@@ -5,14 +5,26 @@ use color_eyre::Result;
 use ratatui::prelude::{Buffer, Color, Modifier, Rect, Style, Widget};
 use ratatui::widgets::{Block, Borders};
 use std::fs::File;
-use std::io::{BufRead, BufReader, ErrorKind};
+use std::io::{BufRead, BufReader, ErrorKind, Read};
 use std::path::Path;
 use tui_textarea::{CursorMove, Input, Key, Scrolling, TextArea};
+
+/// Lines read for a preview: comfortably more than any real terminal height,
+/// so the pane is always filled without reading a whole log file.
+const PREVIEW_LINES: usize = 500;
+
+/// Byte ceiling for a preview. A file with no newlines is a single enormous
+/// line, which the line cap alone would happily read in full.
+const MAX_PREVIEW_BYTES: u64 = 1 << 20;
+
+/// Shown in place of the contents when a file is not UTF-8.
+const BINARY_MESSAGE: &str = "<binary file: not valid UTF-8>";
 
 #[derive(Debug, Default)]
 pub struct FileView<'a> {
     pub filename: String, // name of the log file to view
     pub textarea: TextArea<'a>,
+    pub truncated: bool, // showing a bounded preview rather than the whole file
     pub active: bool,
 }
 
@@ -31,9 +43,30 @@ impl FileView<'_> {
     pub fn load(&mut self, path: &Path) {
         self.filename = path.display().to_string();
         self.textarea = TextArea::new(read_lines(path));
+        self.truncated = false;
+    }
+
+    /// Show just enough of `path` to fill the pane.
+    ///
+    /// Used as the selection moves, where reading whole files on every cursor
+    /// key would stutter on large logs. While the nav pane holds focus the
+    /// view cannot be scrolled, so a screenful is all that can be seen; the
+    /// rest is read by `handle_events` as soon as the view is actually used.
+    pub fn preview(&mut self, path: &Path) {
+        self.filename = path.display().to_string();
+        let (lines, truncated) = read_preview(path);
+        self.textarea = TextArea::new(lines);
+        self.truncated = truncated;
     }
 
     pub fn handle_events(&mut self, input: Input) -> Result<()> {
+        // The user is interacting with the view, so a preview is no longer
+        // enough: they can now scroll past the end of it.
+        if self.truncated {
+            let path = Path::new(&self.filename).to_path_buf();
+            self.load(&path);
+        }
+
         match input {
             Input {
                 key: Key::Char('h'),
@@ -159,19 +192,166 @@ fn read_lines(path: &Path) -> Vec<String> {
 
     match BufReader::new(file).lines().collect::<std::io::Result<Vec<_>>>() {
         Ok(lines) => lines,
-        Err(err) if err.kind() == ErrorKind::InvalidData => {
-            vec!["<binary file: not valid UTF-8>".to_string()]
-        }
+        Err(err) if err.kind() == ErrorKind::InvalidData => vec![BINARY_MESSAGE.to_string()],
         Err(err) => vec![format!("<{err}>")],
     }
+}
+
+/// Read at most a screenful of `path`, reporting whether anything was left.
+///
+/// Bounded on both axes: `PREVIEW_LINES` lines and `MAX_PREVIEW_BYTES` bytes.
+/// Because the reader stops as soon as either is reached, the cost does not
+/// grow with the size of the file and there is no long-running work to cancel
+/// when the selection moves on.
+///
+/// A file that cannot be read reports the reason and is *not* marked truncated
+/// — there is nothing better to re-read later.
+fn read_preview(path: &Path) -> (Vec<String>, bool) {
+    let file = match File::open(path) {
+        Ok(file) => file,
+        Err(err) => return (vec![format!("<{err}>")], false),
+    };
+
+    let mut reader = BufReader::new(file.take(MAX_PREVIEW_BYTES));
+    let mut lines = Vec::new();
+    let mut line = String::new();
+
+    while lines.len() < PREVIEW_LINES {
+        line.clear();
+        match reader.read_line(&mut line) {
+            Ok(0) => break,
+            Ok(_) => lines.push(line.trim_end_matches(['\n', '\r']).to_string()),
+            Err(err) if err.kind() == ErrorKind::InvalidData => {
+                return (vec![BINARY_MESSAGE.to_string()], false)
+            }
+            Err(err) => return (vec![format!("<{err}>")], false),
+        }
+    }
+
+    // Either the line budget ran out, or the byte allowance did. A file that
+    // ends exactly on a cap is reported as truncated, which only costs a
+    // redundant re-read the first time the view is used.
+    let truncated = lines.len() == PREVIEW_LINES || reader.into_inner().limit() == 0;
+    (lines, truncated)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     fn contents(view: &FileView<'_>) -> String {
         view.textarea.lines().join("\n")
+    }
+
+    /// Write a fixture under `target/` so the tests do not depend on whatever
+    /// happens to be in the working tree.
+    fn fixture(name: &str, contents: &str) -> std::path::PathBuf {
+        let dir = Path::new("target/test-fixtures");
+        fs::create_dir_all(dir).expect("create fixture dir");
+        let path = dir.join(name);
+        fs::write(&path, contents).expect("write fixture");
+        path
+    }
+
+    fn long_file(name: &str, lines: usize) -> std::path::PathBuf {
+        let body: String = (0..lines).map(|i| format!("line {i}\n")).collect();
+        fixture(name, &body)
+    }
+
+    #[test]
+    fn preview_stops_at_the_line_cap() {
+        let path = long_file("long.txt", PREVIEW_LINES * 3);
+        let mut view = FileView::new("Cargo.toml".to_string());
+
+        view.preview(&path);
+
+        assert_eq!(view.textarea.lines().len(), PREVIEW_LINES);
+        assert!(view.truncated, "a capped preview should be marked truncated");
+    }
+
+    #[test]
+    fn preview_of_a_short_file_is_complete() {
+        let path = long_file("short.txt", 3);
+        let mut view = FileView::new("Cargo.toml".to_string());
+
+        view.preview(&path);
+
+        assert_eq!(view.textarea.lines().len(), 3);
+        assert!(!view.truncated, "a fully read file is not truncated");
+    }
+
+    /// A file with no newlines is a single enormous line, so the line cap alone
+    /// would read the whole thing. The byte cap has to stop it.
+    #[test]
+    fn preview_byte_caps_a_file_without_newlines() {
+        let blob = "x".repeat((MAX_PREVIEW_BYTES as usize) * 3);
+        let path = fixture("blob.txt", &blob);
+        let mut view = FileView::new("Cargo.toml".to_string());
+
+        view.preview(&path);
+
+        let read: usize = view.textarea.lines().iter().map(String::len).sum();
+        assert!(
+            read as u64 <= MAX_PREVIEW_BYTES,
+            "read {read} bytes, over the {MAX_PREVIEW_BYTES} cap"
+        );
+        assert!(view.truncated);
+    }
+
+    /// While the nav pane has focus the preview is all that is on screen, but
+    /// the moment the view is used it must hold the whole file.
+    #[test]
+    fn interacting_upgrades_a_truncated_preview() {
+        let path = long_file("upgrade.txt", PREVIEW_LINES * 2);
+        let mut view = FileView::new("Cargo.toml".to_string());
+        view.preview(&path);
+        assert!(view.truncated);
+
+        view.handle_events(Input {
+            key: Key::Down,
+            ..Default::default()
+        })
+        .unwrap();
+
+        assert_eq!(view.textarea.lines().len(), PREVIEW_LINES * 2);
+        assert!(!view.truncated);
+    }
+
+    #[test]
+    fn interacting_with_a_complete_file_changes_nothing() {
+        let path = long_file("complete.txt", 3);
+        let mut view = FileView::new("Cargo.toml".to_string());
+        view.preview(&path);
+
+        view.handle_events(Input {
+            key: Key::Down,
+            ..Default::default()
+        })
+        .unwrap();
+
+        assert_eq!(view.textarea.lines().len(), 3);
+    }
+
+    #[test]
+    fn preview_reports_a_binary_file() {
+        let mut view = FileView::new("Cargo.toml".to_string());
+
+        view.preview(Path::new("target/debug/recon"));
+
+        assert_eq!(contents(&view), "<binary file: not valid UTF-8>");
+        assert!(!view.truncated, "an error message is not a truncated preview");
+    }
+
+    #[test]
+    fn preview_of_a_missing_file_shows_a_message() {
+        let mut view = FileView::new("Cargo.toml".to_string());
+
+        view.preview(Path::new("no/such/file.txt"));
+
+        let text = contents(&view);
+        assert!(text.starts_with('<') && text.ends_with('>'), "not a message: {text}");
+        assert!(!view.truncated);
     }
 
     #[test]

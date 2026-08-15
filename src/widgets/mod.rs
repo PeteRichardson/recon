@@ -10,8 +10,11 @@ use std::path::PathBuf;
 /// needs to reach a sibling widget.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
-    /// Show this file in the file view.
+    /// Show this file in the file view, reading all of it.
     Load(PathBuf),
+    /// Show enough of this file to fill the pane, as the selection passes over
+    /// it. Bounded so that holding a cursor key stays responsive.
+    Preview(PathBuf),
 }
 
 pub enum AppWidget<'a> {

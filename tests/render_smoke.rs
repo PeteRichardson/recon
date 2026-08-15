@@ -135,15 +135,56 @@ fn enter_on_a_file_loads_it_into_the_view() {
     );
 }
 
+/// Moving the selection is enough on its own; Enter is only for directories.
+#[test]
+fn moving_onto_a_file_loads_it_without_enter() {
+    let config = Config {
+        file: "Cargo.toml".to_string(),
+    };
+    let mut app = App::new(&config);
+
+    highlight(&mut app, "Cargo.lock");
+
+    let pane = view_pane(&mut app);
+    assert!(
+        pane.contains("[[package]]"),
+        "Cargo.lock was not previewed on selection:\n{pane}"
+    );
+}
+
+/// Stepping onto a directory must not blank the view: it keeps the last file.
+#[test]
+fn moving_onto_a_directory_leaves_the_view_alone() {
+    let config = Config {
+        file: "Cargo.toml".to_string(),
+    };
+    let mut app = App::new(&config);
+
+    // `Cargo.toml` sorts immediately before `src`, so a single Down lands on
+    // the directory without passing over any other file.
+    highlight(&mut app, "Cargo.toml");
+    let previewed = view_pane(&mut app);
+    press(&mut app, KeyCode::Down);
+    assert_eq!(highlighted_name(&mut app), "src", "expected to land on src");
+
+    assert_eq!(
+        previewed,
+        view_pane(&mut app),
+        "the view changed on a directory"
+    );
+}
+
 #[test]
 fn enter_on_a_directory_relists_the_nav_pane_without_touching_the_view() {
     let config = Config {
         file: "Cargo.toml".to_string(),
     };
     let mut app = App::new(&config);
-    let view_before = view_pane(&mut app);
 
+    // Capture the view once the cursor is already on `src`: getting there
+    // passes over files, which now preview as the selection moves.
     highlight(&mut app, "src");
+    let view_before = view_pane(&mut app);
     press(&mut app, KeyCode::Enter);
 
     let mut buf = Buffer::empty(AREA);

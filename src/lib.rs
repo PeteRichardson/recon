@@ -97,12 +97,11 @@ impl App<'_> {
 
     /// Carry out an action on behalf of the widget that raised it.
     fn perform(&mut self, action: Action) {
-        match action {
-            Action::Load(path) => {
-                for widget in &mut self.widgets {
-                    if let AppWidget::FileView(view) = widget {
-                        view.load(&path);
-                    }
+        for widget in &mut self.widgets {
+            if let AppWidget::FileView(view) = widget {
+                match &action {
+                    Action::Load(path) => view.load(path),
+                    Action::Preview(path) => view.preview(path),
                 }
             }
         }

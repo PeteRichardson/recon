@@ -50,8 +50,14 @@ impl FileNav<'_> {
     pub fn handle_events(&mut self, event: Event) -> Result<Option<Action>> {
         if let Event::Key(key) = event {
             match key.code {
-                KeyCode::Up | KeyCode::Char('k') => self.select_previous(),
-                KeyCode::Down | KeyCode::Char('j') => self.select_next(),
+                KeyCode::Up | KeyCode::Char('k') => {
+                    self.select_previous();
+                    return Ok(self.preview_selection());
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    self.select_next();
+                    return Ok(self.preview_selection());
+                }
                 KeyCode::Enter => return Ok(self.activate_selection()),
                 _ => {}
             }
@@ -60,11 +66,25 @@ impl FileNav<'_> {
         Ok(None)
     }
 
-    /// Open the highlighted entry: descend into a directory in place, or ask
-    /// for a file to be loaded into the file view.
-    fn activate_selection(&mut self) -> Option<Action> {
+    /// The path the cursor is sitting on.
+    fn selected_path(&self) -> Option<PathBuf> {
         let selected = self.state.selected()?;
-        let path = self.dir.join(self.entries.get(selected)?);
+        Some(self.dir.join(self.entries.get(selected)?))
+    }
+
+    /// Ask for the highlighted entry to be previewed, if it is a file.
+    ///
+    /// Directories and `PARENT` have nothing to show, so they yield no action
+    /// and the view keeps whatever it was already displaying.
+    fn preview_selection(&self) -> Option<Action> {
+        let path = self.selected_path()?;
+        path.is_file().then_some(Action::Preview(path))
+    }
+
+    /// Open the highlighted entry: descend into a directory in place, or ask
+    /// for a file to be loaded into the file view in full.
+    fn activate_selection(&mut self) -> Option<Action> {
+        let path = self.selected_path()?;
 
         if path.is_dir() {
             self.set_dir(path);
@@ -107,9 +127,12 @@ mod tests {
     use super::*;
     use crossterm::event::KeyEvent;
 
+    fn press(nav: &mut FileNav<'_>, code: KeyCode) -> Option<Action> {
+        nav.handle_events(Event::Key(KeyEvent::from(code))).unwrap()
+    }
+
     fn enter(nav: &mut FileNav<'_>) -> Option<Action> {
-        nav.handle_events(Event::Key(KeyEvent::from(KeyCode::Enter)))
-            .unwrap()
+        press(nav, KeyCode::Enter)
     }
 
     /// Move the selection onto a named entry, so tests don't hard-code indices
@@ -167,6 +190,51 @@ mod tests {
     fn missing_directory_still_offers_parent() {
         let nav = FileNav::new("no/such/dir/file.txt".to_string());
         assert_eq!(nav.entries, vec![PARENT.to_string()]);
+    }
+
+    /// Moving onto a file previews it, so no keypress beyond the cursor move
+    /// is needed to see its contents.
+    #[test]
+    fn moving_onto_a_file_requests_a_preview() {
+        let mut nav = FileNav::new("Cargo.toml".to_string());
+        select(&mut nav, "Cargo.lock"); // sorts immediately before Cargo.toml
+
+        match press(&mut nav, KeyCode::Down) {
+            Some(Action::Preview(path)) => {
+                assert_eq!(path.file_name().unwrap(), "Cargo.toml");
+            }
+            other => panic!("expected a Preview action, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn moving_up_onto_a_file_requests_a_preview() {
+        let mut nav = FileNav::new("Cargo.toml".to_string());
+        select(&mut nav, "src"); // sorts immediately after Cargo.toml
+
+        match press(&mut nav, KeyCode::Up) {
+            Some(Action::Preview(path)) => {
+                assert_eq!(path.file_name().unwrap(), "Cargo.toml");
+            }
+            other => panic!("expected a Preview action, got {other:?}"),
+        }
+    }
+
+    /// Directories have nothing to show, so the view keeps the last file.
+    #[test]
+    fn moving_onto_a_directory_requests_nothing() {
+        let mut nav = FileNav::new("Cargo.toml".to_string());
+        select(&mut nav, "Cargo.toml"); // `src` is next
+
+        assert!(press(&mut nav, KeyCode::Down).is_none());
+    }
+
+    #[test]
+    fn moving_onto_the_parent_entry_requests_nothing() {
+        let mut nav = FileNav::new("Cargo.toml".to_string());
+        select(&mut nav, ".git"); // `..` is above it
+
+        assert!(press(&mut nav, KeyCode::Up).is_none());
     }
 
     #[test]
