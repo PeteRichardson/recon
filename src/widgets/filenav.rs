@@ -1,16 +1,20 @@
 /// FileNav
 ///
+use crate::widgets::Action;
 use color_eyre::Result;
 use crossterm::event::{Event, KeyCode};
 use ratatui::prelude::{Buffer, Color, Modifier, Rect, Style, Widget};
 use ratatui::widgets::{Block, List, ListState, StatefulWidget};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
+/// The entry that climbs to the parent directory.
+pub const PARENT: &str = "..";
 
 #[derive(Debug, Default)]
 pub struct FileNav<'a> {
-    pub filename: String, // name of the log file to view
-    pub entries: Vec<String>, // names of the files alongside `filename`
+    pub dir: PathBuf,         // directory currently being listed
+    pub entries: Vec<String>, // `PARENT` followed by the sorted contents of `dir`
     pub navlist: List<'a>,
     pub state: ListState,
     pub active: bool,
@@ -18,27 +22,56 @@ pub struct FileNav<'a> {
 
 impl FileNav<'_> {
     pub fn new(filename: String) -> Self {
-        let entries = read_dir_entries(&filename);
+        // A bare filename such as `Cargo.toml` has an empty parent, so fall
+        // back to the current directory.
+        let dir = match Path::new(&filename).parent() {
+            Some(parent) if !parent.as_os_str().is_empty() => parent.to_path_buf(),
+            _ => PathBuf::from("."),
+        };
 
-        Self {
-            filename,
-            navlist: List::new(entries.clone()),
-            entries,
-            state: ListState::default().with_selected(Some(0)),
-            active: false,
-        }
+        let mut nav = Self::default();
+        nav.set_dir(dir);
+        nav
     }
 
-    pub fn handle_events(&mut self, event: Event) -> Result<()> {
+    /// Re-list the pane at `dir`, selecting its first entry.
+    ///
+    /// The path is canonicalized so that walking into a directory and back out
+    /// again lands on the original path rather than accumulating `src/..`
+    /// segments. Canonicalization fails on a path that does not exist, in
+    /// which case the path is kept as-is and the listing comes back empty.
+    fn set_dir(&mut self, dir: PathBuf) {
+        self.dir = fs::canonicalize(&dir).unwrap_or(dir);
+        self.entries = read_dir_entries(&self.dir);
+        self.navlist = List::new(self.entries.clone());
+        self.state = ListState::default().with_selected(Some(0));
+    }
+
+    pub fn handle_events(&mut self, event: Event) -> Result<Option<Action>> {
         if let Event::Key(key) = event {
             match key.code {
                 KeyCode::Up | KeyCode::Char('k') => self.select_previous(),
                 KeyCode::Down | KeyCode::Char('j') => self.select_next(),
+                KeyCode::Enter => return Ok(self.activate_selection()),
                 _ => {}
             }
         }
 
-        Ok(())
+        Ok(None)
+    }
+
+    /// Open the highlighted entry: descend into a directory in place, or ask
+    /// for a file to be loaded into the file view.
+    fn activate_selection(&mut self) -> Option<Action> {
+        let selected = self.state.selected()?;
+        let path = self.dir.join(self.entries.get(selected)?);
+
+        if path.is_dir() {
+            self.set_dir(path);
+            None
+        } else {
+            Some(Action::Load(path))
+        }
     }
 
     fn select_previous(&mut self) {
@@ -50,31 +83,45 @@ impl FileNav<'_> {
     }
 }
 
-/// List the names of the files sitting alongside `filename`, sorted.
+/// List `dir`, sorted, with `PARENT` first.
 ///
-/// A bare filename such as `Cargo.toml` has an empty parent, so fall back to
-/// the current directory. An unreadable directory yields no entries rather
-/// than panicking, so the nav pane degrades to an empty box.
-fn read_dir_entries(filename: &str) -> Vec<String> {
-    let dir = match Path::new(filename).parent() {
-        Some(parent) if !parent.as_os_str().is_empty() => parent,
-        _ => Path::new("."),
-    };
+/// An unreadable directory still yields `PARENT`, so the user can always climb
+/// back out rather than being stranded in an empty pane. Nothing here panics.
+fn read_dir_entries(dir: &Path) -> Vec<String> {
+    let mut entries = vec![PARENT.to_string()];
 
     let Ok(read_dir) = fs::read_dir(dir) else {
-        return Vec::new();
+        return entries;
     };
 
-    let mut entries: Vec<String> = read_dir
+    let mut names: Vec<String> = read_dir
         .filter_map(|entry| Some(entry.ok()?.file_name().to_string_lossy().into_owned()))
         .collect();
-    entries.sort();
+    names.sort();
+    entries.append(&mut names);
     entries
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crossterm::event::KeyEvent;
+
+    fn enter(nav: &mut FileNav<'_>) -> Option<Action> {
+        nav.handle_events(Event::Key(KeyEvent::from(KeyCode::Enter)))
+            .unwrap()
+    }
+
+    /// Move the selection onto a named entry, so tests don't hard-code indices
+    /// that shift as the working tree changes.
+    fn select(nav: &mut FileNav<'_>, name: &str) {
+        let index = nav
+            .entries
+            .iter()
+            .position(|e| e == name)
+            .unwrap_or_else(|| panic!("{name} not among {:?}", nav.entries));
+        nav.state.select(Some(index));
+    }
 
     /// A bare filename has no directory component, so the nav pane should fall
     /// back to the current directory rather than listing nothing.
@@ -90,11 +137,18 @@ mod tests {
     }
 
     #[test]
-    fn entries_are_sorted() {
+    fn parent_entry_comes_first() {
         let nav = FileNav::new("Cargo.toml".to_string());
-        let mut sorted = nav.entries.clone();
+        assert_eq!(nav.entries.first().map(String::as_str), Some(PARENT));
+    }
+
+    #[test]
+    fn entries_after_parent_are_sorted() {
+        let nav = FileNav::new("Cargo.toml".to_string());
+        let rest = &nav.entries[1..];
+        let mut sorted = rest.to_vec();
         sorted.sort();
-        assert_eq!(nav.entries, sorted);
+        assert_eq!(rest, sorted.as_slice());
     }
 
     #[test]
@@ -108,11 +162,79 @@ mod tests {
         assert!(!nav.entries.iter().any(|e| e == "Cargo.toml"));
     }
 
-    /// An unreadable directory should render an empty pane, not panic.
+    /// An unreadable directory still offers `..` so the user can escape.
     #[test]
-    fn missing_directory_yields_no_entries() {
+    fn missing_directory_still_offers_parent() {
         let nav = FileNav::new("no/such/dir/file.txt".to_string());
-        assert!(nav.entries.is_empty());
+        assert_eq!(nav.entries, vec![PARENT.to_string()]);
+    }
+
+    #[test]
+    fn enter_on_a_file_requests_a_load() {
+        let mut nav = FileNav::new("Cargo.toml".to_string());
+        select(&mut nav, "Cargo.toml");
+
+        let action = enter(&mut nav);
+
+        match action {
+            Some(Action::Load(path)) => {
+                assert!(path.is_file(), "{path:?} is not a file");
+                assert_eq!(path.file_name().unwrap(), "Cargo.toml");
+            }
+            other => panic!("expected a Load action, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn enter_on_a_directory_navigates_into_it() {
+        let mut nav = FileNav::new("Cargo.toml".to_string());
+        select(&mut nav, "src");
+
+        let action = enter(&mut nav);
+
+        assert!(action.is_none(), "descending should not request a load");
+        assert!(
+            nav.entries.iter().any(|e| e == "lib.rs"),
+            "did not descend into src, entries: {:?}",
+            nav.entries
+        );
+        assert_eq!(nav.dir.file_name().unwrap(), "src");
+    }
+
+    #[test]
+    fn descending_resets_the_selection() {
+        let mut nav = FileNav::new("Cargo.toml".to_string());
+        select(&mut nav, "src");
+        enter(&mut nav);
+        assert_eq!(nav.state.selected(), Some(0));
+    }
+
+    #[test]
+    fn parent_entry_climbs_back_up() {
+        let mut nav = FileNav::new("src/lib.rs".to_string());
+        let start = nav.dir.clone();
+        select(&mut nav, PARENT);
+
+        let action = enter(&mut nav);
+
+        assert!(action.is_none());
+        assert_eq!(nav.dir, start.parent().unwrap());
+        assert!(nav.entries.iter().any(|e| e == "Cargo.toml"));
+    }
+
+    /// Navigating in and back out should land on the original directory, not
+    /// accumulate `./src/..` path segments.
+    #[test]
+    fn round_trip_returns_to_the_same_directory() {
+        let mut nav = FileNav::new("Cargo.toml".to_string());
+        let start = nav.dir.clone();
+
+        select(&mut nav, "src");
+        enter(&mut nav);
+        select(&mut nav, PARENT);
+        enter(&mut nav);
+
+        assert_eq!(nav.dir, start);
     }
 
     #[test]
@@ -160,7 +282,25 @@ mod tests {
 
         let text: String = buf.content().iter().map(|c| c.symbol()).collect();
         assert!(text.contains("Cargo.toml"), "entries not drawn:\n{text}");
-        assert!(text.contains("List"), "block title not drawn");
+        assert!(text.contains(PARENT), "parent entry not drawn:\n{text}");
+    }
+
+    /// The block title tracks the directory being listed, so the user can tell
+    /// where they have navigated to.
+    #[test]
+    fn title_shows_the_current_directory() {
+        let mut nav = FileNav::new("Cargo.toml".to_string());
+        // Wide enough that the absolute path is not truncated away.
+        let area = Rect::new(0, 0, 120, 10);
+        let mut buf = Buffer::empty(area);
+
+        nav.render(area, &mut buf);
+
+        let title: String = (0..area.width).map(|x| buf[(x, 0)].symbol()).collect();
+        assert!(
+            title.contains(&nav.dir.display().to_string()),
+            "title does not show the current directory:\n{title}"
+        );
     }
 
     #[test]
@@ -201,7 +341,7 @@ impl Widget for &mut FileNav<'_> {
         let list = self
             .navlist
             .clone()
-            .block(Block::bordered().title("List"))
+            .block(Block::bordered().title(self.dir.display().to_string()))
             .highlight_style(highlight_style)
             .highlight_symbol(">>")
             .repeat_highlight_symbol(true);

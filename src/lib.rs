@@ -7,7 +7,7 @@ use std::time::Duration;
 mod widgets;
 use widgets::filenav::FileNav;
 use widgets::fileview::FileView;
-use widgets::AppWidget;
+use widgets::{Action, AppWidget};
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about=None)]
@@ -66,18 +66,46 @@ impl App<'_> {
         let timeout = Duration::from_secs_f32(1.0 / 60.0);
         if event::poll(timeout)? {
             let event = event::read()?;
-            if let event::Event::Key(key) = event {
-                match key.code {
-                    KeyCode::Char('q') => self.state = AppState::Quit,
-                    KeyCode::Tab => {
-                        self.active_widget = (self.active_widget + 1) % self.widgets.len();
-                    }
-                    _ => self.widgets[self.active_widget].handle_events(event)?,
-                }
-            }
-            // Handle event::Event::Mouse?
+            self.handle_event(event)?;
         }
         Ok(())
+    }
+
+    /// Dispatch a single event: app-wide keys first, then the focused widget.
+    ///
+    /// Split out from the polling loop so that it can be driven directly.
+    pub fn handle_event(&mut self, event: event::Event) -> Result<()> {
+        if let event::Event::Key(key) = event {
+            match key.code {
+                KeyCode::Char('q') => {
+                    self.state = AppState::Quit;
+                    return Ok(());
+                }
+                KeyCode::Tab => {
+                    self.active_widget = (self.active_widget + 1) % self.widgets.len();
+                    return Ok(());
+                }
+                _ => {}
+            }
+        }
+
+        if let Some(action) = self.widgets[self.active_widget].handle_events(event)? {
+            self.perform(action);
+        }
+        Ok(())
+    }
+
+    /// Carry out an action on behalf of the widget that raised it.
+    fn perform(&mut self, action: Action) {
+        match action {
+            Action::Load(path) => {
+                for widget in &mut self.widgets {
+                    if let AppWidget::FileView(view) = widget {
+                        view.load(&path);
+                    }
+                }
+            }
+        }
     }
 }
 

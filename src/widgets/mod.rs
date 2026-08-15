@@ -4,6 +4,15 @@ pub mod fileview;
 use color_eyre::Result;
 use crossterm::event::Event;
 use ratatui::prelude::{Buffer, Rect, Widget};
+use std::path::PathBuf;
+
+/// A request raised by a widget that only `App` can carry out, because it
+/// needs to reach a sibling widget.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Action {
+    /// Show this file in the file view.
+    Load(PathBuf),
+}
 
 pub enum AppWidget<'a> {
     FileNav(filenav::FileNav<'a>),
@@ -19,10 +28,15 @@ impl AppWidget<'_> {
         }
     }
 
-    pub fn handle_events(&mut self, event: Event) -> Result<()> {
+    /// Feed an event to this widget, returning any action it wants `App` to
+    /// perform on its behalf.
+    pub fn handle_events(&mut self, event: Event) -> Result<Option<Action>> {
         match self {
             Self::FileNav(w) => w.handle_events(event),
-            Self::FileView(w) => w.handle_events(event.into()),
+            Self::FileView(w) => {
+                w.handle_events(event.into())?;
+                Ok(None)
+            }
         }
     }
 }
