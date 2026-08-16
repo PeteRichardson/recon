@@ -64,6 +64,25 @@ impl FileView<'_> {
         self.truncated = truncated;
     }
 
+    /// Style individual lines, indexed by line number.
+    ///
+    /// Filtering uses this to dim lines that match no filter and colour those
+    /// that do. Rebuilding the textarea — which `load` and `preview` both do —
+    /// clears these, so they must be re-applied after either.
+    pub fn set_line_styles(&mut self, styles: Vec<Option<Style>>) {
+        self.textarea.set_line_styles(styles);
+    }
+
+    /// Show these 0-based source line numbers in the gutter instead of
+    /// numbering the buffer 1..N.
+    ///
+    /// Used when the buffer holds only the lines matching a filter, so the
+    /// gutter still reads as positions in the original file. Cleared by
+    /// `load` and `preview`, as above.
+    pub fn set_line_numbers(&mut self, numbers: Vec<usize>) {
+        self.textarea.set_line_numbers(numbers);
+    }
+
     /// Start a search, moving to the first match from the cursor.
     ///
     /// The pattern is a regular expression, so an invalid one is reported
@@ -620,6 +639,66 @@ mod tests {
         view.load(Path::new("target/debug/recon"));
 
         assert_eq!(contents(&view), "<binary file: not valid UTF-8>");
+    }
+
+    /// Whether any cell in row `y` carries `colour` as its foreground.
+    fn row_has_fg(buf: &Buffer, y: u16, colour: Color) -> bool {
+        (0..buf.area.width).any(|x| buf[(x, y)].style().fg == Some(colour))
+    }
+
+    /// The row containing `needle`. The view draws a bordered block, so text
+    /// does not begin at row 0 and row indices cannot be assumed.
+    fn row_of(buf: &Buffer, needle: &str) -> u16 {
+        (0..buf.area.height)
+            .find(|&y| {
+                (0..buf.area.width)
+                    .map(|x| buf[(x, y)].symbol())
+                    .collect::<String>()
+                    .contains(needle)
+            })
+            .unwrap_or_else(|| panic!("no row containing {needle:?}"))
+    }
+
+    #[test]
+    fn line_styles_reach_the_rendered_view() {
+        let mut view = view_of("line_styles.txt", "alpha\nbeta\n");
+        view.set_line_styles(vec![None, Some(Style::default().fg(Color::Yellow))]);
+        let area = Rect::new(0, 0, 40, 6);
+        let mut buf = Buffer::empty(area);
+
+        (&mut view).render(area, &mut buf);
+
+        let alpha = row_of(&buf, "alpha");
+        let beta = row_of(&buf, "beta");
+        assert!(row_has_fg(&buf, beta, Color::Yellow), "beta not styled");
+        assert!(!row_has_fg(&buf, alpha, Color::Yellow), "alpha wrongly styled");
+    }
+
+    #[test]
+    fn overridden_line_numbers_reach_the_gutter() {
+        let mut view = view_of("line_numbers.txt", "beta\ndelta\n");
+        view.set_line_numbers(vec![1, 3]);
+
+        let text = rendered(&mut view);
+
+        assert!(text.contains("2 beta"), "gutter not overridden:\n{text}");
+        assert!(text.contains("4 delta"), "gutter not overridden:\n{text}");
+    }
+
+    /// Loading a file rebuilds the TextArea, which drops both. Phase 2 must
+    /// re-apply them after every load; this pins the behaviour so that is not
+    /// discovered by surprise.
+    #[test]
+    fn loading_a_file_clears_line_styles_and_numbers() {
+        let path = fixture("reload.txt", "alpha\nbeta\n");
+        let mut view = view_of("reload_start.txt", "x\n");
+        view.set_line_styles(vec![Some(Style::default().fg(Color::Yellow))]);
+        view.set_line_numbers(vec![41]);
+
+        view.load(&path);
+
+        assert!(view.textarea.line_styles().is_empty());
+        assert!(view.textarea.line_numbers().is_empty());
     }
 }
 
