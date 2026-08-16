@@ -66,6 +66,23 @@ impl FileNav<'_> {
         Ok(None)
     }
 
+    /// Columns needed to show the longest entry in full.
+    ///
+    /// Counts the two borders and the two-column `>>` marker on top of the
+    /// name. Measured in `char`s rather than display width, so wide glyphs
+    /// (CJK, emoji) are under-measured and their names will clip.
+    pub fn preferred_width(&self) -> u16 {
+        const BORDERS_AND_MARKER: usize = 4;
+
+        let longest = self
+            .entries
+            .iter()
+            .map(|entry| entry.chars().count())
+            .max()
+            .unwrap_or(0);
+        u16::try_from(longest + BORDERS_AND_MARKER).unwrap_or(u16::MAX)
+    }
+
     /// The path the cursor is sitting on.
     fn selected_path(&self) -> Option<PathBuf> {
         let selected = self.state.selected()?;
@@ -190,6 +207,49 @@ mod tests {
     fn missing_directory_still_offers_parent() {
         let nav = FileNav::new("no/such/dir/file.txt".to_string());
         assert_eq!(nav.entries, vec![PARENT.to_string()]);
+    }
+
+    /// Build a directory with known contents, so width assertions do not
+    /// depend on whatever happens to be in the working tree.
+    fn nav_over(name: &str, files: &[&str]) -> FileNav<'static> {
+        let dir = Path::new("target/test-navdirs").join(name);
+        fs::remove_dir_all(&dir).ok();
+        fs::create_dir_all(&dir).expect("create fixture dir");
+        for file in files {
+            fs::write(dir.join(file), "x").expect("write fixture");
+        }
+        FileNav::new(dir.join("placeholder").display().to_string())
+    }
+
+    #[test]
+    fn preferred_width_fits_the_longest_entry() {
+        let nav = nav_over("widths", &["a.rs", "much_longer_name.rs"]);
+
+        // Two borders plus the two-column `>>` marker, plus the name itself.
+        assert_eq!(nav.preferred_width(), "much_longer_name.rs".len() as u16 + 4);
+    }
+
+    /// `..` is always present, so even an empty directory has a width.
+    #[test]
+    fn preferred_width_of_an_empty_directory_covers_the_parent_entry() {
+        let nav = nav_over("empty", &[]);
+
+        assert_eq!(nav.entries, vec![PARENT.to_string()]);
+        assert_eq!(nav.preferred_width(), PARENT.len() as u16 + 4);
+    }
+
+    #[test]
+    fn preferred_width_tracks_the_directory_being_listed() {
+        let mut nav = nav_over("outer", &["short.rs"]);
+        let narrow = nav.preferred_width();
+        fs::create_dir_all("target/test-navdirs/outer/a_much_longer_subdir")
+            .expect("create subdir");
+        nav.set_dir(Path::new("target/test-navdirs/outer").to_path_buf());
+
+        assert!(
+            nav.preferred_width() > narrow,
+            "width did not grow for a longer entry"
+        );
     }
 
     /// Moving onto a file previews it, so no keypress beyond the cursor move
