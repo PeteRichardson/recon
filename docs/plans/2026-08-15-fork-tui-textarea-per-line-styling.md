@@ -247,21 +247,23 @@ fn line_styles_apply_to_the_named_line_only() {
 
     let buf = render(&textarea, 10, 3);
 
+    assert_eq!(row_text(&buf, 1), "beta", "styled the row we think we styled");
     assert_eq!(buf[(0, 1)].style().fg, Some(Color::Yellow), "beta not styled");
-    assert_ne!(buf[(0, 0)].style().fg, Some(Color::Yellow), "alpha wrongly styled");
     assert_ne!(buf[(0, 2)].style().fg, Some(Color::Yellow), "gamma wrongly styled");
 }
 
 #[test]
 fn lines_past_the_end_of_the_styles_are_unstyled() {
-    let mut textarea = plain(&["alpha", "beta"]);
+    let mut textarea = plain(&["alpha", "beta", "gamma"]);
     // Deliberately shorter than the buffer: must not panic or misapply.
-    textarea.set_line_styles(vec![Some(Style::default().fg(Color::Yellow))]);
+    // Row 0 is avoided deliberately — the cursor starts there, and the
+    // cursor-line style legitimately overrides per-line styles.
+    textarea.set_line_styles(vec![None, Some(Style::default().fg(Color::Yellow))]);
 
-    let buf = render(&textarea, 10, 2);
+    let buf = render(&textarea, 10, 3);
 
-    assert_eq!(buf[(0, 0)].style().fg, Some(Color::Yellow));
-    assert_ne!(buf[(0, 1)].style().fg, Some(Color::Yellow));
+    assert_eq!(buf[(0, 1)].style().fg, Some(Color::Yellow), "beta not styled");
+    assert_ne!(buf[(0, 2)].style().fg, Some(Color::Yellow), "gamma styled past the end");
 }
 
 #[test]
@@ -885,9 +887,10 @@ diff -ruN \
 grep "^diff " vendor/tui-textarea-2/upstream.patch
 ```
 
-Expected: exactly three files — `src/textarea.rs`, `src/widget.rs`, and
-`tests/line_presentation.rs`. **Anything touching `screen_map.rs`, `wrap.rs`
-or `cursor.rs` violates the spec's constraint** — stop and raise it rather
+Expected: exactly four files — `Cargo.toml` (the vendored crate's own, which
+sets `autotests = false` and so needs an explicit `[[test]]` entry for the new
+file), `src/textarea.rs`, `src/widget.rs`, and `tests/line_presentation.rs`.
+**Anything touching `screen_map.rs`, `wrap.rs` or `cursor.rs` violates the spec's constraint** — stop and raise it rather
 than committing.
 
 - [ ] **Step 3: Note the fork in the README**
