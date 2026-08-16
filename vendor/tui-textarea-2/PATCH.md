@@ -37,15 +37,32 @@ line); this fork only makes it reachable.
   `widest_display_row`.
 - `src/textarea.rs`, `line_spans_segment`: pass `display_row(wrapped.row)` to
   `hl.line_number` instead of `wrapped.row`.
-- `src/widget.rs`, `text_widget` and `scroll_top_col`: size the gutter from
+- `src/widget.rs`, `text_widget`: size the gutter from
   `widest_display_row() + 1` rather than `lines().len()`. Required, not
   cosmetic: `LineHighlighter::line_number` pads with an unsigned subtraction
   that underflows if a number is wider than the gutter.
-- `src/widget.rs`, `rendered_position_in`: same substitution, for
-  consistency. This one can't underflow (it's a saturating addition, not the
-  unsigned subtraction that motivates the other two sites) but without it,
-  the reported cursor column would be offset by the wrong gutter width
+- `src/widget.rs`, `scroll_top_col` and `rendered_position_in`: same
+  substitution, for consistency and a correct offset. Neither can underflow
+  — both do `u16`/saturating arithmetic rather than the unsigned subtraction
+  that motivates `text_widget` — but without the substitution, the reported
+  scroll column and cursor column would be offset by the wrong gutter width
   whenever line numbers are overridden to wider values.
+
+### Limitation: gutter overrides need `WrapMode::None`
+
+`screen_map.rs` (`screen_map_load`, ~line 89) and `measure_content_rows` in
+`textarea.rs` (~line 2950) both still size the gutter reservation from
+`self.lines.len()` rather than the widest *displayed* number, and both feed
+wrap layout. With `wrap_mode != WrapMode::None` and overrides wider than the
+buffer's natural numbering, they under-reserve and content clips on the
+right.
+
+This is not fixed, and should not be: `screen_map.rs` is the design's
+declared tripwire below — touching it is the signal to stop forking and
+build a purpose-built viewer instead. `recon` never calls `set_wrap_mode`,
+so the default `WrapMode::None` short-circuits both sites and nothing can
+hit this today. Gutter overrides are therefore supported only under
+`WrapMode::None`.
 
 ### Local-only: removed `[profile.bench]`
 
@@ -60,8 +77,22 @@ upstream's own tree it is the root package and the profile is valid.
 
 1. Copy the new version over this directory.
 2. Re-apply the entries listed above (each names its file and anchor).
-3. Run `cargo test` in the repo root; all tests must pass.
+3. Run `cargo test --workspace` in the repo root; all tests must pass. Plain
+   `cargo test` is not enough: the workspace's default members are `recon`
+   alone, so it runs `recon`'s tests and skips this crate entirely, including
+   `tests/line_presentation.rs`, which pins this fork's whole contract.
 
 The patch is deliberately confined to per-line *presentation*. If it ever
 needs to touch cursor movement, `screen_map.rs` or `wrap.rs`, stop: that is
 the signal to reconsider a purpose-built viewer instead (see the spec).
+
+## Inert publish artefacts
+
+The vendored tree also carries `Cargo.lock`, `Cargo.toml.orig` and
+`.cargo_vcs_info.json`, left over from the published package. They are
+inert: workspace members use the workspace's own `Cargo.lock`, so the
+vendored one is never consulted. `Cargo.toml.orig` is **not** a stale copy
+of `Cargo.toml` to ignore — it is the pre-publish manifest and differs
+materially (no `[[test]]` entries, no `autotests` key, and it still has
+`[profile.bench]`). Patching the wrong one gives confusing results; the
+entries above all target `Cargo.toml`.

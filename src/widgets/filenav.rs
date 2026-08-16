@@ -484,8 +484,10 @@ mod tests {
 
     #[test]
     fn moving_onto_the_parent_entry_requests_nothing() {
-        let mut nav = FileNav::new("Cargo.toml".to_string());
-        select(&mut nav, ".git"); // `..` is above it
+        // Own fixture directory: the repo's own listing shifts as files are
+        // added, which silently changes which entry follows which.
+        let mut nav = nav_over("parent_entry", &["alpha.rs"]);
+        select(&mut nav, "alpha.rs"); // `..` is above it
 
         assert!(press(&mut nav, KeyCode::Up).is_none());
     }

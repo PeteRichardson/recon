@@ -69,6 +69,12 @@ impl FileView<'_> {
     /// Filtering uses this to dim lines that match no filter and colour those
     /// that do. Rebuilding the textarea — which `load` and `preview` both do —
     /// clears these, so they must be re-applied after either.
+    ///
+    /// The line the cursor is on is an exception: `render` sets a cursor-line
+    /// style unconditionally, and the textarea replaces rather than merges the
+    /// line's style, so that one line renders as the cursor-line style even
+    /// when that style is `Style::default()`. Anything relying on every line
+    /// being styled — dimming a filtered view, say — has to account for it.
     pub fn set_line_styles(&mut self, styles: Vec<Option<Style>>) {
         self.textarea.set_line_styles(styles);
     }
@@ -337,6 +343,15 @@ mod tests {
         path
     }
 
+    /// Write a fixture of raw bytes, for content that is not valid UTF-8.
+    fn byte_fixture(name: &str, bytes: &[u8]) -> std::path::PathBuf {
+        let dir = Path::new("target/test-fixtures");
+        fs::create_dir_all(dir).expect("create fixture dir");
+        let path = dir.join(name);
+        fs::write(&path, bytes).expect("write fixture");
+        path
+    }
+
     fn long_file(name: &str, lines: usize) -> std::path::PathBuf {
         let body: String = (0..lines).map(|i| format!("line {i}\n")).collect();
         fixture(name, &body)
@@ -570,9 +585,10 @@ mod tests {
 
     #[test]
     fn preview_reports_a_binary_file() {
+        let path = byte_fixture("preview_binary.bin", &[0xff, 0xfe, 0x00, 0x80]);
         let mut view = FileView::new("Cargo.toml".to_string());
 
-        view.preview(Path::new("target/debug/recon"));
+        view.preview(&path);
 
         assert_eq!(contents(&view), "<binary file: not valid UTF-8>");
         assert!(!view.truncated, "an error message is not a truncated preview");
@@ -634,9 +650,10 @@ mod tests {
 
     #[test]
     fn binary_file_is_reported_as_binary() {
+        let path = byte_fixture("load_binary.bin", &[0xff, 0xfe, 0x00, 0x80]);
         let mut view = FileView::new("Cargo.toml".to_string());
 
-        view.load(Path::new("target/debug/recon"));
+        view.load(&path);
 
         assert_eq!(contents(&view), "<binary file: not valid UTF-8>");
     }

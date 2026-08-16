@@ -2,6 +2,43 @@
 
 A TUI log viewer with a two-pane file navigator.
 
+## Keybindings
+
+There is no separate keybindings reference beyond this section; the
+authoritative source is each widget's `handle_events`.
+
+File view pane (`src/widgets/fileview.rs`):
+
+| Key(s) | Action |
+| --- | --- |
+| `h` / `Left` | Move cursor back |
+| `j` / `Down` | Move cursor down |
+| `k` / `Up` | Move cursor up |
+| `l` / `Right` | Move cursor forward |
+| `w` | Move to the next word |
+| `b` | Move to the previous word |
+| `e` | Move to the end of the word |
+| `0` / `^` | Move to the start of the line |
+| `$` | Move to the end of the line |
+| `{` / `}` | Move by paragraph, back / forward |
+| `g` / `Home` | Move to the top |
+| `G` / `End` | Move to the bottom |
+| `#` | Toggle the line-number gutter |
+| `n` / `N` | Repeat the last search, forward / reversed |
+| `Ctrl-e` / `Ctrl-y` | Scroll one line down / up |
+| `Ctrl-d` / `Ctrl-u` | Scroll half a page down / up |
+| `Ctrl-b` / `PageUp` | Scroll a page up |
+| `Ctrl-f` / `PageDown` / `Space` / `Enter` | Scroll a page down |
+
+Navigator pane (`src/widgets/filenav.rs`):
+
+| Key(s) | Action |
+| --- | --- |
+| `k` / `Up` | Select the previous entry |
+| `j` / `Down` | Select the next entry |
+| `Enter` | Open the selected entry (descend into a directory, or load a file) |
+| `n` / `N` | Repeat the last search, forward / reversed |
+
 ## Vendored dependency
 
 `vendor/tui-textarea-2` is a patched copy of
@@ -11,10 +48,28 @@ and gutter number overrides — which the file view needs in order to dim lines
 that do not match a filter and to show original line numbers while filtered.
 
 See `vendor/tui-textarea-2/PATCH.md` for the exact changes and how to rebase
-onto a new upstream release, and `upstream.patch` for the diff as offered
-upstream. Note that `upstream.patch` also contains one local-only hunk
-(removal of `[profile.bench]` from `Cargo.toml`, needed only because this
-crate lives inside `recon`'s workspace) that `PATCH.md` explicitly calls out
-as not for upstream submission; drop that hunk before sending the patch
-anywhere else. If the rest of the patch is accepted, this directory and the
-`[patch.crates-io]` entry can both be deleted.
+onto a new upstream release. Verify a rebase with `cargo test --workspace`,
+not plain `cargo test`: the workspace's default members are `recon` alone, so
+plain `cargo test` runs only `recon`'s suite and skips this crate's own tests
+entirely (including `tests/line_presentation.rs`, which pins the fork's whole
+contract), which would let a broken fork look green. Note that
+`--workspace` also compiles the vendored crate's dev-dependencies — making it
+a workspace member pulls its whole dev-dependency graph into `Cargo.lock`,
+around 20 extra packages including `termion`, `termwiz`, `serde_json`, and a
+second `crossterm` (0.28.1) alongside `recon`'s own 0.29.0 — so expect a
+heavier build than `cargo build`/plain `cargo test`, which never compile any
+of it.
+
+`upstream.patch` is a local record of what this fork changes, not a
+submission-ready patch, and it has not been submitted anywhere. It contains
+two hunks that are not offerable upstream even so: the `[profile.bench]`
+removal (needed only because this crate lives inside `recon`'s workspace,
+noted in `PATCH.md`), and the `[[test]] name = "line_presentation"` addition,
+which patches the *generated* `Cargo.toml` — upstream's actual pre-publish
+tree (`Cargo.toml.orig`) has no `[[test]]` entries and no `autotests` key at
+all, so that hunk doesn't apply there either. The patch headers also
+reference `/tmp/tui-pristine/...` and `vendor/tui-textarea-2/...`, so as-is
+it will not `git apply` cleanly against an upstream checkout regardless. If
+upstream submission is ever pursued, this all needs reworking first — nothing
+here is submission-ready. If a suitable subset is ever accepted upstream,
+this directory and the `[patch.crates-io]` entry can both be deleted.
