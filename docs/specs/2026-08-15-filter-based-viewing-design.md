@@ -201,6 +201,15 @@ Rebuilding on toggle clones the matching lines. That is bounded but not free
 on a large log, and should be measured the way preview reads were; if it
 bites, the fix is to keep both buffers and swap between them.
 
+**The cursor line.** The textarea *replaces* rather than merges a line's
+style, and `render` sets a cursor-line style unconditionally — so the line the
+cursor sits on would discard its verdict styling and, while the pane is
+inactive, render `Reset`: one line of a dimmed view reading as a match.
+Resolution: `render` sets the cursor-line style to *that line's own verdict
+style, patched with the focus decoration*. It already knows the cursor row and
+the style vector, so this needs no change to the fork. Every line then reads
+correctly, and the cursor stays visible when the view has focus.
+
 ### Layout
 
 The left column splits horizontally: file nav on top, filters beneath.
@@ -326,13 +335,24 @@ Asked for; each is independently useful and independently droppable.
 
 Each phase is independently shippable and leaves the app working.
 
-1. **Fork and wire up** — fork `tui-textarea-2`, add the two setters, and
-   switch the dependency over with no behaviour change. Existing tests must
-   pass untouched, which is the whole point: the foundation is verified
-   against known behaviour before anything is built on it. Offer the patch
-   upstream at this point. (`#` for line numbers is already done.)
-2. **Filters and Ctrl+H** — `Document`, `Filter`, verdict caching, dimming,
-   filter colours, the filter pane, the status line. Delivers the workflow.
+1. **Fork and wire up** — ✅ **done**. Forked `tui-textarea-2`, added the two
+   setters, switched the dependency over with no behaviour change. (`#` for
+   line numbers landed here too.) `upstream.patch` is prepared but
+   deliberately **not** submitted anywhere.
+2. **Filters and Ctrl+H**, split into three so each delivers something usable:
+   - **2a — include filters and dimming.** `Document`, `Filter`, verdict
+     caching, dimming and filter colours, the `f` prompt, `!` to disable all,
+     a minimal status line. Uses `set_line_styles` only and **never rebuilds
+     the buffer**, so no line is ever hidden.
+   - **2b — hiding.** Everything that removes lines from view: excluding
+     filters and the Ctrl+H toggle, and therefore the visible↔source mapping,
+     `set_line_numbers`, the cursor round trip, and the status-line funnel.
+   - **2c — the filter pane.** Toggling, editing, deleting, reordering and
+     colouring filters in the stacked left pane.
+
+   The 2a/2b boundary is drawn at *buffer rebuilding*: 2a styles lines in
+   place, 2b is where anything starts disappearing. Each phase therefore
+   exercises exactly one of the two capabilities the fork added.
 3. **Markers and filter sets** — persistence and marker filters.
 4. **Tail/follow and export.**
 
