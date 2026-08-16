@@ -187,24 +187,25 @@ fn moving_onto_a_file_loads_it_without_enter() {
 }
 
 /// Stepping onto a directory must not blank the view: it keeps the last file.
+///
+/// Own fixture directory: the repo's own listing shifts as files are added,
+/// which silently changes which entry follows which.
 #[test]
 fn moving_onto_a_directory_leaves_the_view_alone() {
+    let dir = std::path::Path::new("target/test-navdirs/render_move_onto_dir");
+    std::fs::remove_dir_all(dir).ok();
+    std::fs::create_dir_all(dir.join("beta_dir")).expect("create fixture dir");
+    std::fs::write(dir.join("alpha.rs"), "content\n").expect("write fixture");
+
     let config = Config {
-        file: "Cargo.toml".to_string(),
+        file: dir.join("alpha.rs").display().to_string(),
     };
     let mut app = App::new(&config);
 
-    // Step onto whatever directory follows `Cargo.toml`. Which one that is
-    // depends on the working tree, so assert it *is* a directory rather than
-    // naming it.
-    highlight(&mut app, "Cargo.toml");
+    highlight(&mut app, "alpha.rs"); // `beta_dir` sorts next
     let previewed = view_text(&mut app);
     press(&mut app, KeyCode::Down);
-    let landed = highlighted_name(&mut app);
-    assert!(
-        std::path::Path::new(&landed).is_dir(),
-        "expected to land on a directory, got {landed}"
-    );
+    assert_eq!(highlighted_name(&mut app), "beta_dir");
 
     assert_eq!(
         previewed,

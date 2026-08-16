@@ -206,7 +206,7 @@ impl<'a> TextArea<'a> {
 
         let mut cursor_col = cursor.col;
         if self.line_number_style().is_some() {
-            cursor_col = cursor_col.saturating_add(num_digits(self.lines().len()) as usize + 2);
+            cursor_col = cursor_col.saturating_add(num_digits(self.widest_display_row() + 1) as usize + 2);
         }
 
         let top_col = top_col as usize;

@@ -41,6 +41,11 @@ line); this fork only makes it reachable.
   `widest_display_row() + 1` rather than `lines().len()`. Required, not
   cosmetic: `LineHighlighter::line_number` pads with an unsigned subtraction
   that underflows if a number is wider than the gutter.
+- `src/widget.rs`, `rendered_position_in`: same substitution, for
+  consistency. This one can't underflow (it's a saturating addition, not the
+  unsigned subtraction that motivates the other two sites) but without it,
+  the reported cursor column would be offset by the wrong gutter width
+  whenever line numbers are overridden to wider values.
 
 ### Local-only: removed `[profile.bench]`
 

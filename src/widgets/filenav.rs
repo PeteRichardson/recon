@@ -471,8 +471,13 @@ mod tests {
     /// Directories have nothing to show, so the view keeps the last file.
     #[test]
     fn moving_onto_a_directory_requests_nothing() {
-        let mut nav = FileNav::new("Cargo.toml".to_string());
-        select(&mut nav, "Cargo.toml"); // `src` is next
+        // Own fixture directory: the repo's own listing shifts as files are
+        // added, which silently changes which entry follows which.
+        let mut nav = nav_over("move_onto_dir", &["alpha.rs"]);
+        let dir = Path::new("target/test-navdirs/move_onto_dir");
+        fs::create_dir_all(dir.join("beta_dir")).expect("create subdir");
+        nav.set_dir(dir.to_path_buf());
+        select(&mut nav, "alpha.rs"); // `beta_dir` sorts next
 
         assert!(press(&mut nav, KeyCode::Down).is_none());
     }
