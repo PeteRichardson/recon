@@ -5,7 +5,35 @@ A TUI log viewer with a two-pane file navigator.
 ## Keybindings
 
 There is no separate keybindings reference beyond this section; the
-authoritative source is each widget's `handle_events`.
+authoritative source is `App::handle_event` in `src/lib.rs` for the global
+keys, and each widget's `handle_events` for the rest.
+
+Global (`src/lib.rs`), handled before the focused pane sees the key:
+
+| Key(s) | Action |
+| --- | --- |
+| `q` | Quit |
+| `Tab` | Move focus to the next pane |
+| `/` | Search forward in the focused pane |
+| `?` | Search backward in the focused pane |
+
+Mouse: drag the divider between the panes to resize them; double-click it to
+return to sizing the navigator pane automatically to its contents.
+
+While a search prompt is open it consumes every key, so `q` and `Tab` are
+typed into the pattern rather than acted on:
+
+| Key(s) | Action |
+| --- | --- |
+| printable characters | Append to the pattern |
+| `Backspace` | Delete the last character; on an empty pattern, cancel |
+| `Enter` | Run the search |
+| `Esc` | Cancel |
+
+Searching is by regular expression in both panes — the file view matches line
+contents, the navigator matches entry names, so `^foo` anchors to the start of
+a filename. An invalid pattern reports `E486: invalid pattern` and leaves the
+prompt open to correct.
 
 File view pane (`src/widgets/fileview.rs`):
 
