@@ -26,6 +26,9 @@ pub struct FileView<'a> {
     pub textarea: TextArea<'a>,
     pub truncated: bool, // showing a bounded preview rather than the whole file
     pub active: bool,
+    /// Direction the current search was started in, so `n` repeats it and `N`
+    /// reverses it.
+    search_reverse: bool,
 }
 
 impl FileView<'_> {
@@ -57,6 +60,30 @@ impl FileView<'_> {
         let (lines, truncated) = read_preview(path);
         self.textarea = TextArea::new(lines);
         self.truncated = truncated;
+    }
+
+    /// Start a search, moving to the first match from the cursor.
+    ///
+    /// The pattern is a regular expression, so an invalid one is reported
+    /// rather than silently matching nothing. The search wraps around the
+    /// buffer and every match is highlighted.
+    pub fn search(&mut self, pattern: &str, reverse: bool) -> Result<bool, regex::Error> {
+        self.textarea.set_search_pattern(pattern)?;
+        self.search_reverse = reverse;
+        Ok(self.step_search(reverse))
+    }
+
+    /// Repeat the current search: `n` keeps its direction, `N` flips it.
+    pub fn repeat_search(&mut self, opposite: bool) -> bool {
+        self.step_search(self.search_reverse != opposite)
+    }
+
+    fn step_search(&mut self, reverse: bool) -> bool {
+        if reverse {
+            self.textarea.search_back(false)
+        } else {
+            self.textarea.search_forward(false)
+        }
     }
 
     pub fn handle_events(&mut self, input: Input) -> Result<()> {
@@ -102,7 +129,38 @@ impl FileView<'_> {
             Input {
                 key: Key::Char('^'),
                 ..
+            }
+            | Input {
+                key: Key::Char('0'),
+                ..
             } => self.textarea.move_cursor(CursorMove::Head),
+            Input {
+                key: Key::Char('e'),
+                ctrl: false,
+                ..
+            } => self.textarea.move_cursor(CursorMove::WordEnd),
+            Input {
+                key: Key::Char('}'),
+                ..
+            } => self.textarea.move_cursor(CursorMove::ParagraphForward),
+            Input {
+                key: Key::Char('{'),
+                ..
+            } => self.textarea.move_cursor(CursorMove::ParagraphBack),
+            Input {
+                key: Key::Char('n'),
+                ctrl: false,
+                ..
+            } => {
+                self.repeat_search(false);
+            }
+            Input {
+                key: Key::Char('N'),
+                ctrl: false,
+                ..
+            } => {
+                self.repeat_search(true);
+            }
             Input {
                 key: Key::Char('$'),
                 ..
@@ -257,6 +315,117 @@ mod tests {
     fn long_file(name: &str, lines: usize) -> std::path::PathBuf {
         let body: String = (0..lines).map(|i| format!("line {i}\n")).collect();
         fixture(name, &body)
+    }
+
+    /// A view over known text, so cursor assertions are exact.
+    fn view_of(name: &str, body: &str) -> FileView<'static> {
+        let path = fixture(name, body);
+        FileView::new(path.display().to_string())
+    }
+
+    fn send(view: &mut FileView<'_>, key: Key) {
+        view.handle_events(Input {
+            key,
+            ..Default::default()
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn zero_moves_to_the_start_of_the_line() {
+        let mut view = view_of("motions_zero.txt", "hello world\n");
+        send(&mut view, Key::Char('$'));
+        assert_ne!(view.textarea.cursor().1, 0);
+
+        send(&mut view, Key::Char('0'));
+
+        assert_eq!(view.textarea.cursor(), (0, 0));
+    }
+
+    #[test]
+    fn e_moves_to_the_end_of_the_word() {
+        let mut view = view_of("motions_e.txt", "hello world\n");
+
+        send(&mut view, Key::Char('e'));
+
+        // On the last character of `hello`, not the start of `world`.
+        assert_eq!(view.textarea.cursor(), (0, 4));
+    }
+
+    #[test]
+    fn braces_move_by_paragraph() {
+        let mut view = view_of("motions_para.txt", "one\ntwo\n\nthree\nfour\n\nfive\n");
+
+        send(&mut view, Key::Char('}'));
+        let after_forward = view.textarea.cursor().0;
+        assert!(after_forward > 0, "}} did not move forward");
+
+        send(&mut view, Key::Char('{'));
+
+        assert!(
+            view.textarea.cursor().0 < after_forward,
+            "{{ did not move back"
+        );
+    }
+
+    #[test]
+    fn search_jumps_to_the_first_match() {
+        let mut view = view_of("search.txt", "alpha\nbeta\ngamma\nbeta\n");
+
+        let found = view.search("beta", false).expect("valid pattern");
+
+        assert!(found);
+        assert_eq!(view.textarea.cursor().0, 1);
+    }
+
+    #[test]
+    fn search_supports_regex() {
+        let mut view = view_of("search_re.txt", "alpha\nbeta\ngamma\n");
+
+        assert!(view.search("^gam+a$", false).expect("valid pattern"));
+
+        assert_eq!(view.textarea.cursor().0, 2);
+    }
+
+    /// `n` repeats in the direction the search started; `N` reverses it.
+    #[test]
+    fn n_and_shift_n_cycle_matches() {
+        let mut view = view_of("search_cycle.txt", "beta\nx\nbeta\ny\nbeta\n");
+        view.search("beta", false).expect("valid pattern");
+        assert_eq!(view.textarea.cursor().0, 2, "search starts after the cursor");
+
+        send(&mut view, Key::Char('n'));
+        assert_eq!(view.textarea.cursor().0, 4);
+
+        send(&mut view, Key::Char('N'));
+        assert_eq!(view.textarea.cursor().0, 2);
+    }
+
+    #[test]
+    fn search_wraps_around_the_buffer() {
+        let mut view = view_of("search_wrap.txt", "beta\nx\ny\n");
+        view.search("beta", false).expect("valid pattern");
+
+        send(&mut view, Key::Char('n'));
+
+        assert_eq!(view.textarea.cursor().0, 0, "search did not wrap");
+    }
+
+    #[test]
+    fn a_backward_search_walks_upwards() {
+        let mut view = view_of("search_back.txt", "beta\nx\nbeta\ny\n");
+        view.textarea.move_cursor(CursorMove::Bottom);
+
+        assert!(view.search("beta", true).expect("valid pattern"));
+
+        assert_eq!(view.textarea.cursor().0, 2);
+    }
+
+    #[test]
+    fn an_invalid_pattern_is_reported() {
+        let mut view = view_of("search_bad.txt", "alpha\n");
+
+        assert!(view.search("[", false).is_err());
     }
 
     #[test]
@@ -417,6 +586,8 @@ impl Widget for &mut FileView<'_> {
             style = style.fg(Color::Green).add_modifier(Modifier::REVERSED);
         }
         self.textarea.set_cursor_line_style(style);
+        self.textarea
+            .set_search_style(Style::default().fg(Color::Black).bg(Color::Yellow));
         self.textarea.set_block(
             Block::default()
                 .borders(Borders::ALL)

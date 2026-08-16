@@ -1,7 +1,7 @@
 use clap::Parser;
 use color_eyre::Result;
 use crossterm::event::{self, KeyCode, MouseButton, MouseEvent, MouseEventKind};
-use ratatui::prelude::{Backend, Buffer, Constraint, Layout, Rect, Terminal, Widget};
+use ratatui::prelude::{Backend, Buffer, Color, Constraint, Layout, Rect, Style, Terminal, Widget};
 use std::time::{Duration, Instant};
 
 /// Widest the nav pane will size itself to automatically.
@@ -13,6 +13,33 @@ const MIN_PANE_WIDTH: u16 = 3;
 /// Two clicks on the divider inside this window restore automatic sizing.
 /// Crossterm does not report double-clicks, so they are timed here.
 const DOUBLE_CLICK: Duration = Duration::from_millis(400);
+
+/// Shown in the prompt when a pattern will not compile, after vim's error.
+const INVALID_PATTERN: &str = "E486: invalid pattern";
+
+/// A search pattern being typed at the bottom of the screen.
+#[derive(Debug, Default)]
+struct SearchPrompt {
+    pattern: String,
+    /// Started with `?` rather than `/`.
+    reverse: bool,
+    error: Option<String>,
+}
+
+impl SearchPrompt {
+    /// What the bottom line shows: the error if the pattern was rejected,
+    /// otherwise the pattern being typed behind its `/` or `?` sigil.
+    fn line(&self) -> String {
+        match &self.error {
+            Some(error) => error.clone(),
+            None => format!(
+                "{}{}",
+                if self.reverse { '?' } else { '/' },
+                self.pattern
+            ),
+        }
+    }
+}
 
 /// How the nav pane's width is decided.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -46,6 +73,8 @@ pub struct App<'a> {
     divider: u16,
     dragging: bool,
     last_divider_click: Option<Instant>,
+    /// Open while a search pattern is being typed.
+    search: Option<SearchPrompt>,
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -68,7 +97,62 @@ impl App<'_> {
             divider: 0,
             dragging: false,
             last_divider_click: None,
+            search: None,
         }
+    }
+
+    /// Feed a key to the open search prompt.
+    ///
+    /// While it is open it consumes every key, so app-wide commands like `q`
+    /// are typed into the pattern rather than acted on.
+    fn handle_search_key(&mut self, key: event::KeyEvent) {
+        match key.code {
+            KeyCode::Esc => self.search = None,
+            KeyCode::Enter => {
+                let Some(prompt) = self.search.as_ref() else {
+                    return;
+                };
+                let (pattern, reverse) = (prompt.pattern.clone(), prompt.reverse);
+
+                if self.run_search(&pattern, reverse).is_ok() {
+                    self.search = None;
+                } else if let Some(prompt) = self.search.as_mut() {
+                    prompt.error = Some(INVALID_PATTERN.to_string());
+                }
+            }
+            KeyCode::Backspace => {
+                if let Some(prompt) = self.search.as_mut() {
+                    prompt.error = None;
+                    // Backspacing past the start abandons the search, as in vim.
+                    if prompt.pattern.pop().is_none() {
+                        self.search = None;
+                    }
+                }
+            }
+            KeyCode::Char(c) => {
+                if let Some(prompt) = self.search.as_mut() {
+                    prompt.error = None;
+                    prompt.pattern.push(c);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Run a committed pattern against whichever pane has focus.
+    fn run_search(&mut self, pattern: &str, reverse: bool) -> Result<(), regex::Error> {
+        let action = match &mut self.widgets[self.active_widget] {
+            AppWidget::FileNav(nav) => nav.search(pattern, reverse)?,
+            AppWidget::FileView(view) => {
+                view.search(pattern, reverse)?;
+                None
+            }
+        };
+
+        if let Some(action) = action {
+            self.perform(action);
+        }
+        Ok(())
     }
 
     /// The nav pane, which owns the entry names the automatic width is based on.
@@ -173,6 +257,14 @@ impl App<'_> {
     ///
     /// Split out from the polling loop so that it can be driven directly.
     pub fn handle_event(&mut self, event: event::Event) -> Result<()> {
+        // An open prompt takes precedence over every other binding.
+        if self.search.is_some() {
+            if let event::Event::Key(key) = event {
+                self.handle_search_key(key);
+            }
+            return Ok(());
+        }
+
         if let event::Event::Key(key) = event {
             match key.code {
                 KeyCode::Char('q') => {
@@ -181,6 +273,13 @@ impl App<'_> {
                 }
                 KeyCode::Tab => {
                     self.active_widget = (self.active_widget + 1) % self.widgets.len();
+                    return Ok(());
+                }
+                KeyCode::Char(sigil @ ('/' | '?')) => {
+                    self.search = Some(SearchPrompt {
+                        reverse: sigil == '?',
+                        ..SearchPrompt::default()
+                    });
                     return Ok(());
                 }
                 _ => {}
@@ -217,6 +316,16 @@ impl Widget for &mut App<'_> {
         use Constraint::{Length, Min};
         // calculate rects where widgets should be rendered
         assert!(self.widgets.len() == 2);
+
+        // The search prompt borrows the bottom row, but only while it is open.
+        let (area, prompt_area) = match self.search {
+            Some(_) => {
+                let [panes, prompt] = Layout::vertical([Min(0), Length(1)]).areas(area);
+                (panes, Some(prompt))
+            }
+            None => (area, None),
+        };
+
         let nav_width = self.nav_width(area);
         let widget_areas: [Rect; 2] = Layout::horizontal([Length(nav_width), Min(0)]).areas(area);
 
@@ -227,6 +336,21 @@ impl Widget for &mut App<'_> {
         for (i, w) in self.widgets.iter_mut().enumerate() {
             w.set_active(i == self.active_widget);
             w.render(widget_areas[i], buf);
+        }
+
+        if let (Some(prompt_area), Some(prompt)) = (prompt_area, self.search.as_ref()) {
+            let style = if prompt.error.is_some() {
+                Style::default().fg(Color::Red)
+            } else {
+                Style::default()
+            };
+            buf.set_stringn(
+                prompt_area.x,
+                prompt_area.y,
+                prompt.line(),
+                prompt_area.width as usize,
+                style,
+            );
         }
     }
 }
@@ -374,6 +498,143 @@ mod tests {
             AREA.width - app.nav_width(AREA) >= MIN_PANE_WIDTH,
             "file view collapsed"
         );
+    }
+
+    fn key(app: &mut App, code: KeyCode) {
+        app.handle_event(event::Event::Key(code.into())).unwrap();
+    }
+
+    fn typed(app: &mut App, text: &str) {
+        for c in text.chars() {
+            key(app, KeyCode::Char(c));
+        }
+    }
+
+    fn prompt_line(app: &mut App) -> String {
+        let mut buf = Buffer::empty(AREA);
+        app.render(AREA, &mut buf);
+        let y = AREA.height - 1;
+        (0..AREA.width)
+            .map(|x| buf[(x, y)].symbol())
+            .collect::<String>()
+            .trim_end()
+            .to_string()
+    }
+
+    #[test]
+    fn slash_opens_a_search_prompt() {
+        let mut app = app_over("prompt", &["a.rs"]);
+
+        key(&mut app, KeyCode::Char('/'));
+        typed(&mut app, "foo");
+
+        assert_eq!(prompt_line(&mut app), "/foo");
+    }
+
+    #[test]
+    fn question_mark_opens_a_backward_search() {
+        let mut app = app_over("prompt_back", &["a.rs"]);
+
+        key(&mut app, KeyCode::Char('?'));
+        typed(&mut app, "foo");
+
+        assert_eq!(prompt_line(&mut app), "?foo");
+    }
+
+    /// The prompt swallows keys that are otherwise app-wide commands.
+    #[test]
+    fn q_while_searching_is_typed_not_quit() {
+        let mut app = app_over("prompt_q", &["a.rs"]);
+
+        key(&mut app, KeyCode::Char('/'));
+        typed(&mut app, "q");
+
+        assert!(app.is_running(), "q closed the app while typing a pattern");
+        assert_eq!(prompt_line(&mut app), "/q");
+    }
+
+    #[test]
+    fn backspace_deletes_then_cancels() {
+        let mut app = app_over("prompt_bs", &["a.rs"]);
+        key(&mut app, KeyCode::Char('/'));
+        typed(&mut app, "ab");
+
+        key(&mut app, KeyCode::Backspace);
+        assert_eq!(prompt_line(&mut app), "/a");
+
+        key(&mut app, KeyCode::Backspace);
+        key(&mut app, KeyCode::Backspace);
+
+        assert!(app.search.is_none(), "backspace on empty did not cancel");
+    }
+
+    #[test]
+    fn esc_cancels_the_prompt() {
+        let mut app = app_over("prompt_esc", &["a.rs"]);
+        key(&mut app, KeyCode::Char('/'));
+        typed(&mut app, "foo");
+
+        key(&mut app, KeyCode::Esc);
+
+        assert!(app.search.is_none());
+    }
+
+    #[test]
+    fn committing_a_search_closes_the_prompt_and_moves_the_selection() {
+        let mut app = app_over("prompt_commit", &["alpha.rs", "gamma.rs"]);
+        draw(&mut app);
+
+        key(&mut app, KeyCode::Char('/'));
+        typed(&mut app, "gamma");
+        key(&mut app, KeyCode::Enter);
+
+        assert!(app.search.is_none(), "prompt stayed open");
+        let nav = app.nav().expect("nav pane");
+        assert_eq!(nav.entries[nav.state.selected().unwrap()], "gamma.rs");
+    }
+
+    #[test]
+    fn an_invalid_pattern_keeps_the_prompt_open_with_an_error() {
+        let mut app = app_over("prompt_bad", &["a.rs"]);
+
+        key(&mut app, KeyCode::Char('/'));
+        typed(&mut app, "[");
+        key(&mut app, KeyCode::Enter);
+
+        assert!(app.search.is_some(), "prompt closed on an invalid pattern");
+        assert!(
+            prompt_line(&mut app).contains("E486"),
+            "no error shown: {}",
+            prompt_line(&mut app)
+        );
+    }
+
+    /// Searching in the nav pane jumps to the file *and* previews it.
+    #[test]
+    fn a_nav_search_previews_the_matched_file() {
+        let mut app = app_over("prompt_preview", &["alpha.rs", "gamma.rs"]);
+        fs::write("target/test-appdirs/prompt_preview/gamma.rs", "GAMMA MARKER\n").unwrap();
+        draw(&mut app);
+
+        key(&mut app, KeyCode::Char('/'));
+        typed(&mut app, "gamma");
+        key(&mut app, KeyCode::Enter);
+
+        let mut buf = Buffer::empty(AREA);
+        (&mut app).render(AREA, &mut buf);
+        let text: String = buf.content().iter().map(|c| c.symbol()).collect();
+        assert!(text.contains("GAMMA MARKER"), "matched file was not previewed");
+    }
+
+    /// The prompt only takes a row while it is open.
+    #[test]
+    fn the_prompt_row_appears_only_while_searching() {
+        let mut app = app_over("prompt_layout", &["a.rs"]);
+        let idle = prompt_line(&mut app);
+
+        key(&mut app, KeyCode::Char('/'));
+
+        assert_ne!(idle, prompt_line(&mut app));
     }
 
     /// A click nowhere near the divider is still the focused widget's business.

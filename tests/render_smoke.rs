@@ -37,13 +37,20 @@ fn view_pane(app: &mut App) -> String {
 
 /// The file view's contents with borders and padding stripped, so comparisons
 /// survive the pane being resized by auto-snapping.
+///
+/// Lines are also truncated to a width both panes comfortably exceed: a wider
+/// pane clips long lines later, which would otherwise read as a difference.
 fn view_text(app: &mut App) -> String {
+    const COMPARABLE: usize = 30;
+
     view_pane(app)
         .lines()
         .map(|line| {
             line.trim_matches(|c| "┌┐└┘│─".contains(c))
                 .trim_end()
-                .to_string()
+                .chars()
+                .take(COMPARABLE)
+                .collect::<String>()
         })
         .collect::<Vec<_>>()
         .join("\n")

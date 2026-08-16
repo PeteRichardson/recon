@@ -4,12 +4,16 @@ use crate::widgets::Action;
 use color_eyre::Result;
 use crossterm::event::{Event, KeyCode};
 use ratatui::prelude::{Buffer, Color, Modifier, Rect, Style, Widget};
-use ratatui::widgets::{Block, List, ListState, StatefulWidget};
+use ratatui::widgets::{Block, List, ListItem, ListState, StatefulWidget};
+use regex::Regex;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 /// The entry that climbs to the parent directory.
 pub const PARENT: &str = "..";
+
+/// Applied to entries matching the current search pattern.
+const MATCH_STYLE: Style = Style::new().fg(Color::Yellow);
 
 #[derive(Debug, Default)]
 pub struct FileNav<'a> {
@@ -18,6 +22,10 @@ pub struct FileNav<'a> {
     pub navlist: List<'a>,
     pub state: ListState,
     pub active: bool,
+    /// Current search pattern, matched against entry names.
+    matcher: Option<Regex>,
+    /// Direction the search was started in, so `n` repeats and `N` reverses.
+    search_reverse: bool,
 }
 
 impl FileNav<'_> {
@@ -43,8 +51,70 @@ impl FileNav<'_> {
     fn set_dir(&mut self, dir: PathBuf) {
         self.dir = fs::canonicalize(&dir).unwrap_or(dir);
         self.entries = read_dir_entries(&self.dir);
-        self.navlist = List::new(self.entries.clone());
+        self.rebuild_list();
         self.state = ListState::default().with_selected(Some(0));
+    }
+
+    /// Rebuild the rendered list, styling entries that match the search.
+    ///
+    /// The selection highlight is applied over the top of this at render time,
+    /// so the current match still reads as selected.
+    fn rebuild_list(&mut self) {
+        let matcher = self.matcher.as_ref();
+        let items: Vec<ListItem> = self
+            .entries
+            .iter()
+            .map(|entry| {
+                let item = ListItem::new(entry.clone());
+                match matcher {
+                    Some(pattern) if pattern.is_match(entry) => item.style(MATCH_STYLE),
+                    _ => item,
+                }
+            })
+            .collect();
+        self.navlist = List::new(items);
+    }
+
+    /// Start a search over the entry names, moving to the first match.
+    ///
+    /// The pattern is a regular expression, matching how the file view
+    /// searches, so `^foo` anchors to the start of a name.
+    pub fn search(&mut self, pattern: &str, reverse: bool) -> Result<Option<Action>, regex::Error> {
+        self.matcher = Some(Regex::new(pattern)?);
+        self.search_reverse = reverse;
+        self.rebuild_list();
+        Ok(self.step_search(reverse))
+    }
+
+    /// Repeat the current search: `n` keeps its direction, `N` flips it.
+    fn repeat_search(&mut self, opposite: bool) -> Option<Action> {
+        self.step_search(self.search_reverse != opposite)
+    }
+
+    /// Move the selection to the next matching entry, wrapping around.
+    ///
+    /// Starts one entry away from the cursor so a repeat always moves, and
+    /// checks the current entry last so a lone match holds its place.
+    fn step_search(&mut self, reverse: bool) -> Option<Action> {
+        let matcher = self.matcher.as_ref()?;
+        let count = self.entries.len();
+        if count == 0 {
+            return None;
+        }
+        let start = self.state.selected().unwrap_or(0);
+
+        let found = (1..=count)
+            .map(|offset| {
+                if reverse {
+                    (start + count - offset) % count
+                } else {
+                    (start + offset) % count
+                }
+            })
+            .find(|&index| matcher.is_match(&self.entries[index]))?;
+
+        self.state.select(Some(found));
+        self.preview_selection()
     }
 
     pub fn handle_events(&mut self, event: Event) -> Result<Option<Action>> {
@@ -59,6 +129,8 @@ impl FileNav<'_> {
                     return Ok(self.preview_selection());
                 }
                 KeyCode::Enter => return Ok(self.activate_selection()),
+                KeyCode::Char('n') => return Ok(self.repeat_search(false)),
+                KeyCode::Char('N') => return Ok(self.repeat_search(true)),
                 _ => {}
             }
         }
@@ -219,6 +291,120 @@ mod tests {
             fs::write(dir.join(file), "x").expect("write fixture");
         }
         FileNav::new(dir.join("placeholder").display().to_string())
+    }
+
+    /// A nav pane over a known set of names, for search assertions. Each test
+    /// gets its own directory, since tests run in parallel.
+    fn searchable(name: &str) -> FileNav<'static> {
+        nav_over(name, &["alpha.rs", "beta.rs", "beta2.rs", "gamma.rs"])
+    }
+
+    fn selected_name<'n>(nav: &'n FileNav<'_>) -> &'n str {
+        &nav.entries[nav.state.selected().expect("nothing selected")]
+    }
+
+    #[test]
+    fn search_selects_a_matching_entry() {
+        let mut nav = searchable("search_sel");
+
+        nav.search("beta", false).expect("valid pattern");
+
+        assert_eq!(selected_name(&nav), "beta.rs");
+    }
+
+    #[test]
+    fn search_is_a_regex() {
+        let mut nav = searchable("search_regex");
+
+        nav.search(r"^gam+a\.rs$", false).expect("valid pattern");
+
+        assert_eq!(selected_name(&nav), "gamma.rs");
+    }
+
+    /// Jumping to a file previews it, exactly as moving the cursor does.
+    #[test]
+    fn search_asks_for_the_matched_file_to_be_previewed() {
+        let mut nav = searchable("search_preview");
+
+        let action = nav.search("gamma", false).expect("valid pattern");
+
+        match action {
+            Some(Action::Preview(path)) => {
+                assert_eq!(path.file_name().unwrap(), "gamma.rs");
+            }
+            other => panic!("expected a Preview action, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn n_cycles_to_the_next_match() {
+        let mut nav = searchable("search_cycle");
+        nav.search("beta", false).expect("valid pattern");
+
+        press(&mut nav, KeyCode::Char('n'));
+        assert_eq!(selected_name(&nav), "beta2.rs");
+
+        press(&mut nav, KeyCode::Char('N'));
+        assert_eq!(selected_name(&nav), "beta.rs");
+    }
+
+    #[test]
+    fn search_wraps_around_the_listing() {
+        let mut nav = searchable("search_wrap");
+        nav.search("beta", false).expect("valid pattern");
+        press(&mut nav, KeyCode::Char('n')); // beta2.rs, the last match
+
+        press(&mut nav, KeyCode::Char('n'));
+
+        assert_eq!(selected_name(&nav), "beta.rs", "search did not wrap");
+    }
+
+    #[test]
+    fn a_backward_search_walks_upwards() {
+        let mut nav = searchable("search_back");
+        select(&mut nav, "gamma.rs");
+
+        nav.search("beta", true).expect("valid pattern");
+
+        assert_eq!(selected_name(&nav), "beta2.rs");
+    }
+
+    #[test]
+    fn an_invalid_pattern_is_reported() {
+        let mut nav = searchable("search_bad");
+
+        assert!(nav.search("[", false).is_err());
+    }
+
+    #[test]
+    fn a_pattern_matching_nothing_leaves_the_selection_alone() {
+        let mut nav = searchable("search_nomatch");
+        select(&mut nav, "alpha.rs");
+
+        let action = nav.search("zzz", false).expect("valid pattern");
+
+        assert!(action.is_none());
+        assert_eq!(selected_name(&nav), "alpha.rs");
+    }
+
+    #[test]
+    fn matching_entries_are_highlighted() {
+        let mut nav = searchable("search_highlight");
+        nav.search("beta", false).expect("valid pattern");
+        let area = Rect::new(0, 0, 20, 10);
+        let mut buf = Buffer::empty(area);
+
+        nav.render(area, &mut buf);
+
+        let row_style = |name: &str| {
+            let y = nav.entries.iter().position(|e| e == name).unwrap() as u16 + 1;
+            buf[(4, y)].style()
+        };
+        assert_ne!(
+            row_style("beta2.rs"),
+            row_style("alpha.rs"),
+            "matching entries are not styled differently"
+        );
     }
 
     #[test]

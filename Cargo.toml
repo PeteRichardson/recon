@@ -10,4 +10,5 @@ crossterm = "0.29"
 env_logger = "0.11.11"
 log = "0.4.33"
 color-eyre = "0.6.5"
-tui-textarea-2 = "0.12.1"
+tui-textarea-2 = { version = "0.12.1", features = ["search"] }
+regex = "1"

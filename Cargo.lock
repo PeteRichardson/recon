@@ -852,6 +852,7 @@ dependencies = [
  "env_logger",
  "log",
  "ratatui",
+ "regex",
  "tui-textarea-2",
 ]
 
@@ -1812,6 +1813,7 @@ dependencies = [
  "portable-atomic",
  "ratatui-core",
  "ratatui-widgets",
+ "regex",
  "unicode-segmentation",
  "unicode-width",
 ]
