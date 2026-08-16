@@ -3,6 +3,9 @@ name = "recon"
 version = "0.1.0"
 edition = "2021"
 
+[workspace]
+members = ["vendor/tui-textarea-2"]
+
 [dependencies]
 ratatui = "0.30.2"
 clap = { version = "4.6.6", features = ["derive"] }

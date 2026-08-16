@@ -208,6 +208,7 @@ pub struct TextArea<'a> {
     history: History,
     cursor_line_style: Style,
     line_number_style: Option<Style>,
+    line_styles: Vec<Option<Style>>,
     pub(crate) viewport: Viewport,
     pub(crate) cursor_style: Style,
     cursor_render_mode: CursorRenderMode,
@@ -328,6 +329,7 @@ impl<'a> TextArea<'a> {
             history: History::new(50),
             cursor_line_style: Style::default().add_modifier(Modifier::UNDERLINED),
             line_number_style: None,
+            line_styles: Vec::new(),
             viewport: Viewport::default(),
             cursor_style: Style::default().add_modifier(Modifier::REVERSED),
             cursor_render_mode: CursorRenderMode::Cell,
@@ -2070,6 +2072,10 @@ impl<'a> TextArea<'a> {
             }
         }
 
+        if let Some(Some(style)) = self.line_styles.get(wrapped.row) {
+            hl.set_line_style(*style);
+        }
+
         if wrapped.row == self.cursor.0 {
             hl.set_line_style(self.cursor_line_style);
             let cursor_col = self.cursor.1;
@@ -2405,6 +2411,39 @@ impl<'a> TextArea<'a> {
     /// Get the style of line number if set.
     pub fn line_number_style(&self) -> Option<Style> {
         self.line_number_style
+    }
+
+    /// Set a style for each line, indexed by line number.
+    ///
+    /// Lines whose entry is `None`, and lines past the end of `styles`, are
+    /// left at the textarea's own style. This is intended for showing the
+    /// state of a line — dimming lines that do not match a filter, or
+    /// colouring those that do — rather than for syntax highlighting.
+    ///
+    /// The cursor line style still takes precedence over the entry for the
+    /// line the cursor is on.
+    ///
+    /// ```
+    /// use ratatui::style::{Color, Style};
+    /// use tui_textarea::TextArea;
+    ///
+    /// let mut textarea = TextArea::new(vec!["a".to_string(), "b".to_string()]);
+    /// textarea.set_line_styles(vec![None, Some(Style::default().fg(Color::DarkGray))]);
+    /// ```
+    pub fn set_line_styles(&mut self, styles: Vec<Option<Style>>) {
+        self.line_styles = styles;
+    }
+
+    /// The per-line styles set by [`TextArea::set_line_styles`]. Empty when
+    /// none have been set.
+    pub fn line_styles(&self) -> &[Option<Style>] {
+        &self.line_styles
+    }
+
+    /// Remove all per-line styles, returning every line to the textarea's own
+    /// style.
+    pub fn clear_line_styles(&mut self) {
+        self.line_styles.clear();
     }
 
     /// Set the placeholder text. The text is set in the textarea when no text is input. Setting a non-empty string `""`
