@@ -28,7 +28,7 @@ crossterm 0.29, regex 1.
 - The vendored crate keeps `name = "tui-textarea-2"` and `version = "0.12.1"`
   verbatim — `[patch.crates-io]` matches on both.
 - The `search` feature stays enabled for `recon`.
-- Upstream is MIT licensed; `LICENSE.txt` must be preserved unmodified.
+- Upstream is MIT licensed; the licence file (`LICENSE`, no extension) must be preserved unmodified.
 - **Phase 1 changes no behaviour of `recon`.** All **82** existing tests
   (73 lib + 9 integration) must keep passing untouched at every commit. If a
   test needs editing, something has gone wrong — stop and re-read the spec.
@@ -84,11 +84,11 @@ rm -f vendor/tui-textarea-2/.cargo-ok
 
 ```bash
 grep -E '^(name|version) = ' vendor/tui-textarea-2/Cargo.toml | head -2
-ls vendor/tui-textarea-2/LICENSE.txt
+ls vendor/tui-textarea-2/LICENSE
 ```
 
 Expected: `name = "tui-textarea-2"`, `version = "0.12.1"`, and the licence file
-present. If the name or version differs, `[patch.crates-io]` will not apply.
+(`LICENSE`, no extension) present. If the name or version differs, `[patch.crates-io]` will not apply.
 
 - [ ] **Step 3: Point the build at the vendored copy**
 
@@ -133,7 +133,7 @@ Create `vendor/tui-textarea-2/PATCH.md`:
 
 **Upstream:** https://github.com/srothgan/tui-textarea
 **Vendored version:** 0.12.1, copied verbatim from crates.io
-**Licence:** MIT (see LICENSE.txt, unmodified)
+**Licence:** MIT (see LICENSE, unmodified)
 
 ## Why this fork exists
 
