@@ -209,6 +209,7 @@ pub struct TextArea<'a> {
     cursor_line_style: Style,
     line_number_style: Option<Style>,
     line_styles: Vec<Option<Style>>,
+    line_numbers: Vec<usize>,
     pub(crate) viewport: Viewport,
     pub(crate) cursor_style: Style,
     cursor_render_mode: CursorRenderMode,
@@ -330,6 +331,7 @@ impl<'a> TextArea<'a> {
             cursor_line_style: Style::default().add_modifier(Modifier::UNDERLINED),
             line_number_style: None,
             line_styles: Vec::new(),
+            line_numbers: Vec::new(),
             viewport: Viewport::default(),
             cursor_style: Style::default().add_modifier(Modifier::REVERSED),
             cursor_render_mode: CursorRenderMode::Cell,
@@ -2066,7 +2068,7 @@ impl<'a> TextArea<'a> {
 
         if let Some(style) = self.line_number_style {
             if wrapped.first_in_row {
-                hl.line_number(wrapped.row, lnum_len, style);
+                hl.line_number(self.display_row(wrapped.row), lnum_len, style);
             } else {
                 hl.line_number_placeholder(lnum_len, style);
             }
@@ -2444,6 +2446,57 @@ impl<'a> TextArea<'a> {
     /// style.
     pub fn clear_line_styles(&mut self) {
         self.line_styles.clear();
+    }
+
+    /// Override the number shown in the gutter for each line.
+    ///
+    /// Values are 0-based source indices, matching the crate's internal row
+    /// numbering; the gutter renders each one `+ 1`. Rows past the end of
+    /// `numbers` fall back to their position in the buffer.
+    ///
+    /// This exists so a buffer holding a filtered subset of a file can show
+    /// the original line numbers — 2, 4, 9 — rather than renumbering 1, 2, 3.
+    /// The gutter widens automatically to fit the largest number given.
+    ///
+    /// ```
+    /// use tui_textarea::TextArea;
+    ///
+    /// let mut textarea = TextArea::new(vec!["second".to_string()]);
+    /// textarea.set_line_numbers(vec![1]); // renders as line 2
+    /// ```
+    pub fn set_line_numbers(&mut self, numbers: Vec<usize>) {
+        self.line_numbers = numbers;
+    }
+
+    /// The overrides set by [`TextArea::set_line_numbers`]. Empty when none
+    /// have been set.
+    pub fn line_numbers(&self) -> &[usize] {
+        &self.line_numbers
+    }
+
+    /// Remove all overrides, returning the gutter to natural numbering.
+    pub fn clear_line_numbers(&mut self) {
+        self.line_numbers.clear();
+    }
+
+    /// The 0-based number to show in the gutter for `row`.
+    pub(crate) fn display_row(&self, row: usize) -> usize {
+        self.line_numbers.get(row).copied().unwrap_or(row)
+    }
+
+    /// The largest 0-based number the gutter will have to show.
+    ///
+    /// The gutter computes its padding as `lnum_len - num_digits(row + 1)` on
+    /// unsigned integers, so sizing the gutter from `lines.len()` alone would
+    /// underflow and panic as soon as an override is wider than the buffer.
+    pub(crate) fn widest_display_row(&self) -> usize {
+        let natural = self.lines.len().saturating_sub(1);
+        self.line_numbers
+            .iter()
+            .copied()
+            .max()
+            .unwrap_or(natural)
+            .max(natural)
     }
 
     /// Set the placeholder text. The text is set in the textarea when no text is input. Setting a non-empty string `""`

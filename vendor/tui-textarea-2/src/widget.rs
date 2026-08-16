@@ -98,7 +98,7 @@ struct RenderPlan {
 
 impl<'a> TextArea<'a> {
     fn text_widget(&'a self, top_row: usize, height: usize) -> Text<'a> {
-        let lnum_len = num_digits(self.lines().len());
+        let lnum_len = num_digits(self.widest_display_row() + 1);
         let screen_lines = self.screen_lines.borrow();
         let bottom_row = cmp::min(top_row + height, screen_lines.len());
         let mut lines = Vec::with_capacity(bottom_row - top_row);
@@ -128,7 +128,7 @@ impl<'a> TextArea<'a> {
 
         // Adjust the cursor position due to the width of line number.
         if self.line_number_style().is_some() {
-            let lnum = num_digits(self.lines().len()) as u16 + 2; // `+ 2` for margins
+            let lnum = num_digits(self.widest_display_row() + 1) as u16 + 2; // `+ 2` for margins
             if cursor <= lnum {
                 cursor *= 2; // Smoothly slide the line number into the screen on scrolling left
             } else {

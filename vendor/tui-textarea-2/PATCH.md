@@ -28,6 +28,20 @@ line); this fork only makes it reachable.
   (unlike `Cargo.toml.orig`, which relies on auto-discovery), so a new test
   file needs an entry here or cargo won't find it.
 
+### 2. Gutter number overrides
+
+- `src/textarea.rs`, `struct TextArea`: added field `line_numbers: Vec<usize>`.
+- `src/textarea.rs`, `TextArea::new`: initialise it to `Vec::new()`.
+- `src/textarea.rs`: added `set_line_numbers`, `line_numbers`,
+  `clear_line_numbers`, and the crate-internal `display_row` /
+  `widest_display_row`.
+- `src/textarea.rs`, `line_spans_segment`: pass `display_row(wrapped.row)` to
+  `hl.line_number` instead of `wrapped.row`.
+- `src/widget.rs`, `text_widget` and `scroll_top_col`: size the gutter from
+  `widest_display_row() + 1` rather than `lines().len()`. Required, not
+  cosmetic: `LineHighlighter::line_number` pads with an unsigned subtraction
+  that underflows if a number is wider than the gutter.
+
 ### Local-only: removed `[profile.bench]`
 
 - `Cargo.toml`: dropped `[profile.bench] lto = "thin"`.

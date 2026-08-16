@@ -85,3 +85,67 @@ fn the_cursor_line_style_still_wins() {
     assert_eq!(buf[(0, 0)].style().fg, Some(Color::Green), "cursor line lost its style");
     assert_eq!(buf[(0, 1)].style().fg, Some(Color::Yellow), "other line lost its style");
 }
+
+#[test]
+fn line_numbers_can_be_overridden() {
+    let mut textarea = plain(&["beta", "delta"]);
+    textarea.set_line_number_style(Style::default());
+    // 0-based source rows 1 and 3 render as 2 and 4.
+    textarea.set_line_numbers(vec![1, 3]);
+
+    let buf = render(&textarea, 20, 2);
+
+    assert!(row_text(&buf, 0).trim_start().starts_with("2 "), "got {:?}", row_text(&buf, 0));
+    assert!(row_text(&buf, 1).trim_start().starts_with("4 "), "got {:?}", row_text(&buf, 1));
+}
+
+/// The gutter pads with `lnum_len - num_digits(row + 1)`, an unsigned
+/// subtraction. An override wider than the buffer's own line count would
+/// underflow and panic unless the gutter is sized from the overrides.
+#[test]
+fn the_gutter_widens_for_overridden_numbers() {
+    let mut textarea = plain(&["a", "b"]);
+    textarea.set_line_number_style(Style::default());
+    textarea.set_line_numbers(vec![9997, 9998]);
+
+    let buf = render(&textarea, 20, 2);
+
+    assert!(row_text(&buf, 0).trim_start().starts_with("9998 "), "got {:?}", row_text(&buf, 0));
+    assert!(row_text(&buf, 1).trim_start().starts_with("9999 "), "got {:?}", row_text(&buf, 1));
+}
+
+#[test]
+fn without_overrides_numbering_is_unchanged() {
+    let mut textarea = plain(&["a", "b"]);
+    textarea.set_line_number_style(Style::default());
+
+    let buf = render(&textarea, 20, 2);
+
+    assert!(row_text(&buf, 0).trim_start().starts_with("1 "), "got {:?}", row_text(&buf, 0));
+    assert!(row_text(&buf, 1).trim_start().starts_with("2 "), "got {:?}", row_text(&buf, 1));
+}
+
+#[test]
+fn rows_without_an_override_fall_back_to_their_position() {
+    let mut textarea = plain(&["a", "b", "c"]);
+    textarea.set_line_number_style(Style::default());
+    textarea.set_line_numbers(vec![41]);
+
+    let buf = render(&textarea, 20, 3);
+
+    assert!(row_text(&buf, 0).trim_start().starts_with("42 "), "got {:?}", row_text(&buf, 0));
+    assert!(row_text(&buf, 1).trim_start().starts_with("2 "), "got {:?}", row_text(&buf, 1));
+}
+
+#[test]
+fn clear_line_numbers_restores_natural_numbering() {
+    let mut textarea = plain(&["a", "b"]);
+    textarea.set_line_number_style(Style::default());
+    textarea.set_line_numbers(vec![100, 101]);
+    textarea.clear_line_numbers();
+
+    let buf = render(&textarea, 20, 2);
+
+    assert!(textarea.line_numbers().is_empty());
+    assert!(row_text(&buf, 0).trim_start().starts_with("1 "), "got {:?}", row_text(&buf, 0));
+}
