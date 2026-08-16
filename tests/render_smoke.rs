@@ -194,12 +194,17 @@ fn moving_onto_a_directory_leaves_the_view_alone() {
     };
     let mut app = App::new(&config);
 
-    // `Cargo.toml` sorts immediately before `src`, so a single Down lands on
-    // the directory without passing over any other file.
+    // Step onto whatever directory follows `Cargo.toml`. Which one that is
+    // depends on the working tree, so assert it *is* a directory rather than
+    // naming it.
     highlight(&mut app, "Cargo.toml");
     let previewed = view_text(&mut app);
     press(&mut app, KeyCode::Down);
-    assert_eq!(highlighted_name(&mut app), "src", "expected to land on src");
+    let landed = highlighted_name(&mut app);
+    assert!(
+        std::path::Path::new(&landed).is_dir(),
+        "expected to land on a directory, got {landed}"
+    );
 
     assert_eq!(
         previewed,

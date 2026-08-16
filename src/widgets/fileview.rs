@@ -29,6 +29,8 @@ pub struct FileView<'a> {
     /// Direction the current search was started in, so `n` repeats it and `N`
     /// reverses it.
     search_reverse: bool,
+    /// Whether the line-number gutter is drawn. Toggled with `#`.
+    hide_line_numbers: bool,
 }
 
 impl FileView<'_> {
@@ -139,6 +141,10 @@ impl FileView<'_> {
                 ctrl: false,
                 ..
             } => self.textarea.move_cursor(CursorMove::WordEnd),
+            Input {
+                key: Key::Char('#'),
+                ..
+            } => self.hide_line_numbers = !self.hide_line_numbers,
             Input {
                 key: Key::Char('}'),
                 ..
@@ -329,6 +335,47 @@ mod tests {
             ..Default::default()
         })
         .unwrap();
+    }
+
+    fn rendered(view: &mut FileView<'_>) -> String {
+        let area = Rect::new(0, 0, 40, 6);
+        let mut buf = Buffer::empty(area);
+        view.render(area, &mut buf);
+        (0..area.height)
+            .map(|y| {
+                (0..area.width)
+                    .map(|x| buf[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn line_numbers_show_by_default() {
+        let mut view = view_of("numbers_on.txt", "alpha\nbeta\n");
+
+        assert!(
+            rendered(&mut view).contains("1 alpha"),
+            "no line number gutter:\n{}",
+            rendered(&mut view)
+        );
+    }
+
+    #[test]
+    fn hash_toggles_line_numbers_off_and_back_on() {
+        let mut view = view_of("numbers_toggle.txt", "alpha\nbeta\n");
+
+        send(&mut view, Key::Char('#'));
+        let without = rendered(&mut view);
+        assert!(
+            without.contains("alpha") && !without.contains("1 alpha"),
+            "gutter still present:\n{without}"
+        );
+
+        send(&mut view, Key::Char('#'));
+
+        assert!(rendered(&mut view).contains("1 alpha"), "gutter did not return");
     }
 
     #[test]
@@ -579,8 +626,12 @@ mod tests {
 /// Widget impl for `FileView`
 impl Widget for &mut FileView<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        self.textarea
-            .set_line_number_style(Style::default().fg(Color::DarkGray));
+        if self.hide_line_numbers {
+            self.textarea.remove_line_number();
+        } else {
+            self.textarea
+                .set_line_number_style(Style::default().fg(Color::DarkGray));
+        }
         let mut style = Style::default();
         if self.active {
             style = style.fg(Color::Green).add_modifier(Modifier::REVERSED);

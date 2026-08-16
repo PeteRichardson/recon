@@ -442,12 +442,12 @@ mod tests {
     /// is needed to see its contents.
     #[test]
     fn moving_onto_a_file_requests_a_preview() {
-        let mut nav = FileNav::new("Cargo.toml".to_string());
-        select(&mut nav, "Cargo.lock"); // sorts immediately before Cargo.toml
+        let mut nav = nav_over("move_down", &["alpha.rs", "beta.rs"]);
+        select(&mut nav, "alpha.rs");
 
         match press(&mut nav, KeyCode::Down) {
             Some(Action::Preview(path)) => {
-                assert_eq!(path.file_name().unwrap(), "Cargo.toml");
+                assert_eq!(path.file_name().unwrap(), "beta.rs");
             }
             other => panic!("expected a Preview action, got {other:?}"),
         }
@@ -455,12 +455,14 @@ mod tests {
 
     #[test]
     fn moving_up_onto_a_file_requests_a_preview() {
-        let mut nav = FileNav::new("Cargo.toml".to_string());
-        select(&mut nav, "src"); // sorts immediately after Cargo.toml
+        // Own fixture directory: the repo's own listing changes as files are
+        // added, which would silently move which entries are adjacent.
+        let mut nav = nav_over("move_up", &["alpha.rs", "beta.rs"]);
+        select(&mut nav, "beta.rs");
 
         match press(&mut nav, KeyCode::Up) {
             Some(Action::Preview(path)) => {
-                assert_eq!(path.file_name().unwrap(), "Cargo.toml");
+                assert_eq!(path.file_name().unwrap(), "alpha.rs");
             }
             other => panic!("expected a Preview action, got {other:?}"),
         }
