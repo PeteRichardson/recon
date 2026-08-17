@@ -77,7 +77,7 @@ contract can be tested without a terminal.
 - Produces:
   - `pub fn remove(&mut self, index: usize) -> bool`
   - `pub fn set_enabled(&mut self, index: usize, enabled: bool) -> bool`
-  - `pub fn toggle_enabled(&mut self, index: usize) -> bool`
+  - `pub fn toggle_enabled(&mut self, index: usize) -> Option<bool>`
   - `pub fn disable_all_remembering(&mut self)` and
     `pub fn restore_remembered(&mut self)`, replacing the `!` behaviour
   - `pub fn has_remembered(&self) -> bool`
@@ -133,8 +133,9 @@ exist — reuse them.
     fn toggle_flips_one_filter_and_reports_its_new_state() {
         let mut set = set_with(&["foo"]);
 
-        assert!(!set.toggle_enabled(0), "was enabled, so is now disabled");
-        assert!(set.toggle_enabled(0), "and back on");
+        assert_eq!(set.toggle_enabled(0), Some(false), "was enabled, so is now disabled");
+        assert_eq!(set.toggle_enabled(0), Some(true), "and back on");
+        assert_eq!(set.toggle_enabled(9), None, "no such filter");
     }
 
     /// `!` must restore what was enabled before, not enable everything —
@@ -231,20 +232,27 @@ and beside `set_all_enabled`:
         }
     }
 
-    /// Flip one filter, returning its new state. A missing index reports
-    /// `false` without changing anything.
-    pub fn toggle_enabled(&mut self, index: usize) -> bool {
-        match self.filters.get_mut(index) {
-            Some(filter) => {
-                filter.enabled = !filter.enabled;
-                filter.enabled
-            }
-            None => false,
-        }
+    /// Flip one filter, returning its new state, or `None` if there is no
+    /// such filter.
+    ///
+    /// Distinguishing the two matters: a caller cannot otherwise tell "turned
+    /// off" from "that row is gone", and the pane's selection can lag a
+    /// deletion by a frame.
+    pub fn toggle_enabled(&mut self, index: usize) -> Option<bool> {
+        let filter = self.filters.get_mut(index)?;
+        filter.enabled = !filter.enabled;
+        Some(filter.enabled)
     }
 
     /// Disable every filter, recording which were enabled.
+    ///
+    /// A second call before a restore is ignored: the flags at that point are
+    /// the ones this method just cleared, so capturing them again would
+    /// overwrite the real state with all-disabled and lose it for good.
     pub fn disable_all_remembering(&mut self) {
+        if self.remembered.is_some() {
+            return;
+        }
         self.remembered = Some(self.filters.iter().map(|f| f.enabled).collect());
         for filter in &mut self.filters {
             filter.enabled = false;
