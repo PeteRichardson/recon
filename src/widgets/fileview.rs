@@ -38,19 +38,18 @@ pub struct FileView<'a> {
     /// and read as "this file has one empty line" — so the gutter is
     /// suppressed outright instead.
     gutter_blank: bool,
-    /// The area this pane was rendered into last time, if ever. Used only by
-    /// `scroll_cursor_to_row` — see there for why.
+    /// A `scroll_cursor_to_row` request not yet applied. Applied against the
+    /// real area the next time this pane renders — see the `Widget` impl —
+    /// rather than acted on immediately, since the caller (a filter or
+    /// hide-toggle rebuild) always runs before this frame has rendered even
+    /// once, so there is no real area to scroll against yet.
     ///
-    /// A stale proxy for "what area will this frame's real render use": most
-    /// obviously wrong across a mid-frame resize, but also across `load` and
-    /// `preview`, which replace the textarea outright and drop its block —
-    /// the block is only re-set inside `render`, so the first priming render
-    /// after either sees no border and computes an inner height two rows
-    /// larger than the pane will actually have. Harmless today, since both
-    /// leave the cursor at row 0 (`desired_top` and the resulting `delta`
-    /// are 0 regardless of height), but a future caller that restores a
-    /// nonzero row across a `load`/`preview` would need this fixed first.
-    last_area: Option<Rect>,
+    /// `get_or_insert`, not overwritten, if a second request arrives before
+    /// the next render: the first row captured was measured against a
+    /// viewport that was still valid, and a later one would be answering
+    /// the same question against a viewport already disturbed by the first
+    /// rebuild — see `scroll_cursor_to_row`.
+    pending_screen_row: Option<u16>,
 }
 
 impl FileView<'_> {
@@ -142,26 +141,43 @@ impl FileView<'_> {
         self.textarea.cursor().0.saturating_sub(top as usize) as u16
     }
 
-    /// Scroll so the cursor sits on `row` of the pane, as far as the buffer
-    /// allows near its start or end.
+    /// Request that the cursor be scrolled onto `row` of the pane the next
+    /// time it renders, as far as the buffer allows near its start or end.
     ///
     /// Called right after a rebuild, before this frame has rendered the pane
-    /// even once. `set_lines` reset the viewport to zeroed dimensions, which
-    /// are normally only repopulated by an actual render — and `scroll`'s
-    /// own bookkeeping (`CursorMove::InViewport`) clamps the cursor to that
+    /// even once — so there is no real area to scroll against yet, only a
+    /// guess at one. This used to prime a throwaway render against the
+    /// *previous* frame's area and scroll immediately, which was a
+    /// reasonable guess only as long as the pane's area never changed
+    /// between renders. It stopped being reasonable once the filter pane
+    /// joined the layout: adding or removing a filter can now change the
+    /// file view's own width mid-rebuild, which made the guess wrong and
+    /// reintroduced the exact re-anchoring this mechanism exists to
+    /// prevent. Recording the request and applying it later, against the
+    /// real area `render` is about to use — see `apply_pending_scroll` —
+    /// removes the need to guess at all.
+    ///
+    /// `get_or_insert`: see the field doc on `pending_screen_row` for why a
+    /// second request before the next render must not overwrite the first.
+    pub fn scroll_cursor_to_row(&mut self, row: u16) {
+        self.pending_screen_row.get_or_insert(row);
+    }
+
+    /// Apply a pending `scroll_cursor_to_row` request, if any, against
+    /// `area` — the pane's real area for the frame about to render.
+    ///
+    /// `set_lines` reset the viewport to zeroed dimensions, which are
+    /// normally only repopulated by an actual render — and `scroll`'s own
+    /// bookkeeping (`CursorMove::InViewport`) clamps the cursor to that
     /// cached size, so scrolling against a zeroed one collapses the cursor
     /// onto the scroll target instead of leaving it on its line. Priming
-    /// with a throwaway render at the pane's last known area first (the real
-    /// render this frame will use the same area, bar the staleness noted on
-    /// `last_area`) gives `scroll` the pane's real height to clamp against,
-    /// so the cursor survives the nudge intact.
-    ///
-    /// Without a known area there is no geometry to scroll a *screen* row
-    /// against, so this is a no-op rather than risking the zeroed-viewport
-    /// collapse above with nothing primed to guard it — that would move the
-    /// cursor's *data* position, not just the view, and do it silently.
-    pub fn scroll_cursor_to_row(&mut self, row: u16) {
-        let Some(area) = self.last_area else { return };
+    /// with a throwaway render at the real area first gives `scroll` the
+    /// pane's actual height to clamp against, so the cursor survives the
+    /// nudge intact.
+    fn apply_pending_scroll(&mut self, area: Rect) {
+        let Some(row) = self.pending_screen_row.take() else {
+            return;
+        };
         let mut scratch = Buffer::empty(area);
         (&self.textarea).render(area, &mut scratch);
 
@@ -955,11 +971,12 @@ mod tests {
     }
 
     /// Pins the fix directly at the `FileView` level, without going through
-    /// `App`: `scroll_cursor_to_row` runs right after `show_lines_with_cursor`
-    /// resets the viewport to zeroed dimensions, before this frame has
-    /// rendered even once. Without priming a render first, `TextArea::scroll`'s
-    /// own `CursorMove::InViewport` bookkeeping clamps *the cursor itself*
-    /// (not just the view) onto the scroll target, since the zeroed height
+    /// `App`: `show_lines_with_cursor` resets the viewport to zeroed
+    /// dimensions, and `apply_pending_scroll` (run from `render`, on the
+    /// next frame) has to prime a throwaway render against the real area
+    /// before scrolling — without that, `TextArea::scroll`'s own
+    /// `CursorMove::InViewport` bookkeeping clamps *the cursor itself* (not
+    /// just the view) onto the scroll target, since the zeroed height
     /// collapses its valid range to a single row. This is the piece most
     /// likely to rot silently — the `App`-level tests only exercise it
     /// indirectly, through a whole filter toggle.
@@ -969,8 +986,8 @@ mod tests {
         let mut view = view_of("scroll_cursor_prime.txt", &body);
         let area = Rect::new(0, 0, 40, 8);
         let mut buf = Buffer::empty(area);
-        // Establishes `last_area` and the fork's real viewport dimensions,
-        // the way the pane's first real render of the session would.
+        // Establishes the pane's real viewport dimensions, the way the
+        // pane's first real render of the session would.
         (&mut view).render(area, &mut buf);
 
         // Simulate a rebuild: `show_lines_with_cursor` calls `set_lines`,
@@ -978,8 +995,11 @@ mod tests {
         // filter toggle's rebuild would.
         let lines = view.textarea.lines().to_vec();
         view.show_lines_with_cursor(lines, 150);
-
         view.scroll_cursor_to_row(3);
+
+        // The scroll is only *requested* until the next render applies it —
+        // see `apply_pending_scroll` — against that render's real area.
+        (&mut view).render(area, &mut buf);
 
         assert_eq!(
             view.textarea.cursor().0,
@@ -994,24 +1014,68 @@ mod tests {
         );
     }
 
-    /// Without a render having ever happened, there is no known area to
-    /// prime with, so scrolling to a screen row is meaningless — this must
-    /// be a no-op rather than running `scroll` blind into the same
-    /// zeroed-viewport collapse the priming exists to avoid.
+    /// Under the old immediate-priming design, a restore requested before
+    /// any render had ever happened had no real area to prime against and
+    /// had to be a no-op. The deferred design has no such gap: the request
+    /// is just recorded, and the pane's very first render — there does not
+    /// need to be an earlier one — supplies a real area to apply it
+    /// against. This pins that positive claim directly, rather than a
+    /// "no-op" claim the new design no longer makes true.
     #[test]
-    fn scroll_cursor_to_row_is_a_no_op_before_any_render() {
+    fn a_scroll_requested_before_any_render_is_applied_on_the_first_render() {
         let body: String = (0..200).map(|i| format!("line {i}\n")).collect();
         let mut view = view_of("scroll_cursor_no_area.txt", &body);
 
         let lines = view.textarea.lines().to_vec();
         view.show_lines_with_cursor(lines, 150);
-
         view.scroll_cursor_to_row(3);
+
+        // The pane's first render ever — nothing has primed anything before
+        // this.
+        let area = Rect::new(0, 0, 40, 8);
+        let mut buf = Buffer::empty(area);
+        (&mut view).render(area, &mut buf);
 
         assert_eq!(
             view.textarea.cursor().0,
             150,
-            "the cursor moved despite no known area to scroll against"
+            "the cursor's line moved — the zeroed-viewport clamp corrupted \
+             the cursor's data position, not just the view"
+        );
+        assert_eq!(
+            view.cursor_screen_row(),
+            3,
+            "the requested scroll was dropped instead of being applied on \
+             the first render"
+        );
+    }
+
+    /// `get_or_insert`, not overwrite: if a second rebuild (and a second
+    /// `scroll_cursor_to_row` call) happens before the next render, the
+    /// *first* row is the one that was measured against a viewport still
+    /// valid at the time, and must be what is applied — a second request
+    /// arriving before the deferred restore has ever run must not silently
+    /// replace it.
+    #[test]
+    fn a_second_pending_scroll_before_the_next_render_does_not_overwrite_the_first() {
+        let body: String = (0..200).map(|i| format!("line {i}\n")).collect();
+        let mut view = view_of("scroll_get_or_insert.txt", &body);
+        let area = Rect::new(0, 0, 40, 8);
+        let mut buf = Buffer::empty(area);
+        (&mut view).render(area, &mut buf);
+
+        let lines = view.textarea.lines().to_vec();
+        view.show_lines_with_cursor(lines.clone(), 150);
+        view.scroll_cursor_to_row(3);
+        view.show_lines_with_cursor(lines, 160);
+        view.scroll_cursor_to_row(6);
+
+        (&mut view).render(area, &mut buf);
+
+        assert_eq!(
+            view.cursor_screen_row(),
+            3,
+            "the second scroll request overwrote the first instead of being ignored"
         );
     }
 }
@@ -1019,7 +1083,10 @@ mod tests {
 /// Widget impl for `FileView`
 impl Widget for &mut FileView<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        self.last_area = Some(area);
+        // Apply any scroll requested since the last render — see
+        // `scroll_cursor_to_row` and `apply_pending_scroll` — against this
+        // frame's real area, before drawing it.
+        self.apply_pending_scroll(area);
         if self.hide_line_numbers || self.gutter_blank {
             self.textarea.remove_line_number();
         } else {
