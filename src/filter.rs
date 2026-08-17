@@ -19,9 +19,6 @@ const PALETTE: [Color; 6] = [
 ];
 
 /// Whether a filter selects lines or removes them.
-///
-/// Only `Include` is constructed in this phase; `Exclude` exists so that adding
-/// it later does not reshape the model.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Sense {
     Include,
@@ -35,7 +32,7 @@ pub enum Verdict {
     Included(usize),
     /// Matched no including filter.
     Unmatched,
-    /// Removed by an excluding filter. Never produced in this phase.
+    /// Removed by an excluding filter.
     Excluded,
 }
 
@@ -89,6 +86,29 @@ impl FilterSet {
         Ok(())
     }
 
+    /// Add an excluding filter: its matches are removed from view entirely,
+    /// in both display modes.
+    ///
+    /// Excluding filters carry no colour, since a line they match is never
+    /// rendered.
+    pub fn add_excluding(&mut self, pattern: &str) -> Result<(), regex::Error> {
+        let pattern = Regex::new(pattern)?;
+        self.filters.push(Filter {
+            pattern,
+            sense: Sense::Exclude,
+            enabled: true,
+            style: Style::default(),
+        });
+        Ok(())
+    }
+
+    /// Whether any enabled filter removes lines.
+    pub fn any_excluding(&self) -> bool {
+        self.filters
+            .iter()
+            .any(|filter| filter.enabled && filter.sense == Sense::Exclude)
+    }
+
     /// Enable or disable every filter at once, for the `!` toggle.
     pub fn set_all_enabled(&mut self, enabled: bool) {
         for filter in &mut self.filters {
@@ -107,6 +127,15 @@ impl FilterSet {
     /// rather than a wholly dimmed one. The first matching filter wins, which
     /// is what makes the set's order meaningful.
     pub fn verdict(&self, line: &str) -> Verdict {
+        // Exclusion is applied after inclusion and overrides it, so a line an
+        // including filter selected is still removed if an excluding filter
+        // also matches it.
+        if self.filters.iter().any(|filter| {
+            filter.enabled && filter.sense == Sense::Exclude && filter.pattern.is_match(line)
+        }) {
+            return Verdict::Excluded;
+        }
+
         self.filters
             .iter()
             .enumerate()
@@ -118,6 +147,17 @@ impl FilterSet {
             .map_or(Verdict::Unmatched, |(index, _)| Verdict::Included(index))
     }
 
+    /// Whether any enabled filter selects lines, as opposed to removing them.
+    ///
+    /// Dimming means "this line matched no include filter". With only
+    /// excluding filters there is nothing to dim against, so the file reads
+    /// normally minus the removed lines.
+    fn any_including(&self) -> bool {
+        self.filters
+            .iter()
+            .any(|filter| filter.enabled && filter.sense == Sense::Include)
+    }
+
     /// The style to render a line with, or `None` to leave it alone.
     ///
     /// `Unmatched` dims only when some including filter is actually active —
@@ -125,7 +165,7 @@ impl FilterSet {
     pub fn style_for(&self, verdict: Verdict) -> Option<Style> {
         match verdict {
             Verdict::Included(index) => self.filters.get(index).map(|f| f.style),
-            Verdict::Unmatched if self.any_enabled() => {
+            Verdict::Unmatched if self.any_including() => {
                 Some(Style::default().add_modifier(Modifier::DIM))
             }
             Verdict::Unmatched | Verdict::Excluded => None,
@@ -236,5 +276,77 @@ mod tests {
             set.filters()[1].style,
             "two filters would be indistinguishable"
         );
+    }
+
+    fn set_excluding(patterns: &[&str]) -> FilterSet {
+        let mut set = FilterSet::new();
+        for pattern in patterns {
+            set.add_excluding(pattern).expect("valid pattern");
+        }
+        set
+    }
+
+    #[test]
+    fn an_excluding_filter_excludes_its_matches() {
+        let set = set_excluding(&["heartbeat"]);
+
+        assert_eq!(set.verdict("a heartbeat line"), Verdict::Excluded);
+    }
+
+    /// Excluding filters run after including ones, so exclusion wins even on a
+    /// line an including filter selected.
+    #[test]
+    fn exclusion_beats_inclusion_on_the_same_line() {
+        let mut set = set_with(&["foo"]);
+        set.add_excluding("noisy").expect("valid pattern");
+
+        assert_eq!(set.verdict("foo but noisy"), Verdict::Excluded);
+        assert_eq!(set.verdict("foo alone"), Verdict::Included(0));
+    }
+
+    /// With only excluding filters, unmatched lines stay ordinary — there is
+    /// nothing to dim against.
+    #[test]
+    fn excluding_filters_alone_do_not_dim() {
+        let set = set_excluding(&["heartbeat"]);
+
+        assert_eq!(set.verdict("something else"), Verdict::Unmatched);
+        assert_eq!(set.style_for(Verdict::Unmatched), None);
+    }
+
+    #[test]
+    fn a_disabled_excluding_filter_excludes_nothing() {
+        let mut set = set_excluding(&["heartbeat"]);
+        set.set_all_enabled(false);
+
+        assert_eq!(set.verdict("a heartbeat line"), Verdict::Unmatched);
+    }
+
+    #[test]
+    fn an_invalid_excluding_pattern_is_reported() {
+        let mut set = FilterSet::new();
+
+        assert!(set.add_excluding("[").is_err());
+        assert!(set.is_empty(), "a rejected pattern must not be added");
+    }
+
+    #[test]
+    fn any_excluding_reports_whether_one_is_enabled() {
+        let mut set = set_with(&["foo"]);
+        assert!(!set.any_excluding());
+
+        set.add_excluding("bar").expect("valid pattern");
+        assert!(set.any_excluding());
+
+        set.set_all_enabled(false);
+        assert!(!set.any_excluding(), "a disabled filter does not count");
+    }
+
+    /// An excluded line is never rendered, so it has no style.
+    #[test]
+    fn an_excluded_line_has_no_style() {
+        let set = set_excluding(&["heartbeat"]);
+
+        assert_eq!(set.style_for(Verdict::Excluded), None);
     }
 }
