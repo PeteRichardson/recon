@@ -499,8 +499,35 @@ impl App<'_> {
         // The cursor is a source line index for the duration of the rebuild:
         // its row in the view is only meaningful against the old visible list.
         let cursor_source = self.cursor_source();
+        // A rebuild (`set_lines`, inside `apply_view`) resets the viewport,
+        // so the screen row the cursor was drawn on is captured here and put
+        // back afterwards — otherwise the cursor re-anchors to wherever a
+        // freshly reset viewport happens to land it.
+        let screen_row = self.file_view_screen_row();
         self.document.evaluate(&self.filters);
         self.apply_view(cursor_source);
+        self.restore_screen_row(screen_row);
+    }
+
+    /// Which row of the file view pane the cursor is currently drawn on.
+    fn file_view_screen_row(&self) -> u16 {
+        self.widgets
+            .iter()
+            .find_map(|widget| match widget {
+                AppWidget::FileView(view) => Some(view.cursor_screen_row()),
+                AppWidget::FileNav(_) => None,
+            })
+            .unwrap_or(0)
+    }
+
+    /// Put the cursor back on the screen row it occupied before the rebuild,
+    /// so lines appear and disappear around a fixed point.
+    fn restore_screen_row(&mut self, row: u16) {
+        for widget in &mut self.widgets {
+            if let AppWidget::FileView(view) = widget {
+                view.scroll_cursor_to_row(row);
+            }
+        }
     }
 
     /// Push the document's current verdicts onto the file view.
@@ -1650,6 +1677,16 @@ mod tests {
             .expect("no file view")
     }
 
+    fn cursor_screen_row(app: &App) -> u16 {
+        app.widgets
+            .iter()
+            .find_map(|w| match w {
+                AppWidget::FileView(view) => Some(view.cursor_screen_row()),
+                _ => None,
+            })
+            .expect("no file view")
+    }
+
     /// Move the cursor to `row` without going through `CursorMove::Jump`,
     /// whose `u16` argument would silently truncate on the large-file test
     /// below.
@@ -1719,6 +1756,66 @@ mod tests {
             before, after,
             "adding a filter that matched nothing moved the viewport"
         );
+    }
+
+    /// Toggling a filter changes the visible set, so the buffer is rebuilt —
+    /// but the line under the cursor must stay on the same screen row rather
+    /// than the view re-anchoring beneath it.
+    ///
+    /// An *excluding* filter is used deliberately: an including filter in
+    /// the default (`Dimmed`) mode never changes `visible` at all — it only
+    /// changes styling — so `!` would trigger no rebuild and the test would
+    /// pass trivially, before any fix exists. Excluded lines are dropped
+    /// from `visible` in every mode, so toggling one genuinely forces the
+    /// rebuild this test is about.
+    #[test]
+    fn toggling_a_filter_leaves_the_cursor_on_the_same_screen_row() {
+        let body: String = (0..200).map(|i| format!("line {i}\n")).collect();
+        let mut app = app_over_file("scroll_hold", &body);
+        key(&mut app, KeyCode::Char('F'));
+        typed(&mut app, "line 1[5-9][0-9]"); // excludes 150..=199, well below the cursor
+        key(&mut app, KeyCode::Enter);
+        draw(&mut app);
+
+        // Put the cursor well down the file. Moving down one line at a time
+        // like this pins it to the pane's *last* screen row — the viewport
+        // scrolls minimally to keep it in view, landing it on the bottom
+        // edge every time.
+        for _ in 0..120 {
+            key(&mut app, KeyCode::Tab);
+            key(&mut app, KeyCode::Char('j'));
+            key(&mut app, KeyCode::Tab);
+        }
+        draw(&mut app);
+        let pinned_row = cursor_screen_row(&app);
+
+        // Pull it back off that row: the pane's last row is exactly where a
+        // reset viewport would re-anchor the cursor after a rebuild, so
+        // parking there would make the bug and the fix indistinguishable.
+        for _ in 0..3 {
+            key(&mut app, KeyCode::Tab);
+            key(&mut app, KeyCode::Char('k'));
+            key(&mut app, KeyCode::Tab);
+        }
+        draw(&mut app);
+        let before_row = cursor_screen_row(&app);
+        let before_source = cursor_source(&app);
+        assert!(
+            before_row < pinned_row,
+            "test setup did not move the cursor off the pane's last row \
+             (pinned_row = {pinned_row}, before_row = {before_row}) — \
+             this test would pass whether or not the fix exists"
+        );
+
+        key(&mut app, KeyCode::Char('!'));
+        draw(&mut app);
+
+        assert_eq!(
+            cursor_screen_row(&app),
+            before_row,
+            "the view re-anchored instead of holding the line in place"
+        );
+        assert_eq!(cursor_source(&app), before_source, "the cursor changed line");
     }
 
     #[test]

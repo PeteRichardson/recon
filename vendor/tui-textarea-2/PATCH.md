@@ -64,6 +64,15 @@ so the default `WrapMode::None` short-circuits both sites and nothing can
 hit this today. Gutter overrides are therefore supported only under
 `WrapMode::None`.
 
+### 3. Viewport reporting
+
+- `src/textarea.rs`, beside `cursor()`: added `scroll_top`, reporting the
+  existing `pub(crate)` `Viewport::scroll_top()` value. `scroll` and `cursor`
+  were already public; only the viewport's own top-left position had no way
+  out of the crate. Used by `recon` to hold the cursor's screen row steady
+  across a buffer rebuild (`set_lines` resets the viewport), rather than
+  letting it re-anchor to wherever the reset viewport happens to land it.
+
 ### Local-only: removed `[profile.bench]`
 
 - `Cargo.toml`: dropped `[profile.bench] lto = "thin"`.

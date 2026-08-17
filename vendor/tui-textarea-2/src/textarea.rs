@@ -2751,6 +2751,15 @@ impl<'a> TextArea<'a> {
         self.cursor.into()
     }
 
+    /// The viewport's top-left position: the first visible row and column.
+    ///
+    /// Reported so a caller can tell where the cursor sits *on screen*, not
+    /// just in the buffer — needed to hold a line in place across a
+    /// `set_lines`, which resets the viewport.
+    pub fn scroll_top(&self) -> (u16, u16) {
+        self.viewport.scroll_top()
+    }
+
     pub(crate) fn screen_cursor(&self) -> ScreenCursor {
         self.cursor.to_screen_cursor(self)
     }

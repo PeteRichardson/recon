@@ -1,6 +1,6 @@
 diff -ruN '--exclude=PATCH.md' '--exclude=upstream.patch' '--exclude=target' /tmp/tui-pristine/Cargo.toml vendor/tui-textarea-2/Cargo.toml
---- /tmp/tui-pristine/Cargo.toml	2026-08-16 00:24:02.441736729 -0400
-+++ vendor/tui-textarea-2/Cargo.toml	2026-08-15 23:12:30.666161122 -0400
+--- /tmp/tui-pristine/Cargo.toml	2026-08-17 11:15:17.217600795 -0400
++++ vendor/tui-textarea-2/Cargo.toml	2026-08-16 17:37:37.599437460 -0400
 @@ -171,6 +171,10 @@
  path = "tests/input.rs"
  
@@ -20,8 +20,8 @@ diff -ruN '--exclude=PATCH.md' '--exclude=upstream.patch' '--exclude=target' /tm
 -[profile.bench]
 -lto = "thin"
 diff -ruN '--exclude=PATCH.md' '--exclude=upstream.patch' '--exclude=target' /tmp/tui-pristine/src/textarea.rs vendor/tui-textarea-2/src/textarea.rs
---- /tmp/tui-pristine/src/textarea.rs	2026-08-16 00:24:02.451770112 -0400
-+++ vendor/tui-textarea-2/src/textarea.rs	2026-08-15 23:17:01.505548695 -0400
+--- /tmp/tui-pristine/src/textarea.rs	2026-08-17 11:15:17.227875293 -0400
++++ vendor/tui-textarea-2/src/textarea.rs	2026-08-17 11:08:13.429863640 -0400
 @@ -208,6 +208,8 @@
      history: History,
      cursor_line_style: Style,
@@ -149,9 +149,25 @@ diff -ruN '--exclude=PATCH.md' '--exclude=upstream.patch' '--exclude=target' /tm
      /// Set the placeholder text. The text is set in the textarea when no text is input. Setting a non-empty string `""`
      /// enables the placeholder. The default value is an empty string so the placeholder is disabled by default.
      /// To customize the text style, see [`TextArea::set_placeholder_style`].
+@@ -2659,6 +2751,15 @@
+         self.cursor.into()
+     }
+ 
++    /// The viewport's top-left position: the first visible row and column.
++    ///
++    /// Reported so a caller can tell where the cursor sits *on screen*, not
++    /// just in the buffer — needed to hold a line in place across a
++    /// `set_lines`, which resets the viewport.
++    pub fn scroll_top(&self) -> (u16, u16) {
++        self.viewport.scroll_top()
++    }
++
+     pub(crate) fn screen_cursor(&self) -> ScreenCursor {
+         self.cursor.to_screen_cursor(self)
+     }
 diff -ruN '--exclude=PATCH.md' '--exclude=upstream.patch' '--exclude=target' /tmp/tui-pristine/src/widget.rs vendor/tui-textarea-2/src/widget.rs
---- /tmp/tui-pristine/src/widget.rs	2026-08-16 00:24:02.451199908 -0400
-+++ vendor/tui-textarea-2/src/widget.rs	2026-08-16 00:23:47.186966893 -0400
+--- /tmp/tui-pristine/src/widget.rs	2026-08-17 11:15:17.227081165 -0400
++++ vendor/tui-textarea-2/src/widget.rs	2026-08-16 17:37:37.606378737 -0400
 @@ -98,7 +98,7 @@
  
  impl<'a> TextArea<'a> {
@@ -181,7 +197,7 @@ diff -ruN '--exclude=PATCH.md' '--exclude=upstream.patch' '--exclude=target' /tm
          let top_col = top_col as usize;
 diff -ruN '--exclude=PATCH.md' '--exclude=upstream.patch' '--exclude=target' /tmp/tui-pristine/tests/line_presentation.rs vendor/tui-textarea-2/tests/line_presentation.rs
 --- /tmp/tui-pristine/tests/line_presentation.rs	1969-12-31 19:00:00.000000000 -0500
-+++ vendor/tui-textarea-2/tests/line_presentation.rs	2026-08-15 23:16:33.611844202 -0400
++++ vendor/tui-textarea-2/tests/line_presentation.rs	2026-08-16 17:37:37.607783243 -0400
 @@ -0,0 +1,151 @@
 +use ratatui::buffer::Buffer;
 +use ratatui::layout::Rect;

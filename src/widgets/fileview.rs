@@ -38,6 +38,9 @@ pub struct FileView<'a> {
     /// and read as "this file has one empty line" — so the gutter is
     /// suppressed outright instead.
     gutter_blank: bool,
+    /// The area this pane was rendered into last time, if ever. Used only by
+    /// `scroll_cursor_to_row` — see there for why.
+    last_area: Option<Rect>,
 }
 
 impl FileView<'_> {
@@ -117,6 +120,44 @@ impl FileView<'_> {
         // set_lines rejects an empty vector; an empty buffer is one blank line.
         let lines = if lines.is_empty() { vec![String::new()] } else { lines };
         self.textarea.set_lines(lines, (row, 0));
+    }
+
+    /// Which row of the pane the cursor is currently drawn on.
+    ///
+    /// Used to hold a line in place across a rebuild: `set_lines` resets the
+    /// viewport, so without this the cursor re-anchors to the pane's last row
+    /// and the view lurches whenever a filter changes.
+    pub fn cursor_screen_row(&self) -> u16 {
+        let (top, _) = self.textarea.scroll_top();
+        self.textarea.cursor().0.saturating_sub(top as usize) as u16
+    }
+
+    /// Scroll so the cursor sits on `row` of the pane, as far as the buffer
+    /// allows near its start or end.
+    ///
+    /// Called right after a rebuild, before this frame has rendered the pane
+    /// even once. `set_lines` reset the viewport to zeroed dimensions, which
+    /// are normally only repopulated by an actual render — and `scroll`'s
+    /// own bookkeeping (`CursorMove::InViewport`) clamps the cursor to that
+    /// cached size, so scrolling against a zeroed one collapses the cursor
+    /// onto the scroll target instead of leaving it on its line. Priming
+    /// with a throwaway render at the pane's last known area first (the real
+    /// render this frame will use the same area, bar a mid-frame resize)
+    /// gives `scroll` the pane's real height to clamp against, so the cursor
+    /// survives the nudge intact.
+    pub fn scroll_cursor_to_row(&mut self, row: u16) {
+        if let Some(area) = self.last_area {
+            let mut scratch = Buffer::empty(area);
+            (&self.textarea).render(area, &mut scratch);
+        }
+        let cursor = self.textarea.cursor().0;
+        let desired_top = cursor.saturating_sub(row as usize);
+        let (current_top, _) = self.textarea.scroll_top();
+        let delta = desired_top as i64 - current_top as i64;
+        if delta != 0 {
+            self.textarea
+                .scroll((delta.clamp(i16::MIN as i64, i16::MAX as i64) as i16, 0));
+        }
     }
 
     /// Start a search, moving to the first match from the cursor.
@@ -902,6 +943,7 @@ mod tests {
 /// Widget impl for `FileView`
 impl Widget for &mut FileView<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
+        self.last_area = Some(area);
         if self.hide_line_numbers || self.gutter_blank {
             self.textarea.remove_line_number();
         } else {
