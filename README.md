@@ -20,6 +20,9 @@ Global (`src/lib.rs`), handled before the focused pane sees the key:
 | `F` | Add an exclude filter — its matches leave the view entirely |
 | `Ctrl-H` / `H` | Toggle between dimming unmatched lines and hiding them |
 | `!` | Disable every filter, remembering which were on; restores exactly that (or enables all, if none were on to remember) |
+| `b` | Hide the left column, giving the file its full width — press again to restore |
+| `e` | Bring the left column back and focus it |
+| `z` | Maximise the focused pane, or restore the split — works in the navigator too, for long filenames |
 
 Mouse: drag the divider between the panes to resize them; double-click it to
 return to sizing the navigator pane automatically to its contents.
@@ -71,8 +74,6 @@ File view pane (`src/widgets/fileview.rs`):
 | `k` / `Up` | Move cursor up |
 | `l` / `Right` | Move cursor forward |
 | `w` | Move to the next word |
-| `b` | Move to the previous word |
-| `e` | Move to the end of the word |
 | `0` / `^` | Move to the start of the line |
 | `$` | Move to the end of the line |
 | `{` / `}` | Move by paragraph, back / forward |
@@ -82,8 +83,12 @@ File view pane (`src/widgets/fileview.rs`):
 | `n` / `N` | Repeat the last search, forward / reversed |
 | `Ctrl-e` / `Ctrl-y` | Scroll one line down / up |
 | `Ctrl-d` / `Ctrl-u` | Scroll half a page down / up |
-| `Ctrl-b` / `PageUp` | Scroll a page up |
-| `Ctrl-f` / `PageDown` / `Space` / `Enter` | Scroll a page down |
+| `Ctrl-b` / `PageUp` / `Space` | Scroll a page up |
+| `Ctrl-f` / `PageDown` / `Enter` | Scroll a page down |
+
+`b` and `e` are global window commands rather than vim word motions: the
+trade was deliberate, since returning to the navigator from a maximised file
+view is exactly when you need `e`. `w` still moves forward by word.
 
 Navigator pane (`src/widgets/filenav.rs`):
 
