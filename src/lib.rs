@@ -2718,6 +2718,52 @@ mod tests {
         );
     }
 
+    /// The README documents the exact order `Tab` cycles the panes in
+    /// (navigator, file view, filter pane), which follows `self.widgets`'
+    /// construction order in `App::new` rather than anything visual — the
+    /// filter pane sits *above* the file view on screen but *after* it in
+    /// the cycle. Nothing else pinned that order, so a reshuffle of
+    /// `self.widgets` (plausible in a later phase that adds a fourth pane)
+    /// would leave the README quietly wrong with an otherwise green suite.
+    /// Asserting against the index accessors, rather than bare `0`/`1`/`2`
+    /// literals, means a reordering breaks this test loudly instead of the
+    /// assertions silently tracking whatever the new order happens to be.
+    #[test]
+    fn tab_cycles_navigator_then_file_view_then_filter_pane() {
+        let mut app = app_over_file("tab_cycle_order", "alpha\n");
+        key(&mut app, KeyCode::Char('f'));
+        typed(&mut app, "alpha");
+        key(&mut app, KeyCode::Enter);
+        draw(&mut app);
+
+        assert_eq!(
+            app.active_widget,
+            app.nav_index(),
+            "should start focused on the navigator"
+        );
+
+        key(&mut app, KeyCode::Tab);
+        assert_eq!(
+            app.active_widget,
+            app.file_view_index(),
+            "one Tab from the navigator should reach the file view"
+        );
+
+        key(&mut app, KeyCode::Tab);
+        assert_eq!(
+            app.active_widget,
+            app.filter_list_index(),
+            "two Tabs from the navigator should reach the filter pane"
+        );
+
+        key(&mut app, KeyCode::Tab);
+        assert_eq!(
+            app.active_widget,
+            app.nav_index(),
+            "three Tabs should cycle back to the navigator"
+        );
+    }
+
     /// `App::render` has two branches that reach a widget's own `render`
     /// method — the ordinary split and the zoom special case — and only the
     /// split branch is exercised by the tests above. `AppWidget`'s own

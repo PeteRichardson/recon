@@ -13,7 +13,7 @@ Global (`src/lib.rs`), handled before the focused pane sees the key:
 | Key(s) | Action |
 | --- | --- |
 | `q` | Quit |
-| `Tab` | Move focus to the next of three panes — navigator, filter pane, file view — skipping the filter pane while it is collapsed |
+| `Tab` | Move focus to the next of three panes — navigator, file view, filter pane — skipping the filter pane while it is collapsed |
 | `/` | Search forward in the focused pane |
 | `?` | Search backward in the focused pane |
 | `f` | Add an include filter (always applies to the file view) |
@@ -25,7 +25,8 @@ Global (`src/lib.rs`), handled before the focused pane sees the key:
 | `z` | Maximise the focused pane, or restore the split — works in the navigator too, for long filenames |
 
 Mouse: drag the divider between the panes to resize them; double-click it to
-return to sizing the navigator pane automatically to its contents.
+return to auto-sizing the left column to whichever of the navigator or the
+filter pane currently needs more room.
 
 Filters colour the lines they match and dim the rest; they are regular
 expressions, like search. A filter set describes a log format rather than one
