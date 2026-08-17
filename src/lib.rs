@@ -1,6 +1,6 @@
 use clap::Parser;
 use color_eyre::Result;
-use crossterm::event::{self, KeyCode, MouseButton, MouseEvent, MouseEventKind};
+use crossterm::event::{self, KeyCode, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::prelude::{Backend, Buffer, Color, Constraint, Layout, Rect, Style, Terminal, Widget};
 use std::time::{Duration, Instant};
 
@@ -23,6 +23,7 @@ enum PromptKind {
     #[default]
     Search,
     Filter,
+    Exclude,
 }
 
 /// A search pattern being typed at the bottom of the screen.
@@ -42,6 +43,7 @@ impl SearchPrompt {
         match (&self.error, self.kind) {
             (Some(error), _) => error.clone(),
             (None, PromptKind::Filter) => format!("filter: {}", self.pattern),
+            (None, PromptKind::Exclude) => format!("exclude: {}", self.pattern),
             (None, PromptKind::Search) => format!(
                 "{}{}",
                 if self.reverse { '?' } else { '/' },
@@ -118,7 +120,7 @@ impl App<'_> {
             document: Document::default(),
         };
         app.sync_document();
-        app.restyle();
+        app.refresh_view();
         app
     }
 
@@ -139,6 +141,7 @@ impl App<'_> {
                 let outcome = match kind {
                     PromptKind::Search => self.run_search(&pattern, reverse),
                     PromptKind::Filter => self.add_filter(&pattern),
+                    PromptKind::Exclude => self.add_excluding_filter(&pattern),
                 };
                 if outcome.is_ok() {
                     self.search = None;
@@ -184,7 +187,14 @@ impl App<'_> {
     /// Add an including filter, colouring it distinctly from its predecessors.
     fn add_filter(&mut self, pattern: &str) -> Result<(), regex::Error> {
         self.filters.add(pattern)?;
-        self.restyle();
+        self.refresh_view();
+        Ok(())
+    }
+
+    /// Add an excluding filter: its matches leave the view entirely.
+    fn add_excluding_filter(&mut self, pattern: &str) -> Result<(), regex::Error> {
+        self.filters.add_excluding(pattern)?;
+        self.refresh_view();
         Ok(())
     }
 
@@ -335,12 +345,21 @@ impl App<'_> {
                     });
                     return Ok(());
                 }
+                KeyCode::Char('F')
+                    if !key.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+                {
+                    self.search = Some(SearchPrompt {
+                        kind: PromptKind::Exclude,
+                        ..SearchPrompt::default()
+                    });
+                    return Ok(());
+                }
                 KeyCode::Char('!') if key.modifiers.is_empty() => {
                     // Toggle the whole set, so an unfiltered view is one
                     // keystroke away without losing the filters themselves.
                     let enable = !self.filters.any_enabled();
                     self.filters.set_all_enabled(enable);
-                    self.restyle();
+                    self.refresh_view();
                     return Ok(());
                 }
                 _ => {}
@@ -362,7 +381,7 @@ impl App<'_> {
             self.perform(action);
         } else if was_truncated && !self.file_view_truncated() {
             self.sync_document();
-            self.restyle();
+            self.refresh_view();
         }
         Ok(())
     }
@@ -378,7 +397,7 @@ impl App<'_> {
             }
         }
         self.sync_document();
-        self.restyle();
+        self.refresh_view();
     }
 
     /// Take the view's current contents as the document to filter.
@@ -399,16 +418,36 @@ impl App<'_> {
         self.document = Document::new(lines);
     }
 
-    /// Re-evaluate the filters and push the resulting styles into the view.
+    /// Re-evaluate the filters and rebuild what the view shows.
     ///
-    /// Loading or previewing rebuilds the textarea, which clears its line
-    /// styles, so this must run after any change to the contents as well as
-    /// after any change to the filters.
-    fn restyle(&mut self) {
+    /// When nothing is hidden the buffer is the whole document and the gutter
+    /// numbers itself. As soon as a line is hidden the buffer holds only the
+    /// visible lines, so the gutter must be told each row's *source* number or
+    /// it would renumber 1..N and the line numbers would be lies.
+    ///
+    /// Rebuilding costs a clone of the visible lines. That is bounded but not
+    /// free on a large log; if it bites, the fix is to keep both buffers and
+    /// swap between them rather than to rebuild.
+    fn refresh_view(&mut self) {
         self.document.evaluate(&self.filters);
-        let styles = self.document.line_styles(&self.filters);
+
+        let hiding = self.document.visible().len() < self.document.lines().len();
+        let lines = self.document.visible_lines();
+        let styles = self.document.visible_styles(&self.filters);
+        let numbers: Vec<usize> = if hiding {
+            self.document.visible().to_vec()
+        } else {
+            Vec::new()
+        };
+
         for widget in &mut self.widgets {
             if let AppWidget::FileView(view) = widget {
+                // Always rebuild. `visible_lines()` is the whole document when
+                // nothing is hidden, so this is a no-op in content — but making
+                // it conditional leaves a stale subset behind when hiding ends,
+                // with the gutter override cleared underneath it.
+                view.show_lines(lines.clone());
+                view.set_line_numbers(numbers.clone());
                 view.set_line_styles(styles.clone());
             }
         }
@@ -485,7 +524,7 @@ impl Widget for &mut App<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crossterm::event::{KeyEvent, KeyModifiers, MouseEvent};
+    use crossterm::event::{KeyEvent, MouseEvent};
     use ratatui::prelude::Buffer;
     use ratatui::style::Modifier; // the tests assert on Modifier::DIM
     use std::fs;
@@ -1104,5 +1143,111 @@ mod tests {
                 AppWidget::FileNav(_) => None,
             })
             .expect("no file view")
+    }
+
+    /// The text the file view is currently showing, one entry per row.
+    fn view_lines(app: &App) -> Vec<String> {
+        app.widgets
+            .iter()
+            .find_map(|w| match w {
+                AppWidget::FileView(view) => Some(view.textarea.lines().to_vec()),
+                AppWidget::FileNav(_) => None,
+            })
+            .expect("no file view")
+    }
+
+    fn view_line_numbers(app: &App) -> Vec<usize> {
+        app.widgets
+            .iter()
+            .find_map(|w| match w {
+                AppWidget::FileView(view) => Some(view.textarea.line_numbers().to_vec()),
+                AppWidget::FileNav(_) => None,
+            })
+            .expect("no file view")
+    }
+
+    #[test]
+    fn an_excluding_filter_removes_its_lines_from_the_view() {
+        let mut app = app_over_file("exclude_view", "alpha\nnoise\ngamma\n");
+
+        key(&mut app, KeyCode::Char('F'));
+        typed(&mut app, "noise");
+        key(&mut app, KeyCode::Enter);
+
+        assert_eq!(view_lines(&app), vec!["alpha".to_string(), "gamma".to_string()]);
+    }
+
+    /// The gutter keeps the original numbering, so a hidden line leaves a gap.
+    #[test]
+    fn the_gutter_shows_source_line_numbers_when_lines_are_hidden() {
+        let mut app = app_over_file("exclude_gutter", "alpha\nnoise\ngamma\n");
+
+        key(&mut app, KeyCode::Char('F'));
+        typed(&mut app, "noise");
+        key(&mut app, KeyCode::Enter);
+
+        // 0-based source indices: rows 0 and 2 render as 1 and 3.
+        assert_eq!(view_line_numbers(&app), vec![0, 2]);
+    }
+
+    #[test]
+    fn styles_still_line_up_with_the_rebuilt_buffer() {
+        let mut app = app_over_file("exclude_styles", "alpha\nnoise\nbeta\n");
+        key(&mut app, KeyCode::Char('F'));
+        typed(&mut app, "noise");
+        key(&mut app, KeyCode::Enter);
+
+        key(&mut app, KeyCode::Char('f'));
+        typed(&mut app, "beta");
+        key(&mut app, KeyCode::Enter);
+
+        assert_eq!(view_line_styles(&app).len(), view_lines(&app).len());
+    }
+
+    /// With nothing excluded the buffer is the whole file and the gutter is
+    /// left to number itself.
+    #[test]
+    fn without_hiding_the_gutter_is_not_overridden() {
+        let mut app = app_over_file("no_hiding", "alpha\nbeta\n");
+
+        key(&mut app, KeyCode::Char('f'));
+        typed(&mut app, "beta");
+        key(&mut app, KeyCode::Enter);
+
+        assert_eq!(view_lines(&app).len(), 2);
+        assert!(
+            view_line_numbers(&app).is_empty(),
+            "the gutter was overridden when nothing is hidden"
+        );
+    }
+
+    /// Lifting the hiding must restore the whole buffer. Leaving a stale subset
+    /// behind is worse than never hiding: the gutter override is cleared at the
+    /// same moment, so the remaining rows would renumber from 1 and claim to be
+    /// the whole file.
+    #[test]
+    fn disabling_an_excluding_filter_restores_the_hidden_lines() {
+        let mut app = app_over_file("exclude_restore", "alpha\nnoise\ngamma\n");
+        key(&mut app, KeyCode::Char('F'));
+        typed(&mut app, "noise");
+        key(&mut app, KeyCode::Enter);
+        assert_eq!(view_lines(&app).len(), 2, "the line was not hidden");
+
+        key(&mut app, KeyCode::Char('!'));
+
+        assert_eq!(
+            view_lines(&app),
+            vec!["alpha".to_string(), "noise".to_string(), "gamma".to_string()],
+            "the hidden line did not come back"
+        );
+        assert_eq!(
+            view_line_styles(&app).len(),
+            view_lines(&app).len(),
+            "styles no longer line up with the buffer"
+        );
+        assert!(
+            view_line_numbers(&app).is_empty(),
+            "the gutter is still overridden with nothing hidden"
+        );
     }
 }

@@ -86,6 +86,15 @@ impl FileView<'_> {
         self.textarea.set_line_numbers(numbers);
     }
 
+    /// Replace the buffer's contents without touching the file.
+    ///
+    /// Used when filtering hides lines: the view then holds a subset of the
+    /// document rather than the file as read. The filename is left alone, since
+    /// it still describes where these lines came from.
+    pub fn show_lines(&mut self, lines: Vec<String>) {
+        self.textarea = TextArea::new(lines);
+    }
+
     /// Start a search, moving to the first match from the cursor.
     ///
     /// The pattern is a regular expression, so an invalid one is reported
