@@ -21,6 +21,7 @@ pub enum Action {
 pub enum AppWidget<'a> {
     FileNav(filenav::FileNav<'a>),
     FileView(fileview::FileView<'a>),
+    FilterList(filterlist::FilterList),
 }
 
 impl AppWidget<'_> {
@@ -29,6 +30,7 @@ impl AppWidget<'_> {
         match self {
             Self::FileNav(w) => w.active = active,
             Self::FileView(w) => w.active = active,
+            Self::FilterList(w) => w.active = active,
         }
     }
 
@@ -41,6 +43,9 @@ impl AppWidget<'_> {
                 w.handle_events(event.into())?;
                 Ok(None)
             }
+            // Toggling and deleting filters from this pane is Task 6's job;
+            // for now it simply does not react to input.
+            Self::FilterList(_) => Ok(None),
         }
     }
 }
@@ -50,6 +55,15 @@ impl Widget for &mut AppWidget<'_> {
         match self {
             AppWidget::FileNav(w) => w.render(area, buf),
             AppWidget::FileView(w) => w.render(area, buf),
+            // `FilterList::render` needs a borrowed `FilterSet`, which this
+            // type has no way to hold: `App` owns the one true set, and a
+            // copy here could go stale the moment a filter changed. Rather
+            // than give `AppWidget` one, `App::render` special-cases this
+            // variant and calls `FilterList::render` directly with the set
+            // it owns — see `render_widget` in `lib.rs`. This arm exists
+            // only so `AppWidget` remains a normal `Widget`; it deliberately
+            // draws nothing and is not expected to ever actually run.
+            AppWidget::FilterList(_) => {}
         }
     }
 }

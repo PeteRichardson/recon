@@ -13,20 +13,12 @@ const SELECTION: &str = ">>";
 /// Rows of chrome the pane needs on top of one row per filter.
 const BORDERS: u16 = 2;
 
-// This task builds the widget in isolation, deliberately without wiring it
-// into `App` (that is Task 5's job). Until Task 5 holds a `FilterList`,
-// nothing outside this module's own tests constructs one, so rustc's
-// dead_code lint flags the struct and its methods. Task 5 is required to
-// remove both `#[allow(dead_code)]` attributes below once `App` holds one,
-// and to confirm the build stays warning-free with them gone.
-#[allow(dead_code)]
 #[derive(Debug, Default)]
 pub struct FilterList {
     pub state: ListState,
     pub active: bool,
 }
 
-#[allow(dead_code)]
 impl FilterList {
     pub fn selected(&self) -> Option<usize> {
         self.state.selected()

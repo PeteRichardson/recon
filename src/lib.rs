@@ -8,7 +8,33 @@ use std::time::{Duration, Instant};
 const MAX_NAV_WIDTH: u16 = 40;
 
 /// Narrowest either pane may be dragged, so a bordered block still renders.
+///
+/// This is nav's own floor — how little it may have — and is independent of
+/// `MIN_FILE_VIEW_WIDTH` below, which bounds how much it may *take*. A drag
+/// to the far edge, or a directory of short filenames, may still leave nav
+/// narrower than `MIN_FILE_VIEW_WIDTH` would ask for; that is fine, since
+/// nothing at that end is starving the file view.
 const MIN_PANE_WIDTH: u16 = 3;
+
+/// Columns the file view needs to stay genuinely readable, not merely
+/// present — derived, not tuned:
+/// - 2 for its own left and right border columns.
+/// - The gutter's overhead, `digits + 2` (one padding column plus the
+///   trailing space after the number — see `LineHighlighter::line_number`
+///   in `vendor/tui-textarea-2/src/highlight.rs`), budgeted at 6 digits: a
+///   log under a million lines comfortably fits, and this project has
+///   already exercised a 70,000-line file (`the_round_trip_survives_more_than_65535_lines`).
+/// - 20 for a recognisable fragment of a line: the length of an ISO 8601
+///   timestamp (`2024-01-01T12:00:00`, 19 characters) plus a trailing space
+///   — a reasonable proxy for "the start of a real log line", not an
+///   arbitrary round number.
+///
+/// Used as the ceiling on how much of the terminal the left column may
+/// claim, in both `nav_width`'s auto-sizing and pinned (dragged) branches,
+/// so a deliberate drag cannot starve the view any more than auto-sizing
+/// can — the app already refuses to let a drag collapse a pane outright
+/// (`MIN_PANE_WIDTH`); this is the same principle at a usable threshold.
+const MIN_FILE_VIEW_WIDTH: u16 = 2 + (6 + 2) + 20;
 
 /// Two clicks on the divider inside this window restore automatic sizing.
 /// Crossterm does not report double-clicks, so they are timed here.
@@ -70,6 +96,7 @@ use document::{Document, Mode};
 use filter::FilterSet;
 use widgets::filenav::FileNav;
 use widgets::fileview::FileView;
+use widgets::filterlist::FilterList;
 use widgets::{Action, AppWidget};
 
 #[derive(Parser, Debug)]
@@ -119,6 +146,7 @@ impl App<'_> {
             widgets: vec![
                 AppWidget::FileNav(FileNav::new(config.file.clone())),
                 AppWidget::FileView(FileView::new(config.file.clone())),
+                AppWidget::FilterList(FilterList::default()),
             ],
             active_widget: 0,
             nav_width: NavWidth::Auto,
@@ -188,6 +216,9 @@ impl App<'_> {
                 view.search(pattern, reverse)?;
                 None
             }
+            // The filter pane has nothing to search over; a `/` opened while
+            // it has focus simply finds nothing to do.
+            AppWidget::FilterList(_) => None,
         };
 
         if let Some(action) = action {
@@ -237,8 +268,25 @@ impl App<'_> {
     fn nav(&self) -> Option<&FileNav<'_>> {
         self.widgets.iter().find_map(|widget| match widget {
             AppWidget::FileNav(nav) => Some(nav),
-            AppWidget::FileView(_) => None,
+            AppWidget::FileView(_) | AppWidget::FilterList(_) => None,
         })
+    }
+
+    /// The filter pane, which owns its own selection and rendering state
+    /// independent of the `FilterSet` model `App` holds.
+    fn filter_list(&self) -> Option<&FilterList> {
+        self.widgets.iter().find_map(|widget| match widget {
+            AppWidget::FilterList(list) => Some(list),
+            AppWidget::FileNav(_) | AppWidget::FileView(_) => None,
+        })
+    }
+
+    /// Rows the filter pane wants, which is none while no filter exists — so
+    /// it costs nothing to a user who never defines one.
+    fn filter_pane_height(&self) -> u16 {
+        self.filter_list()
+            .map(|list| list.preferred_height(self.filters.len()))
+            .unwrap_or(0)
     }
 
     /// Whether the file view is showing a bounded preview rather than the
@@ -246,24 +294,35 @@ impl App<'_> {
     fn file_view_truncated(&self) -> bool {
         self.widgets.iter().any(|widget| match widget {
             AppWidget::FileView(view) => view.truncated,
-            AppWidget::FileNav(_) => false,
+            AppWidget::FileNav(_) | AppWidget::FilterList(_) => false,
         })
     }
 
     /// Resolve the nav pane's width within `area`.
     fn nav_width(&self, area: Rect) -> u16 {
         let width = match self.nav_width {
-            NavWidth::Auto => self
-                .nav()
-                .map_or(MAX_NAV_WIDTH, FileNav::preferred_width)
-                .min(MAX_NAV_WIDTH),
+            // The column has to fit whichever pane currently wants more:
+            // the navigator's longest entry, or the filter pane's longest
+            // row. Either alone could otherwise get silently clipped by the
+            // other's narrower automatic width.
+            NavWidth::Auto => {
+                let nav_width = self.nav().map_or(MAX_NAV_WIDTH, FileNav::preferred_width);
+                let filter_width = self
+                    .filter_list()
+                    .map_or(0, |list| list.preferred_width(&self.filters));
+                nav_width.max(filter_width).min(MAX_NAV_WIDTH)
+            }
             NavWidth::Pinned(width) => width,
         };
 
-        // Whatever the source, neither pane may lose its borders.
+        // Whatever the source — auto-sizing or a drag — nav may not claim so
+        // much that the file view drops below a genuinely usable width.
+        // `MIN_PANE_WIDTH` is the fallback once the terminal is too narrow
+        // even for that (its `.max` below): nav's own floor, unrelated to
+        // this ceiling, is applied last.
         let widest = area
             .width
-            .saturating_sub(MIN_PANE_WIDTH)
+            .saturating_sub(MIN_FILE_VIEW_WIDTH)
             .max(MIN_PANE_WIDTH);
         width.clamp(MIN_PANE_WIDTH, widest)
     }
@@ -363,12 +422,7 @@ impl App<'_> {
                     return Ok(());
                 }
                 KeyCode::Tab => {
-                    self.active_widget = (self.active_widget + 1) % self.widgets.len();
-                    // The zoomed pane is always the focused pane, so the cursor is never
-                    // on a pane that is not on screen.
-                    if self.zoom.is_some() {
-                        self.zoom = Some(self.active_widget);
-                    }
+                    self.focus_next();
                     return Ok(());
                 }
                 KeyCode::Char(sigil @ ('/' | '?')) if key.modifiers.is_empty() => {
@@ -481,7 +535,7 @@ impl App<'_> {
     fn sync_document(&mut self) {
         let Some(lines) = self.widgets.iter().find_map(|w| match w {
             AppWidget::FileView(view) => Some(view.textarea.lines().to_vec()),
-            AppWidget::FileNav(_) => None,
+            AppWidget::FileNav(_) | AppWidget::FilterList(_) => None,
         }) else {
             return;
         };
@@ -512,7 +566,7 @@ impl App<'_> {
             .iter()
             .find_map(|widget| match widget {
                 AppWidget::FileView(view) => Some(view.cursor_screen_row()),
-                AppWidget::FileNav(_) => None,
+                AppWidget::FileNav(_) | AppWidget::FilterList(_) => None,
             })
             .unwrap_or(0)
     }
@@ -585,7 +639,7 @@ impl App<'_> {
 
         let Some(view) = self.widgets.iter_mut().find_map(|w| match w {
             AppWidget::FileView(view) => Some(view),
-            AppWidget::FileNav(_) => None,
+            AppWidget::FileNav(_) | AppWidget::FilterList(_) => None,
         }) else {
             return;
         };
@@ -608,7 +662,7 @@ impl App<'_> {
                     let row = view.textarea.cursor().0;
                     Some(self.document.source_at(row).unwrap_or(row))
                 }
-                AppWidget::FileNav(_) => None,
+                AppWidget::FileNav(_) | AppWidget::FilterList(_) => None,
             })
             .unwrap_or(0)
     }
@@ -659,8 +713,42 @@ impl App<'_> {
         self.index_of(|widget| matches!(widget, AppWidget::FileView(_)))
     }
 
+    /// Mirrors `nav_index`/`file_view_index`. Nothing in production code
+    /// needs the filter pane's position yet — Task 5 has no "jump to the
+    /// filter pane" command of its own — so this is test-only for now,
+    /// unlike its two siblings, which `zoom_file_view` and
+    /// `reveal_and_focus_nav` both call for real.
+    #[cfg(test)]
+    fn filter_list_index(&self) -> usize {
+        self.index_of(|widget| matches!(widget, AppWidget::FilterList(_)))
+    }
+
     fn index_of(&self, predicate: impl Fn(&AppWidget<'_>) -> bool) -> usize {
         self.widgets.iter().position(predicate).unwrap_or(0)
+    }
+
+    /// Move focus to the next pane, skipping the filter pane while it is
+    /// collapsed — focusing a pane that is not on screen would strand the
+    /// user with no visible cursor.
+    fn focus_next(&mut self) {
+        let count = self.widgets.len();
+        for step in 1..=count {
+            let candidate = (self.active_widget + step) % count;
+            let collapsed = matches!(self.widgets[candidate], AppWidget::FilterList(_))
+                && self.filters.is_empty();
+            if !collapsed {
+                self.active_widget = candidate;
+                break;
+            }
+        }
+        // The zoomed pane is always the focused pane, so the cursor is never
+        // on a pane that is not on screen. This lives inside `focus_next`
+        // itself, rather than beside its call site, so a future caller of
+        // `focus_next` cannot forget it — the early `break` above makes that
+        // easy to drop if it were bolted on afterwards instead.
+        if self.zoom.is_some() {
+            self.zoom = Some(self.active_widget);
+        }
     }
 
     /// Zoom `target`, or restore the split if it is already zoomed. Reports
@@ -709,11 +797,27 @@ impl App<'_> {
     }
 }
 
+/// Render one widget into `area`, reaching past `AppWidget`'s own `Widget`
+/// impl for the filter pane so it actually draws something.
+///
+/// `AppWidget::FilterList`'s arm of that impl deliberately renders nothing —
+/// it has no `FilterSet` to render against, since `App` owns the one true
+/// set and a copy on the widget could go stale the moment a filter changed.
+/// Both branches of `App::render` (the ordinary split and the zoom special
+/// case) go through this helper, so the filter pane cannot go blank in one
+/// of them while working in the other.
+fn render_widget(widget: &mut AppWidget<'_>, filters: &FilterSet, area: Rect, buf: &mut Buffer) {
+    match widget {
+        AppWidget::FilterList(list) => list.render(filters, area, buf),
+        AppWidget::FileNav(_) | AppWidget::FileView(_) => widget.render(area, buf),
+    }
+}
+
 impl Widget for &mut App<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         use Constraint::{Length, Min};
         // calculate rects where widgets should be rendered
-        assert!(self.widgets.len() == 2);
+        assert!(self.widgets.len() == 3);
 
         // The search prompt borrows the bottom row while it is open; failing
         // that, the status line borrows it whenever there is something to show.
@@ -745,12 +849,19 @@ impl Widget for &mut App<'_> {
                 widget.set_active(i == self.active_widget);
             }
             if let Some(widget) = self.widgets.get_mut(index) {
-                widget.render(area, buf);
+                render_widget(widget, &self.filters, area, buf);
             }
         } else {
             let nav_width = self.nav_width(area);
-            let widget_areas: [Rect; 2] =
-                Layout::horizontal([Length(nav_width), Min(0)]).areas(area);
+            let [left, right] = Layout::horizontal([Length(nav_width), Min(0)]).areas(area);
+
+            // The filter pane sits under the navigator inside the left
+            // column; it claims its preferred height first, leaving the
+            // navigator whatever remains (down to nothing on a very short
+            // terminal — see `a_short_terminal_gives_the_filter_pane_priority_over_the_navigator`).
+            let filter_height = self.filter_pane_height();
+            let [nav_area, filter_area] =
+                Layout::vertical([Min(0), Length(filter_height)]).areas(left);
 
             // Remember the boundary so mouse events landing before the next
             // frame can be tested against it.
@@ -758,7 +869,17 @@ impl Widget for &mut App<'_> {
 
             for (i, w) in self.widgets.iter_mut().enumerate() {
                 w.set_active(i == self.active_widget);
-                w.render(widget_areas[i], buf);
+                // Each widget gets the area that matches what it is, not
+                // its position in `self.widgets` — the three areas above
+                // don't share that vec's order, and indexing into a
+                // two-element array by a three-widget position (as this
+                // used to) panics the moment a third widget exists.
+                let widget_area = match w {
+                    AppWidget::FileNav(_) => nav_area,
+                    AppWidget::FileView(_) => right,
+                    AppWidget::FilterList(_) => filter_area,
+                };
+                render_widget(w, &self.filters, widget_area, buf);
             }
         }
 
@@ -956,6 +1077,25 @@ mod tests {
         for c in text.chars() {
             key(app, KeyCode::Char(c));
         }
+    }
+
+    /// Put focus on the file view, however many `Tab` presses that takes.
+    ///
+    /// A fixed `key(Tab); ...; key(Tab);` pair only reaches the file view
+    /// because `Tab` used to be a two-state toggle; the filter pane joining
+    /// the cycle once a filter exists already broke that assumption for
+    /// three tests, and a later phase adding a fourth pane would break it
+    /// again. Tabbing until the target is reached, rather than a fixed
+    /// number of times, is robust to however many panes exist.
+    fn focus_file_view(app: &mut App) {
+        let target = app.file_view_index();
+        for _ in 0..app.widgets.len() {
+            if app.active_widget == target {
+                return;
+            }
+            key(app, KeyCode::Tab);
+        }
+        panic!("could not reach the file view by tabbing");
     }
 
     fn prompt_line(app: &mut App) -> String {
@@ -1178,7 +1318,7 @@ mod tests {
             .iter()
             .find_map(|w| match w {
                 AppWidget::FileView(view) => Some(view.textarea.line_styles().to_vec()),
-                AppWidget::FileNav(_) => None,
+                AppWidget::FileNav(_) | AppWidget::FilterList(_) => None,
             })
             .expect("no file view")
     }
@@ -1552,7 +1692,7 @@ mod tests {
             .iter()
             .find_map(|w| match w {
                 AppWidget::FileView(view) => Some(view.textarea.cursor().0),
-                AppWidget::FileNav(_) => None,
+                AppWidget::FileNav(_) | AppWidget::FilterList(_) => None,
             })
             .expect("no file view")
     }
@@ -1563,7 +1703,7 @@ mod tests {
             .iter()
             .find_map(|w| match w {
                 AppWidget::FileView(view) => Some(view.textarea.lines().to_vec()),
-                AppWidget::FileNav(_) => None,
+                AppWidget::FileNav(_) | AppWidget::FilterList(_) => None,
             })
             .expect("no file view")
     }
@@ -1573,7 +1713,7 @@ mod tests {
             .iter()
             .find_map(|w| match w {
                 AppWidget::FileView(view) => Some(view.textarea.line_numbers().to_vec()),
-                AppWidget::FileNav(_) => None,
+                AppWidget::FileNav(_) | AppWidget::FilterList(_) => None,
             })
             .expect("no file view")
     }
@@ -1672,7 +1812,7 @@ mod tests {
                     let row = view.textarea.cursor().0;
                     Some(app.document.source_at(row).unwrap_or(row))
                 }
-                AppWidget::FileNav(_) => None,
+                AppWidget::FileNav(_) | AppWidget::FilterList(_) => None,
             })
             .expect("no file view")
     }
@@ -1682,7 +1822,7 @@ mod tests {
             .iter()
             .find_map(|w| match w {
                 AppWidget::FileView(view) => Some(view.cursor_screen_row()),
-                AppWidget::FileNav(_) => None,
+                AppWidget::FileNav(_) | AppWidget::FilterList(_) => None,
             })
             .expect("no file view")
     }
@@ -1782,9 +1922,8 @@ mod tests {
         // scrolls minimally to keep it in view, landing it on the bottom
         // edge every time.
         for _ in 0..120 {
-            key(&mut app, KeyCode::Tab);
+            focus_file_view(&mut app);
             key(&mut app, KeyCode::Char('j'));
-            key(&mut app, KeyCode::Tab);
         }
         draw(&mut app);
         let pinned_row = cursor_screen_row(&app);
@@ -1793,9 +1932,8 @@ mod tests {
         // reset viewport would re-anchor the cursor after a rebuild, so
         // parking there would make the bug and the fix indistinguishable.
         for _ in 0..3 {
-            key(&mut app, KeyCode::Tab);
+            focus_file_view(&mut app);
             key(&mut app, KeyCode::Char('k'));
-            key(&mut app, KeyCode::Tab);
         }
         draw(&mut app);
         let before_row = cursor_screen_row(&app);
@@ -1852,17 +1990,15 @@ mod tests {
         // (the nearest remaining visible line), then this drives it further
         // down — well clear of the excluded block either way.
         for _ in 0..120 {
-            key(&mut app, KeyCode::Tab);
+            focus_file_view(&mut app);
             key(&mut app, KeyCode::Char('j'));
-            key(&mut app, KeyCode::Tab);
         }
         draw(&mut app);
         let pinned_row = cursor_screen_row(&app);
 
         for _ in 0..3 {
-            key(&mut app, KeyCode::Tab);
+            focus_file_view(&mut app);
             key(&mut app, KeyCode::Char('k'));
-            key(&mut app, KeyCode::Tab);
         }
         draw(&mut app);
         let before_row = cursor_screen_row(&app);
@@ -1912,17 +2048,15 @@ mod tests {
         draw(&mut app);
 
         for _ in 0..120 {
-            key(&mut app, KeyCode::Tab);
+            focus_file_view(&mut app);
             key(&mut app, KeyCode::Char('j'));
-            key(&mut app, KeyCode::Tab);
         }
         draw(&mut app);
         let pinned_row = cursor_screen_row(&app);
 
         for _ in 0..3 {
-            key(&mut app, KeyCode::Tab);
+            focus_file_view(&mut app);
             key(&mut app, KeyCode::Char('k'));
-            key(&mut app, KeyCode::Tab);
         }
         draw(&mut app);
         let before_row = cursor_screen_row(&app);
@@ -2407,6 +2541,174 @@ mod tests {
         assert!(
             status.contains("lines shown"),
             "expected filter status text while zoomed, got: {status}"
+        );
+    }
+
+    /// The pane costs nothing until a filter exists.
+    #[test]
+    fn the_filter_pane_is_absent_until_a_filter_is_defined() {
+        let mut app = app_over_file("pane_absent", "alpha\n");
+
+        assert!(!rendered(&mut app).contains("Filters"));
+
+        key(&mut app, KeyCode::Char('f'));
+        typed(&mut app, "alpha");
+        key(&mut app, KeyCode::Enter);
+
+        assert!(rendered(&mut app).contains("Filters"));
+    }
+
+    #[test]
+    fn the_filter_pane_lists_the_patterns() {
+        let mut app = app_over_file("pane_lists", "alpha\n");
+        key(&mut app, KeyCode::Char('f'));
+        typed(&mut app, "alpha");
+        key(&mut app, KeyCode::Enter);
+
+        assert!(rendered(&mut app).contains("alpha"));
+    }
+
+    /// Tab reaches the filter pane once it exists, and skips it before then.
+    #[test]
+    fn tab_skips_the_filter_pane_while_it_is_collapsed() {
+        let mut app = app_over_file("pane_focus", "alpha\n");
+        draw(&mut app);
+
+        key(&mut app, KeyCode::Tab);
+        key(&mut app, KeyCode::Tab);
+
+        assert_eq!(app.active_widget, 0, "focus did not return to the navigator");
+    }
+
+    #[test]
+    fn tab_reaches_the_filter_pane_once_a_filter_exists() {
+        let mut app = app_over_file("pane_focus_on", "alpha\n");
+        key(&mut app, KeyCode::Char('f'));
+        typed(&mut app, "alpha");
+        key(&mut app, KeyCode::Enter);
+        draw(&mut app);
+
+        let filter_index = app.filter_list_index();
+        let mut seen = vec![app.active_widget];
+        for _ in 0..3 {
+            key(&mut app, KeyCode::Tab);
+            seen.push(app.active_widget);
+        }
+
+        assert!(
+            seen.contains(&filter_index),
+            "the filter pane never took focus: {seen:?}"
+        );
+    }
+
+    /// `App::render` has two branches that reach a widget's own `render`
+    /// method — the ordinary split and the zoom special case — and only the
+    /// split branch is exercised by the tests above. `AppWidget`'s own
+    /// `Widget` impl deliberately renders nothing for the filter pane (see
+    /// its comment): the real rendering happens in a helper that both
+    /// branches of `App::render` must go through, or zooming the filter pane
+    /// would focus an invisible pane showing a blank screen.
+    #[test]
+    fn zooming_the_filter_pane_shows_its_contents() {
+        let mut app = app_over_file("zoom_filter_pane", "alpha\n");
+        key(&mut app, KeyCode::Char('f'));
+        typed(&mut app, "alpha");
+        key(&mut app, KeyCode::Enter);
+
+        let filter_index = app.filter_list_index();
+        while app.active_widget != filter_index {
+            key(&mut app, KeyCode::Tab);
+        }
+        key(&mut app, KeyCode::Char('z'));
+
+        let after = rendered(&mut app);
+        assert!(after.contains("Filters"), "the filter pane's border is not on screen: {after}");
+        assert!(after.contains("alpha"), "the filter pattern is not on screen: {after}");
+    }
+
+    /// The left column takes the wider of the navigator's and the filter
+    /// pane's preferred widths — but a long filter pattern must not push it
+    /// past `MAX_NAV_WIDTH` any more than a long file name already does.
+    #[test]
+    fn a_long_filter_pattern_does_not_push_the_column_past_the_cap() {
+        let mut app = app_over_file("wide_filter", "alpha\n");
+        let long_pattern = "a".repeat(200);
+        key(&mut app, KeyCode::Char('f'));
+        typed(&mut app, &long_pattern);
+        key(&mut app, KeyCode::Enter);
+        draw(&mut app);
+
+        assert_eq!(app.nav_width(AREA), MAX_NAV_WIDTH);
+    }
+
+    /// On a wide terminal `MAX_NAV_WIDTH` alone governs, exactly as before
+    /// the filter pane existed — `MIN_FILE_VIEW_WIDTH` never binds here.
+    /// Companion to `a_long_filter_pattern_does_not_push_the_column_past_the_cap`,
+    /// but asserting the *other* bound is the one doing nothing, not just
+    /// that the column stopped somewhere reasonable.
+    #[test]
+    fn on_a_wide_terminal_the_max_width_cap_governs_not_the_new_floor() {
+        let mut app = app_over_file("wide_filter_floor_slack", "alpha\n");
+        let long_pattern = "a".repeat(50);
+        key(&mut app, KeyCode::Char('f'));
+        typed(&mut app, &long_pattern);
+        key(&mut app, KeyCode::Enter);
+        draw(&mut app);
+
+        assert_eq!(app.nav_width(AREA), MAX_NAV_WIDTH, "MAX_NAV_WIDTH is not governing");
+        assert!(
+            AREA.width - app.nav_width(AREA) > MIN_FILE_VIEW_WIDTH,
+            "the file view is sitting at its floor on a wide terminal — the \
+             floor, not MAX_NAV_WIDTH, is what's actually governing here"
+        );
+    }
+
+    /// On a narrow terminal, a filter pattern that would otherwise want more
+    /// than the terminal can spare must not starve the file view below its
+    /// floor — asserted as the exact width, not merely "greater than zero".
+    #[test]
+    fn a_long_filter_pattern_on_a_narrow_terminal_leaves_the_file_view_its_floor() {
+        let narrow = Rect { x: 0, y: 0, width: 40, height: 12 };
+        let mut app = app_over_file("narrow_filter_floor", "alpha\n");
+        let long_pattern = "a".repeat(50);
+        key(&mut app, KeyCode::Char('f'));
+        typed(&mut app, &long_pattern);
+        key(&mut app, KeyCode::Enter);
+        draw(&mut app);
+
+        assert_eq!(
+            narrow.width - app.nav_width(narrow),
+            MIN_FILE_VIEW_WIDTH,
+            "the file view lost its floor"
+        );
+    }
+
+    /// If the terminal is too short for the filter pane's requested height,
+    /// `Layout::vertical([Min(0), Length(h)])` gives the filter pane its rows
+    /// first — the navigator is free to shrink to nothing, but the pane the
+    /// user is actively working with must not vanish or panic the render.
+    #[test]
+    fn a_short_terminal_gives_the_filter_pane_priority_over_the_navigator() {
+        let mut app = app_over_file("short_terminal", "alpha\n");
+        for pattern in ["one", "two", "three", "four", "five", "six"] {
+            key(&mut app, KeyCode::Char('f'));
+            typed(&mut app, pattern);
+            key(&mut app, KeyCode::Enter);
+        }
+
+        let short = Rect { x: 0, y: 0, width: 40, height: 5 };
+        let mut buf = Buffer::empty(short);
+        // Must not panic even though the filter pane alone wants more rows
+        // (6 filters + 2 borders = 8) than the whole terminal has.
+        (&mut app).render(short, &mut buf);
+
+        let text: String = (0..short.height)
+            .flat_map(|y| (0..short.width).map(move |x| (x, y)))
+            .map(|(x, y)| buf[(x, y)].symbol())
+            .collect();
+        assert!(
+            text.contains("Filters"),
+            "the filter pane lost its rows entirely to the collapsed navigator: {text}"
         );
     }
 }
