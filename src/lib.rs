@@ -112,7 +112,7 @@ use filter::FilterSet;
 use widgets::filenav::FileNav;
 use widgets::fileview::FileView;
 use widgets::filterlist::FilterList;
-use widgets::{Action, AppWidget};
+use widgets::{Action, AppWidget, FilterCommand};
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about=None)]
@@ -511,6 +511,17 @@ impl App<'_> {
             }
         }
 
+        // Filter pane keys are routed here rather than through the generic
+        // `handle_events` dispatch below: applying them means mutating the
+        // `FilterSet`, which only `App` owns, so `FilterList` cannot carry
+        // them out itself — see `handle_filter_key`.
+        if let event::Event::Key(key) = event {
+            if matches!(self.widgets[self.active_widget], AppWidget::FilterList(_)) {
+                self.handle_filter_key(key.code);
+                return Ok(());
+            }
+        }
+
         // The file view upgrades its own truncated preview to a full load on
         // first interaction, which rebuilds the textarea and clears its line
         // styles. That happens inside the widget, so it never reaches
@@ -568,11 +579,58 @@ impl App<'_> {
 
     /// Re-evaluate the filters and rebuild what the view shows.
     fn refresh_view(&mut self) {
+        // Whatever changed the set may have changed how many filters there
+        // are, so the pane's selection has to be pulled back into range (or
+        // established at 0 on a set that just became non-empty) before
+        // anything else runs. Every mutation path — `add_filter`,
+        // `add_excluding_filter`, and the pane's own toggle/delete — funnels
+        // through this method, so putting the call here rather than at each
+        // call site means a future fourth path cannot forget it.
+        let len = self.filters.len();
+        for widget in &mut self.widgets {
+            if let AppWidget::FilterList(list) = widget {
+                list.clamp_selection(len);
+            }
+        }
+
         // The cursor is a source line index for the duration of the rebuild:
         // its row in the view is only meaningful against the old visible list.
         let cursor_source = self.cursor_source();
         self.document.evaluate(&self.filters);
         self.apply_view(cursor_source);
+    }
+
+    /// Handle a key aimed at the filter pane.
+    ///
+    /// This borrows the pane and the `FilterSet` together — something
+    /// neither `FilterList` nor `Action` can do on their own, since the pane
+    /// only ever borrows the set to render it — applies whatever command the
+    /// pane reports, moves focus off the pane if the set is now empty (which
+    /// also carries the zoom along, since `focus_next` already keeps that
+    /// invariant), and re-evaluates. A delete renumbers the remaining
+    /// filters, so `refresh_view`'s full `Document::evaluate` is required
+    /// here: every cached `Verdict::Included` is a positional index that a
+    /// patch would leave stale.
+    fn handle_filter_key(&mut self, code: KeyCode) {
+        let len = self.filters.len();
+        let Some(AppWidget::FilterList(list)) = self.widgets.get_mut(self.active_widget) else {
+            return;
+        };
+        let Some(command) = list.handle_key(code, len) else {
+            return;
+        };
+        match command {
+            FilterCommand::Toggle(index) => {
+                self.filters.toggle_enabled(index);
+            }
+            FilterCommand::Delete(index) => {
+                self.filters.remove(index);
+            }
+        }
+        if self.filters.is_empty() {
+            self.focus_next();
+        }
+        self.refresh_view();
     }
 
     /// Which row of the file view pane the cursor is currently drawn on.
@@ -1128,6 +1186,20 @@ mod tests {
             key(app, KeyCode::Tab);
         }
         panic!("could not reach the file view by tabbing");
+    }
+
+    /// Put focus on the filter pane, however many `Tab` presses that takes.
+    /// Bounded the same way as `focus_file_view`, for the same reason: a
+    /// fixed count would break the moment a fourth pane joined the cycle.
+    fn focus_filter_pane(app: &mut App) {
+        let target = app.filter_list_index();
+        for _ in 0..app.widgets.len() {
+            if app.active_widget == target {
+                return;
+            }
+            key(app, KeyCode::Tab);
+        }
+        panic!("could not reach the filter pane by tabbing");
     }
 
     fn prompt_line(app: &mut App) -> String {
@@ -2765,5 +2837,122 @@ mod tests {
             text.contains("Filters"),
             "the filter pane lost its rows entirely to the collapsed navigator: {text}"
         );
+    }
+
+    fn app_with_two_filters(name: &str) -> App<'static> {
+        let mut app = app_over_file(name, "alpha\nbeta\ngamma\n");
+        for pattern in ["alpha", "beta"] {
+            key(&mut app, KeyCode::Char('f'));
+            typed(&mut app, pattern);
+            key(&mut app, KeyCode::Enter);
+        }
+        app
+    }
+
+    #[test]
+    fn space_toggles_the_selected_filter() {
+        let mut app = app_with_two_filters("pane_toggle");
+        focus_filter_pane(&mut app);
+
+        key(&mut app, KeyCode::Char(' '));
+
+        assert!(!app.filters.filters()[0].enabled);
+    }
+
+    /// Toggling must re-evaluate: the view is what the pane is controlling.
+    #[test]
+    fn toggling_a_filter_restyles_the_view() {
+        let mut app = app_with_two_filters("pane_toggle_view");
+        focus_filter_pane(&mut app);
+        let before = view_line_styles(&app);
+
+        key(&mut app, KeyCode::Char(' '));
+
+        assert_ne!(before, view_line_styles(&app), "the view did not follow");
+    }
+
+    #[test]
+    fn d_deletes_the_selected_filter() {
+        let mut app = app_with_two_filters("pane_delete");
+        focus_filter_pane(&mut app);
+
+        key(&mut app, KeyCode::Char('d'));
+
+        assert_eq!(app.filters.len(), 1);
+    }
+
+    /// Deleting renumbers the filters, so every cached verdict is stale.
+    #[test]
+    fn deleting_a_filter_re_evaluates_rather_than_patching() {
+        let mut app = app_with_two_filters("pane_delete_verdicts");
+        focus_filter_pane(&mut app);
+
+        key(&mut app, KeyCode::Char('d')); // removes "alpha", "beta" becomes 0
+
+        let styles = view_line_styles(&app);
+        let beta = styles[1].expect("beta still matches a filter");
+        assert_eq!(
+            beta.fg,
+            app.filters.filters()[0].style.fg,
+            "the line is coloured with the wrong filter's style"
+        );
+    }
+
+    #[test]
+    fn deleting_the_last_filter_collapses_the_pane_and_moves_focus() {
+        let mut app = app_over_file("pane_delete_last", "alpha\n");
+        key(&mut app, KeyCode::Char('f'));
+        typed(&mut app, "alpha");
+        key(&mut app, KeyCode::Enter);
+        focus_filter_pane(&mut app);
+
+        key(&mut app, KeyCode::Char('d'));
+        draw(&mut app);
+
+        assert!(app.filters.is_empty());
+        assert!(!rendered(&mut app).contains("Filters"));
+        assert!(
+            !matches!(app.widgets[app.active_widget], AppWidget::FilterList(_)),
+            "focus was left on a pane that is no longer on screen"
+        );
+    }
+
+    /// Deleting the last filter while the pane is zoomed must not leave
+    /// `App::zoom` naming a pane focus has moved off. `App::render` carries
+    /// `debug_assert_eq!(index, self.active_widget)` for exactly this
+    /// invariant — a `draw` after the delete trips it if the zoom did not
+    /// follow the focus.
+    #[test]
+    fn deleting_the_last_filter_while_zoomed_keeps_the_zoom_invariant() {
+        let mut app = app_over_file("pane_delete_last_zoomed", "alpha\n");
+        key(&mut app, KeyCode::Char('f'));
+        typed(&mut app, "alpha");
+        key(&mut app, KeyCode::Enter);
+        focus_filter_pane(&mut app);
+        key(&mut app, KeyCode::Char('z'));
+        assert_eq!(
+            app.zoom,
+            Some(app.active_widget),
+            "z did not zoom the filter pane"
+        );
+
+        key(&mut app, KeyCode::Char('d'));
+        draw(&mut app);
+
+        if let Some(index) = app.zoom {
+            assert_eq!(index, app.active_widget, "zoom outlived the pane it named");
+        }
+    }
+
+    #[test]
+    fn j_and_k_move_the_filter_selection() {
+        let mut app = app_with_two_filters("pane_select");
+        focus_filter_pane(&mut app);
+
+        key(&mut app, KeyCode::Char('j'));
+        key(&mut app, KeyCode::Char(' '));
+
+        assert!(app.filters.filters()[0].enabled, "toggled the wrong filter");
+        assert!(!app.filters.filters()[1].enabled);
     }
 }

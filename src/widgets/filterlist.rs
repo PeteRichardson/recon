@@ -3,7 +3,9 @@
 //! It renders from a borrowed `FilterSet` rather than owning one: `App` owns
 //! the set, and a copy here could go stale the moment a filter changed.
 
+use super::FilterCommand;
 use crate::filter::{FilterSet, Sense, DIM_STYLE};
+use crossterm::event::KeyCode;
 use ratatui::prelude::{Buffer, Color, Modifier, Rect, Style};
 use ratatui::widgets::{Block, List, ListItem, ListState, StatefulWidget};
 
@@ -49,6 +51,28 @@ impl FilterList {
                 let index = self.state.selected().unwrap_or(0).min(len - 1);
                 self.state.select(Some(index));
             }
+        }
+    }
+
+    /// Handle a key, reporting any change `App` must make to the filter set.
+    ///
+    /// Selection movement is handled here because it is the pane's own
+    /// state; mutations are only reported, never applied, because the
+    /// `FilterSet` they act on belongs to `App` — this pane only borrows one
+    /// to render it.
+    pub fn handle_key(&mut self, code: KeyCode, len: usize) -> Option<FilterCommand> {
+        match code {
+            KeyCode::Char('j') | KeyCode::Down => {
+                self.select_next(len);
+                None
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.select_previous(len);
+                None
+            }
+            KeyCode::Char(' ') => self.selected().map(FilterCommand::Toggle),
+            KeyCode::Char('d') => self.selected().map(FilterCommand::Delete),
+            _ => None,
         }
     }
 

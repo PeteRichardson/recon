@@ -24,6 +24,19 @@ pub enum AppWidget<'a> {
     FilterList(filterlist::FilterList),
 }
 
+/// What a keypress in the filter pane asks `App` to do.
+///
+/// `FilterList` cannot mutate the `FilterSet` it only borrows for rendering,
+/// so it reports what the user asked for and lets `App` — the set's owner —
+/// carry it out. This is not carried on `Action`: that enum is about a
+/// widget asking `App` to show a *file* (`Load`/`Preview`), and a filter
+/// mutation is a different kind of request that would only muddy it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FilterCommand {
+    Toggle(usize),
+    Delete(usize),
+}
+
 impl AppWidget<'_> {
     /// Mark this widget as the one currently receiving input.
     pub fn set_active(&mut self, active: bool) {
@@ -43,8 +56,12 @@ impl AppWidget<'_> {
                 w.handle_events(event.into())?;
                 Ok(None)
             }
-            // Toggling and deleting filters from this pane is Task 6's job;
-            // for now it simply does not react to input.
+            // Keys aimed at this pane are intercepted earlier, by
+            // `App::handle_event`, and routed through `App::handle_filter_key`
+            // instead of reaching here: applying them means mutating the
+            // `FilterSet`, and this widget only ever borrows one, so it
+            // cannot carry out its own commands. This arm exists only so the
+            // match stays exhaustive; it never actually runs for a key.
             Self::FilterList(_) => Ok(None),
         }
     }
