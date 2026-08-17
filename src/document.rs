@@ -3,6 +3,16 @@
 use crate::filter::{FilterSet, Verdict};
 use ratatui::style::Style;
 
+/// Which lines the file view shows.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum Mode {
+    /// Every line that no excluding filter removed; unmatched lines are dimmed.
+    #[default]
+    Dimmed,
+    /// Only lines an including filter selected.
+    FilteredOnly,
+}
+
 /// A loaded file, with a cached verdict per line.
 ///
 /// Evaluating a filter set is O(lines × filters), which is not free on a large
@@ -16,6 +26,8 @@ pub struct Document {
     lines: Vec<String>,
     verdicts: Vec<Verdict>,
     match_count: usize,
+    mode: Mode,
+    visible: Vec<usize>,
 }
 
 impl Document {
@@ -25,6 +37,8 @@ impl Document {
             lines,
             verdicts,
             match_count: 0,
+            mode: Mode::default(),
+            visible: Vec::new(),
         }
     }
 
@@ -48,6 +62,20 @@ impl Document {
             .iter()
             .filter(|verdict| matches!(verdict, Verdict::Included(_)))
             .count();
+        self.visible = self
+            .verdicts
+            .iter()
+            .enumerate()
+            .filter(|(_, verdict)| match (self.mode, verdict) {
+                // Excluded lines are gone in both modes; the toggle governs
+                // unmatched lines only.
+                (_, Verdict::Excluded) => false,
+                (Mode::Dimmed, _) => true,
+                (Mode::FilteredOnly, Verdict::Included(_)) => true,
+                (Mode::FilteredOnly, Verdict::Unmatched) => false,
+            })
+            .map(|(index, _)| index)
+            .collect();
     }
 
     /// How many lines an including filter selected.
@@ -64,6 +92,63 @@ impl Document {
             .iter()
             .map(|verdict| filters.style_for(*verdict))
             .collect()
+    }
+
+    pub fn mode(&self) -> Mode {
+        self.mode
+    }
+
+    /// Change which lines are shown. The caller must re-`evaluate` afterwards.
+    pub fn set_mode(&mut self, mode: Mode) {
+        self.mode = mode;
+    }
+
+    /// Source line indices currently on screen, in order.
+    pub fn visible(&self) -> &[usize] {
+        &self.visible
+    }
+
+    /// The text of the visible lines, for rebuilding the view's buffer.
+    pub fn visible_lines(&self) -> Vec<String> {
+        self.visible
+            .iter()
+            .map(|&source| self.lines[source].clone())
+            .collect()
+    }
+
+    /// One style slot per *visible* line, aligned with `visible_lines`.
+    pub fn visible_styles(&self, filters: &FilterSet) -> Vec<Option<Style>> {
+        self.visible
+            .iter()
+            .map(|&source| filters.style_for(self.verdicts[source]))
+            .collect()
+    }
+
+    /// Where a source line sits in the visible list, if it is shown at all.
+    pub fn visible_position(&self, source: usize) -> Option<usize> {
+        self.visible.binary_search(&source).ok()
+    }
+
+    /// The source index of the visible row at `visible_row`.
+    pub fn source_at(&self, visible_row: usize) -> Option<usize> {
+        self.visible.get(visible_row).copied()
+    }
+
+    /// The nearest visible source line at or after `source`, falling back to
+    /// the last one before it.
+    ///
+    /// Used when a mode change hides the line the cursor was on: snapping
+    /// forward lands on the match the user was navigating towards, and the
+    /// backward fallback stops the cursor being lost when nothing follows.
+    pub fn nearest_visible(&self, source: usize) -> Option<usize> {
+        match self.visible.binary_search(&source) {
+            Ok(_) => Some(source),
+            Err(index) => self
+                .visible
+                .get(index)
+                .copied()
+                .or_else(|| self.visible.last().copied()),
+        }
     }
 }
 
@@ -177,5 +262,130 @@ mod tests {
         let styles = document.line_styles(&filters);
 
         assert_ne!(styles[0].unwrap().fg, styles[1].unwrap().fg);
+    }
+
+    fn set_excluding(patterns: &[&str]) -> FilterSet {
+        let mut set = FilterSet::new();
+        for pattern in patterns {
+            set.add_excluding(pattern).expect("valid pattern");
+        }
+        set
+    }
+
+    #[test]
+    fn dimmed_mode_shows_every_line_that_is_not_excluded() {
+        let mut document = doc(&["alpha", "beta", "gamma"]);
+        document.evaluate(&set_with(&["beta"]));
+
+        assert_eq!(document.visible(), &[0, 1, 2]);
+    }
+
+    /// Excluded lines are gone in both modes — the toggle governs unmatched
+    /// lines only.
+    #[test]
+    fn excluded_lines_are_hidden_even_when_dimmed() {
+        let mut document = doc(&["alpha", "noise", "gamma"]);
+        document.evaluate(&set_excluding(&["noise"]));
+
+        assert_eq!(document.mode(), Mode::Dimmed);
+        assert_eq!(document.visible(), &[0, 2]);
+    }
+
+    #[test]
+    fn filtered_only_mode_shows_matches_alone() {
+        let mut document = doc(&["alpha", "beta", "gamma", "beta again"]);
+        document.set_mode(Mode::FilteredOnly);
+        document.evaluate(&set_with(&["beta"]));
+
+        assert_eq!(document.visible(), &[1, 3]);
+    }
+
+    #[test]
+    fn visible_lines_are_the_text_of_the_visible_indices() {
+        let mut document = doc(&["alpha", "beta", "gamma"]);
+        document.set_mode(Mode::FilteredOnly);
+        document.evaluate(&set_with(&["beta"]));
+
+        assert_eq!(document.visible_lines(), vec!["beta".to_string()]);
+    }
+
+    #[test]
+    fn visible_styles_line_up_with_visible_lines() {
+        let mut document = doc(&["alpha", "beta", "gamma"]);
+        let filters = set_with(&["beta"]);
+        document.evaluate(&filters);
+
+        assert_eq!(
+            document.visible_styles(&filters).len(),
+            document.visible().len()
+        );
+    }
+
+    #[test]
+    fn source_and_visible_positions_map_both_ways() {
+        let mut document = doc(&["alpha", "beta", "gamma", "beta again"]);
+        document.set_mode(Mode::FilteredOnly);
+        document.evaluate(&set_with(&["beta"]));
+
+        assert_eq!(document.visible_position(3), Some(1));
+        assert_eq!(document.source_at(1), Some(3));
+        assert_eq!(document.visible_position(0), None, "line 0 is hidden");
+    }
+
+    /// Toggling into filtered mode from a hidden line snaps forward to the
+    /// next match, which is what the user was navigating towards.
+    #[test]
+    fn nearest_visible_snaps_forward() {
+        let mut document = doc(&["alpha", "beta", "gamma", "beta again"]);
+        document.set_mode(Mode::FilteredOnly);
+        document.evaluate(&set_with(&["beta"]));
+
+        assert_eq!(document.nearest_visible(0), Some(1));
+        assert_eq!(document.nearest_visible(2), Some(3));
+    }
+
+    /// With no match after it, fall back to the one before rather than losing
+    /// the cursor entirely.
+    #[test]
+    fn nearest_visible_falls_back_to_the_previous_match() {
+        let mut document = doc(&["beta", "alpha", "gamma"]);
+        document.set_mode(Mode::FilteredOnly);
+        document.evaluate(&set_with(&["beta"]));
+
+        assert_eq!(document.nearest_visible(2), Some(0));
+    }
+
+    #[test]
+    fn nearest_visible_is_none_when_nothing_is_visible() {
+        let mut document = doc(&["alpha", "beta"]);
+        document.set_mode(Mode::FilteredOnly);
+        document.evaluate(&set_with(&["zzz"]));
+
+        assert!(document.visible().is_empty());
+        assert_eq!(document.nearest_visible(0), None);
+    }
+
+    /// `set_mode` records the mode but does not recompute anything: `visible`
+    /// catches up on the next `evaluate`. The task that toggles modes relies on
+    /// that ordering, because it captures the cursor's source line against the
+    /// *old* mapping before rebuilding.
+    #[test]
+    fn set_mode_alone_does_not_change_what_is_visible() {
+        let mut document = doc(&["alpha", "beta", "gamma"]);
+        let filters = set_with(&["beta"]);
+        document.evaluate(&filters);
+        assert_eq!(document.visible(), &[0, 1, 2]);
+
+        document.set_mode(Mode::FilteredOnly);
+
+        assert_eq!(document.mode(), Mode::FilteredOnly, "the mode was not recorded");
+        assert_eq!(
+            document.visible(),
+            &[0, 1, 2],
+            "visible changed before evaluate was called"
+        );
+
+        document.evaluate(&filters);
+        assert_eq!(document.visible(), &[1], "visible did not catch up");
     }
 }
