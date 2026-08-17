@@ -366,6 +366,10 @@ impl App<'_> {
     ///
     /// The view owns the reading — including its preview truncation and its
     /// error messages — so the document follows it rather than re-reading.
+    /// Note the consequence: while a file is only previewed (the view
+    /// truncates large files), the document holds just that preview, so
+    /// filters see only the truncated slice until the view is focused and
+    /// loads the file in full.
     fn sync_document(&mut self) {
         let Some((path, lines)) = self.widgets.iter().find_map(|w| match w {
             AppWidget::FileView(view) => Some((
@@ -393,6 +397,25 @@ impl App<'_> {
             }
         }
     }
+
+    /// A one-line summary of the filter state, empty when no filters exist.
+    ///
+    /// Dimming alone does not say *why* lines are dim, or that a filter is
+    /// defined but currently disabled — the pane would just look ordinary.
+    fn status_text(&self) -> String {
+        if self.filters.is_empty() {
+            return String::new();
+        }
+        let filters = self.filters.len();
+        if !self.filters.any_enabled() {
+            return format!("{filters} filters (disabled)");
+        }
+        format!(
+            "{filters} filters   {}/{} lines match",
+            self.document.match_count(),
+            self.document.lines().len()
+        )
+    }
 }
 
 impl Widget for &mut App<'_> {
@@ -401,13 +424,14 @@ impl Widget for &mut App<'_> {
         // calculate rects where widgets should be rendered
         assert!(self.widgets.len() == 2);
 
-        // The search prompt borrows the bottom row, but only while it is open.
-        let (area, prompt_area) = match self.search {
-            Some(_) => {
-                let [panes, prompt] = Layout::vertical([Min(0), Length(1)]).areas(area);
-                (panes, Some(prompt))
-            }
-            None => (area, None),
+        // The search prompt borrows the bottom row while it is open; failing
+        // that, the status line borrows it whenever there is something to show.
+        let status = self.status_text();
+        let (area, prompt_area) = if self.search.is_some() || !status.is_empty() {
+            let [panes, prompt] = Layout::vertical([Min(0), Length(1)]).areas(area);
+            (panes, Some(prompt))
+        } else {
+            (area, None)
         };
 
         let nav_width = self.nav_width(area);
@@ -422,16 +446,18 @@ impl Widget for &mut App<'_> {
             w.render(widget_areas[i], buf);
         }
 
-        if let (Some(prompt_area), Some(prompt)) = (prompt_area, self.search.as_ref()) {
-            let style = if prompt.error.is_some() {
-                Style::default().fg(Color::Red)
-            } else {
-                Style::default()
+        if let Some(prompt_area) = prompt_area {
+            let (text, style) = match self.search.as_ref() {
+                Some(prompt) if prompt.error.is_some() => {
+                    (prompt.line(), Style::default().fg(Color::Red))
+                }
+                Some(prompt) => (prompt.line(), Style::default()),
+                None => (status, Style::default().fg(Color::DarkGray)),
             };
             buf.set_stringn(
                 prompt_area.x,
                 prompt_area.y,
-                prompt.line(),
+                text,
                 prompt_area.width as usize,
                 style,
             );
@@ -894,5 +920,75 @@ mod tests {
             view_line_styles(&app)[1].is_some(),
             "! did not restore the filters"
         );
+    }
+
+    /// The bottom row when no prompt is open.
+    fn status_line(app: &mut App) -> String {
+        let mut buf = Buffer::empty(AREA);
+        app.render(AREA, &mut buf);
+        let y = AREA.height - 1;
+        (0..AREA.width)
+            .map(|x| buf[(x, y)].symbol())
+            .collect::<String>()
+            .trim_end()
+            .to_string()
+    }
+
+    /// With no filters there is nothing to report, so the bottom row is not
+    /// surrendered at all: the panes still reach it and draw their own border
+    /// there. Costing a row to say nothing is what this checks against.
+    #[test]
+    fn no_row_is_surrendered_without_filters() {
+        let mut app = app_over_file("status_none", "alpha\n");
+
+        let bottom = status_line(&mut app);
+
+        assert!(
+            !bottom.contains("filters"),
+            "reported filter state when no filters exist: {bottom}"
+        );
+        assert!(
+            bottom.contains('└'),
+            "the panes did not reach the bottom row, so a row was spent on nothing: {bottom}"
+        );
+    }
+
+    #[test]
+    fn the_status_line_reports_filters_and_matches() {
+        let mut app = app_over_file("status_some", "alpha\nbeta\ngamma\n");
+        key(&mut app, KeyCode::Char('f'));
+        typed(&mut app, "beta");
+        key(&mut app, KeyCode::Enter);
+
+        let status = status_line(&mut app);
+
+        assert!(status.contains('1'), "filter count missing: {status}");
+        assert!(status.contains("1/3"), "match count missing: {status}");
+    }
+
+    #[test]
+    fn the_status_line_says_when_filters_are_disabled() {
+        let mut app = app_over_file("status_off", "alpha\nbeta\n");
+        key(&mut app, KeyCode::Char('f'));
+        typed(&mut app, "beta");
+        key(&mut app, KeyCode::Enter);
+
+        key(&mut app, KeyCode::Char('!'));
+
+        assert!(
+            status_line(&mut app).contains("disabled"),
+            "no indication the filters are off: {}",
+            status_line(&mut app)
+        );
+    }
+
+    /// An open prompt takes the row, as it already does.
+    #[test]
+    fn a_prompt_still_takes_the_bottom_row() {
+        let mut app = app_over_file("status_prompt", "alpha\n");
+        key(&mut app, KeyCode::Char('f'));
+        typed(&mut app, "foo");
+
+        assert_eq!(status_line(&mut app), "filter: foo");
     }
 }

@@ -16,9 +16,17 @@ Global (`src/lib.rs`), handled before the focused pane sees the key:
 | `Tab` | Move focus to the next pane |
 | `/` | Search forward in the focused pane |
 | `?` | Search backward in the focused pane |
+| `f` | Add an include filter (always applies to the file view) |
+| `!` | Disable every filter, or restore them |
 
 Mouse: drag the divider between the panes to resize them; double-click it to
 return to sizing the navigator pane automatically to its contents.
+
+Filters colour the lines they match and dim the rest; they are regular
+expressions, like search. A filter set describes a log format rather than one
+file, so it survives loading another file — `!` is the single keystroke back to
+an unfiltered view without discarding the set. Nothing is hidden: filters only
+change how lines are presented.
 
 While a search prompt is open it consumes every key, so `q` and `Tab` are
 typed into the pattern rather than acted on:
