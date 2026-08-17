@@ -62,6 +62,17 @@ impl Document {
             .iter()
             .filter(|verdict| matches!(verdict, Verdict::Included(_)))
             .count();
+        self.recompute_visible();
+    }
+
+    /// Recompute `visible` from the existing verdicts and the current mode,
+    /// without re-running the filters.
+    ///
+    /// A verdict depends on the lines and the filters; `visible` depends only
+    /// on the verdicts and the mode. So toggling the mode (`H` / `Ctrl-H`)
+    /// only needs this, not a full `evaluate` — which matters, since
+    /// `evaluate` is O(lines × filters) and this is O(lines).
+    pub fn recompute_visible(&mut self) {
         self.visible = self
             .verdicts
             .iter()
@@ -98,7 +109,8 @@ impl Document {
         self.mode
     }
 
-    /// Change which lines are shown. The caller must re-`evaluate` afterwards.
+    /// Change which lines are shown. The caller must re-`evaluate` (or, if
+    /// the verdicts have not changed, just `recompute_visible`) afterwards.
     pub fn set_mode(&mut self, mode: Mode) {
         self.mode = mode;
     }
@@ -387,5 +399,26 @@ mod tests {
 
         document.evaluate(&filters);
         assert_eq!(document.visible(), &[1], "visible did not catch up");
+    }
+
+    /// The point of splitting `recompute_visible` out of `evaluate`: the mode
+    /// toggle can refresh `visible` alone, without redoing the verdict pass
+    /// (the expensive part on a large document).
+    #[test]
+    fn recompute_visible_updates_visible_without_rerunning_the_filters() {
+        let mut document = doc(&["alpha", "beta", "gamma"]);
+        let filters = set_with(&["beta"]);
+        document.evaluate(&filters);
+        let verdicts_before = document.verdicts().to_vec();
+
+        document.set_mode(Mode::FilteredOnly);
+        document.recompute_visible();
+
+        assert_eq!(document.visible(), &[1], "visible did not pick up the new mode");
+        assert_eq!(
+            document.verdicts(),
+            verdicts_before.as_slice(),
+            "recompute_visible must not touch the verdicts"
+        );
     }
 }

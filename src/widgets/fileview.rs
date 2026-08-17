@@ -31,6 +31,13 @@ pub struct FileView<'a> {
     search_reverse: bool,
     /// Whether the line-number gutter is drawn. Toggled with `#`.
     hide_line_numbers: bool,
+    /// Set when the buffer currently holds the single blank placeholder line
+    /// substituted by `show_lines_with_cursor` for an empty visible set (e.g.
+    /// everything is hidden). An empty `line_numbers` override falls back to
+    /// natural 1..N numbering, which would render "1" beside that blank row
+    /// and read as "this file has one empty line" — so the gutter is
+    /// suppressed outright instead.
+    gutter_blank: bool,
 }
 
 impl FileView<'_> {
@@ -86,14 +93,26 @@ impl FileView<'_> {
         self.textarea.set_line_numbers(numbers);
     }
 
+    /// Suppress the gutter entirely, for the placeholder row shown when
+    /// nothing is visible. See the `gutter_blank` field for why an empty
+    /// `set_line_numbers` override is not enough on its own.
+    pub fn set_gutter_blank(&mut self, blank: bool) {
+        self.gutter_blank = blank;
+    }
+
     /// Replace the buffer's contents and put the cursor on `row`, without
     /// touching the file.
     ///
     /// Used when filtering hides lines: the view then holds a subset of the
     /// document. The cursor row is applied here rather than by a later jump,
     /// because `CursorMove::Jump` takes a `u16` and would silently truncate
-    /// past 65,535 lines. The filename is left alone, since it still describes
-    /// where these lines came from.
+    /// past 65,535 lines. `set_lines` clamps in `usize` instead, so the
+    /// cursor's *data position* is applied directly rather than jumped to
+    /// afterwards. The rendered *viewport* is still `u16` internally, though —
+    /// that ceiling is unchanged, so the view still cannot scroll past
+    /// 65,535 lines; only landing the cursor on the right line survives past
+    /// it. The filename is left alone, since it still describes where these
+    /// lines came from.
     pub fn show_lines_with_cursor(&mut self, lines: Vec<String>, row: usize) {
         // set_lines rejects an empty vector; an empty buffer is one blank line.
         let lines = if lines.is_empty() { vec![String::new()] } else { lines };
@@ -339,14 +358,34 @@ fn read_preview(path: &Path) -> (Vec<String>, bool) {
 mod tests {
     use super::*;
     use std::fs;
+    use std::sync::Mutex;
 
     fn contents(view: &FileView<'_>) -> String {
         view.textarea.lines().join("\n")
     }
 
+    /// Every fixture file name claimed so far in this process. `fixture` and
+    /// `byte_fixture` both write directly into `target/test-fixtures/<name>`,
+    /// so they share one namespace.
+    static FIXTURE_NAMES: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+    /// Panic loudly if `name` has already been used for a fixture file in
+    /// this process, instead of letting two tests race to write the same
+    /// path — the same class of bug that caused a release-only flake in the
+    /// `target/test-appdirs` fixtures (see `lib.rs`'s `claim_fixture_dir`).
+    fn claim_fixture_name(name: &str) {
+        let mut names = FIXTURE_NAMES.lock().unwrap_or_else(|poison| poison.into_inner());
+        assert!(
+            !names.iter().any(|used| used == name),
+            "fixture file name {name:?} is already in use by another test — pick a unique name"
+        );
+        names.push(name.to_string());
+    }
+
     /// Write a fixture under `target/` so the tests do not depend on whatever
     /// happens to be in the working tree.
     fn fixture(name: &str, contents: &str) -> std::path::PathBuf {
+        claim_fixture_name(name);
         let dir = Path::new("target/test-fixtures");
         fs::create_dir_all(dir).expect("create fixture dir");
         let path = dir.join(name);
@@ -356,6 +395,7 @@ mod tests {
 
     /// Write a fixture of raw bytes, for content that is not valid UTF-8.
     fn byte_fixture(name: &str, bytes: &[u8]) -> std::path::PathBuf {
+        claim_fixture_name(name);
         let dir = Path::new("target/test-fixtures");
         fs::create_dir_all(dir).expect("create fixture dir");
         let path = dir.join(name);
@@ -713,6 +753,25 @@ mod tests {
         assert!(text.contains("4 delta"), "gutter not overridden:\n{text}");
     }
 
+    /// An empty `line_numbers` override falls back to natural 1..N
+    /// numbering, which is correct when nothing is overridden at all — but
+    /// wrong for the single blank placeholder row shown when hiding leaves
+    /// nothing visible: that row would render "1" and read as "this file has
+    /// one empty line". `set_gutter_blank` suppresses it instead.
+    #[test]
+    fn gutter_blank_suppresses_the_gutter_even_without_an_override() {
+        let mut view = view_of("gutter_blank.txt", "alpha\nbeta\n");
+        assert!(
+            rendered(&mut view).contains("1 alpha"),
+            "sanity: the gutter shows by default"
+        );
+
+        view.set_gutter_blank(true);
+
+        let text = rendered(&mut view);
+        assert!(!text.contains("1 alpha"), "gutter number still shown:\n{text}");
+    }
+
     /// Loading a file rebuilds the TextArea, which drops both. Phase 2 must
     /// re-apply them after every load; this pins the behaviour so that is not
     /// discovered by surprise.
@@ -833,7 +892,7 @@ mod tests {
 /// Widget impl for `FileView`
 impl Widget for &mut FileView<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        if self.hide_line_numbers {
+        if self.hide_line_numbers || self.gutter_blank {
             self.textarea.remove_line_number();
         } else {
             self.textarea

@@ -31,8 +31,11 @@ an unfiltered view without discarding the set. Nothing is hidden: filters only
 change how lines are presented.
 
 Excluding filters (`F`) are different: their matches are removed from view
-outright, in both modes. `Ctrl-H` (or `H`, for terminals that fold Ctrl-H into
-Backspace) toggles the remaining lines between dimmed and hidden. The gutter
+outright, in both modes. `Ctrl-H` (or `H`) toggles the remaining lines between
+dimmed and hidden. `H` is kept as an alternative binding for terminals
+configured with `stty erase ^H`, where the Backspace *key* itself sends
+`0x08` — the same byte crossterm reports as `Ctrl-H` — so pressing Backspace
+would otherwise toggle hiding instead of doing nothing in this app. The gutter
 keeps the original line numbers either way, so a gap in the numbering is how
 you tell something was left out. Toggling back returns you to the exact line
 you were on, which is the point: the hidden view is for finding a line, not

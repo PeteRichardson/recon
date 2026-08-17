@@ -93,6 +93,11 @@ pub struct App<'a> {
     search: Option<SearchPrompt>,
     filters: FilterSet,
     document: Document,
+    /// Source line indices the file view's buffer was last rebuilt from.
+    /// `refresh_view` rebuilds only when the new visible set differs from
+    /// this, so a filter change that leaves the same rows on screen does not
+    /// reset the viewport's scroll position.
+    last_visible: Vec<usize>,
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -118,6 +123,7 @@ impl App<'_> {
             search: None,
             filters: FilterSet::new(),
             document: Document::default(),
+            last_visible: Vec::new(),
         };
         app.sync_document();
         app.refresh_view();
@@ -199,13 +205,23 @@ impl App<'_> {
     }
 
     /// Flip between dimming unmatched lines and hiding them.
+    ///
+    /// Unlike a filter change, this always re-anchors the view: which rows
+    /// are visible necessarily changes (that is the point of the toggle), so
+    /// there is no "nothing changed" case to guard `refresh_view` against
+    /// here the way `add_filter` needs. It calls `recompute_visible` rather
+    /// than `refresh_view`'s full `evaluate`, though: the mode is the only
+    /// thing that changed, and no verdict can be different, so redoing the
+    /// whole filter pass would be pure waste on a large document.
     fn toggle_hiding(&mut self) {
         let mode = match self.document.mode() {
             Mode::Dimmed => Mode::FilteredOnly,
             Mode::FilteredOnly => Mode::Dimmed,
         };
+        let cursor_source = self.cursor_source();
         self.document.set_mode(mode);
-        self.refresh_view();
+        self.document.recompute_visible();
+        self.apply_view(cursor_source);
     }
 
     /// The nav pane, which owns the entry names the automatic width is based on.
@@ -436,30 +452,58 @@ impl App<'_> {
             return;
         };
         self.document = Document::new(lines);
+        // The buffer the view is showing belongs to the *previous* document,
+        // so the record of what it was built from is meaningless now.
+        // Clearing it forces the next `apply_view` to rebuild: two different
+        // documents can easily produce an equal visible list — reloading the
+        // same file with a filter active produces an identical one every
+        // time, which would otherwise leave the just-loaded, unfiltered
+        // buffer in place under numbers and styles sized for the filtered
+        // subset.
+        self.last_visible.clear();
     }
 
     /// Re-evaluate the filters and rebuild what the view shows.
-    ///
-    /// When nothing is hidden the buffer is the whole document and the gutter
-    /// numbers itself. As soon as a line is hidden the buffer holds only the
-    /// visible lines, so the gutter must be told each row's *source* number or
-    /// it would renumber 1..N and the line numbers would be lies.
-    ///
-    /// Rebuilding costs a clone of the visible lines. That is bounded but not
-    /// free on a large log; if it bites, the fix is to keep both buffers and
-    /// swap between them rather than to rebuild.
     fn refresh_view(&mut self) {
         // The cursor is a source line index for the duration of the rebuild:
         // its row in the view is only meaningful against the old visible list.
         let cursor_source = self.cursor_source();
         self.document.evaluate(&self.filters);
+        self.apply_view(cursor_source);
+    }
+
+    /// Push the document's current verdicts onto the file view.
+    ///
+    /// `cursor_source` is where the cursor was *before* whatever changed the
+    /// verdicts or the mode — it is remapped here onto the now-current
+    /// visible set, since a filter or the hide toggle may have removed the
+    /// exact line it was on.
+    ///
+    /// When nothing is hidden the buffer is the whole document and the gutter
+    /// numbers itself. As soon as a line is hidden the buffer holds only the
+    /// visible lines, so the gutter must be told each row's *source* number or
+    /// it would renumber 1..N and the line numbers would be lies. And when
+    /// hiding leaves nothing visible at all, the buffer falls back to a single
+    /// blank placeholder row — which must not get a gutter number of its own,
+    /// or it reads as "this file has one empty line".
+    ///
+    /// Rebuilding the buffer (`TextArea::set_lines`) resets the viewport's
+    /// scroll position, so it only happens when the visible *set* of rows has
+    /// actually changed from what the buffer was last built with. Otherwise a
+    /// filter change that matches nothing — or any other no-op change to the
+    /// verdicts — would still re-anchor the view to wherever the cursor's row
+    /// happens to land in a freshly reset viewport, which reads as the view
+    /// jumping a full page for no reason. The gutter numbers and line styles
+    /// are cheap and must stay in sync regardless, so those are always
+    /// reapplied.
+    fn apply_view(&mut self, cursor_source: usize) {
         let cursor_source = self
             .document
             .nearest_visible(cursor_source)
             .unwrap_or(cursor_source);
 
         let hiding = self.document.visible().len() < self.document.lines().len();
-        let lines = self.document.visible_lines();
+        let nothing_visible = hiding && self.document.visible().is_empty();
         let styles = self.document.visible_styles(&self.filters);
         let numbers: Vec<usize> = if hiding {
             self.document.visible().to_vec()
@@ -471,19 +515,29 @@ impl App<'_> {
         // 65,535 lines and lands the cursor 65,536 lines from its target on a
         // large log. `set_lines` clamps in `usize` and replaces the buffer in
         // the same call, so the row is applied directly rather than jumped to
-        // afterwards.
+        // afterwards. (The rendered viewport is still `u16`-limited, though —
+        // see `FileView::show_lines_with_cursor`.)
         let row = self.document.visible_position(cursor_source).unwrap_or(0);
-        for widget in &mut self.widgets {
-            if let AppWidget::FileView(view) = widget {
-                // Always rebuild. `visible_lines()` is the whole document when
-                // nothing is hidden, so this is a no-op in content — but making
-                // it conditional leaves a stale subset behind when hiding ends,
-                // with the gutter override cleared underneath it.
-                view.show_lines_with_cursor(lines.clone(), row);
-                view.set_line_numbers(numbers.clone());
-                view.set_line_styles(styles.clone());
-            }
+        let rebuild = self.document.visible() != self.last_visible.as_slice();
+        let lines = if rebuild {
+            self.last_visible = self.document.visible().to_vec();
+            Some(self.document.visible_lines())
+        } else {
+            None
+        };
+
+        let Some(view) = self.widgets.iter_mut().find_map(|w| match w {
+            AppWidget::FileView(view) => Some(view),
+            AppWidget::FileNav(_) => None,
+        }) else {
+            return;
+        };
+        if let Some(lines) = lines {
+            view.show_lines_with_cursor(lines, row);
         }
+        view.set_line_numbers(numbers);
+        view.set_line_styles(styles);
+        view.set_gutter_blank(nothing_visible);
     }
 
     /// The source line the cursor is on, mapped through the *current* visible
@@ -506,7 +560,12 @@ impl App<'_> {
     /// Dimming alone does not say *why* lines are dim, or that a filter is
     /// defined but currently disabled — the pane would just look ordinary.
     fn status_text(&self) -> String {
-        let hiding = self.document.mode() == Mode::FilteredOnly;
+        // `FilteredOnly` is not the only way lines leave the screen: an
+        // excluding filter (`F`) removes its matches in `Dimmed` mode too,
+        // which is the entire point of it. Showing the funnel only for
+        // `FilteredOnly` let `F` empty the pane with nothing on the status
+        // line saying so.
+        let hiding = self.document.mode() == Mode::FilteredOnly || self.filters.any_excluding();
         let funnel = if hiding { "▼ " } else { "" };
         if self.filters.is_empty() {
             // With no filters every line is unmatched, so `FilteredOnly`
@@ -523,9 +582,13 @@ impl App<'_> {
         if !self.filters.any_enabled() {
             return format!("{funnel}{count} {noun} (disabled)");
         }
+        // Report what is actually on screen (lines *shown*) rather than how
+        // many matched an including filter: an excluding filter alone can
+        // remove lines while matching nothing, which used to read as "0
+        // matched" over a pane that had in fact lost lines.
         format!(
-            "{funnel}{count} {noun}   {}/{} lines match",
-            self.document.match_count(),
+            "{funnel}{count} {noun}   {}/{} lines shown",
+            self.document.visible().len(),
             self.document.lines().len()
         )
     }
@@ -585,6 +648,7 @@ mod tests {
     use ratatui::prelude::Buffer;
     use ratatui::style::Modifier; // the tests assert on Modifier::DIM
     use std::fs;
+    use std::sync::Mutex;
 
     const AREA: Rect = Rect {
         x: 0,
@@ -593,8 +657,28 @@ mod tests {
         height: 10,
     };
 
+    /// Every fixture directory name claimed so far in this process.
+    /// `app_over` and `app_over_file` both derive `target/test-appdirs/<name>`
+    /// from `name`, so they share one namespace.
+    static FIXTURE_DIR_NAMES: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+    /// Panic loudly if `name` has already been used for a fixture directory
+    /// in this process, instead of letting two tests race to
+    /// `remove_dir_all`/`create_dir_all` the same path. That race is exactly
+    /// what caused a real, release-only flake: both tests "succeeded" and
+    /// just clobbered each other's files depending on interleaving.
+    fn claim_fixture_dir(name: &str) {
+        let mut names = FIXTURE_DIR_NAMES.lock().unwrap_or_else(|poison| poison.into_inner());
+        assert!(
+            !names.iter().any(|used| used == name),
+            "fixture directory name {name:?} is already in use by another test — pick a unique name"
+        );
+        names.push(name.to_string());
+    }
+
     /// An app listing a directory with known entry names.
     fn app_over(name: &str, files: &[&str]) -> App<'static> {
+        claim_fixture_dir(name);
         let dir = std::path::Path::new("target/test-appdirs").join(name);
         fs::remove_dir_all(&dir).ok();
         fs::create_dir_all(&dir).expect("create fixture dir");
@@ -960,6 +1044,7 @@ mod tests {
     }
 
     fn app_over_file(name: &str, body: &str) -> App<'static> {
+        claim_fixture_dir(name);
         let dir = std::path::Path::new("target/test-appdirs").join(name);
         fs::remove_dir_all(&dir).ok();
         fs::create_dir_all(&dir).expect("create fixture dir");
@@ -968,6 +1053,22 @@ mod tests {
         App::new(&Config {
             file: file.display().to_string(),
         })
+    }
+
+    /// A duplicate fixture directory name must fail loudly and immediately,
+    /// not race with whatever other test already claimed it. The panic
+    /// happens in `claim_fixture_dir` before any filesystem work, and
+    /// `claim_fixture_dir` recovers the lock via `into_inner` on poison, so
+    /// this does not wedge the guard for every test that runs after it.
+    #[test]
+    fn a_duplicate_fixture_directory_name_is_rejected() {
+        let _first = app_over("dup_fixture_name", &["a.rs"]);
+
+        let second = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            app_over("dup_fixture_name", &["a.rs"]);
+        }));
+
+        assert!(second.is_err(), "a duplicate fixture directory name was not rejected");
     }
 
     #[test]
@@ -1013,6 +1114,44 @@ mod tests {
         let styles = view_line_styles(&app);
         assert_eq!(styles.len(), 2, "styles not re-applied to the new file");
         assert!(styles[0].is_some(), "match in the new file unstyled");
+    }
+
+    /// `sync_document` replaces `self.document` wholesale, so whatever
+    /// `last_visible` (finding 1's rebuild-skip guard) held is meaningless
+    /// afterwards — it describes a buffer built from the *previous*
+    /// document. Reloading the *same* file while an excluding filter is
+    /// active reproduces an identical `visible()` list every time (the
+    /// document is genuinely equal), which the guard alone cannot tell apart
+    /// from "nothing changed". `FileNav` fires `Action::Load` unconditionally
+    /// on `Enter`, even over the entry that is already open, so this is not a
+    /// contrived path.
+    #[test]
+    fn reloading_the_same_file_reapplies_an_active_excluding_filter() {
+        let mut app = app_over_file("reload_same_file", "alpha\nnoise\ngamma\n");
+        let path = std::path::Path::new("target/test-appdirs/reload_same_file/log.txt").to_path_buf();
+
+        key(&mut app, KeyCode::Char('F'));
+        typed(&mut app, "noise");
+        key(&mut app, KeyCode::Enter);
+        assert_eq!(
+            view_lines(&app),
+            vec!["alpha".to_string(), "gamma".to_string()],
+            "sanity: the excluding filter hid a line"
+        );
+
+        app.perform(Action::Load(path));
+
+        assert_eq!(
+            view_lines(&app),
+            vec!["alpha".to_string(), "gamma".to_string()],
+            "the reload brought back the hidden line: the buffer kept the \
+             freshly loaded, unfiltered content instead of being rebuilt"
+        );
+        assert_eq!(
+            view_line_styles(&app).len(),
+            view_lines(&app).len(),
+            "styles/numbers were sized for the filtered subset but the buffer came back full-length"
+        );
     }
 
     #[test]
@@ -1067,7 +1206,7 @@ mod tests {
     }
 
     #[test]
-    fn the_status_line_reports_filters_and_matches() {
+    fn the_status_line_reports_filters_and_lines_shown() {
         let mut app = app_over_file("status_some", "alpha\nbeta\ngamma\n");
         key(&mut app, KeyCode::Char('f'));
         typed(&mut app, "beta");
@@ -1079,7 +1218,9 @@ mod tests {
             status.contains("1 filter") && !status.contains("1 filters"),
             "count is not singular-aware: {status}"
         );
-        assert!(status.contains("1/3"), "match count missing: {status}");
+        // An including filter alone dims rather than removes, so every line
+        // is still shown even though only one of them matched.
+        assert!(status.contains("3/3"), "lines-shown count missing: {status}");
     }
 
     #[test]
@@ -1334,6 +1475,65 @@ mod tests {
         }
     }
 
+    /// The row (if any) whose rendered text contains `needle`.
+    fn row_containing(buf: &Buffer, needle: &str) -> Option<u16> {
+        (0..buf.area.height).find(|&y| {
+            (0..buf.area.width)
+                .map(|x| buf[(x, y)].symbol())
+                .collect::<String>()
+                .contains(needle)
+        })
+    }
+
+    /// A regression against the previous phase: `restyle` (Phase 2a) only
+    /// set styles and never touched the buffer, so a filter change left the
+    /// view exactly where it was. `refresh_view` rebuilding unconditionally
+    /// broke that, because rebuilding resets the textarea's viewport —
+    /// so any filter change re-anchored the scroll on the next render, even
+    /// one that changed nothing about what is on screen.
+    ///
+    /// Demonstrated exactly as found: the cursor is scrolled so its line
+    /// sits at the top of the pane, then a filter that matches nothing is
+    /// added. Nothing about the visible rows changed, so the view must not
+    /// move.
+    #[test]
+    fn a_filter_matching_nothing_does_not_move_the_viewport() {
+        let area = Rect { x: 0, y: 0, width: 40, height: 12 };
+        let body: String = (0..200).map(|i| format!("line {i}\n")).collect();
+        let mut app = app_over_file("no_op_filter_viewport", &body);
+        key(&mut app, KeyCode::Tab); // focus the file view
+
+        // Render once so the textarea knows its viewport size (10 rows of
+        // content inside the 12-row, bordered pane), then page down nine
+        // screens so the cursor's line lands exactly at the top of the pane.
+        let mut buf = Buffer::empty(area);
+        (&mut app).render(area, &mut buf);
+        for _ in 0..9 {
+            app.handle_event(event::Event::Key(KeyEvent::new(
+                KeyCode::Char('f'),
+                KeyModifiers::CONTROL,
+            )))
+            .unwrap();
+        }
+
+        let mut buf = Buffer::empty(area);
+        (&mut app).render(area, &mut buf);
+        let before = row_containing(&buf, "line 90").expect("line 90 should be on screen");
+
+        key(&mut app, KeyCode::Char('f'));
+        typed(&mut app, "zzz_never_matches");
+        key(&mut app, KeyCode::Enter);
+
+        let mut buf = Buffer::empty(area);
+        (&mut app).render(area, &mut buf);
+        let after = row_containing(&buf, "line 90").expect("line 90 should still be on screen");
+
+        assert_eq!(
+            before, after,
+            "adding a filter that matched nothing moved the viewport"
+        );
+    }
+
     #[test]
     fn h_hides_lines_that_match_no_filter() {
         let mut app = app_over_file("toggle_hide", "alpha\nbeta\ngamma\n");
@@ -1449,6 +1649,37 @@ mod tests {
         assert_eq!(view_lines(&app).len(), 2, "did not come back");
     }
 
+    /// When hiding leaves nothing visible, the buffer falls back to a single
+    /// blank placeholder row. Before this, an empty `line_numbers` override
+    /// fell back to natural 1..N numbering, so the gutter rendered "1" next
+    /// to that blank row — reading as "this file has one empty line" when
+    /// really both of its lines are just hidden.
+    #[test]
+    fn hiding_everything_does_not_show_a_phantom_line_number() {
+        let mut app = app_over_file("no_matches_gutter", "alpha\nbeta\n");
+        key(&mut app, KeyCode::Char('f'));
+        typed(&mut app, "zzz");
+        key(&mut app, KeyCode::Enter);
+
+        key(&mut app, KeyCode::Char('H'));
+
+        let mut buf = Buffer::empty(AREA);
+        (&mut app).render(AREA, &mut buf);
+
+        // Row 0 is the file view's top border, so row 1 is its first content
+        // row — where the blank placeholder for "nothing visible" is drawn.
+        // (The row still ends in the pane's own right-hand border, hence
+        // checking for digits rather than requiring the whole row blank.)
+        let divider = app.divider;
+        let content_row: String = ((divider + 1)..AREA.width)
+            .map(|x| buf[(x, 1)].symbol())
+            .collect();
+        assert!(
+            !content_row.chars().any(|c| c.is_ascii_digit()),
+            "expected no gutter number on the placeholder row, got: {content_row:?}"
+        );
+    }
+
     #[test]
     fn the_status_line_shows_a_funnel_while_hiding() {
         let mut app = app_over_file("funnel", "alpha\nbeta\n");
@@ -1463,6 +1694,54 @@ mod tests {
             status_line(&mut app).contains('▼'),
             "no indication that lines are hidden: {}",
             status_line(&mut app)
+        );
+    }
+
+    /// An excluding filter (`F`) removes lines in `Dimmed` mode too — that is
+    /// the entire point of it — so the funnel must not be gated on
+    /// `FilteredOnly` alone. Before this, `F` matching every line rendered a
+    /// blank pane with no indication anything was going on.
+    #[test]
+    fn the_status_line_shows_a_funnel_for_an_excluding_filter_while_dimmed() {
+        let mut app = app_over_file("funnel_dimmed_exclude", "alpha\nnoise\ngamma\n");
+
+        key(&mut app, KeyCode::Char('F'));
+        typed(&mut app, "noise");
+        key(&mut app, KeyCode::Enter);
+
+        assert_eq!(
+            app.document.mode(),
+            Mode::Dimmed,
+            "sanity: the mode never changed, only the filter set"
+        );
+        assert!(
+            status_line(&mut app).contains('▼'),
+            "no funnel shown for an excluding filter while dimmed: {}",
+            status_line(&mut app)
+        );
+    }
+
+    /// An excluding-only filter set never produces an `Included` verdict, so
+    /// the old `match_count`-based report always read "0 matched" even while
+    /// visibly removing lines — indistinguishable from the filter matching
+    /// nothing at all. The status line must describe what is on screen.
+    #[test]
+    fn the_status_line_reports_lines_shown_not_matched() {
+        let mut app = app_over_file("status_shown_not_matched", "alpha\nnoise\ngamma\n");
+
+        key(&mut app, KeyCode::Char('F'));
+        typed(&mut app, "noise");
+        key(&mut app, KeyCode::Enter);
+
+        let status = status_line(&mut app);
+
+        assert!(
+            status.contains("2/3"),
+            "expected the two lines actually shown, got: {status}"
+        );
+        assert!(
+            !status.contains("0/3"),
+            "reported the (always-zero) match count instead of lines shown: {status}"
         );
     }
 
