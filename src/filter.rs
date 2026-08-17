@@ -18,6 +18,23 @@ const PALETTE: [Color; 6] = [
     Color::Red,
 ];
 
+/// How lines matching no including filter are rendered.
+///
+/// `Modifier::DIM` alone is not enough: it emits the terminal's "faint"
+/// attribute, which many terminals ignore outright, leaving dimmed lines
+/// indistinguishable from matched ones. An explicit grey is what actually
+/// produces the contrast; the modifier is kept for terminals that do honour it.
+///
+/// The colour is the 256-colour greyscale ramp rather than `DarkGray`, so the
+/// shade does not depend on the terminal's theme. **Lower is darker** — adjust
+/// `DIM_GREY` to taste: 244 is subtle, 240 clear, 236 heavy. The ramp runs from
+/// 232 (near-black) to 255 (near-white).
+const DIM_GREY: u8 = 240;
+
+const DIM_STYLE: Style = Style::new()
+    .fg(Color::Indexed(DIM_GREY))
+    .add_modifier(Modifier::DIM);
+
 /// Whether a filter selects lines or removes them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Sense {
@@ -165,9 +182,7 @@ impl FilterSet {
     pub fn style_for(&self, verdict: Verdict) -> Option<Style> {
         match verdict {
             Verdict::Included(index) => self.filters.get(index).map(|f| f.style),
-            Verdict::Unmatched if self.any_including() => {
-                Some(Style::default().add_modifier(Modifier::DIM))
-            }
+            Verdict::Unmatched if self.any_including() => Some(DIM_STYLE),
             Verdict::Unmatched | Verdict::Excluded => None,
         }
     }
@@ -340,6 +355,22 @@ mod tests {
 
         set.set_all_enabled(false);
         assert!(!set.any_excluding(), "a disabled filter does not count");
+    }
+
+    /// Dimming must set a foreground colour, not just the DIM attribute: many
+    /// terminals ignore the attribute entirely, and on those a "dimmed" line
+    /// would be indistinguishable from a matched one.
+    #[test]
+    fn dimming_sets_a_colour_rather_than_only_an_attribute() {
+        let set = set_with(&["foo"]);
+
+        let style = set.style_for(Verdict::Unmatched).expect("unmatched dims");
+
+        assert!(
+            style.fg.is_some(),
+            "dimming relies on the DIM attribute alone, which many terminals ignore"
+        );
+        assert!(style.add_modifier.contains(Modifier::DIM));
     }
 
     /// An excluded line is never rendered, so it has no style.
