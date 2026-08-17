@@ -2,6 +2,7 @@ use clap::Parser;
 use color_eyre::Result;
 use crossterm::event::{self, KeyCode, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::prelude::{Backend, Buffer, Color, Constraint, Layout, Rect, Style, Terminal, Widget};
+use std::path::PathBuf; // sync_document builds one
 use std::time::{Duration, Instant};
 
 /// Widest the nav pane will size itself to automatically.
@@ -64,6 +65,7 @@ enum NavWidth {
 pub mod document;
 pub mod filter;
 mod widgets;
+use document::Document;
 use filter::FilterSet;
 use widgets::filenav::FileNav;
 use widgets::fileview::FileView;
@@ -89,6 +91,7 @@ pub struct App<'a> {
     /// Open while a search pattern is being typed.
     search: Option<SearchPrompt>,
     filters: FilterSet,
+    document: Document,
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -100,7 +103,7 @@ enum AppState {
 
 impl App<'_> {
     pub fn new(config: &Config) -> Self {
-        Self {
+        let mut app = Self {
             state: AppState::Running,
             widgets: vec![
                 AppWidget::FileNav(FileNav::new(config.file.clone())),
@@ -113,7 +116,11 @@ impl App<'_> {
             last_divider_click: None,
             search: None,
             filters: FilterSet::new(),
-        }
+            document: Document::default(),
+        };
+        app.sync_document();
+        app.restyle();
+        app
     }
 
     /// Feed a key to the open search prompt.
@@ -178,7 +185,9 @@ impl App<'_> {
     /// Add an including filter, colouring it distinctly from its predecessors.
     fn add_filter(&mut self, pattern: &str) -> Result<(), regex::Error> {
         let style = self.filters.next_style();
-        self.filters.add(pattern, style)
+        self.filters.add(pattern, style)?;
+        self.restyle();
+        Ok(())
     }
 
     /// The nav pane, which owns the entry names the automatic width is based on.
@@ -315,6 +324,14 @@ impl App<'_> {
                     });
                     return Ok(());
                 }
+                KeyCode::Char('!') => {
+                    // Toggle the whole set, so an unfiltered view is one
+                    // keystroke away without losing the filters themselves.
+                    let enable = !self.filters.any_enabled();
+                    self.filters.set_all_enabled(enable);
+                    self.restyle();
+                    return Ok(());
+                }
                 _ => {}
             }
         }
@@ -339,6 +356,40 @@ impl App<'_> {
                     Action::Load(path) => view.load(path),
                     Action::Preview(path) => view.preview(path),
                 }
+            }
+        }
+        self.sync_document();
+        self.restyle();
+    }
+
+    /// Take the view's current contents as the document to filter.
+    ///
+    /// The view owns the reading — including its preview truncation and its
+    /// error messages — so the document follows it rather than re-reading.
+    fn sync_document(&mut self) {
+        let Some((path, lines)) = self.widgets.iter().find_map(|w| match w {
+            AppWidget::FileView(view) => Some((
+                PathBuf::from(&view.filename),
+                view.textarea.lines().to_vec(),
+            )),
+            AppWidget::FileNav(_) => None,
+        }) else {
+            return;
+        };
+        self.document = Document::new(path, lines);
+    }
+
+    /// Re-evaluate the filters and push the resulting styles into the view.
+    ///
+    /// Loading or previewing rebuilds the textarea, which clears its line
+    /// styles, so this must run after any change to the contents as well as
+    /// after any change to the filters.
+    fn restyle(&mut self) {
+        self.document.evaluate(&self.filters);
+        let styles = self.document.line_styles(&self.filters);
+        for widget in &mut self.widgets {
+            if let AppWidget::FileView(view) = widget {
+                view.set_line_styles(styles.clone());
             }
         }
     }
@@ -393,6 +444,7 @@ mod tests {
     use super::*;
     use crossterm::event::{KeyModifiers, MouseEvent};
     use ratatui::prelude::Buffer;
+    use ratatui::style::Modifier; // the tests assert on Modifier::DIM
     use std::fs;
 
     const AREA: Rect = Rect {
@@ -755,5 +807,92 @@ mod tests {
 
         let styles: Vec<_> = app.filters.filters().iter().map(|f| f.style.fg).collect();
         assert_ne!(styles[0], styles[1]);
+    }
+
+    /// Returns the styles the file view is currently rendering with.
+    fn view_line_styles(app: &App) -> Vec<Option<Style>> {
+        app.widgets
+            .iter()
+            .find_map(|w| match w {
+                AppWidget::FileView(view) => Some(view.textarea.line_styles().to_vec()),
+                AppWidget::FileNav(_) => None,
+            })
+            .expect("no file view")
+    }
+
+    fn app_over_file(name: &str, body: &str) -> App<'static> {
+        let dir = std::path::Path::new("target/test-appdirs").join(name);
+        fs::remove_dir_all(&dir).ok();
+        fs::create_dir_all(&dir).expect("create fixture dir");
+        let file = dir.join("log.txt");
+        fs::write(&file, body).expect("write fixture");
+        App::new(&Config {
+            file: file.display().to_string(),
+        })
+    }
+
+    #[test]
+    fn committing_a_filter_styles_the_view() {
+        let mut app = app_over_file("restyle", "alpha\nbeta\ngamma\n");
+
+        key(&mut app, KeyCode::Char('f'));
+        typed(&mut app, "beta");
+        key(&mut app, KeyCode::Enter);
+
+        let styles = view_line_styles(&app);
+        assert_eq!(styles.len(), 3, "a style slot per line");
+        assert!(styles[1].is_some(), "matching line unstyled");
+        assert!(
+            styles[0]
+                .expect("unmatched line unstyled")
+                .add_modifier
+                .contains(Modifier::DIM),
+            "unmatched line not dimmed"
+        );
+    }
+
+    #[test]
+    fn an_unfiltered_view_has_no_styles() {
+        let app = app_over_file("restyle_none", "alpha\nbeta\n");
+
+        assert!(view_line_styles(&app).iter().all(Option::is_none));
+    }
+
+    /// Filters describe a log format, so they outlive the file they were
+    /// defined against — and must be re-applied after a load clears them.
+    #[test]
+    fn filters_survive_loading_another_file() {
+        let mut app = app_over_file("restyle_reload", "alpha\nbeta\n");
+        key(&mut app, KeyCode::Char('f'));
+        typed(&mut app, "beta");
+        key(&mut app, KeyCode::Enter);
+
+        let dir = std::path::Path::new("target/test-appdirs/restyle_reload");
+        fs::write(dir.join("other.txt"), "beta again\nnothing\n").expect("write");
+        app.perform(Action::Load(dir.join("other.txt")));
+
+        let styles = view_line_styles(&app);
+        assert_eq!(styles.len(), 2, "styles not re-applied to the new file");
+        assert!(styles[0].is_some(), "match in the new file unstyled");
+    }
+
+    #[test]
+    fn bang_disables_every_filter_and_restores_them() {
+        let mut app = app_over_file("restyle_bang", "alpha\nbeta\n");
+        key(&mut app, KeyCode::Char('f'));
+        typed(&mut app, "beta");
+        key(&mut app, KeyCode::Enter);
+
+        key(&mut app, KeyCode::Char('!'));
+        assert!(
+            view_line_styles(&app).iter().all(Option::is_none),
+            "! did not clear the styling"
+        );
+
+        key(&mut app, KeyCode::Char('!'));
+        assert!(
+            view_line_styles(&app)[1].is_some(),
+            "! did not restore the filters"
+        );
     }
 }
