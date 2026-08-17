@@ -1422,7 +1422,7 @@ mod tests {
     /// to the next one, and toggling back lands on that.
     #[test]
     fn hiding_from_an_unmatched_line_snaps_to_the_next_match() {
-        let mut app = app_over_file("snap", "alpha\nbeta\ngamma\nbeta two\n");
+        let mut app = app_over_file("snap_to_match", "alpha\nbeta\ngamma\nbeta two\n");
         key(&mut app, KeyCode::Char('f'));
         typed(&mut app, "beta");
         key(&mut app, KeyCode::Enter);
