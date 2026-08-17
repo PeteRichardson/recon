@@ -521,7 +521,7 @@ Expected: PASS, 9 new tests.
 cargo test 2>&1 | grep -E "^test result"
 cargo test 2>&1 | grep -ci "^warning"
 ```
-Expected: 139 passing, `0` warnings.
+Expected: 140 passing, `0` warnings (a fix-round test was added to Task 2).
 
 - [ ] **Step 7: Commit**
 
@@ -645,13 +645,16 @@ rebuilds it.
 
 - [ ] **Step 3: Add the imports this task needs**
 
-`src/lib.rs` imports `KeyModifiers` only inside `mod tests`, and does not import
-`Mode` at all. Both are needed by production code from here on:
+`src/lib.rs` imports `KeyModifiers` only inside `mod tests`, but production code
+needs it from here on:
 
 ```rust
 use crossterm::event::{self, KeyCode, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
-use document::Mode;
 ```
+
+`Mode` is *not* imported here — nothing in this task uses it, so it would be an
+unused import and break the zero-warnings constraint. The next task adds it
+along with the code that needs it.
 
 - [ ] **Step 4: Add `F` for excluding filters**
 
@@ -715,9 +718,11 @@ Replace `restyle` with:
 
         for widget in &mut self.widgets {
             if let AppWidget::FileView(view) = widget {
-                if hiding {
-                    view.show_lines(lines.clone());
-                }
+                // Always rebuild. `visible_lines()` is the whole document
+                // when nothing is hidden, so this costs a no-op clone then —
+                // but making it conditional leaves a stale subset behind when
+                // hiding ends, with the gutter override cleared underneath it.
+                view.show_lines(lines.clone());
                 view.set_line_numbers(numbers.clone());
                 view.set_line_styles(styles.clone());
             }
@@ -754,7 +759,7 @@ Expected: PASS, including the four new tests.
 cargo test 2>&1 | grep -E "^test result"
 cargo test 2>&1 | grep -ci "^warning"
 ```
-Expected: 143 passing, `0` warnings.
+Expected: 145 passing, `0` warnings.
 
 - [ ] **Step 9: Commit**
 
@@ -1027,7 +1032,7 @@ cargo test 2>&1 | grep -E "^test result"
 cargo test 2>&1 | grep -ci "^warning"
 cargo clippy --lib 2>&1 | grep -c "^warning:"
 ```
-Expected: 149 passing, `0` test warnings, and clippy reporting only the
+Expected: 151 passing, `0` test warnings, and clippy reporting only the
 pre-existing `AppWidget` variant-size warning.
 
 - [ ] **Step 8: Commit**
@@ -1088,7 +1093,7 @@ for living in.
 cargo test 2>&1 | grep -E "^test result"
 cargo test 2>&1 | grep -ci "^warning"
 ```
-Expected: 149 passing, `0` warnings.
+Expected: 150 passing, `0` warnings.
 
 - [ ] **Step 4: Commit**
 
@@ -1101,7 +1106,7 @@ git commit -m "docs: document exclude filters and the hide toggle"
 
 ## Phase 2b completion criteria
 
-- `cargo test` reports **149 passing**, 0 failed, in debug *and* `--release`;
+- `cargo test` reports **151 passing**, 0 failed, in debug *and* `--release`;
   the 123 pre-existing tests are unmodified.
 - `cargo test 2>&1 | grep -ci "^warning"` prints `0`.
 - `cargo clippy --lib` reports only the pre-existing `AppWidget` warning.
