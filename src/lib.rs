@@ -639,6 +639,15 @@ impl App<'_> {
     /// Zoom `target`, or restore the split if it is already zoomed. Reports
     /// whether the pane ended up zoomed.
     fn toggle_zoom(&mut self, target: usize) -> bool {
+        // A drag in progress has no divider to keep tracking once zoomed —
+        // the `Drag` arm in `handle_divider` only checks `self.dragging`, not
+        // whether a divider is actually on screen — so it would otherwise
+        // keep silently re-pinning `nav_width` while nothing is drawn to
+        // explain why, with the new width only appearing on un-zoom. Zooming
+        // (in either direction) cancels it outright. Unzooming is a no-op
+        // here in practice, since a drag can only start via a click that
+        // `on_divider` accepted, and that can't happen while already zoomed.
+        self.dragging = false;
         self.zoom = match self.zoom {
             Some(index) if index == target => None,
             _ => Some(target),
@@ -693,10 +702,17 @@ impl Widget for &mut App<'_> {
         // This deliberately falls through to the status/prompt drawing below
         // rather than returning, so the status line survives a zoom.
         if let Some(index) = self.zoom {
-            // There is no divider to drag while zoomed. Parking it out at
-            // `u16::MAX` — well past any real terminal width — means a click
-            // near where the divider *used* to be cannot be hit-tested as a
-            // drag on a boundary that is not on screen.
+            debug_assert_eq!(
+                index, self.active_widget,
+                "the zoomed pane must be the focused pane"
+            );
+            // There is no divider to drag while zoomed. `run` draws exactly
+            // one frame per event read, so `divider` is always recomputed by
+            // `render` before the next mouse event can be hit-tested — there
+            // is no frame after un-zooming that could carry a stale
+            // `u16::MAX` forward. Parking it here at `u16::MAX` — well past
+            // any real terminal width — is a second, independent reason a
+            // stray hit-test could not land on it even without that guarantee.
             self.divider = u16::MAX;
             for (i, widget) in self.widgets.iter_mut().enumerate() {
                 widget.set_active(i == self.active_widget);
@@ -1140,13 +1156,21 @@ mod tests {
             .expect("no file view")
     }
 
-    fn app_over_file(name: &str, body: &str) -> App<'static> {
+    /// Create (or recreate) `target/test-appdirs/<name>/log.txt` with `body`,
+    /// claiming the fixture directory name first so a duplicate is rejected
+    /// loudly rather than racing another test for the same path.
+    fn fixture_path(name: &str, body: &str) -> std::path::PathBuf {
         claim_fixture_dir(name);
         let dir = std::path::Path::new("target/test-appdirs").join(name);
         fs::remove_dir_all(&dir).ok();
         fs::create_dir_all(&dir).expect("create fixture dir");
         let file = dir.join("log.txt");
         fs::write(&file, body).expect("write fixture");
+        file
+    }
+
+    fn app_over_file(name: &str, body: &str) -> App<'static> {
+        let file = fixture_path(name, body);
         App::new(&Config {
             file: file.display().to_string(),
         })
@@ -1962,8 +1986,15 @@ mod tests {
     #[test]
     fn b_toggles_back_but_leaves_focus_in_the_file_view() {
         let mut app = app_over_file("zoom_b_back", "alpha\n");
-        let before = rendered(&mut app);
         assert_eq!(app.active_widget, app.nav_index());
+
+        // Capture the baseline with focus already where `b b` will leave it,
+        // so the comparison below isolates the layout claim rather than also
+        // depending on the active/inactive distinction being style-only
+        // (which `rendered`, collecting `symbol()` alone, cannot see).
+        key(&mut app, KeyCode::Tab);
+        let before = rendered(&mut app);
+        key(&mut app, KeyCode::Tab); // back to the real starting point
 
         key(&mut app, KeyCode::Char('b'));
         key(&mut app, KeyCode::Char('b'));
@@ -2016,13 +2047,18 @@ mod tests {
     /// filenames.
     #[test]
     fn z_zooms_the_navigator_when_it_has_focus() {
-        let mut app = app_over_file("zoom_z_nav", "alpha\n");
+        // A distinctive marker, not "alpha": the navigator titles its block
+        // with the canonicalized checkout path, which could itself contain
+        // "alpha" on some checkout — the negative assertion below would then
+        // pass or fail depending on where the repo happens to be checked
+        // out, rather than on what the test claims to check.
+        let mut app = app_over_file("zoom_z_nav", "ZOOMMARKER\n");
 
         key(&mut app, KeyCode::Char('z'));
 
         let after = rendered(&mut app);
         assert!(after.contains(">>"), "the navigator is not on screen");
-        assert!(!after.contains("alpha"), "the file view is still showing");
+        assert!(!after.contains("ZOOMMARKER"), "the file view is still showing");
     }
 
     /// With focus in the file view, `z` and `b` do the same thing.
@@ -2032,12 +2068,7 @@ mod tests {
         // border includes its full path as a title, so two different
         // fixture directories would make `rendered` disagree on the title
         // text alone, regardless of whether the zoom layouts truly match.
-        claim_fixture_dir("zoom_view_parity");
-        let dir = std::path::Path::new("target/test-appdirs").join("zoom_view_parity");
-        fs::remove_dir_all(&dir).ok();
-        fs::create_dir_all(&dir).expect("create fixture dir");
-        let file = dir.join("log.txt");
-        fs::write(&file, "alpha\n").expect("write fixture");
+        let file = fixture_path("zoom_view_parity", "alpha\n");
         let config = Config {
             file: file.display().to_string(),
         };
@@ -2050,6 +2081,13 @@ mod tests {
         key(&mut with_b, KeyCode::Char('b'));
 
         assert_eq!(rendered(&mut with_z), rendered(&mut with_b));
+        // `rendered` only sees symbols, so two layouts that differ solely in
+        // which pane is focused — a thicker border, a title glyph — could
+        // still render identically today. These pin the claim the symbols
+        // alone cannot: `z` and `b` leave the app in the exact same state,
+        // not just looking the same.
+        assert_eq!(with_z.active_widget, with_b.active_widget);
+        assert_eq!(with_z.zoom, with_b.zoom);
     }
 
     #[test]
@@ -2061,6 +2099,32 @@ mod tests {
         key(&mut app, KeyCode::Char('z'));
 
         assert_eq!(rendered(&mut app), before);
+    }
+
+    /// A drag started on the divider must not survive into a zoom: there is
+    /// no divider to drag while zoomed, but the `Drag` arm in
+    /// `handle_divider` only checks `self.dragging`, so without
+    /// `toggle_zoom` cancelling it, moving the mouse mid-drag would silently
+    /// re-pin `nav_width` while nothing is drawn to explain why.
+    #[test]
+    fn zooming_mid_drag_cancels_the_drag() {
+        let mut app = app_over_file("zoom_drag_cancel", "alpha\n");
+        draw(&mut app);
+        let divider = app.divider;
+        let before = app.nav_width(AREA);
+
+        mouse(&mut app, MouseEventKind::Down(MouseButton::Left), divider);
+        assert!(app.dragging, "sanity: the divider click started a drag");
+
+        key(&mut app, KeyCode::Char('b'));
+        mouse(&mut app, MouseEventKind::Drag(MouseButton::Left), 60);
+
+        assert!(!app.dragging, "the drag survived into the zoom");
+        assert_eq!(
+            app.nav_width(AREA),
+            before,
+            "nav_width changed from a drag that continued while zoomed"
+        );
     }
 
     /// Tab while zoomed must not leave the cursor on an invisible pane: the

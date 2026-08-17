@@ -456,6 +456,20 @@ mod tests {
         assert_eq!(view.textarea.cursor(), (0, 0));
     }
 
+    /// `w` is the only word motion left in the view — `b` and `e` were
+    /// reassigned to global window commands — so it is the one thing the
+    /// README and the zoom/paging plan point to as compensation. Mirrors the
+    /// shape of the deleted `e_moves_to_the_end_of_the_word` test.
+    #[test]
+    fn w_moves_to_the_start_of_the_next_word() {
+        let mut view = view_of("motions_w.txt", "hello world\n");
+
+        send(&mut view, Key::Char('w'));
+
+        // On the first character of `world`, not still inside `hello`.
+        assert_eq!(view.textarea.cursor(), (0, 6));
+    }
+
     #[test]
     fn braces_move_by_paragraph() {
         let mut view = view_of("motions_para.txt", "one\ntwo\n\nthree\nfour\n\nfive\n");

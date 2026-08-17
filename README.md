@@ -20,7 +20,7 @@ Global (`src/lib.rs`), handled before the focused pane sees the key:
 | `F` | Add an exclude filter — its matches leave the view entirely |
 | `Ctrl-H` / `H` | Toggle between dimming unmatched lines and hiding them |
 | `!` | Disable every filter, remembering which were on; restores exactly that (or enables all, if none were on to remember) |
-| `b` | Hide the left column, giving the file its full width — press again to restore |
+| `b` | Hide the left column and focus the file view — press again to restore the split (focus stays in the file view; `e` returns it) |
 | `e` | Bring the left column back and focus it |
 | `z` | Maximise the focused pane, or restore the split — works in the navigator too, for long filenames |
 
