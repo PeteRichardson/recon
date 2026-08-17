@@ -175,13 +175,20 @@ Then:
     }
 
     /// With focus in the file view, `z` and `b` do the same thing.
+    ///
+    /// Both apps must be built over the *same* file: the view's title is its
+    /// full path, so two fixture directories would differ on screen no matter
+    /// how the zoom behaved.
     #[test]
     fn z_in_the_file_view_matches_b() {
-        let mut with_z = app_over_file("zoom_z_view", "alpha\n");
+        let path = fixture_path("zoom_same", "alpha\n");
+        let config = Config { file: path.clone() };
+
+        let mut with_z = App::new(&config);
         key(&mut with_z, KeyCode::Tab);
         key(&mut with_z, KeyCode::Char('z'));
 
-        let mut with_b = app_over_file("zoom_b_view", "alpha\n");
+        let mut with_b = App::new(&Config { file: path });
         key(&mut with_b, KeyCode::Char('b'));
 
         assert_eq!(rendered(&mut with_z), rendered(&mut with_b));
@@ -360,11 +367,13 @@ first so there is status text to look for.
 - [ ] **Step 8: Run the tests to verify they pass**
 
 Run: `cargo test --lib`
-Expected: PASS, 10 new tests. Pre-existing file-view tests that use `b` or `e`
-as word motions **will fail** — that is the deliberate displacement. Note which
-ones, and leave them; Task 2 removes them.
+Expected: PASS, 11 new tests, and **nothing pre-existing should fail**.
 
-If any test *other* than a `b`/`e` word-motion one fails, stop and report.
+Note carefully: the file view's `b`/`e` word-motion tests drive `FileView`
+directly rather than going through `App::handle_event`, so they keep passing
+even though the motions are now unreachable in the running app. That is the
+point Task 2 acts on — the arms are dead from the user's side, and both the
+arms and their tests go there. If something else fails, stop and report.
 
 - [ ] **Step 9: Commit**
 
