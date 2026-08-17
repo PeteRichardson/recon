@@ -70,11 +70,8 @@ impl FileView<'_> {
     /// that do. Rebuilding the textarea — which `load` and `preview` both do —
     /// clears these, so they must be re-applied after either.
     ///
-    /// The line the cursor is on is an exception: `render` sets a cursor-line
-    /// style unconditionally, and the textarea replaces rather than merges the
-    /// line's style, so that one line renders as the cursor-line style even
-    /// when that style is `Style::default()`. Anything relying on every line
-    /// being styled — dimming a filtered view, say — has to account for it.
+    /// The line the cursor is on keeps its style too: `render` folds it into
+    /// the cursor-line style, because the textarea replaces rather than merges.
     pub fn set_line_styles(&mut self, styles: Vec<Option<Style>>) {
         self.textarea.set_line_styles(styles);
     }
@@ -717,6 +714,79 @@ mod tests {
         assert!(view.textarea.line_styles().is_empty());
         assert!(view.textarea.line_numbers().is_empty());
     }
+
+    /// The cursor line must not escape dimming: the textarea replaces rather
+    /// than merges line styles, so `render` has to fold the line's own style
+    /// into the cursor-line style.
+    #[test]
+    fn the_cursor_line_keeps_its_own_line_style() {
+        let mut view = view_of("cursor_dim.txt", "alpha\nbeta\n");
+        // The cursor starts on row 0.
+        view.set_line_styles(vec![
+            Some(Style::default().fg(Color::Yellow)),
+            Some(Style::default().fg(Color::Yellow)),
+        ]);
+        let area = Rect::new(0, 0, 40, 6);
+        let mut buf = Buffer::empty(area);
+
+        (&mut view).render(area, &mut buf);
+
+        let alpha = row_of(&buf, "alpha");
+        assert!(
+            row_has_fg(&buf, alpha, Color::Yellow),
+            "the cursor's line lost its style"
+        );
+    }
+
+    /// With focus, the cursor line keeps its own style *and* gains the focus
+    /// decoration — the decoration is layered on, not substituted.
+    ///
+    /// The seeded style uses a background colour deliberately: the active
+    /// branch sets a foreground, so seeding one would be overwritten and the
+    /// test would pass even if the fold were skipped entirely.
+    #[test]
+    fn an_active_view_still_marks_the_cursor_line() {
+        let mut view = view_of("cursor_active.txt", "alpha\nbeta\n");
+        view.active = true;
+        view.set_line_styles(vec![Some(Style::default().bg(Color::Blue)); 2]);
+        let area = Rect::new(0, 0, 40, 6);
+        let mut buf = Buffer::empty(area);
+
+        (&mut view).render(area, &mut buf);
+
+        let alpha = row_of(&buf, "alpha");
+        let beta = row_of(&buf, "beta");
+
+        // The cursor line kept the style it was given...
+        assert!(
+            (0..area.width).any(|x| buf[(x, alpha)].style().bg == Some(Color::Blue)),
+            "the cursor line lost its own style under focus"
+        );
+        // ...and gained the focus decoration on top of it.
+        assert!(
+            (0..area.width)
+                .any(|x| buf[(x, alpha)].style().add_modifier.contains(Modifier::REVERSED)),
+            "cursor line not marked when active"
+        );
+        // A non-cursor line is unaffected either way.
+        assert!(
+            (0..area.width).any(|x| buf[(x, beta)].style().bg == Some(Color::Blue)),
+            "a non-cursor line lost its style"
+        );
+    }
+
+    /// Without line styles, the old behaviour is unchanged.
+    #[test]
+    fn without_line_styles_the_cursor_line_is_unchanged() {
+        let mut view = view_of("cursor_plain.txt", "alpha\nbeta\n");
+        let area = Rect::new(0, 0, 40, 6);
+        let mut buf = Buffer::empty(area);
+
+        (&mut view).render(area, &mut buf);
+
+        let alpha = row_of(&buf, "alpha");
+        assert!(!row_has_fg(&buf, alpha, Color::Yellow));
+    }
 }
 
 /// Widget impl for `FileView`
@@ -728,7 +798,18 @@ impl Widget for &mut FileView<'_> {
             self.textarea
                 .set_line_number_style(Style::default().fg(Color::DarkGray));
         }
-        let mut style = Style::default();
+        // The textarea replaces rather than merges a line's style, so the
+        // cursor line would otherwise discard whatever the filters gave it and
+        // read as unfiltered. Start from that line's own style and add the
+        // focus decoration on top.
+        let cursor_row = self.textarea.cursor().0;
+        let mut style = self
+            .textarea
+            .line_styles()
+            .get(cursor_row)
+            .copied()
+            .flatten()
+            .unwrap_or_default();
         if self.active {
             style = style.fg(Color::Green).add_modifier(Modifier::REVERSED);
         }
