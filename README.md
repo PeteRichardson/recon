@@ -13,15 +13,15 @@ Global (`src/lib.rs`), handled before the focused pane sees the key:
 | Key(s) | Action |
 | --- | --- |
 | `q` | Quit |
-| `Tab` | Move focus to the next pane |
+| `Tab` | Move focus to the next of three panes — navigator, filter pane, file view — skipping the filter pane while it is collapsed |
 | `/` | Search forward in the focused pane |
 | `?` | Search backward in the focused pane |
 | `f` | Add an include filter (always applies to the file view) |
 | `F` | Add an exclude filter — its matches leave the view entirely |
 | `Ctrl-H` / `H` | Toggle between dimming unmatched lines and hiding them |
 | `!` | Disable every filter, remembering which were on; restores exactly that (or enables all, if none were on to remember) |
-| `b` | Hide the left column and focus the file view — press again to restore the split (focus stays in the file view; `e` returns it) |
-| `e` | Bring the left column back and focus it |
+| `b` | Hide the left column — both the navigator and the filter pane — and focus the file view; press again to restore the split (focus stays in the file view; `e` returns it) |
+| `e` | Bring the left column back and focus the navigator specifically, skipping the filter pane |
 | `z` | Maximise the focused pane, or restore the split — works in the navigator too, for long filenames |
 
 Mouse: drag the divider between the panes to resize them; double-click it to
@@ -98,6 +98,27 @@ Navigator pane (`src/widgets/filenav.rs`):
 | `j` / `Down` | Select the next entry |
 | `Enter` | Open the selected entry (descend into a directory, or load a file) |
 | `n` / `N` | Repeat the last search, forward / reversed |
+
+Filter pane (`src/widgets/filterlist.rs`), reached with `Tab` once a filter
+exists — the pane sizes to its contents and collapses entirely when no
+filters are defined, so it costs nothing to a user who never defines one:
+
+| Key(s) | Action |
+| --- | --- |
+| `k` / `Up` | Select the previous filter |
+| `j` / `Down` | Select the next filter |
+| `space` | Enable or disable the selected filter |
+| `d` | Delete the selected filter |
+
+Each row shows the filter's number, whether it is enabled, whether it
+includes or excludes, and its pattern — e.g. `1[x] inc foo`. Including
+filters are drawn in their own colour so the pane and the file view agree at
+a glance; excluding filters have no colour, which is why the sense is
+spelled out. A disabled filter is dimmed. Toggling or deleting re-evaluates
+the whole document but holds the line under the cursor on the same screen
+row, so lines appear and disappear around a fixed point rather than the view
+lurching. Deleting the last filter collapses the pane again and moves focus
+off it.
 
 ## Vendored dependency
 
