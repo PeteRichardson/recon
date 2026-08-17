@@ -347,6 +347,16 @@ Each phase is independently shippable and leaves the app working.
    - **2b — hiding.** Everything that removes lines from view: excluding
      filters and the Ctrl+H toggle, and therefore the visible↔source mapping,
      `set_line_numbers`, the cursor round trip, and the status-line funnel.
+
+     `F` adds an excluding filter, mirroring `f` for including ones, so
+     exclusion is reachable and testable before 2c's pane exists to flip a
+     filter's sense.
+
+     The toggle is bound to **both `Ctrl-H` and `H`**. Many terminals fold
+     Ctrl-H into Backspace (ASCII 0x08), which the prompt already uses, so
+     Ctrl-H alone would leave this phase's headline feature unreachable on
+     those terminals. `H` always arrives; Ctrl-H preserves the muscle memory
+     of the tool this is modelled on.
    - **2c — the filter pane.** Toggling, editing, deleting, reordering and
      colouring filters in the stacked left pane.
 
