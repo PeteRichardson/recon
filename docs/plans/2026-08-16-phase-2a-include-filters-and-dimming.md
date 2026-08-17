@@ -1107,11 +1107,19 @@ Expected: FAIL — the styles vector is empty, because nothing pushes it yet.
 
 - [ ] **Step 3: Hold a document on `App`**
 
-`src/lib.rs` does not currently import either of these — add them:
+`src/lib.rs` does not currently import `PathBuf`, which `sync_document` builds:
 
 ```rust
-use ratatui::style::Modifier;   // the tests assert on Modifier::DIM
-use std::path::PathBuf;         // sync_document builds one
+use std::path::PathBuf;
+```
+
+The tests also need `Modifier` (they assert on `Modifier::DIM`), but it is used
+*only* in tests — importing it at the crate root would be unused in a non-test
+build and trip the zero-warnings constraint. Put it inside `mod tests`, as
+`src/document.rs` already does for the same reason:
+
+```rust
+    use ratatui::style::Modifier;
 ```
 
 Add `document: Document,` to `struct App` and `document: Document::default(),`
