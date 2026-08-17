@@ -34,9 +34,13 @@ crossterm 0.29, regex 1.
   printing `0`. Never verify with `grep -E "^test result"`, which filters
   warnings out by construction and has hidden a real warning on this project
   twice.
-- **Guard every new global key with `key.modifiers.is_empty()`** (except where
-  the binding *is* a modified key). An unguarded `KeyCode::Char` arm swallowed
-  `Ctrl-f` in the previous phase and broke page-down.
+- **Guard every new global key against modifiers.** An unguarded
+  `KeyCode::Char` arm swallowed `Ctrl-f` in the previous phase and broke
+  page-down. Unshifted keys use `key.modifiers.is_empty()`, as the existing
+  ones do. Shifted letters (`F`, `H`) must *not* require `SHIFT` exactly, since
+  not every terminal reports it for a shifted character — require only that
+  `CONTROL` and `ALT` are absent. A binding that *is* a modified key checks for
+  that modifier with `contains`.
 - Tests must not depend on the live repo-root directory listing or on build
   artefacts. Use fixture directories under `target/`. Repo-listing coupling has
   broken this suite three times.
