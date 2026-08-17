@@ -16,6 +16,21 @@ const MAX_NAV_WIDTH: u16 = 40;
 /// nothing at that end is starving the file view.
 const MIN_PANE_WIDTH: u16 = 3;
 
+/// Rows the navigator keeps even when the filter pane's stacked below it
+/// wants more than the terminal can spare.
+///
+/// `Layout::vertical([Min(_), Length(filter_height)])` gives the filter pane
+/// unbounded priority over whatever `Min` bound the navigator carries — a
+/// bare `Min(0)` lets a tall enough filter pane squeeze the navigator to
+/// zero rows while it may still be the *focused* pane, stranding the user on
+/// a cursor they cannot see. `MIN_PANE_WIDTH`'s reasoning applied to the
+/// other axis: enough for a bordered block to render at all (top border,
+/// one content row, bottom border), not enough to call comfortable — the
+/// filter pane still wins the rest of the space, exactly as
+/// `a_short_terminal_gives_the_filter_pane_priority_over_the_navigator`
+/// requires.
+const MIN_NAV_HEIGHT: u16 = 3;
+
 /// Columns the file view needs to stay genuinely readable, not merely
 /// present — derived, not tuned:
 /// - 2 for its own left and right border columns.
@@ -857,11 +872,15 @@ impl Widget for &mut App<'_> {
 
             // The filter pane sits under the navigator inside the left
             // column; it claims its preferred height first, leaving the
-            // navigator whatever remains (down to nothing on a very short
-            // terminal — see `a_short_terminal_gives_the_filter_pane_priority_over_the_navigator`).
+            // navigator whatever remains, down to `MIN_NAV_HEIGHT` on a very
+            // short terminal — see
+            // `a_short_terminal_gives_the_filter_pane_priority_over_the_navigator`.
+            // The navigator keeps that floor rather than `Min(0)` so a
+            // terminal too short for both never leaves the *focused* pane
+            // with zero rows to draw into.
             let filter_height = self.filter_pane_height();
             let [nav_area, filter_area] =
-                Layout::vertical([Min(0), Length(filter_height)]).areas(left);
+                Layout::vertical([Min(MIN_NAV_HEIGHT), Length(filter_height)]).areas(left);
 
             // Remember the boundary so mouse events landing before the next
             // frame can be tested against it.
@@ -1066,6 +1085,19 @@ mod tests {
         assert!(
             AREA.width - app.nav_width(AREA) >= MIN_PANE_WIDTH,
             "file view collapsed"
+        );
+        // The bound above is `MIN_PANE_WIDTH` (3), which the file view's own
+        // floor, `MIN_FILE_VIEW_WIDTH` (30), also satisfies — so it alone
+        // cannot tell the two floors apart. A drag all the way to the far
+        // edge is the pinned-width equivalent of
+        // `a_long_filter_pattern_on_a_narrow_terminal_leaves_the_file_view_its_floor`,
+        // so it gets the same exact-equality assertion: the doc comment on
+        // `MIN_FILE_VIEW_WIDTH` claims the ceiling applies to a drag just as
+        // much as to auto-sizing, and nothing was pinning that claim.
+        assert_eq!(
+            AREA.width - app.nav_width(AREA),
+            MIN_FILE_VIEW_WIDTH,
+            "a hard drag to the far edge did not stop at the file view's floor"
         );
     }
 
@@ -1648,8 +1680,11 @@ mod tests {
 
         // Tab into the file view and press a key: this is exactly what
         // upgrades the truncated preview to a full load inside
-        // `FileView::handle_events`.
-        key(&mut app, KeyCode::Tab);
+        // `FileView::handle_events`. A filter is already defined here, so a
+        // bare `Tab` would no longer land on the file view once the filter
+        // pane joins the cycle — `focus_file_view` tabs however many times
+        // that takes.
+        focus_file_view(&mut app);
         key(&mut app, KeyCode::Char('j'));
 
         let styles = view_line_styles(&app);
@@ -1671,7 +1706,7 @@ mod tests {
         let body: String = (0..100).map(|i| format!("line {i}\n")).collect();
         let mut app = app_over_file("ctrl_f_scroll", &body);
         draw(&mut app); // establish the file view's rendered size
-        key(&mut app, KeyCode::Tab); // focus the file view
+        focus_file_view(&mut app);
 
         let before = view_cursor_row(&app);
         app.handle_event(event::Event::Key(KeyEvent::new(
@@ -1865,7 +1900,7 @@ mod tests {
         let area = Rect { x: 0, y: 0, width: 40, height: 12 };
         let body: String = (0..200).map(|i| format!("line {i}\n")).collect();
         let mut app = app_over_file("no_op_filter_viewport", &body);
-        key(&mut app, KeyCode::Tab); // focus the file view
+        focus_file_view(&mut app);
 
         // Render once so the textarea knows its viewport size (10 rows of
         // content inside the 12-row, bordered pane), then page down nine
@@ -2357,7 +2392,7 @@ mod tests {
         // so the comparison below isolates the layout claim rather than also
         // depending on the active/inactive distinction being style-only
         // (which `rendered`, collecting `symbol()` alone, cannot see).
-        key(&mut app, KeyCode::Tab);
+        focus_file_view(&mut app);
         let before = rendered(&mut app);
         key(&mut app, KeyCode::Tab); // back to the real starting point
 
@@ -2400,7 +2435,7 @@ mod tests {
     #[test]
     fn e_focuses_the_navigator_even_when_nothing_is_hidden() {
         let mut app = app_over_file("zoom_e_visible", "alpha\n");
-        key(&mut app, KeyCode::Tab);
+        focus_file_view(&mut app);
         assert_ne!(app.active_widget, app.nav_index());
 
         key(&mut app, KeyCode::Char('e'));
@@ -2439,7 +2474,7 @@ mod tests {
         };
 
         let mut with_z = App::new(&config);
-        key(&mut with_z, KeyCode::Tab);
+        focus_file_view(&mut with_z);
         key(&mut with_z, KeyCode::Char('z'));
 
         let mut with_b = App::new(&config);
@@ -2499,7 +2534,7 @@ mod tests {
         let mut app = app_over_file("zoom_tab", "alpha\n");
         key(&mut app, KeyCode::Char('z'));
 
-        key(&mut app, KeyCode::Tab);
+        focus_file_view(&mut app);
 
         assert_eq!(
             app.zoom,
@@ -2514,7 +2549,7 @@ mod tests {
     #[test]
     fn ctrl_modified_letters_still_reach_the_file_view() {
         let mut app = app_over_file("zoom_ctrl", "alpha\nbeta\n");
-        key(&mut app, KeyCode::Tab);
+        focus_file_view(&mut app);
 
         for code in [KeyCode::Char('b'), KeyCode::Char('e'), KeyCode::Char('z')] {
             app.handle_event(event::Event::Key(event::KeyEvent::new(
@@ -2565,7 +2600,13 @@ mod tests {
         typed(&mut app, "alpha");
         key(&mut app, KeyCode::Enter);
 
-        assert!(rendered(&mut app).contains("alpha"));
+        // `.contains("alpha")` alone would also be satisfied by the file
+        // view drawing the log's own one-line body (see
+        // `b_hides_the_left_column`, which asserts exactly that over the
+        // same body with no filter pane in play) — so this asserts a
+        // substring only `FilterList::row_text` produces: the row's index,
+        // enabled marker, sense and pattern together.
+        assert!(rendered(&mut app).contains("1[x] inc alpha"));
     }
 
     /// Tab reaches the filter pane once it exists, and skips it before then.
@@ -2577,7 +2618,11 @@ mod tests {
         key(&mut app, KeyCode::Tab);
         key(&mut app, KeyCode::Tab);
 
-        assert_eq!(app.active_widget, 0, "focus did not return to the navigator");
+        assert_eq!(
+            app.active_widget,
+            app.nav_index(),
+            "focus did not return to the navigator"
+        );
     }
 
     #[test]
@@ -2615,10 +2660,20 @@ mod tests {
         typed(&mut app, "alpha");
         key(&mut app, KeyCode::Enter);
 
+        // Bounded, like `focus_file_view`, rather than an unbounded `while`:
+        // if the filter pane ever stopped being reachable, a `while` here
+        // would hang the test instead of failing it.
         let filter_index = app.filter_list_index();
-        while app.active_widget != filter_index {
+        for _ in 0..app.widgets.len() {
+            if app.active_widget == filter_index {
+                break;
+            }
             key(&mut app, KeyCode::Tab);
         }
+        assert_eq!(
+            app.active_widget, filter_index,
+            "could not reach the filter pane by tabbing"
+        );
         key(&mut app, KeyCode::Char('z'));
 
         let after = rendered(&mut app);

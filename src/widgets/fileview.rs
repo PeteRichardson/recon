@@ -68,6 +68,11 @@ impl FileView<'_> {
         self.filename = path.display().to_string();
         self.textarea = TextArea::new(read_lines(path));
         self.truncated = false;
+        // A pending restore was measured against the buffer this just threw
+        // away; carrying it into an unrelated file would apply it to the
+        // wrong data entirely — see `sync_document`'s clearing of
+        // `last_visible` in `lib.rs` for the same reasoning.
+        self.pending_screen_row = None;
     }
 
     /// Show just enough of `path` to fill the pane.
@@ -81,6 +86,9 @@ impl FileView<'_> {
         let (lines, truncated) = read_preview(path);
         self.textarea = TextArea::new(lines);
         self.truncated = truncated;
+        // See `load`: a pending restore does not survive a switch to a
+        // different file's buffer.
+        self.pending_screen_row = None;
     }
 
     /// Style individual lines, indexed by line number.
@@ -1083,10 +1091,6 @@ mod tests {
 /// Widget impl for `FileView`
 impl Widget for &mut FileView<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        // Apply any scroll requested since the last render — see
-        // `scroll_cursor_to_row` and `apply_pending_scroll` — against this
-        // frame's real area, before drawing it.
-        self.apply_pending_scroll(area);
         if self.hide_line_numbers || self.gutter_blank {
             self.textarea.remove_line_number();
         } else {
@@ -1121,6 +1125,14 @@ impl Widget for &mut FileView<'_> {
                 .borders(Borders::ALL)
                 .title(self.filename.clone()),
         );
+        // Apply any scroll requested since the last render — see
+        // `scroll_cursor_to_row` and `apply_pending_scroll` — only now, once
+        // the block above is set: `apply_pending_scroll`'s scratch render
+        // needs to see the same borders the real render below is about to
+        // draw, or it computes an inner height that is two rows too tall on
+        // the first frame after `load`/`preview` replace the textarea (which
+        // drops its block along with everything else).
+        self.apply_pending_scroll(area);
         (&self.textarea).render(area, buf);
     }
 }

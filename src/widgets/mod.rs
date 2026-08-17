@@ -63,7 +63,14 @@ impl Widget for &mut AppWidget<'_> {
             // it owns — see `render_widget` in `lib.rs`. This arm exists
             // only so `AppWidget` remains a normal `Widget`; it deliberately
             // draws nothing and is not expected to ever actually run.
-            AppWidget::FilterList(_) => {}
+            //
+            // `render_widget` is the only thing keeping that promise: a
+            // future caller reaching for `widget.render(...)` directly would
+            // otherwise get a silent blank pane. Loud in every debug test
+            // run, without changing release behaviour.
+            AppWidget::FilterList(_) => {
+                debug_assert!(false, "render the filter pane through render_widget");
+            }
         }
     }
 }
