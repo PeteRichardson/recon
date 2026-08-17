@@ -357,8 +357,24 @@ Each phase is independently shippable and leaves the app working.
      Ctrl-H alone would leave this phase's headline feature unreachable on
      those terminals. `H` always arrives; Ctrl-H preserves the muscle memory
      of the tool this is modelled on.
-   - **2c — the filter pane.** Toggling, editing, deleting, reordering and
-     colouring filters in the stacked left pane.
+   - **2c — the filter pane**, split in two so the first half is usable on its
+     own:
+     - **2c-i** — the pane itself, the stacked left-hand layout, focus cycling,
+       and toggling and deleting filters. A working filter manager.
+     - **2c-ii** — editing, reordering and recolouring.
+
+     Toggling a filter changes the visible set, so the view rebuilds. The
+     scroll must be restored so the cursor lands on **the same screen row** it
+     occupied before: with a pane full of toggles this is the dominant
+     interaction, and re-anchoring would make the view lurch on every click.
+     Lines should appear and disappear around a fixed point.
+
+     Two things carried from earlier phases come due here. `Verdict::Included`
+     stores a *positional* index into the filter list, so deleting or
+     reordering invalidates every cached verdict and forces a re-evaluation.
+     And `!` must be made to restore the per-filter enabled state it captured,
+     rather than enabling everything as it does today — harmless until this
+     phase, wrong the moment a filter can be disabled individually.
 
    The 2a/2b boundary is drawn at *buffer rebuilding*: 2a styles lines in
    place, 2b is where anything starts disappearing. Each phase therefore
