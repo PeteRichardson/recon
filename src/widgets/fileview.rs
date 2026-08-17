@@ -179,11 +179,6 @@ impl FileView<'_> {
                 ..
             } => self.textarea.move_cursor(CursorMove::WordForward),
             Input {
-                key: Key::Char('b'),
-                ctrl: false,
-                ..
-            } => self.textarea.move_cursor(CursorMove::WordBack),
-            Input {
                 key: Key::Char('^'),
                 ..
             }
@@ -191,11 +186,6 @@ impl FileView<'_> {
                 key: Key::Char('0'),
                 ..
             } => self.textarea.move_cursor(CursorMove::Head),
-            Input {
-                key: Key::Char('e'),
-                ctrl: false,
-                ..
-            } => self.textarea.move_cursor(CursorMove::WordEnd),
             Input {
                 key: Key::Char('#'),
                 ..
@@ -266,23 +256,15 @@ impl FileView<'_> {
             | Input {
                 key: Key::PageUp, ..
             } => self.textarea.scroll(Scrolling::PageUp),
+            // Paired deliberately: Enter under the pinky pages down, space
+            // under the thumb pages back up.
+            Input {
+                key: Key::Enter, ..
+            } => self.textarea.scroll(Scrolling::PageDown),
             Input {
                 key: Key::Char(' '),
                 ..
-            }
-            | Input {
-                key: Key::Enter, ..
-            } => self.textarea.scroll(Scrolling::PageDown),
-            // Input {
-            //     key: Key::Char(' '),
-            //     shift: true,
-            //     ..
-            // }
-            // | Input {
-            //     key: Key::Enter,
-            //     shift: true,
-            //     ..
-            // } => textarea.scroll(Scrolling::PageUp),
+            } => self.textarea.scroll(Scrolling::PageUp),
             Input {
                 key: Key::Char('f'),
                 ctrl: true,
@@ -472,16 +454,6 @@ mod tests {
         send(&mut view, Key::Char('0'));
 
         assert_eq!(view.textarea.cursor(), (0, 0));
-    }
-
-    #[test]
-    fn e_moves_to_the_end_of_the_word() {
-        let mut view = view_of("motions_e.txt", "hello world\n");
-
-        send(&mut view, Key::Char('e'));
-
-        // On the last character of `hello`, not the start of `world`.
-        assert_eq!(view.textarea.cursor(), (0, 4));
     }
 
     #[test]
@@ -872,6 +844,30 @@ mod tests {
             (0..area.width)
                 .any(|x| buf[(x, alpha)].style().add_modifier.contains(Modifier::REVERSED)),
             "cursor line not marked when active"
+        );
+    }
+
+    /// `space` and `Enter` page in opposite directions, so a thumb on the
+    /// space bar and a pinky on Enter can scan a file in both directions.
+    #[test]
+    fn space_pages_up_and_enter_pages_down() {
+        let body: String = (0..200).map(|i| format!("line {i}\n")).collect();
+        let mut view = view_of("space_pages.txt", &body);
+        let area = Rect::new(0, 0, 40, 10);
+        let mut buf = Buffer::empty(area);
+        (&mut view).render(area, &mut buf);
+
+        send(&mut view, Key::Enter);
+        (&mut view).render(area, &mut buf);
+        let after_enter = view.textarea.cursor().0;
+        assert!(after_enter > 0, "Enter did not page down");
+
+        send(&mut view, Key::Char(' '));
+        (&mut view).render(area, &mut buf);
+
+        assert!(
+            view.textarea.cursor().0 < after_enter,
+            "space did not page back up"
         );
     }
 
