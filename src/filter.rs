@@ -64,6 +64,11 @@ pub struct Filter {
 #[derive(Debug, Default)]
 pub struct FilterSet {
     filters: Vec<Filter>,
+    /// Enabled flags captured by `disable_all_remembering`, awaiting a restore.
+    ///
+    /// Held separately from the filters so that a filter removed in the
+    /// meantime simply drops out of the restore rather than resurrecting.
+    remembered: Option<Vec<bool>>,
 }
 
 impl FilterSet {
@@ -131,6 +136,79 @@ impl FilterSet {
         for filter in &mut self.filters {
             filter.enabled = enabled;
         }
+    }
+
+    /// Remove the filter at `index`, reporting whether it existed.
+    ///
+    /// Indices are positional, so this renumbers every later filter. Any
+    /// cached `Verdict::Included` is invalid afterwards — callers must
+    /// re-evaluate rather than patch.
+    pub fn remove(&mut self, index: usize) -> bool {
+        if index >= self.filters.len() {
+            return false;
+        }
+        self.filters.remove(index);
+        if let Some(remembered) = self.remembered.as_mut() {
+            if index < remembered.len() {
+                remembered.remove(index);
+            }
+        }
+        true
+    }
+
+    /// Enable or disable one filter, reporting whether it existed.
+    pub fn set_enabled(&mut self, index: usize, enabled: bool) -> bool {
+        match self.filters.get_mut(index) {
+            Some(filter) => {
+                filter.enabled = enabled;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Flip one filter, returning its new state, or `None` if there is no
+    /// such filter.
+    ///
+    /// Distinguishing the two matters: a caller cannot otherwise tell "turned
+    /// off" from "that row is gone", and the pane's selection can lag a
+    /// deletion by a frame.
+    pub fn toggle_enabled(&mut self, index: usize) -> Option<bool> {
+        let filter = self.filters.get_mut(index)?;
+        filter.enabled = !filter.enabled;
+        Some(filter.enabled)
+    }
+
+    /// Disable every filter, recording which were enabled.
+    ///
+    /// A second call before a restore is ignored: the flags at that point are
+    /// the ones this method just cleared, so capturing them again would
+    /// overwrite the real state with all-disabled and lose it for good.
+    pub fn disable_all_remembering(&mut self) {
+        if self.remembered.is_some() {
+            return;
+        }
+        self.remembered = Some(self.filters.iter().map(|f| f.enabled).collect());
+        for filter in &mut self.filters {
+            filter.enabled = false;
+        }
+    }
+
+    /// Put back exactly the state `disable_all_remembering` captured.
+    ///
+    /// Enabling everything instead would silently switch on filters the user
+    /// had deliberately turned off.
+    pub fn restore_remembered(&mut self) {
+        let Some(remembered) = self.remembered.take() else {
+            return;
+        };
+        for (filter, was_enabled) in self.filters.iter_mut().zip(remembered) {
+            filter.enabled = was_enabled;
+        }
+    }
+
+    pub fn has_remembered(&self) -> bool {
+        self.remembered.is_some()
     }
 
     pub fn any_enabled(&self) -> bool {
@@ -379,5 +457,197 @@ mod tests {
         let set = set_excluding(&["heartbeat"]);
 
         assert_eq!(set.style_for(Verdict::Excluded), None);
+    }
+
+    #[test]
+    fn removing_a_filter_drops_it() {
+        let mut set = set_with(&["foo", "bar"]);
+
+        assert!(set.remove(0));
+
+        assert_eq!(set.len(), 1);
+        assert_eq!(set.verdict("bar line"), Verdict::Included(0));
+    }
+
+    /// Indices are positional, so removing a filter renumbers the ones after
+    /// it. Any verdict cached against the old numbering is now wrong, which is
+    /// why callers must re-evaluate rather than patch.
+    #[test]
+    fn removing_a_filter_renumbers_the_rest() {
+        let mut set = set_with(&["foo", "bar"]);
+        assert_eq!(set.verdict("bar line"), Verdict::Included(1));
+
+        set.remove(0);
+
+        assert_eq!(set.verdict("bar line"), Verdict::Included(0));
+    }
+
+    #[test]
+    fn removing_out_of_range_reports_failure_and_changes_nothing() {
+        let mut set = set_with(&["foo"]);
+
+        assert!(!set.remove(5));
+        assert_eq!(set.len(), 1);
+    }
+
+    #[test]
+    fn a_single_filter_can_be_disabled() {
+        let mut set = set_with(&["foo", "bar"]);
+
+        assert!(set.set_enabled(0, false));
+
+        assert_eq!(set.verdict("foo line"), Verdict::Unmatched);
+        assert_eq!(set.verdict("bar line"), Verdict::Included(1));
+    }
+
+    #[test]
+    fn toggle_flips_one_filter_and_reports_its_new_state() {
+        let mut set = set_with(&["foo"]);
+
+        assert_eq!(
+            set.toggle_enabled(0),
+            Some(false),
+            "was enabled, so is now disabled"
+        );
+        assert_eq!(set.toggle_enabled(0), Some(true), "and back on");
+    }
+
+    /// `toggle_enabled` must distinguish "turned off" from "no such filter" —
+    /// both would otherwise report `false`, and the pane's selection can lag
+    /// a deletion by a frame.
+    #[test]
+    fn toggling_a_missing_index_reports_none_and_changes_nothing() {
+        let mut set = set_with(&["foo"]);
+
+        assert_eq!(set.toggle_enabled(5), None);
+        assert!(set.filters()[0].enabled, "nothing should have changed");
+    }
+
+    /// `!` must restore what was enabled before, not enable everything —
+    /// otherwise it silently switches on filters the user turned off.
+    #[test]
+    fn disabling_all_remembers_the_previous_state() {
+        let mut set = set_with(&["foo", "bar", "baz"]);
+        set.set_enabled(1, false);
+
+        set.disable_all_remembering();
+        assert!(!set.any_enabled());
+
+        set.restore_remembered();
+
+        assert!(set.filters()[0].enabled);
+        assert!(!set.filters()[1].enabled, "a filter the user had off came back on");
+        assert!(set.filters()[2].enabled);
+    }
+
+    #[test]
+    fn has_remembered_reports_whether_a_restore_is_pending() {
+        let mut set = set_with(&["foo"]);
+        assert!(!set.has_remembered());
+
+        set.disable_all_remembering();
+        assert!(set.has_remembered());
+
+        set.restore_remembered();
+        assert!(!set.has_remembered());
+    }
+
+    /// Removing a filter while a restore is pending must not resurrect it or
+    /// misapply the remembered flags to the wrong filters.
+    #[test]
+    fn removing_while_disabled_does_not_corrupt_the_restore() {
+        let mut set = set_with(&["foo", "bar"]);
+        set.disable_all_remembering();
+
+        set.remove(0);
+        set.restore_remembered();
+
+        assert_eq!(set.len(), 1);
+        assert!(set.filters()[0].enabled);
+    }
+
+    /// A second `disable_all_remembering` before a restore must not overwrite
+    /// the capture: by then every filter reads disabled (this method just
+    /// disabled them), so capturing again would replace the real prior state
+    /// with all-false and lose it for good — the exact bug this task exists
+    /// to prevent, reached from the other direction.
+    #[test]
+    fn disabling_all_twice_does_not_overwrite_the_capture() {
+        let mut set = set_with(&["foo", "bar"]);
+        set.set_enabled(1, false);
+
+        set.disable_all_remembering();
+        set.disable_all_remembering();
+
+        set.restore_remembered();
+
+        assert!(set.filters()[0].enabled);
+        assert!(
+            !set.filters()[1].enabled,
+            "a filter the user had off came back on"
+        );
+    }
+
+    #[test]
+    fn removing_down_to_an_empty_set_leaves_it_empty() {
+        let mut set = set_with(&["foo"]);
+
+        assert!(set.remove(0));
+
+        assert!(set.is_empty());
+        assert_eq!(set.verdict("foo"), Verdict::Unmatched);
+    }
+
+    #[test]
+    fn removing_from_an_already_empty_set_reports_failure() {
+        let mut set = FilterSet::new();
+
+        assert!(!set.remove(0));
+        assert!(set.is_empty());
+    }
+
+    /// With nothing captured, a restore is a no-op — the `else { return; }`
+    /// path in `restore_remembered` has no other coverage, and a future
+    /// refactor to `.unwrap()` should fail this test rather than panic
+    /// unnoticed in production.
+    #[test]
+    fn restoring_with_nothing_captured_does_nothing() {
+        let mut set = set_with(&["foo"]);
+        set.set_enabled(0, false);
+
+        set.restore_remembered();
+
+        assert!(
+            !set.filters()[0].enabled,
+            "nothing was captured, so nothing should change"
+        );
+        assert!(!set.has_remembered());
+    }
+
+    /// Adding a filter while a restore is pending is not part of the `!`
+    /// workflow, but it must not corrupt state either. `add` always creates
+    /// an enabled filter, and the captured flags are shorter than the
+    /// filters by one, so `zip` in `restore_remembered` pairs the capture
+    /// only with the filters that existed when it was taken — the new filter
+    /// has nothing to restore it to, so it is left exactly as added:
+    /// enabled, regardless of every other filter being forced off around it.
+    #[test]
+    fn adding_while_a_restore_is_pending_leaves_the_new_filter_enabled() {
+        let mut set = set_with(&["foo"]);
+        set.disable_all_remembering();
+
+        set.add("bar").expect("valid pattern");
+        assert!(
+            set.filters()[1].enabled,
+            "new filters are always added enabled"
+        );
+
+        set.restore_remembered();
+
+        assert!(set.filters()[0].enabled, "restored to what it was before");
+        assert!(
+            set.filters()[1].enabled,
+            "nothing was captured for it, so it is left as added"
+        );
     }
 }
