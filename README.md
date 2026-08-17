@@ -1,6 +1,6 @@
 # list
 
-A TUI log viewer with a two-pane file navigator.
+A TUI log viewer with a file navigator and a filterable view.
 
 ## Keybindings
 
