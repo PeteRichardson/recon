@@ -66,7 +66,7 @@ enum NavWidth {
 pub mod document;
 pub mod filter;
 mod widgets;
-use document::Document;
+use document::{Document, Mode};
 use filter::FilterSet;
 use widgets::filenav::FileNav;
 use widgets::fileview::FileView;
@@ -196,6 +196,16 @@ impl App<'_> {
         self.filters.add_excluding(pattern)?;
         self.refresh_view();
         Ok(())
+    }
+
+    /// Flip between dimming unmatched lines and hiding them.
+    fn toggle_hiding(&mut self) {
+        let mode = match self.document.mode() {
+            Mode::Dimmed => Mode::FilteredOnly,
+            Mode::FilteredOnly => Mode::Dimmed,
+        };
+        self.document.set_mode(mode);
+        self.refresh_view();
     }
 
     /// The nav pane, which owns the entry names the automatic width is based on.
@@ -362,6 +372,16 @@ impl App<'_> {
                     self.refresh_view();
                     return Ok(());
                 }
+                KeyCode::Char('H')
+                    if !key.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+                {
+                    self.toggle_hiding();
+                    return Ok(());
+                }
+                KeyCode::Char('h') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    self.toggle_hiding();
+                    return Ok(());
+                }
                 _ => {}
             }
         }
@@ -429,7 +449,14 @@ impl App<'_> {
     /// free on a large log; if it bites, the fix is to keep both buffers and
     /// swap between them rather than to rebuild.
     fn refresh_view(&mut self) {
+        // The cursor is a source line index for the duration of the rebuild:
+        // its row in the view is only meaningful against the old visible list.
+        let cursor_source = self.cursor_source();
         self.document.evaluate(&self.filters);
+        let cursor_source = self
+            .document
+            .nearest_visible(cursor_source)
+            .unwrap_or(cursor_source);
 
         let hiding = self.document.visible().len() < self.document.lines().len();
         let lines = self.document.visible_lines();
@@ -440,17 +467,38 @@ impl App<'_> {
             Vec::new()
         };
 
+        // `CursorMove::Jump` takes a `u16`, which silently truncates past
+        // 65,535 lines and lands the cursor 65,536 lines from its target on a
+        // large log. `set_lines` clamps in `usize` and replaces the buffer in
+        // the same call, so the row is applied directly rather than jumped to
+        // afterwards.
+        let row = self.document.visible_position(cursor_source).unwrap_or(0);
         for widget in &mut self.widgets {
             if let AppWidget::FileView(view) = widget {
                 // Always rebuild. `visible_lines()` is the whole document when
                 // nothing is hidden, so this is a no-op in content — but making
                 // it conditional leaves a stale subset behind when hiding ends,
                 // with the gutter override cleared underneath it.
-                view.show_lines(lines.clone());
+                view.show_lines_with_cursor(lines.clone(), row);
                 view.set_line_numbers(numbers.clone());
                 view.set_line_styles(styles.clone());
             }
         }
+    }
+
+    /// The source line the cursor is on, mapped through the *current* visible
+    /// list before it is rebuilt.
+    fn cursor_source(&self) -> usize {
+        self.widgets
+            .iter()
+            .find_map(|widget| match widget {
+                AppWidget::FileView(view) => {
+                    let row = view.textarea.cursor().0;
+                    Some(self.document.source_at(row).unwrap_or(row))
+                }
+                AppWidget::FileNav(_) => None,
+            })
+            .unwrap_or(0)
     }
 
     /// A one-line summary of the filter state, empty when no filters exist.
@@ -458,16 +506,25 @@ impl App<'_> {
     /// Dimming alone does not say *why* lines are dim, or that a filter is
     /// defined but currently disabled — the pane would just look ordinary.
     fn status_text(&self) -> String {
+        let hiding = self.document.mode() == Mode::FilteredOnly;
+        let funnel = if hiding { "▼ " } else { "" };
         if self.filters.is_empty() {
-            return String::new();
+            // With no filters every line is unmatched, so `FilteredOnly`
+            // shows nothing at all. Reporting it here is the only way the
+            // user can tell the file is intact rather than gone.
+            return if hiding {
+                format!("{funnel}nothing to show — no filters")
+            } else {
+                String::new()
+            };
         }
         let count = self.filters.len();
         let noun = if count == 1 { "filter" } else { "filters" };
         if !self.filters.any_enabled() {
-            return format!("{count} {noun} (disabled)");
+            return format!("{funnel}{count} {noun} (disabled)");
         }
         format!(
-            "{count} {noun}   {}/{} lines match",
+            "{funnel}{count} {noun}   {}/{} lines match",
             self.document.match_count(),
             self.document.lines().len()
         )
@@ -1248,6 +1305,181 @@ mod tests {
         assert!(
             view_line_numbers(&app).is_empty(),
             "the gutter is still overridden with nothing hidden"
+        );
+    }
+
+    /// The cursor's source line, derived from where it sits in the view.
+    fn cursor_source(app: &App) -> usize {
+        app.widgets
+            .iter()
+            .find_map(|w| match w {
+                AppWidget::FileView(view) => {
+                    let row = view.textarea.cursor().0;
+                    Some(app.document.source_at(row).unwrap_or(row))
+                }
+                AppWidget::FileNav(_) => None,
+            })
+            .expect("no file view")
+    }
+
+    /// Move the cursor to `row` without going through `CursorMove::Jump`,
+    /// whose `u16` argument would silently truncate on the large-file test
+    /// below.
+    fn move_cursor_to_visible_row(app: &mut App, row: usize) {
+        for widget in &mut app.widgets {
+            if let AppWidget::FileView(view) = widget {
+                let lines = view.textarea.lines().to_vec();
+                view.textarea.set_lines(lines, (row, 0));
+            }
+        }
+    }
+
+    #[test]
+    fn h_hides_lines_that_match_no_filter() {
+        let mut app = app_over_file("toggle_hide", "alpha\nbeta\ngamma\n");
+        key(&mut app, KeyCode::Char('f'));
+        typed(&mut app, "beta");
+        key(&mut app, KeyCode::Enter);
+        assert_eq!(view_lines(&app).len(), 3, "nothing hidden yet");
+
+        key(&mut app, KeyCode::Char('H'));
+
+        assert_eq!(view_lines(&app), vec!["beta".to_string()]);
+    }
+
+    #[test]
+    fn ctrl_h_toggles_the_same_way() {
+        let mut app = app_over_file("toggle_ctrl_h", "alpha\nbeta\n");
+        key(&mut app, KeyCode::Char('f'));
+        typed(&mut app, "beta");
+        key(&mut app, KeyCode::Enter);
+
+        app.handle_event(event::Event::Key(event::KeyEvent::new(
+            KeyCode::Char('h'),
+            KeyModifiers::CONTROL,
+        )))
+        .unwrap();
+
+        assert_eq!(view_lines(&app), vec!["beta".to_string()]);
+    }
+
+    /// The workflow: filter, hide, scroll to a match, show everything again,
+    /// and land on that exact line with its context around it.
+    #[test]
+    fn the_round_trip_returns_to_the_chosen_line() {
+        let body: String = (0..20).map(|i| format!("line {i}\n")).collect();
+        let mut app = app_over_file("round_trip", &body);
+        key(&mut app, KeyCode::Char('f'));
+        typed(&mut app, "line 1[0-9]");
+        key(&mut app, KeyCode::Enter);
+
+        key(&mut app, KeyCode::Char('H'));
+        // Visible rows are now source lines 10..=19; pick the third of them.
+        move_cursor_to_visible_row(&mut app, 2);
+        assert_eq!(cursor_source(&app), 12);
+
+        key(&mut app, KeyCode::Char('H'));
+
+        assert_eq!(cursor_source(&app), 12, "did not return to the same line");
+        assert_eq!(view_lines(&app).len(), 20, "context did not come back");
+    }
+
+    /// `CursorMove::Jump` takes a `u16`, so a restore that went through it
+    /// would silently truncate a row above 65,535 and land 65,536 lines from
+    /// the chosen one instead of on it.
+    #[test]
+    fn the_round_trip_survives_more_than_65535_lines() {
+        const TOTAL: usize = 70_000;
+        const TARGET: usize = 66_000;
+        let body: String = (0..TOTAL)
+            .map(|i| {
+                if i == TARGET {
+                    "MATCH\n".to_string()
+                } else {
+                    format!("line {i}\n")
+                }
+            })
+            .collect();
+        let mut app = app_over_file("large_round_trip", &body);
+        key(&mut app, KeyCode::Char('f'));
+        typed(&mut app, "MATCH");
+        key(&mut app, KeyCode::Enter);
+
+        key(&mut app, KeyCode::Char('H'));
+        assert_eq!(cursor_source(&app), TARGET, "did not land on the sole match");
+
+        key(&mut app, KeyCode::Char('H'));
+
+        assert_eq!(
+            cursor_source(&app),
+            TARGET,
+            "did not return to the same line past the u16 boundary"
+        );
+        assert_eq!(view_lines(&app).len(), TOTAL, "context did not come back");
+    }
+
+    /// Toggling into hidden mode from a line that is not a match snaps forward
+    /// to the next one, and toggling back lands on that.
+    #[test]
+    fn hiding_from_an_unmatched_line_snaps_to_the_next_match() {
+        let mut app = app_over_file("snap", "alpha\nbeta\ngamma\nbeta two\n");
+        key(&mut app, KeyCode::Char('f'));
+        typed(&mut app, "beta");
+        key(&mut app, KeyCode::Enter);
+        move_cursor_to_visible_row(&mut app, 2); // gamma, unmatched
+        assert_eq!(cursor_source(&app), 2);
+
+        key(&mut app, KeyCode::Char('H'));
+
+        assert_eq!(cursor_source(&app), 3, "did not snap to the next match");
+    }
+
+    /// Hiding with nothing to show must not panic or lose the cursor.
+    #[test]
+    fn hiding_with_no_matches_is_survivable() {
+        let mut app = app_over_file("no_matches", "alpha\nbeta\n");
+        key(&mut app, KeyCode::Char('f'));
+        typed(&mut app, "zzz");
+        key(&mut app, KeyCode::Enter);
+
+        key(&mut app, KeyCode::Char('H'));
+        assert!(view_lines(&app).iter().all(String::is_empty) || view_lines(&app).is_empty());
+
+        key(&mut app, KeyCode::Char('H'));
+        assert_eq!(view_lines(&app).len(), 2, "did not come back");
+    }
+
+    #[test]
+    fn the_status_line_shows_a_funnel_while_hiding() {
+        let mut app = app_over_file("funnel", "alpha\nbeta\n");
+        key(&mut app, KeyCode::Char('f'));
+        typed(&mut app, "beta");
+        key(&mut app, KeyCode::Enter);
+        assert!(!status_line(&mut app).contains('▼'));
+
+        key(&mut app, KeyCode::Char('H'));
+
+        assert!(
+            status_line(&mut app).contains('▼'),
+            "no indication that lines are hidden: {}",
+            status_line(&mut app)
+        );
+    }
+
+    /// With no filters, `H` empties the view entirely (every line is
+    /// unmatched). Without a status row saying so, the pane just looks like a
+    /// bare border and the user cannot tell the file is intact.
+    #[test]
+    fn hiding_with_no_filters_still_reports_status() {
+        let mut app = app_over_file("hide_no_filters", "alpha\nbeta\n");
+
+        key(&mut app, KeyCode::Char('H'));
+
+        let status = status_line(&mut app);
+        assert!(status.contains('▼'), "no funnel shown: {status}");
+        assert!(
+            status.to_lowercase().contains("no filters"),
+            "does not explain why nothing is shown: {status}"
         );
     }
 }

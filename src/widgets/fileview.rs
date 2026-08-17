@@ -86,13 +86,18 @@ impl FileView<'_> {
         self.textarea.set_line_numbers(numbers);
     }
 
-    /// Replace the buffer's contents without touching the file.
+    /// Replace the buffer's contents and put the cursor on `row`, without
+    /// touching the file.
     ///
     /// Used when filtering hides lines: the view then holds a subset of the
-    /// document rather than the file as read. The filename is left alone, since
-    /// it still describes where these lines came from.
-    pub fn show_lines(&mut self, lines: Vec<String>) {
-        self.textarea = TextArea::new(lines);
+    /// document. The cursor row is applied here rather than by a later jump,
+    /// because `CursorMove::Jump` takes a `u16` and would silently truncate
+    /// past 65,535 lines. The filename is left alone, since it still describes
+    /// where these lines came from.
+    pub fn show_lines_with_cursor(&mut self, lines: Vec<String>, row: usize) {
+        // set_lines rejects an empty vector; an empty buffer is one blank line.
+        let lines = if lines.is_empty() { vec![String::new()] } else { lines };
+        self.textarea.set_lines(lines, (row, 0));
     }
 
     /// Start a search, moving to the first match from the cursor.
