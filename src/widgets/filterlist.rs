@@ -3,12 +3,6 @@
 //! It renders from a borrowed `FilterSet` rather than owning one: `App` owns
 //! the set, and a copy here could go stale the moment a filter changed.
 
-// This task builds the widget in isolation, deliberately without wiring it
-// into `App` (that is Task 5's job). Until then, nothing outside this
-// module's own tests constructs a `FilterList`, so rustc's dead_code lint
-// flags the whole thing. Task 5 should remove this once `App` holds one.
-#![allow(dead_code)]
-
 use crate::filter::{FilterSet, Sense, DIM_STYLE};
 use ratatui::prelude::{Buffer, Color, Modifier, Rect, Style};
 use ratatui::widgets::{Block, List, ListItem, ListState, StatefulWidget};
@@ -19,12 +13,20 @@ const SELECTION: &str = ">>";
 /// Rows of chrome the pane needs on top of one row per filter.
 const BORDERS: u16 = 2;
 
+// This task builds the widget in isolation, deliberately without wiring it
+// into `App` (that is Task 5's job). Until Task 5 holds a `FilterList`,
+// nothing outside this module's own tests constructs one, so rustc's
+// dead_code lint flags the struct and its methods. Task 5 is required to
+// remove both `#[allow(dead_code)]` attributes below once `App` holds one,
+// and to confirm the build stays warning-free with them gone.
+#[allow(dead_code)]
 #[derive(Debug, Default)]
 pub struct FilterList {
     pub state: ListState,
     pub active: bool,
 }
 
+#[allow(dead_code)]
 impl FilterList {
     pub fn selected(&self) -> Option<usize> {
         self.state.selected()
@@ -216,6 +218,59 @@ mod tests {
         assert!(
             foo.contains("inc"),
             "including filter should be marked inc:\n{foo}"
+        );
+    }
+
+    #[test]
+    fn preferred_width_grows_with_the_longest_pattern() {
+        let list = FilterList::default();
+        let short = set_of(&["foo"], &[]);
+        let long = set_of(&["a pattern much longer than foo"], &[]);
+
+        assert!(
+            list.preferred_width(&long) > list.preferred_width(&short),
+            "width should grow with the longest pattern"
+        );
+    }
+
+    /// The `u16::try_from(..).unwrap_or(u16::MAX)` fallback must saturate on
+    /// overflow rather than wrap, the way an `as u16` truncation would — this
+    /// project has already shipped a real defect from that kind of silent
+    /// wraparound elsewhere.
+    #[test]
+    fn preferred_width_saturates_rather_than_wrapping_on_overflow() {
+        let huge_pattern = "a".repeat(usize::from(u16::MAX) + 100);
+        let filters = set_of(&[huge_pattern.as_str()], &[]);
+        let list = FilterList::default();
+
+        assert_eq!(
+            list.preferred_width(&filters),
+            u16::MAX,
+            "an overflowing width should saturate at u16::MAX, not wrap"
+        );
+    }
+
+    /// A disabled excluding filter must read as dimmed, not as the ordinary
+    /// excluding grey — disabled wins visually. Nothing else pinned this
+    /// ordering, so a future change to how the style branches combine could
+    /// silently flip it.
+    #[test]
+    fn a_disabled_excluding_filter_is_dimmed_not_grey() {
+        let mut filters = set_of(&[], &["noise"]);
+        filters.set_enabled(0, false);
+        let mut list = FilterList::default();
+        let area = Rect::new(0, 0, 30, 8);
+        let mut buf = Buffer::empty(area);
+
+        list.render(&filters, area, &mut buf);
+
+        assert!(
+            (0..area.width).any(|x| buf[(x, 1)].style().fg == DIM_STYLE.fg),
+            "a disabled excluding filter should use the dim style"
+        );
+        assert!(
+            !(0..area.width).any(|x| buf[(x, 1)].style().fg == Some(Color::DarkGray)),
+            "a disabled excluding filter should not render in the ordinary excluding grey"
         );
     }
 
