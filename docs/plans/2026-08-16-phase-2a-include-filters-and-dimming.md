@@ -398,7 +398,7 @@ Create `src/document.rs` with only this test module:
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ratatui::style::{Color, Modifier};
+    use ratatui::style::Modifier;
 
     fn doc(lines: &[&str]) -> Document {
         Document::new(
