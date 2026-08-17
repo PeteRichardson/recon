@@ -1264,11 +1264,23 @@ Add to `mod tests` in `src/lib.rs`:
             .to_string()
     }
 
+    /// With no filters there is nothing to report, so the bottom row is not
+    /// surrendered at all: the panes still reach it and draw their own border
+    /// there. Costing a row to say nothing is what this checks against.
     #[test]
-    fn the_status_line_is_empty_without_filters() {
+    fn no_row_is_surrendered_without_filters() {
         let mut app = app_over_file("status_none", "alpha\n");
 
-        assert_eq!(status_line(&mut app), "");
+        let bottom = status_line(&mut app);
+
+        assert!(
+            !bottom.contains("filters"),
+            "reported filter state when no filters exist: {bottom}"
+        );
+        assert!(
+            bottom.contains('└'),
+            "the panes did not reach the bottom row, so a row was spent on nothing: {bottom}"
+        );
     }
 
     #[test]
