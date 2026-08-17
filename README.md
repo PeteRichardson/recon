@@ -17,6 +17,8 @@ Global (`src/lib.rs`), handled before the focused pane sees the key:
 | `/` | Search forward in the focused pane |
 | `?` | Search backward in the focused pane |
 | `f` | Add an include filter (always applies to the file view) |
+| `F` | Add an exclude filter — its matches leave the view entirely |
+| `Ctrl-H` / `H` | Toggle between dimming unmatched lines and hiding them |
 | `!` | Disable every filter, or re-enable them all |
 
 Mouse: drag the divider between the panes to resize them; double-click it to
@@ -27,6 +29,19 @@ expressions, like search. A filter set describes a log format rather than one
 file, so it survives loading another file — `!` is the single keystroke back to
 an unfiltered view without discarding the set. Nothing is hidden: filters only
 change how lines are presented.
+
+Excluding filters (`F`) are different: their matches are removed from view
+outright, in both modes. `Ctrl-H` (or `H`, for terminals that fold Ctrl-H into
+Backspace) toggles the remaining lines between dimmed and hidden. The gutter
+keeps the original line numbers either way, so a gap in the numbering is how
+you tell something was left out. Toggling back returns you to the exact line
+you were on, which is the point: the hidden view is for finding a line, not
+for living in.
+
+Behaviour change: `Ctrl-h` no longer moves the cursor left in the file view.
+It used to — the file view matches `h` regardless of modifiers — but the
+global `Ctrl-H` binding is now handled first and returns before the view ever
+sees the key. Plain `h` is unaffected.
 
 While a search or filter prompt is open it consumes every key, so `q` and
 `Tab` are typed into the pattern rather than acted on:
@@ -48,6 +63,7 @@ File view pane (`src/widgets/fileview.rs`):
 | Key(s) | Action |
 | --- | --- |
 | `h` / `Left` | Move cursor back |
+| `Ctrl-h` | Nothing here — the global `Ctrl-H` hide toggle handles it first. Plain `h` still moves the cursor back. |
 | `j` / `Down` | Move cursor down |
 | `k` / `Up` | Move cursor up |
 | `l` / `Right` | Move cursor forward |
