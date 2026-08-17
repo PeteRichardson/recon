@@ -17,6 +17,14 @@ const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 /// Shown in the prompt when a pattern will not compile, after vim's error.
 const INVALID_PATTERN: &str = "E486: invalid pattern";
 
+/// What an open prompt will do with the pattern being typed.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+enum PromptKind {
+    #[default]
+    Search,
+    Filter,
+}
+
 /// A search pattern being typed at the bottom of the screen.
 #[derive(Debug, Default)]
 struct SearchPrompt {
@@ -24,15 +32,17 @@ struct SearchPrompt {
     /// Started with `?` rather than `/`.
     reverse: bool,
     error: Option<String>,
+    kind: PromptKind,
 }
 
 impl SearchPrompt {
     /// What the bottom line shows: the error if the pattern was rejected,
     /// otherwise the pattern being typed behind its `/` or `?` sigil.
     fn line(&self) -> String {
-        match &self.error {
-            Some(error) => error.clone(),
-            None => format!(
+        match (&self.error, self.kind) {
+            (Some(error), _) => error.clone(),
+            (None, PromptKind::Filter) => format!("filter: {}", self.pattern),
+            (None, PromptKind::Search) => format!(
                 "{}{}",
                 if self.reverse { '?' } else { '/' },
                 self.pattern
@@ -54,6 +64,7 @@ enum NavWidth {
 pub mod document;
 pub mod filter;
 mod widgets;
+use filter::FilterSet;
 use widgets::filenav::FileNav;
 use widgets::fileview::FileView;
 use widgets::{Action, AppWidget};
@@ -77,6 +88,7 @@ pub struct App<'a> {
     last_divider_click: Option<Instant>,
     /// Open while a search pattern is being typed.
     search: Option<SearchPrompt>,
+    filters: FilterSet,
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -100,6 +112,7 @@ impl App<'_> {
             dragging: false,
             last_divider_click: None,
             search: None,
+            filters: FilterSet::new(),
         }
     }
 
@@ -114,9 +127,14 @@ impl App<'_> {
                 let Some(prompt) = self.search.as_ref() else {
                     return;
                 };
-                let (pattern, reverse) = (prompt.pattern.clone(), prompt.reverse);
+                let (pattern, reverse, kind) =
+                    (prompt.pattern.clone(), prompt.reverse, prompt.kind);
 
-                if self.run_search(&pattern, reverse).is_ok() {
+                let outcome = match kind {
+                    PromptKind::Search => self.run_search(&pattern, reverse),
+                    PromptKind::Filter => self.add_filter(&pattern),
+                };
+                if outcome.is_ok() {
                     self.search = None;
                 } else if let Some(prompt) = self.search.as_mut() {
                     prompt.error = Some(INVALID_PATTERN.to_string());
@@ -155,6 +173,12 @@ impl App<'_> {
             self.perform(action);
         }
         Ok(())
+    }
+
+    /// Add an including filter, colouring it distinctly from its predecessors.
+    fn add_filter(&mut self, pattern: &str) -> Result<(), regex::Error> {
+        let style = self.filters.next_style();
+        self.filters.add(pattern, style)
     }
 
     /// The nav pane, which owns the entry names the automatic width is based on.
@@ -280,6 +304,13 @@ impl App<'_> {
                 KeyCode::Char(sigil @ ('/' | '?')) => {
                     self.search = Some(SearchPrompt {
                         reverse: sigil == '?',
+                        ..SearchPrompt::default()
+                    });
+                    return Ok(());
+                }
+                KeyCode::Char('f') => {
+                    self.search = Some(SearchPrompt {
+                        kind: PromptKind::Filter,
                         ..SearchPrompt::default()
                     });
                     return Ok(());
@@ -651,5 +682,78 @@ mod tests {
 
         assert!(!app.dragging);
         assert_eq!(app.nav_width(AREA), before);
+    }
+
+    #[test]
+    fn f_opens_a_filter_prompt() {
+        let mut app = app_over("filter_prompt", &["a.rs"]);
+
+        key(&mut app, KeyCode::Char('f'));
+        typed(&mut app, "foo");
+
+        assert_eq!(prompt_line(&mut app), "filter: foo");
+    }
+
+    #[test]
+    fn committing_a_filter_adds_it() {
+        let mut app = app_over("filter_add", &["a.rs"]);
+
+        key(&mut app, KeyCode::Char('f'));
+        typed(&mut app, "foo");
+        key(&mut app, KeyCode::Enter);
+
+        assert!(app.search.is_none(), "prompt stayed open");
+        assert_eq!(app.filters.len(), 1);
+    }
+
+    #[test]
+    fn an_invalid_filter_pattern_keeps_the_prompt_open() {
+        let mut app = app_over("filter_bad", &["a.rs"]);
+
+        key(&mut app, KeyCode::Char('f'));
+        typed(&mut app, "[");
+        key(&mut app, KeyCode::Enter);
+
+        assert!(app.search.is_some(), "prompt closed on an invalid pattern");
+        assert!(prompt_line(&mut app).contains("E486"));
+        assert_eq!(app.filters.len(), 0, "a rejected pattern must not be added");
+    }
+
+    #[test]
+    fn esc_cancels_a_filter_prompt_without_adding() {
+        let mut app = app_over("filter_esc", &["a.rs"]);
+
+        key(&mut app, KeyCode::Char('f'));
+        typed(&mut app, "foo");
+        key(&mut app, KeyCode::Esc);
+
+        assert!(app.search.is_none());
+        assert_eq!(app.filters.len(), 0);
+    }
+
+    /// The prompt swallows keys, so `q` types rather than quits — as for search.
+    #[test]
+    fn q_while_filtering_is_typed_not_quit() {
+        let mut app = app_over("filter_q", &["a.rs"]);
+
+        key(&mut app, KeyCode::Char('f'));
+        typed(&mut app, "q");
+
+        assert!(app.is_running());
+        assert_eq!(prompt_line(&mut app), "filter: q");
+    }
+
+    #[test]
+    fn successive_filters_take_different_colours() {
+        let mut app = app_over("filter_colours", &["a.rs"]);
+
+        for pattern in ["foo", "bar"] {
+            key(&mut app, KeyCode::Char('f'));
+            typed(&mut app, pattern);
+            key(&mut app, KeyCode::Enter);
+        }
+
+        let styles: Vec<_> = app.filters.filters().iter().map(|f| f.style.fg).collect();
+        assert_ne!(styles[0], styles[1]);
     }
 }
