@@ -91,9 +91,10 @@ upstream's own tree it is the root package and the profile is valid.
    alone, so it runs `recon`'s tests and skips this crate entirely, including
    `tests/line_presentation.rs`, which pins this fork's whole contract.
 
-The patch is deliberately confined to per-line *presentation*. If it ever
-needs to touch cursor movement, `screen_map.rs` or `wrap.rs`, stop: that is
-the signal to reconsider a purpose-built viewer instead (see the spec).
+The patch is deliberately confined to per-line *presentation* and viewport
+*reporting*. If it ever needs to touch cursor movement, `screen_map.rs` or
+`wrap.rs`, stop: that is the signal to reconsider a purpose-built viewer
+instead (see the spec).
 
 ## Inert publish artefacts
 

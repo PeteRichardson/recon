@@ -40,6 +40,16 @@ pub struct FileView<'a> {
     gutter_blank: bool,
     /// The area this pane was rendered into last time, if ever. Used only by
     /// `scroll_cursor_to_row` — see there for why.
+    ///
+    /// A stale proxy for "what area will this frame's real render use": most
+    /// obviously wrong across a mid-frame resize, but also across `load` and
+    /// `preview`, which replace the textarea outright and drop its block —
+    /// the block is only re-set inside `render`, so the first priming render
+    /// after either sees no border and computes an inner height two rows
+    /// larger than the pane will actually have. Harmless today, since both
+    /// leave the cursor at row 0 (`desired_top` and the resulting `delta`
+    /// are 0 regardless of height), but a future caller that restores a
+    /// nonzero row across a `load`/`preview` would need this fixed first.
     last_area: Option<Rect>,
 }
 
@@ -142,14 +152,19 @@ impl FileView<'_> {
     /// cached size, so scrolling against a zeroed one collapses the cursor
     /// onto the scroll target instead of leaving it on its line. Priming
     /// with a throwaway render at the pane's last known area first (the real
-    /// render this frame will use the same area, bar a mid-frame resize)
-    /// gives `scroll` the pane's real height to clamp against, so the cursor
-    /// survives the nudge intact.
+    /// render this frame will use the same area, bar the staleness noted on
+    /// `last_area`) gives `scroll` the pane's real height to clamp against,
+    /// so the cursor survives the nudge intact.
+    ///
+    /// Without a known area there is no geometry to scroll a *screen* row
+    /// against, so this is a no-op rather than risking the zeroed-viewport
+    /// collapse above with nothing primed to guard it — that would move the
+    /// cursor's *data* position, not just the view, and do it silently.
     pub fn scroll_cursor_to_row(&mut self, row: u16) {
-        if let Some(area) = self.last_area {
-            let mut scratch = Buffer::empty(area);
-            (&self.textarea).render(area, &mut scratch);
-        }
+        let Some(area) = self.last_area else { return };
+        let mut scratch = Buffer::empty(area);
+        (&self.textarea).render(area, &mut scratch);
+
         let cursor = self.textarea.cursor().0;
         let desired_top = cursor.saturating_sub(row as usize);
         let (current_top, _) = self.textarea.scroll_top();
@@ -937,6 +952,67 @@ mod tests {
 
         let alpha = row_of(&buf, "alpha");
         assert!(!row_has_fg(&buf, alpha, Color::Yellow));
+    }
+
+    /// Pins the fix directly at the `FileView` level, without going through
+    /// `App`: `scroll_cursor_to_row` runs right after `show_lines_with_cursor`
+    /// resets the viewport to zeroed dimensions, before this frame has
+    /// rendered even once. Without priming a render first, `TextArea::scroll`'s
+    /// own `CursorMove::InViewport` bookkeeping clamps *the cursor itself*
+    /// (not just the view) onto the scroll target, since the zeroed height
+    /// collapses its valid range to a single row. This is the piece most
+    /// likely to rot silently — the `App`-level tests only exercise it
+    /// indirectly, through a whole filter toggle.
+    #[test]
+    fn scroll_cursor_to_row_primes_the_viewport_before_scrolling() {
+        let body: String = (0..200).map(|i| format!("line {i}\n")).collect();
+        let mut view = view_of("scroll_cursor_prime.txt", &body);
+        let area = Rect::new(0, 0, 40, 8);
+        let mut buf = Buffer::empty(area);
+        // Establishes `last_area` and the fork's real viewport dimensions,
+        // the way the pane's first real render of the session would.
+        (&mut view).render(area, &mut buf);
+
+        // Simulate a rebuild: `show_lines_with_cursor` calls `set_lines`,
+        // which resets the viewport to zeroed dimensions, exactly as a real
+        // filter toggle's rebuild would.
+        let lines = view.textarea.lines().to_vec();
+        view.show_lines_with_cursor(lines, 150);
+
+        view.scroll_cursor_to_row(3);
+
+        assert_eq!(
+            view.textarea.cursor().0,
+            150,
+            "the cursor's line moved — the zeroed-viewport clamp corrupted \
+             the cursor's data position, not just the view"
+        );
+        assert_eq!(
+            view.cursor_screen_row(),
+            3,
+            "the cursor did not land on the requested screen row"
+        );
+    }
+
+    /// Without a render having ever happened, there is no known area to
+    /// prime with, so scrolling to a screen row is meaningless — this must
+    /// be a no-op rather than running `scroll` blind into the same
+    /// zeroed-viewport collapse the priming exists to avoid.
+    #[test]
+    fn scroll_cursor_to_row_is_a_no_op_before_any_render() {
+        let body: String = (0..200).map(|i| format!("line {i}\n")).collect();
+        let mut view = view_of("scroll_cursor_no_area.txt", &body);
+
+        let lines = view.textarea.lines().to_vec();
+        view.show_lines_with_cursor(lines, 150);
+
+        view.scroll_cursor_to_row(3);
+
+        assert_eq!(
+            view.textarea.cursor().0,
+            150,
+            "the cursor moved despite no known area to scroll against"
+        );
     }
 }
 

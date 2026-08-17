@@ -1,5 +1,5 @@
 diff -ruN '--exclude=PATCH.md' '--exclude=upstream.patch' '--exclude=target' /tmp/tui-pristine/Cargo.toml vendor/tui-textarea-2/Cargo.toml
---- /tmp/tui-pristine/Cargo.toml	2026-08-17 11:15:17.217600795 -0400
+--- /tmp/tui-pristine/Cargo.toml	2026-08-17 11:37:08.760672337 -0400
 +++ vendor/tui-textarea-2/Cargo.toml	2026-08-16 17:37:37.599437460 -0400
 @@ -171,6 +171,10 @@
  path = "tests/input.rs"
@@ -20,8 +20,8 @@ diff -ruN '--exclude=PATCH.md' '--exclude=upstream.patch' '--exclude=target' /tm
 -[profile.bench]
 -lto = "thin"
 diff -ruN '--exclude=PATCH.md' '--exclude=upstream.patch' '--exclude=target' /tmp/tui-pristine/src/textarea.rs vendor/tui-textarea-2/src/textarea.rs
---- /tmp/tui-pristine/src/textarea.rs	2026-08-17 11:15:17.227875293 -0400
-+++ vendor/tui-textarea-2/src/textarea.rs	2026-08-17 11:08:13.429863640 -0400
+--- /tmp/tui-pristine/src/textarea.rs	2026-08-17 11:37:08.771463672 -0400
++++ vendor/tui-textarea-2/src/textarea.rs	2026-08-17 11:36:59.946528054 -0400
 @@ -208,6 +208,8 @@
      history: History,
      cursor_line_style: Style,
@@ -149,7 +149,7 @@ diff -ruN '--exclude=PATCH.md' '--exclude=upstream.patch' '--exclude=target' /tm
      /// Set the placeholder text. The text is set in the textarea when no text is input. Setting a non-empty string `""`
      /// enables the placeholder. The default value is an empty string so the placeholder is disabled by default.
      /// To customize the text style, see [`TextArea::set_placeholder_style`].
-@@ -2659,6 +2751,15 @@
+@@ -2659,6 +2751,34 @@
          self.cursor.into()
      }
  
@@ -158,6 +158,25 @@ diff -ruN '--exclude=PATCH.md' '--exclude=upstream.patch' '--exclude=target' /tm
 +    /// Reported so a caller can tell where the cursor sits *on screen*, not
 +    /// just in the buffer — needed to hold a line in place across a
 +    /// `set_lines`, which resets the viewport.
++    /// ```
++    /// use ratatui::buffer::Buffer;
++    /// use ratatui::layout::Rect;
++    /// use ratatui::widgets::Widget;
++    /// use tui_textarea::TextArea;
++    ///
++    /// let mut textarea: TextArea = (0..20).map(|i| i.to_string()).collect();
++    /// assert_eq!(textarea.scroll_top(), (0, 0));
++    ///
++    /// // A render establishes the viewport's real dimensions; the cursor
++    /// // starts at row 0, so this one leaves the top where it was.
++    /// let area = Rect { x: 0, y: 0, width: 24, height: 8 };
++    /// let mut buf = Buffer::empty(area);
++    /// textarea.render(area, &mut buf);
++    /// assert_eq!(textarea.scroll_top(), (0, 0));
++    ///
++    /// textarea.scroll((15, 0));
++    /// assert_eq!(textarea.scroll_top(), (15, 0));
++    /// ```
 +    pub fn scroll_top(&self) -> (u16, u16) {
 +        self.viewport.scroll_top()
 +    }
@@ -166,7 +185,7 @@ diff -ruN '--exclude=PATCH.md' '--exclude=upstream.patch' '--exclude=target' /tm
          self.cursor.to_screen_cursor(self)
      }
 diff -ruN '--exclude=PATCH.md' '--exclude=upstream.patch' '--exclude=target' /tmp/tui-pristine/src/widget.rs vendor/tui-textarea-2/src/widget.rs
---- /tmp/tui-pristine/src/widget.rs	2026-08-17 11:15:17.227081165 -0400
+--- /tmp/tui-pristine/src/widget.rs	2026-08-17 11:37:08.770733833 -0400
 +++ vendor/tui-textarea-2/src/widget.rs	2026-08-16 17:37:37.606378737 -0400
 @@ -98,7 +98,7 @@
  

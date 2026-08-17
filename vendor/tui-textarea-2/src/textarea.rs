@@ -2756,6 +2756,25 @@ impl<'a> TextArea<'a> {
     /// Reported so a caller can tell where the cursor sits *on screen*, not
     /// just in the buffer — needed to hold a line in place across a
     /// `set_lines`, which resets the viewport.
+    /// ```
+    /// use ratatui::buffer::Buffer;
+    /// use ratatui::layout::Rect;
+    /// use ratatui::widgets::Widget;
+    /// use tui_textarea::TextArea;
+    ///
+    /// let mut textarea: TextArea = (0..20).map(|i| i.to_string()).collect();
+    /// assert_eq!(textarea.scroll_top(), (0, 0));
+    ///
+    /// // A render establishes the viewport's real dimensions; the cursor
+    /// // starts at row 0, so this one leaves the top where it was.
+    /// let area = Rect { x: 0, y: 0, width: 24, height: 8 };
+    /// let mut buf = Buffer::empty(area);
+    /// textarea.render(area, &mut buf);
+    /// assert_eq!(textarea.scroll_top(), (0, 0));
+    ///
+    /// textarea.scroll((15, 0));
+    /// assert_eq!(textarea.scroll_top(), (15, 0));
+    /// ```
     pub fn scroll_top(&self) -> (u16, u16) {
         self.viewport.scroll_top()
     }
