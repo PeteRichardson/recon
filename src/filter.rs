@@ -105,6 +105,10 @@ impl FilterSet {
             enabled: true,
             style,
         });
+        // A pending capture describes a set that no longer exists. Keeping it
+        // would strand it: `!` would see an enabled filter, try to capture,
+        // find one already pending, and do nothing at all — forever.
+        self.remembered = None;
         Ok(())
     }
 
@@ -121,6 +125,10 @@ impl FilterSet {
             enabled: true,
             style: Style::default(),
         });
+        // A pending capture describes a set that no longer exists. Keeping it
+        // would strand it: `!` would see an enabled filter, try to capture,
+        // find one already pending, and do nothing at all — forever.
+        self.remembered = None;
         Ok(())
     }
 
@@ -624,15 +632,13 @@ mod tests {
         assert!(!set.has_remembered());
     }
 
-    /// Adding a filter while a restore is pending is not part of the `!`
-    /// workflow, but it must not corrupt state either. `add` always creates
-    /// an enabled filter, and the captured flags are shorter than the
-    /// filters by one, so `zip` in `restore_remembered` pairs the capture
-    /// only with the filters that existed when it was taken — the new filter
-    /// has nothing to restore it to, so it is left exactly as added:
-    /// enabled, regardless of every other filter being forced off around it.
+    /// Adding a filter while a restore is pending describes a set that no
+    /// longer exists, so `add` drops the capture rather than let it strand:
+    /// a later `restore_remembered` is a no-op, and every filter — the ones
+    /// captured and the one just added — is left exactly as it stood right
+    /// after the add.
     #[test]
-    fn adding_while_a_restore_is_pending_leaves_the_new_filter_enabled() {
+    fn adding_while_a_restore_is_pending_drops_the_capture() {
         let mut set = set_with(&["foo"]);
         set.disable_all_remembering();
 
@@ -641,13 +647,20 @@ mod tests {
             set.filters()[1].enabled,
             "new filters are always added enabled"
         );
+        assert!(
+            !set.has_remembered(),
+            "adding a filter should drop the now-stale capture"
+        );
 
         set.restore_remembered();
 
-        assert!(set.filters()[0].enabled, "restored to what it was before");
+        assert!(
+            !set.filters()[0].enabled,
+            "nothing was captured any more, so restore is a no-op"
+        );
         assert!(
             set.filters()[1].enabled,
-            "nothing was captured for it, so it is left as added"
+            "still enabled, exactly as added"
         );
     }
 }

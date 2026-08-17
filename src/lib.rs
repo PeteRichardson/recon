@@ -381,10 +381,18 @@ impl App<'_> {
                     return Ok(());
                 }
                 KeyCode::Char('!') if key.modifiers.is_empty() => {
-                    // Toggle the whole set, so an unfiltered view is one
-                    // keystroke away without losing the filters themselves.
-                    let enable = !self.filters.any_enabled();
-                    self.filters.set_all_enabled(enable);
+                    // Three states, because "nothing is enabled" and "nothing
+                    // was captured" are different situations. Branching on the
+                    // capture alone makes ! inert once every filter has been
+                    // disabled by hand: it would capture all-disabled and then
+                    // faithfully restore it, forever.
+                    if self.filters.any_enabled() {
+                        self.filters.disable_all_remembering();
+                    } else if self.filters.has_remembered() {
+                        self.filters.restore_remembered();
+                    } else {
+                        self.filters.set_all_enabled(true);
+                    }
                     self.refresh_view();
                     return Ok(());
                 }
@@ -1172,6 +1180,72 @@ mod tests {
             view_line_styles(&app)[1].is_some(),
             "! did not restore the filters"
         );
+    }
+
+    /// `!` must put back what the user had, not switch everything on.
+    #[test]
+    fn bang_restores_the_per_filter_state_it_captured() {
+        let mut app = app_over_file("bang_restore", "alpha\nbeta\n");
+        for pattern in ["alpha", "beta"] {
+            key(&mut app, KeyCode::Char('f'));
+            typed(&mut app, pattern);
+            key(&mut app, KeyCode::Enter);
+        }
+        app.filters.set_enabled(1, false);
+
+        key(&mut app, KeyCode::Char('!'));
+        assert!(!app.filters.any_enabled());
+
+        key(&mut app, KeyCode::Char('!'));
+
+        assert!(app.filters.filters()[0].enabled);
+        assert!(
+            !app.filters.filters()[1].enabled,
+            "a filter the user had disabled was switched back on"
+        );
+    }
+
+    /// With every filter disabled by hand and nothing captured, `!` has no
+    /// prior state to restore — so it enables everything, rather than
+    /// capturing all-disabled and becoming inert.
+    #[test]
+    fn bang_re_enables_when_everything_was_disabled_by_hand() {
+        let mut app = app_over_file("bang_escape", "alpha\nbeta\n");
+        for pattern in ["alpha", "beta"] {
+            key(&mut app, KeyCode::Char('f'));
+            typed(&mut app, pattern);
+            key(&mut app, KeyCode::Enter);
+        }
+        app.filters.set_enabled(0, false);
+        app.filters.set_enabled(1, false);
+
+        key(&mut app, KeyCode::Char('!'));
+
+        assert!(app.filters.any_enabled(), "! left the user with no way back");
+    }
+
+    /// Adding a filter while `!` has a capture pending must not strand it.
+    /// The capture describes a set that no longer exists, so it is dropped and
+    /// the next `!` captures afresh — otherwise `!` sees an enabled filter,
+    /// finds a capture already pending, and silently does nothing forever.
+    #[test]
+    fn adding_a_filter_after_bang_does_not_leave_bang_inert() {
+        let mut app = app_over_file("bang_after_add", "alpha\nbeta\n");
+        key(&mut app, KeyCode::Char('f'));
+        typed(&mut app, "alpha");
+        key(&mut app, KeyCode::Enter);
+        key(&mut app, KeyCode::Char('!'));
+        assert!(!app.filters.any_enabled());
+
+        key(&mut app, KeyCode::Char('f'));
+        typed(&mut app, "beta");
+        key(&mut app, KeyCode::Enter);
+
+        key(&mut app, KeyCode::Char('!'));
+        assert!(!app.filters.any_enabled(), "! did not disable the new filter");
+
+        key(&mut app, KeyCode::Char('!'));
+        assert!(app.filters.any_enabled(), "! went inert - nothing came back");
     }
 
     /// The bottom row when no prompt is open.

@@ -19,7 +19,7 @@ Global (`src/lib.rs`), handled before the focused pane sees the key:
 | `f` | Add an include filter (always applies to the file view) |
 | `F` | Add an exclude filter — its matches leave the view entirely |
 | `Ctrl-H` / `H` | Toggle between dimming unmatched lines and hiding them |
-| `!` | Disable every filter, or re-enable them all |
+| `!` | Disable every filter, remembering which were on; restores exactly that (or enables all, if none were on to remember) |
 
 Mouse: drag the divider between the panes to resize them; double-click it to
 return to sizing the navigator pane automatically to its contents.
