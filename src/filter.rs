@@ -69,17 +69,19 @@ impl FilterSet {
         &self.filters
     }
 
-    /// The colour the next filter added should take.
-    pub fn next_style(&self) -> Style {
+    /// The colour the next filter added will take.
+    fn next_style(&self) -> Style {
         Style::default().fg(PALETTE[self.filters.len() % PALETTE.len()])
     }
 
-    /// Add an including filter. A pattern that will not compile is rejected and
-    /// the set left untouched.
-    pub fn add(&mut self, pattern: &str, style: Style) -> Result<(), regex::Error> {
-        let pattern = Regex::new(pattern)?;
+    /// Add an including filter, colouring it distinctly from its
+    /// predecessors. A pattern that will not compile is rejected and the set
+    /// left untouched.
+    pub fn add(&mut self, pattern: &str) -> Result<(), regex::Error> {
+        let compiled = Regex::new(pattern)?;
+        let style = self.next_style();
         self.filters.push(Filter {
-            pattern,
+            pattern: compiled,
             sense: Sense::Include,
             enabled: true,
             style,
@@ -134,16 +136,11 @@ impl FilterSet {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ratatui::style::Color;
-
-    fn yellow() -> Style {
-        Style::default().fg(Color::Yellow)
-    }
 
     fn set_with(patterns: &[&str]) -> FilterSet {
         let mut set = FilterSet::new();
         for pattern in patterns {
-            set.add(pattern, yellow()).expect("valid pattern");
+            set.add(pattern).expect("valid pattern");
         }
         set
     }
@@ -191,7 +188,7 @@ mod tests {
     fn an_invalid_pattern_is_reported() {
         let mut set = FilterSet::new();
 
-        assert!(set.add("[", yellow()).is_err());
+        assert!(set.add("[").is_err());
         assert!(set.is_empty(), "a rejected pattern must not be added");
     }
 
@@ -204,7 +201,9 @@ mod tests {
         assert!(!set.any_enabled());
     }
 
-    /// `!` disables everything and restores exactly what was enabled before.
+    /// `!` disables every filter, then a second press re-enables them all —
+    /// not a restore of whatever per-filter state existed before, since
+    /// nothing here can disable a filter individually yet.
     #[test]
     fn disabling_and_restoring_round_trips() {
         let mut set = set_with(&["foo"]);
@@ -229,10 +228,13 @@ mod tests {
     #[test]
     fn successive_filters_get_distinct_colours() {
         let mut set = FilterSet::new();
-        let first = set.next_style();
-        set.add("a", first).expect("valid");
-        let second = set.next_style();
+        set.add("a").expect("valid");
+        set.add("b").expect("valid");
 
-        assert_ne!(first, second, "two filters would be indistinguishable");
+        assert_ne!(
+            set.filters()[0].style,
+            set.filters()[1].style,
+            "two filters would be indistinguishable"
+        );
     }
 }

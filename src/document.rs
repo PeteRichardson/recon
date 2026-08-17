@@ -2,32 +2,30 @@
 
 use crate::filter::{FilterSet, Verdict};
 use ratatui::style::Style;
-use std::path::PathBuf;
 
 /// A loaded file, with a cached verdict per line.
 ///
 /// Evaluating a filter set is O(lines × filters), which is not free on a large
 /// log, so verdicts are computed when the lines or the filters change rather
-/// than once per frame.
+/// than once per frame. `match_count` is cached alongside the verdicts for the
+/// same reason: `render` reads it every frame (via the status line), and
+/// rescanning the whole verdict vector at redraw rate would scale with the
+/// file rather than with how often the filters actually change.
 #[derive(Debug, Default)]
 pub struct Document {
-    path: PathBuf,
     lines: Vec<String>,
     verdicts: Vec<Verdict>,
+    match_count: usize,
 }
 
 impl Document {
-    pub fn new(path: PathBuf, lines: Vec<String>) -> Self {
+    pub fn new(lines: Vec<String>) -> Self {
         let verdicts = vec![Verdict::Unmatched; lines.len()];
         Self {
-            path,
             lines,
             verdicts,
+            match_count: 0,
         }
-    }
-
-    pub fn path(&self) -> &PathBuf {
-        &self.path
     }
 
     pub fn lines(&self) -> &[String] {
@@ -45,14 +43,16 @@ impl Document {
             .iter()
             .map(|line| filters.verdict(line))
             .collect();
+        self.match_count = self
+            .verdicts
+            .iter()
+            .filter(|verdict| matches!(verdict, Verdict::Included(_)))
+            .count();
     }
 
     /// How many lines an including filter selected.
     pub fn match_count(&self) -> usize {
-        self.verdicts
-            .iter()
-            .filter(|verdict| matches!(verdict, Verdict::Included(_)))
-            .count()
+        self.match_count
     }
 
     /// One style slot per line, for `FileView::set_line_styles`.
@@ -73,17 +73,13 @@ mod tests {
     use ratatui::style::Modifier;
 
     fn doc(lines: &[&str]) -> Document {
-        Document::new(
-            PathBuf::from("fixture.log"),
-            lines.iter().map(|l| l.to_string()).collect(),
-        )
+        Document::new(lines.iter().map(|l| l.to_string()).collect())
     }
 
     fn set_with(patterns: &[&str]) -> FilterSet {
         let mut set = FilterSet::new();
         for pattern in patterns {
-            let style = set.next_style();
-            set.add(pattern, style).expect("valid pattern");
+            set.add(pattern).expect("valid pattern");
         }
         set
     }

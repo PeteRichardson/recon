@@ -775,6 +775,33 @@ mod tests {
         );
     }
 
+    /// A cursor line that already carries a filter's own foreground colour
+    /// must keep it under focus: overwriting it with the green decoration
+    /// would make a matched line and a dimmed line look identical under the
+    /// one line you're actually looking at.
+    #[test]
+    fn a_filter_coloured_cursor_line_keeps_its_colour_when_active() {
+        let mut view = view_of("cursor_filtered.txt", "alpha\nbeta\n");
+        view.active = true;
+        // The cursor starts on row 0, which is given its own foreground here.
+        view.set_line_styles(vec![Some(Style::default().fg(Color::Magenta)), None]);
+        let area = Rect::new(0, 0, 40, 6);
+        let mut buf = Buffer::empty(area);
+
+        (&mut view).render(area, &mut buf);
+
+        let alpha = row_of(&buf, "alpha");
+        assert!(
+            row_has_fg(&buf, alpha, Color::Magenta),
+            "the cursor line lost its filter colour under focus"
+        );
+        assert!(
+            (0..area.width)
+                .any(|x| buf[(x, alpha)].style().add_modifier.contains(Modifier::REVERSED)),
+            "cursor line not marked when active"
+        );
+    }
+
     /// Without line styles, the old behaviour is unchanged.
     #[test]
     fn without_line_styles_the_cursor_line_is_unchanged() {
@@ -801,17 +828,22 @@ impl Widget for &mut FileView<'_> {
         // The textarea replaces rather than merges a line's style, so the
         // cursor line would otherwise discard whatever the filters gave it and
         // read as unfiltered. Start from that line's own style and add the
-        // focus decoration on top.
+        // focus decoration on top: REVERSED always, but the green foreground
+        // only when the line has no colour of its own — otherwise a matched
+        // line under the cursor would be indistinguishable from a dimmed one.
         let cursor_row = self.textarea.cursor().0;
-        let mut style = self
+        let own_style = self
             .textarea
             .line_styles()
             .get(cursor_row)
             .copied()
-            .flatten()
-            .unwrap_or_default();
+            .flatten();
+        let mut style = own_style.unwrap_or_default();
         if self.active {
-            style = style.fg(Color::Green).add_modifier(Modifier::REVERSED);
+            if own_style.is_none() {
+                style = style.fg(Color::Green);
+            }
+            style = style.add_modifier(Modifier::REVERSED);
         }
         self.textarea.set_cursor_line_style(style);
         self.textarea

@@ -2,7 +2,6 @@ use clap::Parser;
 use color_eyre::Result;
 use crossterm::event::{self, KeyCode, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::prelude::{Backend, Buffer, Color, Constraint, Layout, Rect, Style, Terminal, Widget};
-use std::path::PathBuf; // sync_document builds one
 use std::time::{Duration, Instant};
 
 /// Widest the nav pane will size itself to automatically.
@@ -184,8 +183,7 @@ impl App<'_> {
 
     /// Add an including filter, colouring it distinctly from its predecessors.
     fn add_filter(&mut self, pattern: &str) -> Result<(), regex::Error> {
-        let style = self.filters.next_style();
-        self.filters.add(pattern, style)?;
+        self.filters.add(pattern)?;
         self.restyle();
         Ok(())
     }
@@ -195,6 +193,15 @@ impl App<'_> {
         self.widgets.iter().find_map(|widget| match widget {
             AppWidget::FileNav(nav) => Some(nav),
             AppWidget::FileView(_) => None,
+        })
+    }
+
+    /// Whether the file view is showing a bounded preview rather than the
+    /// whole file.
+    fn file_view_truncated(&self) -> bool {
+        self.widgets.iter().any(|widget| match widget {
+            AppWidget::FileView(view) => view.truncated,
+            AppWidget::FileNav(_) => false,
         })
     }
 
@@ -302,7 +309,11 @@ impl App<'_> {
 
         if let event::Event::Key(key) = event {
             match key.code {
-                KeyCode::Char('q') => {
+                // Guarded to an empty modifier set so a modified key — e.g.
+                // Ctrl-f, which the file view uses for page-down — falls
+                // through to the focused widget instead of being swallowed
+                // here.
+                KeyCode::Char('q') if key.modifiers.is_empty() => {
                     self.state = AppState::Quit;
                     return Ok(());
                 }
@@ -310,21 +321,21 @@ impl App<'_> {
                     self.active_widget = (self.active_widget + 1) % self.widgets.len();
                     return Ok(());
                 }
-                KeyCode::Char(sigil @ ('/' | '?')) => {
+                KeyCode::Char(sigil @ ('/' | '?')) if key.modifiers.is_empty() => {
                     self.search = Some(SearchPrompt {
                         reverse: sigil == '?',
                         ..SearchPrompt::default()
                     });
                     return Ok(());
                 }
-                KeyCode::Char('f') => {
+                KeyCode::Char('f') if key.modifiers.is_empty() => {
                     self.search = Some(SearchPrompt {
                         kind: PromptKind::Filter,
                         ..SearchPrompt::default()
                     });
                     return Ok(());
                 }
-                KeyCode::Char('!') => {
+                KeyCode::Char('!') if key.modifiers.is_empty() => {
                     // Toggle the whole set, so an unfiltered view is one
                     // keystroke away without losing the filters themselves.
                     let enable = !self.filters.any_enabled();
@@ -342,8 +353,16 @@ impl App<'_> {
             }
         }
 
+        // The file view upgrades its own truncated preview to a full load on
+        // first interaction, which rebuilds the textarea and clears its line
+        // styles. That happens inside the widget, so it never reaches
+        // `perform` — resync here instead, without re-reading the file.
+        let was_truncated = self.file_view_truncated();
         if let Some(action) = self.widgets[self.active_widget].handle_events(event)? {
             self.perform(action);
+        } else if was_truncated && !self.file_view_truncated() {
+            self.sync_document();
+            self.restyle();
         }
         Ok(())
     }
@@ -371,16 +390,13 @@ impl App<'_> {
     /// filters see only the truncated slice until the view is focused and
     /// loads the file in full.
     fn sync_document(&mut self) {
-        let Some((path, lines)) = self.widgets.iter().find_map(|w| match w {
-            AppWidget::FileView(view) => Some((
-                PathBuf::from(&view.filename),
-                view.textarea.lines().to_vec(),
-            )),
+        let Some(lines) = self.widgets.iter().find_map(|w| match w {
+            AppWidget::FileView(view) => Some(view.textarea.lines().to_vec()),
             AppWidget::FileNav(_) => None,
         }) else {
             return;
         };
-        self.document = Document::new(path, lines);
+        self.document = Document::new(lines);
     }
 
     /// Re-evaluate the filters and push the resulting styles into the view.
@@ -406,12 +422,13 @@ impl App<'_> {
         if self.filters.is_empty() {
             return String::new();
         }
-        let filters = self.filters.len();
+        let count = self.filters.len();
+        let noun = if count == 1 { "filter" } else { "filters" };
         if !self.filters.any_enabled() {
-            return format!("{filters} filters (disabled)");
+            return format!("{count} {noun} (disabled)");
         }
         format!(
-            "{filters} filters   {}/{} lines match",
+            "{count} {noun}   {}/{} lines match",
             self.document.match_count(),
             self.document.lines().len()
         )
@@ -468,7 +485,7 @@ impl Widget for &mut App<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crossterm::event::{KeyModifiers, MouseEvent};
+    use crossterm::event::{KeyEvent, KeyModifiers, MouseEvent};
     use ratatui::prelude::Buffer;
     use ratatui::style::Modifier; // the tests assert on Modifier::DIM
     use std::fs;
@@ -962,7 +979,10 @@ mod tests {
 
         let status = status_line(&mut app);
 
-        assert!(status.contains('1'), "filter count missing: {status}");
+        assert!(
+            status.contains("1 filter") && !status.contains("1 filters"),
+            "count is not singular-aware: {status}"
+        );
         assert!(status.contains("1/3"), "match count missing: {status}");
     }
 
@@ -990,5 +1010,99 @@ mod tests {
         typed(&mut app, "foo");
 
         assert_eq!(status_line(&mut app), "filter: foo");
+    }
+
+    /// Arrowing onto a large log only previews it (bounded by
+    /// `PREVIEW_LINES` = 500 in `fileview.rs`), so a filter added at that
+    /// point is evaluated against the truncated slice. `FileView` upgrades
+    /// itself to a full load the moment it is actually used — inside its own
+    /// `handle_events`, invisible to `perform` — which rebuilds the textarea
+    /// and clears its line styles. Without a resync, the view is left
+    /// unfiltered and the style vector stuck at the stale preview length.
+    #[test]
+    fn upgrading_a_truncated_preview_resyncs_styles_without_reloading() {
+        let dir = std::path::Path::new("target/test-appdirs").join("preview_upgrade_resync");
+        fs::remove_dir_all(&dir).ok();
+        fs::create_dir_all(&dir).expect("create fixture dir");
+        // Comfortably more than PREVIEW_LINES (500), so the first preview is
+        // truncated. The match sits inside the first 500 lines too, so it is
+        // visible both before and after the upgrade to a full load.
+        let body: String = (0..600)
+            .map(|i| {
+                if i == 10 {
+                    "MATCH line\n".to_string()
+                } else {
+                    format!("line {i}\n")
+                }
+            })
+            .collect();
+        fs::write(dir.join("big.log"), &body).expect("write fixture");
+
+        let mut app = App::new(&Config {
+            file: dir.join("placeholder").display().to_string(),
+        });
+
+        // Arrow onto the log from the nav pane: this previews it rather than
+        // reading the whole 600-line file.
+        key(&mut app, KeyCode::Down);
+
+        // Add a filter while the view still only holds the preview.
+        key(&mut app, KeyCode::Char('f'));
+        typed(&mut app, "MATCH");
+        key(&mut app, KeyCode::Enter);
+
+        let preview_styles = view_line_styles(&app);
+        assert_eq!(preview_styles.len(), 500, "sanity: preview is capped");
+        assert!(preview_styles[10].is_some(), "match line unstyled in the preview");
+
+        // Tab into the file view and press a key: this is exactly what
+        // upgrades the truncated preview to a full load inside
+        // `FileView::handle_events`.
+        key(&mut app, KeyCode::Tab);
+        key(&mut app, KeyCode::Char('j'));
+
+        let styles = view_line_styles(&app);
+        assert_eq!(
+            styles.len(),
+            600,
+            "style vector was not resynced to the fully loaded buffer"
+        );
+        assert!(
+            styles[10].is_some(),
+            "matching line lost its style after the preview upgraded to a full load"
+        );
+    }
+
+    /// `Ctrl-f` must reach the file view's own page-down binding, not the
+    /// global `f` handler that opens a filter prompt.
+    #[test]
+    fn ctrl_f_scrolls_the_file_view_instead_of_opening_a_filter_prompt() {
+        let body: String = (0..100).map(|i| format!("line {i}\n")).collect();
+        let mut app = app_over_file("ctrl_f_scroll", &body);
+        draw(&mut app); // establish the file view's rendered size
+        key(&mut app, KeyCode::Tab); // focus the file view
+
+        let before = view_cursor_row(&app);
+        app.handle_event(event::Event::Key(KeyEvent::new(
+            KeyCode::Char('f'),
+            KeyModifiers::CONTROL,
+        )))
+        .unwrap();
+
+        assert!(app.search.is_none(), "Ctrl-f opened a filter prompt");
+        assert!(
+            view_cursor_row(&app) > before,
+            "Ctrl-f did not scroll the file view"
+        );
+    }
+
+    fn view_cursor_row(app: &App) -> usize {
+        app.widgets
+            .iter()
+            .find_map(|w| match w {
+                AppWidget::FileView(view) => Some(view.textarea.cursor().0),
+                AppWidget::FileNav(_) => None,
+            })
+            .expect("no file view")
     }
 }

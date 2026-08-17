@@ -17,7 +17,7 @@ Global (`src/lib.rs`), handled before the focused pane sees the key:
 | `/` | Search forward in the focused pane |
 | `?` | Search backward in the focused pane |
 | `f` | Add an include filter (always applies to the file view) |
-| `!` | Disable every filter, or restore them |
+| `!` | Disable every filter, or re-enable them all |
 
 Mouse: drag the divider between the panes to resize them; double-click it to
 return to sizing the navigator pane automatically to its contents.
@@ -28,14 +28,14 @@ file, so it survives loading another file — `!` is the single keystroke back t
 an unfiltered view without discarding the set. Nothing is hidden: filters only
 change how lines are presented.
 
-While a search prompt is open it consumes every key, so `q` and `Tab` are
-typed into the pattern rather than acted on:
+While a search or filter prompt is open it consumes every key, so `q` and
+`Tab` are typed into the pattern rather than acted on:
 
 | Key(s) | Action |
 | --- | --- |
 | printable characters | Append to the pattern |
 | `Backspace` | Delete the last character; on an empty pattern, cancel |
-| `Enter` | Run the search |
+| `Enter` | Run the search, or add the filter |
 | `Esc` | Cancel |
 
 Searching is by regular expression in both panes — the file view matches line
