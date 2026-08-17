@@ -1,5 +1,6 @@
 pub mod filenav;
 pub mod fileview;
+pub mod filterlist;
 
 use color_eyre::Result;
 use crossterm::event::Event;

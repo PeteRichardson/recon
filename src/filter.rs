@@ -31,7 +31,7 @@ const PALETTE: [Color; 6] = [
 /// 232 (near-black) to 255 (near-white).
 const DIM_GREY: u8 = 240;
 
-const DIM_STYLE: Style = Style::new()
+pub(crate) const DIM_STYLE: Style = Style::new()
     .fg(Color::Indexed(DIM_GREY))
     .add_modifier(Modifier::DIM);
 
