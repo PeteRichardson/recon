@@ -98,6 +98,11 @@ pub struct App<'a> {
     /// this, so a filter change that leaves the same rows on screen does not
     /// reset the viewport's scroll position.
     last_visible: Vec<usize>,
+    /// The single widget filling the screen, or `None` for the normal split.
+    ///
+    /// Hiding the left column and maximising the file view are the same thing,
+    /// so they share this one field. Two separate flags could disagree.
+    zoom: Option<usize>,
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -124,6 +129,7 @@ impl App<'_> {
             filters: FilterSet::new(),
             document: Document::default(),
             last_visible: Vec::new(),
+            zoom: None,
         };
         app.sync_document();
         app.refresh_view();
@@ -355,6 +361,11 @@ impl App<'_> {
                 }
                 KeyCode::Tab => {
                     self.active_widget = (self.active_widget + 1) % self.widgets.len();
+                    // The zoomed pane is always the focused pane, so the cursor is never
+                    // on a pane that is not on screen.
+                    if self.zoom.is_some() {
+                        self.zoom = Some(self.active_widget);
+                    }
                     return Ok(());
                 }
                 KeyCode::Char(sigil @ ('/' | '?')) if key.modifiers.is_empty() => {
@@ -404,6 +415,18 @@ impl App<'_> {
                 }
                 KeyCode::Char('h') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     self.toggle_hiding();
+                    return Ok(());
+                }
+                KeyCode::Char('b') if key.modifiers.is_empty() => {
+                    self.zoom_file_view();
+                    return Ok(());
+                }
+                KeyCode::Char('e') if key.modifiers.is_empty() => {
+                    self.reveal_and_focus_nav();
+                    return Ok(());
+                }
+                KeyCode::Char('z') if key.modifiers.is_empty() => {
+                    self.zoom_focused();
                     return Ok(());
                 }
                 _ => {}
@@ -600,6 +623,54 @@ impl App<'_> {
             self.document.lines().len()
         )
     }
+
+    fn nav_index(&self) -> usize {
+        self.index_of(|widget| matches!(widget, AppWidget::FileNav(_)))
+    }
+
+    fn file_view_index(&self) -> usize {
+        self.index_of(|widget| matches!(widget, AppWidget::FileView(_)))
+    }
+
+    fn index_of(&self, predicate: impl Fn(&AppWidget<'_>) -> bool) -> usize {
+        self.widgets.iter().position(predicate).unwrap_or(0)
+    }
+
+    /// Zoom `target`, or restore the split if it is already zoomed. Reports
+    /// whether the pane ended up zoomed.
+    fn toggle_zoom(&mut self, target: usize) -> bool {
+        self.zoom = match self.zoom {
+            Some(index) if index == target => None,
+            _ => Some(target),
+        };
+        self.zoom == Some(target)
+    }
+
+    /// Maximise the focused pane, or restore the split if it already is.
+    fn zoom_focused(&mut self) {
+        self.toggle_zoom(self.active_widget);
+    }
+
+    /// Give the file its full width. Focus follows, because the pane the
+    /// cursor was in may no longer be on screen.
+    ///
+    /// Restoring the split on the second press deliberately leaves focus in
+    /// the file view rather than dragging it back to the navigator: you
+    /// pressed `b` to read the file, so that is where you want to stay. `e`
+    /// is the documented way back, precisely so `b` does not have to carry
+    /// that job too.
+    fn zoom_file_view(&mut self) {
+        let view = self.file_view_index();
+        if self.toggle_zoom(view) {
+            self.active_widget = view;
+        }
+    }
+
+    /// Bring the left column back and put the cursor in it.
+    fn reveal_and_focus_nav(&mut self) {
+        self.zoom = None;
+        self.active_widget = self.nav_index();
+    }
 }
 
 impl Widget for &mut App<'_> {
@@ -618,16 +689,34 @@ impl Widget for &mut App<'_> {
             (area, None)
         };
 
-        let nav_width = self.nav_width(area);
-        let widget_areas: [Rect; 2] = Layout::horizontal([Length(nav_width), Min(0)]).areas(area);
+        // A zoomed pane takes the whole pane area; the others are not drawn.
+        // This deliberately falls through to the status/prompt drawing below
+        // rather than returning, so the status line survives a zoom.
+        if let Some(index) = self.zoom {
+            // There is no divider to drag while zoomed. Parking it out at
+            // `u16::MAX` — well past any real terminal width — means a click
+            // near where the divider *used* to be cannot be hit-tested as a
+            // drag on a boundary that is not on screen.
+            self.divider = u16::MAX;
+            for (i, widget) in self.widgets.iter_mut().enumerate() {
+                widget.set_active(i == self.active_widget);
+            }
+            if let Some(widget) = self.widgets.get_mut(index) {
+                widget.render(area, buf);
+            }
+        } else {
+            let nav_width = self.nav_width(area);
+            let widget_areas: [Rect; 2] =
+                Layout::horizontal([Length(nav_width), Min(0)]).areas(area);
 
-        // Remember the boundary so mouse events landing before the next frame
-        // can be tested against it.
-        self.divider = area.x + nav_width;
+            // Remember the boundary so mouse events landing before the next
+            // frame can be tested against it.
+            self.divider = area.x + nav_width;
 
-        for (i, w) in self.widgets.iter_mut().enumerate() {
-            w.set_active(i == self.active_widget);
-            w.render(widget_areas[i], buf);
+            for (i, w) in self.widgets.iter_mut().enumerate() {
+                w.set_active(i == self.active_widget);
+                w.render(widget_areas[i], buf);
+            }
         }
 
         if let Some(prompt_area) = prompt_area {
@@ -1833,6 +1922,196 @@ mod tests {
         assert!(
             status.to_lowercase().contains("no filters"),
             "does not explain why nothing is shown: {status}"
+        );
+    }
+
+    fn rendered(app: &mut App) -> String {
+        let mut buf = Buffer::empty(AREA);
+        app.render(AREA, &mut buf);
+        (0..AREA.height)
+            .map(|y| {
+                (0..AREA.width)
+                    .map(|x| buf[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// `b` gives the file its full width by hiding the left column.
+    #[test]
+    fn b_hides_the_left_column() {
+        let mut app = app_over_file("zoom_b", "alpha\n");
+        assert!(rendered(&mut app).contains("alpha"));
+        let before = rendered(&mut app);
+
+        key(&mut app, KeyCode::Char('b'));
+
+        let after = rendered(&mut app);
+        assert_ne!(before, after, "the layout did not change");
+        assert!(after.contains("alpha"), "the file view went missing");
+        assert!(
+            !after.contains(">>"),
+            "the navigator's selection marker is still on screen"
+        );
+    }
+
+    /// `b` restores the split, but deliberately leaves the cursor where it
+    /// moved it: you pressed `b` to read the file, so being dropped back into
+    /// the navigator on the way out would be the surprise. `e` is the way back.
+    #[test]
+    fn b_toggles_back_but_leaves_focus_in_the_file_view() {
+        let mut app = app_over_file("zoom_b_back", "alpha\n");
+        let before = rendered(&mut app);
+        assert_eq!(app.active_widget, app.nav_index());
+
+        key(&mut app, KeyCode::Char('b'));
+        key(&mut app, KeyCode::Char('b'));
+
+        assert_eq!(rendered(&mut app), before, "b did not restore the split");
+        assert_eq!(
+            app.active_widget,
+            app.file_view_index(),
+            "focus was dragged back to the navigator"
+        );
+        assert_eq!(app.zoom, None);
+    }
+
+    /// Hiding the column the cursor is in must move focus somewhere visible,
+    /// or the user is left typing into a pane that is not on screen.
+    #[test]
+    fn b_moves_focus_out_of_the_hidden_column() {
+        let mut app = app_over_file("zoom_b_focus", "alpha\n");
+        assert_eq!(app.active_widget, app.nav_index(), "starts in the navigator");
+
+        key(&mut app, KeyCode::Char('b'));
+
+        assert_eq!(app.active_widget, app.file_view_index());
+    }
+
+    /// `e` is how you get back, so it must work from a hidden state.
+    #[test]
+    fn e_reveals_the_left_column_and_focuses_it() {
+        let mut app = app_over_file("zoom_e", "alpha\n");
+        key(&mut app, KeyCode::Char('b'));
+
+        key(&mut app, KeyCode::Char('e'));
+
+        assert_eq!(app.zoom, None, "the left column is still hidden");
+        assert_eq!(app.active_widget, app.nav_index());
+    }
+
+    #[test]
+    fn e_focuses_the_navigator_even_when_nothing_is_hidden() {
+        let mut app = app_over_file("zoom_e_visible", "alpha\n");
+        key(&mut app, KeyCode::Tab);
+        assert_ne!(app.active_widget, app.nav_index());
+
+        key(&mut app, KeyCode::Char('e'));
+
+        assert_eq!(app.active_widget, app.nav_index());
+    }
+
+    /// `z` maximises whatever has focus — including the navigator, for long
+    /// filenames.
+    #[test]
+    fn z_zooms_the_navigator_when_it_has_focus() {
+        let mut app = app_over_file("zoom_z_nav", "alpha\n");
+
+        key(&mut app, KeyCode::Char('z'));
+
+        let after = rendered(&mut app);
+        assert!(after.contains(">>"), "the navigator is not on screen");
+        assert!(!after.contains("alpha"), "the file view is still showing");
+    }
+
+    /// With focus in the file view, `z` and `b` do the same thing.
+    #[test]
+    fn z_in_the_file_view_matches_b() {
+        // Both apps must point at the exact same file: the file view's
+        // border includes its full path as a title, so two different
+        // fixture directories would make `rendered` disagree on the title
+        // text alone, regardless of whether the zoom layouts truly match.
+        claim_fixture_dir("zoom_view_parity");
+        let dir = std::path::Path::new("target/test-appdirs").join("zoom_view_parity");
+        fs::remove_dir_all(&dir).ok();
+        fs::create_dir_all(&dir).expect("create fixture dir");
+        let file = dir.join("log.txt");
+        fs::write(&file, "alpha\n").expect("write fixture");
+        let config = Config {
+            file: file.display().to_string(),
+        };
+
+        let mut with_z = App::new(&config);
+        key(&mut with_z, KeyCode::Tab);
+        key(&mut with_z, KeyCode::Char('z'));
+
+        let mut with_b = App::new(&config);
+        key(&mut with_b, KeyCode::Char('b'));
+
+        assert_eq!(rendered(&mut with_z), rendered(&mut with_b));
+    }
+
+    #[test]
+    fn z_toggles_back() {
+        let mut app = app_over_file("zoom_z_back", "alpha\n");
+        let before = rendered(&mut app);
+
+        key(&mut app, KeyCode::Char('z'));
+        key(&mut app, KeyCode::Char('z'));
+
+        assert_eq!(rendered(&mut app), before);
+    }
+
+    /// Tab while zoomed must not leave the cursor on an invisible pane: the
+    /// zoom follows the focus.
+    #[test]
+    fn tab_while_zoomed_moves_the_zoom_with_the_focus() {
+        let mut app = app_over_file("zoom_tab", "alpha\n");
+        key(&mut app, KeyCode::Char('z'));
+
+        key(&mut app, KeyCode::Tab);
+
+        assert_eq!(
+            app.zoom,
+            Some(app.active_widget),
+            "focus moved off the zoomed pane"
+        );
+        assert!(rendered(&mut app).contains("alpha"), "the focused pane is not visible");
+    }
+
+    /// The modifier guard: an earlier phase shipped a global key that swallowed
+    /// a Ctrl- binding the file view needed.
+    #[test]
+    fn ctrl_modified_letters_still_reach_the_file_view() {
+        let mut app = app_over_file("zoom_ctrl", "alpha\nbeta\n");
+        key(&mut app, KeyCode::Tab);
+
+        for code in [KeyCode::Char('b'), KeyCode::Char('e'), KeyCode::Char('z')] {
+            app.handle_event(event::Event::Key(event::KeyEvent::new(
+                code,
+                KeyModifiers::CONTROL,
+            )))
+            .unwrap();
+            assert_eq!(app.zoom, None, "a Ctrl- key was taken as a zoom command");
+        }
+    }
+
+    /// The status/prompt row is split off above the pane split and drawn
+    /// below it, so a zoomed pane must not skip past that drawing.
+    #[test]
+    fn the_status_line_still_renders_while_zoomed() {
+        let mut app = app_over_file("zoom_status", "alpha\nbeta\n");
+        key(&mut app, KeyCode::Char('f'));
+        typed(&mut app, "beta");
+        key(&mut app, KeyCode::Enter);
+
+        key(&mut app, KeyCode::Char('z'));
+
+        let status = status_line(&mut app);
+        assert!(
+            status.contains("lines shown"),
+            "expected filter status text while zoomed, got: {status}"
         );
     }
 }
