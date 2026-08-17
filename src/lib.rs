@@ -51,6 +51,7 @@ enum NavWidth {
     Pinned(u16),
 }
 
+pub mod document;
 pub mod filter;
 mod widgets;
 use widgets::filenav::FileNav;
