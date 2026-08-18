@@ -125,9 +125,12 @@ off it.
 
 `vendor/tui-textarea-2` is a patched copy of
 [tui-textarea-2](https://github.com/srothgan/tui-textarea) 0.12.1, wired in
-via `[patch.crates-io]`. The patch adds two public setters — per-line styles
-and gutter number overrides — which the file view needs in order to dim lines
-that do not match a filter and to show original line numbers while filtered.
+via `[patch.crates-io]`. The patch adds three public additions — setters for
+per-line styles and gutter number overrides, which the file view needs in
+order to dim lines that do not match a filter and to show original line
+numbers while filtered, plus a `scroll_top` getter that reports the
+viewport's position so the cursor's screen row can be held steady across a
+buffer rebuild.
 
 See `vendor/tui-textarea-2/PATCH.md` for the exact changes and how to rebase
 onto a new upstream release. Verify a rebase with `cargo test --workspace`,

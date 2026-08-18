@@ -139,6 +139,13 @@ struct Filter {
 }
 ```
 
+**`hits` — dropped, not implemented by 2c-i or 2c-ii.** Neither the shipped
+`Filter` (`src/filter.rs`) nor the filter pane (`src/widgets/filterlist.rs`)
+carries a match count; the status line's aggregate "N/M lines shown" covers
+the common case in the meantime. Revisiting this is not currently planned,
+but it is not ruled out either — it would slot into the pane's own row
+rendering whenever it is picked up.
+
 Evaluation order, matching TextAnalysisTool exactly:
 
 1. If no enabled including filters exist, every line is `Unmatched`
@@ -230,8 +237,13 @@ The left column splits horizontally: file nav on top, filters beneath.
   `MAX_NAV_WIDTH`, and the drag/double-click behaviour is unchanged.
 - The filter pane sizes to its contents and **collapses entirely when no
   filters are defined**, so it costs nothing to users who never define one.
-- The horizontal divider between the two is draggable, reusing the existing
-  divider machinery generalised to both axes.
+- **Dropped, not implemented by 2c-i or 2c-ii:** the horizontal divider
+  between the two was to be draggable, reusing the existing divider
+  machinery generalised to both axes. The filter pane's height is
+  content-driven — it sizes to the filter count and collapses to zero when
+  empty — rather than a free-standing user preference the way the vertical
+  divider's width is, so there is no comparable target to drag. It belongs
+  to neither 2c-i nor 2c-ii's scope; revisiting it is not currently planned.
 - `Tab` cycles three panes; the filter pane is skipped while collapsed.
 
 ### Filters persist across files
@@ -270,8 +282,8 @@ New, chosen to avoid the existing set:
 | `#` | toggle line numbers |
 | `Ctrl-h` | toggle dimmed ↔ filtered-only |
 | `f` | add filter prompt (`f` then pattern, as `/` works today) |
-| `F` | focus the filter pane |
-| `1`–`9` | toggle filter *n* (filter pane only — see below) |
+| `F` | add an exclude filter — corrected: this row originally read "focus the filter pane", which contradicted the Phasing section (2b) and was never what shipped. `F` opens the exclude-filter prompt, mirroring `f`. **Consequence, dropped with reason:** there is no dedicated key to focus the filter pane directly; `Tab`-cycling already reaches it in at most two presses, so a separate binding was not added. |
+| `1`–`9` | toggle filter *n* (filter pane only — see below) — **deferred to 2c-ii**, alongside the `x` sense-flip binding; not implemented by 2c-i. |
 | `x` | flip include/exclude (filter pane) |
 | `d` | delete filter (filter pane) |
 | `space` | enable/disable filter (filter pane) |
@@ -361,7 +373,10 @@ Each phase is independently shippable and leaves the app working.
      own:
      - **2c-i** — the pane itself, the stacked left-hand layout, focus cycling,
        and toggling and deleting filters. A working filter manager.
-     - **2c-ii** — editing, reordering and recolouring.
+     - **2c-ii** — editing, reordering and recolouring, plus the `1`–`9`
+       digit-toggle binding the Keybindings section recommends for the pane
+       (deferred here rather than 2c-i, alongside the `x` sense-flip
+       binding it is naturally grouped with).
 
      Toggling a filter changes the visible set, so the view rebuilds. The
      scroll must be restored so the cursor lands on **the same screen row** it
