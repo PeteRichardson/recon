@@ -5,7 +5,7 @@
 
 use super::FilterCommand;
 use crate::filter::{FilterSet, Sense, DIM_STYLE};
-use crossterm::event::KeyCode;
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::prelude::{Buffer, Color, Modifier, Rect, Style};
 use ratatui::widgets::{Block, List, ListItem, ListState, StatefulWidget};
 
@@ -60,8 +60,20 @@ impl FilterList {
     /// state; mutations are only reported, never applied, because the
     /// `FilterSet` they act on belongs to `App` — this pane only borrows one
     /// to render it.
-    pub fn handle_key(&mut self, code: KeyCode, len: usize) -> Option<FilterCommand> {
-        match code {
+    ///
+    /// Guarded against CONTROL and ALT the same way every global binding in
+    /// `App::handle_event` is: without this, `Ctrl-D` — half-page-down in the
+    /// file view, and exactly the muscle memory a vim user arrives with —
+    /// silently deleted the selected filter instead, since the routing that
+    /// reaches this pane discarded modifiers entirely. Takes the whole
+    /// `KeyEvent`, not just its `KeyCode`, so the guard is possible at all;
+    /// 2c-ii's `x` and digit bindings are also modifier-sensitive, so this
+    /// signature is owed either way.
+    pub fn handle_key(&mut self, key: KeyEvent, len: usize) -> Option<FilterCommand> {
+        if key.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) {
+            return None;
+        }
+        match key.code {
             KeyCode::Char('j') | KeyCode::Down => {
                 self.select_next(len);
                 None

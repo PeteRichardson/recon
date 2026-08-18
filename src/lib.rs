@@ -19,16 +19,28 @@ const MIN_PANE_WIDTH: u16 = 3;
 /// Rows the navigator keeps even when the filter pane's stacked below it
 /// wants more than the terminal can spare.
 ///
-/// `Layout::vertical([Min(_), Length(filter_height)])` gives the filter pane
-/// unbounded priority over whatever `Min` bound the navigator carries — a
-/// bare `Min(0)` lets a tall enough filter pane squeeze the navigator to
-/// zero rows while it may still be the *focused* pane, stranding the user on
-/// a cursor they cannot see. `MIN_PANE_WIDTH`'s reasoning applied to the
-/// other axis: enough for a bordered block to render at all (top border,
-/// one content row, bottom border), not enough to call comfortable — the
-/// filter pane still wins the rest of the space, exactly as
-/// `a_short_terminal_gives_the_filter_pane_priority_over_the_navigator`
-/// requires.
+/// This used to be enforced by giving the navigator `Min(MIN_NAV_HEIGHT)`
+/// and the filter pane `Length(filter_height)`, on the claim that `Min`
+/// beats `Length` for priority. It doesn't: in ratatui-core 0.1.2 `Length`
+/// adds its equality constraint an order of magnitude *stronger* than `Min`
+/// adds its bound, so the filter pane's `Length` was actually the one
+/// winning — a bare `Min(0)` navigator constraint could be squeezed to zero
+/// rows by a tall filter pane while still being the *focused* pane,
+/// stranding the user on a cursor they cannot see. That this is backwards
+/// from what the constraint names suggest fooled an implementer and a
+/// re-reviewer in turn.
+///
+/// The floor is now arithmetic instead of leaned on the solver: `App::render`
+/// caps `filter_height` at `left.height.saturating_sub(MIN_NAV_HEIGHT)`
+/// before handing it to `Length`, so the navigator's own constraint can be
+/// `Min(0)` and still never drop below this floor whenever the terminal has
+/// at least `MIN_NAV_HEIGHT` rows to give the left column in total. Below
+/// that — a terminal shorter than the floor itself — the cap saturates to
+/// zero, the filter pane gets nothing, and the navigator takes whatever the
+/// terminal has, however little that is; there is no lower floor to fall
+/// back to at that point. `MIN_PANE_WIDTH`'s reasoning applied to the other
+/// axis: enough for a bordered block to render at all (top border, one
+/// content row, bottom border), not enough to call comfortable.
 const MIN_NAV_HEIGHT: u16 = 3;
 
 /// Columns the file view needs to stay genuinely readable, not merely
@@ -231,8 +243,13 @@ impl App<'_> {
                 view.search(pattern, reverse)?;
                 None
             }
-            // The filter pane has nothing to search over; a `/` opened while
-            // it has focus simply finds nothing to do.
+            // Unreachable in practice: `/` and `?` are no longer opened at
+            // all while the filter pane has focus (see their guard in
+            // `handle_event`), and the prompt swallows every key including
+            // `Tab` while it is open, so focus cannot move to this pane
+            // before `Enter` gets here. Kept so this match stays exhaustive
+            // against a fourth `AppWidget` variant, and as a harmless
+            // fallback if that guard is ever loosened.
             AppWidget::FilterList(_) => None,
         };
 
@@ -302,6 +319,36 @@ impl App<'_> {
         self.filter_list()
             .map(|list| list.preferred_height(self.filters.len()))
             .unwrap_or(0)
+    }
+
+    /// How much of `left_height` (the left column's total rows) the filter
+    /// pane gets, out of the navigator's floor `MIN_NAV_HEIGHT`.
+    ///
+    /// The filter pane gets its preferred height, capped at whatever is left
+    /// over once the navigator's floor is set aside — expressed as
+    /// arithmetic rather than leaned on how ratatui's constraint solver
+    /// weighs `Min` against `Length` (see `MIN_NAV_HEIGHT`'s doc comment for
+    /// why that was the wrong thing to lean on). Kept as its own method,
+    /// rather than inlined at its one call site in `render`, so the two
+    /// floors this expresses are directly testable without going through a
+    /// full render and inspecting cells for it.
+    ///
+    /// Also capped at half of `left_height`: `preferred_height` alone grows
+    /// without bound as filters are added, so on an ordinary terminal a
+    /// filter set that grows past a handful would otherwise pin the
+    /// navigator at its bare floor *permanently* rather than only on a
+    /// genuinely short terminal — the floor is meant as a last resort, not
+    /// the navigator's everyday allotment. `List`/`ListState` already
+    /// scrolls, so a capped pane loses nothing but simultaneous visibility:
+    /// every filter stays reachable. The two caps compose via `min`: on a
+    /// short terminal the floor-based one is tighter and wins, exactly as
+    /// before this cap existed; on a tall one the half-based one is tighter
+    /// and gives the navigator a proportional share instead of the bare
+    /// floor.
+    fn filter_pane_split_height(&self, left_height: u16) -> u16 {
+        self.filter_pane_height()
+            .min(left_height / 2)
+            .min(left_height.saturating_sub(MIN_NAV_HEIGHT))
     }
 
     /// Whether the file view is showing a bounded preview rather than the
@@ -440,7 +487,15 @@ impl App<'_> {
                     self.focus_next();
                     return Ok(());
                 }
-                KeyCode::Char(sigil @ ('/' | '?')) if key.modifiers.is_empty() => {
+                // The filter pane has nothing to search over, so the prompt
+                // is not opened at all while it has focus — opening it and
+                // then having `Enter` silently do nothing (`run_search`'s
+                // `FilterList` arm) looked like the keystroke was simply
+                // swallowed, with no feedback that anything was wrong.
+                KeyCode::Char(sigil @ ('/' | '?'))
+                    if key.modifiers.is_empty()
+                        && !matches!(self.widgets[self.active_widget], AppWidget::FilterList(_)) =>
+                {
                     self.search = Some(SearchPrompt {
                         reverse: sigil == '?',
                         ..SearchPrompt::default()
@@ -517,7 +572,7 @@ impl App<'_> {
         // them out itself — see `handle_filter_key`.
         if let event::Event::Key(key) = event {
             if matches!(self.widgets[self.active_widget], AppWidget::FilterList(_)) {
-                self.handle_filter_key(key.code);
+                self.handle_filter_key(key);
                 return Ok(());
             }
         }
@@ -611,12 +666,17 @@ impl App<'_> {
     /// filters, so `refresh_view`'s full `Document::evaluate` is required
     /// here: every cached `Verdict::Included` is a positional index that a
     /// patch would leave stale.
-    fn handle_filter_key(&mut self, code: KeyCode) {
+    ///
+    /// Takes the whole `KeyEvent`, not just its `KeyCode`: `FilterList::handle_key`
+    /// needs the modifiers to guard `space`/`d`/`j`/`k` against CONTROL and
+    /// ALT, the same way every other global binding is guarded — see its
+    /// doc comment.
+    fn handle_filter_key(&mut self, key: event::KeyEvent) {
         let len = self.filters.len();
         let Some(AppWidget::FilterList(list)) = self.widgets.get_mut(self.active_widget) else {
             return;
         };
-        let Some(command) = list.handle_key(code, len) else {
+        let Some(command) = list.handle_key(key, len) else {
             return;
         };
         match command {
@@ -722,7 +782,18 @@ impl App<'_> {
         view.set_line_numbers(numbers);
         view.set_line_styles(styles);
         view.set_gutter_blank(nothing_visible);
-        view.scroll_cursor_to_row(screen_row);
+        // Only a rebuild resets the viewport, so only a rebuild needs the
+        // cursor nudged back onto `screen_row` — the whole point of
+        // `scroll_cursor_to_row` is undoing that reset. Requesting it
+        // unconditionally used to queue a no-op nudge on every call that hid
+        // nothing new (every navigator arrow key goes through `Preview` →
+        // `refresh_view` → here, whether or not a filter is even defined),
+        // and `apply_pending_scroll` pays for that with a full scratch
+        // render of the file view on the very next frame regardless of
+        // whether there was anything to correct.
+        if rebuild {
+            view.scroll_cursor_to_row(screen_row);
+        }
     }
 
     /// The source line the cursor is on, mapped through the *current* visible
@@ -796,8 +867,18 @@ impl App<'_> {
         self.index_of(|widget| matches!(widget, AppWidget::FilterList(_)))
     }
 
+    /// `unwrap_or(0)` used to paper over "the pane is not registered" as
+    /// index 0 — the navigator — turning that bug into a silent wrong-pane
+    /// zoom instead of a panic: with three panes now in `self.widgets`, `b`
+    /// (`zoom_file_view` -> `file_view_index`) would zoom the navigator
+    /// instead of the file view, with nothing to say why. A caller asking
+    /// for a widget kind that genuinely is not present is a programming
+    /// error, not a state this method should quietly paper over.
     fn index_of(&self, predicate: impl Fn(&AppWidget<'_>) -> bool) -> usize {
-        self.widgets.iter().position(predicate).unwrap_or(0)
+        self.widgets
+            .iter()
+            .position(predicate)
+            .expect("every AppWidget variant index_of is asked for must be registered in self.widgets")
     }
 
     /// Move focus to the next pane, skipping the filter pane while it is
@@ -932,13 +1013,14 @@ impl Widget for &mut App<'_> {
             // column; it claims its preferred height first, leaving the
             // navigator whatever remains, down to `MIN_NAV_HEIGHT` on a very
             // short terminal — see
-            // `a_short_terminal_gives_the_filter_pane_priority_over_the_navigator`.
-            // The navigator keeps that floor rather than `Min(0)` so a
-            // terminal too short for both never leaves the *focused* pane
-            // with zero rows to draw into.
-            let filter_height = self.filter_pane_height();
+            // `a_short_terminal_shows_a_real_filter_row_not_just_the_title`.
+            // `filter_pane_split_height` does the capping arithmetically, so
+            // the navigator's own constraint here can be a bare `Min(0)` and
+            // still never drop below its floor while a terminal has enough
+            // rows to give the left column at all.
+            let filter_height = self.filter_pane_split_height(left.height);
             let [nav_area, filter_area] =
-                Layout::vertical([Min(MIN_NAV_HEIGHT), Length(filter_height)]).areas(left);
+                Layout::vertical([Min(0), Length(filter_height)]).areas(left);
 
             // Remember the boundary so mouse events landing before the next
             // frame can be tested against it.
@@ -2135,6 +2217,65 @@ mod tests {
         assert_eq!(cursor_source(&app), before_source, "the cursor changed line");
     }
 
+    /// The two tests above drive this same screen-row criterion through `!`
+    /// and (below) `H` — both global bindings — but never through the
+    /// filter pane's own `space` key, even though the spec calls pane
+    /// toggling "the dominant interaction" once filters exist. Without this,
+    /// a future `handle_filter_key` change that bypassed `refresh_view` —
+    /// patching the cached verdicts in place instead of re-evaluating, say
+    /// — would pass every screen-row test in this file while breaking the
+    /// one interaction the pane exists for.
+    #[test]
+    fn toggling_a_filter_from_the_pane_leaves_the_cursor_on_the_same_screen_row() {
+        let body: String = (0..200).map(|i| format!("line {i}\n")).collect();
+        let mut app = app_over_file("pane_scroll_hold", &body);
+        key(&mut app, KeyCode::Char('F'));
+        typed(&mut app, "line 1[5-9][0-9]"); // excludes 150..=199, well below the cursor
+        key(&mut app, KeyCode::Enter);
+        draw(&mut app);
+
+        for _ in 0..120 {
+            focus_file_view(&mut app);
+            key(&mut app, KeyCode::Char('j'));
+        }
+        draw(&mut app);
+        let pinned_row = cursor_screen_row(&app);
+
+        for _ in 0..3 {
+            focus_file_view(&mut app);
+            key(&mut app, KeyCode::Char('k'));
+        }
+        draw(&mut app);
+        let before_row = cursor_screen_row(&app);
+        let before_source = cursor_source(&app);
+        let before_len = view_lines(&app).len();
+        assert!(
+            before_row < pinned_row,
+            "test setup did not move the cursor off the pane's last row \
+             (pinned_row = {pinned_row}, before_row = {before_row}) — \
+             this test would pass whether or not the fix exists"
+        );
+
+        // The pane's own key, not `!` — this is the criterion this test adds.
+        focus_filter_pane(&mut app);
+        key(&mut app, KeyCode::Char(' '));
+        draw(&mut app);
+
+        assert_ne!(
+            view_lines(&app).len(),
+            before_len,
+            "the buffer did not change size, so the pane's toggle did not \
+             force a rebuild here — this test would pass whether or not the \
+             fix exists"
+        );
+        assert_eq!(
+            cursor_screen_row(&app),
+            before_row,
+            "the view re-anchored instead of holding the line in place"
+        );
+        assert_eq!(cursor_source(&app), before_source, "the cursor changed line");
+    }
+
     /// `H` always rebuilds the buffer — unlike a filter change, there is no
     /// "visible set happens to be unchanged" case to skip it — so it is the
     /// most literal instance of the rebuild this whole task is about. It
@@ -2796,7 +2937,16 @@ mod tests {
 
         let after = rendered(&mut app);
         assert!(after.contains("Filters"), "the filter pane's border is not on screen: {after}");
-        assert!(after.contains("alpha"), "the filter pattern is not on screen: {after}");
+        // The full row, not a bare `contains("alpha")`: the file view (whose
+        // gutter would also print a bare `alpha`-free line number) is not
+        // drawn while zoomed, which is what let `contains("alpha")` alone
+        // pass here — incidentally, not because it actually pinned the
+        // filter pane's own content. `the_filter_pane_lists_the_patterns`
+        // already caught and fixed this exact trap once.
+        assert!(
+            after.contains("1[x] inc alpha"),
+            "the filter pattern's row is not on screen: {after}"
+        );
     }
 
     /// The left column takes the wider of the navigator's and the filter
@@ -2857,11 +3007,23 @@ mod tests {
     }
 
     /// If the terminal is too short for the filter pane's requested height,
-    /// `Layout::vertical([Min(0), Length(h)])` gives the filter pane its rows
-    /// first — the navigator is free to shrink to nothing, but the pane the
-    /// user is actively working with must not vanish or panic the render.
+    /// the navigator is squeezed to its floor (`MIN_NAV_HEIGHT`) so the
+    /// filter pane — the pane the user is actively working with — gets a
+    /// genuine content row rather than merely surviving as a title with
+    /// nothing under it.
+    ///
+    /// The area here is picked so the filter pane gets exactly 3 rows (top
+    /// border, one content row, bottom border): asserting on the actual row
+    /// text `1[x] inc one`, not just `"Filters"` on the border, is the
+    /// point — a one-row (title-only) or zero-row pane both contain
+    /// `"Filters"` too (the title is drawn on the top border, which survives
+    /// down to a single row), so that alone cannot tell a real, usable pane
+    /// apart from a vanished one that still happens to have focus. That gap
+    /// is exactly how a prior version of this test passed at 40×5 while a
+    /// 40×4 terminal made the pane vanish entirely while still focused,
+    /// silently routing keys (e.g. `d`) to content the user could not see.
     #[test]
-    fn a_short_terminal_gives_the_filter_pane_priority_over_the_navigator() {
+    fn a_short_terminal_shows_a_real_filter_row_not_just_the_title() {
         let mut app = app_over_file("short_terminal", "alpha\n");
         for pattern in ["one", "two", "three", "four", "five", "six"] {
             key(&mut app, KeyCode::Char('f'));
@@ -2869,7 +3031,13 @@ mod tests {
             key(&mut app, KeyCode::Enter);
         }
 
-        let short = Rect { x: 0, y: 0, width: 40, height: 5 };
+        // Status row: 1. Left column: 6 rows, split 3 (nav floor) / 3
+        // (filter: still short of the 8 all six filters would need, so the
+        // floors are still genuinely competing). Wide enough that the
+        // filter pane's auto width comfortably fits a full row's text
+        // rather than truncating it — this test is about the *height*
+        // floor, so the width must not be the thing hiding the row.
+        let short = Rect { x: 0, y: 0, width: 60, height: 7 };
         let mut buf = Buffer::empty(short);
         // Must not panic even though the filter pane alone wants more rows
         // (6 filters + 2 borders = 8) than the whole terminal has.
@@ -2880,8 +3048,67 @@ mod tests {
             .map(|(x, y)| buf[(x, y)].symbol())
             .collect();
         assert!(
-            text.contains("Filters"),
-            "the filter pane lost its rows entirely to the collapsed navigator: {text}"
+            text.contains("1[x] inc one"),
+            "the filter pane shrank to its title with no content row visible \
+             while still focusable: {text}"
+        );
+    }
+
+    /// `filter_pane_split_height` is the arithmetic Important 2 replaced a
+    /// reliance on constraint-solver internals with. This drives it directly
+    /// at a height where the two floors genuinely compete — the filter pane
+    /// wants more than is available, and the navigator's floor is what
+    /// limits how much of it can win — and asserts the exact split, matching
+    /// the measured (not documented) behaviour of the constraint-solver
+    /// version this replaced: `Min(3) + Length(8)` over 4 rows produced nav
+    /// 3, filter 1.
+    #[test]
+    fn the_two_height_floors_compete_and_split_arithmetically() {
+        let mut app = app_over_file("short_terminal_split", "alpha\n");
+        for pattern in ["one", "two", "three", "four", "five", "six"] {
+            key(&mut app, KeyCode::Char('f'));
+            typed(&mut app, pattern);
+            key(&mut app, KeyCode::Enter);
+        }
+        // The filter pane wants 6 + 2 = 8 rows; only 4 are available for the
+        // whole left column, so both floors are in play at once.
+        let filter_height = app.filter_pane_split_height(4);
+
+        assert_eq!(filter_height, 1, "the filter pane did not get its share");
+        assert_eq!(
+            4 - filter_height,
+            MIN_NAV_HEIGHT,
+            "the navigator did not keep exactly its floor"
+        );
+    }
+
+    /// Before the cap in `filter_pane_split_height`, `preferred_height` grew
+    /// without bound as filters were added — so a filter set that grows past
+    /// a handful would pin the navigator at its bare floor *permanently* on
+    /// any terminal, not only a genuinely short one. `List`/`ListState`
+    /// already scrolls the pane, so nothing is lost by capping it.
+    #[test]
+    fn the_filter_pane_cannot_pin_the_navigator_at_its_bare_floor() {
+        let mut app = app_over_file("many_filters_cap", "alpha\n");
+        for i in 0..20 {
+            key(&mut app, KeyCode::Char('f'));
+            typed(&mut app, &format!("f{i}"));
+            key(&mut app, KeyCode::Enter);
+        }
+
+        // 20 filters want 22 rows. On a column with 20 rows to give, the
+        // floor-only cap (`left_height - MIN_NAV_HEIGHT` = 17) would still
+        // let the filter pane take all but the navigator's bare floor.
+        let filter_height = app.filter_pane_split_height(20);
+
+        assert!(
+            filter_height <= 10,
+            "the filter pane claimed more than half the column: {filter_height}"
+        );
+        assert!(
+            20 - filter_height > MIN_NAV_HEIGHT,
+            "the navigator was pinned at its bare floor despite ample room \
+             (filter_height = {filter_height})"
         );
     }
 
@@ -2927,20 +3154,115 @@ mod tests {
         assert_eq!(app.filters.len(), 1);
     }
 
-    /// Deleting renumbers the filters, so every cached verdict is stale.
+    /// Important 1: the routing into the filter pane used to pass only
+    /// `key.code`, discarding the modifiers — so every global binding's
+    /// "no CONTROL/ALT" guard was silently bypassed once a key reached this
+    /// pane. `Ctrl-D` is half-page-down in the file view, documented in the
+    /// README, and exactly the muscle memory a vim user arrives with; here
+    /// it used to delete the selected filter outright, with no confirmation
+    /// and no undo.
     #[test]
-    fn deleting_a_filter_re_evaluates_rather_than_patching() {
-        let mut app = app_with_two_filters("pane_delete_verdicts");
+    fn ctrl_d_does_not_delete_the_selected_filter() {
+        let mut app = app_with_two_filters("pane_ctrl_d");
         focus_filter_pane(&mut app);
 
-        key(&mut app, KeyCode::Char('d')); // removes "alpha", "beta" becomes 0
+        app.handle_event(event::Event::Key(KeyEvent::new(
+            KeyCode::Char('d'),
+            KeyModifiers::CONTROL,
+        )))
+        .unwrap();
+
+        assert_eq!(app.filters.len(), 2, "Ctrl-D deleted a filter");
+    }
+
+    /// Same defect, for the toggle binding.
+    #[test]
+    fn ctrl_space_does_not_toggle_the_selected_filter() {
+        let mut app = app_with_two_filters("pane_ctrl_space");
+        focus_filter_pane(&mut app);
+
+        app.handle_event(event::Event::Key(KeyEvent::new(
+            KeyCode::Char(' '),
+            KeyModifiers::CONTROL,
+        )))
+        .unwrap();
+
+        assert!(
+            app.filters.filters()[0].enabled,
+            "Ctrl-Space toggled a filter"
+        );
+    }
+
+    /// Finding 11: the filter pane has nothing to search over, so `/` (and
+    /// `?`) must not even open the prompt while it has focus — opening it
+    /// and then having `Enter` silently do nothing looked like the
+    /// keystroke was simply dropped, with no feedback that anything was
+    /// wrong.
+    #[test]
+    fn slash_does_nothing_while_the_filter_pane_is_focused() {
+        let mut app = app_with_two_filters("filter_pane_slash");
+        focus_filter_pane(&mut app);
+
+        key(&mut app, KeyCode::Char('/'));
+
+        assert!(app.search.is_none(), "a prompt opened over the filter pane");
+    }
+
+    /// Deleting renumbers the filters, so every cached verdict is stale.
+    ///
+    /// Two filters, deleting the first — this test's original form — cannot
+    /// actually distinguish a full re-evaluate from a naive patch: on a
+    /// naive patch (splice the `FilterSet` but leave cached verdicts alone),
+    /// the stale `Verdict::Included(1)` left over from the deleted filter's
+    /// own line would index *past* the now-length-1 `FilterSet` — `None`,
+    /// not a collision — and the test would fail via `.expect()` panicking,
+    /// before the colour assertion it advertises ever ran.
+    ///
+    /// Three filters, deleting the *middle* one ("beta"), produces a genuine
+    /// in-range collision instead: beta's own filter is gone, so beta must
+    /// read as unmatched (dim) once re-evaluated — but a naive patch leaves
+    /// beta's stale `Verdict::Included(1)` in place, and after the splice,
+    /// array position 1 is no longer beta's old filter — it is gamma's,
+    /// shifted down from position 2. `style_for` finds a filter there
+    /// (`.get(1)` succeeds), so the naive patch renders beta in *gamma's*
+    /// colour: a real, in-range wrong-colour failure, not a panic.
+    #[test]
+    fn deleting_a_filter_re_evaluates_rather_than_patching() {
+        let mut app = app_over_file("pane_delete_verdicts_mid", "alpha\nbeta\ngamma\n");
+        for pattern in ["alpha", "beta", "gamma"] {
+            key(&mut app, KeyCode::Char('f'));
+            typed(&mut app, pattern);
+            key(&mut app, KeyCode::Enter);
+        }
+        focus_filter_pane(&mut app);
+        key(&mut app, KeyCode::Char('j')); // move off "alpha" onto "beta", the middle filter
+
+        key(&mut app, KeyCode::Char('d')); // removes "beta"; "gamma" becomes index 1
 
         let styles = view_line_styles(&app);
-        let beta = styles[1].expect("beta still matches a filter");
+
+        // beta's own filter was just deleted, so beta must be unmatched —
+        // plain dim, never coloured as if it still matched something. A
+        // stale, un-re-evaluated verdict left over from beta's own
+        // (deleted) filter would instead land on gamma's — see the doc
+        // comment above — which is the collision this test exists to
+        // catch. Checked first, and as a colour comparison rather than an
+        // `.expect()`, so that exact failure surfaces directly instead of
+        // being masked by a panic from the sanity check below.
+        let beta = styles[1].map(|s| s.fg);
+        assert_ne!(
+            beta,
+            Some(app.filters.filters()[1].style.fg),
+            "beta is coloured with the wrong (gamma's) filter's style"
+        );
+
+        // gamma is unaffected in content and still matches its own filter,
+        // now shifted down to index 1.
+        let gamma = styles[2].expect("gamma still matches a filter");
         assert_eq!(
-            beta.fg,
-            app.filters.filters()[0].style.fg,
-            "the line is coloured with the wrong filter's style"
+            gamma.fg,
+            app.filters.filters()[1].style.fg,
+            "gamma is not coloured with its own (shifted) filter's style"
         );
     }
 
@@ -2964,10 +3286,14 @@ mod tests {
     }
 
     /// Deleting the last filter while the pane is zoomed must not leave
-    /// `App::zoom` naming a pane focus has moved off. `App::render` carries
-    /// `debug_assert_eq!(index, self.active_widget)` for exactly this
-    /// invariant — a `draw` after the delete trips it if the zoom did not
-    /// follow the focus.
+    /// `App::zoom` naming a pane focus has moved off. `App::render` also
+    /// carries `debug_assert_eq!(index, self.active_widget)` for exactly
+    /// this invariant, but that macro compiles out entirely in `--release`
+    /// — this test's assertion must catch the same defect on its own, not
+    /// merely lean on the debug build to do it. The prior form of this test
+    /// wrapped its assertion in `if let Some(index) = app.zoom`, which is
+    /// vacuously true whenever the zoom is `None` — asserting the
+    /// disjunction directly below closes that gap.
     #[test]
     fn deleting_the_last_filter_while_zoomed_keeps_the_zoom_invariant() {
         let mut app = app_over_file("pane_delete_last_zoomed", "alpha\n");
@@ -2983,11 +3309,26 @@ mod tests {
         );
 
         key(&mut app, KeyCode::Char('d'));
-        draw(&mut app);
 
-        if let Some(index) = app.zoom {
-            assert_eq!(index, app.active_widget, "zoom outlived the pane it named");
-        }
+        assert!(
+            app.zoom.is_none() || app.zoom == Some(app.active_widget),
+            "zoom ({:?}) outlived the pane it named (active_widget = {})",
+            app.zoom,
+            app.active_widget
+        );
+        assert!(
+            !matches!(app.widgets[app.active_widget], AppWidget::FilterList(_)),
+            "focus (and so the zoom, if any) was left on the now-collapsed filter pane"
+        );
+
+        // The disjunction above is satisfiable by a blank frame that merely
+        // avoids naming the wrong pane; this pins the stronger claim that
+        // whatever the zoom now points at is genuinely drawn, not empty.
+        let text = rendered(&mut app);
+        assert!(
+            text.contains("log.txt"),
+            "the pane the zoom now names is not actually on screen: {text}"
+        );
     }
 
     #[test]
@@ -2999,6 +3340,19 @@ mod tests {
         key(&mut app, KeyCode::Char(' '));
 
         assert!(app.filters.filters()[0].enabled, "toggled the wrong filter");
-        assert!(!app.filters.filters()[1].enabled);
+        assert!(!app.filters.filters()[1].enabled, "j did not move the selection");
+
+        // `k` back up, then toggle again: if `k` did not move the selection
+        // back to filter 0, this toggle would re-hit filter 1 instead — and
+        // since filter 1 is already disabled, that would re-enable it rather
+        // than disabling filter 0, so the assertions below would fail.
+        key(&mut app, KeyCode::Char('k'));
+        key(&mut app, KeyCode::Char(' '));
+
+        assert!(!app.filters.filters()[0].enabled, "k did not move the selection back");
+        assert!(
+            !app.filters.filters()[1].enabled,
+            "the wrong filter was toggled after k"
+        );
     }
 }
