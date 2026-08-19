@@ -97,11 +97,9 @@ impl SearchPrompt {
             (Some(error), _) => error.clone(),
             (None, PromptKind::Filter) => format!("filter: {}", self.pattern),
             (None, PromptKind::Exclude) => format!("exclude: {}", self.pattern),
-            (None, PromptKind::Search) => format!(
-                "{}{}",
-                if self.reverse { '?' } else { '/' },
-                self.pattern
-            ),
+            (None, PromptKind::Search) => {
+                format!("{}{}", if self.reverse { '?' } else { '/' }, self.pattern)
+            }
         }
     }
 }
@@ -494,7 +492,10 @@ impl App<'_> {
                 // swallowed, with no feedback that anything was wrong.
                 KeyCode::Char(sigil @ ('/' | '?'))
                     if key.modifiers.is_empty()
-                        && !matches!(self.widgets[self.active_widget], AppWidget::FilterList(_)) =>
+                        && !matches!(
+                            self.widgets[self.active_widget],
+                            AppWidget::FilterList(_)
+                        ) =>
                 {
                     self.search = Some(SearchPrompt {
                         reverse: sigil == '?',
@@ -510,7 +511,9 @@ impl App<'_> {
                     return Ok(());
                 }
                 KeyCode::Char('F')
-                    if !key.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+                    if !key
+                        .modifiers
+                        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
                 {
                     self.search = Some(SearchPrompt {
                         kind: PromptKind::Exclude,
@@ -535,7 +538,9 @@ impl App<'_> {
                     return Ok(());
                 }
                 KeyCode::Char('H')
-                    if !key.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+                    if !key
+                        .modifiers
+                        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
                 {
                     self.toggle_hiding();
                     return Ok(());
@@ -875,10 +880,9 @@ impl App<'_> {
     /// for a widget kind that genuinely is not present is a programming
     /// error, not a state this method should quietly paper over.
     fn index_of(&self, predicate: impl Fn(&AppWidget<'_>) -> bool) -> usize {
-        self.widgets
-            .iter()
-            .position(predicate)
-            .expect("every AppWidget variant index_of is asked for must be registered in self.widgets")
+        self.widgets.iter().position(predicate).expect(
+            "every AppWidget variant index_of is asked for must be registered in self.widgets",
+        )
     }
 
     /// Move focus to the next pane, skipping the filter pane while it is
@@ -1088,7 +1092,9 @@ mod tests {
     /// what caused a real, release-only flake: both tests "succeeded" and
     /// just clobbered each other's files depending on interleaving.
     fn claim_fixture_dir(name: &str) {
-        let mut names = FIXTURE_DIR_NAMES.lock().unwrap_or_else(|poison| poison.into_inner());
+        let mut names = FIXTURE_DIR_NAMES
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
         assert!(
             !names.iter().any(|used| used == name),
             "fixture directory name {name:?} is already in use by another test — pick a unique name"
@@ -1387,7 +1393,11 @@ mod tests {
     #[test]
     fn a_nav_search_previews_the_matched_file() {
         let mut app = app_over("prompt_preview", &["alpha.rs", "gamma.rs"]);
-        fs::write("target/test-appdirs/prompt_preview/gamma.rs", "GAMMA MARKER\n").unwrap();
+        fs::write(
+            "target/test-appdirs/prompt_preview/gamma.rs",
+            "GAMMA MARKER\n",
+        )
+        .unwrap();
         draw(&mut app);
 
         key(&mut app, KeyCode::Char('/'));
@@ -1397,7 +1407,10 @@ mod tests {
         let mut buf = Buffer::empty(AREA);
         (&mut app).render(AREA, &mut buf);
         let text: String = buf.content().iter().map(|c| c.symbol()).collect();
-        assert!(text.contains("GAMMA MARKER"), "matched file was not previewed");
+        assert!(
+            text.contains("GAMMA MARKER"),
+            "matched file was not previewed"
+        );
     }
 
     /// The prompt only takes a row while it is open.
@@ -1542,7 +1555,10 @@ mod tests {
             app_over("dup_fixture_name", &["a.rs"]);
         }));
 
-        assert!(second.is_err(), "a duplicate fixture directory name was not rejected");
+        assert!(
+            second.is_err(),
+            "a duplicate fixture directory name was not rejected"
+        );
     }
 
     #[test]
@@ -1602,7 +1618,8 @@ mod tests {
     #[test]
     fn reloading_the_same_file_reapplies_an_active_excluding_filter() {
         let mut app = app_over_file("reload_same_file", "alpha\nnoise\ngamma\n");
-        let path = std::path::Path::new("target/test-appdirs/reload_same_file/log.txt").to_path_buf();
+        let path =
+            std::path::Path::new("target/test-appdirs/reload_same_file/log.txt").to_path_buf();
 
         key(&mut app, KeyCode::Char('F'));
         typed(&mut app, "noise");
@@ -1687,7 +1704,10 @@ mod tests {
 
         key(&mut app, KeyCode::Char('!'));
 
-        assert!(app.filters.any_enabled(), "! left the user with no way back");
+        assert!(
+            app.filters.any_enabled(),
+            "! left the user with no way back"
+        );
     }
 
     /// Adding a filter while `!` has a capture pending must not strand it.
@@ -1708,10 +1728,16 @@ mod tests {
         key(&mut app, KeyCode::Enter);
 
         key(&mut app, KeyCode::Char('!'));
-        assert!(!app.filters.any_enabled(), "! did not disable the new filter");
+        assert!(
+            !app.filters.any_enabled(),
+            "! did not disable the new filter"
+        );
 
         key(&mut app, KeyCode::Char('!'));
-        assert!(app.filters.any_enabled(), "! went inert - nothing came back");
+        assert!(
+            app.filters.any_enabled(),
+            "! went inert - nothing came back"
+        );
     }
 
     /// The bottom row when no prompt is open.
@@ -1760,7 +1786,10 @@ mod tests {
         );
         // An including filter alone dims rather than removes, so every line
         // is still shown even though only one of them matched.
-        assert!(status.contains("3/3"), "lines-shown count missing: {status}");
+        assert!(
+            status.contains("3/3"),
+            "lines-shown count missing: {status}"
+        );
     }
 
     #[test]
@@ -1830,7 +1859,10 @@ mod tests {
 
         let preview_styles = view_line_styles(&app);
         assert_eq!(preview_styles.len(), 500, "sanity: preview is capped");
-        assert!(preview_styles[10].is_some(), "match line unstyled in the preview");
+        assert!(
+            preview_styles[10].is_some(),
+            "match line unstyled in the preview"
+        );
 
         // Tab into the file view and press a key: this is exactly what
         // upgrades the truncated preview to a full load inside
@@ -1915,7 +1947,10 @@ mod tests {
         typed(&mut app, "noise");
         key(&mut app, KeyCode::Enter);
 
-        assert_eq!(view_lines(&app), vec!["alpha".to_string(), "gamma".to_string()]);
+        assert_eq!(
+            view_lines(&app),
+            vec!["alpha".to_string(), "gamma".to_string()]
+        );
     }
 
     /// The gutter keeps the original numbering, so a hidden line leaves a gap.
@@ -1978,7 +2013,11 @@ mod tests {
 
         assert_eq!(
             view_lines(&app),
-            vec!["alpha".to_string(), "noise".to_string(), "gamma".to_string()],
+            vec![
+                "alpha".to_string(),
+                "noise".to_string(),
+                "gamma".to_string()
+            ],
             "the hidden line did not come back"
         );
         assert_eq!(
@@ -2051,7 +2090,12 @@ mod tests {
     /// move.
     #[test]
     fn a_filter_matching_nothing_does_not_move_the_viewport() {
-        let area = Rect { x: 0, y: 0, width: 40, height: 12 };
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 40,
+            height: 12,
+        };
         let body: String = (0..200).map(|i| format!("line {i}\n")).collect();
         let mut app = app_over_file("no_op_filter_viewport", &body);
         focus_file_view(&mut app);
@@ -2154,7 +2198,11 @@ mod tests {
             before_row,
             "the view re-anchored instead of holding the line in place"
         );
-        assert_eq!(cursor_source(&app), before_source, "the cursor changed line");
+        assert_eq!(
+            cursor_source(&app),
+            before_source,
+            "the cursor changed line"
+        );
     }
 
     /// Companion to the test above: there the excluded block sits *below*
@@ -2214,7 +2262,11 @@ mod tests {
             before_row,
             "the view re-anchored instead of holding the line in place"
         );
-        assert_eq!(cursor_source(&app), before_source, "the cursor changed line");
+        assert_eq!(
+            cursor_source(&app),
+            before_source,
+            "the cursor changed line"
+        );
     }
 
     /// The two tests above drive this same screen-row criterion through `!`
@@ -2273,7 +2325,11 @@ mod tests {
             before_row,
             "the view re-anchored instead of holding the line in place"
         );
-        assert_eq!(cursor_source(&app), before_source, "the cursor changed line");
+        assert_eq!(
+            cursor_source(&app),
+            before_source,
+            "the cursor changed line"
+        );
     }
 
     /// `H` always rebuilds the buffer — unlike a filter change, there is no
@@ -2287,7 +2343,13 @@ mod tests {
         // and keeps only 100..199 — a large, predictable rebuild — while the
         // cursor, parked inside the matched range, stays visible throughout.
         let body: String = (0..200)
-            .map(|i| if i < 100 { format!("plain {i}\n") } else { format!("match {i}\n") })
+            .map(|i| {
+                if i < 100 {
+                    format!("plain {i}\n")
+                } else {
+                    format!("match {i}\n")
+                }
+            })
             .collect();
         let mut app = app_over_file("h_scroll_hold", &body);
         key(&mut app, KeyCode::Char('f'));
@@ -2331,7 +2393,11 @@ mod tests {
             before_row,
             "the view re-anchored instead of holding the line in place"
         );
-        assert_eq!(cursor_source(&app), before_source, "the cursor changed line");
+        assert_eq!(
+            cursor_source(&app),
+            before_source,
+            "the cursor changed line"
+        );
     }
 
     #[test]
@@ -2406,7 +2472,11 @@ mod tests {
         key(&mut app, KeyCode::Enter);
 
         key(&mut app, KeyCode::Char('H'));
-        assert_eq!(cursor_source(&app), TARGET, "did not land on the sole match");
+        assert_eq!(
+            cursor_source(&app),
+            TARGET,
+            "did not land on the sole match"
+        );
 
         key(&mut app, KeyCode::Char('H'));
 
@@ -2626,7 +2696,11 @@ mod tests {
     #[test]
     fn b_moves_focus_out_of_the_hidden_column() {
         let mut app = app_over_file("zoom_b_focus", "alpha\n");
-        assert_eq!(app.active_widget, app.nav_index(), "starts in the navigator");
+        assert_eq!(
+            app.active_widget,
+            app.nav_index(),
+            "starts in the navigator"
+        );
 
         key(&mut app, KeyCode::Char('b'));
 
@@ -2671,7 +2745,10 @@ mod tests {
 
         let after = rendered(&mut app);
         assert!(after.contains(">>"), "the navigator is not on screen");
-        assert!(!after.contains("ZOOMMARKER"), "the file view is still showing");
+        assert!(
+            !after.contains("ZOOMMARKER"),
+            "the file view is still showing"
+        );
     }
 
     /// With focus in the file view, `z` and `b` do the same thing.
@@ -2754,7 +2831,10 @@ mod tests {
             Some(app.active_widget),
             "focus moved off the zoomed pane"
         );
-        assert!(rendered(&mut app).contains("alpha"), "the focused pane is not visible");
+        assert!(
+            rendered(&mut app).contains("alpha"),
+            "the focused pane is not visible"
+        );
     }
 
     /// The modifier guard: an earlier phase shipped a global key that swallowed
@@ -2936,7 +3016,10 @@ mod tests {
         key(&mut app, KeyCode::Char('z'));
 
         let after = rendered(&mut app);
-        assert!(after.contains("Filters"), "the filter pane's border is not on screen: {after}");
+        assert!(
+            after.contains("Filters"),
+            "the filter pane's border is not on screen: {after}"
+        );
         // The full row, not a bare `contains("alpha")`: the file view (whose
         // gutter would also print a bare `alpha`-free line number) is not
         // drawn while zoomed, which is what let `contains("alpha")` alone
@@ -2978,7 +3061,11 @@ mod tests {
         key(&mut app, KeyCode::Enter);
         draw(&mut app);
 
-        assert_eq!(app.nav_width(AREA), MAX_NAV_WIDTH, "MAX_NAV_WIDTH is not governing");
+        assert_eq!(
+            app.nav_width(AREA),
+            MAX_NAV_WIDTH,
+            "MAX_NAV_WIDTH is not governing"
+        );
         assert!(
             AREA.width - app.nav_width(AREA) > MIN_FILE_VIEW_WIDTH,
             "the file view is sitting at its floor on a wide terminal — the \
@@ -2991,7 +3078,12 @@ mod tests {
     /// floor — asserted as the exact width, not merely "greater than zero".
     #[test]
     fn a_long_filter_pattern_on_a_narrow_terminal_leaves_the_file_view_its_floor() {
-        let narrow = Rect { x: 0, y: 0, width: 40, height: 12 };
+        let narrow = Rect {
+            x: 0,
+            y: 0,
+            width: 40,
+            height: 12,
+        };
         let mut app = app_over_file("narrow_filter_floor", "alpha\n");
         let long_pattern = "a".repeat(50);
         key(&mut app, KeyCode::Char('f'));
@@ -3037,7 +3129,12 @@ mod tests {
         // filter pane's auto width comfortably fits a full row's text
         // rather than truncating it — this test is about the *height*
         // floor, so the width must not be the thing hiding the row.
-        let short = Rect { x: 0, y: 0, width: 60, height: 7 };
+        let short = Rect {
+            x: 0,
+            y: 0,
+            width: 60,
+            height: 7,
+        };
         let mut buf = Buffer::empty(short);
         // Must not panic even though the filter pane alone wants more rows
         // (6 filters + 2 borders = 8) than the whole terminal has.
@@ -3340,7 +3437,10 @@ mod tests {
         key(&mut app, KeyCode::Char(' '));
 
         assert!(app.filters.filters()[0].enabled, "toggled the wrong filter");
-        assert!(!app.filters.filters()[1].enabled, "j did not move the selection");
+        assert!(
+            !app.filters.filters()[1].enabled,
+            "j did not move the selection"
+        );
 
         // `k` back up, then toggle again: if `k` did not move the selection
         // back to filter 0, this toggle would re-hit filter 1 instead — and
@@ -3349,7 +3449,10 @@ mod tests {
         key(&mut app, KeyCode::Char('k'));
         key(&mut app, KeyCode::Char(' '));
 
-        assert!(!app.filters.filters()[0].enabled, "k did not move the selection back");
+        assert!(
+            !app.filters.filters()[0].enabled,
+            "k did not move the selection back"
+        );
         assert!(
             !app.filters.filters()[1].enabled,
             "the wrong filter was toggled after k"

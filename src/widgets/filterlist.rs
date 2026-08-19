@@ -70,7 +70,10 @@ impl FilterList {
     /// 2c-ii's `x` and digit bindings are also modifier-sensitive, so this
     /// signature is owed either way.
     pub fn handle_key(&mut self, key: KeyEvent, len: usize) -> Option<FilterCommand> {
-        if key.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) {
+        if key
+            .modifiers
+            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+        {
             return None;
         }
         match key.code {
@@ -121,7 +124,13 @@ impl FilterList {
             Sense::Include => "inc",
             Sense::Exclude => "exc",
         };
-        format!("{}[{}] {} {}", index + 1, mark, sense, filter.pattern.as_str())
+        format!(
+            "{}[{}] {} {}",
+            index + 1,
+            mark,
+            sense,
+            filter.pattern.as_str()
+        )
     }
 
     pub fn render(&mut self, filters: &FilterSet, area: Rect, buf: &mut Buffer) {
@@ -216,7 +225,10 @@ mod tests {
         let foo = rows.iter().find(|r| r.contains("foo")).expect("foo row");
         let bar = rows.iter().find(|r| r.contains("bar")).expect("bar row");
 
-        assert!(foo.contains("[x]"), "enabled filter should show [x]:\n{foo}");
+        assert!(
+            foo.contains("[x]"),
+            "enabled filter should show [x]:\n{foo}"
+        );
         assert!(
             bar.contains("[ ]"),
             "disabled filter should show [ ], not [x]:\n{bar}"
@@ -366,7 +378,11 @@ mod tests {
         list.clamp_selection(0);
 
         assert_eq!(list.selected(), None);
-        assert_eq!(list.preferred_height(0), 0, "an empty pane must take no rows");
+        assert_eq!(
+            list.preferred_height(0),
+            0,
+            "an empty pane must take no rows"
+        );
     }
 
     #[test]

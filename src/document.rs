@@ -243,7 +243,10 @@ mod tests {
 
         let styles = document.line_styles(&filters);
 
-        assert_eq!(styles[1].expect("beta styled").fg, filters.filters()[0].style.fg);
+        assert_eq!(
+            styles[1].expect("beta styled").fg,
+            filters.filters()[0].style.fg
+        );
         assert!(
             styles[0]
                 .expect("alpha styled")
@@ -390,7 +393,11 @@ mod tests {
 
         document.set_mode(Mode::FilteredOnly);
 
-        assert_eq!(document.mode(), Mode::FilteredOnly, "the mode was not recorded");
+        assert_eq!(
+            document.mode(),
+            Mode::FilteredOnly,
+            "the mode was not recorded"
+        );
         assert_eq!(
             document.visible(),
             &[0, 1, 2],
@@ -414,7 +421,11 @@ mod tests {
         document.set_mode(Mode::FilteredOnly);
         document.recompute_visible();
 
-        assert_eq!(document.visible(), &[1], "visible did not pick up the new mode");
+        assert_eq!(
+            document.visible(),
+            &[1],
+            "visible did not pick up the new mode"
+        );
         assert_eq!(
             document.verdicts(),
             verdicts_before.as_slice(),

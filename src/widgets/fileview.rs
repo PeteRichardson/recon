@@ -135,7 +135,11 @@ impl FileView<'_> {
     /// lines came from.
     pub fn show_lines_with_cursor(&mut self, lines: Vec<String>, row: usize) {
         // set_lines rejects an empty vector; an empty buffer is one blank line.
-        let lines = if lines.is_empty() { vec![String::new()] } else { lines };
+        let lines = if lines.is_empty() {
+            vec![String::new()]
+        } else {
+            lines
+        };
         self.textarea.set_lines(lines, (row, 0));
     }
 
@@ -371,7 +375,10 @@ fn read_lines(path: &Path) -> Vec<String> {
         Err(err) => return vec![format!("<{err}>")],
     };
 
-    match BufReader::new(file).lines().collect::<std::io::Result<Vec<_>>>() {
+    match BufReader::new(file)
+        .lines()
+        .collect::<std::io::Result<Vec<_>>>()
+    {
         Ok(lines) => lines,
         Err(err) if err.kind() == ErrorKind::InvalidData => vec![BINARY_MESSAGE.to_string()],
         Err(err) => vec![format!("<{err}>")],
@@ -436,7 +443,9 @@ mod tests {
     /// path — the same class of bug that caused a release-only flake in the
     /// `target/test-appdirs` fixtures (see `lib.rs`'s `claim_fixture_dir`).
     fn claim_fixture_name(name: &str) {
-        let mut names = FIXTURE_NAMES.lock().unwrap_or_else(|poison| poison.into_inner());
+        let mut names = FIXTURE_NAMES
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
         assert!(
             !names.iter().any(|used| used == name),
             "fixture file name {name:?} is already in use by another test — pick a unique name"
@@ -522,7 +531,10 @@ mod tests {
 
         send(&mut view, Key::Char('#'));
 
-        assert!(rendered(&mut view).contains("1 alpha"), "gutter did not return");
+        assert!(
+            rendered(&mut view).contains("1 alpha"),
+            "gutter did not return"
+        );
     }
 
     #[test]
@@ -590,7 +602,11 @@ mod tests {
     fn n_and_shift_n_cycle_matches() {
         let mut view = view_of("search_cycle.txt", "beta\nx\nbeta\ny\nbeta\n");
         view.search("beta", false).expect("valid pattern");
-        assert_eq!(view.textarea.cursor().0, 2, "search starts after the cursor");
+        assert_eq!(
+            view.textarea.cursor().0,
+            2,
+            "search starts after the cursor"
+        );
 
         send(&mut view, Key::Char('n'));
         assert_eq!(view.textarea.cursor().0, 4);
@@ -634,7 +650,10 @@ mod tests {
         view.preview(&path);
 
         assert_eq!(view.textarea.lines().len(), PREVIEW_LINES);
-        assert!(view.truncated, "a capped preview should be marked truncated");
+        assert!(
+            view.truncated,
+            "a capped preview should be marked truncated"
+        );
     }
 
     #[test]
@@ -708,7 +727,10 @@ mod tests {
         view.preview(&path);
 
         assert_eq!(contents(&view), "<binary file: not valid UTF-8>");
-        assert!(!view.truncated, "an error message is not a truncated preview");
+        assert!(
+            !view.truncated,
+            "an error message is not a truncated preview"
+        );
     }
 
     #[test]
@@ -718,7 +740,10 @@ mod tests {
         view.preview(Path::new("no/such/file.txt"));
 
         let text = contents(&view);
-        assert!(text.starts_with('<') && text.ends_with('>'), "not a message: {text}");
+        assert!(
+            text.starts_with('<') && text.ends_with('>'),
+            "not a message: {text}"
+        );
         assert!(!view.truncated);
     }
 
@@ -735,7 +760,10 @@ mod tests {
         view.load(Path::new("src/lib.rs"));
 
         let text = contents(&view);
-        assert!(text.contains("pub struct App"), "did not load lib.rs:\n{text}");
+        assert!(
+            text.contains("pub struct App"),
+            "did not load lib.rs:\n{text}"
+        );
         assert!(!text.contains("[dependencies]"), "old contents lingered");
         assert!(view.filename.contains("lib.rs"), "title not updated");
     }
@@ -748,7 +776,10 @@ mod tests {
         view.load(Path::new("no/such/file.txt"));
 
         let text = contents(&view);
-        assert!(text.starts_with('<') && text.ends_with('>'), "not a message: {text}");
+        assert!(
+            text.starts_with('<') && text.ends_with('>'),
+            "not a message: {text}"
+        );
         assert!(!text.contains("[dependencies]"), "old contents lingered");
     }
 
@@ -761,8 +792,14 @@ mod tests {
         view.load(Path::new("src"));
 
         let text = contents(&view);
-        assert!(text.starts_with('<') && text.ends_with('>'), "not a message: {text}");
-        assert!(!text.contains("not valid UTF-8"), "directory misreported as binary");
+        assert!(
+            text.starts_with('<') && text.ends_with('>'),
+            "not a message: {text}"
+        );
+        assert!(
+            !text.contains("not valid UTF-8"),
+            "directory misreported as binary"
+        );
     }
 
     #[test]
@@ -805,7 +842,10 @@ mod tests {
         let alpha = row_of(&buf, "alpha");
         let beta = row_of(&buf, "beta");
         assert!(row_has_fg(&buf, beta, Color::Yellow), "beta not styled");
-        assert!(!row_has_fg(&buf, alpha, Color::Yellow), "alpha wrongly styled");
+        assert!(
+            !row_has_fg(&buf, alpha, Color::Yellow),
+            "alpha wrongly styled"
+        );
     }
 
     #[test]
@@ -835,7 +875,10 @@ mod tests {
         view.set_gutter_blank(true);
 
         let text = rendered(&mut view);
-        assert!(!text.contains("1 alpha"), "gutter number still shown:\n{text}");
+        assert!(
+            !text.contains("1 alpha"),
+            "gutter number still shown:\n{text}"
+        );
     }
 
     /// Loading a file rebuilds the TextArea, which drops both. Phase 2 must
@@ -903,8 +946,10 @@ mod tests {
         );
         // ...and gained the focus decoration on top of it.
         assert!(
-            (0..area.width)
-                .any(|x| buf[(x, alpha)].style().add_modifier.contains(Modifier::REVERSED)),
+            (0..area.width).any(|x| buf[(x, alpha)]
+                .style()
+                .add_modifier
+                .contains(Modifier::REVERSED)),
             "cursor line not marked when active"
         );
         // A non-cursor line is unaffected either way.
@@ -935,8 +980,10 @@ mod tests {
             "the cursor line lost its filter colour under focus"
         );
         assert!(
-            (0..area.width)
-                .any(|x| buf[(x, alpha)].style().add_modifier.contains(Modifier::REVERSED)),
+            (0..area.width).any(|x| buf[(x, alpha)]
+                .style()
+                .add_modifier
+                .contains(Modifier::REVERSED)),
             "cursor line not marked when active"
         );
     }

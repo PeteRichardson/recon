@@ -243,9 +243,7 @@ impl FilterSet {
             .iter()
             .enumerate()
             .find(|(_, filter)| {
-                filter.enabled
-                    && filter.sense == Sense::Include
-                    && filter.pattern.is_match(line)
+                filter.enabled && filter.sense == Sense::Include && filter.pattern.is_match(line)
             })
             .map_or(Verdict::Unmatched, |(index, _)| Verdict::Included(index))
     }
@@ -544,7 +542,10 @@ mod tests {
         set.restore_remembered();
 
         assert!(set.filters()[0].enabled);
-        assert!(!set.filters()[1].enabled, "a filter the user had off came back on");
+        assert!(
+            !set.filters()[1].enabled,
+            "a filter the user had off came back on"
+        );
         assert!(set.filters()[2].enabled);
     }
 
@@ -658,9 +659,6 @@ mod tests {
             !set.filters()[0].enabled,
             "nothing was captured any more, so restore is a no-op"
         );
-        assert!(
-            set.filters()[1].enabled,
-            "still enabled, exactly as added"
-        );
+        assert!(set.filters()[1].enabled, "still enabled, exactly as added");
     }
 }

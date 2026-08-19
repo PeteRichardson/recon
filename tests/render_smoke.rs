@@ -1,8 +1,8 @@
 use crossterm::event::{
     Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
-use recon::{App, Config};
 use ratatui::prelude::{Buffer, Rect, Widget};
+use recon::{App, Config};
 
 const AREA: Rect = Rect {
     x: 0,
@@ -72,7 +72,10 @@ fn renders_file_contents_into_buffer() {
     (&mut app).render(area, &mut buf);
 
     let text: String = buf.content().iter().map(|c| c.symbol()).collect();
-    assert!(text.contains("tui-textarea-2"), "textarea did not render file contents:\n{text}");
+    assert!(
+        text.contains("tui-textarea-2"),
+        "textarea did not render file contents:\n{text}"
+    );
     assert!(text.contains("Cargo.toml"), "block title missing");
 }
 
@@ -109,10 +112,7 @@ fn nav_pane_renders_directory_entries() {
         pane.contains("Cargo.toml"),
         "nav pane did not list real directory entries:\n{pane}"
     );
-    assert!(
-        pane.contains("src"),
-        "nav pane missing src entry:\n{pane}"
-    );
+    assert!(pane.contains("src"), "nav pane missing src entry:\n{pane}");
     assert!(
         pane.contains(">>"),
         "nav pane drew no selection highlight:\n{pane}"
@@ -231,7 +231,10 @@ fn enter_on_a_directory_relists_the_nav_pane_without_touching_the_view() {
     (&mut app).render(AREA, &mut buf);
     let nav = nav_pane_rows(&buf).join("\n");
 
-    assert!(nav.contains("lib.rs"), "nav did not descend into src:\n{nav}");
+    assert!(
+        nav.contains("lib.rs"),
+        "nav did not descend into src:\n{nav}"
+    );
     assert_eq!(
         view_before,
         view_text(&mut app),
@@ -267,7 +270,12 @@ fn nav_pane_snaps_to_its_contents() {
 
     let longest = nav_pane_rows(&buf)
         .iter()
-        .filter_map(|row| row.split(['│', '┌', '┐']).nth(1).map(str::trim).map(str::len))
+        .filter_map(|row| {
+            row.split(['│', '┌', '┐'])
+                .nth(1)
+                .map(str::trim)
+                .map(str::len)
+        })
         .max()
         .expect("no nav rows");
 

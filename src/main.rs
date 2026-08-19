@@ -6,9 +6,9 @@ use crossterm::{
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use env_logger;
-use recon::{App, Config};
 use log::debug;
 use ratatui::{prelude::CrosstermBackend, Terminal};
+use recon::{App, Config};
 use std::io::{self, Stdout};
 use std::panic;
 

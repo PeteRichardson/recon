@@ -412,7 +412,10 @@ mod tests {
         let nav = nav_over("widths", &["a.rs", "much_longer_name.rs"]);
 
         // Two borders plus the two-column `>>` marker, plus the name itself.
-        assert_eq!(nav.preferred_width(), "much_longer_name.rs".len() as u16 + 4);
+        assert_eq!(
+            nav.preferred_width(),
+            "much_longer_name.rs".len() as u16 + 4
+        );
     }
 
     /// `..` is always present, so even an empty directory has a width.
