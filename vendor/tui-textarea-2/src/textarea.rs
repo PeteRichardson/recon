@@ -210,6 +210,7 @@ pub struct TextArea<'a> {
     line_number_style: Option<Style>,
     line_styles: Vec<Option<Style>>,
     line_numbers: Vec<usize>,
+    min_line_number_width: u8,
     pub(crate) viewport: Viewport,
     pub(crate) cursor_style: Style,
     cursor_render_mode: CursorRenderMode,
@@ -332,6 +333,7 @@ impl<'a> TextArea<'a> {
             line_number_style: None,
             line_styles: Vec::new(),
             line_numbers: Vec::new(),
+            min_line_number_width: 0,
             viewport: Viewport::default(),
             cursor_style: Style::default().add_modifier(Modifier::REVERSED),
             cursor_render_mode: CursorRenderMode::Cell,
@@ -2482,6 +2484,46 @@ impl<'a> TextArea<'a> {
     /// The 0-based number to show in the gutter for `row`.
     pub(crate) fn display_row(&self, row: usize) -> usize {
         self.line_numbers.get(row).copied().unwrap_or(row)
+    }
+
+    /// Reserve at least `digits` columns for the line-number gutter, even
+    /// when the buffer's own numbering needs fewer.
+    ///
+    /// The minimum only ever *raises* the width: a buffer whose numbers are
+    /// already wider keeps its own, so a stale reservation can never truncate
+    /// the gutter.
+    ///
+    /// This exists for a viewer that shows a bounded slice of a large file
+    /// before loading the rest. Sized from the slice alone, the gutter is as
+    /// wide as the slice's line count needs and then widens the moment the
+    /// full file arrives, shifting every line of text sideways. Reserving the
+    /// final width up front keeps the column still.
+    ///
+    /// ```
+    /// use tui_textarea::TextArea;
+    ///
+    /// let mut textarea = TextArea::new(vec!["only line".to_string()]);
+    /// textarea.set_min_line_number_width(4); // gutter sized as if for line 1000
+    /// ```
+    pub fn set_min_line_number_width(&mut self, digits: u8) {
+        self.min_line_number_width = digits;
+    }
+
+    /// The reservation set by [`TextArea::set_min_line_number_width`]. Zero,
+    /// meaning no reservation, by default.
+    pub fn min_line_number_width(&self) -> u8 {
+        self.min_line_number_width
+    }
+
+    /// Columns the line-number gutter occupies, excluding its margins.
+    ///
+    /// The single source of truth for the gutter's width. `widget.rs` needs
+    /// it in three places — the rendered text, the horizontal scroll offset,
+    /// and the cursor's screen column — and they must agree: sizing only the
+    /// text would leave the cursor drawn to the left of the character it is
+    /// on whenever a minimum is set.
+    pub(crate) fn line_number_width(&self) -> u8 {
+        num_digits(self.widest_display_row() + 1).max(self.min_line_number_width)
     }
 
     /// The largest 0-based number the gutter will have to show.

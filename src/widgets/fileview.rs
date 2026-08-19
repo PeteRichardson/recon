@@ -20,6 +20,28 @@ const MAX_PREVIEW_BYTES: u64 = 1 << 20;
 /// Shown in place of the contents when a file is not UTF-8.
 const BINARY_MESSAGE: &str = "<binary file: not valid UTF-8>";
 
+/// What `read_preview` found: the lines it read, whether more remain, and how
+/// many lines the whole file probably has.
+struct Preview {
+    lines: Vec<String>,
+    truncated: bool,
+    /// `None` when the file was read whole (the count is not a guess then, it
+    /// is `lines.len()`) or when there was nothing to estimate from.
+    estimated_lines: Option<usize>,
+}
+
+impl Preview {
+    /// A preview that is really an error or a placeholder. Not truncated —
+    /// there is nothing better to re-read later — and nothing to estimate.
+    fn message(text: String) -> Self {
+        Self {
+            lines: vec![text],
+            truncated: false,
+            estimated_lines: None,
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct FileView<'a> {
     pub filename: String, // name of the log file to view
@@ -83,9 +105,20 @@ impl FileView<'_> {
     /// rest is read by `handle_events` as soon as the view is actually used.
     pub fn preview(&mut self, path: &Path) {
         self.filename = path.display().to_string();
-        let (lines, truncated) = read_preview(path);
-        self.textarea = TextArea::new(lines);
-        self.truncated = truncated;
+        let preview = read_preview(path);
+        self.textarea = TextArea::new(preview.lines);
+        self.truncated = preview.truncated;
+        // Size the gutter for the whole file, not for the slice of it on
+        // screen. Without this the gutter fits the preview's ~500 lines and
+        // then widens the moment the rest of the file arrives, shifting every
+        // line of text sideways on a pane the user is already reading.
+        //
+        // Only ever a *minimum*: if the estimate reads low, the real numbering
+        // still wins once loaded, so a bad guess costs the same single redraw
+        // that making no guess at all would have.
+        if let Some(estimate) = preview.estimated_lines {
+            self.textarea.set_min_line_number_width(digits(estimate));
+        }
         // See `load`: a pending restore does not survive a switch to a
         // different file's buffer.
         self.pending_screen_row = None;
@@ -394,11 +427,14 @@ fn read_lines(path: &Path) -> Vec<String> {
 ///
 /// A file that cannot be read reports the reason and is *not* marked truncated
 /// — there is nothing better to re-read later.
-fn read_preview(path: &Path) -> (Vec<String>, bool) {
+fn read_preview(path: &Path) -> Preview {
     let file = match File::open(path) {
         Ok(file) => file,
-        Err(err) => return (vec![format!("<{err}>")], false),
+        Err(err) => return Preview::message(format!("<{err}>")),
     };
+    // Read before the bytes are consumed; a file that cannot be stat'd simply
+    // gets no estimate rather than failing the preview.
+    let file_bytes = file.metadata().ok().map(|meta| meta.len());
 
     let mut reader = BufReader::new(file.take(MAX_PREVIEW_BYTES));
     let mut lines = Vec::new();
@@ -410,17 +446,56 @@ fn read_preview(path: &Path) -> (Vec<String>, bool) {
             Ok(0) => break,
             Ok(_) => lines.push(line.trim_end_matches(['\n', '\r']).to_string()),
             Err(err) if err.kind() == ErrorKind::InvalidData => {
-                return (vec![BINARY_MESSAGE.to_string()], false);
+                return Preview::message(BINARY_MESSAGE.to_string());
             }
-            Err(err) => return (vec![format!("<{err}>")], false),
+            Err(err) => return Preview::message(format!("<{err}>")),
         }
     }
 
     // Either the line budget ran out, or the byte allowance did. A file that
     // ends exactly on a cap is reported as truncated, which only costs a
     // redundant re-read the first time the view is used.
-    let truncated = lines.len() == PREVIEW_LINES || reader.into_inner().limit() == 0;
-    (lines, truncated)
+    let remaining = reader.into_inner().limit();
+    let truncated = lines.len() == PREVIEW_LINES || remaining == 0;
+    let estimated_lines = if truncated {
+        estimate_lines(file_bytes, MAX_PREVIEW_BYTES - remaining, lines.len())
+    } else {
+        None
+    };
+    Preview {
+        lines,
+        truncated,
+        estimated_lines,
+    }
+}
+
+/// How many lines a file of `file_bytes` probably holds, given that its first
+/// `bytes_read` bytes held `lines_read` lines.
+///
+/// Scaling the sample's bytes-per-line up to the whole file is a guess, but a
+/// cheap one — the alternative is reading the file to count its newlines,
+/// which is exactly the unbounded work `read_preview` exists to avoid. It only
+/// has to be right to the *digit*, since all it feeds is a gutter width, so
+/// being off by 10% costs nothing and being off by 10x costs one redraw: the
+/// same redraw as having made no estimate at all.
+///
+/// `None` when there is nothing to scale from — no readable size, an empty
+/// read, or a preview that consumed no bytes.
+fn estimate_lines(file_bytes: Option<u64>, bytes_read: u64, lines_read: usize) -> Option<usize> {
+    let file_bytes = file_bytes?;
+    if bytes_read == 0 || lines_read == 0 {
+        return None;
+    }
+    // u128: `file_bytes` is a real file size and `lines_read` is at most
+    // PREVIEW_LINES, but their product still overflows u64 on a file above
+    // ~37 PiB. Cheap to rule out rather than reason about.
+    let estimate = (u128::from(file_bytes) * lines_read as u128).div_ceil(u128::from(bytes_read));
+    Some(usize::try_from(estimate).unwrap_or(usize::MAX))
+}
+
+/// Decimal digits in `n`, for sizing the gutter. `0` and `1` both need one.
+fn digits(n: usize) -> u8 {
+    if n == 0 { 1 } else { n.ilog10() as u8 + 1 }
 }
 
 /// Widget impl for `FileView`
@@ -1181,5 +1256,123 @@ mod tests {
             3,
             "the second scroll request overwrote the first instead of being ignored"
         );
+    }
+
+    /// Columns the line-number gutter occupies, read back off a real render.
+    ///
+    /// A row is `border + margin + right-aligned number + margin + text`, so
+    /// on the buffer's first row — whose number is always `1` — the sole
+    /// digit sits at column `1 + 1 + lnum_len - 1`, and the width falls out
+    /// as `column - 1`.
+    ///
+    /// Indexes buffer cells rather than searching a joined `String`: the
+    /// border is `\u{2502}`, three bytes in UTF-8, so `str::find` returns a
+    /// byte offset two greater than the column and every measurement taken
+    /// that way is quietly wrong.
+    fn gutter_digits(view: &mut FileView<'_>) -> usize {
+        let area = Rect::new(0, 0, 60, 4);
+        let mut buf = Buffer::empty(area);
+        view.render(area, &mut buf);
+        let digit_column = (0..area.width)
+            .find(|&x| {
+                buf[(x, 1)]
+                    .symbol()
+                    .chars()
+                    .next()
+                    .is_some_and(|c| c.is_ascii_digit())
+            })
+            .expect("no line number rendered") as usize;
+        digit_column - 1
+    }
+
+    /// Issue #1. A preview holds `PREVIEW_LINES` rows, so the gutter is sized
+    /// for 500 while the file has thousands; focusing the view loads the rest
+    /// and the gutter widens, shifting every line of text sideways on a pane
+    /// the user is already reading. The two renders must agree.
+    #[test]
+    fn a_preview_reserves_the_gutter_the_full_file_will_need() {
+        let path = long_file("gutter_preview.txt", 5000);
+        let mut view = FileView::new("Cargo.toml".to_string());
+
+        view.preview(&path);
+        let previewed = gutter_digits(&mut view);
+        view.load(&path);
+        let loaded = gutter_digits(&mut view);
+
+        assert_eq!(
+            previewed, loaded,
+            "gutter jumped from {previewed} to {loaded} when the file finished loading"
+        );
+        assert_eq!(loaded, 4, "a 5000-line file needs four digits");
+    }
+
+    /// The helper has to be able to see the defect it is asserting the
+    /// absence of, or the test above passes for the wrong reason.
+    #[test]
+    fn gutter_digits_tracks_the_line_count() {
+        let short = long_file("gutter_sensitivity.txt", 5);
+        let mut view = FileView::new(short.display().to_string());
+
+        assert_eq!(gutter_digits(&mut view), 1);
+    }
+
+    /// A file read whole is not a preview, so there is nothing to estimate
+    /// and nothing to reserve — it must not pay for a column it never uses.
+    #[test]
+    fn a_short_file_reserves_nothing() {
+        let path = long_file("gutter_short.txt", 12);
+        let mut view = FileView::new("Cargo.toml".to_string());
+
+        view.preview(&path);
+
+        assert!(!view.truncated, "precondition: the file was read whole");
+        assert_eq!(view.textarea.min_line_number_width(), 0);
+        assert_eq!(gutter_digits(&mut view), 2, "12 lines need two digits");
+    }
+
+    /// The estimate scales the preview's own bytes-per-line up to the file's
+    /// size, so lines far longer than average must not under-reserve. This
+    /// file has the same 5000 lines as the one above but each is ~200 bytes
+    /// longer, which a byte-blind estimate would read as a much longer file.
+    #[test]
+    fn the_estimate_scales_with_line_length() {
+        let body: String = (0..5000)
+            .map(|i| format!("line {i} {}\n", "x".repeat(200)))
+            .collect();
+        let path = fixture("gutter_wide.txt", &body);
+        let mut view = FileView::new("Cargo.toml".to_string());
+
+        view.preview(&path);
+        let previewed = gutter_digits(&mut view);
+        view.load(&path);
+
+        assert_eq!(
+            previewed,
+            gutter_digits(&mut view),
+            "long lines threw the estimate off"
+        );
+    }
+
+    /// A full load knows the real count, so it must drop the reservation
+    /// rather than leave the previous file's propped up under a short one.
+    #[test]
+    fn loading_clears_a_reservation_the_preview_made() {
+        let big = long_file("gutter_clear_big.txt", 5000);
+        let small = long_file("gutter_clear_small.txt", 5);
+        let mut view = FileView::new("Cargo.toml".to_string());
+
+        view.preview(&big);
+        assert!(
+            view.textarea.min_line_number_width() > 0,
+            "precondition: the preview reserved room"
+        );
+        view.load(&small);
+
+        assert_eq!(
+            view.textarea.min_line_number_width(),
+            0,
+            "the previous file's reservation outlived it"
+        );
+        assert_eq!(gutter_digits(&mut view), 1);
     }
 }
