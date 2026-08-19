@@ -156,10 +156,10 @@ impl FilterSet {
             return false;
         }
         self.filters.remove(index);
-        if let Some(remembered) = self.remembered.as_mut() {
-            if index < remembered.len() {
-                remembered.remove(index);
-            }
+        if let Some(remembered) = self.remembered.as_mut()
+            && index < remembered.len()
+        {
+            remembered.remove(index);
         }
         true
     }

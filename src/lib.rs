@@ -565,21 +565,21 @@ impl App<'_> {
             }
         }
 
-        if let event::Event::Mouse(mouse) = event {
-            if self.handle_divider(mouse) {
-                return Ok(());
-            }
+        if let event::Event::Mouse(mouse) = event
+            && self.handle_divider(mouse)
+        {
+            return Ok(());
         }
 
         // Filter pane keys are routed here rather than through the generic
         // `handle_events` dispatch below: applying them means mutating the
         // `FilterSet`, which only `App` owns, so `FilterList` cannot carry
         // them out itself — see `handle_filter_key`.
-        if let event::Event::Key(key) = event {
-            if matches!(self.widgets[self.active_widget], AppWidget::FilterList(_)) {
-                self.handle_filter_key(key);
-                return Ok(());
-            }
+        if let event::Event::Key(key) = event
+            && matches!(self.widgets[self.active_widget], AppWidget::FilterList(_))
+        {
+            self.handle_filter_key(key);
+            return Ok(());
         }
 
         // The file view upgrades its own truncated preview to a full load on
