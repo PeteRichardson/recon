@@ -1,6 +1,163 @@
-# list
+# recon
 
-A TUI log viewer with a file navigator and a filterable view.
+> _Read a log the way you read it in your head: one filter at a time._
+
+`recon` is a terminal file viewer built around a **stack of regex filters** you
+build up interactively. Matching lines get colour; everything else dims — and
+`Ctrl-H` flips the unmatched lines from dimmed to gone entirely, keeping the
+original line numbers in the gutter so a gap tells you something was left out.
+Filters are individually toggled, disabled en masse with `!`, and survive
+loading a different file. It's for the moment when `grep -v` has become four 
+chained `grep -v`s and you've lost track of what you're excluding.
+
+Three panes: a file navigator, the file view, and the filter list. Vim-style
+motions throughout.
+
+> **Status:** Active development — pre-1.0, no tagged releases. Keybindings and
+> behaviour may change between commits.
+
+---
+
+## Table of Contents
+
+- [Features](#features)
+- [Prerequisites](#prerequisites)
+- [Installation](#installation)
+- [Quick Start](#quick-start)
+- [Usage](#usage)
+- [Keybindings](#keybindings)
+- [Known Limitations](#known-limitations)
+- [Vendored dependency](#vendored-dependency)
+- [Development](#development)
+- [License](#license)
+
+---
+
+## Features
+
+- **A filter stack, not a single pattern** — add filters with `f` (include) and
+  `F` (exclude); each one is listed, numbered, and independently toggled with
+  `space`. The filter pane collapses to nothing until you define your first
+  filter.
+- **Dim or hide, on one keystroke** — `Ctrl-H` toggles unmatched lines between
+  dimmed-but-present and removed. Toggling back returns you to the exact line
+  you were on.
+- **Line numbers stay honest** — the gutter shows original file line numbers
+  even while filtered, so gaps in the numbering mark what was hidden.
+- **Filters outlive the file** — load another log and the filter set stays put.
+  `!` disables everything at once and remembers what was on, so it's one
+  keystroke back to an unfiltered view without discarding your work.
+- **Regex everywhere** — filters and searches are both regular expressions. An
+  invalid pattern reports `E486: invalid pattern` and leaves the prompt open.
+- **Vim motions** — `hjkl`, `w`, `0`/`^`/`$`, `{`/`}`, `g`/`G`, `Ctrl-D`/`Ctrl-U`,
+  `/` and `?` with `n`/`N` repeat.
+- **Cheap navigation** — moving through the navigator renders a bounded preview
+  (500 lines / 1 MiB), so scrolling a directory of large logs doesn't stutter.
+- **Mouse resize** — drag the pane divider; double-click it to return to
+  auto-sizing.
+
+---
+
+## Prerequisites
+
+- **Rust 1.88.0 or later** — required by the vendored `tui-textarea-2` fork,
+  which is edition 2024. (`recon` itself is edition 2021.)
+- **A terminal.** `recon` enters raw mode and the alternate screen; it exits
+  with `Device not configured (os error 6)` if stdout isn't a TTY.
+
+Developed and tested on macOS.
+
+---
+
+## Installation
+
+### From source
+
+```sh
+git clone git@github.com:PeteRichardson/recon.git
+cd recon
+cargo build --release
+# Binary: ./target/release/recon
+```
+
+### Install to your PATH
+
+```sh
+cargo install --path .
+```
+
+`recon` is not published to crates.io, so `cargo install recon` will not work.
+
+### Verify
+
+```sh
+recon --version
+```
+```
+recon 0.1.0
+```
+
+---
+
+## Quick Start
+
+<!-- 🖊 TODO: Add a demo GIF here
+<p align="center">
+  <img src="docs/images/demo.gif" alt="recon demo" width="700">
+</p>
+-->
+
+```sh
+recon /var/log/system.log
+```
+
+The file opens in the centre pane with its directory listed on the left. Then:
+
+| Press | To |
+| --- | --- |
+| `f` `ERROR` `Enter` | Colour every line matching `ERROR`, dim the rest |
+| `f` `WARN` `Enter` | Add a second filter, in its own colour |
+| `F` `healthcheck` `Enter` | Drop `healthcheck` lines from view entirely |
+| `Ctrl-H` | Hide the dimmed lines — only `ERROR` and `WARN` remain |
+| `Tab` | Focus the filter pane; `space` toggles a filter off and on |
+| `!` | Disable all filters — the whole file returns |
+| `q` | Quit |
+
+---
+
+## Usage
+
+```
+Usage: recon <FILE>
+
+Arguments:
+  <FILE>
+
+Options:
+  -h, --help     Print help
+  -V, --version  Print version
+```
+
+`<FILE>` is required. The file opens in the view pane and the navigator opens
+its **parent directory**, so `recon Cargo.toml` lists the current directory.
+From there, `Enter` in the navigator descends into directories or loads files.
+
+<!-- 🖊 TODO: `<FILE>` has no help text and `--help` shows no description,
+     because `Config.file` in src/lib.rs has no doc comment and Cargo.toml has
+     no `description` field. Adding both would make `recon --help` self-
+     explanatory. -->
+
+### A note on stderr
+
+`recon` logs its parsed config at DEBUG to stderr before starting the TUI, so
+you'll see one line like `[DEBUG] Config { file: "app.log" }` on launch.
+Redirect it if it's in your way:
+
+```sh
+recon app.log 2>/dev/null
+```
+
+---
 
 ## Keybindings
 
@@ -121,6 +278,27 @@ row, so lines appear and disappear around a fixed point rather than the view
 lurching. Deleting the last filter collapses the pane again and moves focus
 off it.
 
+---
+
+## Known Limitations
+
+- **Files are read entirely into memory.** `read_lines` in
+  `src/widgets/fileview.rs` collects the whole file into a `Vec<String>`.
+  A multi-gigabyte log will be fully resident. There is no streaming or
+  memory-mapped path.  This is github issue #7.
+- **Previews are bounded, full loads are not.** While the navigator has focus,
+  only `PREVIEW_LINES` (500) lines or `MAX_PREVIEW_BYTES` (1 MiB) are read,
+  whichever comes first. The full read happens once you focus the view.
+- **Non-UTF-8 files are not viewable.** A file that isn't valid UTF-8 renders
+  as `<binary file: not valid UTF-8>` rather than as bytes.
+- **Nothing is persisted.** Filter sets live only for the session — there is no
+  config file and no way to save or reload a filter set. Re-typing them is the
+  only option after a restart.   This is github issue #8
+- **The argument must be a file, not a directory.** The navigator opens the
+  *parent* of whatever path you pass.
+
+---
+
 ## Vendored dependency
 
 `vendor/tui-textarea-2` is a patched copy of
@@ -158,3 +336,42 @@ it will not `git apply` cleanly against an upstream checkout regardless. If
 upstream submission is ever pursued, this all needs reworking first — nothing
 here is submission-ready. If a suitable subset is ever accepted upstream,
 this directory and the `[patch.crates-io]` entry can both be deleted.
+
+---
+
+## Development
+
+```sh
+cargo build              # debug build
+cargo test               # recon's suite: 224 unit + 9 integration tests
+cargo test --workspace   # also runs the vendored fork's tests — see above
+cargo clippy
+cargo fmt
+```
+
+Layout:
+
+| Path | Contents |
+| --- | --- |
+| `src/main.rs` | Entry point: terminal setup, error hooks, logging |
+| `src/lib.rs` | `App` — layout, global keys, pane focus, prompts |
+| `src/document.rs` | The loaded file and its visible-line set |
+| `src/filter.rs` | `FilterSet` — the filter stack and its evaluation |
+| `src/widgets/filenav.rs` | Directory navigator pane |
+| `src/widgets/fileview.rs` | File view pane |
+| `src/widgets/filterlist.rs` | Filter list pane |
+| `tests/render_smoke.rs` | End-to-end render tests |
+| `docs/specs/`, `docs/plans/` | Design specs and implementation plans |
+
+Design background lives in
+[`docs/specs/2026-08-15-filter-based-viewing-design.md`](docs/specs/2026-08-15-filter-based-viewing-design.md).
+
+---
+
+## License
+
+Licensed under the **MIT License** — see [LICENSE](LICENSE) for details.
+
+`vendor/tui-textarea-2` is third-party code under its own MIT licence
+(Copyright © 2022 rhysd), kept unmodified at
+`vendor/tui-textarea-2/LICENSE`. It covers that directory only.
