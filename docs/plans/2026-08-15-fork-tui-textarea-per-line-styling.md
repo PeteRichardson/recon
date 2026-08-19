@@ -854,6 +854,13 @@ re-apply."
 
 ### Task 5: Prepare the upstream patch and document the fork
 
+> **Superseded — historical record.** `vendor/tui-textarea-2/upstream.patch`
+> was later deleted; `PATCH.md` is now the sole record of what the fork
+> changes. The steps below are kept as an account of what this task actually
+> did, not as instructions to follow. The regeneration command in Step 1 still
+> works if you ever want an ad-hoc diff — see the README's "Vendored
+> dependency" section.
+
 The fork is only acceptable if it is easy to drop. This produces the artefact
 needed to offer it upstream and tells a reader of the repo why `vendor/` exists.
 

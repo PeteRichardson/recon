@@ -355,24 +355,36 @@ second `crossterm` (0.28.1) alongside `recon`'s own 0.29.0 — so expect a
 heavier build than `cargo build`/plain `cargo test`, which never compile any
 of it.
 
-`upstream.patch` is a local record of what this fork changes, not a
-submission-ready patch, and it has not been submitted anywhere. **It is
-currently stale:** it predates the minimum-gutter-width change (entry 4 in
-`PATCH.md`) and does not contain it. Regenerating it needs a pristine 0.12.1
-checkout to diff against, and since the file is not submission-ready for the
-reasons below, `PATCH.md` — not this file — is the authoritative record of
-what the fork changes. It contains
-two hunks that are not offerable upstream even so: the `[profile.bench]`
-removal (needed only because this crate lives inside `recon`'s workspace,
-noted in `PATCH.md`), and the `[[test]] name = "line_presentation"` addition,
-which patches the *generated* `Cargo.toml` — upstream's actual pre-publish
-tree (`Cargo.toml.orig`) has no `[[test]]` entries and no `autotests` key at
-all, so that hunk doesn't apply there either. The patch headers also
-reference `/tmp/tui-pristine/...` and `vendor/tui-textarea-2/...`, so as-is
-it will not `git apply` cleanly against an upstream checkout regardless. If
-upstream submission is ever pursued, this all needs reworking first — nothing
-here is submission-ready. If a suitable subset is ever accepted upstream,
-this directory and the `[patch.crates-io]` entry can both be deleted.
+`PATCH.md` is the authoritative record of what this fork changes — every
+entry names its file and its anchor, which is what a rebase or an upstream
+submission actually works from.
+
+There used to be an `upstream.patch` beside it, a `diff -ruN` against pristine
+0.12.1. It was deleted, because it was never submittable and could only stay
+correct if every future fork change remembered to regenerate it — which was
+missed the first time it mattered. Three things made it unsubmittable as it
+stood: its `Cargo.toml` hunk patched the *generated* manifest, while
+upstream's pre-publish tree (`Cargo.toml.orig`) has no `[[test]]` entries and
+no `autotests` key for it to apply to; the `[profile.bench]` removal is needed
+only because this crate sits inside `recon`'s workspace; and its headers
+referenced `/tmp/tui-pristine/...`, so it would not `git apply` against an
+upstream checkout regardless.
+
+None of that is lost. Regenerating an equivalent diff at any time is one
+command, against the copy of 0.12.1 cargo has already unpacked:
+
+```sh
+rm -rf /tmp/tui-pristine
+cp -R "$(ls -d ~/.cargo/registry/src/*/tui-textarea-2-0.12.1)" /tmp/tui-pristine
+chmod -R u+w /tmp/tui-pristine && rm -f /tmp/tui-pristine/.cargo-ok
+diff -ruN --exclude=PATCH.md --exclude=target /tmp/tui-pristine vendor/tui-textarea-2
+```
+
+If upstream submission is ever pursued, the work is rebuilding these changes
+as commits against upstream's own tree and dropping the two local-only hunks —
+a job that starts from `PATCH.md`, not from a checked-in diff. If a suitable
+subset is ever accepted upstream, this directory and the `[patch.crates-io]`
+entry can both be deleted.
 
 ---
 

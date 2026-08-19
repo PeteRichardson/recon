@@ -130,6 +130,24 @@ The patch is deliberately confined to per-line *presentation* and viewport
 `wrap.rs`, stop: that is the signal to reconsider a purpose-built viewer
 instead (see the spec).
 
+## This file is the record
+
+There is no `upstream.patch` in this directory. There used to be — a
+`diff -ruN` against pristine 0.12.1 — and it was deleted, because it could
+only stay correct if every change above remembered to regenerate it, and that
+was missed the first time it mattered (entry 4). It was never submittable
+as-is either: see the README's "Vendored dependency" section.
+
+So this file is the sole record of what the fork changes, and the entries
+above have to carry their own weight — each one names its file and its
+anchor, because that is what a rebase and any future upstream submission
+actually work from. **A new change here is not done until it has an entry.**
+
+An equivalent diff is one command away whenever it is wanted; the README
+gives it. Two older plan documents under `docs/plans/` still describe
+regenerating the file as a step. They are historical records of work already
+done and are marked superseded at those points.
+
 ## Inert publish artefacts
 
 The vendored tree also carries `Cargo.lock`, `Cargo.toml.orig` and

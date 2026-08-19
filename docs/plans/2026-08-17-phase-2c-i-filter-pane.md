@@ -407,7 +407,8 @@ rather than needing it retrofitted.
 **Files:**
 - Modify: `vendor/tui-textarea-2/src/textarea.rs` (one accessor)
 - Modify: `vendor/tui-textarea-2/PATCH.md`
-- Modify: `vendor/tui-textarea-2/upstream.patch` (regenerate)
+- Modify: `vendor/tui-textarea-2/upstream.patch` (regenerate) — that file has
+  since been deleted; `PATCH.md` alone carries the record now
 - Modify: `src/widgets/fileview.rs`
 - Modify: `src/lib.rs`
 

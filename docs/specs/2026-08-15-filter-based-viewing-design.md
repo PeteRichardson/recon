@@ -349,8 +349,10 @@ Each phase is independently shippable and leaves the app working.
 
 1. **Fork and wire up** — ✅ **done**. Forked `tui-textarea-2`, added the two
    setters, switched the dependency over with no behaviour change. (`#` for
-   line numbers landed here too.) `upstream.patch` is prepared but
-   deliberately **not** submitted anywhere.
+   line numbers landed here too.) The fork is recorded in its own `PATCH.md`
+   and has deliberately **not** been submitted anywhere. (An `upstream.patch`
+   was also produced at the time; it was later deleted — see the README's
+   "Vendored dependency" section for why.)
 2. **Filters and Ctrl+H**, split into three so each delivers something usable:
    - **2a — include filters and dimming.** `Document`, `Filter`, verdict
      caching, dimming and filter colours, the `f` prompt, `!` to disable all,
