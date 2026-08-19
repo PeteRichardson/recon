@@ -333,12 +333,14 @@ form and can be dropped altogether.
 
 `vendor/tui-textarea-2` is a patched copy of
 [tui-textarea-2](https://github.com/srothgan/tui-textarea) 0.12.1, wired in
-via `[patch.crates-io]`. The patch adds three public additions — setters for
+via `[patch.crates-io]`. The patch adds four public additions — setters for
 per-line styles and gutter number overrides, which the file view needs in
 order to dim lines that do not match a filter and to show original line
-numbers while filtered, plus a `scroll_top` getter that reports the
-viewport's position so the cursor's screen row can be held steady across a
-buffer rebuild.
+numbers while filtered; a `scroll_top` getter that reports the viewport's
+position so the cursor's screen row can be held steady across a buffer
+rebuild; and a minimum gutter width, so the line-number column can be sized
+for a file's estimated length while only a bounded preview of it is loaded
+rather than widening when the rest arrives.
 
 See `vendor/tui-textarea-2/PATCH.md` for the exact changes and how to rebase
 onto a new upstream release. Verify a rebase with `cargo test --workspace`,
@@ -354,7 +356,12 @@ heavier build than `cargo build`/plain `cargo test`, which never compile any
 of it.
 
 `upstream.patch` is a local record of what this fork changes, not a
-submission-ready patch, and it has not been submitted anywhere. It contains
+submission-ready patch, and it has not been submitted anywhere. **It is
+currently stale:** it predates the minimum-gutter-width change (entry 4 in
+`PATCH.md`) and does not contain it. Regenerating it needs a pristine 0.12.1
+checkout to diff against, and since the file is not submission-ready for the
+reasons below, `PATCH.md` — not this file — is the authoritative record of
+what the fork changes. It contains
 two hunks that are not offerable upstream even so: the `[profile.bench]`
 removal (needed only because this crate lives inside `recon`'s workspace,
 noted in `PATCH.md`), and the `[[test]] name = "line_presentation"` addition,

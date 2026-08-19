@@ -3,7 +3,6 @@ use crate::ratatui::layout::{Position, Rect};
 use crate::ratatui::text::{Line, Span, Text};
 use crate::ratatui::widgets::{Paragraph, Widget};
 use crate::textarea::{CursorRenderMode, TextArea};
-use crate::util::num_digits;
 use crate::wrap::WrapMode;
 use portable_atomic::{AtomicU64, Ordering};
 use std::cmp;
@@ -98,7 +97,7 @@ struct RenderPlan {
 
 impl<'a> TextArea<'a> {
     fn text_widget(&'a self, top_row: usize, height: usize) -> Text<'a> {
-        let lnum_len = num_digits(self.widest_display_row() + 1);
+        let lnum_len = self.line_number_width();
         let screen_lines = self.screen_lines.borrow();
         let bottom_row = cmp::min(top_row + height, screen_lines.len());
         let mut lines = Vec::with_capacity(bottom_row - top_row);
@@ -128,7 +127,7 @@ impl<'a> TextArea<'a> {
 
         // Adjust the cursor position due to the width of line number.
         if self.line_number_style().is_some() {
-            let lnum = num_digits(self.widest_display_row() + 1) as u16 + 2; // `+ 2` for margins
+            let lnum = self.line_number_width() as u16 + 2; // `+ 2` for margins
             if cursor <= lnum {
                 cursor *= 2; // Smoothly slide the line number into the screen on scrolling left
             } else {
@@ -206,7 +205,7 @@ impl<'a> TextArea<'a> {
 
         let mut cursor_col = cursor.col;
         if self.line_number_style().is_some() {
-            cursor_col = cursor_col.saturating_add(num_digits(self.widest_display_row() + 1) as usize + 2);
+            cursor_col = cursor_col.saturating_add(self.line_number_width() as usize + 2);
         }
 
         let top_col = top_col as usize;

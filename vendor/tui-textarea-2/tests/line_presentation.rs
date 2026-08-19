@@ -149,3 +149,75 @@ fn clear_line_numbers_restores_natural_numbering() {
     assert!(textarea.line_numbers().is_empty());
     assert!(row_text(&buf, 0).trim_start().starts_with("1 "), "got {:?}", row_text(&buf, 0));
 }
+
+/// A minimum width lets a caller reserve gutter room the buffer does not yet
+/// justify — `recon` sizes the gutter for a file's estimated line count while
+/// only a bounded preview is loaded, so the column does not jump when the
+/// rest of the file arrives.
+#[test]
+fn a_minimum_width_reserves_gutter_room() {
+    let mut textarea = plain(&["a", "b"]);
+    textarea.set_line_number_style(Style::default());
+    textarea.set_min_line_number_width(4);
+
+    let buf = render(&textarea, 20, 2);
+
+    assert!(row_text(&buf, 0).trim_end().ends_with("   1 a"), "got {:?}", row_text(&buf, 0));
+    assert!(row_text(&buf, 1).trim_end().ends_with("   2 b"), "got {:?}", row_text(&buf, 1));
+}
+
+/// The minimum only ever raises the width. A buffer already wider than the
+/// minimum keeps its own numbering, so a stale reservation cannot truncate a
+/// gutter that has outgrown it.
+#[test]
+fn a_minimum_narrower_than_the_content_is_ignored() {
+    let mut textarea = plain(&["a", "b"]);
+    textarea.set_line_number_style(Style::default());
+    textarea.set_line_numbers(vec![9997, 9998]);
+    textarea.set_min_line_number_width(2);
+
+    let buf = render(&textarea, 20, 2);
+
+    assert!(row_text(&buf, 0).trim_start().starts_with("9998 "), "got {:?}", row_text(&buf, 0));
+}
+
+#[test]
+fn the_minimum_width_is_zero_by_default() {
+    let textarea = plain(&["a"]);
+
+    assert_eq!(textarea.min_line_number_width(), 0);
+}
+
+/// The gutter width feeds the cursor's screen column as well as the rendered
+/// text. Sizing only the render would leave the cursor drawn `min - natural`
+/// columns left of the character it is actually on.
+#[test]
+fn a_minimum_width_shifts_the_cursor_column_too() {
+    fn cursor_column(textarea: &TextArea<'_>) -> Option<u16> {
+        let area = Rect::new(0, 0, 20, 1);
+        let mut buf = Buffer::empty(area);
+        Widget::render(textarea, area, &mut buf);
+        (0..area.width).find(|&x| {
+            buf[(x, 0)]
+                .style()
+                .add_modifier
+                .contains(ratatui::style::Modifier::REVERSED)
+        })
+    }
+
+    // Not `plain`: that hides the cursor, which is the thing under test.
+    let mut narrow = TextArea::new(vec!["ab".to_string()]);
+    narrow.set_line_number_style(Style::default());
+    let narrow_col = cursor_column(&narrow).expect("cursor not drawn without a minimum");
+
+    let mut wide = TextArea::new(vec!["ab".to_string()]);
+    wide.set_line_number_style(Style::default());
+    wide.set_min_line_number_width(6);
+    let wide_col = cursor_column(&wide).expect("cursor not drawn with a minimum");
+
+    assert_eq!(
+        wide_col - narrow_col,
+        5,
+        "cursor column did not follow the reserved gutter ({wide_col} vs {narrow_col})"
+    );
+}

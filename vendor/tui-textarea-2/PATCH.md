@@ -73,6 +73,40 @@ hit this today. Gutter overrides are therefore supported only under
   across a buffer rebuild (`set_lines` resets the viewport), rather than
   letting it re-anchor to wherever the reset viewport happens to land it.
 
+### 4. Minimum gutter width
+
+- `src/textarea.rs`, `struct TextArea`: added field `min_line_number_width: u8`.
+- `src/textarea.rs`, `TextArea::new`: initialise it to `0`.
+- `src/textarea.rs`: added `set_min_line_number_width`, `min_line_number_width`,
+  and the crate-internal `line_number_width`, before `widest_display_row`.
+- `src/widget.rs`, `text_widget`, `scroll_top_col` and `rendered_position_in`:
+  all three now call `line_number_width()` instead of computing
+  `num_digits(widest_display_row() + 1)` for themselves. The `use
+  crate::util::num_digits` import went with them.
+- `tests/line_presentation.rs`: four new tests.
+
+`recon` shows a bounded preview of a large file before loading the rest. Sized
+from the preview alone, the gutter fits ~500 lines and then widens the instant
+the full file arrives, shifting every line of text sideways on a pane the user
+is reading. `recon` estimates the file's line count from the preview's own
+bytes-per-line and reserves the width up front.
+
+**Routing all three `widget.rs` sites through one accessor is the point, not a
+tidy-up.** The width feeds the rendered text, the horizontal scroll offset and
+the cursor's screen column; sizing only the text would leave the cursor drawn
+`min - natural` columns left of the character it is on. The three had already
+drifted apart once, in change 2 above, for the same reason.
+
+The minimum only ever raises the width, never lowers it, so a stale
+reservation cannot truncate a gutter that has outgrown it — which is what
+makes a wrong estimate cost at most the single redraw it was trying to avoid.
+
+Same `WrapMode::None` caveat as change 2: `screen_map.rs` and
+`measure_content_rows` still reserve gutter space from `self.lines.len()`, so
+a minimum wider than the buffer's natural numbering would under-reserve under
+a wrapping mode. `recon` never calls `set_wrap_mode`. Not fixed, for the
+reason given above — that file is the declared tripwire.
+
 ### Local-only: removed `[profile.bench]`
 
 - `Cargo.toml`: dropped `[profile.bench] lto = "thin"`.
