@@ -18,6 +18,21 @@ pub enum Action {
     Preview(PathBuf),
 }
 
+/// The three panes, as one type so `App` can hold them in a single list and
+/// dispatch focus by index.
+///
+/// `clippy::large_enum_variant` fires here because the variants differ sharply
+/// in size — `FileView` is 824 bytes (it owns a `TextArea`), `FileNav` 496 and
+/// `FilterList` 32 — and boxing the largest is the usual answer. It is the
+/// wrong answer here. Exactly three of these ever exist, in `App::widgets`, so
+/// the total over-allocation is about 1.1 KB for the life of the process,
+/// while the box would add a heap indirection to `render` and `handle_events`
+/// on the file view — the pane that redraws every frame and takes nearly every
+/// keystroke. Paying a per-frame cost to save a kilobyte once is a bad trade.
+///
+/// Revisit if `AppWidget` ever lands in a collection that grows with the file
+/// or the directory, where the waste would scale with it.
+#[allow(clippy::large_enum_variant)]
 pub enum AppWidget<'a> {
     FileNav(filenav::FileNav<'a>),
     FileView(fileview::FileView<'a>),

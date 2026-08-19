@@ -5,7 +5,6 @@ use crossterm::{
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
-use env_logger;
 use log::debug;
 use ratatui::{Terminal, prelude::CrosstermBackend};
 use recon::{App, Config};
