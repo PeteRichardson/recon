@@ -211,6 +211,23 @@ fn read_dir_entries(dir: &Path) -> Vec<String> {
     entries
 }
 
+impl Widget for &mut FileNav<'_> {
+    fn render(self, area: Rect, buf: &mut Buffer) {
+        let mut highlight_style = Style::new().add_modifier(Modifier::REVERSED);
+        if self.active {
+            highlight_style = highlight_style.fg(Color::Green);
+        }
+        let list = self
+            .navlist
+            .clone()
+            .block(Block::bordered().title(self.dir.display().to_string()))
+            .highlight_style(highlight_style)
+            .highlight_symbol(">>")
+            .repeat_highlight_symbol(true);
+        StatefulWidget::render(&list, area, buf, &mut self.state);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -655,22 +672,5 @@ mod tests {
         nav.handle_events(Event::Key(KeyEvent::from(KeyCode::Char('k'))))
             .unwrap();
         assert_eq!(nav.state.selected(), Some(0), "k should move back up");
-    }
-}
-
-impl Widget for &mut FileNav<'_> {
-    fn render(self, area: Rect, buf: &mut Buffer) {
-        let mut highlight_style = Style::new().add_modifier(Modifier::REVERSED);
-        if self.active {
-            highlight_style = highlight_style.fg(Color::Green);
-        }
-        let list = self
-            .navlist
-            .clone()
-            .block(Block::bordered().title(self.dir.display().to_string()))
-            .highlight_style(highlight_style)
-            .highlight_symbol(">>")
-            .repeat_highlight_symbol(true);
-        StatefulWidget::render(&list, area, buf, &mut self.state);
     }
 }

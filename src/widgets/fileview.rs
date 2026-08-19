@@ -423,6 +423,55 @@ fn read_preview(path: &Path) -> (Vec<String>, bool) {
     (lines, truncated)
 }
 
+/// Widget impl for `FileView`
+impl Widget for &mut FileView<'_> {
+    fn render(self, area: Rect, buf: &mut Buffer) {
+        if self.hide_line_numbers || self.gutter_blank {
+            self.textarea.remove_line_number();
+        } else {
+            self.textarea
+                .set_line_number_style(Style::default().fg(Color::DarkGray));
+        }
+        // The textarea replaces rather than merges a line's style, so the
+        // cursor line would otherwise discard whatever the filters gave it and
+        // read as unfiltered. Start from that line's own style and add the
+        // focus decoration on top: REVERSED always, but the green foreground
+        // only when the line has no colour of its own — otherwise a matched
+        // line under the cursor would be indistinguishable from a dimmed one.
+        let cursor_row = self.textarea.cursor().0;
+        let own_style = self
+            .textarea
+            .line_styles()
+            .get(cursor_row)
+            .copied()
+            .flatten();
+        let mut style = own_style.unwrap_or_default();
+        if self.active {
+            if own_style.is_none() {
+                style = style.fg(Color::Green);
+            }
+            style = style.add_modifier(Modifier::REVERSED);
+        }
+        self.textarea.set_cursor_line_style(style);
+        self.textarea
+            .set_search_style(Style::default().fg(Color::Black).bg(Color::Yellow));
+        self.textarea.set_block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(self.filename.clone()),
+        );
+        // Apply any scroll requested since the last render — see
+        // `scroll_cursor_to_row` and `apply_pending_scroll` — only now, once
+        // the block above is set: `apply_pending_scroll`'s scratch render
+        // needs to see the same borders the real render below is about to
+        // draw, or it computes an inner height that is two rows too tall on
+        // the first frame after `load`/`preview` replace the textarea (which
+        // drops its block along with everything else).
+        self.apply_pending_scroll(area);
+        (&self.textarea).render(area, buf);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1132,54 +1181,5 @@ mod tests {
             3,
             "the second scroll request overwrote the first instead of being ignored"
         );
-    }
-}
-
-/// Widget impl for `FileView`
-impl Widget for &mut FileView<'_> {
-    fn render(self, area: Rect, buf: &mut Buffer) {
-        if self.hide_line_numbers || self.gutter_blank {
-            self.textarea.remove_line_number();
-        } else {
-            self.textarea
-                .set_line_number_style(Style::default().fg(Color::DarkGray));
-        }
-        // The textarea replaces rather than merges a line's style, so the
-        // cursor line would otherwise discard whatever the filters gave it and
-        // read as unfiltered. Start from that line's own style and add the
-        // focus decoration on top: REVERSED always, but the green foreground
-        // only when the line has no colour of its own — otherwise a matched
-        // line under the cursor would be indistinguishable from a dimmed one.
-        let cursor_row = self.textarea.cursor().0;
-        let own_style = self
-            .textarea
-            .line_styles()
-            .get(cursor_row)
-            .copied()
-            .flatten();
-        let mut style = own_style.unwrap_or_default();
-        if self.active {
-            if own_style.is_none() {
-                style = style.fg(Color::Green);
-            }
-            style = style.add_modifier(Modifier::REVERSED);
-        }
-        self.textarea.set_cursor_line_style(style);
-        self.textarea
-            .set_search_style(Style::default().fg(Color::Black).bg(Color::Yellow));
-        self.textarea.set_block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(self.filename.clone()),
-        );
-        // Apply any scroll requested since the last render — see
-        // `scroll_cursor_to_row` and `apply_pending_scroll` — only now, once
-        // the block above is set: `apply_pending_scroll`'s scratch render
-        // needs to see the same borders the real render below is about to
-        // draw, or it computes an inner height that is two rows too tall on
-        // the first frame after `load`/`preview` replace the textarea (which
-        // drops its block along with everything else).
-        self.apply_pending_scroll(area);
-        (&self.textarea).render(area, buf);
     }
 }
