@@ -47,8 +47,9 @@ motions throughout.
 
 - **A filter stack, not a single pattern** — add filters with `f` (include) and
   `F` (exclude); each one is listed, numbered, and independently toggled with
-  `space`. The filter pane collapses to nothing until you define your first
-  filter.
+  `space`. The filter pane is on screen whenever the navigator is, showing
+  `press f to add` until you define your first filter, so the layout never
+  shifts under you as the set grows and shrinks.
 - **Dim or hide, on one keystroke** — `Ctrl-H` toggles unmatched lines between
   dimmed-but-present and removed. Toggling back returns you to the exact line
   you were on.
@@ -181,7 +182,7 @@ Global (`src/lib.rs`), handled before the focused pane sees the key:
 | Key(s) | Action |
 | --- | --- |
 | `q` | Quit |
-| `Tab` | Move focus to the next of three panes — navigator, file view, filter pane — skipping the filter pane while it is collapsed |
+| `Tab` | Move focus to the next of three panes — navigator, file view, filter pane. All three are always on screen, so the cycle never skips one |
 | `/` | Search forward in the focused pane |
 | `?` | Search backward in the focused pane |
 | `f` | Add an include filter (always applies to the file view) |
@@ -268,9 +269,10 @@ Navigator pane (`src/widgets/filenav.rs`):
 | `Enter` | Open the selected entry (descend into a directory, or load a file) |
 | `n` / `N` | Repeat the last search, forward / reversed |
 
-Filter pane (`src/widgets/filterlist.rs`), reached with `Tab` once a filter
-exists — the pane sizes to its contents and collapses entirely when no
-filters are defined, so it costs nothing to a user who never defines one:
+Filter pane (`src/widgets/filterlist.rs`), reached with `Tab` — the pane
+sizes to its contents, and with no filters defined it holds a single dimmed
+row reading `press f to add` (shortened to `press f`, or dropped entirely, if
+the column is too narrow for it). It is on screen whenever the navigator is:
 
 | Key(s) | Action |
 | --- | --- |
@@ -286,8 +288,14 @@ a glance; excluding filters have no colour, which is why the sense is
 spelled out. A disabled filter is dimmed. Toggling or deleting re-evaluates
 the whole document but holds the line under the cursor on the same screen
 row, so lines appear and disappear around a fixed point rather than the view
-lurching. Deleting the last filter collapses the pane again and moves focus
-off it.
+lurching. Deleting the last filter returns the pane to its `press f to add`
+row and leaves focus where it was — the pane is still on screen, so there is
+nothing to move focus off.
+
+The pane never widens the left column to fit its hint: the column is sized by
+the navigator's longest entry, and a directory of short names keeps it narrow
+exactly as before. The hint gives way instead, which is why it has a short
+form and can be dropped altogether.
 
 ---
 

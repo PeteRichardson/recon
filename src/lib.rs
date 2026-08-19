@@ -692,9 +692,9 @@ impl App<'_> {
                 self.filters.remove(index);
             }
         }
-        if self.filters.is_empty() {
-            self.focus_next();
-        }
+        // Deleting the last filter used to collapse the pane, so focus had to
+        // be pushed off it. The pane stays now, so focus stays too — moving it
+        // would be a jump the user did not ask for, off a pane still on screen.
         self.refresh_view();
     }
 
@@ -885,20 +885,15 @@ impl App<'_> {
         )
     }
 
-    /// Move focus to the next pane, skipping the filter pane while it is
-    /// collapsed — focusing a pane that is not on screen would strand the
-    /// user with no visible cursor.
+    /// Move focus to the next pane.
+    ///
+    /// Every pane is always on screen, so this is a plain rotation. It used to
+    /// skip the filter pane while an empty set collapsed it out of the layout,
+    /// since focusing a pane that is not drawn would strand the user with no
+    /// visible cursor; the pane no longer collapses, so the special case is
+    /// gone with it and the cycle is three deep at all times.
     fn focus_next(&mut self) {
-        let count = self.widgets.len();
-        for step in 1..=count {
-            let candidate = (self.active_widget + step) % count;
-            let collapsed = matches!(self.widgets[candidate], AppWidget::FilterList(_))
-                && self.filters.is_empty();
-            if !collapsed {
-                self.active_widget = candidate;
-                break;
-            }
-        }
+        self.active_widget = (self.active_widget + 1) % self.widgets.len();
         // The zoomed pane is always the focused pane, so the cursor is never
         // on a pane that is not on screen. This lives inside `focus_next`
         // itself, rather than beside its call site, so a future caller of
@@ -2874,16 +2869,29 @@ mod tests {
 
     /// The pane costs nothing until a filter exists.
     #[test]
-    fn the_filter_pane_is_absent_until_a_filter_is_defined() {
+    /// The pane is on screen whenever the navigator is, filters or not — so a
+    /// user who has never pressed `f` still sees where filters will appear,
+    /// and the layout does not shift under them the first time they add one.
+    fn the_filter_pane_is_present_before_any_filter_is_defined() {
         let mut app = app_over_file("pane_absent", "alpha\n");
 
-        assert!(!rendered(&mut app).contains("Filters"));
+        let empty = rendered(&mut app);
+        assert!(empty.contains("Filters"), "no filter pane before a filter");
+        assert!(
+            empty.contains("press f"),
+            "empty pane drew no hint: {empty}"
+        );
 
         key(&mut app, KeyCode::Char('f'));
         typed(&mut app, "alpha");
         key(&mut app, KeyCode::Enter);
 
-        assert!(rendered(&mut app).contains("Filters"));
+        let populated = rendered(&mut app);
+        assert!(populated.contains("Filters"));
+        assert!(
+            !populated.contains("press f"),
+            "hint outlived the empty pane: {populated}"
+        );
     }
 
     #[test]
@@ -2904,11 +2912,23 @@ mod tests {
 
     /// Tab reaches the filter pane once it exists, and skips it before then.
     #[test]
-    fn tab_skips_the_filter_pane_while_it_is_collapsed() {
+    /// The pane is always on screen now, so `Tab` always stops on it. The
+    /// cycle is three panes deep whether or not a filter exists — the rule is
+    /// "visible means focusable", with no special case for an empty set.
+    fn tab_reaches_the_filter_pane_while_it_is_empty() {
         let mut app = app_over_file("pane_focus", "alpha\n");
         draw(&mut app);
+        assert!(app.filters.is_empty(), "precondition: no filters");
 
         key(&mut app, KeyCode::Tab);
+        key(&mut app, KeyCode::Tab);
+
+        assert_eq!(
+            app.active_widget,
+            app.filter_list_index(),
+            "Tab skipped the empty filter pane"
+        );
+
         key(&mut app, KeyCode::Tab);
 
         assert_eq!(
@@ -3364,7 +3384,11 @@ mod tests {
     }
 
     #[test]
-    fn deleting_the_last_filter_collapses_the_pane_and_moves_focus() {
+    /// Deleting the last filter used to collapse the pane, which forced focus
+    /// off it. The pane now stays, so focus stays too — moving it would be a
+    /// jump the user did not ask for, and the pane they are looking at is
+    /// still on screen and still the one they were working in.
+    fn deleting_the_last_filter_keeps_the_pane_and_the_focus() {
         let mut app = app_over_file("pane_delete_last", "alpha\n");
         key(&mut app, KeyCode::Char('f'));
         typed(&mut app, "alpha");
@@ -3375,10 +3399,15 @@ mod tests {
         draw(&mut app);
 
         assert!(app.filters.is_empty());
-        assert!(!rendered(&mut app).contains("Filters"));
+        let text = rendered(&mut app);
         assert!(
-            !matches!(app.widgets[app.active_widget], AppWidget::FilterList(_)),
-            "focus was left on a pane that is no longer on screen"
+            text.contains("Filters"),
+            "pane vanished with its last filter"
+        );
+        assert!(text.contains("press f"), "pane lost its empty hint");
+        assert!(
+            matches!(app.widgets[app.active_widget], AppWidget::FilterList(_)),
+            "focus was moved off a pane that is still on screen"
         );
     }
 
@@ -3414,16 +3443,19 @@ mod tests {
             app.active_widget
         );
         assert!(
-            !matches!(app.widgets[app.active_widget], AppWidget::FilterList(_)),
-            "focus (and so the zoom, if any) was left on the now-collapsed filter pane"
+            matches!(app.widgets[app.active_widget], AppWidget::FilterList(_)),
+            "focus left the filter pane, which deleting its last filter no longer collapses"
         );
 
         // The disjunction above is satisfiable by a blank frame that merely
         // avoids naming the wrong pane; this pins the stronger claim that
         // whatever the zoom now points at is genuinely drawn, not empty.
+        // Focus stays on the filter pane now that its last filter no longer
+        // collapses it, so the zoomed pane is the filter pane — it used to be
+        // the navigator, which is why this looked for a filename before.
         let text = rendered(&mut app);
         assert!(
-            text.contains("log.txt"),
+            text.contains("Filters") && text.contains("press f"),
             "the pane the zoom now names is not actually on screen: {text}"
         );
     }
