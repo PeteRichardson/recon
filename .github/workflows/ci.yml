@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # One job rather than four parallel ones. Each job pays the toolchain install
+  # and cache restore again, and this repo builds on macOS runners, which bill
+  # at 10x the Linux rate on GitHub-hosted minutes — four jobs would multiply
+  # that overhead for a suite that finishes in seconds. The steps below run in
+  # increasing order of cost, so a formatting slip fails before anything is
+  # compiled.
+  check:
+    name: fmt, clippy, test, build
+    # macOS only: recon is developed and tested here, and the README claims no
+    # more than that. src/ has no cfg(target_os) guards and crossterm is
+    # cross-platform, so ubuntu-latest would very likely pass — but "likely"
+    # is not what a CI matrix is for. Adding Linux is a deliberate decision to
+    # widen the supported-platform claim, not a default.
+    runs-on: macos-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Tracks stable rather than pinning. The floor that matters is 1.88.0,
+      # set by the vendored fork's own rust-version (recon and the fork are
+      # both edition 2024, which needs only 1.85), and stable is always well
+      # past it. Tracking stable also surfaces new lints as they land, at the
+      # cost of a toolchain release occasionally breaking a build on a day
+      # nobody touched the repo. There is deliberately no rust-toolchain.toml:
+      # it would pin contributors' local builds too, which is a heavier
+      # commitment than CI needs.
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      # -p recon, not --all. Plain `cargo fmt --all --check` also checks
+      # vendor/tui-textarea-2, which is kept verbatim from crates.io apart from
+      # the changes listed in its PATCH.md — it is not formatted to this repo's
+      # rustfmt and must not be. As of this commit --all fails on 9 sites in
+      # that tree, all of them upstream's formatting, none of them ours.
+      - name: Format
+        run: cargo fmt -p recon --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      # --workspace, not plain `cargo test`. The workspace's default members
+      # are recon alone, so plain `cargo test` runs recon's 224 unit + 9
+      # integration tests and skips the vendored fork entirely — including
+      # vendor/tui-textarea-2/tests/line_presentation.rs, which pins the whole
+      # contract of our patch. A CI job on plain `cargo test` would let a
+      # broken fork go green, which defeats the point of having CI at all.
+      - name: Test
+        run: cargo test --workspace
+
+      - name: Build
+        run: cargo build --release

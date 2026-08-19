@@ -1,5 +1,15 @@
 # recon
 
+<p align="center">
+  <a href="../../actions/workflows/ci.yml"><img src="https://github.com/PeteRichardson/recon/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/PeteRichardson/recon" alt="License"></a>
+</p>
+
+<!-- 🖊 TODO: A release badge belongs here too, but would 404 until the first
+     tagged release exists:
+  <a href="../../releases/latest"><img src="https://img.shields.io/github/v/release/PeteRichardson/recon" alt="Latest release"></a>
+-->
+
 > _Read a log the way you read it in your head: one filter at a time._
 
 `recon` is a terminal file viewer built around a **stack of regex filters** you
@@ -355,6 +365,27 @@ the latter also reformats `vendor/tui-textarea-2`, which is meant to stay
 verbatim from crates.io apart from the changes listed in its `PATCH.md` —
 reformatting it adds diff noise against upstream and makes a rebase harder to
 verify.
+
+### CI
+
+`.github/workflows/ci.yml` runs on pushes to `main` and on every pull request:
+`cargo fmt -p recon --check`, `cargo clippy --workspace --all-targets -- -D
+warnings`, `cargo test --workspace`, then `cargo build --release`. Running
+those four locally reproduces CI exactly.
+
+Clippy is a hard gate — `-D warnings` — so a new warning fails the build. The
+one standing suppression is `clippy::large_enum_variant` on `AppWidget`, which
+carries its reasoning in `src/widgets/mod.rs`.
+
+**Toolchain: stable, unpinned.** There is no `rust-toolchain.toml`, so local
+builds use whatever you have and CI uses current stable. The floor that matters
+is the 1.88.0 in Prerequisites, set by the vendored fork; stable is always past
+it. The trade is that a stable release can break the build on a day nobody
+touched the repo — acceptable in exchange for seeing new lints as they land,
+and for not forcing a toolchain download on everyone who clones the repo.
+
+**Platform: macOS only.** Linux would very likely pass, but that is unverified
+— see the note under Prerequisites.
 
 Layout:
 
