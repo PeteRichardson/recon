@@ -6,7 +6,7 @@
 use super::FilterCommand;
 use crate::filter::{DIM_STYLE, FilterSet, Sense};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use ratatui::prelude::{Buffer, Color, Modifier, Rect, Style};
+use ratatui::prelude::{Buffer, Color, Modifier, Rect, Style, Widget};
 use ratatui::widgets::{Block, List, ListItem, ListState, StatefulWidget};
 
 /// Marks the row the cursor is on, matching the navigator pane.
@@ -14,6 +14,23 @@ const SELECTION: &str = ">>";
 
 /// Rows of chrome the pane needs on top of one row per filter.
 const BORDERS: u16 = 2;
+
+/// Candidate texts for the pane's single row when no filter is defined,
+/// longest first. `render` draws the first one that fits the column.
+///
+/// The pane is on screen whenever the navigator is, so with an empty set it
+/// would otherwise be a titled box with nothing in it — space taken and
+/// nothing said. Naming the binding that fills it turns that row into the one
+/// place `f` is discoverable without reading the README.
+///
+/// Two forms rather than one because the column is sized by the *navigator*
+/// (see `preferred_width`), and a directory of short names leaves well under
+/// 14 columns inside the borders — the full sentence would then never be
+/// drawn at all. Falling back to `press f` keeps the binding visible down to
+/// a 9-column pane, which is about as narrow as the navigator ever gets in
+/// practice. Below even that, `render` draws neither: half a sentence of
+/// advice is worse than none.
+const EMPTY_HINTS: [&str; 2] = ["press f to add", "press f"];
 
 #[derive(Debug, Default)]
 pub struct FilterList {
@@ -91,17 +108,28 @@ impl FilterList {
         }
     }
 
-    /// Rows this pane wants: one per filter plus its borders, or none at all
-    /// when there are no filters, so it costs nothing to a user who never
-    /// defines one.
+    /// Rows this pane wants: one per filter plus its borders, and never fewer
+    /// than the single row a hint needs.
+    ///
+    /// An empty set used to ask for nothing, which collapsed the pane out of
+    /// the layout entirely. It is now on screen whenever the navigator is, so
+    /// the floor is one content row rather than zero — see `EMPTY_HINTS`.
     pub fn preferred_height(&self, len: usize) -> u16 {
-        match len {
-            0 => 0,
-            n => u16::try_from(n).unwrap_or(u16::MAX).saturating_add(BORDERS),
-        }
+        u16::try_from(len.max(1))
+            .unwrap_or(u16::MAX)
+            .saturating_add(BORDERS)
     }
 
     /// Columns needed for the widest row.
+    ///
+    /// Deliberately does **not** account for `EMPTY_HINTS`. `App::nav_width`
+    /// sizes the left column to whichever pane wants more, so counting the
+    /// hint here would put a ~18-column floor under the column for every user
+    /// who has not defined a filter — including the directory of short names
+    /// that `auto_width_has_no_floor` exists to keep narrow. The hint is
+    /// guidance, not content: it yields to the navigator rather than widening
+    /// the column, and `render` simply omits it when the column is too narrow
+    /// to hold it.
     pub fn preferred_width(&self, filters: &FilterSet) -> u16 {
         let longest = (0..filters.len())
             .map(|index| Self::row_text(filters, index).chars().count())
@@ -134,6 +162,26 @@ impl FilterList {
     }
 
     pub fn render(&mut self, filters: &FilterSet, area: Rect, buf: &mut Buffer) {
+        // An empty set draws the hint instead of no rows at all. `DIM_STYLE`
+        // is the same grey the file view and the disabled-filter rows use, so
+        // the hint reads as chrome rather than as a filter someone defined.
+        //
+        // Omitted rather than clipped when the column is too narrow to hold
+        // it: `preferred_width` deliberately lets the navigator win the width
+        // (see its doc comment), so a narrow column is an expected state, not
+        // a broken one, and half a sentence of advice is worse than none.
+        if filters.is_empty() {
+            let interior = area.width.saturating_sub(BORDERS) as usize;
+            let rows: Vec<ListItem> = EMPTY_HINTS
+                .iter()
+                .find(|hint| hint.chars().count() <= interior)
+                .map(|hint| vec![ListItem::new(*hint).style(DIM_STYLE)])
+                .unwrap_or_default();
+            let hint = List::new(rows).block(Block::bordered().title("Filters"));
+            Widget::render(&hint, area, buf);
+            return;
+        }
+
         let items: Vec<ListItem> = (0..filters.len())
             .map(|index| {
                 let filter = &filters.filters()[index];
@@ -372,17 +420,29 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_set_has_no_selection_and_no_height() {
+    fn an_empty_set_has_no_selection() {
         let mut list = FilterList::default();
 
         list.clamp_selection(0);
 
         assert_eq!(list.selected(), None);
-        assert_eq!(
-            list.preferred_height(0),
-            0,
-            "an empty pane must take no rows"
-        );
+    }
+
+    /// The pane is on screen whenever the navigator is, so an empty set still
+    /// reserves its borders plus the one row a hint is drawn on.
+    #[test]
+    fn an_empty_pane_reserves_a_row_for_the_hint() {
+        let list = FilterList::default();
+
+        assert_eq!(list.preferred_height(0), BORDERS + 1);
+    }
+
+    /// One filter must not make the pane shorter than no filters did.
+    #[test]
+    fn one_filter_is_no_shorter_than_an_empty_pane() {
+        let list = FilterList::default();
+
+        assert_eq!(list.preferred_height(1), list.preferred_height(0));
     }
 
     #[test]
@@ -390,5 +450,107 @@ mod tests {
         let list = FilterList::default();
 
         assert!(list.preferred_height(3) > list.preferred_height(1));
+    }
+
+    /// The hint must not widen the left column. `App::nav_width` takes the
+    /// larger of the two panes' preferred widths, so counting the hint here
+    /// would put a floor under the column for everyone who has not defined a
+    /// filter — see `auto_width_has_no_floor` in `lib.rs`.
+    #[test]
+    fn the_hint_does_not_widen_the_column() {
+        let list = FilterList::default();
+
+        let width = list.preferred_width(&FilterSet::new()) as usize;
+
+        assert!(
+            width < EMPTY_HINTS[EMPTY_HINTS.len() - 1].chars().count(),
+            "an empty pane is asking for {width} columns to fit its hint"
+        );
+    }
+
+    /// The short form is what keeps the binding visible at the widths the
+    /// navigator actually produces — a directory of short names leaves about
+    /// nine columns inside the borders, well under the full sentence.
+    #[test]
+    fn a_column_too_narrow_for_the_sentence_still_shows_the_binding() {
+        let mut list = FilterList::default();
+        let filters = FilterSet::new();
+        let area = Rect::new(0, 0, 11, 3);
+        let mut buf = Buffer::empty(area);
+
+        list.render(&filters, area, &mut buf);
+
+        let row: String = (0..area.width).map(|col| buf[(col, 1)].symbol()).collect();
+        assert!(
+            row.contains("press f"),
+            "no binding shown at width 11: {row:?}"
+        );
+        assert!(
+            !row.contains("to add"),
+            "the full sentence was clipped in rather than falling back: {row:?}"
+        );
+    }
+
+    /// Half a sentence of advice is worse than none, so a column too narrow
+    /// for the whole hint gets a plain bordered box instead of a clipped one.
+    #[test]
+    fn a_narrow_pane_omits_the_hint_rather_than_clipping_it() {
+        let mut list = FilterList::default();
+        let filters = FilterSet::new();
+        let area = Rect::new(0, 0, 6, 3);
+        let mut buf = Buffer::empty(area);
+
+        list.render(&filters, area, &mut buf);
+
+        let text: String = (0..area.width)
+            .map(|col| buf[(col, 1)].symbol())
+            .collect::<String>();
+        assert!(
+            text.trim_matches(['│', ' ']).is_empty(),
+            "clipped hint drawn in a narrow pane: {text:?}"
+        );
+    }
+
+    #[test]
+    fn an_empty_pane_draws_the_hint() {
+        let mut list = FilterList::default();
+        let filters = FilterSet::new();
+        let area = Rect::new(0, 0, 30, 3);
+        let mut buf = Buffer::empty(area);
+
+        list.render(&filters, area, &mut buf);
+
+        let text: String = (0..area.height)
+            .map(|row| {
+                (0..area.width)
+                    .map(|col| buf[(col, row)].symbol())
+                    .collect::<String>()
+            })
+            .collect();
+        assert!(
+            text.contains("Filters"),
+            "no title on an empty pane: {text}"
+        );
+        assert!(
+            text.contains(EMPTY_HINTS[0]),
+            "no hint on an empty pane: {text}"
+        );
+    }
+
+    /// The hint is guidance, not content — it must not read as a filter.
+    #[test]
+    fn the_hint_is_dimmed() {
+        let mut list = FilterList::default();
+        let filters = FilterSet::new();
+        let area = Rect::new(0, 0, 30, 3);
+        let mut buf = Buffer::empty(area);
+
+        list.render(&filters, area, &mut buf);
+
+        let hint_cell = (0..area.width)
+            .map(|col| &buf[(col, 1)])
+            .find(|cell| cell.symbol().trim() == "p")
+            .expect("hint row not drawn");
+        assert_eq!(hint_cell.style().fg, DIM_STYLE.fg);
     }
 }
