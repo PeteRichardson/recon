@@ -55,9 +55,14 @@ motions throughout.
   you were on.
 - **Line numbers stay honest** — the gutter shows original file line numbers
   even while filtered, so gaps in the numbering mark what was hidden.
-- **Filters outlive the file** — load another log and the filter set stays put.
-  `!` disables everything at once and remembers what was on, so it's one
-  keystroke back to an unfiltered view without discarding your work.
+- **Filters outlive the file** — load another log and the filter set stays put,
+  along with the `Ctrl-H` hide toggle. `!` disables everything at once and
+  remembers what was on, so it's one keystroke back to an unfiltered view
+  without discarding your work.
+- **Skim a directory for hits** — with a filter set and `Ctrl-H` hiding, move
+  down the navigator and each file draws only its matching lines. A file that
+  comes up blank has none, which makes a directory of logs answerable by
+  arrow key rather than by four chained `grep`s.
 - **Regex everywhere** — filters and searches are both regular expressions. An
   invalid pattern reports `E486: invalid pattern` and leaves the prompt open.
 - **Vim motions** — `hjkl`, `w`, `0`/`^`/`$`, `{`/`}`, `g`/`G`, `Ctrl-D`/`Ctrl-U`,
@@ -213,6 +218,12 @@ keeps the original line numbers either way, so a gap in the numbering is how
 you tell something was left out. Toggling back returns you to the exact line
 you were on, which is the point: the hidden view is for finding a line, not
 for living in.
+
+The hide toggle survives loading another file, exactly as the filter set does
+— it describes how you are reading, not which file you are reading. That is
+what makes skimming work: set a filter, press `Ctrl-H`, then walk the
+navigator with `j`. Each file is drawn hidden, so the ones with no matches
+come up blank and the ones worth opening are the ones with anything in them.
 
 Behaviour change: `Ctrl-h` no longer moves the cursor left in the file view.
 It used to — the file view matches `h` regardless of modifiers — but the

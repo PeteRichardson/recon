@@ -145,11 +145,22 @@ pub struct App<'a> {
     search: Option<SearchPrompt>,
     filters: FilterSet,
     document: Document,
-    /// Source line indices the file view's buffer was last rebuilt from.
+    /// Source line indices the file view's buffer was last rebuilt from, or
+    /// `None` when what the buffer holds is unknown and a rebuild is owed
+    /// unconditionally.
+    ///
     /// `refresh_view` rebuilds only when the new visible set differs from
     /// this, so a filter change that leaves the same rows on screen does not
     /// reset the viewport's scroll position.
-    last_visible: Vec<usize>,
+    ///
+    /// `Option`, not a plain empty `Vec`: `sync_document` has to say "this
+    /// buffer belongs to a document that no longer exists, rebuild whatever
+    /// happens next", and an empty `Vec` cannot say that. An empty *visible
+    /// set* is a real, reachable state — every line filtered away — and it
+    /// compares equal to an empty `Vec`, so the guard read "nothing changed"
+    /// and left the previous file's buffer on screen. `None` is unequal to
+    /// every `Some`, so the rebuild always happens.
+    last_visible: Option<Vec<usize>>,
     /// The single widget filling the screen, or `None` for the normal split.
     ///
     /// Hiding the left column and maximising the file view are the same thing,
@@ -181,7 +192,7 @@ impl App<'_> {
             search: None,
             filters: FilterSet::new(),
             document: Document::default(),
-            last_visible: Vec::new(),
+            last_visible: None,
             zoom: None,
         };
         app.sync_document();
@@ -625,7 +636,21 @@ impl App<'_> {
         }) else {
             return;
         };
+        // The hide toggle describes how the user is reading, not which file
+        // they are reading, so it outlives the document exactly as the filter
+        // set does — and for the same reason. The filters survived a load
+        // only because `App` owns them separately from the `Document` this
+        // line replaces; the mode lives *on* the document, so without
+        // carrying it across, every load and every navigator preview silently
+        // reset it to `Mode::default()`.
+        //
+        // That made the toggle almost unusable for its main purpose: skimming
+        // a directory for the files a filter actually matches means moving
+        // the navigator's selection, and every move fired a `Preview` through
+        // here and undid the `Ctrl-H` that made the skim possible.
+        let mode = self.document.mode();
         self.document = Document::new(lines);
+        self.document.set_mode(mode);
         // The buffer the view is showing belongs to the *previous* document,
         // so the record of what it was built from is meaningless now.
         // Clearing it forces the next `apply_view` to rebuild: two different
@@ -634,7 +659,7 @@ impl App<'_> {
         // time, which would otherwise leave the just-loaded, unfiltered
         // buffer in place under numbers and styles sized for the filtered
         // subset.
-        self.last_visible.clear();
+        self.last_visible = None;
     }
 
     /// Re-evaluate the filters and rebuild what the view shows.
@@ -767,9 +792,9 @@ impl App<'_> {
         // afterwards. (The rendered viewport is still `u16`-limited, though —
         // see `FileView::show_lines_with_cursor`.)
         let row = self.document.visible_position(cursor_source).unwrap_or(0);
-        let rebuild = self.document.visible() != self.last_visible.as_slice();
+        let rebuild = self.last_visible.as_deref() != Some(self.document.visible());
         let lines = if rebuild {
-            self.last_visible = self.document.visible().to_vec();
+            self.last_visible = Some(self.document.visible().to_vec());
             Some(self.document.visible_lines())
         } else {
             None
@@ -1599,6 +1624,151 @@ mod tests {
         let styles = view_line_styles(&app);
         assert_eq!(styles.len(), 2, "styles not re-applied to the new file");
         assert!(styles[0].is_some(), "match in the new file unstyled");
+    }
+
+    /// The hide toggle describes how you are reading, not which file you are
+    /// reading — so it outlives a load exactly as the filter set does.
+    ///
+    /// `sync_document` replaces `self.document` wholesale, and `Document::new`
+    /// starts at `Mode::default()`; the filters survived only because `App`
+    /// owns them separately. The mode had no such owner.
+    #[test]
+    fn the_hide_mode_survives_loading_another_file() {
+        let mut app = app_over_file("hide_mode_load", "alpha\nbeta\n");
+        key(&mut app, KeyCode::Char('f'));
+        typed(&mut app, "beta");
+        key(&mut app, KeyCode::Enter);
+        key(&mut app, KeyCode::Char('H'));
+        assert_eq!(app.document.mode(), Mode::FilteredOnly, "sanity: hiding");
+        assert_eq!(view_lines(&app), vec!["beta".to_string()]);
+
+        let dir = std::path::Path::new("target/test-appdirs/hide_mode_load");
+        fs::write(dir.join("other.txt"), "beta again\nnothing\n").expect("write");
+        app.perform(Action::Load(dir.join("other.txt")));
+
+        assert_eq!(
+            app.document.mode(),
+            Mode::FilteredOnly,
+            "the load reset the hide toggle"
+        );
+        assert_eq!(
+            view_lines(&app),
+            vec!["beta again".to_string()],
+            "the new file came back unhidden"
+        );
+    }
+
+    /// The workflow in the issue is cursor movement in the navigator, which
+    /// fires `Preview`, not `Load` — so previews must hold the mode too, or
+    /// the whole point (skimming a directory for files that are not blank) is
+    /// lost on every keystroke.
+    #[test]
+    fn the_hide_mode_survives_a_navigator_preview() {
+        let mut app = app_over_file("hide_mode_preview", "alpha\nbeta\n");
+        key(&mut app, KeyCode::Char('f'));
+        typed(&mut app, "beta");
+        key(&mut app, KeyCode::Enter);
+        key(&mut app, KeyCode::Char('H'));
+
+        let dir = std::path::Path::new("target/test-appdirs/hide_mode_preview");
+        fs::write(dir.join("other.txt"), "beta again\nnothing\n").expect("write");
+        app.perform(Action::Preview(dir.join("other.txt")));
+
+        assert_eq!(
+            app.document.mode(),
+            Mode::FilteredOnly,
+            "the preview reset the hide toggle"
+        );
+        assert_eq!(view_lines(&app), vec!["beta again".to_string()]);
+    }
+
+    /// The payoff the issue asks for: skimming a directory while hiding, a
+    /// file with no matches shows an empty pane, which is the signal to move
+    /// on. Without the mode surviving, every such file came back full of
+    /// unmatched text and there was nothing to skim.
+    #[test]
+    fn a_file_with_no_matches_shows_an_empty_view_while_hiding() {
+        let mut app = app_over_file("hide_mode_no_match", "alpha\nbeta\n");
+        key(&mut app, KeyCode::Char('f'));
+        typed(&mut app, "beta");
+        key(&mut app, KeyCode::Enter);
+        key(&mut app, KeyCode::Char('H'));
+
+        let dir = std::path::Path::new("target/test-appdirs/hide_mode_no_match");
+        fs::write(dir.join("quiet.txt"), "nothing\nhere\n").expect("write");
+        app.perform(Action::Preview(dir.join("quiet.txt")));
+
+        assert_eq!(app.document.mode(), Mode::FilteredOnly);
+        assert!(
+            app.document.visible().is_empty(),
+            "a file with no matches still had visible lines while hiding"
+        );
+        assert!(
+            view_lines(&app).iter().all(String::is_empty),
+            "expected a blank pane, got {:?}",
+            view_lines(&app)
+        );
+    }
+
+    /// The rebuild guard's empty-set collision, reachable with no hide toggle
+    /// involved at all: an excluding filter that removes every line leaves
+    /// `visible()` legitimately empty, and that used to compare equal to the
+    /// `last_visible` that `sync_document` had just cleared. The guard read
+    /// "nothing changed" and left the freshly loaded file on screen in full —
+    /// showing exactly the lines the filter existed to remove.
+    ///
+    /// This is why `last_visible` is an `Option`: "the buffer holds no rows"
+    /// and "what the buffer holds is unknown" are different claims, and only
+    /// the second one may force a rebuild.
+    #[test]
+    fn loading_a_file_that_every_filter_excludes_leaves_a_blank_view() {
+        let mut app = app_over_file("exclude_all_load", "noise one\nnoise two\n");
+        key(&mut app, KeyCode::Char('F'));
+        typed(&mut app, "noise");
+        key(&mut app, KeyCode::Enter);
+        assert!(
+            app.document.visible().is_empty(),
+            "sanity: the filter excluded every line"
+        );
+
+        let dir = std::path::Path::new("target/test-appdirs/exclude_all_load");
+        fs::write(dir.join("other.txt"), "noise three\nnoise four\n").expect("write");
+        app.perform(Action::Load(dir.join("other.txt")));
+
+        assert_eq!(
+            app.document.mode(),
+            Mode::Dimmed,
+            "sanity: the hide toggle plays no part in this one"
+        );
+        assert!(app.document.visible().is_empty());
+        assert!(
+            view_lines(&app).iter().all(String::is_empty),
+            "the excluded lines came back on screen: {:?}",
+            view_lines(&app)
+        );
+    }
+
+    /// Toggling back after a load must still restore the whole file — the
+    /// mode surviving must not leave the document unable to leave it.
+    #[test]
+    fn the_hide_mode_can_still_be_toggled_off_after_a_load() {
+        let mut app = app_over_file("hide_mode_untoggle", "alpha\nbeta\n");
+        key(&mut app, KeyCode::Char('f'));
+        typed(&mut app, "beta");
+        key(&mut app, KeyCode::Enter);
+        key(&mut app, KeyCode::Char('H'));
+
+        let dir = std::path::Path::new("target/test-appdirs/hide_mode_untoggle");
+        fs::write(dir.join("other.txt"), "beta again\nnothing\n").expect("write");
+        app.perform(Action::Load(dir.join("other.txt")));
+        key(&mut app, KeyCode::Char('H'));
+
+        assert_eq!(app.document.mode(), Mode::Dimmed);
+        assert_eq!(
+            view_lines(&app),
+            vec!["beta again".to_string(), "nothing".to_string()],
+            "toggling off did not restore the whole file"
+        );
     }
 
     /// `sync_document` replaces `self.document` wholesale, so whatever
