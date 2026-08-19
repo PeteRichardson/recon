@@ -1,13 +1,13 @@
 use clap::Parser;
-use color_eyre::{config::HookBuilder, eyre, Result};
+use color_eyre::{Result, config::HookBuilder, eyre};
 use crossterm::{
     event::{DisableMouseCapture, EnableMouseCapture},
     execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use env_logger;
 use log::debug;
-use ratatui::{prelude::CrosstermBackend, Terminal};
+use ratatui::{Terminal, prelude::CrosstermBackend};
 use recon::{App, Config};
 use std::io::{self, Stdout};
 use std::panic;

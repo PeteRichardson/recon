@@ -60,8 +60,9 @@ motions throughout.
 
 ## Prerequisites
 
-- **Rust 1.88.0 or later** — required by the vendored `tui-textarea-2` fork,
-  which is edition 2024. (`recon` itself is edition 2021.)
+- **Rust 1.88.0 or later** — required by the vendored `tui-textarea-2` fork.
+  Both it and `recon` are edition 2024, which itself needs only 1.85; the
+  fork's own floor is what sets 1.88.
 - **A terminal.** `recon` enters raw mode and the alternate screen; it exits
   with `Device not configured (os error 6)` if stdout isn't a TTY.
 
@@ -346,8 +347,14 @@ cargo build              # debug build
 cargo test               # recon's suite: 224 unit + 9 integration tests
 cargo test --workspace   # also runs the vendored fork's tests — see above
 cargo clippy
-cargo fmt
+cargo fmt -p recon       # -p recon, not plain `cargo fmt` — see below
 ```
+
+Use `cargo fmt -p recon` rather than plain `cargo fmt`. At the workspace root
+the latter also reformats `vendor/tui-textarea-2`, which is meant to stay
+verbatim from crates.io apart from the changes listed in its `PATCH.md` —
+reformatting it adds diff noise against upstream and makes a rebase harder to
+verify.
 
 Layout:
 

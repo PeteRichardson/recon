@@ -4,7 +4,7 @@
 //! the set, and a copy here could go stale the moment a filter changed.
 
 use super::FilterCommand;
-use crate::filter::{FilterSet, Sense, DIM_STYLE};
+use crate::filter::{DIM_STYLE, FilterSet, Sense};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::prelude::{Buffer, Color, Modifier, Rect, Style};
 use ratatui::widgets::{Block, List, ListItem, ListState, StatefulWidget};

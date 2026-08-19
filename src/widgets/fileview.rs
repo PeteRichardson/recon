@@ -410,7 +410,7 @@ fn read_preview(path: &Path) -> (Vec<String>, bool) {
             Ok(0) => break,
             Ok(_) => lines.push(line.trim_end_matches(['\n', '\r']).to_string()),
             Err(err) if err.kind() == ErrorKind::InvalidData => {
-                return (vec![BINARY_MESSAGE.to_string()], false)
+                return (vec![BINARY_MESSAGE.to_string()], false);
             }
             Err(err) => return (vec![format!("<{err}>")], false),
         }
