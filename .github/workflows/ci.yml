@@ -25,7 +25,7 @@ jobs:
     runs-on: macos-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # Tracks stable rather than pinning. The floor that matters is 1.88.0,
       # set by the vendored fork's own rust-version (recon and the fork are
