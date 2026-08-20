@@ -20,6 +20,14 @@ const MAX_PREVIEW_BYTES: u64 = 1 << 20;
 /// Shown in place of the contents when a file is not UTF-8.
 const BINARY_MESSAGE: &str = "<binary file: not valid UTF-8>";
 
+/// Shown when the navigator's selection is a directory.
+///
+/// Directories used to raise no action at all, so the pane kept displaying
+/// whatever file was there before — which reads as though the directory
+/// contains that text. Saying so explicitly is the point: the pane always
+/// describes what is selected.
+const DIRECTORY_MESSAGE: &str = "<directory>";
+
 /// What `read_preview` found: the lines it read, whether more remain, and how
 /// many lines the whole file probably has.
 struct Preview {
@@ -403,6 +411,11 @@ impl FileView<'_> {
 /// the two error paths are kept distinct: `InvalidData` means the bytes are not
 /// UTF-8, anything else is reported verbatim from the OS.
 fn read_lines(path: &Path) -> Vec<String> {
+    // See `read_preview`: a directory opens fine and then fails to read, so
+    // it is recognised up front rather than surfacing an OS error string.
+    if path.is_dir() {
+        return vec![DIRECTORY_MESSAGE.to_string()];
+    }
     let file = match File::open(path) {
         Ok(file) => file,
         Err(err) => return vec![format!("<{err}>")],
@@ -428,6 +441,14 @@ fn read_lines(path: &Path) -> Vec<String> {
 /// A file that cannot be read reports the reason and is *not* marked truncated
 /// — there is nothing better to re-read later.
 fn read_preview(path: &Path) -> Preview {
+    // Checked before opening, not after failing to read. `File::open` on a
+    // directory *succeeds* on macOS and the read then fails `EISDIR`, so
+    // falling through to the error path below would display
+    // `<Is a directory (os error 21)>` — platform-specific and meaningless
+    // to a reader.
+    if path.is_dir() {
+        return Preview::message(DIRECTORY_MESSAGE.to_string());
+    }
     let file = match File::open(path) {
         Ok(file) => file,
         Err(err) => return Preview::message(format!("<{err}>")),
@@ -1283,6 +1304,33 @@ mod tests {
             })
             .expect("no line number rendered") as usize;
         digit_column - 1
+    }
+
+    /// Selecting a directory in the navigator used to leave the previous
+    /// file's text on screen, which reads as though the directory contains it.
+    #[test]
+    fn a_directory_previews_as_a_directory() {
+        let path = fixture("dir_preview_file.txt", "alpha\nbeta\n");
+        let mut view = FileView::new(path.display().to_string());
+        assert!(contents(&view).contains("alpha"), "precondition");
+
+        view.preview(path.parent().expect("fixture has a parent"));
+
+        assert_eq!(contents(&view), DIRECTORY_MESSAGE);
+        assert!(!view.truncated, "a directory is not a truncated preview");
+    }
+
+    /// `load` is only reached for files today — the navigator descends into a
+    /// directory rather than loading it — but it must not be the one place
+    /// that leaks a raw OS error if that ever changes.
+    #[test]
+    fn loading_a_directory_reports_it_the_same_way() {
+        let path = fixture("dir_load_file.txt", "alpha\n");
+        let mut view = FileView::new(path.display().to_string());
+
+        view.load(path.parent().expect("fixture has a parent"));
+
+        assert_eq!(contents(&view), DIRECTORY_MESSAGE);
     }
 
     /// Issue #1. A preview holds `PREVIEW_LINES` rows, so the gutter is sized

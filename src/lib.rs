@@ -1162,7 +1162,8 @@ mod tests {
         let mut app = app_over("snap", &["a.rs", "twelve_chars.rs"]);
         draw(&mut app);
 
-        assert_eq!(app.nav_width(AREA), "twelve_chars.rs".len() as u16 + 4);
+        // Name plus two borders; the `>>` marker used to add two more.
+        assert_eq!(app.nav_width(AREA), "twelve_chars.rs".len() as u16 + 2);
     }
 
     #[test]
@@ -1233,7 +1234,7 @@ mod tests {
         mouse(&mut app, MouseEventKind::Down(MouseButton::Left), divider);
 
         assert_eq!(app.nav_width, NavWidth::Auto);
-        assert_eq!(app.nav_width(AREA), "a.rs".len() as u16 + 4);
+        assert_eq!(app.nav_width(AREA), "a.rs".len() as u16 + 2);
     }
 
     #[test]
@@ -1390,7 +1391,7 @@ mod tests {
 
         assert!(app.search.is_none(), "prompt stayed open");
         let nav = app.nav().expect("nav pane");
-        assert_eq!(nav.entries[nav.state.selected().unwrap()], "gamma.rs");
+        assert_eq!(nav.entries[nav.state.selected().unwrap()].name, "gamma.rs");
     }
 
     #[test]
@@ -2822,10 +2823,11 @@ mod tests {
         let after = rendered(&mut app);
         assert_ne!(before, after, "the layout did not change");
         assert!(after.contains("alpha"), "the file view went missing");
-        assert!(
-            !after.contains(">>"),
-            "the navigator's selection marker is still on screen"
-        );
+        // `../` is the probe for "the navigator is drawn": every listing has
+        // a parent entry, and a canonicalized path in the block title cannot
+        // contain `..`. This used to look for the `>>` selection marker,
+        // which no longer exists — leaving the assertion vacuously true.
+        assert!(!after.contains("../"), "the navigator is still on screen");
     }
 
     /// `b` restores the split, but deliberately leaves the cursor where it
@@ -2909,7 +2911,8 @@ mod tests {
         key(&mut app, KeyCode::Char('z'));
 
         let after = rendered(&mut app);
-        assert!(after.contains(">>"), "the navigator is not on screen");
+        // See `b_hides_the_left_column` for why `../` is the probe.
+        assert!(after.contains("../"), "the navigator is not on screen");
         assert!(
             !after.contains("ZOOMMARKER"),
             "the file view is still showing"

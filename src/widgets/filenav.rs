@@ -13,12 +13,77 @@ use std::path::{Path, PathBuf};
 pub const PARENT: &str = "..";
 
 /// Applied to entries matching the current search pattern.
+///
+/// Outranks the kind styles below. A search hit is the transient, task-driven
+/// signal, and an entry's kind is still carried by its trailing `/` and its
+/// bold — so letting the match win costs nothing that was not said twice over.
 const MATCH_STYLE: Style = Style::new().fg(Color::Yellow);
+
+/// Directories: bright blue and bold, and `rebuild_list` adds a trailing `/`.
+///
+/// Three cues for one fact, deliberately. Navigating is a fast scanning task,
+/// and the colour is caught first, the bold survives a theme with weak colour
+/// contrast, and the slash survives no colour at all.
+///
+/// *Bright* blue rather than plain `Blue`, which is the classic
+/// unreadable-on-a-dark-background case.
+const DIR_STYLE: Style = Style::new()
+    .fg(Color::LightBlue)
+    .add_modifier(Modifier::BOLD);
+
+/// Files with the executable bit set, following `yazi`'s palette.
+///
+/// This reports the file's *mode*, not whether it can be viewed — plenty of
+/// executable scripts are perfectly readable text. Previewability is answered
+/// by the view pane, which reads the actual bytes; a heuristic cue here could
+/// only disagree with it.
+const EXEC_STYLE: Style = Style::new().fg(Color::Green);
+
+/// What an entry is, which is all the palette encodes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+    Dir,
+    Executable,
+    Plain,
+}
+
+/// One row of the listing: its name, and what it is.
+///
+/// `name` stays exactly as it is on disk — the trailing `/` on a directory is
+/// added when the row is drawn, never stored. Otherwise `selected_path` would
+/// have to strip it back off, and a search for `dir$` would fail to match the
+/// directory it names.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Entry {
+    pub name: String,
+    pub kind: Kind,
+}
+
+impl Entry {
+    fn style(&self) -> Style {
+        match self.kind {
+            Kind::Dir => DIR_STYLE,
+            Kind::Executable => EXEC_STYLE,
+            // The common case pays for no colour. With directories and
+            // executables marked, a plain row is unambiguous by absence, and
+            // the terminal's own theme governs the rows there are most of.
+            Kind::Plain => Style::new(),
+        }
+    }
+
+    /// The row as drawn: directories wear a trailing `/`, as `ls -F` does.
+    fn display(&self) -> String {
+        match self.kind {
+            Kind::Dir => format!("{}/", self.name),
+            _ => self.name.clone(),
+        }
+    }
+}
 
 #[derive(Debug, Default)]
 pub struct FileNav<'a> {
-    pub dir: PathBuf,         // directory currently being listed
-    pub entries: Vec<String>, // `PARENT` followed by the sorted contents of `dir`
+    pub dir: PathBuf,        // directory currently being listed
+    pub entries: Vec<Entry>, // `PARENT` followed by the sorted contents of `dir`
     pub navlist: List<'a>,
     pub state: ListState,
     pub active: bool,
@@ -65,11 +130,11 @@ impl FileNav<'_> {
             .entries
             .iter()
             .map(|entry| {
-                let item = ListItem::new(entry.clone());
-                match matcher {
-                    Some(pattern) if pattern.is_match(entry) => item.style(MATCH_STYLE),
-                    _ => item,
-                }
+                let style = match matcher {
+                    Some(pattern) if pattern.is_match(&entry.name) => MATCH_STYLE,
+                    _ => entry.style(),
+                };
+                ListItem::new(entry.display()).style(style)
             })
             .collect();
         self.navlist = List::new(items);
@@ -111,7 +176,7 @@ impl FileNav<'_> {
                     (start + offset) % count
                 }
             })
-            .find(|&index| matcher.is_match(&self.entries[index]))?;
+            .find(|&index| matcher.is_match(&self.entries[index].name))?;
 
         self.state.select(Some(found));
         self.preview_selection()
@@ -140,34 +205,41 @@ impl FileNav<'_> {
 
     /// Columns needed to show the longest entry in full.
     ///
-    /// Counts the two borders and the two-column `>>` marker on top of the
-    /// name. Measured in `char`s rather than display width, so wide glyphs
-    /// (CJK, emoji) are under-measured and their names will clip.
+    /// Measures the row *as drawn*, so a directory's trailing `/` is counted;
+    /// sizing from the bare name would clip the slash off the longest one.
+    /// Only the two borders are added — there is no selection marker to
+    /// reserve room for since #15 removed it (see #19 for its return).
+    ///
+    /// Measured in `char`s rather than display width, so wide glyphs (CJK,
+    /// emoji) are under-measured and their names will clip.
     pub fn preferred_width(&self) -> u16 {
-        const BORDERS_AND_MARKER: usize = 4;
+        const BORDERS: usize = 2;
 
         let longest = self
             .entries
             .iter()
-            .map(|entry| entry.chars().count())
+            .map(|entry| entry.display().chars().count())
             .max()
             .unwrap_or(0);
-        u16::try_from(longest + BORDERS_AND_MARKER).unwrap_or(u16::MAX)
+        u16::try_from(longest + BORDERS).unwrap_or(u16::MAX)
     }
 
     /// The path the cursor is sitting on.
     fn selected_path(&self) -> Option<PathBuf> {
         let selected = self.state.selected()?;
-        Some(self.dir.join(self.entries.get(selected)?))
+        Some(self.dir.join(&self.entries.get(selected)?.name))
     }
 
-    /// Ask for the highlighted entry to be previewed, if it is a file.
+    /// Ask for the highlighted entry to be previewed.
     ///
-    /// Directories and `PARENT` have nothing to show, so they yield no action
-    /// and the view keeps whatever it was already displaying.
+    /// Directories included. They used to be filtered out here, on the
+    /// reasoning that they have nothing to show — but the consequence was
+    /// that the view kept displaying the *previous* file, so moving onto a
+    /// directory read as though the directory contained that text. The view
+    /// renders `<directory>` for them instead, so the pane always describes
+    /// what is actually selected.
     fn preview_selection(&self) -> Option<Action> {
-        let path = self.selected_path()?;
-        path.is_file().then_some(Action::Preview(path))
+        Some(Action::Preview(self.selected_path()?))
     }
 
     /// Open the highlighted entry: descend into a directory in place, or ask
@@ -196,19 +268,65 @@ impl FileNav<'_> {
 ///
 /// An unreadable directory still yields `PARENT`, so the user can always climb
 /// back out rather than being stranded in an empty pane. Nothing here panics.
-fn read_dir_entries(dir: &Path) -> Vec<String> {
-    let mut entries = vec![PARENT.to_string()];
+fn read_dir_entries(dir: &Path) -> Vec<Entry> {
+    let mut entries = vec![Entry {
+        name: PARENT.to_string(),
+        // `..` is a directory and reads as one, rather than being a third
+        // kind of thing with its own look.
+        kind: Kind::Dir,
+    }];
 
     let Ok(read_dir) = fs::read_dir(dir) else {
         return entries;
     };
 
-    let mut names: Vec<String> = read_dir
-        .filter_map(|entry| Some(entry.ok()?.file_name().to_string_lossy().into_owned()))
+    let mut listed: Vec<Entry> = read_dir
+        .filter_map(|entry| {
+            let entry = entry.ok()?;
+            Some(Entry {
+                name: entry.file_name().to_string_lossy().into_owned(),
+                kind: kind_of(&entry),
+            })
+        })
         .collect();
-    names.sort();
-    entries.append(&mut names);
+    listed.sort_by(|a, b| a.name.cmp(&b.name));
+    entries.append(&mut listed);
     entries
+}
+
+/// Classify one listed entry.
+///
+/// `file_type()` is answered from the `d_type` that `readdir` already
+/// returned on macOS and Linux, so telling a directory from a file costs no
+/// extra syscall. The executable bit does — it needs `metadata()`, one
+/// `lstat` per entry — which is why this runs once per listing in `set_dir`
+/// and is stored on the `Entry`, never recomputed per render.
+fn kind_of(entry: &fs::DirEntry) -> Kind {
+    match entry.file_type() {
+        Ok(file_type) if file_type.is_dir() => Kind::Dir,
+        _ if is_executable(entry) => Kind::Executable,
+        _ => Kind::Plain,
+    }
+}
+
+/// Whether the executable bit is set for anyone.
+///
+/// Unix-only; elsewhere there is no such bit and nothing is ever green.
+///
+/// Known false positive, which `yazi` shares: FAT and some network mounts
+/// report every file as executable, which turns the whole pane green. That is
+/// the filesystem talking, not a bug here.
+#[cfg(unix)]
+fn is_executable(entry: &fs::DirEntry) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    entry
+        .metadata()
+        .is_ok_and(|meta| meta.permissions().mode() & 0o111 != 0)
+}
+
+#[cfg(not(unix))]
+fn is_executable(_entry: &fs::DirEntry) -> bool {
+    false
 }
 
 impl Widget for &mut FileNav<'_> {
@@ -221,9 +339,7 @@ impl Widget for &mut FileNav<'_> {
             .navlist
             .clone()
             .block(Block::bordered().title(self.dir.display().to_string()))
-            .highlight_style(highlight_style)
-            .highlight_symbol(">>")
-            .repeat_highlight_symbol(true);
+            .highlight_style(highlight_style);
         StatefulWidget::render(&list, area, buf, &mut self.state);
     }
 }
@@ -247,9 +363,209 @@ mod tests {
         let index = nav
             .entries
             .iter()
-            .position(|e| e == name)
+            .position(|e| e.name == name)
             .unwrap_or_else(|| panic!("{name} not among {:?}", nav.entries));
         nav.state.select(Some(index));
+    }
+
+    /// A fixture with one plain file, one executable file and one directory,
+    /// which is the whole matrix the palette distinguishes.
+    fn nav_with_kinds(name: &str) -> FileNav<'static> {
+        let dir = Path::new("target/test-navdirs").join(name);
+        fs::remove_dir_all(&dir).ok();
+        fs::create_dir_all(dir.join("subdir")).expect("create subdir");
+        fs::write(dir.join("plain.txt"), "x").expect("write plain");
+        let script = dir.join("script.sh");
+        fs::write(&script, "#!/bin/sh\n").expect("write script");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).expect("chmod");
+        }
+        FileNav::new(dir.join("placeholder").display().to_string())
+    }
+
+    /// The rendered row for `name`, as cells, so styles can be read off it.
+    fn row_cells(nav: &mut FileNav<'_>, name: &str) -> Vec<(String, Style)> {
+        let area = Rect::new(0, 0, 40, 10);
+        let mut buf = Buffer::empty(area);
+        nav.render(area, &mut buf);
+        for y in 0..area.height {
+            let row: Vec<(String, Style)> = (0..area.width)
+                .map(|x| (buf[(x, y)].symbol().to_string(), buf[(x, y)].style()))
+                .collect();
+            let text: String = row.iter().map(|(sym, _)| sym.as_str()).collect();
+            if text.contains(name) {
+                return row;
+            }
+        }
+        panic!("no row containing {name:?}");
+    }
+
+    fn row_text(nav: &mut FileNav<'_>, name: &str) -> String {
+        row_cells(nav, name)
+            .iter()
+            .map(|(sym, _)| sym.as_str())
+            .collect::<String>()
+            .trim_matches(|c| c == '\u{2502}' || c == ' ')
+            .to_string()
+    }
+
+    /// The style on the first cell of `name` itself, past the border and any
+    /// indentation, so the assertion reads the name's own styling.
+    fn name_style(nav: &mut FileNav<'_>, name: &str) -> Style {
+        let cells = row_cells(nav, name);
+        let first = name.chars().next().expect("empty name");
+        cells
+            .iter()
+            .find(|(sym, _)| sym.starts_with(first))
+            .map(|(_, style)| *style)
+            .expect("name not drawn")
+    }
+
+    #[test]
+    fn directories_get_a_trailing_slash() {
+        let mut nav = nav_with_kinds("kinds_slash");
+
+        assert!(
+            row_text(&mut nav, "subdir").ends_with("subdir/"),
+            "no trailing slash: {:?}",
+            row_text(&mut nav, "subdir")
+        );
+        assert!(
+            !row_text(&mut nav, "plain.txt").ends_with('/'),
+            "a plain file was given a directory's slash"
+        );
+    }
+
+    /// Three cues on directories, not one: colour for the eye, bold for a
+    /// theme with weak colour, and the slash for no colour at all.
+    #[test]
+    fn directories_are_bright_blue_and_bold() {
+        let mut nav = nav_with_kinds("kinds_dir_style");
+
+        let style = name_style(&mut nav, "subdir");
+
+        assert_eq!(style.fg, Some(Color::LightBlue));
+        assert!(
+            style.add_modifier.contains(Modifier::BOLD),
+            "directories are not bold"
+        );
+    }
+
+    /// Follows yazi: colour reports the file's *mode*, so green means the
+    /// executable bit is set and says nothing about whether it can be viewed.
+    #[cfg(unix)]
+    #[test]
+    fn executable_files_are_green() {
+        let mut nav = nav_with_kinds("kinds_exec");
+
+        assert_eq!(name_style(&mut nav, "script.sh").fg, Some(Color::Green));
+    }
+
+    /// The common case pays for no colour: with directories and executables
+    /// marked, a plain row is unambiguous by absence, and the terminal's own
+    /// theme governs the rows there are most of.
+    #[test]
+    fn ordinary_files_are_left_unstyled() {
+        let mut nav = nav_with_kinds("kinds_plain");
+
+        let style = name_style(&mut nav, "plain.txt");
+
+        // A rendered cell carries `Reset` rather than `None`; either way it
+        // must not be wearing one of the kind colours.
+        assert!(
+            matches!(style.fg, None | Some(Color::Reset)),
+            "an ordinary file was coloured: {:?}",
+            style.fg
+        );
+        assert!(!style.add_modifier.contains(Modifier::BOLD));
+    }
+
+    /// `..` is a directory and reads as one, rather than being a third thing.
+    #[test]
+    fn the_parent_entry_is_styled_as_a_directory() {
+        let mut nav = nav_with_kinds("kinds_parent");
+
+        assert_eq!(name_style(&mut nav, PARENT).fg, Some(Color::LightBlue));
+        assert!(row_text(&mut nav, PARENT).ends_with("../"));
+    }
+
+    /// A search hit outranks the kind colour: it is the transient, task-driven
+    /// signal, and the kind is still carried by the slash and the bold.
+    #[test]
+    fn a_search_match_outranks_the_kind_colour() {
+        let mut nav = nav_with_kinds("kinds_search");
+        nav.search("subdir", false).expect("valid pattern");
+
+        assert_eq!(name_style(&mut nav, "subdir").fg, Some(Color::Yellow));
+    }
+
+    /// The width is measured from the row *as drawn*, so the longest entry
+    /// being a directory means its slash has to be counted too — sizing from
+    /// the bare name would clip the slash off the one entry that has one.
+    #[test]
+    fn the_width_counts_a_directory_s_trailing_slash() {
+        let dir = Path::new("target/test-navdirs/kinds_width");
+        fs::remove_dir_all(dir).ok();
+        fs::create_dir_all(dir.join("the_longest_entry_here")).expect("create subdir");
+        fs::write(dir.join("short.txt"), "x").expect("write");
+        let nav = FileNav::new(dir.join("placeholder").display().to_string());
+
+        assert_eq!(
+            nav.preferred_width(),
+            "the_longest_entry_here".len() as u16 + 1 + 2,
+            "expected the name, its slash, and two borders"
+        );
+    }
+
+    /// The selection marker is gone; reverse video is what says "selected".
+    #[test]
+    fn no_selection_marker_is_drawn() {
+        let mut nav = nav_with_kinds("kinds_no_marker");
+        let area = Rect::new(0, 0, 40, 10);
+        let mut buf = Buffer::empty(area);
+        nav.render(area, &mut buf);
+
+        let text: String = (0..area.height)
+            .flat_map(|y| (0..area.width).map(move |x| (x, y)))
+            .map(|(x, y)| buf[(x, y)].symbol())
+            .collect();
+
+        assert!(!text.contains(">>"), "a selection marker is still drawn");
+    }
+
+    /// With the `>>` marker gone, reverse video is the only thing that says
+    /// "selected" — and it now has to say it on top of a coloured, bold row.
+    ///
+    /// Checked because it is the way this change could quietly be worse than
+    /// what it replaced. On a selected directory the kind colour becomes the
+    /// *background* rather than being lost, and the trailing `/` and the bold
+    /// survive either way, which is the whole reason for carrying three cues.
+    #[test]
+    fn a_selected_directory_is_still_marked_as_selected_and_as_a_directory() {
+        let mut nav = nav_with_kinds("kinds_selected_dir");
+        select(&mut nav, "subdir");
+
+        let cells = row_cells(&mut nav, "subdir");
+        let style = cells
+            .iter()
+            .find(|(sym, _)| sym == "s")
+            .map(|(_, style)| *style)
+            .expect("subdir not drawn");
+
+        assert!(
+            style.add_modifier.contains(Modifier::REVERSED),
+            "the selected row is not drawn as selected"
+        );
+        assert!(
+            style.add_modifier.contains(Modifier::BOLD),
+            "the directory lost its bold when selected"
+        );
+        assert!(
+            row_text(&mut nav, "subdir").ends_with('/'),
+            "the directory lost its slash when selected"
+        );
     }
 
     /// A bare filename has no directory component, so the nav pane should fall
@@ -258,44 +574,44 @@ mod tests {
     fn bare_filename_lists_current_directory() {
         let nav = FileNav::new("Cargo.toml".to_string());
         assert!(
-            nav.entries.iter().any(|e| e == "Cargo.toml"),
+            nav.entries.iter().any(|e| e.name == "Cargo.toml"),
             "expected Cargo.toml among entries, got {:?}",
             nav.entries
         );
-        assert!(nav.entries.iter().any(|e| e == "src"));
+        assert!(nav.entries.iter().any(|e| e.name == "src"));
     }
 
     #[test]
     fn parent_entry_comes_first() {
         let nav = FileNav::new("Cargo.toml".to_string());
-        assert_eq!(nav.entries.first().map(String::as_str), Some(PARENT));
+        assert_eq!(nav.entries.first().map(|e| e.name.as_str()), Some(PARENT));
     }
 
     #[test]
     fn entries_after_parent_are_sorted() {
         let nav = FileNav::new("Cargo.toml".to_string());
-        let rest = &nav.entries[1..];
-        let mut sorted = rest.to_vec();
-        sorted.sort();
-        assert_eq!(rest, sorted.as_slice());
+        let rest: Vec<&str> = names(&nav)[1..].to_vec();
+        let mut sorted = rest.clone();
+        sorted.sort_unstable();
+        assert_eq!(rest, sorted);
     }
 
     #[test]
     fn path_with_directory_lists_that_directory() {
         let nav = FileNav::new("src/lib.rs".to_string());
         assert!(
-            nav.entries.iter().any(|e| e == "lib.rs"),
+            nav.entries.iter().any(|e| e.name == "lib.rs"),
             "expected lib.rs among entries, got {:?}",
             nav.entries
         );
-        assert!(!nav.entries.iter().any(|e| e == "Cargo.toml"));
+        assert!(!nav.entries.iter().any(|e| e.name == "Cargo.toml"));
     }
 
     /// An unreadable directory still offers `..` so the user can escape.
     #[test]
     fn missing_directory_still_offers_parent() {
         let nav = FileNav::new("no/such/dir/file.txt".to_string());
-        assert_eq!(nav.entries, vec![PARENT.to_string()]);
+        assert_eq!(names(&nav), vec![PARENT]);
     }
 
     /// Build a directory with known contents, so width assertions do not
@@ -317,7 +633,13 @@ mod tests {
     }
 
     fn selected_name<'n>(nav: &'n FileNav<'_>) -> &'n str {
-        &nav.entries[nav.state.selected().expect("nothing selected")]
+        &nav.entries[nav.state.selected().expect("nothing selected")].name
+    }
+
+    /// Entry names in listing order, for assertions that are about the
+    /// listing rather than about how a row is drawn.
+    fn names<'n>(nav: &'n FileNav<'_>) -> Vec<&'n str> {
+        nav.entries.iter().map(|e| e.name.as_str()).collect()
     }
 
     #[test]
@@ -414,7 +736,7 @@ mod tests {
         nav.render(area, &mut buf);
 
         let row_style = |name: &str| {
-            let y = nav.entries.iter().position(|e| e == name).unwrap() as u16 + 1;
+            let y = nav.entries.iter().position(|e| e.name == name).unwrap() as u16 + 1;
             buf[(4, y)].style()
         };
         assert_ne!(
@@ -428,20 +750,25 @@ mod tests {
     fn preferred_width_fits_the_longest_entry() {
         let nav = nav_over("widths", &["a.rs", "much_longer_name.rs"]);
 
-        // Two borders plus the two-column `>>` marker, plus the name itself.
+        // Two borders plus the name. The `>>` marker used to add two more.
         assert_eq!(
             nav.preferred_width(),
-            "much_longer_name.rs".len() as u16 + 4
+            "much_longer_name.rs".len() as u16 + 2
         );
     }
 
     /// `..` is always present, so even an empty directory has a width.
+    ///
+    /// Two changes land on this number at once: the `>>` marker no longer
+    /// reserves two columns, and `..` is a directory so it is drawn `../`,
+    /// which claims one back. Net one column narrower than before.
     #[test]
     fn preferred_width_of_an_empty_directory_covers_the_parent_entry() {
         let nav = nav_over("empty", &[]);
 
-        assert_eq!(nav.entries, vec![PARENT.to_string()]);
-        assert_eq!(nav.preferred_width(), PARENT.len() as u16 + 4);
+        assert_eq!(names(&nav), vec![PARENT]);
+        // `../` plus two borders.
+        assert_eq!(nav.preferred_width(), PARENT.len() as u16 + 1 + 2);
     }
 
     #[test]
@@ -490,7 +817,10 @@ mod tests {
 
     /// Directories have nothing to show, so the view keeps the last file.
     #[test]
-    fn moving_onto_a_directory_requests_nothing() {
+    /// Moving onto a directory asks for it to be previewed, so the view can
+    /// say `<directory>`. It used to request nothing, which left the previous
+    /// file's text on screen under a directory's name.
+    fn moving_onto_a_directory_requests_a_preview() {
         // Own fixture directory: the repo's own listing shifts as files are
         // added, which silently changes which entry follows which.
         let mut nav = nav_over("move_onto_dir", &["alpha.rs"]);
@@ -499,17 +829,34 @@ mod tests {
         nav.set_dir(dir.to_path_buf());
         select(&mut nav, "alpha.rs"); // `beta_dir` sorts next
 
-        assert!(press(&mut nav, KeyCode::Down).is_none());
+        let action = press(&mut nav, KeyCode::Down);
+
+        assert_eq!(
+            selected_name(&nav),
+            "beta_dir",
+            "moved onto the wrong entry"
+        );
+        assert!(
+            matches!(&action, Some(Action::Preview(path)) if path.ends_with("beta_dir")),
+            "expected a preview of the directory, got {action:?}"
+        );
     }
 
     #[test]
-    fn moving_onto_the_parent_entry_requests_nothing() {
+    /// `..` is a directory like any other, and previews as one.
+    fn moving_onto_the_parent_entry_requests_a_preview() {
         // Own fixture directory: the repo's own listing shifts as files are
         // added, which silently changes which entry follows which.
         let mut nav = nav_over("parent_entry", &["alpha.rs"]);
         select(&mut nav, "alpha.rs"); // `..` is above it
 
-        assert!(press(&mut nav, KeyCode::Up).is_none());
+        let action = press(&mut nav, KeyCode::Up);
+
+        assert_eq!(selected_name(&nav), PARENT);
+        assert!(
+            matches!(action, Some(Action::Preview(_))),
+            "expected a preview of the parent directory, got {action:?}"
+        );
     }
 
     #[test]
@@ -537,7 +884,7 @@ mod tests {
 
         assert!(action.is_none(), "descending should not request a load");
         assert!(
-            nav.entries.iter().any(|e| e == "lib.rs"),
+            nav.entries.iter().any(|e| e.name == "lib.rs"),
             "did not descend into src, entries: {:?}",
             nav.entries
         );
@@ -562,7 +909,7 @@ mod tests {
 
         assert!(action.is_none());
         assert_eq!(nav.dir, start.parent().unwrap());
-        assert!(nav.entries.iter().any(|e| e == "Cargo.toml"));
+        assert!(nav.entries.iter().any(|e| e.name == "Cargo.toml"));
     }
 
     /// Navigating in and back out should land on the original directory, not
@@ -600,19 +947,30 @@ mod tests {
         assert_eq!(nav.state.selected(), Some(0));
     }
 
-    /// Render the pane and return the row carrying the `>>` selection marker.
+    /// Render the pane and return the selected row.
+    ///
+    /// Finds it by the reverse-video attribute rather than by a `>>` marker:
+    /// the marker is gone, and reverse video is now the only thing that says
+    /// "selected", so this probes what actually carries the meaning.
     fn highlighted_row(nav: &mut FileNav<'_>) -> String {
         let area = Rect::new(0, 0, 20, 10);
         let mut buf = Buffer::empty(area);
         nav.render(area, &mut buf);
         (0..area.height)
+            .find(|&y| {
+                (0..area.width).any(|x| {
+                    buf[(x, y)]
+                        .style()
+                        .add_modifier
+                        .contains(Modifier::REVERSED)
+                })
+            })
             .map(|y| {
                 (0..area.width)
                     .map(|x| buf[(x, y)].symbol())
                     .collect::<String>()
             })
-            .find(|row| row.contains(">>"))
-            .expect("nothing rendered with a selection marker")
+            .expect("no row is drawn as selected")
     }
 
     #[test]

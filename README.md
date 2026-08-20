@@ -67,6 +67,9 @@ motions throughout.
   invalid pattern reports `E486: invalid pattern` and leaves the prompt open.
 - **Vim motions** — `hjkl`, `w`, `0`/`^`/`$`, `{`/`}`, `g`/`G`, `Ctrl-D`/`Ctrl-U`,
   `/` and `?` with `n`/`N` repeat.
+- **Directories are obvious** — bright blue, bold and slash-suffixed, with
+  executables in green, following yazi. Selecting a directory shows
+  `<directory>` in the view rather than leaving the last file on screen.
 - **Cheap navigation** — moving through the navigator renders a bounded preview
   (500 lines / 1 MiB), so scrolling a directory of large logs doesn't stutter.
 - **Mouse resize** — drag the pane divider; double-click it to return to
@@ -279,6 +282,26 @@ Navigator pane (`src/widgets/filenav.rs`):
 | `j` / `Down` | Select the next entry |
 | `Enter` | Open the selected entry (descend into a directory, or load a file) |
 | `n` / `N` | Repeat the last search, forward / reversed |
+
+Entries are coloured by what they are, following
+[yazi](https://github.com/sxyazi/yazi): directories are bright blue and bold
+and wear a trailing `/`, files with the executable bit set are green, and
+everything else takes the terminal's own foreground. Three cues on a
+directory rather than one is deliberate — the colour is caught first, the
+bold survives a theme with weak colour contrast, and the slash survives no
+colour at all.
+
+Colour reports the file's *mode*, not whether it can be viewed: plenty of
+executable scripts are readable text. What can be viewed is answered by the
+view pane, which reads the actual bytes. Moving the selection onto a
+directory shows `<directory>` there — it used to keep the previous file on
+screen, which read as though the directory contained that text. The
+executable bit is Unix-only, so nothing is green on Windows, and a FAT or
+network mount that reports every file as executable will turn the pane green.
+
+There is no selection marker; the selected row is drawn in reverse video.
+A `>>` marker used to sit in the gutter, and it is coming back as an opt-in
+setting once there is somewhere to configure it.
 
 Filter pane (`src/widgets/filterlist.rs`), reached with `Tab` — the pane
 sizes to its contents, and with no filters defined it holds a single dimmed

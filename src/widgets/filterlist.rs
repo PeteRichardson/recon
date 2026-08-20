@@ -9,9 +9,6 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::prelude::{Buffer, Color, Modifier, Rect, Style, Widget};
 use ratatui::widgets::{Block, List, ListItem, ListState, StatefulWidget};
 
-/// Marks the row the cursor is on, matching the navigator pane.
-const SELECTION: &str = ">>";
-
 /// Rows of chrome the pane needs on top of one row per filter.
 const BORDERS: u16 = 2;
 
@@ -122,6 +119,10 @@ impl FilterList {
 
     /// Columns needed for the widest row.
     ///
+    /// Two borders and the widest row. There is no selection marker to
+    /// reserve room for — #15 removed it from both panes; #19 brings it back
+    /// as a setting.
+    ///
     /// Deliberately does **not** account for `EMPTY_HINTS`. `App::nav_width`
     /// sizes the left column to whichever pane wants more, so counting the
     /// hint here would put a ~18-column floor under the column for every user
@@ -135,7 +136,7 @@ impl FilterList {
             .map(|index| Self::row_text(filters, index).chars().count())
             .max()
             .unwrap_or(0);
-        u16::try_from(longest + SELECTION.len() + BORDERS as usize).unwrap_or(u16::MAX)
+        u16::try_from(longest + BORDERS as usize).unwrap_or(u16::MAX)
     }
 
     /// One filter's row: its number, whether it is on, which way it filters,
@@ -211,8 +212,7 @@ impl FilterList {
 
         let list = List::new(items)
             .block(Block::bordered().title("Filters"))
-            .highlight_style(highlight)
-            .highlight_symbol(SELECTION);
+            .highlight_style(highlight);
         StatefulWidget::render(&list, area, buf, &mut self.state);
     }
 }
