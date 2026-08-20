@@ -4,8 +4,35 @@ pub mod filterlist;
 
 use color_eyre::Result;
 use crossterm::event::Event;
-use ratatui::prelude::{Buffer, Rect, Widget};
+use ratatui::prelude::{Buffer, Color, Rect, Style, Widget};
+use ratatui::widgets::{Block, BorderType};
 use std::path::PathBuf;
+
+/// The bordered block every pane draws, carrying whether it has focus.
+///
+/// Focus used to be signalled by one thing: the selected row's foreground
+/// turning green inside an already reverse-video highlight. That is a
+/// low-contrast shift on a single row, while the border — the largest element
+/// the pane owns — said nothing at all.
+///
+/// Colour *and* weight, not colour alone. This is the argument #19 makes about
+/// the selection marker: a single visual channel fails on a theme with weak
+/// contrast and for a colour-blind reader, and border weight survives a
+/// terminal with no colour whatsoever. Green because it is already this app's
+/// focus colour, so nothing new is introduced.
+///
+/// One helper rather than four call sites styling their own blocks — the
+/// filter pane alone builds two, and they are exactly where a copy would drift.
+pub fn pane_block<'a>(title: impl Into<ratatui::text::Line<'a>>, active: bool) -> Block<'a> {
+    let block = Block::bordered().title(title);
+    if active {
+        block
+            .border_type(BorderType::Thick)
+            .border_style(Style::new().fg(Color::Green))
+    } else {
+        block
+    }
+}
 
 /// A request raised by a widget that only `App` can carry out, because it
 /// needs to reach a sibling widget.

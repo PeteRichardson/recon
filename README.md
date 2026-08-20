@@ -45,11 +45,11 @@ motions throughout.
 
 ## Features
 
-- **A filter stack, not a single pattern** — add filters with `f` (include) and
-  `F` (exclude); each one is listed, numbered, and independently toggled with
-  `space`. The filter pane is on screen whenever the navigator is, showing
-  `press f to add` until you define your first filter, so the layout never
-  shifts under you as the set grows and shrinks.
+- **A filter stack, not a single pattern** — `f` focuses the filter pane, then
+  `i` adds an include filter and `x` an exclude; each one is listed, numbered,
+  and independently toggled with `space`. The filter pane is on screen whenever
+  the navigator is, showing `press f i to add` until you define your first
+  filter, so the layout never shifts under you as the set grows and shrinks.
 - **Dim or hide, on one keystroke** — `Ctrl-H` toggles unmatched lines between
   dimmed-but-present and removed. Toggling back returns you to the exact line
   you were on.
@@ -63,6 +63,11 @@ motions throughout.
   down the navigator and each file draws only its matching lines. A file that
   comes up blank has none, which makes a directory of logs answerable by
   arrow key rather than by four chained `grep`s.
+- **One key per pane, and you can see which has it** — `e`, `t` and `f` jump
+  straight to the navigator, the file view and the filter pane, so focus is
+  something you set rather than something you hunt for with `Tab`. The focused
+  pane draws its border green *and* heavy, so it reads at a glance on a theme
+  with weak colour and in a terminal with none.
 - **Regex everywhere** — filters and searches are both regular expressions. An
   invalid pattern reports `E486: invalid pattern` and leaves the prompt open.
 - **Vim motions** — `hjkl`, `w`, `0`/`^`/`$`, `{`/`}`, `g`/`G`, `Ctrl-D`/`Ctrl-U`,
@@ -136,11 +141,11 @@ The file opens in the centre pane with its directory listed on the left. Then:
 
 | Press | To |
 | --- | --- |
-| `f` `ERROR` `Enter` | Colour every line matching `ERROR`, dim the rest |
-| `f` `WARN` `Enter` | Add a second filter, in its own colour |
-| `F` `healthcheck` `Enter` | Drop `healthcheck` lines from view entirely |
+| `f` `i` `ERROR` `Enter` | Colour every line matching `ERROR`, dim the rest |
+| `i` `WARN` `Enter` | Add a second filter, in its own colour — `f` already moved focus, so `i` alone is enough |
+| `x` `healthcheck` `Enter` | Drop `healthcheck` lines from view entirely |
 | `Ctrl-H` | Hide the dimmed lines — only `ERROR` and `WARN` remain |
-| `Tab` | Focus the filter pane; `space` toggles a filter off and on |
+| `space` | Toggle the selected filter off and on |
 | `!` | Disable all filters — the whole file returns |
 | `q` | Quit |
 
@@ -202,12 +207,12 @@ Global (`src/lib.rs`), handled before the focused pane sees the key:
 | `Tab` | Move focus to the next of three panes — navigator, file view, filter pane. All three are always on screen, so the cycle never skips one |
 | `/` | Search forward in the focused pane |
 | `?` | Search backward in the focused pane |
-| `f` | Add an include filter (always applies to the file view) |
-| `F` | Add an exclude filter — its matches leave the view entirely |
+| `e` | Focus the navigator, revealing the left column if `b` or `z` hid it |
+| `t` | Focus the file view |
+| `f` | Focus the filter pane — filters are then added with `i` and `x` from inside it |
 | `Ctrl-H` / `H` | Toggle between dimming unmatched lines and hiding them |
 | `!` | Disable every filter, remembering which were on; restores exactly that (or enables all, if none were on to remember) |
 | `b` | Hide the left column — both the navigator and the filter pane — and focus the file view; press again to restore the split (focus stays in the file view; `e` returns it) |
-| `e` | Bring the left column back and focus the navigator specifically, skipping the filter pane |
 | `z` | Maximise the focused pane, or restore the split — works in the navigator too, for long filenames |
 
 Mouse: drag the divider between the panes to resize them; double-click it to
@@ -220,7 +225,7 @@ file, so it survives loading another file — `!` is the single keystroke back t
 an unfiltered view without discarding the set. Nothing is hidden: filters only
 change how lines are presented.
 
-Excluding filters (`F`) are different: their matches are removed from view
+Excluding filters (`x`) are different: their matches are removed from view
 outright, in both modes. `Ctrl-H` (or `H`) toggles the remaining lines between
 dimmed and hidden. `H` is kept as an alternative binding for terminals
 configured with `stty erase ^H`, where the Backspace *key* itself sends
@@ -327,17 +332,26 @@ There is no selection marker; the selected row is drawn in reverse video.
 A `>>` marker used to sit in the gutter, and it is coming back as an opt-in
 setting once there is somewhere to configure it.
 
-Filter pane (`src/widgets/filterlist.rs`), reached with `Tab` — the pane
-sizes to its contents, and with no filters defined it holds a single dimmed
-row reading `press f to add` (shortened to `press f`, or dropped entirely, if
-the column is too narrow for it). It is on screen whenever the navigator is:
+Filter pane (`src/widgets/filterlist.rs`), reached with `f` or `Tab` — the
+pane sizes to its contents, and with no filters defined it holds a single
+dimmed row reading `press f i to add` (shortened to `press f i`, then to
+`f i`, or dropped entirely, if the column is too narrow for it). It is on
+screen whenever the navigator is:
 
 | Key(s) | Action |
 | --- | --- |
+| `i` | Add an include filter — opens the prompt at the bottom row |
+| `x` | Add an exclude filter — its matches leave the view entirely |
 | `k` / `Up` | Select the previous filter |
 | `j` / `Down` | Select the next filter |
 | `space` | Enable or disable the selected filter |
 | `d` | Delete the selected filter |
+
+`i` and `x` work only while this pane has focus, which is what `f` is for —
+`f i` and `f x` reach them from anywhere, and `f` is a no-op when the pane
+already has focus, so the pair is always correct. They are deliberately not
+global: bound app-wide they would swallow a keystroke from every other pane,
+which is exactly what `f` and `F` used to do and the reason they moved.
 
 Each row shows the filter's number, whether it is enabled, whether it
 includes or excludes, and its pattern — e.g. `1[x] inc foo`. Including
@@ -346,7 +360,7 @@ a glance; excluding filters have no colour, which is why the sense is
 spelled out. A disabled filter is dimmed. Toggling or deleting re-evaluates
 the whole document but holds the line under the cursor on the same screen
 row, so lines appear and disappear around a fixed point rather than the view
-lurching. Deleting the last filter returns the pane to its `press f to add`
+lurching. Deleting the last filter returns the pane to its `press f i to add`
 row and leaves focus where it was — the pane is still on screen, so there is
 nothing to move focus off.
 
