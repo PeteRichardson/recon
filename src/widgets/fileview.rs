@@ -1,3 +1,4 @@
+use crate::widgets::filenav::Entry;
 /// FileView Widget
 ///
 ///
@@ -38,13 +39,13 @@ const MAX_PREVIEW_BYTES: u64 = 10 << 20;
 /// Shown in place of the contents when a file is not UTF-8.
 const BINARY_MESSAGE: &str = "<binary file: not valid UTF-8>";
 
-/// Shown when the navigator's selection is a directory.
+/// Shown when the navigator's selection is a directory with nothing in it.
 ///
-/// Directories used to raise no action at all, so the pane kept displaying
-/// whatever file was there before — which reads as though the directory
-/// contains that text. Saying so explicitly is the point: the pane always
-/// describes what is selected.
-const DIRECTORY_MESSAGE: &str = "<directory>";
+/// A directory now renders as its listing, so this survives only for the case
+/// where there is no listing to show. Distinguished from `<directory>`, which
+/// this used to be: "I gave you a directory and got nothing" is the one case
+/// that could otherwise read as a bug rather than as an answer.
+const EMPTY_DIRECTORY_MESSAGE: &str = "<empty directory>";
 
 /// What `read_preview` found: the lines it read, whether more remain, and how
 /// many lines the whole file probably has.
@@ -94,6 +95,15 @@ pub struct FileView<'a> {
     /// and read as "this file has one empty line" — so the gutter is
     /// suppressed outright instead.
     gutter_blank: bool,
+    /// Set while the buffer holds a directory listing rather than a file.
+    ///
+    /// A third, independent reason to suppress the gutter — line numbers
+    /// beside filenames number nothing. Deliberately *not* implemented by
+    /// saving and restoring `hide_line_numbers`: a `#` pressed while a
+    /// directory is on screen would then be clobbered on the way out, and the
+    /// two values could disagree. A condition re-evaluated per render has
+    /// nothing to keep in sync, which is the same shape `gutter_blank` uses.
+    showing_directory: bool,
     /// A `scroll_cursor_to_row` request not yet applied. Applied against the
     /// real area the next time this pane renders — see the `Widget` impl —
     /// rather than acted on immediately, since the caller (a filter or
@@ -123,6 +133,7 @@ impl FileView<'_> {
     pub fn load(&mut self, path: &Path) {
         self.filename = path.display().to_string();
         self.textarea = TextArea::new(read_lines(path));
+        self.showing_directory = path.is_dir();
         self.truncated = false;
         // The whole file is here, so its length is a fact rather than a guess.
         self.estimated_lines = None;
@@ -149,6 +160,7 @@ impl FileView<'_> {
     fn preview_with_caps(&mut self, path: &Path, max_lines: usize, max_bytes: u64) {
         self.filename = path.display().to_string();
         let preview = read_preview_with_caps(path, max_lines, max_bytes);
+        self.showing_directory = path.is_dir();
         self.textarea = TextArea::new(preview.lines);
         self.truncated = preview.truncated;
         self.estimated_lines = preview.estimated_lines;
@@ -450,7 +462,7 @@ fn read_lines(path: &Path) -> Vec<String> {
     // See `read_preview`: a directory opens fine and then fails to read, so
     // it is recognised up front rather than surfacing an OS error string.
     if path.is_dir() {
-        return vec![DIRECTORY_MESSAGE.to_string()];
+        return directory_listing(path, usize::MAX).lines;
     }
     let file = match File::open(path) {
         Ok(file) => file,
@@ -492,7 +504,7 @@ fn read_preview_with_caps(path: &Path, max_lines: usize, max_bytes: u64) -> Prev
     // `<Is a directory (os error 21)>` — platform-specific and meaningless
     // to a reader.
     if path.is_dir() {
-        return Preview::message(DIRECTORY_MESSAGE.to_string());
+        return directory_listing(path, max_lines);
     }
     let file = match File::open(path) {
         Ok(file) => file,
@@ -535,6 +547,115 @@ fn read_preview_with_caps(path: &Path, max_lines: usize, max_bytes: u64) -> Prev
     }
 }
 
+/// A directory rendered as its contents, bounded by `max_lines`.
+///
+/// The view is the widest pane on screen and was spending all of it on the
+/// word `<directory>`. Listing what is actually there turns a selected
+/// directory into a look-ahead — and `l` on that selection makes the listing
+/// the navigator's own, which is what stops it being a navigable-looking list
+/// that cannot be navigated.
+///
+/// `..` is absent deliberately: it is the navigator's way back out, and there
+/// is nothing here that could act on it.
+/// Widest a name column grows before long names are allowed to push the
+/// metadata out of line on their own row.
+///
+/// Same trade `MAX_NAV_WIDTH` makes: one pathological 200-character filename
+/// would otherwise pad *every* row out to 200 columns and push the size and
+/// time off screen for all of them. Capping means that one row misaligns
+/// instead of all of them going blank.
+const NAME_COLUMN_MAX: usize = 40;
+
+/// Columns a size occupies, right-aligned. `1023B` and `999.9K` both fit.
+const SIZE_COLUMN: usize = 6;
+
+/// `bytes` as something readable at a glance, in the width `SIZE_COLUMN` gives.
+///
+/// Binary units, since this reports what the filesystem reports. One decimal
+/// above 1 KiB: `18.4K` says as much as `18841` in fewer columns, and the
+/// exact byte count is not what anyone scans a listing for.
+fn format_size(bytes: u64) -> String {
+    const UNITS: [(u64, char); 4] = [(1 << 30, 'G'), (1 << 20, 'M'), (1 << 10, 'K'), (1, 'B')];
+    for (scale, suffix) in UNITS {
+        if bytes >= scale {
+            return if scale == 1 {
+                format!("{bytes}B")
+            } else {
+                // Truncating rather than rounding, so a listing never claims a
+                // file reached the next unit before it did.
+                let whole = bytes / scale;
+                let tenth = (bytes % scale) * 10 / scale;
+                format!("{whole}.{tenth}{suffix}")
+            };
+        }
+    }
+    "0B".to_string()
+}
+
+/// `time` as a local calendar datetime, or `None` if it cannot be represented.
+///
+/// Local, not UTC: the logs recon reads carry local timestamps, and a listing
+/// disagreeing with the lines inside the files would be its own small bug.
+/// `jiff` resolves the zone from the system (`/etc/localtime` on Unix), which
+/// is the part that is genuinely hard to get right by hand.
+fn format_modified(time: std::time::SystemTime) -> Option<String> {
+    let zoned = jiff::Zoned::try_from(time).ok()?;
+    Some(zoned.strftime("%Y-%m-%d %H:%M").to_string())
+}
+
+/// One row: name, then size, then when it changed.
+///
+/// The metadata sits to the *right* of the name deliberately. The view pane
+/// narrows when the navigator is wide, and a row clipped at the pane's edge
+/// then loses the time first, the size next, and the name last — which is the
+/// priority order this wants, achieved by layout rather than by logic that
+/// would need a width the listing does not have when it is built.
+fn listing_row(entry: &Entry, name_width: usize) -> String {
+    let size = entry.size.map_or_else(|| "-".to_string(), format_size);
+    let modified = entry.modified.and_then(format_modified).unwrap_or_default();
+    format!(
+        "{:<name_width$}  {:>SIZE_COLUMN$}  {}",
+        entry.display(),
+        size,
+        modified
+    )
+    .trim_end()
+    .to_string()
+}
+
+fn directory_listing(path: &Path, max_lines: usize) -> Preview {
+    let entries = match crate::widgets::filenav::sorted_entries(path) {
+        Ok(entries) => entries,
+        // Same shape as an unreadable file: say why, verbatim from the OS.
+        Err(err) => return Preview::message(format!("<{err}>")),
+    };
+    if entries.is_empty() {
+        return Preview::message(EMPTY_DIRECTORY_MESSAGE.to_string());
+    }
+    let total = entries.len();
+    let shown = &entries[..entries.len().min(max_lines)];
+    // Padded to the longest name actually on screen, so the columns line up
+    // without every listing being as wide as the widest possible name.
+    let name_width = shown
+        .iter()
+        .map(|entry| entry.display().chars().count())
+        .max()
+        .unwrap_or(0)
+        .min(NAME_COLUMN_MAX);
+    let lines: Vec<String> = shown
+        .iter()
+        .map(|entry| listing_row(entry, name_width))
+        .collect();
+    let truncated = total > lines.len();
+    Preview {
+        lines,
+        truncated,
+        // Unlike a file, the real count is known exactly rather than scaled
+        // from a sample — there is no guessing to do.
+        estimated_lines: truncated.then_some(total),
+    }
+}
+
 /// How many lines a file of `file_bytes` probably holds, given that its first
 /// `bytes_read` bytes held `lines_read` lines.
 ///
@@ -567,7 +688,7 @@ fn digits(n: usize) -> u8 {
 /// Widget impl for `FileView`
 impl Widget for &mut FileView<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
-        if self.hide_line_numbers || self.gutter_blank {
+        if self.hide_line_numbers || self.gutter_blank || self.showing_directory {
             self.textarea.remove_line_number();
         } else {
             self.textarea
@@ -1012,21 +1133,28 @@ mod tests {
     }
 
     /// `File::open` succeeds on a directory on Unix; the failure only surfaces
-    /// when reading, and must not be mistaken for a UTF-8 problem.
+    /// when reading, and must not be mistaken for a UTF-8 problem or leak the
+    /// raw `EISDIR` through.
+    ///
+    /// The directory is recognised *before* opening, which is what keeps both
+    /// of those out — the assertion moved from "some `<message>`" to "the
+    /// listing" when directories started rendering their contents, but the
+    /// failure it guards against is unchanged.
     #[test]
-    fn directory_shows_a_message() {
+    fn a_directory_is_not_misreported_as_binary_or_an_os_error() {
         let mut view = FileView::new("Cargo.toml".to_string());
 
         view.load(Path::new("src"));
 
         let text = contents(&view);
-        assert!(
-            text.starts_with('<') && text.ends_with('>'),
-            "not a message: {text}"
-        );
+        assert!(text.contains("lib.rs"), "not the listing: {text}");
         assert!(
             !text.contains("not valid UTF-8"),
-            "directory misreported as binary"
+            "directory misreported as binary: {text}"
+        );
+        assert!(
+            !text.contains("os error"),
+            "raw OS error leaked through: {text}"
         );
     }
 
@@ -1389,31 +1517,179 @@ mod tests {
         digit_column - 1
     }
 
-    /// Selecting a directory in the navigator used to leave the previous
-    /// file's text on screen, which reads as though the directory contains it.
+    /// A directory of known contents, for the listing tests.
+    fn dir_fixture(name: &str, files: &[&str], subdirs: &[&str]) -> std::path::PathBuf {
+        claim_fixture_name(name);
+        let dir = Path::new("target/test-fixtures").join(name);
+        fs::remove_dir_all(&dir).ok();
+        fs::create_dir_all(&dir).expect("create fixture dir");
+        for file in files {
+            fs::write(dir.join(file), "x").expect("write fixture file");
+        }
+        for sub in subdirs {
+            fs::create_dir_all(dir.join(sub)).expect("create fixture subdir");
+        }
+        dir
+    }
+
+    /// Line numbers beside directory entries number nothing — a listing is not
+    /// a document, and "3" against the third filename is noise.
+    ///
+    /// Derived from what is on screen rather than saved and restored. Stashing
+    /// the user's `#` preference and putting it back would clobber a `#`
+    /// pressed *while* the directory was up; a condition re-evaluated per
+    /// render cannot desync.
     #[test]
-    fn a_directory_previews_as_a_directory() {
-        let path = fixture("dir_preview_file.txt", "alpha\nbeta\n");
-        let mut view = FileView::new(path.display().to_string());
-        assert!(contents(&view).contains("alpha"), "precondition");
+    fn the_gutter_is_suppressed_for_a_directory_and_returns_for_a_file() {
+        let file = fixture("gutter_dir_file.txt", "alpha\nbeta\n");
+        let dir = dir_fixture("gutter_dir", &["one.txt", "two.txt"], &[]);
+        let mut view = FileView::new(file.display().to_string());
+        assert!(
+            rendered(&mut view).contains("1 alpha"),
+            "sanity: the gutter shows for a file"
+        );
 
-        view.preview(path.parent().expect("fixture has a parent"));
+        view.preview(&dir);
+        let listing = rendered(&mut view);
+        assert!(
+            !listing.contains("1 one.txt"),
+            "line numbers drawn beside directory entries:\n{listing}"
+        );
 
-        assert_eq!(contents(&view), DIRECTORY_MESSAGE);
+        view.preview(&file);
+        assert!(
+            rendered(&mut view).contains("1 alpha"),
+            "the gutter did not come back for a file"
+        );
+    }
+
+    /// A `#` pressed while a directory is on screen still sets the user's
+    /// preference, and it survives the return to a file.
+    ///
+    /// This is the case that separates a derived condition from saving and
+    /// restoring `hide_line_numbers`: a save/restore would put the
+    /// pre-directory value back and silently discard the keystroke. Pressing
+    /// `#` once, not twice — two presses cancel out and would pass against
+    /// either implementation.
+    #[test]
+    fn a_hide_toggle_pressed_over_a_directory_still_takes_effect() {
+        let file = fixture("gutter_dir_toggle_file.txt", "alpha\nbeta\n");
+        let dir = dir_fixture("gutter_dir_toggle", &["one.txt"], &[]);
+        let mut view = FileView::new(file.display().to_string());
+        assert!(
+            rendered(&mut view).contains("1 alpha"),
+            "sanity: the gutter starts visible"
+        );
+
+        view.preview(&dir);
+        send(&mut view, Key::Char('#'));
+        view.preview(&file);
+
+        let text = rendered(&mut view);
+        assert!(
+            !text.contains("1 alpha"),
+            "the `#` pressed over the directory was discarded on the way out:\n{text}"
+        );
+    }
+
+    /// The view is the pane with width to spare — the navigator is capped at
+    /// `MAX_NAV_WIDTH` and could never carry these — so the listing shows what
+    /// `ls -l` would: how big, and when it last changed.
+    ///
+    /// A directory gets `-` for size rather than the number `stat` reports,
+    /// which is the size of the directory file and not of its contents.
+    #[test]
+    fn the_listing_shows_size_and_modification_time() {
+        let dir = dir_fixture("dir_columns", &["alpha.txt"], &["subdir"]);
+        let mut view = FileView::new("Cargo.toml".to_string());
+
+        view.preview(&dir);
+
+        let text = contents(&view);
+        let file_row = text
+            .lines()
+            .find(|line| line.contains("alpha.txt"))
+            .expect("file listed")
+            .to_string();
+        let dir_row = text
+            .lines()
+            .find(|line| line.contains("subdir/"))
+            .expect("directory listed")
+            .to_string();
+
+        // `dir_fixture` writes one byte.
+        assert!(file_row.contains("1B"), "size missing: {file_row:?}");
+        // A local calendar date, not a raw SystemTime or a UTC instant.
+        let date = regex::Regex::new(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}").expect("valid");
+        assert!(date.is_match(&file_row), "mtime missing: {file_row:?}");
+        assert!(
+            date.is_match(&dir_row),
+            "directory has no mtime: {dir_row:?}"
+        );
+        assert!(
+            dir_row.contains(" - "),
+            "a directory should report no content size: {dir_row:?}"
+        );
+    }
+
+    /// Selecting a directory shows what is *in* it. The view is the widest
+    /// pane on screen and was spending all of it on the word `<directory>`.
+    ///
+    /// It is a look-ahead rather than a pane you act in, which is what keeps
+    /// it from being the "navigable-looking list you cannot navigate" that
+    /// #15 rejected: `l` on the selected directory makes it the navigator's
+    /// listing, so there is a one-key path from looking to being there.
+    #[test]
+    fn a_directory_previews_as_its_listing() {
+        let dir = dir_fixture("dir_listing", &["alpha.txt", "beta.txt"], &["subdir"]);
+        let mut view = FileView::new("Cargo.toml".to_string());
+
+        view.preview(&dir);
+
+        let text = contents(&view);
+        assert!(text.contains("alpha.txt"), "entry missing: {text}");
+        assert!(text.contains("beta.txt"), "entry missing: {text}");
+        assert!(
+            text.contains("subdir/"),
+            "directory not marked with `/`: {text}"
+        );
+        assert!(
+            !text.contains(".."),
+            "a look-ahead should not offer `..`, which is not actionable here: {text}"
+        );
+    }
+
+    /// A directory with nothing in it is the one case that could read as a
+    /// bug rather than an answer, so it says so rather than rendering blank.
+    ///
+    /// Replaces `a_directory_previews_as_a_directory`, which asserted the
+    /// `<directory>` placeholder for *every* directory. That placeholder now
+    /// survives only here — a directory with contents renders them.
+    #[test]
+    fn an_empty_directory_says_so() {
+        let dir = dir_fixture("dir_empty", &[], &[]);
+        let mut view = FileView::new("Cargo.toml".to_string());
+
+        view.preview(&dir);
+
+        assert_eq!(contents(&view), EMPTY_DIRECTORY_MESSAGE);
         assert!(!view.truncated, "a directory is not a truncated preview");
     }
 
     /// `load` is only reached for files today — the navigator descends into a
     /// directory rather than loading it — but it must not be the one place
-    /// that leaks a raw OS error if that ever changes.
+    /// that leaks a raw OS error if that ever changes. It lists the directory
+    /// exactly as `preview` does, unbounded, since `load` is the uncapped path.
     #[test]
-    fn loading_a_directory_reports_it_the_same_way() {
-        let path = fixture("dir_load_file.txt", "alpha\n");
-        let mut view = FileView::new(path.display().to_string());
+    fn loading_a_directory_lists_it_the_same_way() {
+        let dir = dir_fixture("dir_load", &["gamma.txt"], &[]);
+        let mut view = FileView::new("Cargo.toml".to_string());
 
-        view.load(path.parent().expect("fixture has a parent"));
+        view.load(&dir);
 
-        assert_eq!(contents(&view), DIRECTORY_MESSAGE);
+        let text = contents(&view);
+        assert_eq!(text.lines().count(), 1, "one row per entry: {text:?}");
+        assert!(text.contains("gamma.txt"), "entry missing: {text:?}");
     }
 
     /// Issue #1. A preview holds `PREVIEW_LINES` rows, so the gutter is sized

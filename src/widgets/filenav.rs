@@ -77,6 +77,17 @@ pub enum Kind {
 pub struct Entry {
     pub name: String,
     pub kind: Kind,
+    /// Bytes, for a file. `None` for a directory — a `stat` there reports the
+    /// size of the directory *file*, not of what is in it, so showing it
+    /// beside real file sizes would be a wrong answer rather than a blank.
+    /// Also `None` when the entry could not be stat'd at all.
+    pub size: Option<u64>,
+    /// Last modification time, or `None` when the entry could not be stat'd.
+    ///
+    /// Kept as a `SystemTime` rather than a formatted string: formatting is a
+    /// rendering decision (and a width-dependent one), and doing it here would
+    /// bake a format into the listing every consumer then has to live with.
+    pub modified: Option<std::time::SystemTime>,
 }
 
 impl Entry {
@@ -92,7 +103,7 @@ impl Entry {
     }
 
     /// The row as drawn: directories wear a trailing `/`, as `ls -F` does.
-    fn display(&self) -> String {
+    pub(crate) fn display(&self) -> String {
         match self.kind {
             Kind::Dir => format!("{}/", self.name),
             _ => self.name.clone(),
@@ -376,38 +387,66 @@ fn read_dir_entries(dir: &Path) -> Vec<Entry> {
         // `..` is a directory and reads as one, rather than being a third
         // kind of thing with its own look.
         kind: Kind::Dir,
+        // Not stat'd: `..` is a way out of this listing rather than an entry
+        // in it, and the navigator shows neither field anyway.
+        size: None,
+        modified: None,
     }];
 
-    let Ok(read_dir) = fs::read_dir(dir) else {
-        return entries;
-    };
-
-    let mut listed: Vec<Entry> = read_dir
-        .filter_map(|entry| {
-            let entry = entry.ok()?;
-            Some(Entry {
-                name: entry.file_name().to_string_lossy().into_owned(),
-                kind: kind_of(&entry),
-            })
-        })
-        .collect();
-    listed.sort_by(|a, b| a.name.cmp(&b.name));
-    entries.append(&mut listed);
+    // A directory that cannot be read still offers the way out: `..` alone,
+    // rather than an empty box that reads as "recon is broken".
+    entries.extend(sorted_entries(dir).unwrap_or_default());
     entries
 }
 
-/// Classify one listed entry.
+/// The directory's own contents, sorted, without the `..` that
+/// `read_dir_entries` prepends.
 ///
-/// `file_type()` is answered from the `d_type` that `readdir` already
-/// returned on macOS and Linux, so telling a directory from a file costs no
-/// extra syscall. The executable bit does — it needs `metadata()`, one
-/// `lstat` per entry — which is why this runs once per listing in `set_dir`
-/// and is stored on the `Entry`, never recomputed per render.
-fn kind_of(entry: &fs::DirEntry) -> Kind {
-    match entry.file_type() {
-        Ok(file_type) if file_type.is_dir() => Kind::Dir,
-        _ if is_executable(entry) => Kind::Executable,
-        _ => Kind::Plain,
+/// Split out for the file view, which lists a directory as a look-ahead when
+/// one is selected. `..` is deliberately absent there: it is the navigator's
+/// way back out, and nothing in a look-ahead can act on it.
+///
+/// Returns the error rather than swallowing it, so the view can say *why* a
+/// directory is unreadable. The navigator discards it — see above.
+pub(crate) fn sorted_entries(dir: &Path) -> std::io::Result<Vec<Entry>> {
+    let mut listed: Vec<Entry> = fs::read_dir(dir)?
+        .filter_map(|entry| Some(describe(&entry.ok()?)))
+        .collect();
+    listed.sort_by(|a, b| a.name.cmp(&b.name));
+    Ok(listed)
+}
+
+/// Describe one listed entry: what it is, how big, and when it changed.
+///
+/// `file_type()` is answered from the `d_type` that `readdir` already returned
+/// on macOS and Linux, so telling a directory from a file costs no extra
+/// syscall. Everything else needs `metadata()` — one `lstat` per entry — which
+/// is why this runs once per listing in `set_dir` and `sorted_entries`, and is
+/// stored on the `Entry`, never recomputed per render.
+///
+/// That `lstat` happens exactly once and feeds all three fields. It used to be
+/// made for the executable bit alone and the `Metadata` thrown away, so size
+/// and mtime cost nothing new here — only directories are stat'd where they
+/// were not before, which is what gives them an mtime to show.
+fn describe(entry: &fs::DirEntry) -> Entry {
+    let meta = entry.metadata().ok();
+    let is_dir = entry.file_type().is_ok_and(|file_type| file_type.is_dir());
+    let kind = if is_dir {
+        Kind::Dir
+    } else if meta.as_ref().is_some_and(is_executable) {
+        Kind::Executable
+    } else {
+        Kind::Plain
+    };
+    Entry {
+        name: entry.file_name().to_string_lossy().into_owned(),
+        kind,
+        size: if is_dir {
+            None
+        } else {
+            meta.as_ref().map(fs::Metadata::len)
+        },
+        modified: meta.as_ref().and_then(|meta| meta.modified().ok()),
     }
 }
 
@@ -419,15 +458,13 @@ fn kind_of(entry: &fs::DirEntry) -> Kind {
 /// report every file as executable, which turns the whole pane green. That is
 /// the filesystem talking, not a bug here.
 #[cfg(unix)]
-fn is_executable(entry: &fs::DirEntry) -> bool {
+fn is_executable(meta: &fs::Metadata) -> bool {
     use std::os::unix::fs::PermissionsExt;
-    entry
-        .metadata()
-        .is_ok_and(|meta| meta.permissions().mode() & 0o111 != 0)
+    meta.permissions().mode() & 0o111 != 0
 }
 
 #[cfg(not(unix))]
-fn is_executable(_entry: &fs::DirEntry) -> bool {
+fn is_executable(_meta: &fs::Metadata) -> bool {
     false
 }
 
@@ -908,6 +945,41 @@ mod tests {
     fn parent_entry_comes_first() {
         let nav = FileNav::new("Cargo.toml".to_string());
         assert_eq!(nav.entries.first().map(|e| e.name.as_str()), Some(PARENT));
+    }
+
+    /// The view lists a directory with size and modification time, and both
+    /// come off the `metadata()` call `kind_of` already made for the
+    /// executable bit and then discarded. Fetching them again would be a
+    /// second `lstat` per entry for data already in hand.
+    ///
+    /// Size is `None` for a directory: the number a `stat` reports there is
+    /// the size of the directory *file*, not of its contents, and showing it
+    /// beside real file sizes would be a wrong answer rather than a missing
+    /// one.
+    #[test]
+    fn entries_carry_size_and_modification_time() {
+        let dir = Path::new("target/test-navdirs").join("entry_metadata");
+        fs::remove_dir_all(&dir).ok();
+        fs::create_dir_all(dir.join("subdir")).expect("create fixture");
+        fs::write(dir.join("alpha.txt"), "12345").expect("write fixture");
+
+        let entries = sorted_entries(&dir).expect("fixture is readable");
+        let file = entries
+            .iter()
+            .find(|e| e.name == "alpha.txt")
+            .expect("file listed");
+        let subdir = entries
+            .iter()
+            .find(|e| e.name == "subdir")
+            .expect("directory listed");
+
+        assert_eq!(file.size, Some(5), "size not carried on the entry");
+        assert!(file.modified.is_some(), "mtime not carried on the entry");
+        assert_eq!(subdir.size, None, "a directory reported a content size");
+        assert!(
+            subdir.modified.is_some(),
+            "a directory carries an mtime like anything else"
+        );
     }
 
     #[test]

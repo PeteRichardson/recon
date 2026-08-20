@@ -243,8 +243,11 @@ fn moving_onto_a_directory_shows_that_it_is_a_directory() {
 
     assert_eq!(highlighted_name(&mut app), "beta_dir");
     let shown = view_text(&mut app);
+    // `beta_dir` is empty, so the listing has nothing to show and says so.
+    // The probe used to be `<directory>`, which every directory rendered;
+    // that placeholder now survives only for the empty case.
     assert!(
-        shown.contains("<directory>"),
+        shown.contains("<empty directory>"),
         "the view did not say it was a directory:\n{shown}"
     );
     assert!(
@@ -267,8 +270,10 @@ fn enter_on_a_directory_relists_and_previews_its_first_entry() {
 
     highlight(&mut app, "src");
     let view_before = view_text(&mut app);
+    // Selecting a directory now previews its *contents*, so the probe for
+    // "a directory is selected" is a name from inside it.
     assert!(
-        view_before.contains("<directory>"),
+        view_before.contains("lib.rs"),
         "precondition: a directory is selected:\n{view_before}"
     );
 

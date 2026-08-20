@@ -73,8 +73,10 @@ motions throughout.
 - **Vim motions** — `hjkl`, `w`, `0`/`^`/`$`, `{`/`}`, `g`/`G`, `Ctrl-D`/`Ctrl-U`,
   `/` and `?` with `n`/`N` repeat.
 - **Directories are obvious** — bright blue, bold and slash-suffixed, with
-  executables in green, following yazi. Selecting a directory shows
-  `<directory>` in the view rather than leaving the last file on screen.
+  executables in green, following yazi.
+- **Look before you enter** — selecting a directory lists its contents in the
+  view pane, with size and modification time, so you can see what is inside
+  without going in. `l` on that selection makes the listing the navigator's.
 - **Cheap navigation** — moving through the navigator renders a bounded preview
   (50,000 lines / 10 MiB), so scrolling a directory of very large logs doesn't
   stutter. Ordinary files are well inside those bounds and are simply read.
@@ -323,10 +325,37 @@ colour at all.
 Colour reports the file's *mode*, not whether it can be viewed: plenty of
 executable scripts are readable text. What can be viewed is answered by the
 view pane, which reads the actual bytes. Moving the selection onto a
-directory shows `<directory>` there — it used to keep the previous file on
+directory lists that directory there — it used to keep the previous file on
 screen, which read as though the directory contained that text. The
 executable bit is Unix-only, so nothing is green on Windows, and a FAT or
 network mount that reports every file as executable will turn the pane green.
+
+### The directory listing in the view
+
+Selecting a directory renders its contents in the view pane rather than a
+placeholder — name, size and last-modified time, one row per entry:
+
+```
+src/                    -  2026-08-20 14:32
+Cargo.toml           1.2K  2026-08-19 09:14
+README.md           18.4K  2026-08-20 11:02
+```
+
+It is a look-ahead, not a pane you act in. `l` (or `Enter`) on the selected
+directory makes that listing the navigator's own, which is the one keystroke
+between seeing and being there. `..` is deliberately absent — it is the
+navigator's way back out and nothing here could act on it.
+
+A directory reports `-` for size: the number `stat` gives is the size of the
+directory file, not of what is in it. Times are local, resolved from the
+system time zone. Line numbers are suppressed while a listing is shown, since
+numbering filenames says nothing; your `#` preference is untouched and applies
+again as soon as a file is selected. An empty directory reads
+`<empty directory>`, and one that cannot be read reports why.
+
+The metadata sits to the right of the name on purpose: when the navigator is
+wide the view narrows, and a clipped row loses the time first, the size next,
+and the name last.
 
 There is no selection marker; the selected row is drawn in reverse video.
 A `>>` marker used to sit in the gutter, and it is coming back as an opt-in
