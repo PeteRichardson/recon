@@ -71,7 +71,8 @@ motions throughout.
   executables in green, following yazi. Selecting a directory shows
   `<directory>` in the view rather than leaving the last file on screen.
 - **Cheap navigation** — moving through the navigator renders a bounded preview
-  (500 lines / 1 MiB), so scrolling a directory of large logs doesn't stutter.
+  (50,000 lines / 10 MiB), so scrolling a directory of very large logs doesn't
+  stutter. Ordinary files are well inside those bounds and are simply read.
 - **Mouse resize** — drag the pane divider; double-click it to return to
   auto-sizing.
 
@@ -363,8 +364,15 @@ form and can be dropped altogether.
   A multi-gigabyte log will be fully resident. There is no streaming or
   memory-mapped path.  This is github issue #7.
 - **Previews are bounded, full loads are not.** While the navigator has focus,
-  only `PREVIEW_LINES` (500) lines or `MAX_PREVIEW_BYTES` (1 MiB) are read,
+  only `PREVIEW_LINES` (50,000) lines or `MAX_PREVIEW_BYTES` (10 MiB) are read,
   whichever comes first. The full read happens once you focus the view.
+
+  The caps are set well above ordinary files on purpose. A truncated document
+  is one that filters and line counts report *wrong* answers over — the status
+  bar marks it `(preview)`, but the honest fix is not to truncate a file that
+  costs a millisecond to read. Read, document clone and a filter pass together
+  run about 1 ms/MB, so 10 MiB bounds the worst case near 10 ms. This is
+  github issue #27.
 - **Non-UTF-8 files are not viewable.** A file that isn't valid UTF-8 renders
   as `<binary file: not valid UTF-8>` rather than as bytes.
 - **Nothing is persisted.** Filter sets live only for the session — there is no
