@@ -907,7 +907,7 @@ impl App<'_> {
     ///
     /// The document holds whatever the view holds, so while the view is
     /// showing a bounded preview `document.lines().len()` is the *preview's*
-    /// length — 500 for a 50,000-line log — and reporting it unqualified is
+    /// length — the cap, not the file's count — and reporting it unqualified is
     /// not a rounding error but a wrong answer. The estimate is a guess, but
     /// it is a guess marked as one.
     fn total_lines_text(&self) -> (String, bool) {
@@ -1709,7 +1709,11 @@ mod tests {
         let dir = std::path::Path::new("target/test-appdirs/arg_dir_bounded");
         fs::remove_dir_all(dir).ok();
         fs::create_dir_all(dir).expect("create fixture dir");
-        let body: String = (0..600).map(|i| format!("line {i}\n")).collect();
+        // Past the line cap, which is what "previewed rather than loaded" now
+        // means: below the cap the two are the same thing, deliberately, since
+        // reading a log-sized file whole costs well under a millisecond.
+        let lines = crate::widgets::fileview::PREVIEW_LINES + 100;
+        let body: String = (0..lines).map(|i| format!("line {i}\n")).collect();
         fs::write(dir.join("big.log"), &body).expect("write");
 
         let app = App::new(&Config {
@@ -1718,7 +1722,7 @@ mod tests {
 
         assert_eq!(
             view_lines(&app).len(),
-            500,
+            crate::widgets::fileview::PREVIEW_LINES,
             "the first entry was read in full instead of previewed"
         );
     }
@@ -2146,16 +2150,18 @@ mod tests {
 
     /// While a preview is on screen the document holds only the preview's
     /// lines, so reporting that count as the file's total is confidently
-    /// wrong — a 2000-line log reads as 500. Report the estimate instead, and
-    /// say it is one.
+    /// wrong: the file reads as exactly `PREVIEW_LINES` long, whatever its
+    /// real length. Report the estimate instead, and say it is one.
     #[test]
     fn the_status_line_marks_a_previewed_total_as_an_estimate() {
         let mut app = app_over_file("status_preview", "alpha\n");
         app.add_filter("line").expect("valid pattern");
 
-        // Comfortably past the preview's line cap, so the view truncates and
-        // there is an estimate to report.
-        let body: String = (0..2000).map(|i| format!("line {i}\n")).collect();
+        // Past the preview's line cap, so the view truncates and there is an
+        // estimate to report.
+        let body: String = (0..crate::widgets::fileview::PREVIEW_LINES + 100)
+            .map(|i| format!("line {i}\n"))
+            .collect();
         let dir = std::path::Path::new("target/test-appdirs/status_preview");
         fs::write(dir.join("big.txt"), &body).expect("write");
         app.perform(Action::Preview(dir.join("big.txt")));
@@ -2171,7 +2177,7 @@ mod tests {
             "the total is not marked as an estimate: {bottom}"
         );
         assert!(
-            !bottom.contains("/500 "),
+            !bottom.contains(&format!("/{} ", crate::widgets::fileview::PREVIEW_LINES)),
             "reported the preview's own line count as the file's total: {bottom}"
         );
     }
@@ -2274,7 +2280,7 @@ mod tests {
     }
 
     /// Arrowing onto a large log only previews it (bounded by
-    /// `PREVIEW_LINES` = 500 in `fileview.rs`), so a filter added at that
+    /// `PREVIEW_LINES` in `fileview.rs`), so a filter added at that
     /// point is evaluated against the truncated slice. `FileView` upgrades
     /// itself to a full load the moment it is actually used — inside its own
     /// `handle_events`, invisible to `perform` — which rebuilds the textarea
@@ -2285,10 +2291,10 @@ mod tests {
         let dir = std::path::Path::new("target/test-appdirs").join("preview_upgrade_resync");
         fs::remove_dir_all(&dir).ok();
         fs::create_dir_all(&dir).expect("create fixture dir");
-        // Comfortably more than PREVIEW_LINES (500), so the first preview is
-        // truncated. The match sits inside the first 500 lines too, so it is
-        // visible both before and after the upgrade to a full load.
-        let body: String = (0..600)
+        // Past PREVIEW_LINES, so the first preview is truncated. The match
+        // sits inside the preview too, so it is visible both before and after
+        // the upgrade to a full load.
+        let body: String = (0..crate::widgets::fileview::PREVIEW_LINES + 100)
             .map(|i| {
                 if i == 10 {
                     "MATCH line\n".to_string()
@@ -2315,7 +2321,11 @@ mod tests {
         key(&mut app, KeyCode::Enter);
 
         let preview_styles = view_line_styles(&app);
-        assert_eq!(preview_styles.len(), 500, "sanity: preview is capped");
+        assert_eq!(
+            preview_styles.len(),
+            crate::widgets::fileview::PREVIEW_LINES,
+            "sanity: preview is capped"
+        );
         assert!(
             preview_styles[10].is_some(),
             "match line unstyled in the preview"
@@ -2333,7 +2343,7 @@ mod tests {
         let styles = view_line_styles(&app);
         assert_eq!(
             styles.len(),
-            600,
+            crate::widgets::fileview::PREVIEW_LINES + 100,
             "style vector was not resynced to the fully loaded buffer"
         );
         assert!(

@@ -9,13 +9,32 @@ use std::io::{BufRead, BufReader, ErrorKind, Read};
 use std::path::Path;
 use tui_textarea::{CursorMove, Input, Key, Scrolling, TextArea};
 
-/// Lines read for a preview: comfortably more than any real terminal height,
-/// so the pane is always filled without reading a whole log file.
-const PREVIEW_LINES: usize = 500;
+/// Lines read for a preview.
+///
+/// Not "enough to fill the pane", which is what this was: at 500 lines it
+/// truncated essentially every real file recon is pointed at, and a truncated
+/// document is one that filters and counts report wrong answers over — the
+/// defect in #27. The cap exists to bound work on a genuinely enormous log,
+/// not to avoid reading a log-sized log.
+///
+/// 50,000 is ~5x the largest file in the corpus this was measured against
+/// (a few thousand real log files: p50 1,084 lines, max 10,000), and
+/// `MAX_PREVIEW_BYTES` is the binding limit well before it at any realistic
+/// line length.
+///
+/// `pub(crate)` for the tests in `lib.rs`: reaching the truncated branch
+/// through `App` means a fixture past this cap, and one that hard-coded the
+/// number would quietly stop testing truncation the next time it moves.
+pub(crate) const PREVIEW_LINES: usize = 50_000;
 
 /// Byte ceiling for a preview. A file with no newlines is a single enormous
 /// line, which the line cap alone would happily read in full.
-const MAX_PREVIEW_BYTES: u64 = 1 << 20;
+///
+/// 10 MiB is ~10x the largest measured file and bounds the worst-case blocking
+/// read at roughly 10 ms — read, `Document` clone and a filter pass together
+/// run about 1 ms/MB, so this stays far inside the ~100 ms a delay would have
+/// to reach before anyone noticed it.
+const MAX_PREVIEW_BYTES: u64 = 10 << 20;
 
 /// Shown in place of the contents when a file is not UTF-8.
 const BINARY_MESSAGE: &str = "<binary file: not valid UTF-8>";
@@ -122,15 +141,22 @@ impl FileView<'_> {
     /// view cannot be scrolled, so a screenful is all that can be seen; the
     /// rest is read by `handle_events` as soon as the view is actually used.
     pub fn preview(&mut self, path: &Path) {
+        self.preview_with_caps(path, PREVIEW_LINES, MAX_PREVIEW_BYTES);
+    }
+
+    /// `preview` with both caps injected, so a test can reach the truncated
+    /// branch without building a multi-megabyte fixture. See
+    /// `read_preview_with_caps` for why the seam is here.
+    fn preview_with_caps(&mut self, path: &Path, max_lines: usize, max_bytes: u64) {
         self.filename = path.display().to_string();
-        let preview = read_preview(path);
+        let preview = read_preview_with_caps(path, max_lines, max_bytes);
         self.textarea = TextArea::new(preview.lines);
         self.truncated = preview.truncated;
         self.estimated_lines = preview.estimated_lines;
         // Size the gutter for the whole file, not for the slice of it on
-        // screen. Without this the gutter fits the preview's ~500 lines and
-        // then widens the moment the rest of the file arrives, shifting every
-        // line of text sideways on a pane the user is already reading.
+        // screen. Without this the gutter fits the preview's own line count
+        // and then widens the moment the rest of the file arrives, shifting
+        // every line of text sideways on a pane the user is already reading.
         //
         // Only ever a *minimum*: if the estimate reads low, the real numbering
         // still wins once loaded, so a bad guess costs the same single redraw
@@ -451,7 +477,16 @@ fn read_lines(path: &Path) -> Vec<String> {
 ///
 /// A file that cannot be read reports the reason and is *not* marked truncated
 /// — there is nothing better to re-read later.
-fn read_preview(path: &Path) -> Preview {
+/// Both caps are injected rather than read from the constants.
+///
+/// `FileView::preview` is the only caller outside tests and always passes
+/// `PREVIEW_LINES` and `MAX_PREVIEW_BYTES`. The parameters exist because those
+/// constants are now 50,000 lines and 10 MiB: exercising either cap against
+/// them means building a multi-megabyte fixture per test, and the byte cap
+/// alone cost more than the entire rest of the suite. With the caps injectable
+/// a handful of bytes is enough, and a test states the cap it is testing
+/// instead of deriving it from a constant it does not control.
+fn read_preview_with_caps(path: &Path, max_lines: usize, max_bytes: u64) -> Preview {
     // Checked before opening, not after failing to read. `File::open` on a
     // directory *succeeds* on macOS and the read then fails `EISDIR`, so
     // falling through to the error path below would display
@@ -468,11 +503,11 @@ fn read_preview(path: &Path) -> Preview {
     // gets no estimate rather than failing the preview.
     let file_bytes = file.metadata().ok().map(|meta| meta.len());
 
-    let mut reader = BufReader::new(file.take(MAX_PREVIEW_BYTES));
+    let mut reader = BufReader::new(file.take(max_bytes));
     let mut lines = Vec::new();
     let mut line = String::new();
 
-    while lines.len() < PREVIEW_LINES {
+    while lines.len() < max_lines {
         line.clear();
         match reader.read_line(&mut line) {
             Ok(0) => break,
@@ -488,9 +523,9 @@ fn read_preview(path: &Path) -> Preview {
     // ends exactly on a cap is reported as truncated, which only costs a
     // redundant re-read the first time the view is used.
     let remaining = reader.into_inner().limit();
-    let truncated = lines.len() == PREVIEW_LINES || remaining == 0;
+    let truncated = lines.len() == max_lines || remaining == 0;
     let estimated_lines = if truncated {
-        estimate_lines(file_bytes, MAX_PREVIEW_BYTES - remaining, lines.len())
+        estimate_lines(file_bytes, max_bytes - remaining, lines.len())
     } else {
         None
     };
@@ -798,17 +833,52 @@ mod tests {
         assert!(view.search("[", false).is_err());
     }
 
+    /// The cap is injected rather than taken from `PREVIEW_LINES`, so the
+    /// fixture is 30 lines instead of 150,000. The behaviour under test is the
+    /// cap, not its value.
     #[test]
     fn preview_stops_at_the_line_cap() {
-        let path = long_file("long.txt", PREVIEW_LINES * 3);
+        let path = long_file("long.txt", 30);
+        let mut view = FileView::new("Cargo.toml".to_string());
+
+        view.preview_with_caps(&path, 10, MAX_PREVIEW_BYTES);
+
+        assert_eq!(view.textarea.lines().len(), 10);
+        assert!(
+            view.truncated,
+            "a capped preview should be marked truncated"
+        );
+    }
+
+    /// The value the shipped constant actually takes, kept separate from the
+    /// mechanism above: a file past `PREVIEW_LINES` still truncates.
+    #[test]
+    fn the_real_line_cap_still_truncates_a_file_past_it() {
+        let path = long_file("past_cap.txt", PREVIEW_LINES + 10);
         let mut view = FileView::new("Cargo.toml".to_string());
 
         view.preview(&path);
 
         assert_eq!(view.textarea.lines().len(), PREVIEW_LINES);
+        assert!(view.truncated);
+    }
+
+    /// The kind of log recon is actually used on runs to about 1 MB and
+    /// 10,000 lines at the very top end, and reading one whole costs well
+    /// under a millisecond. Previewing a file that size bought nothing and
+    /// cost the misleading truncated state reported in #27, so the caps sit
+    /// above it and it is simply read.
+    #[test]
+    fn a_log_sized_file_is_read_whole_rather_than_previewed() {
+        let path = long_file("log_sized.txt", 10_000);
+        let mut view = FileView::new("Cargo.toml".to_string());
+
+        view.preview(&path);
+
+        assert_eq!(view.textarea.lines().len(), 10_000);
         assert!(
-            view.truncated,
-            "a capped preview should be marked truncated"
+            !view.truncated,
+            "a log-sized file was previewed rather than read whole"
         );
     }
 
@@ -825,19 +895,21 @@ mod tests {
 
     /// A file with no newlines is a single enormous line, so the line cap alone
     /// would read the whole thing. The byte cap has to stop it.
+    ///
+    /// The cap is injected: against the real 10 MiB constant this test built a
+    /// 30 MiB fixture and cost more than the entire rest of the suite, which
+    /// is the whole reason `read_preview_with_caps` takes the caps.
     #[test]
     fn preview_byte_caps_a_file_without_newlines() {
-        let blob = "x".repeat((MAX_PREVIEW_BYTES as usize) * 3);
+        let cap: u64 = 64;
+        let blob = "x".repeat((cap as usize) * 3);
         let path = fixture("blob.txt", &blob);
         let mut view = FileView::new("Cargo.toml".to_string());
 
-        view.preview(&path);
+        view.preview_with_caps(&path, PREVIEW_LINES, cap);
 
         let read: usize = view.textarea.lines().iter().map(String::len).sum();
-        assert!(
-            read as u64 <= MAX_PREVIEW_BYTES,
-            "read {read} bytes, over the {MAX_PREVIEW_BYTES} cap"
-        );
+        assert!(read as u64 <= cap, "read {read} bytes, over the {cap} cap");
         assert!(view.truncated);
     }
 
@@ -845,9 +917,9 @@ mod tests {
     /// the moment the view is used it must hold the whole file.
     #[test]
     fn interacting_upgrades_a_truncated_preview() {
-        let path = long_file("upgrade.txt", PREVIEW_LINES * 2);
+        let path = long_file("upgrade.txt", 30);
         let mut view = FileView::new("Cargo.toml".to_string());
-        view.preview(&path);
+        view.preview_with_caps(&path, 10, MAX_PREVIEW_BYTES);
         assert!(view.truncated);
 
         view.handle_events(Input {
@@ -856,7 +928,9 @@ mod tests {
         })
         .unwrap();
 
-        assert_eq!(view.textarea.lines().len(), PREVIEW_LINES * 2);
+        // The upgrade goes through `load`, which is uncapped — so the whole
+        // file arrives regardless of the cap the preview was taken with.
+        assert_eq!(view.textarea.lines().len(), 30);
         assert!(!view.truncated);
     }
 
@@ -1420,7 +1494,9 @@ mod tests {
         let small = long_file("gutter_clear_small.txt", 5);
         let mut view = FileView::new("Cargo.toml".to_string());
 
-        view.preview(&big);
+        // Capped low so the preview truncates and so reserves gutter room;
+        // 5000 lines is well inside the shipped cap and would be read whole.
+        view.preview_with_caps(&big, 100, MAX_PREVIEW_BYTES);
         assert!(
             view.textarea.min_line_number_width() > 0,
             "precondition: the preview reserved room"
