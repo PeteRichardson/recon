@@ -114,25 +114,41 @@ fn nav_pane_renders_directory_entries() {
     );
     assert!(pane.contains("src"), "nav pane missing src entry:\n{pane}");
     assert!(
-        pane.contains(">>"),
+        highlighted_row_index(&buf).is_some(),
         "nav pane drew no selection highlight:\n{pane}"
     );
 }
 
-/// The name on the currently highlighted nav row, with the border glyphs and
-/// the `>>` marker stripped off.
+/// Row of the nav pane drawn as selected, found by its reverse-video
+/// attribute.
+///
+/// This used to look for the `>>` marker, which no longer exists — reverse
+/// video is now the only thing that says "selected", so it is what the tests
+/// have to read.
+fn highlighted_row_index(buf: &Buffer) -> Option<u16> {
+    let divider = divider_column(buf);
+    (0..AREA.height).find(|&y| {
+        (0..divider).any(|x| {
+            buf[(x, y)]
+                .style()
+                .add_modifier
+                .contains(ratatui::style::Modifier::REVERSED)
+        })
+    })
+}
+
+/// The name on the currently highlighted nav row, with border glyphs and a
+/// directory's trailing `/` stripped off.
 fn highlighted_name(app: &mut App) -> String {
     let mut buf = Buffer::empty(AREA);
     app.render(AREA, &mut buf);
-    let row = nav_pane_rows(&buf)
-        .into_iter()
-        .find(|row| row.contains(">>"))
-        .expect("no highlighted row");
-    row.split(">>")
-        .nth(1)
-        .unwrap_or_default()
-        .trim_end_matches('│')
-        .trim()
+    let y = highlighted_row_index(&buf).expect("no highlighted row");
+    let divider = divider_column(&buf);
+    (0..divider)
+        .map(|x| buf[(x, y)].symbol())
+        .collect::<String>()
+        .trim_matches(|c| c == '\u{2502}' || c == ' ')
+        .trim_end_matches('/')
         .to_string()
 }
 
@@ -186,12 +202,16 @@ fn moving_onto_a_file_loads_it_without_enter() {
     );
 }
 
-/// Stepping onto a directory must not blank the view: it keeps the last file.
+/// Stepping onto a directory replaces the view with `<directory>`.
+///
+/// It used to keep the last file on screen, which read as though the
+/// directory contained that text. The pane now always describes what is
+/// actually selected.
 ///
 /// Own fixture directory: the repo's own listing shifts as files are added,
 /// which silently changes which entry follows which.
 #[test]
-fn moving_onto_a_directory_leaves_the_view_alone() {
+fn moving_onto_a_directory_shows_that_it_is_a_directory() {
     let dir = std::path::Path::new("target/test-navdirs/render_move_onto_dir");
     std::fs::remove_dir_all(dir).ok();
     std::fs::create_dir_all(dir.join("beta_dir")).expect("create fixture dir");
@@ -203,14 +223,22 @@ fn moving_onto_a_directory_leaves_the_view_alone() {
     let mut app = App::new(&config);
 
     highlight(&mut app, "alpha.rs"); // `beta_dir` sorts next
-    let previewed = view_text(&mut app);
-    press(&mut app, KeyCode::Down);
-    assert_eq!(highlighted_name(&mut app), "beta_dir");
+    assert!(
+        view_text(&mut app).contains("content"),
+        "precondition: the file is on screen"
+    );
 
-    assert_eq!(
-        previewed,
-        view_text(&mut app),
-        "the view changed on a directory"
+    press(&mut app, KeyCode::Down);
+
+    assert_eq!(highlighted_name(&mut app), "beta_dir");
+    let shown = view_text(&mut app);
+    assert!(
+        shown.contains("<directory>"),
+        "the view did not say it was a directory:\n{shown}"
+    );
+    assert!(
+        !shown.contains("content"),
+        "the previous file's text is still on screen:\n{shown}"
     );
 }
 
