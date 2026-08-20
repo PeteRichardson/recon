@@ -148,24 +148,32 @@ The file opens in the centre pane with its directory listed on the left. Then:
 ## Usage
 
 ```
-Usage: recon <FILE>
+Usage: recon [PATH]
 
 Arguments:
-  <FILE>
+  [PATH]  File or directory to open. A directory is listed with its first
+          entry selected; a file is opened with its own directory listed
+          alongside [default: .]
 
 Options:
   -h, --help     Print help
   -V, --version  Print version
 ```
 
-`<FILE>` is required. The file opens in the view pane and the navigator opens
-its **parent directory**, so `recon Cargo.toml` lists the current directory.
-From there, `Enter` in the navigator descends into directories or loads files.
+The argument is optional, and takes either a file or a directory:
 
-<!-- 🖊 TODO: `<FILE>` has no help text and `--help` shows no description,
-     because `Config.file` in src/lib.rs has no doc comment and Cargo.toml has
-     no `description` field. Adding both would make `recon --help` self-
-     explanatory. -->
+| Command | Navigator lists | Cursor starts on | View shows |
+| --- | --- | --- | --- |
+| `recon app.log` | the file's parent | `app.log` | the file, read in full |
+| `recon /var/log` | `/var/log` | its first entry | that entry, previewed |
+| `recon` | the current directory | its first entry | that entry, previewed |
+
+A directory *selects* its first entry rather than being handed one, so that
+entry is previewed — bounded, like arrowing onto it — rather than read whole.
+Starting in a directory of large logs does not read one of them in full.
+
+A file argument that does not exist still reports itself in the view pane,
+rather than silently opening whichever file happens to sort first.
 
 ### A note on stderr
 
@@ -280,8 +288,23 @@ Navigator pane (`src/widgets/filenav.rs`):
 | --- | --- |
 | `k` / `Up` | Select the previous entry |
 | `j` / `Down` | Select the next entry |
-| `Enter` | Open the selected entry (descend into a directory, or load a file) |
+| `h` / `Left` | Go to the parent directory, landing on the directory just left |
+| `l` / `Right` / `Enter` | Open the selected entry — descend into a directory, or load a file |
 | `n` / `N` | Repeat the last search, forward / reversed |
+
+`h` and `l` act on the pane rather than on the row: `h` climbs out whatever is
+selected, and `l` is `Enter` in every case, including on a file. They mean
+here what they mean in a file manager, which is why they differ from the file
+view, where they are vim character motions — the same deliberate trade as `b`
+and `e`.
+
+The cursor lands somewhere useful rather than on `..`. Entering a directory
+selects its first entry and previews it, since you went in to get at something
+inside; climbing out selects the directory you just left, so going up and into
+a sibling is not a scroll through the whole parent listing. "First entry"
+means the first one of any kind, not the first *file* — skipping over
+directories would put the cursor somewhere different in every directory,
+depending on where its files happened to sort.
 
 Entries are coloured by what they are, following
 [yazi](https://github.com/sxyazi/yazi): directories are bright blue and bold
@@ -347,8 +370,6 @@ form and can be dropped altogether.
 - **Nothing is persisted.** Filter sets live only for the session — there is no
   config file and no way to save or reload a filter set. Re-typing them is the
   only option after a restart.   This is github issue #8
-- **The argument must be a file, not a directory.** The navigator opens the
-  *parent* of whatever path you pass.
 
 ---
 
