@@ -16,6 +16,7 @@ log = "0.4.33"
 color-eyre = "0.6.5"
 tui-textarea-2 = { version = "0.12.1", features = ["search"] }
 regex = "1"
+jiff = "0.2.35"
 
 [patch.crates-io]
 tui-textarea-2 = { path = "vendor/tui-textarea-2" }
