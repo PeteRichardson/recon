@@ -894,11 +894,69 @@ impl App<'_> {
         // many matched an including filter: an excluding filter alone can
         // remove lines while matching nothing, which used to read as "0
         // matched" over a pane that had in fact lost lines.
+        let (total, previewing) = self.total_lines_text();
+        let note = if previewing { " (preview)" } else { "" };
         format!(
-            "{funnel}{count} {noun}   {}/{} lines shown",
+            "{funnel}{count} {noun}   {}/{total} lines shown{note}",
             self.document.visible().len(),
-            self.document.lines().len()
         )
+    }
+
+    /// The file's line count as the row should report it, and whether that is
+    /// a preview's estimate rather than a fact.
+    ///
+    /// The document holds whatever the view holds, so while the view is
+    /// showing a bounded preview `document.lines().len()` is the *preview's*
+    /// length — 500 for a 50,000-line log — and reporting it unqualified is
+    /// not a rounding error but a wrong answer. The estimate is a guess, but
+    /// it is a guess marked as one.
+    fn total_lines_text(&self) -> (String, bool) {
+        let loaded = self.document.lines().len();
+        let preview = self.widgets.iter().find_map(|widget| match widget {
+            AppWidget::FileView(view) => Some((view.truncated, view.estimated_lines)),
+            AppWidget::FileNav(_) | AppWidget::FilterList(_) => None,
+        });
+        match preview {
+            // Truncated with nothing to scale from: the count is still the
+            // preview's, so it stays flagged even without a better number.
+            Some((true, None)) => (loaded.to_string(), true),
+            Some((true, Some(estimate))) => (format!("~{estimate}"), true),
+            _ => (loaded.to_string(), false),
+        }
+    }
+
+    /// The directory the navigator is listing.
+    fn nav_dir(&self) -> Option<&std::path::Path> {
+        self.widgets.iter().find_map(|widget| match widget {
+            AppWidget::FileNav(nav) => Some(nav.dir.as_path()),
+            AppWidget::FileView(_) | AppWidget::FilterList(_) => None,
+        })
+    }
+
+    /// The whole bottom row: filter state first, then the directory in
+    /// whatever width is left.
+    ///
+    /// Filter state comes first because it cannot degrade — a count with its
+    /// digits cut off is wrong rather than short — whereas the path elides
+    /// from the left and stays readable. That is the priority order the row
+    /// needs on a narrow terminal, where all of this cannot fit at once.
+    fn status_bar_text(&self, width: usize) -> String {
+        let status = self.status_text();
+        let Some(dir) = self.nav_dir() else {
+            return status;
+        };
+        let dir = dir.display().to_string();
+        if status.is_empty() {
+            return elide_left(&dir, width);
+        }
+        // Two spaces of separation, and the path only gets what survives the
+        // status text. Too narrow for any of it and the path is dropped
+        // entirely rather than rendered as a lone ellipsis.
+        let spent = status.chars().count() + 2;
+        match width.checked_sub(spent) {
+            Some(room) if room > 1 => format!("{status}  {}", elide_left(&dir, room)),
+            _ => status,
+        }
     }
 
     fn nav_index(&self) -> usize {
@@ -1013,21 +1071,38 @@ fn render_widget(widget: &mut AppWidget<'_>, filters: &FilterSet, area: Rect, bu
     }
 }
 
+/// Shorten `text` to `width` columns by dropping characters from the *left*,
+/// marking the cut with a leading `…`.
+///
+/// The tail is what identifies a path: `…/projects/recon/src` still says where
+/// you are, where the same cut taken from the right would not.
+fn elide_left(text: &str, width: usize) -> String {
+    let len = text.chars().count();
+    if len <= width {
+        return text.to_string();
+    }
+    if width == 0 {
+        return String::new();
+    }
+    // One column goes to the ellipsis itself.
+    let tail: String = text.chars().skip(len - (width - 1)).collect();
+    format!("…{tail}")
+}
+
 impl Widget for &mut App<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         use Constraint::{Length, Min};
         // calculate rects where widgets should be rendered
         assert!(self.widgets.len() == 3);
 
-        // The search prompt borrows the bottom row while it is open; failing
-        // that, the status line borrows it whenever there is something to show.
-        let status = self.status_text();
-        let (area, prompt_area) = if self.search.is_some() || !status.is_empty() {
-            let [panes, prompt] = Layout::vertical([Min(0), Length(1)]).areas(area);
-            (panes, Some(prompt))
-        } else {
-            (area, None)
-        };
+        // The bottom row is reserved unconditionally. It used to be taken only
+        // when there was something to put there, which meant the panes resized
+        // under the user the moment the first filter appeared and resized back
+        // when the last one went. The row now always has the current directory
+        // to show, so the objection that answered — spending a row to say
+        // nothing — no longer applies.
+        let [area, prompt_area] = Layout::vertical([Min(0), Length(1)]).areas(area);
+        let status = self.status_bar_text(prompt_area.width as usize);
 
         // A zoomed pane takes the whole pane area; the others are not drawn.
         // This deliberately falls through to the status/prompt drawing below
@@ -1088,22 +1163,21 @@ impl Widget for &mut App<'_> {
             }
         }
 
-        if let Some(prompt_area) = prompt_area {
-            let (text, style) = match self.search.as_ref() {
-                Some(prompt) if prompt.error.is_some() => {
-                    (prompt.line(), Style::default().fg(Color::Red))
-                }
-                Some(prompt) => (prompt.line(), Style::default()),
-                None => (status, Style::default().fg(Color::DarkGray)),
-            };
-            buf.set_stringn(
-                prompt_area.x,
-                prompt_area.y,
-                text,
-                prompt_area.width as usize,
-                style,
-            );
-        }
+        // An open prompt takes the whole row; nothing else competes with it.
+        let (text, style) = match self.search.as_ref() {
+            Some(prompt) if prompt.error.is_some() => {
+                (prompt.line(), Style::default().fg(Color::Red))
+            }
+            Some(prompt) => (prompt.line(), Style::default()),
+            None => (status, Style::default().fg(Color::DarkGray)),
+        };
+        buf.set_stringn(
+            prompt_area.x,
+            prompt_area.y,
+            text,
+            prompt_area.width as usize,
+            style,
+        );
     }
 }
 
@@ -2004,11 +2078,140 @@ mod tests {
             .to_string()
     }
 
-    /// With no filters there is nothing to report, so the bottom row is not
-    /// surrendered at all: the panes still reach it and draw their own border
-    /// there. Costing a row to say nothing is what this checks against.
+    /// The bottom row at an arbitrary width, for the narrow-terminal cases
+    /// `AREA`'s 120 columns are far too generous to reach.
+    fn status_line_at(app: &mut App, width: u16) -> String {
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width,
+            height: 10,
+        };
+        let mut buf = Buffer::empty(area);
+        app.render(area, &mut buf);
+        let y = area.height - 1;
+        (0..area.width)
+            .map(|x| buf[(x, y)].symbol())
+            .collect::<String>()
+            .trim_end()
+            .to_string()
+    }
+
+    /// Row index of the lowest pane border, which is where the pane area ends.
+    ///
+    /// A pane's own `└` is the honest probe for "the panes reach this row" —
+    /// it is drawn by the border, not by anything the status line writes.
+    fn pane_bottom_row(app: &mut App) -> u16 {
+        let mut buf = Buffer::empty(AREA);
+        app.render(AREA, &mut buf);
+        (0..AREA.height)
+            .rev()
+            .find(|&y| (0..AREA.width).any(|x| buf[(x, y)].symbol() == "└"))
+            .expect("no bordered pane was drawn")
+    }
+
+    /// The bottom row is permanent, so the panes keep the same rows whether or
+    /// not a filter exists. The layout shifting under the user on the way to
+    /// the first filter is the defect this pins.
     #[test]
-    fn no_row_is_surrendered_without_filters() {
+    fn the_panes_do_not_move_when_the_first_filter_appears() {
+        let mut app = app_over_file("status_stable", "alpha\nbeta\n");
+        let before = pane_bottom_row(&mut app);
+
+        app.add_filter("alpha").expect("valid pattern");
+
+        assert_eq!(
+            before,
+            pane_bottom_row(&mut app),
+            "the panes resized when the first filter appeared"
+        );
+    }
+
+    /// What earns the row its permanence: the directory is there to show
+    /// whether or not a filter is, so the row is never blank.
+    ///
+    /// Asserts on the tail because the path elides from the left — the tail is
+    /// what identifies where you are.
+    #[test]
+    fn the_status_line_names_the_current_directory() {
+        let mut app = app_over_file("status_dir", "alpha\n");
+
+        let bottom = status_line(&mut app);
+
+        assert!(
+            bottom.contains("status_dir"),
+            "the directory is not named: {bottom}"
+        );
+    }
+
+    /// While a preview is on screen the document holds only the preview's
+    /// lines, so reporting that count as the file's total is confidently
+    /// wrong — a 2000-line log reads as 500. Report the estimate instead, and
+    /// say it is one.
+    #[test]
+    fn the_status_line_marks_a_previewed_total_as_an_estimate() {
+        let mut app = app_over_file("status_preview", "alpha\n");
+        app.add_filter("line").expect("valid pattern");
+
+        // Comfortably past the preview's line cap, so the view truncates and
+        // there is an estimate to report.
+        let body: String = (0..2000).map(|i| format!("line {i}\n")).collect();
+        let dir = std::path::Path::new("target/test-appdirs/status_preview");
+        fs::write(dir.join("big.txt"), &body).expect("write");
+        app.perform(Action::Preview(dir.join("big.txt")));
+
+        let bottom = status_line(&mut app);
+
+        assert!(
+            bottom.contains("(preview)"),
+            "the total is not flagged as a preview: {bottom}"
+        );
+        assert!(
+            bottom.contains('~'),
+            "the total is not marked as an estimate: {bottom}"
+        );
+        assert!(
+            !bottom.contains("/500 "),
+            "reported the preview's own line count as the file's total: {bottom}"
+        );
+    }
+
+    /// The row cannot hold everything on a narrow terminal, so it has a
+    /// priority: the counts survive whole and the path gives way.
+    ///
+    /// That order is not arbitrary. A path cut down to `…/status_narrow` still
+    /// says where you are, where `3/3 lines sh` is not a shorter truth but a
+    /// broken one — so the part that cannot degrade goes first.
+    #[test]
+    fn a_narrow_status_line_keeps_the_counts_and_elides_the_path() {
+        let mut app = app_over_file("status_narrow", "alpha\nbeta\ngamma\n");
+        app.add_filter("beta").expect("valid pattern");
+
+        let bottom = status_line_at(&mut app, 44);
+
+        assert!(
+            bottom.contains("1 filter") && bottom.contains("3/3 lines shown"),
+            "the counts were cut to make room for the path: {bottom}"
+        );
+        // The tail is the whole point: clipping the row at its width would
+        // leave the *head* (`/Users/pete/pro…`), which says nothing about
+        // where you are. Eliding from the left keeps the part that does.
+        assert!(
+            bottom.contains("status_narrow"),
+            "the path was cut from the right, so its identifying tail is gone: {bottom}"
+        );
+    }
+
+    /// With no filters the row reports no filter state — but it is still
+    /// surrendered, because it is permanent.
+    ///
+    /// Replaces `no_row_is_surrendered_without_filters`, which asserted that
+    /// the panes reached the bottom row when there was nothing to report. That
+    /// is the conditional layout whose shifting-under-the-user is the defect
+    /// here; its objection was that a permanent row costs a row to say
+    /// nothing, and the row now always names the directory instead.
+    #[test]
+    fn no_filter_state_is_reported_without_filters() {
         let mut app = app_over_file("status_none", "alpha\n");
 
         let bottom = status_line(&mut app);
@@ -2018,8 +2221,8 @@ mod tests {
             "reported filter state when no filters exist: {bottom}"
         );
         assert!(
-            bottom.contains('└'),
-            "the panes did not reach the bottom row, so a row was spent on nothing: {bottom}"
+            !bottom.contains('└'),
+            "the panes still reach the bottom row, so the layout still shifts: {bottom}"
         );
     }
 
@@ -2344,11 +2547,13 @@ mod tests {
     /// move.
     #[test]
     fn a_filter_matching_nothing_does_not_move_the_viewport() {
+        // 13 rows, not 12: one goes to the permanent status row, leaving the
+        // 12-row bordered pane this test's page arithmetic below depends on.
         let area = Rect {
             x: 0,
             y: 0,
             width: 40,
-            height: 12,
+            height: 13,
         };
         let body: String = (0..200).map(|i| format!("line {i}\n")).collect();
         let mut app = app_over_file("no_op_filter_viewport", &body);

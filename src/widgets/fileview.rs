@@ -55,6 +55,14 @@ pub struct FileView<'a> {
     pub filename: String, // name of the log file to view
     pub textarea: TextArea<'a>,
     pub truncated: bool, // showing a bounded preview rather than the whole file
+    /// Roughly how many lines the whole file holds, while only a preview of it
+    /// is loaded. `None` once the file is read in full, where the count is not
+    /// a guess, and when there was nothing to estimate from.
+    ///
+    /// `read_preview` has always computed this to size the gutter; keeping it
+    /// is what lets the status row report a truthful total, since `truncated`
+    /// alone says the document's length is wrong without saying what is right.
+    pub estimated_lines: Option<usize>,
     pub active: bool,
     /// Direction the current search was started in, so `n` repeats it and `N`
     /// reverses it.
@@ -98,6 +106,8 @@ impl FileView<'_> {
         self.filename = path.display().to_string();
         self.textarea = TextArea::new(read_lines(path));
         self.truncated = false;
+        // The whole file is here, so its length is a fact rather than a guess.
+        self.estimated_lines = None;
         // A pending restore was measured against the buffer this just threw
         // away; carrying it into an unrelated file would apply it to the
         // wrong data entirely — see `sync_document`'s clearing of
@@ -116,6 +126,7 @@ impl FileView<'_> {
         let preview = read_preview(path);
         self.textarea = TextArea::new(preview.lines);
         self.truncated = preview.truncated;
+        self.estimated_lines = preview.estimated_lines;
         // Size the gutter for the whole file, not for the slice of it on
         // screen. Without this the gutter fits the preview's ~500 lines and
         // then widens the moment the rest of the file arrives, shifting every
