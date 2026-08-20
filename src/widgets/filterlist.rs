@@ -7,7 +7,7 @@ use super::FilterCommand;
 use crate::filter::{DIM_STYLE, FilterSet, Sense};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::prelude::{Buffer, Color, Modifier, Rect, Style, Widget};
-use ratatui::widgets::{Block, List, ListItem, ListState, StatefulWidget};
+use ratatui::widgets::{List, ListItem, ListState, StatefulWidget};
 
 /// Rows of chrome the pane needs on top of one row per filter.
 const BORDERS: u16 = 2;
@@ -18,16 +18,24 @@ const BORDERS: u16 = 2;
 /// The pane is on screen whenever the navigator is, so with an empty set it
 /// would otherwise be a titled box with nothing in it — space taken and
 /// nothing said. Naming the binding that fills it turns that row into the one
-/// place `f` is discoverable without reading the README.
+/// place `f i` is discoverable without reading the README.
 ///
-/// Two forms rather than one because the column is sized by the *navigator*
+/// `f i`, not `i`, because the hint has to be right wherever focus happens to
+/// be — and it is: `f` focuses this pane, and pressing it while the pane
+/// already has focus is a no-op, so the pair works from anywhere.
+///
+/// Three forms rather than one because the column is sized by the *navigator*
 /// (see `preferred_width`), and a directory of short names leaves well under
-/// 14 columns inside the borders — the full sentence would then never be
-/// drawn at all. Falling back to `press f` keeps the binding visible down to
-/// a 9-column pane, which is about as narrow as the navigator ever gets in
-/// practice. Below even that, `render` draws neither: half a sentence of
-/// advice is worse than none.
-const EMPTY_HINTS: [&str; 2] = ["press f to add", "press f"];
+/// 16 columns inside the borders — the full sentence would then never be
+/// drawn at all.
+///
+/// The bare `f i` exists because the binding grew a second key: a directory of
+/// names as short as `log.txt` gives the pane 7 content columns, which fitted
+/// the old `press f` exactly and does not fit `press f i`. Dropping to the
+/// keys alone keeps the binding visible there rather than trading it away for
+/// the politer wording. Below 3 columns `render` draws none of them: half a
+/// sentence of advice is worse than none.
+const EMPTY_HINTS: [&str; 3] = ["press f i to add", "press f i", "f i"];
 
 #[derive(Debug, Default)]
 pub struct FilterList {
@@ -178,7 +186,7 @@ impl FilterList {
                 .find(|hint| hint.chars().count() <= interior)
                 .map(|hint| vec![ListItem::new(*hint).style(DIM_STYLE)])
                 .unwrap_or_default();
-            let hint = List::new(rows).block(Block::bordered().title("Filters"));
+            let hint = List::new(rows).block(crate::widgets::pane_block("Filters", self.active));
             Widget::render(&hint, area, buf);
             return;
         }
@@ -211,7 +219,7 @@ impl FilterList {
         }
 
         let list = List::new(items)
-            .block(Block::bordered().title("Filters"))
+            .block(crate::widgets::pane_block("Filters", self.active))
             .highlight_style(highlight);
         StatefulWidget::render(&list, area, buf, &mut self.state);
     }
@@ -497,7 +505,11 @@ mod tests {
     fn a_narrow_pane_omits_the_hint_rather_than_clipping_it() {
         let mut list = FilterList::default();
         let filters = FilterSet::new();
-        let area = Rect::new(0, 0, 6, 3);
+        // One column short of the *shortest* hint, derived rather than
+        // hard-coded: adding a shorter fallback moves this threshold, and a
+        // literal width would quietly start testing a pane that does fit one.
+        let shortest = EMPTY_HINTS[EMPTY_HINTS.len() - 1].chars().count() as u16;
+        let area = Rect::new(0, 0, shortest + BORDERS - 1, 3);
         let mut buf = Buffer::empty(area);
 
         list.render(&filters, area, &mut buf);

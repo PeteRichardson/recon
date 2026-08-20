@@ -536,22 +536,13 @@ impl App<'_> {
                     });
                     return Ok(());
                 }
+                // `f` moves focus; creating a filter is `i` / `x` once the
+                // pane has it. That costs a keystroke from outside the pane
+                // and none from inside, in exchange for one focus key per
+                // pane — see `handle_filter_key`, which owns `i` and `x`
+                // because opening a prompt is `App`'s to do.
                 KeyCode::Char('f') if key.modifiers.is_empty() => {
-                    self.search = Some(SearchPrompt {
-                        kind: PromptKind::Filter,
-                        ..SearchPrompt::default()
-                    });
-                    return Ok(());
-                }
-                KeyCode::Char('F')
-                    if !key
-                        .modifiers
-                        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
-                {
-                    self.search = Some(SearchPrompt {
-                        kind: PromptKind::Exclude,
-                        ..SearchPrompt::default()
-                    });
+                    self.reveal_and_focus(self.filter_list_index());
                     return Ok(());
                 }
                 KeyCode::Char('!') if key.modifiers.is_empty() => {
@@ -587,7 +578,11 @@ impl App<'_> {
                     return Ok(());
                 }
                 KeyCode::Char('e') if key.modifiers.is_empty() => {
-                    self.reveal_and_focus_nav();
+                    self.reveal_and_focus(self.nav_index());
+                    return Ok(());
+                }
+                KeyCode::Char('t') if key.modifiers.is_empty() => {
+                    self.reveal_and_focus(self.file_view_index());
                     return Ok(());
                 }
                 KeyCode::Char('z') if key.modifiers.is_empty() => {
@@ -724,6 +719,32 @@ impl App<'_> {
     /// ALT, the same way every other global binding is guarded — see its
     /// doc comment.
     fn handle_filter_key(&mut self, key: event::KeyEvent) {
+        // `i` and `x` are handled here rather than in `FilterList::handle_key`
+        // because they open a prompt, and `self.search` is `App`'s. They are
+        // deliberately not `FilterCommand` variants: that enum describes
+        // mutations of the `FilterSet`, and opening a prompt is not one — see
+        // its doc comment in `widgets/mod.rs`.
+        //
+        // `e` would read better than `x` for "exclude" and cannot be used: the
+        // global match above runs first and returns, so a bare `e` never
+        // reaches this function. Guarding the global arm the way `/` and `?`
+        // are guarded would cost `e`-to-explorer from this pane, which is the
+        // one thing these focus keys exist to provide.
+        if key.modifiers.is_empty() {
+            let kind = match key.code {
+                KeyCode::Char('i') => Some(PromptKind::Filter),
+                KeyCode::Char('x') => Some(PromptKind::Exclude),
+                _ => None,
+            };
+            if let Some(kind) = kind {
+                self.search = Some(SearchPrompt {
+                    kind,
+                    ..SearchPrompt::default()
+                });
+                return;
+            }
+        }
+
         let len = self.filters.len();
         let Some(AppWidget::FilterList(list)) = self.widgets.get_mut(self.active_widget) else {
             return;
@@ -869,9 +890,9 @@ impl App<'_> {
     /// defined but currently disabled — the pane would just look ordinary.
     fn status_text(&self) -> String {
         // `FilteredOnly` is not the only way lines leave the screen: an
-        // excluding filter (`F`) removes its matches in `Dimmed` mode too,
+        // excluding filter (`x`) removes its matches in `Dimmed` mode too,
         // which is the entire point of it. Showing the funnel only for
-        // `FilteredOnly` let `F` empty the pane with nothing on the status
+        // `FilteredOnly` let `x` empty the pane with nothing on the status
         // line saying so.
         let hiding = self.document.mode() == Mode::FilteredOnly || self.filters.any_excluding();
         let funnel = if hiding { "▼ " } else { "" };
@@ -967,12 +988,9 @@ impl App<'_> {
         self.index_of(|widget| matches!(widget, AppWidget::FileView(_)))
     }
 
-    /// Mirrors `nav_index`/`file_view_index`. Nothing in production code
-    /// needs the filter pane's position yet — Task 5 has no "jump to the
-    /// filter pane" command of its own — so this is test-only for now,
-    /// unlike its two siblings, which `zoom_file_view` and
-    /// `reveal_and_focus_nav` both call for real.
-    #[cfg(test)]
+    /// Mirrors `nav_index`/`file_view_index`. All three are production code
+    /// now that each pane has a focus key of its own — `f` is the "jump to
+    /// the filter pane" command this used to say did not exist.
     fn filter_list_index(&self) -> usize {
         self.index_of(|widget| matches!(widget, AppWidget::FilterList(_)))
     }
@@ -1049,9 +1067,15 @@ impl App<'_> {
     }
 
     /// Bring the left column back and put the cursor in it.
-    fn reveal_and_focus_nav(&mut self) {
+    /// Focus the pane at `index`, un-zooming first so it is actually visible.
+    ///
+    /// Clearing the zoom is the whole reason the focus keys are not just
+    /// `active_widget = ...`: `b` and `z` can leave a pane hidden, and a focus
+    /// key that moved the cursor onto a pane the user cannot see would be
+    /// worse than no key at all.
+    fn reveal_and_focus(&mut self, index: usize) {
         self.zoom = None;
-        self.active_widget = self.nav_index();
+        self.active_widget = index;
     }
 }
 
@@ -1556,10 +1580,11 @@ mod tests {
     }
 
     #[test]
-    fn f_opens_a_filter_prompt() {
+    fn i_opens_a_filter_prompt_in_the_filter_pane() {
         let mut app = app_over("filter_prompt", &["a.rs"]);
 
         key(&mut app, KeyCode::Char('f'));
+        key(&mut app, KeyCode::Char('i'));
         typed(&mut app, "foo");
 
         assert_eq!(prompt_line(&mut app), "filter: foo");
@@ -1570,6 +1595,7 @@ mod tests {
         let mut app = app_over("filter_add", &["a.rs"]);
 
         key(&mut app, KeyCode::Char('f'));
+        key(&mut app, KeyCode::Char('i'));
         typed(&mut app, "foo");
         key(&mut app, KeyCode::Enter);
 
@@ -1582,6 +1608,7 @@ mod tests {
         let mut app = app_over("filter_bad", &["a.rs"]);
 
         key(&mut app, KeyCode::Char('f'));
+        key(&mut app, KeyCode::Char('i'));
         typed(&mut app, "[");
         key(&mut app, KeyCode::Enter);
 
@@ -1595,6 +1622,7 @@ mod tests {
         let mut app = app_over("filter_esc", &["a.rs"]);
 
         key(&mut app, KeyCode::Char('f'));
+        key(&mut app, KeyCode::Char('i'));
         typed(&mut app, "foo");
         key(&mut app, KeyCode::Esc);
 
@@ -1608,6 +1636,7 @@ mod tests {
         let mut app = app_over("filter_q", &["a.rs"]);
 
         key(&mut app, KeyCode::Char('f'));
+        key(&mut app, KeyCode::Char('i'));
         typed(&mut app, "q");
 
         assert!(app.is_running());
@@ -1620,6 +1649,7 @@ mod tests {
 
         for pattern in ["foo", "bar"] {
             key(&mut app, KeyCode::Char('f'));
+            key(&mut app, KeyCode::Char('i'));
             typed(&mut app, pattern);
             key(&mut app, KeyCode::Enter);
         }
@@ -1751,6 +1781,7 @@ mod tests {
         let mut app = app_over_file("restyle", "alpha\nbeta\ngamma\n");
 
         key(&mut app, KeyCode::Char('f'));
+        key(&mut app, KeyCode::Char('i'));
         typed(&mut app, "beta");
         key(&mut app, KeyCode::Enter);
 
@@ -1779,6 +1810,7 @@ mod tests {
     fn filters_survive_loading_another_file() {
         let mut app = app_over_file("restyle_reload", "alpha\nbeta\n");
         key(&mut app, KeyCode::Char('f'));
+        key(&mut app, KeyCode::Char('i'));
         typed(&mut app, "beta");
         key(&mut app, KeyCode::Enter);
 
@@ -1801,6 +1833,7 @@ mod tests {
     fn the_hide_mode_survives_loading_another_file() {
         let mut app = app_over_file("hide_mode_load", "alpha\nbeta\n");
         key(&mut app, KeyCode::Char('f'));
+        key(&mut app, KeyCode::Char('i'));
         typed(&mut app, "beta");
         key(&mut app, KeyCode::Enter);
         key(&mut app, KeyCode::Char('H'));
@@ -1831,6 +1864,7 @@ mod tests {
     fn the_hide_mode_survives_a_navigator_preview() {
         let mut app = app_over_file("hide_mode_preview", "alpha\nbeta\n");
         key(&mut app, KeyCode::Char('f'));
+        key(&mut app, KeyCode::Char('i'));
         typed(&mut app, "beta");
         key(&mut app, KeyCode::Enter);
         key(&mut app, KeyCode::Char('H'));
@@ -1855,6 +1889,7 @@ mod tests {
     fn a_file_with_no_matches_shows_an_empty_view_while_hiding() {
         let mut app = app_over_file("hide_mode_no_match", "alpha\nbeta\n");
         key(&mut app, KeyCode::Char('f'));
+        key(&mut app, KeyCode::Char('i'));
         typed(&mut app, "beta");
         key(&mut app, KeyCode::Enter);
         key(&mut app, KeyCode::Char('H'));
@@ -1888,7 +1923,8 @@ mod tests {
     #[test]
     fn loading_a_file_that_every_filter_excludes_leaves_a_blank_view() {
         let mut app = app_over_file("exclude_all_load", "noise one\nnoise two\n");
-        key(&mut app, KeyCode::Char('F'));
+        key(&mut app, KeyCode::Char('f'));
+        key(&mut app, KeyCode::Char('x'));
         typed(&mut app, "noise");
         key(&mut app, KeyCode::Enter);
         assert!(
@@ -1919,6 +1955,7 @@ mod tests {
     fn the_hide_mode_can_still_be_toggled_off_after_a_load() {
         let mut app = app_over_file("hide_mode_untoggle", "alpha\nbeta\n");
         key(&mut app, KeyCode::Char('f'));
+        key(&mut app, KeyCode::Char('i'));
         typed(&mut app, "beta");
         key(&mut app, KeyCode::Enter);
         key(&mut app, KeyCode::Char('H'));
@@ -1951,7 +1988,8 @@ mod tests {
         let path =
             std::path::Path::new("target/test-appdirs/reload_same_file/log.txt").to_path_buf();
 
-        key(&mut app, KeyCode::Char('F'));
+        key(&mut app, KeyCode::Char('f'));
+        key(&mut app, KeyCode::Char('x'));
         typed(&mut app, "noise");
         key(&mut app, KeyCode::Enter);
         assert_eq!(
@@ -1979,6 +2017,7 @@ mod tests {
     fn bang_disables_every_filter_and_restores_them() {
         let mut app = app_over_file("restyle_bang", "alpha\nbeta\n");
         key(&mut app, KeyCode::Char('f'));
+        key(&mut app, KeyCode::Char('i'));
         typed(&mut app, "beta");
         key(&mut app, KeyCode::Enter);
 
@@ -2001,6 +2040,7 @@ mod tests {
         let mut app = app_over_file("bang_restore", "alpha\nbeta\n");
         for pattern in ["alpha", "beta"] {
             key(&mut app, KeyCode::Char('f'));
+            key(&mut app, KeyCode::Char('i'));
             typed(&mut app, pattern);
             key(&mut app, KeyCode::Enter);
         }
@@ -2026,6 +2066,7 @@ mod tests {
         let mut app = app_over_file("bang_escape", "alpha\nbeta\n");
         for pattern in ["alpha", "beta"] {
             key(&mut app, KeyCode::Char('f'));
+            key(&mut app, KeyCode::Char('i'));
             typed(&mut app, pattern);
             key(&mut app, KeyCode::Enter);
         }
@@ -2048,12 +2089,14 @@ mod tests {
     fn adding_a_filter_after_bang_does_not_leave_bang_inert() {
         let mut app = app_over_file("bang_after_add", "alpha\nbeta\n");
         key(&mut app, KeyCode::Char('f'));
+        key(&mut app, KeyCode::Char('i'));
         typed(&mut app, "alpha");
         key(&mut app, KeyCode::Enter);
         key(&mut app, KeyCode::Char('!'));
         assert!(!app.filters.any_enabled());
 
         key(&mut app, KeyCode::Char('f'));
+        key(&mut app, KeyCode::Char('i'));
         typed(&mut app, "beta");
         key(&mut app, KeyCode::Enter);
 
@@ -2110,7 +2153,9 @@ mod tests {
         app.render(AREA, &mut buf);
         (0..AREA.height)
             .rev()
-            .find(|&y| (0..AREA.width).any(|x| buf[(x, y)].symbol() == "└"))
+            // Plain or thick: a focused pane draws a heavy border, so its
+            // own corner is `┗` rather than `└`.
+            .find(|&y| (0..AREA.width).any(|x| matches!(buf[(x, y)].symbol(), "└" | "┗")))
             .expect("no bordered pane was drawn")
     }
 
@@ -2227,7 +2272,7 @@ mod tests {
             "reported filter state when no filters exist: {bottom}"
         );
         assert!(
-            !bottom.contains('└'),
+            !bottom.contains('└') && !bottom.contains('┗'),
             "the panes still reach the bottom row, so the layout still shifts: {bottom}"
         );
     }
@@ -2236,6 +2281,7 @@ mod tests {
     fn the_status_line_reports_filters_and_lines_shown() {
         let mut app = app_over_file("status_some", "alpha\nbeta\ngamma\n");
         key(&mut app, KeyCode::Char('f'));
+        key(&mut app, KeyCode::Char('i'));
         typed(&mut app, "beta");
         key(&mut app, KeyCode::Enter);
 
@@ -2257,6 +2303,7 @@ mod tests {
     fn the_status_line_says_when_filters_are_disabled() {
         let mut app = app_over_file("status_off", "alpha\nbeta\n");
         key(&mut app, KeyCode::Char('f'));
+        key(&mut app, KeyCode::Char('i'));
         typed(&mut app, "beta");
         key(&mut app, KeyCode::Enter);
 
@@ -2274,6 +2321,7 @@ mod tests {
     fn a_prompt_still_takes_the_bottom_row() {
         let mut app = app_over_file("status_prompt", "alpha\n");
         key(&mut app, KeyCode::Char('f'));
+        key(&mut app, KeyCode::Char('i'));
         typed(&mut app, "foo");
 
         assert_eq!(status_line(&mut app), "filter: foo");
@@ -2317,6 +2365,7 @@ mod tests {
 
         // Add a filter while the view still only holds the preview.
         key(&mut app, KeyCode::Char('f'));
+        key(&mut app, KeyCode::Char('i'));
         typed(&mut app, "MATCH");
         key(&mut app, KeyCode::Enter);
 
@@ -2353,9 +2402,9 @@ mod tests {
     }
 
     /// `Ctrl-f` must reach the file view's own page-down binding, not the
-    /// global `f` handler that opens a filter prompt.
+    /// global `f` handler that moves focus to the filter pane.
     #[test]
-    fn ctrl_f_scrolls_the_file_view_instead_of_opening_a_filter_prompt() {
+    fn ctrl_f_scrolls_the_file_view_instead_of_focusing_the_filter_pane() {
         let body: String = (0..100).map(|i| format!("line {i}\n")).collect();
         let mut app = app_over_file("ctrl_f_scroll", &body);
         draw(&mut app); // establish the file view's rendered size
@@ -2410,7 +2459,8 @@ mod tests {
     fn an_excluding_filter_removes_its_lines_from_the_view() {
         let mut app = app_over_file("exclude_view", "alpha\nnoise\ngamma\n");
 
-        key(&mut app, KeyCode::Char('F'));
+        key(&mut app, KeyCode::Char('f'));
+        key(&mut app, KeyCode::Char('x'));
         typed(&mut app, "noise");
         key(&mut app, KeyCode::Enter);
 
@@ -2425,7 +2475,8 @@ mod tests {
     fn the_gutter_shows_source_line_numbers_when_lines_are_hidden() {
         let mut app = app_over_file("exclude_gutter", "alpha\nnoise\ngamma\n");
 
-        key(&mut app, KeyCode::Char('F'));
+        key(&mut app, KeyCode::Char('f'));
+        key(&mut app, KeyCode::Char('x'));
         typed(&mut app, "noise");
         key(&mut app, KeyCode::Enter);
 
@@ -2436,11 +2487,13 @@ mod tests {
     #[test]
     fn styles_still_line_up_with_the_rebuilt_buffer() {
         let mut app = app_over_file("exclude_styles", "alpha\nnoise\nbeta\n");
-        key(&mut app, KeyCode::Char('F'));
+        key(&mut app, KeyCode::Char('f'));
+        key(&mut app, KeyCode::Char('x'));
         typed(&mut app, "noise");
         key(&mut app, KeyCode::Enter);
 
         key(&mut app, KeyCode::Char('f'));
+        key(&mut app, KeyCode::Char('i'));
         typed(&mut app, "beta");
         key(&mut app, KeyCode::Enter);
 
@@ -2454,6 +2507,7 @@ mod tests {
         let mut app = app_over_file("no_hiding", "alpha\nbeta\n");
 
         key(&mut app, KeyCode::Char('f'));
+        key(&mut app, KeyCode::Char('i'));
         typed(&mut app, "beta");
         key(&mut app, KeyCode::Enter);
 
@@ -2471,7 +2525,8 @@ mod tests {
     #[test]
     fn disabling_an_excluding_filter_restores_the_hidden_lines() {
         let mut app = app_over_file("exclude_restore", "alpha\nnoise\ngamma\n");
-        key(&mut app, KeyCode::Char('F'));
+        key(&mut app, KeyCode::Char('f'));
+        key(&mut app, KeyCode::Char('x'));
         typed(&mut app, "noise");
         key(&mut app, KeyCode::Enter);
         assert_eq!(view_lines(&app).len(), 2, "the line was not hidden");
@@ -2587,6 +2642,7 @@ mod tests {
         let before = row_containing(&buf, "line 90").expect("line 90 should be on screen");
 
         key(&mut app, KeyCode::Char('f'));
+        key(&mut app, KeyCode::Char('i'));
         typed(&mut app, "zzz_never_matches");
         key(&mut app, KeyCode::Enter);
 
@@ -2614,7 +2670,8 @@ mod tests {
     fn toggling_a_filter_leaves_the_cursor_on_the_same_screen_row() {
         let body: String = (0..200).map(|i| format!("line {i}\n")).collect();
         let mut app = app_over_file("scroll_hold", &body);
-        key(&mut app, KeyCode::Char('F'));
+        key(&mut app, KeyCode::Char('f'));
+        key(&mut app, KeyCode::Char('x'));
         typed(&mut app, "line 1[5-9][0-9]"); // excludes 150..=199, well below the cursor
         key(&mut app, KeyCode::Enter);
         draw(&mut app);
@@ -2652,7 +2709,7 @@ mod tests {
         draw(&mut app);
 
         // A structural guard on the rebuild itself: if a future change (e.g.
-        // swapping `F` for `f`) stopped the buffer from actually changing
+        // swapping `x` for `i`) stopped the buffer from actually changing
         // size, the assertions below would pass trivially whether or not the
         // fix exists — the same failure mode correction (a) already covers,
         // pinned here so it can't quietly regress.
@@ -2685,7 +2742,8 @@ mod tests {
     fn toggling_a_filter_above_the_cursor_also_leaves_the_cursor_on_the_same_screen_row() {
         let body: String = (0..200).map(|i| format!("line {i}\n")).collect();
         let mut app = app_over_file("scroll_hold_above", &body);
-        key(&mut app, KeyCode::Char('F'));
+        key(&mut app, KeyCode::Char('f'));
+        key(&mut app, KeyCode::Char('x'));
         // Excludes source lines 0..=49, anchored so e.g. "line 100" is not
         // also matched as a substring of "line 10".
         typed(&mut app, "^line ([0-9]|[1-4][0-9])$");
@@ -2750,7 +2808,8 @@ mod tests {
     fn toggling_a_filter_from_the_pane_leaves_the_cursor_on_the_same_screen_row() {
         let body: String = (0..200).map(|i| format!("line {i}\n")).collect();
         let mut app = app_over_file("pane_scroll_hold", &body);
-        key(&mut app, KeyCode::Char('F'));
+        key(&mut app, KeyCode::Char('f'));
+        key(&mut app, KeyCode::Char('x'));
         typed(&mut app, "line 1[5-9][0-9]"); // excludes 150..=199, well below the cursor
         key(&mut app, KeyCode::Enter);
         draw(&mut app);
@@ -2822,6 +2881,7 @@ mod tests {
             .collect();
         let mut app = app_over_file("h_scroll_hold", &body);
         key(&mut app, KeyCode::Char('f'));
+        key(&mut app, KeyCode::Char('i'));
         typed(&mut app, "^match ");
         key(&mut app, KeyCode::Enter);
         draw(&mut app);
@@ -2873,6 +2933,7 @@ mod tests {
     fn h_hides_lines_that_match_no_filter() {
         let mut app = app_over_file("toggle_hide", "alpha\nbeta\ngamma\n");
         key(&mut app, KeyCode::Char('f'));
+        key(&mut app, KeyCode::Char('i'));
         typed(&mut app, "beta");
         key(&mut app, KeyCode::Enter);
         assert_eq!(view_lines(&app).len(), 3, "nothing hidden yet");
@@ -2886,6 +2947,7 @@ mod tests {
     fn ctrl_h_toggles_the_same_way() {
         let mut app = app_over_file("toggle_ctrl_h", "alpha\nbeta\n");
         key(&mut app, KeyCode::Char('f'));
+        key(&mut app, KeyCode::Char('i'));
         typed(&mut app, "beta");
         key(&mut app, KeyCode::Enter);
 
@@ -2905,6 +2967,7 @@ mod tests {
         let body: String = (0..20).map(|i| format!("line {i}\n")).collect();
         let mut app = app_over_file("round_trip", &body);
         key(&mut app, KeyCode::Char('f'));
+        key(&mut app, KeyCode::Char('i'));
         typed(&mut app, "line 1[0-9]");
         key(&mut app, KeyCode::Enter);
 
@@ -2937,6 +3000,7 @@ mod tests {
             .collect();
         let mut app = app_over_file("large_round_trip", &body);
         key(&mut app, KeyCode::Char('f'));
+        key(&mut app, KeyCode::Char('i'));
         typed(&mut app, "MATCH");
         key(&mut app, KeyCode::Enter);
 
@@ -2963,6 +3027,7 @@ mod tests {
     fn hiding_from_an_unmatched_line_snaps_to_the_next_match() {
         let mut app = app_over_file("snap_to_match", "alpha\nbeta\ngamma\nbeta two\n");
         key(&mut app, KeyCode::Char('f'));
+        key(&mut app, KeyCode::Char('i'));
         typed(&mut app, "beta");
         key(&mut app, KeyCode::Enter);
         move_cursor_to_visible_row(&mut app, 2); // gamma, unmatched
@@ -2978,6 +3043,7 @@ mod tests {
     fn hiding_with_no_matches_is_survivable() {
         let mut app = app_over_file("no_matches", "alpha\nbeta\n");
         key(&mut app, KeyCode::Char('f'));
+        key(&mut app, KeyCode::Char('i'));
         typed(&mut app, "zzz");
         key(&mut app, KeyCode::Enter);
 
@@ -2997,6 +3063,7 @@ mod tests {
     fn hiding_everything_does_not_show_a_phantom_line_number() {
         let mut app = app_over_file("no_matches_gutter", "alpha\nbeta\n");
         key(&mut app, KeyCode::Char('f'));
+        key(&mut app, KeyCode::Char('i'));
         typed(&mut app, "zzz");
         key(&mut app, KeyCode::Enter);
 
@@ -3023,6 +3090,7 @@ mod tests {
     fn the_status_line_shows_a_funnel_while_hiding() {
         let mut app = app_over_file("funnel", "alpha\nbeta\n");
         key(&mut app, KeyCode::Char('f'));
+        key(&mut app, KeyCode::Char('i'));
         typed(&mut app, "beta");
         key(&mut app, KeyCode::Enter);
         assert!(!status_line(&mut app).contains('▼'));
@@ -3036,15 +3104,16 @@ mod tests {
         );
     }
 
-    /// An excluding filter (`F`) removes lines in `Dimmed` mode too — that is
+    /// An excluding filter (`x`) removes lines in `Dimmed` mode too — that is
     /// the entire point of it — so the funnel must not be gated on
-    /// `FilteredOnly` alone. Before this, `F` matching every line rendered a
+    /// `FilteredOnly` alone. Before this, `x` matching every line rendered a
     /// blank pane with no indication anything was going on.
     #[test]
     fn the_status_line_shows_a_funnel_for_an_excluding_filter_while_dimmed() {
         let mut app = app_over_file("funnel_dimmed_exclude", "alpha\nnoise\ngamma\n");
 
-        key(&mut app, KeyCode::Char('F'));
+        key(&mut app, KeyCode::Char('f'));
+        key(&mut app, KeyCode::Char('x'));
         typed(&mut app, "noise");
         key(&mut app, KeyCode::Enter);
 
@@ -3068,7 +3137,8 @@ mod tests {
     fn the_status_line_reports_lines_shown_not_matched() {
         let mut app = app_over_file("status_shown_not_matched", "alpha\nnoise\ngamma\n");
 
-        key(&mut app, KeyCode::Char('F'));
+        key(&mut app, KeyCode::Char('f'));
+        key(&mut app, KeyCode::Char('x'));
         typed(&mut app, "noise");
         key(&mut app, KeyCode::Enter);
 
@@ -3198,6 +3268,127 @@ mod tests {
         key(&mut app, KeyCode::Char('e'));
 
         assert_eq!(app.active_widget, app.nav_index());
+    }
+
+    /// `t` reaches the text pane directly, the way `e` reaches the explorer.
+    #[test]
+    fn t_focuses_the_file_view() {
+        let mut app = app_over_file("focus_t", "alpha\n");
+        assert_ne!(app.active_widget, app.file_view_index());
+
+        key(&mut app, KeyCode::Char('t'));
+
+        assert_eq!(app.active_widget, app.file_view_index());
+    }
+
+    /// `f` reaches the filter pane rather than opening a filter prompt.
+    ///
+    /// Creating a filter moves inside the pane (`i` / `x`), which costs a
+    /// keystroke from elsewhere and buys one focus key per pane.
+    #[test]
+    fn f_focuses_the_filter_pane() {
+        let mut app = app_over_file("focus_f", "alpha\n");
+        assert_ne!(app.active_widget, app.filter_list_index());
+
+        key(&mut app, KeyCode::Char('f'));
+
+        assert_eq!(app.active_widget, app.filter_list_index());
+        assert!(
+            app.search.is_none(),
+            "f opened a prompt instead of moving focus"
+        );
+    }
+
+    /// `x` is the exclude half of the pair. `e` would read better and cannot
+    /// be used — the global match runs first, so a bare `e` never reaches the
+    /// filter pane at all.
+    #[test]
+    fn x_opens_an_excluding_filter_prompt_in_the_filter_pane() {
+        let mut app = app_over("exclude_prompt", &["a.rs"]);
+
+        key(&mut app, KeyCode::Char('f'));
+        key(&mut app, KeyCode::Char('x'));
+        typed(&mut app, "noise");
+
+        assert_eq!(prompt_line(&mut app), "exclude: noise");
+    }
+
+    /// `i` and `x` belong to the filter pane, not to the app. Bound globally
+    /// they would swallow a keystroke from every other pane — which is exactly
+    /// what `f` and `F` used to do, and the reason they moved.
+    #[test]
+    fn i_and_x_do_nothing_outside_the_filter_pane() {
+        for (code, name) in [
+            (KeyCode::Char('i'), "filter_keys_scoped_i"),
+            (KeyCode::Char('x'), "filter_keys_scoped_x"),
+        ] {
+            // A fixture directory per iteration: `claim_fixture_dir` panics on
+            // a reused name, deliberately, so tests cannot race over one.
+            let mut app = app_over_file(name, "alpha\n");
+
+            // The navigator has focus at startup.
+            key(&mut app, code);
+            assert!(
+                app.search.is_none(),
+                "{code:?} opened a prompt from the navigator"
+            );
+
+            key(&mut app, KeyCode::Char('t'));
+            key(&mut app, code);
+            assert!(
+                app.search.is_none(),
+                "{code:?} opened a prompt from the file view"
+            );
+        }
+    }
+
+    /// `F` created an excluding filter and is retired; `x` in the pane does it
+    /// now. Pinned so the old binding cannot quietly come back alongside the
+    /// new one and leave two ways to do the same thing.
+    #[test]
+    fn capital_f_no_longer_opens_a_prompt() {
+        let mut app = app_over_file("capital_f_retired", "alpha\n");
+
+        key(&mut app, KeyCode::Char('F'));
+
+        assert!(app.search.is_none(), "F still opens a prompt");
+    }
+
+    /// The navigator's own top-left corner, as symbol and style.
+    ///
+    /// The corner is the probe because it is drawn by the border and by
+    /// nothing else — a row's highlight, a title, and the pane's contents all
+    /// stay out of it.
+    fn nav_corner(app: &mut App) -> (String, Style) {
+        let mut buf = Buffer::empty(AREA);
+        app.render(AREA, &mut buf);
+        (buf[(0, 0)].symbol().to_string(), buf[(0, 0)].style())
+    }
+
+    /// Focus has to be visible on the pane, not just on the row inside it.
+    ///
+    /// Colour *and* weight, deliberately: this is the argument #19 makes about
+    /// the selection marker. A single channel fails on a theme with weak
+    /// contrast and for a colour-blind reader, and the cue this replaces —
+    /// a green foreground on one already-reversed row — was exactly that.
+    #[test]
+    fn the_focused_pane_border_differs_in_colour_and_weight() {
+        let mut app = app_over_file("focus_border", "alpha\n");
+        // The navigator holds focus at startup.
+        let (focused_symbol, focused_style) = nav_corner(&mut app);
+
+        key(&mut app, KeyCode::Char('t'));
+        let (unfocused_symbol, unfocused_style) = nav_corner(&mut app);
+
+        assert_ne!(
+            focused_style.fg, unfocused_style.fg,
+            "the border colour is the same focused and unfocused"
+        );
+        assert_ne!(
+            focused_symbol, unfocused_symbol,
+            "the border weight is the same focused and unfocused, so the cue \
+             is colour alone"
+        );
     }
 
     /// `z` maximises whatever has focus — including the navigator, for long
@@ -3331,6 +3522,7 @@ mod tests {
     fn the_status_line_still_renders_while_zoomed() {
         let mut app = app_over_file("zoom_status", "alpha\nbeta\n");
         key(&mut app, KeyCode::Char('f'));
+        key(&mut app, KeyCode::Char('i'));
         typed(&mut app, "beta");
         key(&mut app, KeyCode::Enter);
 
@@ -3346,26 +3538,24 @@ mod tests {
     /// The pane costs nothing until a filter exists.
     #[test]
     /// The pane is on screen whenever the navigator is, filters or not — so a
-    /// user who has never pressed `f` still sees where filters will appear,
+    /// user who has never pressed `f i` still sees where filters will appear,
     /// and the layout does not shift under them the first time they add one.
     fn the_filter_pane_is_present_before_any_filter_is_defined() {
         let mut app = app_over_file("pane_absent", "alpha\n");
 
         let empty = rendered(&mut app);
         assert!(empty.contains("Filters"), "no filter pane before a filter");
-        assert!(
-            empty.contains("press f"),
-            "empty pane drew no hint: {empty}"
-        );
+        assert!(empty.contains("f i"), "empty pane drew no hint: {empty}");
 
         key(&mut app, KeyCode::Char('f'));
+        key(&mut app, KeyCode::Char('i'));
         typed(&mut app, "alpha");
         key(&mut app, KeyCode::Enter);
 
         let populated = rendered(&mut app);
         assert!(populated.contains("Filters"));
         assert!(
-            !populated.contains("press f"),
+            !populated.contains("f i"),
             "hint outlived the empty pane: {populated}"
         );
     }
@@ -3374,6 +3564,7 @@ mod tests {
     fn the_filter_pane_lists_the_patterns() {
         let mut app = app_over_file("pane_lists", "alpha\n");
         key(&mut app, KeyCode::Char('f'));
+        key(&mut app, KeyCode::Char('i'));
         typed(&mut app, "alpha");
         key(&mut app, KeyCode::Enter);
 
@@ -3418,6 +3609,7 @@ mod tests {
     fn tab_reaches_the_filter_pane_once_a_filter_exists() {
         let mut app = app_over_file("pane_focus_on", "alpha\n");
         key(&mut app, KeyCode::Char('f'));
+        key(&mut app, KeyCode::Char('i'));
         typed(&mut app, "alpha");
         key(&mut app, KeyCode::Enter);
         draw(&mut app);
@@ -3449,8 +3641,14 @@ mod tests {
     fn tab_cycles_navigator_then_file_view_then_filter_pane() {
         let mut app = app_over_file("tab_cycle_order", "alpha\n");
         key(&mut app, KeyCode::Char('f'));
+        key(&mut app, KeyCode::Char('i'));
         typed(&mut app, "alpha");
         key(&mut app, KeyCode::Enter);
+        // Creating a filter now *leaves* focus on the filter pane — `f` moved
+        // it there. This test is about the cycle, not about where creating a
+        // filter lands, so come back to the navigator deliberately rather than
+        // assuming the setup left focus untouched.
+        key(&mut app, KeyCode::Char('e'));
         draw(&mut app);
 
         assert_eq!(
@@ -3492,6 +3690,7 @@ mod tests {
     fn zooming_the_filter_pane_shows_its_contents() {
         let mut app = app_over_file("zoom_filter_pane", "alpha\n");
         key(&mut app, KeyCode::Char('f'));
+        key(&mut app, KeyCode::Char('i'));
         typed(&mut app, "alpha");
         key(&mut app, KeyCode::Enter);
 
@@ -3536,6 +3735,7 @@ mod tests {
         let mut app = app_over_file("wide_filter", "alpha\n");
         let long_pattern = "a".repeat(200);
         key(&mut app, KeyCode::Char('f'));
+        key(&mut app, KeyCode::Char('i'));
         typed(&mut app, &long_pattern);
         key(&mut app, KeyCode::Enter);
         draw(&mut app);
@@ -3553,6 +3753,7 @@ mod tests {
         let mut app = app_over_file("wide_filter_floor_slack", "alpha\n");
         let long_pattern = "a".repeat(50);
         key(&mut app, KeyCode::Char('f'));
+        key(&mut app, KeyCode::Char('i'));
         typed(&mut app, &long_pattern);
         key(&mut app, KeyCode::Enter);
         draw(&mut app);
@@ -3583,6 +3784,7 @@ mod tests {
         let mut app = app_over_file("narrow_filter_floor", "alpha\n");
         let long_pattern = "a".repeat(50);
         key(&mut app, KeyCode::Char('f'));
+        key(&mut app, KeyCode::Char('i'));
         typed(&mut app, &long_pattern);
         key(&mut app, KeyCode::Enter);
         draw(&mut app);
@@ -3615,6 +3817,7 @@ mod tests {
         let mut app = app_over_file("short_terminal", "alpha\n");
         for pattern in ["one", "two", "three", "four", "five", "six"] {
             key(&mut app, KeyCode::Char('f'));
+            key(&mut app, KeyCode::Char('i'));
             typed(&mut app, pattern);
             key(&mut app, KeyCode::Enter);
         }
@@ -3660,6 +3863,7 @@ mod tests {
         let mut app = app_over_file("short_terminal_split", "alpha\n");
         for pattern in ["one", "two", "three", "four", "five", "six"] {
             key(&mut app, KeyCode::Char('f'));
+            key(&mut app, KeyCode::Char('i'));
             typed(&mut app, pattern);
             key(&mut app, KeyCode::Enter);
         }
@@ -3685,6 +3889,7 @@ mod tests {
         let mut app = app_over_file("many_filters_cap", "alpha\n");
         for i in 0..20 {
             key(&mut app, KeyCode::Char('f'));
+            key(&mut app, KeyCode::Char('i'));
             typed(&mut app, &format!("f{i}"));
             key(&mut app, KeyCode::Enter);
         }
@@ -3709,6 +3914,7 @@ mod tests {
         let mut app = app_over_file(name, "alpha\nbeta\ngamma\n");
         for pattern in ["alpha", "beta"] {
             key(&mut app, KeyCode::Char('f'));
+            key(&mut app, KeyCode::Char('i'));
             typed(&mut app, pattern);
             key(&mut app, KeyCode::Enter);
         }
@@ -3824,6 +4030,7 @@ mod tests {
         let mut app = app_over_file("pane_delete_verdicts_mid", "alpha\nbeta\ngamma\n");
         for pattern in ["alpha", "beta", "gamma"] {
             key(&mut app, KeyCode::Char('f'));
+            key(&mut app, KeyCode::Char('i'));
             typed(&mut app, pattern);
             key(&mut app, KeyCode::Enter);
         }
@@ -3867,6 +4074,7 @@ mod tests {
     fn deleting_the_last_filter_keeps_the_pane_and_the_focus() {
         let mut app = app_over_file("pane_delete_last", "alpha\n");
         key(&mut app, KeyCode::Char('f'));
+        key(&mut app, KeyCode::Char('i'));
         typed(&mut app, "alpha");
         key(&mut app, KeyCode::Enter);
         focus_filter_pane(&mut app);
@@ -3880,7 +4088,7 @@ mod tests {
             text.contains("Filters"),
             "pane vanished with its last filter"
         );
-        assert!(text.contains("press f"), "pane lost its empty hint");
+        assert!(text.contains("f i"), "pane lost its empty hint");
         assert!(
             matches!(app.widgets[app.active_widget], AppWidget::FilterList(_)),
             "focus was moved off a pane that is still on screen"
@@ -3900,6 +4108,7 @@ mod tests {
     fn deleting_the_last_filter_while_zoomed_keeps_the_zoom_invariant() {
         let mut app = app_over_file("pane_delete_last_zoomed", "alpha\n");
         key(&mut app, KeyCode::Char('f'));
+        key(&mut app, KeyCode::Char('i'));
         typed(&mut app, "alpha");
         key(&mut app, KeyCode::Enter);
         focus_filter_pane(&mut app);

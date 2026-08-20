@@ -4,7 +4,7 @@ use crate::widgets::Action;
 use color_eyre::Result;
 use crossterm::event::{Event, KeyCode};
 use ratatui::prelude::{Buffer, Color, Modifier, Rect, Style, Widget};
-use ratatui::widgets::{Block, List, ListItem, ListState, StatefulWidget};
+use ratatui::widgets::{List, ListItem, ListState, StatefulWidget};
 use regex::Regex;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -440,7 +440,10 @@ impl Widget for &mut FileNav<'_> {
         let list = self
             .navlist
             .clone()
-            .block(Block::bordered().title(self.dir.display().to_string()))
+            .block(crate::widgets::pane_block(
+                self.dir.display().to_string(),
+                self.active,
+            ))
             .highlight_style(highlight_style);
         StatefulWidget::render(&list, area, buf, &mut self.state);
     }

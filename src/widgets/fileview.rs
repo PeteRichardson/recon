@@ -3,7 +3,6 @@
 ///
 use color_eyre::Result;
 use ratatui::prelude::{Buffer, Color, Modifier, Rect, Style, Widget};
-use ratatui::widgets::{Block, Borders};
 use std::fs::File;
 use std::io::{BufRead, BufReader, ErrorKind, Read};
 use std::path::Path;
@@ -597,11 +596,10 @@ impl Widget for &mut FileView<'_> {
         self.textarea.set_cursor_line_style(style);
         self.textarea
             .set_search_style(Style::default().fg(Color::Black).bg(Color::Yellow));
-        self.textarea.set_block(
-            Block::default()
-                .borders(Borders::ALL)
-                .title(self.filename.clone()),
-        );
+        self.textarea.set_block(crate::widgets::pane_block(
+            self.filename.clone(),
+            self.active,
+        ));
         // Apply any scroll requested since the last render — see
         // `scroll_cursor_to_row` and `apply_pending_scroll` — only now, once
         // the block above is set: `apply_pending_scroll`'s scratch render

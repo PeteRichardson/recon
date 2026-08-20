@@ -15,7 +15,11 @@ const AREA: Rect = Rect {
 /// size themselves to their contents, so the split cannot be assumed.
 fn divider_column(buf: &Buffer) -> u16 {
     (0..AREA.width)
-        .find(|&x| buf[(x, 0)].symbol() == "┐")
+        // Plain *or* thick: the focused pane draws a heavy border, so the
+        // navigator's own corner is `┓` whenever it has focus. Matching only
+        // the plain glyph found the *file view's* corner instead and put the
+        // divider at the far edge of the screen.
+        .find(|&x| matches!(buf[(x, 0)].symbol(), "┐" | "┓"))
         .expect("no nav pane border in the rendered frame")
         + 1
 }
@@ -46,7 +50,7 @@ fn view_text(app: &mut App) -> String {
     view_pane(app)
         .lines()
         .map(|line| {
-            line.trim_matches(|c| "┌┐└┘│─".contains(c))
+            line.trim_matches(|c| "┌┐└┘│─┏┓┗┛┃━".contains(c))
                 .trim_end()
                 .chars()
                 .take(COMPARABLE)
@@ -147,7 +151,7 @@ fn highlighted_name(app: &mut App) -> String {
     (0..divider)
         .map(|x| buf[(x, y)].symbol())
         .collect::<String>()
-        .trim_matches(|c| c == '\u{2502}' || c == ' ')
+        .trim_matches(|c| c == '\u{2502}' || c == '\u{2503}' || c == ' ')
         .trim_end_matches('/')
         .to_string()
 }
@@ -317,7 +321,7 @@ fn nav_pane_snaps_to_its_contents() {
     let longest = nav_pane_rows(&buf)
         .iter()
         .filter_map(|row| {
-            row.split(['│', '┌', '┐'])
+            row.split(['│', '┌', '┐', '┃', '┏', '┓'])
                 .nth(1)
                 .map(str::trim)
                 .map(str::len)
