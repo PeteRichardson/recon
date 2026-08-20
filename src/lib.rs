@@ -125,9 +125,12 @@ use widgets::filterlist::FilterList;
 use widgets::{Action, AppWidget, FilterCommand};
 
 #[derive(Parser, Debug)]
-#[command(version, about, long_about=None)]
+#[command(version, about, long_about = None)]
 pub struct Config {
-    pub file: String,
+    /// File or directory to open. A directory is listed with its first entry
+    /// selected; a file is opened with its own directory listed alongside.
+    #[arg(default_value = ".")]
+    pub path: String,
 }
 
 #[derive(Default)]
@@ -177,11 +180,30 @@ enum AppState {
 
 impl App<'_> {
     pub fn new(config: &Config) -> Self {
+        let argument = std::path::Path::new(&config.path);
+        let nav = FileNav::new(config.path.clone());
+        let mut view = FileView::default();
+
+        match nav.selected_path() {
+            // A directory argument *selects* an entry rather than being
+            // handed one, so it is previewed — bounded by `PREVIEW_LINES` —
+            // exactly as arrowing onto it would be. Loading it in full would
+            // read a whole log at startup merely because it sorts first,
+            // which is the cost the preview mechanism exists to avoid.
+            Some(selected) if argument.is_dir() => view.preview(&selected),
+            // A file argument loads the argument itself, not the navigator's
+            // selection. They are the same path when the file exists; when it
+            // does not, the navigator falls back to the first entry, and
+            // loading *that* would silently open some other file in response
+            // to a typo. Reporting the argument is what recon already does.
+            _ => view.load(argument),
+        }
+
         let mut app = Self {
             state: AppState::Running,
             widgets: vec![
-                AppWidget::FileNav(FileNav::new(config.file.clone())),
-                AppWidget::FileView(FileView::new(config.file.clone())),
+                AppWidget::FileNav(nav),
+                AppWidget::FileView(view),
                 AppWidget::FilterList(FilterList::default()),
             ],
             active_widget: 0,
@@ -1132,7 +1154,7 @@ mod tests {
             fs::write(dir.join(file), "x").expect("write fixture");
         }
         App::new(&Config {
-            file: dir.join("placeholder").display().to_string(),
+            path: dir.join("placeholder").display().to_string(),
         })
     }
 
@@ -1559,8 +1581,72 @@ mod tests {
     fn app_over_file(name: &str, body: &str) -> App<'static> {
         let file = fixture_path(name, body);
         App::new(&Config {
-            file: file.display().to_string(),
+            path: file.display().to_string(),
         })
+    }
+
+    /// The argument is optional and defaults to the current directory, so
+    /// bare `recon` is `recon .`.
+    #[test]
+    fn no_argument_defaults_to_the_current_directory() {
+        let config = Config::try_parse_from(["recon"]).expect("parses with no argument");
+
+        assert_eq!(config.path, ".");
+    }
+
+    #[test]
+    fn an_explicit_argument_still_wins() {
+        let config = Config::try_parse_from(["recon", "some/path.log"]).expect("parses");
+
+        assert_eq!(config.path, "some/path.log");
+    }
+
+    /// Launched on a directory, the view shows the first entry's contents —
+    /// not `<directory>`, which is what pointing the view at the argument
+    /// itself would have produced.
+    #[test]
+    fn a_directory_argument_previews_the_first_entry() {
+        let dir = std::path::Path::new("target/test-appdirs/arg_is_a_dir");
+        fs::remove_dir_all(dir).ok();
+        fs::create_dir_all(dir).expect("create fixture dir");
+        fs::write(dir.join("aaa.txt"), "first file contents\n").expect("write");
+        fs::write(dir.join("zzz.txt"), "last file contents\n").expect("write");
+
+        let mut app = App::new(&Config {
+            path: dir.display().to_string(),
+        });
+
+        let shown = rendered(&mut app);
+        assert!(
+            shown.contains("first file contents"),
+            "the first entry was not previewed:\n{shown}"
+        );
+        assert!(
+            !shown.contains("<directory>"),
+            "the view was pointed at the directory itself:\n{shown}"
+        );
+    }
+
+    /// A directory argument *selects* its first entry rather than being
+    /// handed it, so it is previewed — bounded — not read in full. Otherwise
+    /// starting recon in a directory of large logs reads one of them whole.
+    #[test]
+    fn a_directory_argument_previews_rather_than_loads() {
+        let dir = std::path::Path::new("target/test-appdirs/arg_dir_bounded");
+        fs::remove_dir_all(dir).ok();
+        fs::create_dir_all(dir).expect("create fixture dir");
+        let body: String = (0..600).map(|i| format!("line {i}\n")).collect();
+        fs::write(dir.join("big.log"), &body).expect("write");
+
+        let app = App::new(&Config {
+            path: dir.display().to_string(),
+        });
+
+        assert_eq!(
+            view_lines(&app).len(),
+            500,
+            "the first entry was read in full instead of previewed"
+        );
     }
 
     /// A duplicate fixture directory name must fail loudly and immediately,
@@ -2011,11 +2097,13 @@ mod tests {
         fs::write(dir.join("big.log"), &body).expect("write fixture");
 
         let mut app = App::new(&Config {
-            file: dir.join("placeholder").display().to_string(),
+            path: dir.join("placeholder").display().to_string(),
         });
 
-        // Arrow onto the log from the nav pane: this previews it rather than
-        // reading the whole 600-line file.
+        // The nav pane previews the log rather than reading the whole
+        // 600-line file. The startup argument names a file that does not
+        // exist, so the navigator falls back to the first real entry — which
+        // is the log — and `Down` holds it there.
         key(&mut app, KeyCode::Down);
 
         // Add a filter while the view still only holds the preview.
@@ -2928,7 +3016,7 @@ mod tests {
         // text alone, regardless of whether the zoom layouts truly match.
         let file = fixture_path("zoom_view_parity", "alpha\n");
         let config = Config {
-            file: file.display().to_string(),
+            path: file.display().to_string(),
         };
 
         let mut with_z = App::new(&config);

@@ -12,6 +12,26 @@ use std::path::{Path, PathBuf};
 /// The entry that climbs to the parent directory.
 pub const PARENT: &str = "..";
 
+/// Where the cursor lands after the listing is rebuilt.
+///
+/// `set_dir` used to hard-code index 0 — `..`, the way back *out* — which is
+/// rarely what was wanted. Every caller now says what it is looking for.
+enum Select {
+    /// The first entry after `..`, falling back to `..` in a directory that
+    /// has nothing else.
+    ///
+    /// Deliberately the first entry of *any* kind, not the first file.
+    /// Skipping over directories to find a file would land the cursor
+    /// somewhere different in every directory, depending on where its files
+    /// happen to sort; a directory of twenty folders and one file would put
+    /// it near the bottom. Starting at the top every time lets the
+    /// alphabetical order do the work.
+    First,
+    /// A named entry, falling back to `First` when it is not there — the
+    /// file was deleted, or the climb reached the filesystem root.
+    Named(String),
+}
+
 /// Applied to entries matching the current search pattern.
 ///
 /// Outranks the kind styles below. A search hit is the transient, task-driven
@@ -94,16 +114,32 @@ pub struct FileNav<'a> {
 }
 
 impl FileNav<'_> {
-    pub fn new(filename: String) -> Self {
+    /// Open the pane on `path`, which may name either a file or a directory.
+    ///
+    /// A directory is listed itself, with the cursor on its first entry. A
+    /// file has its parent listed, with the cursor on the file — which is
+    /// already open in the view, so starting on `..` was strictly less
+    /// useful.
+    pub fn new(path: String) -> Self {
+        let path = Path::new(&path);
+        let mut nav = Self::default();
+
+        if path.is_dir() {
+            nav.set_dir(path.to_path_buf(), Select::First);
+            return nav;
+        }
+
         // A bare filename such as `Cargo.toml` has an empty parent, so fall
         // back to the current directory.
-        let dir = match Path::new(&filename).parent() {
+        let dir = match path.parent() {
             Some(parent) if !parent.as_os_str().is_empty() => parent.to_path_buf(),
             _ => PathBuf::from("."),
         };
-
-        let mut nav = Self::default();
-        nav.set_dir(dir);
+        let select = path
+            .file_name()
+            .map(|name| Select::Named(name.to_string_lossy().into_owned()))
+            .unwrap_or(Select::First);
+        nav.set_dir(dir, select);
         nav
     }
 
@@ -113,11 +149,43 @@ impl FileNav<'_> {
     /// again lands on the original path rather than accumulating `src/..`
     /// segments. Canonicalization fails on a path that does not exist, in
     /// which case the path is kept as-is and the listing comes back empty.
-    fn set_dir(&mut self, dir: PathBuf) {
+    fn set_dir(&mut self, dir: PathBuf, select: Select) {
         self.dir = fs::canonicalize(&dir).unwrap_or(dir);
         self.entries = read_dir_entries(&self.dir);
         self.rebuild_list();
-        self.state = ListState::default().with_selected(Some(0));
+        self.state = ListState::default().with_selected(Some(self.index_of(&select)));
+    }
+
+    /// Resolve a `Select` against the listing just built.
+    ///
+    /// `..` is always entry 0, so "the first entry" is index 1 — and index 0
+    /// only when there is nothing else, which is the empty-directory case.
+    fn index_of(&self, select: &Select) -> usize {
+        let first = usize::from(self.entries.len() > 1);
+        match select {
+            Select::Named(name) => self
+                .entries
+                .iter()
+                .position(|entry| &entry.name == name)
+                .unwrap_or(first),
+            Select::First => first,
+        }
+    }
+
+    /// Climb to the parent directory, landing on the directory just left.
+    ///
+    /// Reads the name to select from `self.dir` *before* moving, which is why
+    /// this needs no bookkeeping: the directory being left is the one whose
+    /// listing is on screen. (Remembering the cursor in every directory ever
+    /// visited, as ranger does, would need a map; this case is free.)
+    ///
+    /// `None` at the filesystem root, where there is no parent to climb to
+    /// and the pane stays exactly as it was.
+    fn go_to_parent(&mut self) -> Option<Action> {
+        let leaving = self.dir.file_name()?.to_string_lossy().into_owned();
+        let parent = self.dir.parent()?.to_path_buf();
+        self.set_dir(parent, Select::Named(leaving));
+        self.preview_selection()
     }
 
     /// Rebuild the rendered list, styling entries that match the search.
@@ -193,7 +261,15 @@ impl FileNav<'_> {
                     self.select_next();
                     return Ok(self.preview_selection());
                 }
-                KeyCode::Enter => return Ok(self.activate_selection()),
+                // `h`/`l` act on the pane, mirroring the movement they mean
+                // in a file manager. `l` is `Enter` in every case, including
+                // on a file: a key that works on some rows and silently does
+                // nothing on others is worse than one that always does the
+                // obvious thing.
+                KeyCode::Left | KeyCode::Char('h') => return Ok(self.go_to_parent()),
+                KeyCode::Enter | KeyCode::Right | KeyCode::Char('l') => {
+                    return Ok(self.activate_selection());
+                }
                 KeyCode::Char('n') => return Ok(self.repeat_search(false)),
                 KeyCode::Char('N') => return Ok(self.repeat_search(true)),
                 _ => {}
@@ -225,7 +301,10 @@ impl FileNav<'_> {
     }
 
     /// The path the cursor is sitting on.
-    fn selected_path(&self) -> Option<PathBuf> {
+    ///
+    /// `pub(crate)` for `App::new`, which builds the file view from whatever
+    /// the navigator selected rather than from the command-line argument.
+    pub(crate) fn selected_path(&self) -> Option<PathBuf> {
         let selected = self.state.selected()?;
         Some(self.dir.join(&self.entries.get(selected)?.name))
     }
@@ -245,11 +324,21 @@ impl FileNav<'_> {
     /// Open the highlighted entry: descend into a directory in place, or ask
     /// for a file to be loaded into the file view in full.
     fn activate_selection(&mut self) -> Option<Action> {
+        // `..` is a directory like any other, but descending into it means
+        // climbing *out* — and the cursor should land on the directory being
+        // left, not on that directory's own first entry.
+        if self.entries.get(self.state.selected()?)?.name == PARENT {
+            return self.go_to_parent();
+        }
+
         let path = self.selected_path()?;
 
         if path.is_dir() {
-            self.set_dir(path);
-            None
+            self.set_dir(path, Select::First);
+            // Preview what was just selected. Descending used to raise no
+            // action at all, so the view kept showing the file from the
+            // directory you had just left.
+            self.preview_selection()
         } else {
             Some(Action::Load(path))
         }
@@ -259,8 +348,21 @@ impl FileNav<'_> {
         self.state.select_previous();
     }
 
+    /// Move down one, stopping at the last entry.
+    ///
+    /// Clamps explicitly rather than using `ListState::select_next`, which
+    /// increments without knowing the list length: at the bottom it moved the
+    /// selection *past* the last entry, where `selected_path` returns `None`
+    /// and previewing silently stopped until you pressed `k`. Rendering hid
+    /// it, because `List` clamps the highlight for drawing. `FilterList`
+    /// already clamps the same way.
     fn select_next(&mut self) {
-        self.state.select_next();
+        let last = self.entries.len().saturating_sub(1);
+        let next = self
+            .state
+            .selected()
+            .map_or(0, |index| (index + 1).min(last));
+        self.state.select(Some(next));
     }
 }
 
@@ -568,6 +670,224 @@ mod tests {
         );
     }
 
+    /// A fixture directory with a subdirectory that has its own contents, for
+    /// exercising movement in and back out.
+    fn nested_fixture(name: &str) -> std::path::PathBuf {
+        let dir = Path::new("target/test-navdirs").join(name);
+        fs::remove_dir_all(&dir).ok();
+        fs::create_dir_all(dir.join("beta_dir")).expect("create subdir");
+        fs::write(dir.join("beta_dir/inner_a.txt"), "x").expect("write");
+        fs::write(dir.join("beta_dir/inner_b.txt"), "x").expect("write");
+        fs::write(dir.join("alpha.txt"), "x").expect("write");
+        fs::write(dir.join("gamma.txt"), "x").expect("write");
+        dir
+    }
+
+    // ---- #21: h / l movement -------------------------------------------
+
+    #[test]
+    fn h_and_left_go_to_the_parent_directory() {
+        for code in [KeyCode::Char('h'), KeyCode::Left] {
+            let dir = nested_fixture("keys_up");
+            let mut nav = FileNav::new(dir.join("alpha.txt").display().to_string());
+            let start = nav.dir.clone();
+
+            press(&mut nav, code);
+
+            assert_eq!(
+                nav.dir,
+                start.parent().expect("fixture has a parent"),
+                "{code:?} did not climb out"
+            );
+        }
+    }
+
+    /// `h` acts on the pane, not on the selected entry — it climbs out
+    /// whether a file, a directory or `..` is under the cursor.
+    #[test]
+    fn h_goes_up_regardless_of_what_is_selected() {
+        let dir = nested_fixture("keys_up_any");
+        let mut nav = FileNav::new(dir.join("alpha.txt").display().to_string());
+        select(&mut nav, "beta_dir");
+        let start = nav.dir.clone();
+
+        press(&mut nav, KeyCode::Char('h'));
+
+        assert_eq!(nav.dir, start.parent().expect("has parent"));
+    }
+
+    #[test]
+    fn l_and_right_descend_into_the_selected_directory() {
+        for code in [KeyCode::Char('l'), KeyCode::Right] {
+            let dir = nested_fixture("keys_down");
+            let mut nav = FileNav::new(dir.join("alpha.txt").display().to_string());
+            select(&mut nav, "beta_dir");
+
+            press(&mut nav, code);
+
+            assert_eq!(nav.dir.file_name().expect("named"), "beta_dir", "{code:?}");
+        }
+    }
+
+    /// `l` is `Enter`, in every case — including on a file, where both load
+    /// it. A key that works on some rows and silently does nothing on others
+    /// is worse than one that always does the obvious thing.
+    #[test]
+    fn l_on_a_file_loads_it_like_enter() {
+        let dir = nested_fixture("keys_l_file");
+        let mut nav = FileNav::new(dir.join("alpha.txt").display().to_string());
+        select(&mut nav, "gamma.txt");
+
+        let action = press(&mut nav, KeyCode::Char('l'));
+
+        assert!(
+            matches!(&action, Some(Action::Load(path)) if path.ends_with("gamma.txt")),
+            "expected a load, got {action:?}"
+        );
+    }
+
+    // ---- #21: where the cursor lands ------------------------------------
+
+    /// Entering a directory lands on its first entry, not on `..`. You went
+    /// in to get at something inside; `..` is the way back out.
+    #[test]
+    fn descending_selects_the_first_entry_and_previews_it() {
+        let dir = nested_fixture("keys_first_entry");
+        let mut nav = FileNav::new(dir.join("alpha.txt").display().to_string());
+        select(&mut nav, "beta_dir");
+
+        let action = press(&mut nav, KeyCode::Char('l'));
+
+        assert_eq!(
+            selected_name(&nav),
+            "inner_a.txt",
+            "did not land on the first entry"
+        );
+        assert!(
+            matches!(&action, Some(Action::Preview(path)) if path.ends_with("inner_a.txt")),
+            "descending did not preview what it selected, got {action:?}"
+        );
+    }
+
+    /// "First" means the first entry, file or directory — not the first
+    /// *file*. Skipping over directories would put the cursor somewhere
+    /// different in every directory depending on where its files sort.
+    #[test]
+    fn first_entry_means_first_entry_even_when_it_is_a_directory() {
+        let dir = Path::new("target/test-navdirs/keys_first_is_dir");
+        fs::remove_dir_all(dir).ok();
+        fs::create_dir_all(dir.join("outer/aaa_dir")).expect("create");
+        fs::write(dir.join("outer/zzz.txt"), "x").expect("write");
+        let mut nav = FileNav::new(dir.join("placeholder").display().to_string());
+        select(&mut nav, "outer");
+
+        press(&mut nav, KeyCode::Char('l'));
+
+        assert_eq!(
+            selected_name(&nav),
+            "aaa_dir",
+            "skipped the directory to find a file"
+        );
+    }
+
+    /// An empty directory has nothing but `..`, so that is where the cursor
+    /// goes — the fallback, not the default.
+    #[test]
+    fn descending_into_an_empty_directory_selects_the_parent_entry() {
+        let dir = Path::new("target/test-navdirs/keys_empty");
+        fs::remove_dir_all(dir).ok();
+        fs::create_dir_all(dir.join("hollow")).expect("create");
+        let mut nav = FileNav::new(dir.join("placeholder").display().to_string());
+        select(&mut nav, "hollow");
+
+        press(&mut nav, KeyCode::Char('l'));
+
+        assert_eq!(selected_name(&nav), PARENT);
+    }
+
+    /// Climbing out lands on the directory just left, so going up and into a
+    /// sibling does not mean scrolling the whole parent listing.
+    #[test]
+    fn going_up_selects_the_directory_just_left() {
+        let dir = nested_fixture("keys_back_out");
+        let mut nav = FileNav::new(dir.join("alpha.txt").display().to_string());
+        select(&mut nav, "beta_dir");
+        press(&mut nav, KeyCode::Char('l'));
+        assert_eq!(
+            nav.dir.file_name().expect("named"),
+            "beta_dir",
+            "precondition"
+        );
+
+        let action = press(&mut nav, KeyCode::Char('h'));
+
+        assert_eq!(
+            selected_name(&nav),
+            "beta_dir",
+            "did not land on the directory just left"
+        );
+        assert!(
+            matches!(&action, Some(Action::Preview(path)) if path.ends_with("beta_dir")),
+            "going up did not preview what it selected, got {action:?}"
+        );
+    }
+
+    /// `Enter` on `..` is the same movement as `h`, and lands the same way.
+    #[test]
+    fn enter_on_the_parent_entry_also_selects_the_directory_just_left() {
+        let dir = nested_fixture("keys_enter_parent");
+        let mut nav = FileNav::new(dir.join("beta_dir/inner_a.txt").display().to_string());
+        select(&mut nav, PARENT);
+
+        enter(&mut nav);
+
+        assert_eq!(selected_name(&nav), "beta_dir");
+    }
+
+    // ---- #21 item 5 / #22: what the startup argument selects ------------
+
+    /// Launched with a file, the cursor starts on that file — it is already
+    /// open in the view, so starting on `..` was strictly less useful.
+    #[test]
+    fn a_file_argument_selects_that_file() {
+        let dir = nested_fixture("arg_file");
+        let nav = FileNav::new(dir.join("gamma.txt").display().to_string());
+
+        assert_eq!(selected_name(&nav), "gamma.txt");
+    }
+
+    #[test]
+    fn a_directory_argument_lists_that_directory_and_selects_its_first_entry() {
+        let dir = nested_fixture("arg_dir");
+        let nav = FileNav::new(dir.display().to_string());
+
+        assert_eq!(
+            nav.dir.file_name().expect("named"),
+            "arg_dir",
+            "listed the parent"
+        );
+        assert_eq!(selected_name(&nav), "alpha.txt");
+    }
+
+    /// `j` at the bottom of the listing must stay on the last entry. It used
+    /// to run off the end, leaving `selected_path` returning `None` so the
+    /// preview quietly stopped updating — invisible, because the rendered
+    /// highlight is clamped separately.
+    #[test]
+    fn select_next_stops_at_the_last_entry() {
+        let mut nav = nav_over("clamp_bottom", &["alpha.txt"]);
+        let last = nav.entries.len() - 1;
+        nav.state.select(Some(last));
+
+        let action = press(&mut nav, KeyCode::Char('j'));
+
+        assert_eq!(nav.state.selected(), Some(last), "ran off the end");
+        assert!(
+            action.is_some(),
+            "preview stopped at the bottom of the list"
+        );
+    }
+
     /// A bare filename has no directory component, so the nav pane should fall
     /// back to the current directory rather than listing nothing.
     #[test]
@@ -777,7 +1097,10 @@ mod tests {
         let narrow = nav.preferred_width();
         fs::create_dir_all("target/test-navdirs/outer/a_much_longer_subdir")
             .expect("create subdir");
-        nav.set_dir(Path::new("target/test-navdirs/outer").to_path_buf());
+        nav.set_dir(
+            Path::new("target/test-navdirs/outer").to_path_buf(),
+            Select::First,
+        );
 
         assert!(
             nav.preferred_width() > narrow,
@@ -826,7 +1149,7 @@ mod tests {
         let mut nav = nav_over("move_onto_dir", &["alpha.rs"]);
         let dir = Path::new("target/test-navdirs/move_onto_dir");
         fs::create_dir_all(dir.join("beta_dir")).expect("create subdir");
-        nav.set_dir(dir.to_path_buf());
+        nav.set_dir(dir.to_path_buf(), Select::First);
         select(&mut nav, "alpha.rs"); // `beta_dir` sorts next
 
         let action = press(&mut nav, KeyCode::Down);
@@ -882,7 +1205,10 @@ mod tests {
 
         let action = enter(&mut nav);
 
-        assert!(action.is_none(), "descending should not request a load");
+        assert!(
+            matches!(action, Some(Action::Preview(_))),
+            "descending should preview what it selected, got {action:?}"
+        );
         assert!(
             nav.entries.iter().any(|e| e.name == "lib.rs"),
             "did not descend into src, entries: {:?}",
@@ -892,11 +1218,13 @@ mod tests {
     }
 
     #[test]
-    fn descending_resets_the_selection() {
+    /// Descending lands on the first entry — index 1, since `..` is 0. It
+    /// used to land on `..` itself, which is the way back out.
+    fn descending_selects_the_first_entry_not_the_parent() {
         let mut nav = FileNav::new("Cargo.toml".to_string());
         select(&mut nav, "src");
         enter(&mut nav);
-        assert_eq!(nav.state.selected(), Some(0));
+        assert_eq!(nav.state.selected(), Some(1));
     }
 
     #[test]
@@ -907,7 +1235,10 @@ mod tests {
 
         let action = enter(&mut nav);
 
-        assert!(action.is_none());
+        assert!(
+            matches!(action, Some(Action::Preview(_))),
+            "climbing out should preview what it selected, got {action:?}"
+        );
         assert_eq!(nav.dir, start.parent().unwrap());
         assert!(nav.entries.iter().any(|e| e.name == "Cargo.toml"));
     }
@@ -927,15 +1258,19 @@ mod tests {
         assert_eq!(nav.dir, start);
     }
 
+    /// Startup lands on the file recon was launched with, not on `..`.
     #[test]
-    fn starts_with_first_entry_selected() {
+    fn starts_on_the_launched_file() {
         let nav = FileNav::new("Cargo.toml".to_string());
-        assert_eq!(nav.state.selected(), Some(0));
+        assert_eq!(selected_name(&nav), "Cargo.toml");
     }
 
+    /// The movement primitives are about moving, so these pin the starting
+    /// index rather than inheriting whatever the startup argument selected.
     #[test]
     fn select_next_advances_selection() {
         let mut nav = FileNav::new("Cargo.toml".to_string());
+        nav.state.select(Some(0));
         nav.select_next();
         assert_eq!(nav.state.selected(), Some(1));
     }
@@ -943,6 +1278,7 @@ mod tests {
     #[test]
     fn select_previous_clamps_at_first_entry() {
         let mut nav = FileNav::new("Cargo.toml".to_string());
+        nav.state.select(Some(0));
         nav.select_previous();
         assert_eq!(nav.state.selected(), Some(0));
     }
@@ -1023,6 +1359,7 @@ mod tests {
         use crossterm::event::{KeyCode, KeyEvent};
 
         let mut nav = FileNav::new("Cargo.toml".to_string());
+        nav.state.select(Some(0));
         nav.handle_events(Event::Key(KeyEvent::from(KeyCode::Char('j'))))
             .unwrap();
         assert_eq!(nav.state.selected(), Some(1), "j should move down");

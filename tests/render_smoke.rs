@@ -63,7 +63,7 @@ fn press(app: &mut App, code: KeyCode) {
 #[test]
 fn renders_file_contents_into_buffer() {
     let config = Config {
-        file: "Cargo.toml".to_string(),
+        path: "Cargo.toml".to_string(),
     };
     let mut app = App::new(&config);
     let area = Rect::new(0, 0, 80, 24);
@@ -96,7 +96,7 @@ fn nav_pane_rows(buf: &Buffer) -> Vec<String> {
 #[test]
 fn nav_pane_renders_directory_entries() {
     let config = Config {
-        file: "Cargo.toml".to_string(),
+        path: "Cargo.toml".to_string(),
     };
     let mut app = App::new(&config);
     let area = Rect::new(0, 0, 80, 24);
@@ -152,9 +152,16 @@ fn highlighted_name(app: &mut App) -> String {
         .to_string()
 }
 
-/// Walk the nav selection down until `name` is highlighted. Keeps the tests
-/// independent of how many entries the working tree happens to contain.
+/// Walk the nav selection to `name`. Keeps the tests independent of how many
+/// entries the working tree happens to contain.
+///
+/// Rewinds to the top first: the cursor no longer starts on `..`, it starts
+/// on whatever the startup argument selected, so walking only downwards
+/// cannot reach an entry that sorts before it.
 fn highlight(app: &mut App, name: &str) {
+    for _ in 0..64 {
+        press(app, KeyCode::Up);
+    }
     for _ in 0..64 {
         if highlighted_name(app) == name {
             return;
@@ -167,7 +174,7 @@ fn highlight(app: &mut App, name: &str) {
 #[test]
 fn enter_on_a_file_loads_it_into_the_view() {
     let config = Config {
-        file: "Cargo.toml".to_string(),
+        path: "Cargo.toml".to_string(),
     };
     let mut app = App::new(&config);
     assert!(
@@ -189,7 +196,7 @@ fn enter_on_a_file_loads_it_into_the_view() {
 #[test]
 fn moving_onto_a_file_loads_it_without_enter() {
     let config = Config {
-        file: "Cargo.toml".to_string(),
+        path: "Cargo.toml".to_string(),
     };
     let mut app = App::new(&config);
 
@@ -218,7 +225,7 @@ fn moving_onto_a_directory_shows_that_it_is_a_directory() {
     std::fs::write(dir.join("alpha.rs"), "content\n").expect("write fixture");
 
     let config = Config {
-        file: dir.join("alpha.rs").display().to_string(),
+        path: dir.join("alpha.rs").display().to_string(),
     };
     let mut app = App::new(&config);
 
@@ -242,31 +249,42 @@ fn moving_onto_a_directory_shows_that_it_is_a_directory() {
     );
 }
 
+/// Descending relists the nav pane *and* moves the view onto the first entry
+/// of the directory entered.
+///
+/// It used to leave the view untouched, so you descended into a directory and
+/// went on looking at a file from the one you had just left.
 #[test]
-fn enter_on_a_directory_relists_the_nav_pane_without_touching_the_view() {
+fn enter_on_a_directory_relists_and_previews_its_first_entry() {
     let config = Config {
-        file: "Cargo.toml".to_string(),
+        path: "Cargo.toml".to_string(),
     };
     let mut app = App::new(&config);
 
-    // Capture the view once the cursor is already on `src`: getting there
-    // passes over files, which now preview as the selection moves.
     highlight(&mut app, "src");
     let view_before = view_text(&mut app);
+    assert!(
+        view_before.contains("<directory>"),
+        "precondition: a directory is selected:\n{view_before}"
+    );
+
     press(&mut app, KeyCode::Enter);
 
     let mut buf = Buffer::empty(AREA);
     (&mut app).render(AREA, &mut buf);
     let nav = nav_pane_rows(&buf).join("\n");
-
     assert!(
         nav.contains("lib.rs"),
         "nav did not descend into src:\n{nav}"
     );
-    assert_eq!(
-        view_before,
-        view_text(&mut app),
-        "descending should leave the file view alone"
+
+    // `src/document.rs` sorts first, and its first line is a module doc
+    // comment — the cursor landed on it and it was previewed.
+    assert_eq!(highlighted_name(&mut app), "document.rs");
+    let view_after = view_text(&mut app);
+    assert!(
+        view_after.contains("The loaded file"),
+        "the first entry was not previewed:\n{view_after}"
     );
 }
 
@@ -274,7 +292,7 @@ fn enter_on_a_directory_relists_the_nav_pane_without_touching_the_view() {
 fn tab_moves_focus_to_the_file_view() {
     // A long file, so that a page-down actually has somewhere to scroll to.
     let config = Config {
-        file: "src/widgets/filenav.rs".to_string(),
+        path: "src/widgets/filenav.rs".to_string(),
     };
     let mut app = App::new(&config);
 
@@ -290,7 +308,7 @@ fn tab_moves_focus_to_the_file_view() {
 #[test]
 fn nav_pane_snaps_to_its_contents() {
     let config = Config {
-        file: "Cargo.toml".to_string(),
+        path: "Cargo.toml".to_string(),
     };
     let mut app = App::new(&config);
     let mut buf = Buffer::empty(AREA);
@@ -328,7 +346,7 @@ fn click(app: &mut App, kind: MouseEventKind, column: u16) {
 #[test]
 fn dragging_the_divider_resizes_the_panes_on_screen() {
     let config = Config {
-        file: "Cargo.toml".to_string(),
+        path: "Cargo.toml".to_string(),
     };
     let mut app = App::new(&config);
     let mut buf = Buffer::empty(AREA);
