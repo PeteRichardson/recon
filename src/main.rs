@@ -5,7 +5,6 @@ use crossterm::{
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
-use log::debug;
 use ratatui::{Terminal, prelude::CrosstermBackend};
 use recon::{App, Config};
 use std::io::{self, Stdout};
@@ -16,7 +15,6 @@ fn main() -> Result<()> {
 
     setup_logging();
     let config = Config::parse();
-    debug!("{:?}", config);
 
     let terminal = init_terminal()?;
     App::new(&config).run(terminal)?;
