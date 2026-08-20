@@ -1309,16 +1309,21 @@ mod tests {
             .expect("no row is drawn as selected")
     }
 
+    /// Over a fixture rather than the working directory: a 20x10 area leaves
+    /// eight rows for the listing, so in a directory with more entries than
+    /// that the selected file only stays on screen by scrolling `..` off the
+    /// top — and this test would fail on the listing's length rather than on
+    /// anything it means to assert.
     #[test]
     fn renders_entries_into_the_buffer() {
-        let mut nav = FileNav::new("Cargo.toml".to_string());
+        let mut nav = nav_over("render_entries", &["alpha.rs", "beta.rs"]);
         let area = Rect::new(0, 0, 20, 10);
         let mut buf = Buffer::empty(area);
 
         nav.render(area, &mut buf);
 
         let text: String = buf.content().iter().map(|c| c.symbol()).collect();
-        assert!(text.contains("Cargo.toml"), "entries not drawn:\n{text}");
+        assert!(text.contains("alpha.rs"), "entries not drawn:\n{text}");
         assert!(text.contains(PARENT), "parent entry not drawn:\n{text}");
     }
 
@@ -1326,7 +1331,7 @@ mod tests {
     /// where they have navigated to.
     #[test]
     fn title_shows_the_current_directory() {
-        let mut nav = FileNav::new("Cargo.toml".to_string());
+        let mut nav = nav_over("title_dir", &["alpha.rs"]);
         // Wide enough that the absolute path is not truncated away.
         let area = Rect::new(0, 0, 120, 10);
         let mut buf = Buffer::empty(area);
@@ -1342,7 +1347,7 @@ mod tests {
 
     #[test]
     fn rendered_highlight_follows_selection() {
-        let mut nav = FileNav::new("Cargo.toml".to_string());
+        let mut nav = nav_over("highlight_follows", &["alpha.rs", "beta.rs"]);
 
         let first = highlighted_row(&mut nav);
         nav.select_next();
