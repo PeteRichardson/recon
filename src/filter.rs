@@ -382,8 +382,11 @@ impl FilterSet {
 
     /// The style to render a line with, or `None` to leave it alone.
     ///
-    /// `Unmatched` dims only when some including filter is actually active —
-    /// otherwise every line of an unfiltered file would be dimmed.
+    /// The style to render a line with, or `None` to leave it alone.
+    ///
+    /// `Unmatched` dims only when a *numbered* including filter is active. The
+    /// live search does not trigger dimming on its own; see `any_numbered_including`
+    /// for why.
     pub fn style_for(&self, verdict: Verdict) -> Option<Style> {
         match verdict {
             Verdict::Included(index) => self.filters.get(index).map(|f| f.style),
@@ -965,13 +968,23 @@ mod tests {
     }
 
     /// Add a numbered filter and dimming switches on, because now there really
-    /// are two things to tell apart.
+    /// are two things to tell apart. If we then disable the numbered filter,
+    /// leaving only the search, dimming must stop — that's the asymmetry.
+    /// This pins the difference between the two predicates directly rather than
+    /// testing a case where they agree.
     #[test]
     fn a_numbered_filter_alongside_a_search_dims() {
         let mut set = set_with(&["ERROR"]);
         set.set_search("foo").expect("valid pattern");
 
         assert_eq!(set.style_for(Verdict::Unmatched), Some(DIM_STYLE));
+
+        set.set_enabled(0, false);
+        assert_eq!(
+            set.style_for(Verdict::Unmatched),
+            None,
+            "search alone must not dim, even when one was present"
+        );
     }
 
     #[test]
