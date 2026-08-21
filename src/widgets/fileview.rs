@@ -83,9 +83,6 @@ pub struct FileView<'a> {
     /// alone says the document's length is wrong without saying what is right.
     pub estimated_lines: Option<usize>,
     pub active: bool,
-    /// Direction the current search was started in, so `n` repeats it and `N`
-    /// reverses it.
-    search_reverse: bool,
     /// Whether the line-number gutter is drawn. Toggled with `#`.
     hide_line_numbers: bool,
     /// Set when the buffer currently holds the single blank placeholder line
@@ -292,28 +289,13 @@ impl FileView<'_> {
         }
     }
 
-    /// Start a search, moving to the first match from the cursor.
+    /// Put the cursor on `row` of the current buffer, clamped to it.
     ///
-    /// The pattern is a regular expression, so an invalid one is reported
-    /// rather than silently matching nothing. The search wraps around the
-    /// buffer and every match is highlighted.
-    pub fn search(&mut self, pattern: &str, reverse: bool) -> Result<bool, regex::Error> {
-        self.textarea.set_search_pattern(pattern)?;
-        self.search_reverse = reverse;
-        Ok(self.step_search(reverse))
-    }
-
-    /// Repeat the current search: `n` keeps its direction, `N` flips it.
-    pub fn repeat_search(&mut self, opposite: bool) -> bool {
-        self.step_search(self.search_reverse != opposite)
-    }
-
-    fn step_search(&mut self, reverse: bool) -> bool {
-        if reverse {
-            self.textarea.search_back(false)
-        } else {
-            self.textarea.search_forward(false)
-        }
+    /// Used by `n`/`N`, which decide *which* line to land on in `App` — the
+    /// only place that can see both the verdicts and the cursor — and then
+    /// ask the view to go there.
+    pub fn set_cursor_row(&mut self, row: usize) {
+        self.textarea.set_cursor_position((row, 0));
     }
 
     pub fn handle_events(&mut self, input: Input) -> Result<()> {
@@ -371,20 +353,6 @@ impl FileView<'_> {
                 key: Key::Char('{'),
                 ..
             } => self.textarea.move_cursor(CursorMove::ParagraphBack),
-            Input {
-                key: Key::Char('n'),
-                ctrl: false,
-                ..
-            } => {
-                self.repeat_search(false);
-            }
-            Input {
-                key: Key::Char('N'),
-                ctrl: false,
-                ..
-            } => {
-                self.repeat_search(true);
-            }
             Input {
                 key: Key::Char('$'),
                 ..
@@ -886,70 +854,6 @@ mod tests {
             view.textarea.cursor().0 < after_forward,
             "{{ did not move back"
         );
-    }
-
-    #[test]
-    fn search_jumps_to_the_first_match() {
-        let mut view = view_of("search.txt", "alpha\nbeta\ngamma\nbeta\n");
-
-        let found = view.search("beta", false).expect("valid pattern");
-
-        assert!(found);
-        assert_eq!(view.textarea.cursor().0, 1);
-    }
-
-    #[test]
-    fn search_supports_regex() {
-        let mut view = view_of("search_re.txt", "alpha\nbeta\ngamma\n");
-
-        assert!(view.search("^gam+a$", false).expect("valid pattern"));
-
-        assert_eq!(view.textarea.cursor().0, 2);
-    }
-
-    /// `n` repeats in the direction the search started; `N` reverses it.
-    #[test]
-    fn n_and_shift_n_cycle_matches() {
-        let mut view = view_of("search_cycle.txt", "beta\nx\nbeta\ny\nbeta\n");
-        view.search("beta", false).expect("valid pattern");
-        assert_eq!(
-            view.textarea.cursor().0,
-            2,
-            "search starts after the cursor"
-        );
-
-        send(&mut view, Key::Char('n'));
-        assert_eq!(view.textarea.cursor().0, 4);
-
-        send(&mut view, Key::Char('N'));
-        assert_eq!(view.textarea.cursor().0, 2);
-    }
-
-    #[test]
-    fn search_wraps_around_the_buffer() {
-        let mut view = view_of("search_wrap.txt", "beta\nx\ny\n");
-        view.search("beta", false).expect("valid pattern");
-
-        send(&mut view, Key::Char('n'));
-
-        assert_eq!(view.textarea.cursor().0, 0, "search did not wrap");
-    }
-
-    #[test]
-    fn a_backward_search_walks_upwards() {
-        let mut view = view_of("search_back.txt", "beta\nx\nbeta\ny\n");
-        view.textarea.move_cursor(CursorMove::Bottom);
-
-        assert!(view.search("beta", true).expect("valid pattern"));
-
-        assert_eq!(view.textarea.cursor().0, 2);
-    }
-
-    #[test]
-    fn an_invalid_pattern_is_reported() {
-        let mut view = view_of("search_bad.txt", "alpha\n");
-
-        assert!(view.search("[", false).is_err());
     }
 
     /// The cap is injected rather than taken from `PREVIEW_LINES`, so the
