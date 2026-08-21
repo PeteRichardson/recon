@@ -581,6 +581,32 @@ impl App<'_> {
                     self.search = Some(SearchPrompt::default());
                     return Ok(());
                 }
+                // Global, like `!`: the search is app state, not the file
+                // view's, and having to focus a particular pane to switch it
+                // off would make it easy to leave one running by accident.
+                //
+                // This departs from vim, where Esc leaves the pattern alone.
+                // Here the search is a filter, and a filter that cannot be
+                // turned off is a leak — one typed ten minutes ago would keep
+                // changing what is on screen with nothing to stop it.
+                //
+                // An open prompt already took this key: `handle_event` returns
+                // early while `self.search` is `Some`, so Esc there cancels the
+                // prompt rather than reaching past it.
+                //
+                // Guarded on `.is_empty()`, unlike `n`/`N` above: that guard was
+                // wrong for them because crossterm attaches SHIFT to every
+                // uppercase letter a real terminal sends. Esc isn't a
+                // printable character, so there is no case to attach SHIFT to;
+                // in the legacy key-reporting mode this app runs in (no
+                // keyboard-enhancement flags — see `main.rs`), a bare Esc byte
+                // carries no modifiers at all, so `is_empty()` is simply
+                // correct here rather than a trap.
+                KeyCode::Esc if key.modifiers.is_empty() => {
+                    self.filters.clear_search();
+                    self.refresh_view();
+                    return Ok(());
+                }
                 // `f` moves focus; creating a filter is `i` / `x` once the
                 // pane has it. That costs a keystroke from outside the pane
                 // and none from inside, in exchange for one focus key per
@@ -4557,6 +4583,70 @@ mod tests {
             app.filters.search().is_none(),
             "a rejected pattern became a filter"
         );
+    }
+
+    #[test]
+    fn escape_clears_the_search_filter() {
+        let mut app = app_over_file("esc_clears", "alpha\nbeta\n");
+        key(&mut app, KeyCode::Char('t'));
+        key(&mut app, KeyCode::Char('/'));
+        typed(&mut app, "beta");
+        key(&mut app, KeyCode::Enter);
+        assert!(app.filters.search().is_some(), "sanity: search set");
+
+        key(&mut app, KeyCode::Esc);
+
+        assert!(app.filters.search().is_none());
+    }
+
+    /// Issue #36's guard is what makes this safe: clearing the last thing that
+    /// was including must not leave a blank pane behind.
+    #[test]
+    fn escape_while_hiding_restores_the_file_rather_than_blanking_it() {
+        let mut app = app_over_file("esc_hiding", "alpha\nbeta\ngamma\n");
+        key(&mut app, KeyCode::Char('t'));
+        key(&mut app, KeyCode::Char('H'));
+        key(&mut app, KeyCode::Char('/'));
+        typed(&mut app, "beta");
+        key(&mut app, KeyCode::Enter);
+        assert_eq!(app.document.visible(), &[1], "sanity: grepped down");
+
+        key(&mut app, KeyCode::Esc);
+
+        assert_eq!(app.document.visible(), &[0, 1, 2], "the pane went blank");
+    }
+
+    /// An open prompt still wins: Esc there cancels the prompt, as it always has,
+    /// rather than reaching past it to delete an established search.
+    #[test]
+    fn escape_in_an_open_prompt_still_cancels_the_prompt() {
+        let mut app = app_over_file("esc_prompt", "alpha\nbeta\n");
+        key(&mut app, KeyCode::Char('t'));
+        key(&mut app, KeyCode::Char('/'));
+        typed(&mut app, "beta");
+        key(&mut app, KeyCode::Enter);
+        key(&mut app, KeyCode::Char('/'));
+        typed(&mut app, "gamma");
+
+        key(&mut app, KeyCode::Esc);
+
+        assert!(app.search.is_none(), "the prompt did not close");
+        assert!(
+            app.filters.search().is_some(),
+            "Esc reached past the prompt"
+        );
+    }
+
+    #[test]
+    fn escape_with_no_search_does_nothing() {
+        let mut app = app_over_file("esc_noop", "alpha\n");
+        key(&mut app, KeyCode::Char('t'));
+        app.filters.add("alpha").expect("valid pattern");
+        app.refresh_view();
+
+        key(&mut app, KeyCode::Esc);
+
+        assert_eq!(app.filters.len(), 1, "Esc touched the numbered filters");
     }
 
     /// `?` is reserved for the help view (#25). With n/N covering both
