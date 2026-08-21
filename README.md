@@ -394,9 +394,15 @@ row and leaves focus where it was — the pane is still on screen, so there is
 nothing to move focus off.
 
 The pane never widens the left column to fit its hint: the column is sized by
-the navigator's longest entry, and a directory of short names keeps it narrow
-exactly as before. The hint gives way instead, which is why it has a short
-form and can be dropped altogether.
+the navigator's longest entry. The hint gives way instead, which is why it has
+a short form and can be dropped altogether.
+
+The left column has a floor when it sizes itself automatically, so entering a
+directory of one short name no longer shrinks it to a few columns and moves
+every pane on screen. It still widens for longer names, up to its cap. The
+floor applies to automatic sizing only — dragging the divider is a decision
+and may still take the column narrower, and `b` or `z` give the file view the
+whole width outright.
 
 ---
 
