@@ -206,6 +206,26 @@ impl FileView<'_> {
         self.gutter_blank = blank;
     }
 
+    /// Set or clear the pattern whose spans the pane highlights black-on-yellow.
+    ///
+    /// The search *filter* owns the pattern; this only controls whether it is
+    /// painted. Passing `None` clears the highlight — `set_search_pattern`
+    /// treats an empty query as "no pattern", so nothing is compiled on that
+    /// path. `load`/`preview` replace the textarea outright, dropping this
+    /// too, same as `set_line_styles`/`set_line_numbers` above, so
+    /// `App::apply_view` re-applies it on every pass rather than only when
+    /// the pattern changes.
+    pub fn set_highlight(&mut self, pattern: Option<&str>) -> Result<(), regex::Error> {
+        self.textarea.set_search_pattern(pattern.unwrap_or(""))
+    }
+
+    /// The pattern currently highlighted, if any.
+    pub fn highlight(&self) -> Option<String> {
+        self.textarea
+            .search_pattern()
+            .map(|pattern| pattern.as_str().to_string())
+    }
+
     /// Replace the buffer's contents and put the cursor on `row`, without
     /// touching the file.
     ///

@@ -977,6 +977,21 @@ impl App<'_> {
         } else {
             Vec::new()
         };
+        // Computed here, alongside `styles`, rather than inside the `view`
+        // block below: both read `self.filters`, and grouping them keeps
+        // every access to that field on the `&self` side of the borrow.
+        // Re-applied on every pass rather than only when the pattern
+        // changes: `load`/`preview` replace the textarea outright, dropping
+        // whatever pattern it had (see `FileView::set_highlight`), and
+        // switching files funnels through `refresh_view` → `apply_view` the
+        // same as every filter mutation does. The pattern also tracks the
+        // filter's *enabled* flag, so `!` and `space` have to reach it here
+        // too, not just `/` and Esc.
+        let highlight = self
+            .filters
+            .search()
+            .filter(|search| search.enabled)
+            .map(|search| search.pattern.as_str().to_string());
 
         // `CursorMove::Jump` takes a `u16`, which silently truncates past
         // 65,535 lines and lands the cursor 65,536 lines from its target on a
@@ -1005,6 +1020,13 @@ impl App<'_> {
         view.set_line_numbers(numbers);
         view.set_line_styles(styles);
         view.set_gutter_blank(nothing_visible);
+        // `highlight`, when `Some`, was `Regex::as_str()` on a pattern that
+        // `FilterSet::set_search` already compiled once; re-parsing the same
+        // string here cannot fail. `.expect` rather than `let _ =` so a
+        // future change that could make it fail (e.g. a differently-sourced
+        // pattern) fails loudly instead of leaving a silently stale highlight.
+        view.set_highlight(highlight.as_deref())
+            .expect("highlight pattern already compiled by FilterSet::search");
         // Only a rebuild resets the viewport, so only a rebuild needs the
         // cursor nudged back onto `screen_row` — the whole point of
         // `scroll_cursor_to_row` is undoing that reset. Requesting it
@@ -5092,5 +5114,99 @@ mod tests {
             Some(0),
             "selection was left pointing past the end after the search row disappeared"
         );
+    }
+
+    impl App<'_> {
+        /// The pattern the file view is currently highlighting, for tests.
+        fn file_view_highlight(&self) -> Option<String> {
+            self.widgets.iter().find_map(|widget| match widget {
+                AppWidget::FileView(view) => view.highlight(),
+                AppWidget::FileNav(_) | AppWidget::FilterList(_) => None,
+            })
+        }
+    }
+
+    /// Toggling hide mode shrinks the visible line set, which rebuilds the
+    /// pane's buffer through `FileView::show_lines_with_cursor`. That call
+    /// does not itself clear the textarea's search pattern — `set_lines`
+    /// only resets selection, custom highlights and the viewport — but
+    /// `apply_view` recomputes and re-applies the highlight unconditionally
+    /// on every pass regardless, the same as `styles`/`numbers` above. This
+    /// confirms a filter-driven rebuild does not disturb it; the swap that
+    /// actually clears the pattern is covered separately, below.
+    #[test]
+    fn the_span_highlight_survives_a_rebuild() {
+        let mut app = app_over_file("hl_rebuild", "alpha\nbeta\ngamma\n");
+        key(&mut app, KeyCode::Char('t'));
+        key(&mut app, KeyCode::Char('/'));
+        typed(&mut app, "beta");
+        key(&mut app, KeyCode::Enter);
+
+        key(&mut app, KeyCode::Char('H'));
+
+        assert!(
+            app.file_view_highlight().is_some(),
+            "the highlight was lost"
+        );
+    }
+
+    /// Unlike a filter-driven rebuild, `load`/`preview` replace the textarea
+    /// outright (see `FileView::load`), which drops any pattern the old one
+    /// held. Filters and the hide mode already had to survive that same
+    /// swap — `filters_survive_loading_another_file`,
+    /// `the_hide_mode_survives_loading_another_file` — the highlight is no
+    /// different.
+    #[test]
+    fn the_span_highlight_survives_loading_another_file() {
+        let mut app = app_over_file("hl_reload", "alpha\nbeta\n");
+        key(&mut app, KeyCode::Char('t'));
+        key(&mut app, KeyCode::Char('/'));
+        typed(&mut app, "beta");
+        key(&mut app, KeyCode::Enter);
+
+        let dir = std::path::Path::new("target/test-appdirs/hl_reload");
+        fs::write(dir.join("other.txt"), "beta again\nnothing\n").expect("write");
+        app.perform(Action::Load(dir.join("other.txt")));
+
+        assert!(
+            app.file_view_highlight().is_some(),
+            "the highlight did not survive loading another file"
+        );
+    }
+
+    /// `!` promises one keystroke back to an unfiltered view. Yellow left glowing
+    /// on an inert view breaks that promise.
+    #[test]
+    fn disabling_everything_clears_the_span_highlight() {
+        let mut app = app_over_file("hl_bang", "alpha\nbeta\n");
+        key(&mut app, KeyCode::Char('t'));
+        key(&mut app, KeyCode::Char('/'));
+        typed(&mut app, "beta");
+        key(&mut app, KeyCode::Enter);
+
+        key(&mut app, KeyCode::Char('!'));
+        assert!(
+            app.file_view_highlight().is_none(),
+            "highlights outlived '!'"
+        );
+
+        key(&mut app, KeyCode::Char('!'));
+        assert!(
+            app.file_view_highlight().is_some(),
+            "the highlight did not come back"
+        );
+    }
+
+    #[test]
+    fn clearing_the_search_clears_the_span_highlight() {
+        let mut app = app_over_file("hl_esc", "alpha\nbeta\n");
+        key(&mut app, KeyCode::Char('t'));
+        key(&mut app, KeyCode::Char('/'));
+        typed(&mut app, "beta");
+        key(&mut app, KeyCode::Enter);
+
+        key(&mut app, KeyCode::Esc);
+
+        assert!(app.file_view_highlight().is_none());
     }
 }
