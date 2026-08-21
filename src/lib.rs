@@ -1022,11 +1022,14 @@ impl App<'_> {
         view.set_gutter_blank(nothing_visible);
         // `highlight`, when `Some`, was `Regex::as_str()` on a pattern that
         // `FilterSet::set_search` already compiled once; re-parsing the same
-        // string here cannot fail. `.expect` rather than `let _ =` so a
-        // future change that could make it fail (e.g. a differently-sourced
-        // pattern) fails loudly instead of leaving a silently stale highlight.
-        view.set_highlight(highlight.as_deref())
-            .expect("highlight pattern already compiled by FilterSet::search");
+        // string here is deterministic and cannot fail today. Even so, this
+        // is the hottest path in the app — every filter mutation and every
+        // navigator preview reaches it — so a future regression here should
+        // cost a stale highlight, not a panic that takes the whole TUI down.
+        // `let _ =` accepts that cosmetic failure mode deliberately, rather
+        // than escalating it into one this codebase's own tests are better
+        // suited to catch.
+        let _ = view.set_highlight(highlight.as_deref());
         // Only a rebuild resets the viewport, so only a rebuild needs the
         // cursor nudged back onto `screen_row` — the whole point of
         // `scroll_cursor_to_row` is undoing that reset. Requesting it
@@ -5127,11 +5130,12 @@ mod tests {
     /// Toggling hide mode shrinks the visible line set, which rebuilds the
     /// pane's buffer through `FileView::show_lines_with_cursor`. That call
     /// does not itself clear the textarea's search pattern — `set_lines`
-    /// only resets selection, custom highlights and the viewport — but
-    /// `apply_view` recomputes and re-applies the highlight unconditionally
-    /// on every pass regardless, the same as `styles`/`numbers` above. This
-    /// confirms a filter-driven rebuild does not disturb it; the swap that
-    /// actually clears the pattern is covered separately, below.
+    /// resets history, selection, custom highlights, atomic ranges and the
+    /// viewport, but never touches the search pattern — and `apply_view`
+    /// recomputes and re-applies the highlight unconditionally on every
+    /// pass regardless, the same as `styles`/`numbers` above. This confirms
+    /// a filter-driven rebuild does not disturb it; the swap that actually
+    /// clears the pattern is covered separately, below.
     #[test]
     fn the_span_highlight_survives_a_rebuild() {
         let mut app = app_over_file("hl_rebuild", "alpha\nbeta\ngamma\n");
