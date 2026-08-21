@@ -1031,13 +1031,23 @@ mod tests {
         assert_eq!(set.verdict("beta line"), Verdict::Included(1));
     }
 
+    /// `next_style` reads `self.filters.len()`, so it must be called before the
+    /// push that grows `filters`, not after — call it after and it reads one
+    /// too many and returns `PALETTE[2]` instead of `PALETTE[1]`. A mere
+    /// inequality would not catch that swap: `PALETTE[2]` is still unequal to
+    /// both filter 0's colour and to `SEARCH_STYLE`. Pinning the exact colour
+    /// is the only assertion that sees the off-by-one.
     #[test]
     fn a_promoted_search_takes_the_next_palette_colour() {
         let mut set = set_with(&["alpha"]);
         set.set_search("beta").expect("valid pattern");
         set.promote_search();
 
-        assert_ne!(set.filters()[0].style, set.filters()[1].style);
+        assert_eq!(
+            set.filters()[1].style.fg,
+            Some(PALETTE[1]),
+            "index 1 is where the promoted filter actually lands"
+        );
         assert_ne!(
             set.filters()[1].style,
             SEARCH_STYLE,
