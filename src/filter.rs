@@ -352,12 +352,29 @@ impl FilterSet {
             .map_or(Verdict::Unmatched, |(index, _)| Verdict::Included(index))
     }
 
-    /// Whether any enabled filter selects lines, as opposed to removing them.
+    /// Whether anything at all is marking lines — a numbered including filter,
+    /// or the live search.
     ///
-    /// Dimming means "this line matched no include filter". With only
-    /// excluding filters there is nothing to dim against, so the file reads
-    /// normally minus the removed lines.
-    fn any_including(&self) -> bool {
+    /// Drives hiding (including the `Ctrl-H` guard in `Document`) and `n`/`N`.
+    /// Public because `Document` caches it at `evaluate` time.
+    pub fn any_including(&self) -> bool {
+        self.any_numbered_including() || self.search.as_ref().is_some_and(|search| search.enabled)
+    }
+
+    /// Whether a *numbered* including filter is enabled. Drives dimming alone.
+    ///
+    /// Dimming is a contrast mechanism: unmatched lines recede so that
+    /// coloured matches stand out, and its value scales with how many things
+    /// are being told apart. A search on its own is one thing, and its hits
+    /// already carry the span highlight — so dimming the rest of the file buys
+    /// nothing and costs the readability of the context the search was run in
+    /// order to reach.
+    ///
+    /// The consequence is deliberate and is the one place dimming stops being
+    /// a strict preview of hiding: after a bare `/foo`, nothing is grey and
+    /// `Ctrl-H` still hides plenty. A user pressing a key that means "hide
+    /// unmatched" is not surprised to get it.
+    fn any_numbered_including(&self) -> bool {
         self.filters
             .iter()
             .any(|filter| filter.enabled && filter.sense == Sense::Include)
@@ -371,7 +388,7 @@ impl FilterSet {
         match verdict {
             Verdict::Included(index) => self.filters.get(index).map(|f| f.style),
             Verdict::Searched => Some(SEARCH_STYLE),
-            Verdict::Unmatched if self.any_including() => Some(DIM_STYLE),
+            Verdict::Unmatched if self.any_numbered_including() => Some(DIM_STYLE),
             Verdict::Unmatched | Verdict::Excluded => None,
         }
     }
@@ -920,5 +937,50 @@ mod tests {
 
         set.set_search("baz").expect("valid pattern");
         assert_eq!(set.row_count(), 3);
+    }
+
+    /// Dimming is a contrast mechanism, and a search on its own is one thing to
+    /// see: its hits already carry the span highlight, so greying the rest of the
+    /// file buys nothing and costs the readability of the context the user
+    /// searched in order to reach.
+    #[test]
+    fn a_search_alone_does_not_dim() {
+        let mut set = FilterSet::new();
+        set.set_search("foo").expect("valid pattern");
+
+        assert_eq!(set.style_for(Verdict::Unmatched), None);
+    }
+
+    /// But it still counts as something to hide against, so `Ctrl-H` works after
+    /// a bare search. This is the asymmetry the two predicates exist for.
+    #[test]
+    fn a_search_alone_still_counts_for_hiding() {
+        let mut set = FilterSet::new();
+        set.set_search("foo").expect("valid pattern");
+
+        assert!(
+            set.any_including(),
+            "Ctrl-H would have nothing to hide against"
+        );
+    }
+
+    /// Add a numbered filter and dimming switches on, because now there really
+    /// are two things to tell apart.
+    #[test]
+    fn a_numbered_filter_alongside_a_search_dims() {
+        let mut set = set_with(&["ERROR"]);
+        set.set_search("foo").expect("valid pattern");
+
+        assert_eq!(set.style_for(Verdict::Unmatched), Some(DIM_STYLE));
+    }
+
+    #[test]
+    fn a_disabled_search_counts_for_neither() {
+        let mut set = FilterSet::new();
+        set.set_search("foo").expect("valid pattern");
+        set.search_set_enabled(false);
+
+        assert!(!set.any_including());
+        assert_eq!(set.style_for(Verdict::Unmatched), None);
     }
 }
