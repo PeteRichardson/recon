@@ -73,7 +73,8 @@ motions throughout.
 - **Vim motions** — `hjkl`, `w`, `0`/`^`/`$`, `{`/`}`, `g`/`G`, `Ctrl-D`/`Ctrl-U`,
   `/` and `?` with `n`/`N` repeat.
 - **Directories are obvious** — bright blue, bold and slash-suffixed, with
-  executables in green, following yazi.
+  executables in green, following yazi. `..` is the exception: it is dimmed
+  grey, because it is the one row that is never what you are looking for.
 - **Look before you enter** — selecting a directory lists its contents in the
   view pane, with size and modification time, so you can see what is inside
   without going in. `l` on that selection makes the listing the navigator's.

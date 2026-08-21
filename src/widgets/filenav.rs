@@ -1,5 +1,6 @@
 /// FileNav
 ///
+use crate::filter::DIM_STYLE;
 use crate::widgets::Action;
 use color_eyre::Result;
 use crossterm::event::{Event, KeyCode};
@@ -59,12 +60,34 @@ const DIR_STYLE: Style = Style::new()
 /// only disagree with it.
 const EXEC_STYLE: Style = Style::new().fg(Color::Green);
 
+/// The `..` row: chrome, not content.
+///
+/// Reuses `filter.rs`'s `DIM_STYLE` — the same grey that already says "not what
+/// you are looking for" on unmatched lines and on disabled filters — rather
+/// than picking a second shade of grey that would drift from it.
+///
+/// `..` *is* a directory, and drawing it as one is defensible; but it is the
+/// single row in every listing that is never the thing being looked for, and
+/// bright blue and bold made it the loudest row on screen. Dimming leaves it
+/// discoverable — it is still the only visible way up, and still the escape
+/// hatch from a directory that would otherwise render as an empty box — while
+/// letting the eye skip it.
+const PARENT_STYLE: Style = DIM_STYLE;
+
 /// What an entry is, which is all the palette encodes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
     Dir,
     Executable,
     Plain,
+    /// The `..` row. A directory, but never one you are looking *for* — see
+    /// `PARENT_STYLE`.
+    ///
+    /// Its own variant rather than a `name == PARENT` test inside `style()`,
+    /// because a real directory genuinely called `..` cannot exist, and every
+    /// place that cares about the distinction (`style`, `display`,
+    /// `activate_selection`) then asks the same question the same way.
+    Parent,
 }
 
 /// One row of the listing: its name, and what it is.
@@ -95,6 +118,7 @@ impl Entry {
         match self.kind {
             Kind::Dir => DIR_STYLE,
             Kind::Executable => EXEC_STYLE,
+            Kind::Parent => PARENT_STYLE,
             // The common case pays for no colour. With directories and
             // executables marked, a plain row is unambiguous by absence, and
             // the terminal's own theme governs the rows there are most of.
@@ -103,9 +127,14 @@ impl Entry {
     }
 
     /// The row as drawn: directories wear a trailing `/`, as `ls -F` does.
+    ///
+    /// `..` included. The slash is a type marker rather than emphasis — `../`
+    /// is what every other tool writes — and it is the one cue that survives a
+    /// terminal with no colour at all, which is exactly the case where the
+    /// dimming says nothing.
     pub(crate) fn display(&self) -> String {
         match self.kind {
-            Kind::Dir => format!("{}/", self.name),
+            Kind::Dir | Kind::Parent => format!("{}/", self.name),
             _ => self.name.clone(),
         }
     }
@@ -335,10 +364,14 @@ impl FileNav<'_> {
     /// Open the highlighted entry: descend into a directory in place, or ask
     /// for a file to be loaded into the file view in full.
     fn activate_selection(&mut self) -> Option<Action> {
-        // `..` is a directory like any other, but descending into it means
-        // climbing *out* — and the cursor should land on the directory being
-        // left, not on that directory's own first entry.
-        if self.entries.get(self.state.selected()?)?.name == PARENT {
+        // `..` opens like a directory, but descending into it means climbing
+        // *out* — and the cursor should land on the directory being left, not
+        // on that directory's own first entry.
+        //
+        // Asks the kind rather than comparing the name: a real entry called
+        // `..` cannot exist, so the two agree, but the kind is the field that
+        // actually carries the distinction.
+        if self.entries.get(self.state.selected()?)?.kind == Kind::Parent {
             return self.go_to_parent();
         }
 
@@ -384,9 +417,10 @@ impl FileNav<'_> {
 fn read_dir_entries(dir: &Path) -> Vec<Entry> {
     let mut entries = vec![Entry {
         name: PARENT.to_string(),
-        // `..` is a directory and reads as one, rather than being a third
-        // kind of thing with its own look.
-        kind: Kind::Dir,
+        // Its own kind, not `Kind::Dir`. It behaves like a directory in every
+        // way that matters to navigation, but it is drawn as chrome — see
+        // `PARENT_STYLE`.
+        kind: Kind::Parent,
         // Not stat'd: `..` is a way out of this listing rather than an entry
         // in it, and the navigator shows neither field anyway.
         size: None,
@@ -624,13 +658,64 @@ mod tests {
         assert!(!style.add_modifier.contains(Modifier::BOLD));
     }
 
-    /// `..` is a directory and reads as one, rather than being a third thing.
+    /// `..` reads as chrome, not as content: it is the one row that is never
+    /// what you are looking for, so it wears the same grey that already means
+    /// "not the thing you want" on unmatched lines and disabled filters.
+    ///
+    /// It used to be drawn as a directory — bright blue and bold — which put it
+    /// in open competition with the actual listing.
     #[test]
-    fn the_parent_entry_is_styled_as_a_directory() {
+    fn the_parent_entry_is_dimmed_as_chrome() {
         let mut nav = nav_with_kinds("kinds_parent");
 
-        assert_eq!(name_style(&mut nav, PARENT).fg, Some(Color::LightBlue));
+        let style = name_style(&mut nav, PARENT);
+
+        assert_eq!(style.fg, DIM_STYLE.fg, "`..` is not drawn in the dim grey");
+        assert!(
+            style.add_modifier.contains(Modifier::DIM),
+            "`..` lost the DIM modifier that terminals honouring it use"
+        );
+        assert!(
+            !style.add_modifier.contains(Modifier::BOLD),
+            "`..` is still bold, which is the emphasis this removes"
+        );
+    }
+
+    /// The trailing `/` stays. It is a type marker rather than emphasis —
+    /// `../` is what every other tool writes — and it is the cue that survives
+    /// a terminal with no colour at all.
+    #[test]
+    fn the_parent_entry_keeps_its_trailing_slash() {
+        let mut nav = nav_with_kinds("kinds_parent_slash");
+
         assert!(row_text(&mut nav, PARENT).ends_with("../"));
+    }
+
+    /// The case this change could quietly break: reverse video is the only
+    /// selection cue since #15, and it now has to land on a *dimmed* row.
+    ///
+    /// Reversing a grey foreground gives a grey background, which still reads
+    /// as selected — but a `..` that looked unselected while the cursor was on
+    /// it would be a straight regression, and nothing else on screen would say
+    /// where the cursor is.
+    #[test]
+    fn a_selected_parent_entry_still_reads_as_selected() {
+        let mut nav = nav_with_kinds("kinds_parent_selected");
+        select(&mut nav, PARENT);
+
+        let selected = name_style(&mut nav, PARENT);
+        let mut unselected_nav = nav_with_kinds("kinds_parent_unselected");
+        select(&mut unselected_nav, "plain.txt");
+        let unselected = name_style(&mut unselected_nav, PARENT);
+
+        assert!(
+            selected.add_modifier.contains(Modifier::REVERSED),
+            "the selected `..` is not drawn as selected"
+        );
+        assert_ne!(
+            selected, unselected,
+            "a selected `..` is indistinguishable from an unselected one"
+        );
     }
 
     /// A search hit outranks the kind colour: it is the transient, task-driven
