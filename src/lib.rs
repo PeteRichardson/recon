@@ -389,7 +389,7 @@ impl App<'_> {
     /// it costs nothing to a user who never defines one.
     fn filter_pane_height(&self) -> u16 {
         self.filter_list()
-            .map(|list| list.preferred_height(self.filters.len()))
+            .map(|list| list.preferred_height(self.filters.row_count()))
             .unwrap_or(0)
     }
 
@@ -823,10 +823,10 @@ impl App<'_> {
         // `add_excluding_filter`, and the pane's own toggle/delete — funnels
         // through this method, so putting the call here rather than at each
         // call site means a future fourth path cannot forget it.
-        let len = self.filters.len();
+        let rows = self.filters.row_count();
         for widget in &mut self.widgets {
             if let AppWidget::FilterList(list) = widget {
-                list.clamp_selection(len);
+                list.clamp_selection(rows);
             }
         }
 
@@ -880,11 +880,12 @@ impl App<'_> {
             }
         }
 
-        let len = self.filters.len();
+        let rows = self.filters.row_count();
+        let has_search = self.filters.search().is_some();
         let Some(AppWidget::FilterList(list)) = self.widgets.get_mut(self.active_widget) else {
             return;
         };
-        let Some(command) = list.handle_key(key, len) else {
+        let Some(command) = list.handle_key(key, rows, has_search) else {
             return;
         };
         match command {
@@ -894,6 +895,11 @@ impl App<'_> {
             FilterCommand::Delete(index) => {
                 self.filters.remove(index);
             }
+            FilterCommand::ToggleSearch => {
+                let enabled = self.filters.search().is_some_and(|search| search.enabled);
+                self.filters.search_set_enabled(!enabled);
+            }
+            FilterCommand::DeleteSearch => self.filters.clear_search(),
         }
         // Deleting the last filter used to collapse the pane, so focus had to
         // be pushed off it. The pane stays now, so focus stays too — moving it
@@ -4890,6 +4896,60 @@ mod tests {
             cursor_source(&app),
             hit_at,
             "n did not reach a hit beyond the truncated preview"
+        );
+    }
+
+    /// End to end through the real key path: the pane's `d` on the search row
+    /// must remove the search and nothing else.
+    #[test]
+    fn deleting_the_search_row_leaves_the_numbered_filters_alone() {
+        let mut app = app_over_file("pane_del_search", "alpha\nbeta\n");
+        key(&mut app, KeyCode::Char('t'));
+        app.filters.add("alpha").expect("valid pattern");
+        key(&mut app, KeyCode::Char('/'));
+        typed(&mut app, "beta");
+        key(&mut app, KeyCode::Enter);
+
+        key(&mut app, KeyCode::Char('f'));
+        key(&mut app, KeyCode::Char('d'));
+
+        assert!(app.filters.search().is_none());
+        assert_eq!(
+            app.filters.len(),
+            1,
+            "a numbered filter was deleted instead"
+        );
+    }
+
+    /// `handle_filter_key` passes `row_count`, not `len`, as the bound `j`/`k`
+    /// clamp movement to. Passing `len` instead is a distinct bug from the
+    /// row-to-filter translation covered above — it under-counts how far the
+    /// selection is allowed to travel rather than mistranslating where it
+    /// lands — and needs two numbered filters plus a search to show up: with
+    /// only one numbered filter, `len` and `row_count - 1` land on the same
+    /// row by coincidence.
+    #[test]
+    fn j_below_the_search_row_can_still_reach_the_last_filter() {
+        let mut app = app_over_file("pane_move_search", "alpha\nbeta\n");
+        key(&mut app, KeyCode::Char('t'));
+        app.filters.add("alpha").expect("valid pattern");
+        app.filters.add("gamma").expect("valid pattern");
+        key(&mut app, KeyCode::Char('/'));
+        typed(&mut app, "beta");
+        key(&mut app, KeyCode::Enter);
+
+        key(&mut app, KeyCode::Char('f'));
+        key(&mut app, KeyCode::Char('j'));
+        key(&mut app, KeyCode::Char('j'));
+        key(&mut app, KeyCode::Char(' '));
+
+        assert!(
+            !app.filters.filters()[1].enabled,
+            "two downs from the search row should have reached the second filter"
+        );
+        assert!(
+            app.filters.filters()[0].enabled,
+            "the first filter was toggled instead of the second"
         );
     }
 }

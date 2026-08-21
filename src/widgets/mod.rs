@@ -77,6 +77,10 @@ pub enum AppWidget<'a> {
 pub enum FilterCommand {
     Toggle(usize),
     Delete(usize),
+    /// The search row, which carries no index: the live search lives in its
+    /// own slot on the `FilterSet`, not at a position in `filters`.
+    ToggleSearch,
+    DeleteSearch,
 }
 
 impl AppWidget<'_> {

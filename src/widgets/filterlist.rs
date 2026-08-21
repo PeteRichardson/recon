@@ -4,7 +4,7 @@
 //! the set, and a copy here could go stale the moment a filter changed.
 
 use super::FilterCommand;
-use crate::filter::{DIM_STYLE, FilterSet, Sense};
+use crate::filter::{DIM_STYLE, Filter, FilterSet, Sense};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::prelude::{Buffer, Color, Modifier, Rect, Style, Widget};
 use ratatui::widgets::{List, ListItem, ListState, StatefulWidget};
@@ -91,24 +91,45 @@ impl FilterList {
     /// `KeyEvent`, not just its `KeyCode`, so the guard is possible at all;
     /// 2c-ii's `x` and digit bindings are also modifier-sensitive, so this
     /// signature is owed either way.
-    pub fn handle_key(&mut self, key: KeyEvent, len: usize) -> Option<FilterCommand> {
+    pub fn handle_key(
+        &mut self,
+        key: KeyEvent,
+        rows: usize,
+        has_search: bool,
+    ) -> Option<FilterCommand> {
         if key
             .modifiers
             .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
         {
             return None;
         }
+        // Row 0 is the live search when one exists, so every row below it
+        // addresses a filter one lower. Doing this translation here, once,
+        // keeps the offset out of `App` entirely.
+        let target = |row: usize| -> Option<usize> {
+            match (has_search, row) {
+                (true, 0) => None,
+                (true, row) => Some(row - 1),
+                (false, row) => Some(row),
+            }
+        };
         match key.code {
             KeyCode::Char('j') | KeyCode::Down => {
-                self.select_next(len);
+                self.select_next(rows);
                 None
             }
             KeyCode::Char('k') | KeyCode::Up => {
-                self.select_previous(len);
+                self.select_previous(rows);
                 None
             }
-            KeyCode::Char(' ') => self.selected().map(FilterCommand::Toggle),
-            KeyCode::Char('d') => self.selected().map(FilterCommand::Delete),
+            KeyCode::Char(' ') => Some(match target(self.selected()?) {
+                Some(index) => FilterCommand::Toggle(index),
+                None => FilterCommand::ToggleSearch,
+            }),
+            KeyCode::Char('d') => Some(match target(self.selected()?) {
+                Some(index) => FilterCommand::Delete(index),
+                None => FilterCommand::DeleteSearch,
+            }),
             _ => None,
         }
     }
@@ -140,20 +161,31 @@ impl FilterList {
     /// the column, and `render` simply omits it when the column is too narrow
     /// to hold it.
     pub fn preferred_width(&self, filters: &FilterSet) -> u16 {
-        let longest = (0..filters.len())
-            .map(|index| Self::row_text(filters, index).chars().count())
+        let longest = (0..filters.row_count())
+            .map(|row| Self::row_text(filters, row).chars().count())
             .max()
             .unwrap_or(0);
         u16::try_from(longest + BORDERS as usize).unwrap_or(u16::MAX)
     }
 
-    /// One filter's row: its number, whether it is on, which way it filters,
-    /// and its pattern.
+    /// One row of the pane: its number, whether it is on, which way it
+    /// filters, and its pattern.
+    ///
+    /// Row 0 is the live search when one exists, marked `/` rather than a
+    /// number — it has no number, because it does not occupy a position in
+    /// `filters`. Its precedence here matches its precedence in `verdict`.
     ///
     /// The sense is spelled out because excluding filters carry no colour —
     /// nothing else on the row would distinguish them.
-    fn row_text(filters: &FilterSet, index: usize) -> String {
-        let Some(filter) = filters.filters().get(index) else {
+    fn row_text(filters: &FilterSet, row: usize) -> String {
+        let (label, filter) = match (filters.search(), row) {
+            (Some(search), 0) => ("/".to_string(), Some(search)),
+            (search, row) => {
+                let index = row - usize::from(search.is_some());
+                ((index + 1).to_string(), filters.filters().get(index))
+            }
+        };
+        let Some(filter) = filter else {
             return String::new();
         };
         let mark = if filter.enabled { 'x' } else { ' ' };
@@ -161,13 +193,15 @@ impl FilterList {
             Sense::Include => "inc",
             Sense::Exclude => "exc",
         };
-        format!(
-            "{}[{}] {} {}",
-            index + 1,
-            mark,
-            sense,
-            filter.pattern.as_str()
-        )
+        format!("{}[{}] {} {}", label, mark, sense, filter.pattern.as_str())
+    }
+
+    /// The filter a pane row refers to, search row included.
+    fn row_filter(filters: &FilterSet, row: usize) -> Option<&Filter> {
+        match (filters.search(), row) {
+            (Some(search), 0) => Some(search),
+            (search, row) => filters.filters().get(row - usize::from(search.is_some())),
+        }
     }
 
     pub fn render(&mut self, filters: &FilterSet, area: Rect, buf: &mut Buffer) {
@@ -179,7 +213,7 @@ impl FilterList {
         // it: `preferred_width` deliberately lets the navigator win the width
         // (see its doc comment), so a narrow column is an expected state, not
         // a broken one, and half a sentence of advice is worse than none.
-        if filters.is_empty() {
+        if filters.row_count() == 0 {
             let interior = area.width.saturating_sub(BORDERS) as usize;
             let rows: Vec<ListItem> = EMPTY_HINTS
                 .iter()
@@ -191,9 +225,12 @@ impl FilterList {
             return;
         }
 
-        let items: Vec<ListItem> = (0..filters.len())
-            .map(|index| {
-                let filter = &filters.filters()[index];
+        let items: Vec<ListItem> = (0..filters.row_count())
+            .map(|row| {
+                // `row_count` bounds this loop, so every row in range has a
+                // filter behind it — the search at row 0, a numbered filter
+                // at every row after.
+                let filter = Self::row_filter(filters, row).expect("row within row_count");
                 let style = if !filter.enabled {
                     // Matches the file view's precedent for dimming
                     // (`src/filter.rs`'s `DIM_STYLE`): `Modifier::DIM` alone is
@@ -204,12 +241,14 @@ impl FilterList {
                 } else {
                     match filter.sense {
                         // An including filter wears its own colour, so the pane
-                        // and the file view agree at a glance.
+                        // and the file view agree at a glance. The search is
+                        // always `Sense::Include`, so it takes this branch too,
+                        // showing `SEARCH_STYLE` the same way.
                         Sense::Include => filter.style,
                         Sense::Exclude => Style::default().fg(Color::DarkGray),
                     }
                 };
-                ListItem::new(Self::row_text(filters, index)).style(style)
+                ListItem::new(Self::row_text(filters, row)).style(style)
             })
             .collect();
 
@@ -564,5 +603,60 @@ mod tests {
             .find(|cell| cell.symbol().trim() == "p")
             .expect("hint row not drawn");
         assert_eq!(hint_cell.style().fg, DIM_STYLE.fg);
+    }
+
+    #[test]
+    fn the_search_row_is_drawn_first_and_carries_a_slash() {
+        let mut set = FilterSet::new();
+        set.add("ERROR").expect("valid pattern");
+        set.set_search("timeout").expect("valid pattern");
+
+        assert_eq!(FilterList::row_text(&set, 0), "/[x] inc timeout");
+        assert_eq!(FilterList::row_text(&set, 1), "1[x] inc ERROR");
+    }
+
+    #[test]
+    fn without_a_search_the_numbered_filters_start_at_row_zero() {
+        let mut set = FilterSet::new();
+        set.add("ERROR").expect("valid pattern");
+
+        assert_eq!(FilterList::row_text(&set, 0), "1[x] inc ERROR");
+    }
+
+    /// The offset is the whole risk in this task: `space` on row 1 must toggle
+    /// filter 0, not filter 1.
+    #[test]
+    fn space_below_the_search_row_toggles_the_right_filter() {
+        let mut set = FilterSet::new();
+        set.add("ERROR").expect("valid pattern");
+        set.set_search("timeout").expect("valid pattern");
+        let mut list = FilterList::default();
+        list.state.select(Some(1));
+
+        let command = list.handle_key(KeyEvent::from(KeyCode::Char(' ')), set.row_count(), true);
+
+        assert_eq!(command, Some(FilterCommand::Toggle(0)));
+    }
+
+    #[test]
+    fn space_on_the_search_row_toggles_the_search() {
+        let mut set = FilterSet::new();
+        set.set_search("timeout").expect("valid pattern");
+        let mut list = FilterList::default();
+        list.state.select(Some(0));
+
+        let command = list.handle_key(KeyEvent::from(KeyCode::Char(' ')), set.row_count(), true);
+
+        assert_eq!(command, Some(FilterCommand::ToggleSearch));
+    }
+
+    #[test]
+    fn d_on_the_search_row_deletes_the_search() {
+        let mut list = FilterList::default();
+        list.state.select(Some(0));
+
+        let command = list.handle_key(KeyEvent::from(KeyCode::Char('d')), 1, true);
+
+        assert_eq!(command, Some(FilterCommand::DeleteSearch));
     }
 }
