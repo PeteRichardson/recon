@@ -206,6 +206,25 @@ impl FilterSet {
         self.filters.len() + usize::from(self.search.is_some())
     }
 
+    /// Move the live search into the numbered set and free the slot.
+    ///
+    /// This is the probe-and-keep loop `p` exists for: `/` a pattern, look at
+    /// what it catches, `p` to keep it, `/` again — building a set worth
+    /// saving without retyping anything.
+    ///
+    /// The enabled state is carried across rather than forced to `true`, so a
+    /// search the user had toggled off is not silently switched back on.
+    /// Reports whether there was a search to promote.
+    pub fn promote_search(&mut self) -> bool {
+        let Some(mut search) = self.search.take() else {
+            return false;
+        };
+        search.style = self.next_style();
+        self.filters.push(search);
+        self.forget_capture();
+        true
+    }
+
     /// Drop a pending `!` capture, both halves together.
     ///
     /// A capture describes a set that no longer exists once the set changes.
@@ -993,5 +1012,67 @@ mod tests {
 
         assert!(!set.any_including());
         assert_eq!(set.style_for(Verdict::Unmatched), None);
+    }
+
+    /// The probe-and-keep loop: `/` to try a pattern, `p` to keep it, `/` again.
+    /// Nothing is retyped.
+    #[test]
+    fn promoting_moves_the_search_into_the_numbered_set() {
+        let mut set = set_with(&["alpha"]);
+        set.set_search("beta").expect("valid pattern");
+
+        assert!(set.promote_search());
+
+        assert_eq!(set.len(), 2);
+        assert!(
+            set.search().is_none(),
+            "the slot should be free for the next probe"
+        );
+        assert_eq!(set.verdict("beta line"), Verdict::Included(1));
+    }
+
+    #[test]
+    fn a_promoted_search_takes_the_next_palette_colour() {
+        let mut set = set_with(&["alpha"]);
+        set.set_search("beta").expect("valid pattern");
+        set.promote_search();
+
+        assert_ne!(set.filters()[0].style, set.filters()[1].style);
+        assert_ne!(
+            set.filters()[1].style,
+            SEARCH_STYLE,
+            "a promoted filter is a keeper, not the live probe"
+        );
+    }
+
+    /// Promoting must not silently switch on a search the user had toggled off.
+    #[test]
+    fn promoting_preserves_the_enabled_state() {
+        let mut set = FilterSet::new();
+        set.set_search("beta").expect("valid pattern");
+        set.search_set_enabled(false);
+
+        set.promote_search();
+
+        assert!(!set.filters()[0].enabled);
+    }
+
+    #[test]
+    fn promoting_without_a_search_reports_failure_and_changes_nothing() {
+        let mut set = set_with(&["alpha"]);
+
+        assert!(!set.promote_search());
+        assert_eq!(set.len(), 1);
+    }
+
+    #[test]
+    fn promoting_drops_a_pending_capture() {
+        let mut set = FilterSet::new();
+        set.set_search("beta").expect("valid pattern");
+        set.disable_all_remembering();
+
+        set.promote_search();
+
+        assert!(!set.has_remembered());
     }
 }
