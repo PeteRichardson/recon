@@ -1119,15 +1119,13 @@ impl App<'_> {
         // line saying so.
         let hiding = self.document.mode() == Mode::FilteredOnly || self.filters.any_excluding();
         let funnel = if hiding { "▼ " } else { "" };
-        if self.filters.is_empty() {
-            // With no filters every line is unmatched, so `FilteredOnly`
-            // shows nothing at all. Reporting it here is the only way the
-            // user can tell the file is intact rather than gone.
-            return if hiding {
-                format!("{funnel}nothing to show — no filters")
-            } else {
-                String::new()
-            };
+        if self.filters.is_empty() && self.filters.search().is_none() {
+            // Issue #36's guard means hiding with nothing including — no
+            // numbered filters, no live search — shows the whole file rather
+            // than blanking it (see `Document::recompute_visible`), so there
+            // is nothing to explain: the funnel would claim a state that
+            // cannot happen.
+            return String::new();
         }
         let count = self.filters.len();
         let noun = if count == 1 { "filter" } else { "filters" };
@@ -3429,20 +3427,20 @@ mod tests {
         );
     }
 
-    /// With no filters, `H` empties the view entirely (every line is
-    /// unmatched). Without a status row saying so, the pane just looks like a
-    /// bare border and the user cannot tell the file is intact.
+    /// Issue #36's guard made this state impossible: with nothing including
+    /// (no numbered filters and no search), hiding shows the whole file
+    /// rather than blanking it, so the status line must not claim the two
+    /// are in tension.
     #[test]
-    fn hiding_with_no_filters_still_reports_status() {
-        let mut app = app_over_file("hide_no_filters", "alpha\nbeta\n");
+    fn hiding_with_no_filters_does_not_claim_the_file_is_empty() {
+        let mut app = app_over_file("status_no_filters", "alpha\nbeta\n");
 
         key(&mut app, KeyCode::Char('H'));
 
         let status = status_line(&mut app);
-        assert!(status.contains('▼'), "no funnel shown: {status}");
         assert!(
-            status.to_lowercase().contains("no filters"),
-            "does not explain why nothing is shown: {status}"
+            !status.to_lowercase().contains("nothing to show"),
+            "the status line still reports a blank pane that no longer happens: {status}"
         );
     }
 

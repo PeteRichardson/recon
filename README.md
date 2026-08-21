@@ -52,7 +52,16 @@ motions throughout.
   filter, so the layout never shifts under you as the set grows and shrinks.
 - **Dim or hide, on one keystroke** — `Ctrl-H` toggles unmatched lines between
   dimmed-but-present and removed. Toggling back returns you to the exact line
-  you were on.
+  you were on. Dimming marks unmatched lines whenever a numbered filter is
+  enabled; a search on its own doesn't grey the file, since its hits already
+  carry a highlight — but `Ctrl-H` still collapses to them.
+- **Search is just a filter** — `/` defines one in a keystroke, `Esc` throws it
+  away, and `p` keeps it: it joins the numbered set with its own colour and
+  frees `/` for the next probe, so a filter set gets built by trying patterns
+  rather than by retyping them. In between it behaves like any other filter —
+  it survives loading another file, answers to `!`, loses to an exclude, and
+  feeds `Ctrl-H`. `n` and `N` step between *interesting* lines, whether the
+  filters or the search made them so.
 - **Line numbers stay honest** — the gutter shows original file line numbers
   even while filtered, so gaps in the numbering mark what was hidden.
 - **Filters outlive the file** — load another log and the filter set stays put,
@@ -71,7 +80,7 @@ motions throughout.
 - **Regex everywhere** — filters and searches are both regular expressions. An
   invalid pattern reports `E486: invalid pattern` and leaves the prompt open.
 - **Vim motions** — `hjkl`, `w`, `0`/`^`/`$`, `{`/`}`, `g`/`G`, `Ctrl-D`/`Ctrl-U`,
-  `/` and `?` with `n`/`N` repeat.
+  `/` with `n`/`N` repeat.
 - **Directories are obvious** — bright blue, bold and slash-suffixed, with
   executables in green, following yazi.
 - **Look before you enter** — selecting a directory lists its contents in the
@@ -207,8 +216,9 @@ Global (`src/lib.rs`), handled before the focused pane sees the key:
 | --- | --- |
 | `q` | Quit |
 | `Tab` | Move focus to the next of three panes — navigator, file view, filter pane. All three are always on screen, so the cycle never skips one |
-| `/` | Search forward in the focused pane |
-| `?` | Search backward in the focused pane |
+| `/` | In the navigator, search filenames. In the file view, set a live search — a filter of its own, which moves you to its first hit exactly as `n` would |
+| `p` | Promote the live search into the numbered filter set, freeing `/` for the next one |
+| `Esc` | Clear the live search (an open prompt takes this key first and just cancels the prompt) |
 | `e` | Focus the navigator, revealing the left column if `b` or `z` hid it |
 | `t` | Focus the file view |
 | `f` | Focus the filter pane — filters are then added with `i` and `x` from inside it |
@@ -216,6 +226,9 @@ Global (`src/lib.rs`), handled before the focused pane sees the key:
 | `!` | Disable every filter, remembering which were on; restores exactly that (or enables all, if none were on to remember) |
 | `b` | Hide the left column — both the navigator and the filter pane — and focus the file view; press again to restore the split (focus stays in the file view; `e` returns it) |
 | `z` | Maximise the focused pane, or restore the split — works in the navigator too, for long filenames |
+
+`?` is unbound. It used to search backward; `n`/`N` cover both directions now,
+so it is reserved for the help view instead (issue #25).
 
 Mouse: drag the divider between the panes to resize them; double-click it to
 return to auto-sizing the left column to whichever of the navigator or the
@@ -226,6 +239,16 @@ expressions, like search. A filter set describes a log format rather than one
 file, so it survives loading another file — `!` is the single keystroke back to
 an unfiltered view without discarding the set. Nothing is hidden: filters only
 change how lines are presented.
+
+The live search set by `/` is one of these filters, not a separate mode: it
+takes its own colour, answers to `!`, and loses to an exclude the same as any
+numbered one. It differs in one place — dimming. A numbered filter dims the
+rest of the file the moment it's enabled; a search on its own doesn't, because
+its hits already carry a highlight of their own and greying the file around
+them would only cost the context the search was run to see. `Ctrl-H` makes no
+such exception: it collapses to a search's matches exactly as it would to a
+filter's. `Esc` drops the search; `p` keeps it, moving it into the numbered
+set and freeing `/` for the next one.
 
 Excluding filters (`x`) are different: their matches are removed from view
 outright, in both modes. `Ctrl-H` (or `H`) toggles the remaining lines between
@@ -280,7 +303,7 @@ File view pane (`src/widgets/fileview.rs`):
 | `g` / `Home` | Move to the top |
 | `G` / `End` | Move to the bottom |
 | `#` | Toggle the line-number gutter |
-| `n` / `N` | Repeat the last search, forward / reversed |
+| `n` / `N` | Move to the next / previous *interesting* line |
 | `Ctrl-e` / `Ctrl-y` | Scroll one line down / up |
 | `Ctrl-d` / `Ctrl-u` | Scroll half a page down / up |
 | `Ctrl-b` / `PageUp` / `Space` | Scroll a page up |
@@ -289,6 +312,12 @@ File view pane (`src/widgets/fileview.rs`):
 `b` and `e` are global window commands rather than vim word motions: the
 trade was deliberate, since returning to the navigator from a maximised file
 view is exactly when you need `e`. `w` still moves forward by word.
+
+`n` and `N` are handled globally, the same as `Ctrl-H`, so — like that key —
+they reach this table only once the file view has focus; the navigator has its
+own `n`/`N`, described below. An *interesting* line here is one an enabled
+including filter or the live search matches; stepping wraps at the ends of the
+file and treats a line with several hits as a single stop, not one per hit.
 
 Navigator pane (`src/widgets/filenav.rs`):
 
@@ -393,6 +422,12 @@ lurching. Deleting the last filter returns the pane to its `press f i to add`
 row and leaves focus where it was — the pane is still on screen, so there is
 nothing to move focus off.
 
+A live search draws as one more row, at the top, marked `/` instead of a
+number — it has none, because it does not occupy a slot in the numbered set.
+`space` and `d` reach it exactly as they reach a numbered filter: `space`
+toggles the flag that also drives its highlight in the file view, and `d`
+clears it, same as `Esc`. `p` is what moves it into the numbered set proper.
+
 The pane never widens the left column to fit its hint: the column is sized by
 the navigator's longest entry. The hint gives way instead, which is why it has
 a short form and can be dropped altogether.
@@ -427,6 +462,12 @@ whole width outright.
 - **Nothing is persisted.** Filter sets live only for the session — there is no
   config file and no way to save or reload a filter set. Re-typing them is the
   only option after a restart.   This is github issue #8
+- `n` and `N` are line-oriented: a line matching the search three times is one
+  stop, not three. `recon` is a line-focused tool, and one rule for filter hits
+  and search hits alike beats two.
+- Only the live search highlights the matched text within a line. Numbered
+  filters colour the whole line — the vendored `TextArea` holds one search
+  pattern, so extending spans to every filter needs more work in the fork.
 
 ---
 
@@ -493,7 +534,7 @@ entry can both be deleted.
 
 ```sh
 cargo build              # debug build
-cargo test               # recon's suite: 224 unit + 9 integration tests
+cargo test               # recon's suite: 350 unit + 9 integration tests
 cargo test --workspace   # also runs the vendored fork's tests — see above
 cargo clippy
 cargo fmt -p recon       # -p recon, not plain `cargo fmt` — see below

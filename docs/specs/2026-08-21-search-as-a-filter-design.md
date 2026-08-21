@@ -1,6 +1,6 @@
 # Search as a filter — design
 
-**Status:** proposed
+**Status:** implemented
 **Date:** 2026-08-21
 
 ## Motivation
