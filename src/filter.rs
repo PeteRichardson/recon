@@ -382,8 +382,6 @@ impl FilterSet {
 
     /// The style to render a line with, or `None` to leave it alone.
     ///
-    /// The style to render a line with, or `None` to leave it alone.
-    ///
     /// `Unmatched` dims only when a *numbered* including filter is active. The
     /// live search does not trigger dimming on its own; see `any_numbered_including`
     /// for why.
