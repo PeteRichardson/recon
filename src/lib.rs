@@ -609,10 +609,30 @@ impl App<'_> {
                 // Scoped to the file view rather than global: `n` in the
                 // navigator is the navigator's key, and hoisting the binding
                 // up here to reach the verdicts must not change that.
+                //
+                // Not guarded with `.is_empty()`, unlike `/` above: crossterm
+                // attaches SHIFT to every uppercase character a real terminal
+                // sends, so an `is_empty()` guard would make `N` unreachable
+                // outside a test harness that never sets it. CONTROL/ALT is
+                // the same tolerance `H` uses just below, for the same reason.
                 KeyCode::Char(c @ ('n' | 'N'))
-                    if key.modifiers.is_empty()
+                    if !key
+                        .modifiers
+                        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
                         && matches!(self.widgets[self.active_widget], AppWidget::FileView(_)) =>
                 {
+                    // `n`/`N` bypass the widget's own `handle_events`, which is
+                    // where a truncated preview promotes itself to a full load
+                    // on first interaction (see `FileView::handle_events`).
+                    // Stepping through matches is exactly that kind of
+                    // interaction, so the promotion is repeated here — otherwise
+                    // `n` on a big file silently wraps inside the preview and
+                    // never reaches the rest of it.
+                    if self.file_view_truncated() {
+                        self.promote_file_view();
+                        self.sync_document();
+                        self.refresh_view();
+                    }
                     self.step_to_interesting(c == 'N');
                     return Ok(());
                 }
@@ -677,6 +697,19 @@ impl App<'_> {
             self.refresh_view();
         }
         Ok(())
+    }
+
+    /// Force the file view's truncated preview to a full load, the same
+    /// thing its own `handle_events` does on first interaction. Needed only
+    /// by `n`/`N`, which move the cursor directly rather than going through
+    /// that dispatch — see their arm in `handle_event`.
+    fn promote_file_view(&mut self) {
+        for widget in &mut self.widgets {
+            if let AppWidget::FileView(view) = widget {
+                let path = std::path::Path::new(&view.filename).to_path_buf();
+                view.load(&path);
+            }
+        }
     }
 
     /// Carry out an action on behalf of the widget that raised it.
@@ -782,8 +815,8 @@ impl App<'_> {
         //
         // `e` would read better than `x` for "exclude" and cannot be used: the
         // global match above runs first and returns, so a bare `e` never
-        // reaches this function. Guarding the global arm the way `/` and `?`
-        // are guarded would cost `e`-to-explorer from this pane, which is the
+        // reaches this function. Guarding the global arm the way `/` is
+        // guarded would cost `e`-to-explorer from this pane, which is the
         // one thing these focus keys exist to provide.
         if key.modifiers.is_empty() {
             let kind = match key.code {
@@ -4365,26 +4398,51 @@ mod tests {
         assert_eq!(cursor_source(&app), 2, "stopped more than once on line 0");
     }
 
+    /// The cursor starts *past* the only hit, so landing back on it requires
+    /// an actual wrap through index 0 — not merely "the cursor never moved",
+    /// which is what the previous version of this test asserted (cursor
+    /// already sat on the sole hit, so it passed even with `n` unbound).
     #[test]
     fn n_wraps_at_the_end_of_the_file() {
         let mut app = app_over_file("n_wrap", "hit\nplain\nplain\n");
         key(&mut app, KeyCode::Char('t'));
+        key(&mut app, KeyCode::Char('j'));
+        key(&mut app, KeyCode::Char('j'));
         app.filters.set_search("hit").expect("valid pattern");
         app.refresh_view();
+        assert_eq!(cursor_source(&app), 2, "sanity: cursor starts past the hit");
 
         key(&mut app, KeyCode::Char('n'));
-        assert_eq!(cursor_source(&app), 0, "did not wrap");
+
+        assert_eq!(cursor_source(&app), 0, "did not wrap around to the hit");
     }
 
+    /// Three hits, cursor on the middle one: forward and backward from there
+    /// land on different lines (4 and 0 respectively), so this actually
+    /// exercises direction. The previous version started at row 0 with only
+    /// two hits, where forward and backward both wrap to the same place —
+    /// it would have passed even if `N` were wired to walk forward.
     #[test]
     fn capital_n_walks_backwards() {
-        let mut app = app_over_file("n_back", "hit a\nplain\nhit b\nplain\n");
+        let mut app = app_over_file("n_back", "hit a\nplain\nhit b\nplain\nhit c\n");
         key(&mut app, KeyCode::Char('t'));
+        key(&mut app, KeyCode::Char('j'));
+        key(&mut app, KeyCode::Char('j'));
         app.filters.set_search("hit").expect("valid pattern");
         app.refresh_view();
+        assert_eq!(
+            cursor_source(&app),
+            2,
+            "sanity: cursor starts on the middle hit"
+        );
 
         key(&mut app, KeyCode::Char('N'));
-        assert_eq!(cursor_source(&app), 2, "N did not walk upwards and wrap");
+
+        assert_eq!(
+            cursor_source(&app),
+            0,
+            "N did not walk backwards to the earlier hit (forward would reach 4)"
+        );
     }
 
     /// Quiet, not a panic and not a jump to line 0.
@@ -4402,13 +4460,35 @@ mod tests {
 
     /// `n` belongs to the file view. Hoisting it into `App` must not make it
     /// global — in the navigator it is still the navigator's key.
+    ///
+    /// `app_over` writes a single-line "x" into every fixture file, which
+    /// made the previous version of this test vacuous: with one line, the
+    /// only hit is already on row 0, so a leaked, fully global `n` binding
+    /// would still be a no-op and the test would pass regardless. This fixture
+    /// puts the hit on row 1, so a leak is observable as the cursor moving.
     #[test]
     fn n_in_the_navigator_does_not_move_the_file_view_cursor() {
-        let mut app = app_over("n_nav", &["alpha.log", "beta.log"]);
+        claim_fixture_dir("n_nav");
+        let dir = std::path::Path::new("target/test-appdirs").join("n_nav");
+        fs::remove_dir_all(&dir).ok();
+        fs::create_dir_all(&dir).expect("create fixture dir");
+        fs::write(dir.join("alpha.log"), "alpha\nx\n").expect("write fixture");
+
+        let mut app = App::new(&Config {
+            path: dir.join("placeholder").display().to_string(),
+        });
+        // The startup argument names a file that does not exist, so `App::new`
+        // loads that (an error message, not real content) and the navigator
+        // falls back to selecting the one real entry. `Down` is what actually
+        // previews it into the file view — the same two-step construction
+        // `n_promotes_a_truncated_preview_before_stepping` uses, for the same
+        // reason.
+        key(&mut app, KeyCode::Down);
         app.filters.set_search("x").expect("valid pattern");
         app.refresh_view();
         key(&mut app, KeyCode::Char('e'));
         let before = cursor_source(&app);
+        assert_eq!(before, 0, "sanity: cursor starts above the hit on row 1");
 
         key(&mut app, KeyCode::Char('n'));
 
@@ -4492,7 +4572,9 @@ mod tests {
     }
 
     /// `/` in the navigator still searches filenames — that pane has its own
-    /// search and is untouched by this work.
+    /// search and is untouched by this work. Asserts the selection actually
+    /// moved, not just that no filter was created: a `/` that did nothing at
+    /// all would also pass the filter-only assertion.
     #[test]
     fn slash_in_the_navigator_still_searches_filenames() {
         let mut app = app_over("slash_nav", &["alpha.log", "zebra.log"]);
@@ -4505,6 +4587,127 @@ mod tests {
         assert!(
             app.filters.search().is_none(),
             "a nav search became a filter"
+        );
+        let nav = app.nav().expect("nav pane");
+        assert_eq!(
+            nav.entries[nav.state.selected().unwrap()].name,
+            "zebra.log",
+            "the nav search did not move the selection"
+        );
+    }
+
+    /// `apply_search`'s ordering — `refresh_view` before `step_to_interesting`
+    /// — doesn't show up in `a_search_with_hiding_on_collapses_the_file_to_its_matches`
+    /// because the cursor starts on row 0 there: forward-from-0 and "the
+    /// first hit" agree by coincidence regardless of order. Here the cursor
+    /// starts past both hits. A swapped order runs `step_to_interesting`
+    /// against verdicts that don't know about the new search yet, so it finds
+    /// nothing and no-ops; `refresh_view` then merely re-anchors the
+    /// unmoved cursor to its nearest surviving neighbour (`beta2`, source 3)
+    /// once it finally runs — landing one hit short of forward-from-cursor's
+    /// real answer (`beta1`, source 1).
+    #[test]
+    fn slash_moves_forward_from_the_cursor_only_after_the_rebuild_completes() {
+        let mut app = app_over_file("slash_order", "alpha\nbeta1\ngamma\nbeta2\ndelta\n");
+        key(&mut app, KeyCode::Char('t'));
+        key(&mut app, KeyCode::Char('H'));
+        key(&mut app, KeyCode::Char('j'));
+        key(&mut app, KeyCode::Char('j'));
+        key(&mut app, KeyCode::Char('j'));
+        key(&mut app, KeyCode::Char('j'));
+        assert_eq!(
+            cursor_source(&app),
+            4,
+            "sanity: cursor starts past both hits"
+        );
+
+        key(&mut app, KeyCode::Char('/'));
+        typed(&mut app, "beta");
+        key(&mut app, KeyCode::Enter);
+
+        assert_eq!(
+            cursor_source(&app),
+            1,
+            "landed on the second hit (3), not the first hit reachable forward \
+             from the cursor (1) — refresh_view did not complete before \
+             step_to_interesting ran"
+        );
+    }
+
+    /// `key()` builds every event with `KeyModifiers::NONE`, which cannot
+    /// express a real keypress: crossterm attaches SHIFT to every uppercase
+    /// character a terminal actually sends. A guard written as
+    /// `key.modifiers.is_empty()` looks correct under `key()` and is
+    /// unreachable in production — this fires the event by hand, the way
+    /// crossterm really would, to catch exactly that class of bug.
+    #[test]
+    fn capital_n_tolerates_the_shift_modifier_a_real_terminal_sends() {
+        let mut app = app_over_file("n_shift", "hit a\nplain\nhit b\nplain\nhit c\n");
+        key(&mut app, KeyCode::Char('t'));
+        key(&mut app, KeyCode::Char('j'));
+        key(&mut app, KeyCode::Char('j'));
+        app.filters.set_search("hit").expect("valid pattern");
+        app.refresh_view();
+        assert_eq!(
+            cursor_source(&app),
+            2,
+            "sanity: cursor starts on the middle hit"
+        );
+
+        app.handle_event(event::Event::Key(KeyEvent::new(
+            KeyCode::Char('N'),
+            KeyModifiers::SHIFT,
+        )))
+        .unwrap();
+
+        assert_eq!(
+            cursor_source(&app),
+            0,
+            "N with the SHIFT modifier a real terminal sends did not walk backwards"
+        );
+    }
+
+    /// `n`/`N` bypass `FileView::handle_events`, which is where a truncated
+    /// preview normally promotes itself to a full load on first interaction.
+    /// Without repeating that promotion, `n` on a large log would silently
+    /// wrap inside the preview and never reach a hit past it.
+    #[test]
+    fn n_promotes_a_truncated_preview_before_stepping() {
+        claim_fixture_dir("n_truncated_promote");
+        let dir = std::path::Path::new("target/test-appdirs").join("n_truncated_promote");
+        fs::remove_dir_all(&dir).ok();
+        fs::create_dir_all(&dir).expect("create fixture dir");
+        // Past PREVIEW_LINES, so the first preview is truncated; the hit sits
+        // beyond the preview boundary, reachable only once promoted.
+        let hit_at = crate::widgets::fileview::PREVIEW_LINES + 50;
+        let body: String = (0..crate::widgets::fileview::PREVIEW_LINES + 100)
+            .map(|i| {
+                if i == hit_at {
+                    "HIT line\n".to_string()
+                } else {
+                    format!("line {i}\n")
+                }
+            })
+            .collect();
+        fs::write(dir.join("big.log"), &body).expect("write fixture");
+
+        let mut app = App::new(&Config {
+            path: dir.join("placeholder").display().to_string(),
+        });
+        // The navigator falls back to the first real entry (the log) and
+        // previews it, exactly as `upgrading_a_truncated_preview_resyncs_styles_without_reloading`
+        // does — the startup argument names a file that does not exist.
+        key(&mut app, KeyCode::Down);
+        focus_file_view(&mut app);
+        app.filters.set_search("HIT").expect("valid pattern");
+        app.refresh_view();
+
+        key(&mut app, KeyCode::Char('n'));
+
+        assert_eq!(
+            cursor_source(&app),
+            hit_at,
+            "n did not reach a hit beyond the truncated preview"
         );
     }
 }
