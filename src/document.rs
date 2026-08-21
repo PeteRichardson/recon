@@ -26,6 +26,15 @@ pub struct Document {
     lines: Vec<String>,
     verdicts: Vec<Verdict>,
     match_count: usize,
+    /// Whether anything was marking lines at the last `evaluate` — a numbered
+    /// including filter, or the live search.
+    ///
+    /// Cached rather than asked of the `FilterSet` inside
+    /// `recompute_visible`, so that method keeps taking no arguments and stays
+    /// independent of the filter set. That independence is what makes the
+    /// `Ctrl-H` path cheap: the toggle re-derives `visible` from the verdicts
+    /// alone, with no borrow and no regex.
+    anything_including: bool,
     mode: Mode,
     visible: Vec<usize>,
 }
@@ -37,6 +46,7 @@ impl Document {
             lines,
             verdicts,
             match_count: 0,
+            anything_including: false,
             mode: Mode::default(),
             visible: Vec::new(),
         }
@@ -62,6 +72,7 @@ impl Document {
             .iter()
             .filter(|verdict| matches!(verdict, Verdict::Included(_) | Verdict::Searched))
             .count();
+        self.anything_including = filters.any_including();
         self.recompute_visible();
     }
 
@@ -83,7 +94,13 @@ impl Document {
                 (_, Verdict::Excluded) => false,
                 (Mode::Dimmed, _) => true,
                 (Mode::FilteredOnly, Verdict::Included(_) | Verdict::Searched) => true,
-                (Mode::FilteredOnly, Verdict::Unmatched) => false,
+                // Issue #36: with nothing including, there is nothing to hide
+                // *against*, so hiding shows the file rather than blanking the
+                // pane. Dimming has always had this guard in `style_for`;
+                // hiding never did, which made `Ctrl-H` with no filters — and
+                // with only excluding filters — produce an empty view that read
+                // as "this file is empty".
+                (Mode::FilteredOnly, Verdict::Unmatched) => !self.anything_including,
             })
             .map(|(index, _)| index)
             .collect();
@@ -327,6 +344,66 @@ mod tests {
 
         assert_eq!(document.mode(), Mode::Dimmed);
         assert_eq!(document.visible(), &[0, 2]);
+    }
+
+    /// Issue #36. With nothing including, there is nothing to hide against, so
+    /// hiding shows the file rather than blanking the pane. Dimming has always
+    /// had this guard (`style_for`); hiding never did.
+    #[test]
+    fn hiding_with_no_filters_shows_the_whole_file() {
+        let mut document = doc(&["alpha", "beta", "gamma"]);
+        document.set_mode(Mode::FilteredOnly);
+        document.evaluate(&FilterSet::new());
+
+        assert_eq!(document.visible(), &[0, 1, 2]);
+    }
+
+    /// The same bug through a second door, unreported until #36 was investigated:
+    /// with only excluding filters there is nothing to hide unmatched lines
+    /// *against* — the user wants the file minus the noise, not an empty pane.
+    #[test]
+    fn hiding_with_only_excluding_filters_shows_the_rest_of_the_file() {
+        let mut document = doc(&["alpha", "noise here", "gamma"]);
+        document.set_mode(Mode::FilteredOnly);
+        document.evaluate(&set_excluding(&["noise"]));
+
+        assert_eq!(document.visible(), &[0, 2]);
+    }
+
+    /// A bare search counts as something to hide against, which is what makes
+    /// `/foo` followed by `Ctrl-H` an instant grep.
+    #[test]
+    fn hiding_with_only_a_search_collapses_to_its_matches() {
+        let mut document = doc(&["alpha", "beta", "gamma"]);
+        document.set_mode(Mode::FilteredOnly);
+        document.evaluate(&set_searching("beta"));
+
+        assert_eq!(document.visible(), &[1]);
+    }
+
+    /// The guard must not soften a real filter set: a file with no hits still
+    /// renders blank, which is exactly what the directory-skim feature needs
+    /// "blank" to mean.
+    #[test]
+    fn a_file_with_no_hits_is_still_blank_when_hiding() {
+        let mut document = doc(&["alpha", "beta"]);
+        document.set_mode(Mode::FilteredOnly);
+        document.evaluate(&set_with(&["ERROR"]));
+
+        assert!(document.visible().is_empty());
+    }
+
+    /// The guard is cached at `evaluate` time precisely so that the mode toggle
+    /// stays O(lines) and runs no regex — see `recompute_visible`.
+    #[test]
+    fn the_guard_survives_a_mode_toggle_without_re_evaluating() {
+        let mut document = doc(&["alpha", "beta"]);
+        document.evaluate(&FilterSet::new());
+
+        document.set_mode(Mode::FilteredOnly);
+        document.recompute_visible();
+
+        assert_eq!(document.visible(), &[0, 1]);
     }
 
     #[test]
