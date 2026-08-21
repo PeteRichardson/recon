@@ -28,7 +28,8 @@ Collapse the two notions into one:
 > A line is **interesting** if it matches an enabled include filter, or if it
 > matches the live search.
 
-Dimming uses it. `Ctrl-H` uses it. `n`/`N` use it.
+`Ctrl-H` uses it. `n`/`N` use it. Dimming uses a deliberately narrower
+predicate — see "Dimming takes a narrower predicate than hiding" below.
 
 The mechanism is to stop treating search as a separate concept. `/` becomes a
 fast way to add a filter, and `Esc` a fast way to remove it. Everything filters
@@ -110,6 +111,41 @@ they just typed.
 `recompute_visible` still runs no regex, so `Ctrl-H` remains O(lines) and
 instant. That property is load-bearing and must survive.
 
+### Dimming takes a narrower predicate than hiding
+
+Dimming is a **contrast** mechanism: unmatched lines recede so that coloured
+matches stand out. Its value scales with how many things are being told apart.
+A search on its own is one thing, and its hits are already marked loudly by the
+span highlight — so dimming the rest of the file buys nothing and costs the
+readability of the context the user searched in order to reach.
+
+Two predicates therefore, each with one job:
+
+```rust
+/// Anything at all is marking lines — a numbered include filter, or the
+/// live search. Drives Ctrl-H (including the issue #36 guard) and n/N.
+pub fn any_including(&self) -> bool;
+
+/// A *numbered* include filter is enabled. Drives dimming alone. The search
+/// by itself does not dim: there is nothing to contrast it against, and its
+/// hits already carry the span highlight.
+fn any_numbered_including(&self) -> bool;
+```
+
+`style_for`'s `Verdict::Unmatched` guard moves to `any_numbered_including`.
+Everything else keeps `any_including`.
+
+The consequence, and it is deliberate: `/foo` on an unfiltered file highlights
+and navigates but does not grey anything out, while `Ctrl-H` still collapses the
+file to the matching lines. Adding a numbered filter switches dimming on,
+because at that point there really are two things to distinguish.
+
+**The cost.** The README describes dimmed lines as flipping "from dimmed to
+gone", which makes dimming a preview of hiding. This weakens that in exactly one
+case — search-alone, where nothing is dimmed yet `Ctrl-H` hides plenty. Accepted:
+a user pressing a key that means "hide unmatched" is not surprised to get it.
+The README sentence needs a corresponding rewrite.
+
 ### New methods
 
 ```rust
@@ -149,6 +185,14 @@ search pattern. This is treated as a feature rather than an inconsistency — th
 live probe is visually distinct from the settled filters. Extending span
 highlighting to every filter would require further work in the fork and is out
 of scope.
+
+**The span highlight follows the search filter's enabled flag.** Disabling the
+search — with `space` on its row, or with `!` — must clear the `TextArea`'s
+search pattern, and re-enabling must restore it. Without this, `!` leaves yellow
+highlights glowing on a view where nothing is meant to be active, breaking the
+"one keystroke back to an unfiltered view" the README promises. The pattern
+itself is retained on the `Filter` throughout, so nothing has to be retyped;
+only the `TextArea`'s copy is set and cleared.
 
 ```
 FILTERS
@@ -299,9 +343,16 @@ on. That is a separate want and survives this fix.
 - **`filter.rs`** — evaluation order (exclude beats search beats include);
   `set_search` replaces rather than stacks; `promote_search` preserves the
   enabled state, takes the next palette colour, empties the slot, and leaves
-  existing filter *indices untouched*; `any_including` counts the search slot;
-  the reserved style is not a `PALETTE` member; `!` round-trips the search slot's
-  enabled flag via `remembered_search`.
+  existing filter *indices untouched*; the reserved style is not a `PALETTE`
+  member; `!` round-trips the search slot's enabled flag via `remembered_search`.
+- **The two predicates** — `any_including` counts the search slot,
+  `any_numbered_including` does not; a search alone leaves `style_for` returning
+  `None` for `Unmatched` while `Ctrl-H` still hides those lines; adding a
+  numbered filter switches dimming on. This pair is the subtlest thing in the
+  design and needs the most direct coverage.
+- **Highlight follows enabled** — disabling the search clears the `TextArea`
+  search pattern; re-enabling restores it; `!` and `space` both go through that
+  path; the pattern itself survives on the `Filter` and never has to be retyped.
 - **`document.rs`** — `Searched` is visible in `FilteredOnly` and counted by
   `match_count`; the #36 guard, covering no-filters, exclude-only, and the
   skim case that must stay blank; `recompute_visible` still runs no regex.
@@ -315,8 +366,17 @@ on. That is a separate want and survives this fix.
 
 ## Migration notes
 
-One behaviour changes on day one and should be called out in the README: typing
-`/foo` on a file with no filters now dims every non-matching line, where before
-it only painted highlights. This follows from search being an include filter and
-is intended — it makes `Ctrl-H` immediately useful after a search — but it is
-the one place an existing reflex meets a different result. `Esc` undoes it.
+On a file with no filters, `/foo` behaves as it does today: highlights, no
+dimming. The narrower dimming predicate is what preserves that. What is new is
+that `n`/`N` now step line-by-line rather than span-by-span, that `Ctrl-H` will
+now collapse the file to the matching lines, and that `Esc` clears the search.
+
+The README needs three edits:
+
+- The line describing dimmed lines flipping "from dimmed to gone" overstates the
+  relationship now. Dimming marks unmatched lines *when marking helps*; `Ctrl-H`
+  hides what is not interesting. They coincide whenever a numbered filter is
+  enabled, which is the common case, but not when a search is the only thing
+  active.
+- `?` no longer searches backwards; `n`/`N` cover both directions.
+- The keybindings table gains `p` and `Esc`.
