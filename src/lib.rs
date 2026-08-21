@@ -16,6 +16,28 @@ const MAX_NAV_WIDTH: u16 = 40;
 /// nothing at that end is starving the file view.
 const MIN_PANE_WIDTH: u16 = 3;
 
+/// Narrowest the column sizes itself to *automatically*.
+///
+/// Distinct from `MIN_PANE_WIDTH`, which bounds a drag. A drag is a decision
+/// and may still go narrower; this bounds a width nobody asked for.
+///
+/// Snapping to the longest entry with no floor meant entering a directory of
+/// one short name took the column from 40 columns to 6 and moved every pane
+/// on screen — see #33. That is the defect #26 fixed on the vertical axis,
+/// where a layout shifting under the user was worth fixing for one row; this
+/// was shifting by nearly forty columns.
+///
+/// Automatic sizing exists to stop the column being uselessly *wide*. Making
+/// it as narrow as possible is a different goal, and a poor trade: the dozen
+/// columns it wins for the file view cost a relayout mid-navigation. The ways
+/// to actually maximise the file view are explicit and already there — `b`,
+/// `z`, and a drag, which pins the width outright.
+///
+/// 20 fits an 18-character name inside the borders, which covers most of what
+/// a source or log directory holds. It is a judgement call rather than a fact,
+/// and a good candidate for a config entry once #18 lands.
+const MIN_AUTO_NAV_WIDTH: u16 = 20;
+
 /// Rows the navigator keeps even when the filter pane's stacked below it
 /// wants more than the terminal can spare.
 ///
@@ -403,7 +425,11 @@ impl App<'_> {
                 let filter_width = self
                     .filter_list()
                     .map_or(0, |list| list.preferred_width(&self.filters));
-                nav_width.max(filter_width).min(MAX_NAV_WIDTH)
+                // Clamped, not just `.max`: the floor must not push a column
+                // past the cap when both apply.
+                nav_width
+                    .max(filter_width)
+                    .clamp(MIN_AUTO_NAV_WIDTH, MAX_NAV_WIDTH)
             }
             NavWidth::Pinned(width) => width,
         };
@@ -1277,13 +1303,21 @@ mod tests {
         mouse(app, MouseEventKind::Up(MouseButton::Left), to);
     }
 
+    /// The name is comfortably longer than `MIN_AUTO_NAV_WIDTH` on purpose:
+    /// below the floor the column reports the floor, so a short name would
+    /// make this pass without the snapping it is named for ever happening.
     #[test]
     fn auto_width_snaps_to_the_longest_entry() {
-        let mut app = app_over("snap", &["a.rs", "twelve_chars.rs"]);
+        const LONGEST: &str = "a_twenty_five_char_name.rs";
+        let mut app = app_over("snap", &["a.rs", LONGEST]);
         draw(&mut app);
 
         // Name plus two borders; the `>>` marker used to add two more.
-        assert_eq!(app.nav_width(AREA), "twelve_chars.rs".len() as u16 + 2);
+        assert!(
+            LONGEST.len() as u16 + 2 > MIN_AUTO_NAV_WIDTH,
+            "fixture no longer exercises snapping"
+        );
+        assert_eq!(app.nav_width(AREA), LONGEST.len() as u16 + 2);
     }
 
     #[test]
@@ -1295,16 +1329,68 @@ mod tests {
         assert_eq!(app.nav_width(AREA), MAX_NAV_WIDTH);
     }
 
-    /// No floor: a directory of short names gets a narrow pane.
+    /// A directory of short names gets the floor, not the width of its
+    /// longest entry.
+    ///
+    /// Replaces `auto_width_has_no_floor`, which asserted the opposite —
+    /// "a directory of short names gets a narrow pane". Snapping that tight
+    /// is what made entering a one-entry directory move every pane on
+    /// screen; see #33. Automatic sizing exists to stop the column being
+    /// uselessly wide, not to win back every column it can.
     #[test]
-    fn auto_width_has_no_floor() {
+    fn auto_width_does_not_shrink_below_the_floor() {
         let mut app = app_over("tiny", &["a"]);
         draw(&mut app);
 
+        assert_eq!(app.nav_width(AREA), MIN_AUTO_NAV_WIDTH);
+    }
+
+    /// The floor is not a fixed width: a directory of longer names still
+    /// widens past it, up to the cap.
+    #[test]
+    fn auto_width_still_grows_past_the_floor() {
+        let name = "a".repeat(MIN_AUTO_NAV_WIDTH as usize + 5);
+        let mut app = app_over("above_floor", &[name.as_str()]);
+        draw(&mut app);
+
         assert!(
-            app.nav_width(AREA) < 10,
-            "expected a narrow pane, got {}",
+            app.nav_width(AREA) > MIN_AUTO_NAV_WIDTH,
+            "the floor became a fixed width, got {}",
             app.nav_width(AREA)
+        );
+    }
+
+    /// The floor governs automatic sizing only. A drag is a decision, and it
+    /// may still take the column down to `MIN_PANE_WIDTH`.
+    #[test]
+    fn the_floor_does_not_apply_to_a_dragged_width() {
+        let mut app = app_over("drag_below_floor", &["a.rs"]);
+        draw(&mut app);
+        let divider = app.divider;
+
+        drag_to(&mut app, divider, MIN_PANE_WIDTH);
+
+        assert_eq!(app.nav_width(AREA), MIN_PANE_WIDTH);
+    }
+
+    /// On a terminal too narrow to honour both, the file view's floor wins:
+    /// the navigator giving up columns it would like is better than the pane
+    /// the app exists for becoming unusable.
+    #[test]
+    fn the_file_views_floor_outranks_the_navigators() {
+        let mut app = app_over("narrow_term", &["a"]);
+        let narrow = Rect {
+            x: 0,
+            y: 0,
+            width: MIN_FILE_VIEW_WIDTH + MIN_AUTO_NAV_WIDTH - 5,
+            height: 10,
+        };
+        draw(&mut app);
+
+        assert!(
+            app.nav_width(narrow) < MIN_AUTO_NAV_WIDTH,
+            "the floor starved the file view, got {}",
+            app.nav_width(narrow)
         );
     }
 
@@ -1354,7 +1440,9 @@ mod tests {
         mouse(&mut app, MouseEventKind::Down(MouseButton::Left), divider);
 
         assert_eq!(app.nav_width, NavWidth::Auto);
-        assert_eq!(app.nav_width(AREA), "a.rs".len() as u16 + 2);
+        // Back to automatic sizing, which for a name this short is the floor
+        // rather than the name's own width — see `MIN_AUTO_NAV_WIDTH`.
+        assert_eq!(app.nav_width(AREA), MIN_AUTO_NAV_WIDTH);
     }
 
     #[test]
