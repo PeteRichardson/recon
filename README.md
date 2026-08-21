@@ -14,8 +14,8 @@
 
 `recon` is a terminal file viewer built around a **stack of regex filters** you
 build up interactively. Matching lines get colour; everything else dims — and
-`Ctrl-H` flips the unmatched lines from dimmed to gone entirely, keeping the
-original line numbers in the gutter so a gap tells you something was left out.
+`Ctrl-H` removes the unmatched lines entirely, keeping the original line
+numbers in the gutter so a gap tells you something was left out.
 Filters are individually toggled, disabled en masse with `!`, and survive
 loading a different file. It's for the moment when `grep -v` has become four 
 chained `grep -v`s and you've lost track of what you're excluding.
@@ -52,9 +52,9 @@ motions throughout.
   filter, so the layout never shifts under you as the set grows and shrinks.
 - **Dim or hide, on one keystroke** — `Ctrl-H` toggles unmatched lines between
   dimmed-but-present and removed. Toggling back returns you to the exact line
-  you were on. Dimming marks unmatched lines whenever a numbered filter is
-  enabled; a search on its own doesn't grey the file, since its hits already
-  carry a highlight — but `Ctrl-H` still collapses to them.
+  you were on. Dimming marks unmatched lines whenever a numbered *including*
+  filter is enabled; a search on its own doesn't grey the file, since its
+  hits already carry a highlight — but `Ctrl-H` still collapses to them.
 - **Search is just a filter** — `/` defines one in a keystroke, `Esc` throws it
   away, and `p` keeps it: it joins the numbered set with its own colour and
   frees `/` for the next probe, so a filter set gets built by trying patterns
@@ -80,7 +80,7 @@ motions throughout.
 - **Regex everywhere** — filters and searches are both regular expressions. An
   invalid pattern reports `E486: invalid pattern` and leaves the prompt open.
 - **Vim motions** — `hjkl`, `w`, `0`/`^`/`$`, `{`/`}`, `g`/`G`, `Ctrl-D`/`Ctrl-U`,
-  `/` with `n`/`N` repeat.
+  `/` then `n`/`N` to step between matches.
 - **Directories are obvious** — bright blue, bold and slash-suffixed, with
   executables in green, following yazi.
 - **Look before you enter** — selecting a directory lists its contents in the
@@ -216,7 +216,7 @@ Global (`src/lib.rs`), handled before the focused pane sees the key:
 | --- | --- |
 | `q` | Quit |
 | `Tab` | Move focus to the next of three panes — navigator, file view, filter pane. All three are always on screen, so the cycle never skips one |
-| `/` | In the navigator, search filenames. In the file view, set a live search — a filter of its own, which moves you to its first hit exactly as `n` would |
+| `/` | In the navigator, search filenames. In the file view, set a live search — a filter of its own, which moves you to its next hit from the cursor exactly as `n` would |
 | `p` | Promote the live search into the numbered filter set, freeing `/` for the next one |
 | `Esc` | Clear the live search (an open prompt takes this key first and just cancels the prompt) |
 | `e` | Focus the navigator, revealing the left column if `b` or `z` hid it |
@@ -242,13 +242,13 @@ change how lines are presented.
 
 The live search set by `/` is one of these filters, not a separate mode: it
 takes its own colour, answers to `!`, and loses to an exclude the same as any
-numbered one. It differs in one place — dimming. A numbered filter dims the
-rest of the file the moment it's enabled; a search on its own doesn't, because
-its hits already carry a highlight of their own and greying the file around
-them would only cost the context the search was run to see. `Ctrl-H` makes no
-such exception: it collapses to a search's matches exactly as it would to a
-filter's. `Esc` drops the search; `p` keeps it, moving it into the numbered
-set and freeing `/` for the next one.
+numbered one. It differs in one place — dimming. A numbered *including*
+filter dims the rest of the file the moment it's enabled; a search on its own
+doesn't, because its hits already carry a highlight of their own and greying
+the file around them would only cost the context the search was run to see.
+`Ctrl-H` makes no such exception: it collapses to a search's matches exactly
+as it would to a filter's. `Esc` drops the search; `p` keeps it, moving it
+into the numbered set and freeing `/` for the next one.
 
 Excluding filters (`x`) are different: their matches are removed from view
 outright, in both modes. `Ctrl-H` (or `H`) toggles the remaining lines between

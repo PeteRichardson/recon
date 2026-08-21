@@ -1130,7 +1130,12 @@ impl App<'_> {
             // cannot happen.
             return String::new();
         }
-        let count = self.filters.len();
+        // `row_count`, not `len`: a live search with no numbered filters is
+        // still one filter as far as this row is concerned — `len` alone
+        // would report "0 filters" while a search was visibly active. See
+        // `FilterSet::row_count`, which the filter pane counts rows by for
+        // exactly this reason.
+        let count = self.filters.row_count();
         let noun = if count == 1 { "filter" } else { "filters" };
         if !self.filters.any_enabled() {
             return format!("{funnel}{count} {noun} (disabled)");
@@ -3444,6 +3449,30 @@ mod tests {
         assert!(
             !status.to_lowercase().contains("nothing to show"),
             "the status line still reports a blank pane that no longer happens: {status}"
+        );
+    }
+
+    /// A live search with no numbered filters is still one filter as far as
+    /// this row is concerned. `self.filters.len()` alone counts only the
+    /// numbered set and would report "0 filters" while a search was visibly
+    /// active and changing what's on screen — the regression this pins.
+    #[test]
+    fn a_search_alone_counts_as_one_filter_on_the_status_line() {
+        let mut app = app_over_file("status_search_only", "alpha\nbeta\n");
+        key(&mut app, KeyCode::Char('t'));
+        key(&mut app, KeyCode::Char('/'));
+        typed(&mut app, "beta");
+        key(&mut app, KeyCode::Enter);
+
+        let status = status_line(&mut app);
+
+        assert!(
+            status.contains("1 filter") && !status.contains("1 filters"),
+            "a lone search is not counted, or not counted singularly: {status}"
+        );
+        assert!(
+            !status.contains("0 filters"),
+            "the search-only status line still claims there are no filters: {status}"
         );
     }
 
