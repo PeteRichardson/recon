@@ -107,6 +107,18 @@ a minimum wider than the buffer's natural numbering would under-reserve under
 a wrapping mode. `recon` never calls `set_wrap_mode`. Not fixed, for the
 reason given above — that file is the declared tripwire.
 
+### 5. Cursor positioning without `u16` truncation
+
+- `src/textarea.rs`: added `set_cursor_position` after `set_lines`.
+- `tests/cursor.rs`: two tests appended.
+
+`recon`'s `n`/`N` land the cursor on an arbitrary source line.
+`CursorMove::Jump` takes `u16` and widens with `as usize` in its handler, so
+a caller past 65,535 lines truncates. `set_lines` clamps in `usize` but
+replaces the buffer, clears history and resets the viewport, which a plain
+cursor move must not do. This exposes the existing private
+`clamp_cursor_to_buffer` as a cursor-only operation.
+
 ### Local-only: removed `[profile.bench]`
 
 - `Cargo.toml`: dropped `[profile.bench] lto = "thin"`.

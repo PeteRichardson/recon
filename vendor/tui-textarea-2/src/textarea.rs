@@ -2760,6 +2760,23 @@ impl<'a> TextArea<'a> {
         self.reset_measure_cache();
     }
 
+    /// Move the cursor to a position in the buffer, clamped to it, without
+    /// touching the text.
+    ///
+    /// [`CursorMove::Jump`] takes `u16` and its handler widens with `as
+    /// usize`, so a caller past 65,535 lines truncates and lands 65,536 rows
+    /// from its target. This clamps in `usize` instead, the same way
+    /// [`TextArea::set_lines`] does — but without replacing the buffer,
+    /// clearing the history or resetting the viewport, none of which a plain
+    /// cursor move should do.
+    ///
+    /// The viewport is not scrolled here. Rendering brings the cursor into
+    /// view, exactly as it does after [`TextArea::move_cursor`].
+    pub fn set_cursor_position(&mut self, cursor: (usize, usize)) {
+        self.cancel_selection();
+        self.cursor = self.clamp_cursor_to_buffer(cursor);
+    }
+
     /// Convert [`TextArea`] instance into line texts.
     /// ```
     /// use tui_textarea::TextArea;

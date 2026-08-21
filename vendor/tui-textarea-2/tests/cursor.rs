@@ -326,3 +326,26 @@ fn word_end() {
         }
     }
 }
+
+#[test]
+fn set_cursor_position_clamps_in_usize() {
+    let lines: Vec<String> = (0..70_000).map(|i| format!("line {i}")).collect();
+    let mut textarea = TextArea::new(lines);
+
+    textarea.set_cursor_position((70_000 - 1, 0));
+
+    assert_eq!(
+        textarea.cursor().0,
+        69_999,
+        "CursorMove::Jump would have truncated this row through u16"
+    );
+}
+
+#[test]
+fn set_cursor_position_clamps_past_the_end() {
+    let mut textarea = TextArea::from(["alpha", "beta"]);
+
+    textarea.set_cursor_position((99, 99));
+
+    assert_eq!(textarea.cursor(), (1, 4));
+}
