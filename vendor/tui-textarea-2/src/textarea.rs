@@ -2772,6 +2772,11 @@ impl<'a> TextArea<'a> {
     ///
     /// The viewport is not scrolled here. Rendering brings the cursor into
     /// view, exactly as it does after [`TextArea::move_cursor`].
+    ///
+    /// Unlike [`TextArea::move_cursor`], this does not run
+    /// `normalize_data_cursor_around_atomic_ranges`, so it can land inside an
+    /// atomic range. Deliberate: nothing in this fork calls
+    /// `set_atomic_ranges` today, so there is no range to land inside.
     pub fn set_cursor_position(&mut self, cursor: (usize, usize)) {
         self.cancel_selection();
         self.cursor = self.clamp_cursor_to_buffer(cursor);

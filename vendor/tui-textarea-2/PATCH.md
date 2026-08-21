@@ -137,10 +137,16 @@ upstream's own tree it is the root package and the profile is valid.
    alone, so it runs `recon`'s tests and skips this crate entirely, including
    `tests/line_presentation.rs`, which pins this fork's whole contract.
 
-The patch is deliberately confined to per-line *presentation* and viewport
-*reporting*. If it ever needs to touch cursor movement, `screen_map.rs` or
+The patch is deliberately confined to per-line *presentation*, viewport
+*reporting*, and — as of change 5 — positioning the cursor through the
+crate's own existing clamp. It does not touch how movement itself works. If
+it ever needs to change `cursor.rs`'s movement logic, `screen_map.rs` or
 `wrap.rs`, stop: that is the signal to reconsider a purpose-built viewer
-instead (see the spec).
+instead (see the spec). `set_cursor_position` (change 5) stays on the
+allowed side of that line because it only calls the crate's existing private
+`clamp_cursor_to_buffer` and touches nothing outside `textarea.rs`; writing
+a new cursor-movement algorithm, or reaching into `screen_map.rs` or
+`wrap.rs`, would not.
 
 ## This file is the record
 
