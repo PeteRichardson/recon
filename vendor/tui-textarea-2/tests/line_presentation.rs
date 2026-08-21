@@ -36,9 +36,21 @@ fn line_styles_apply_to_the_named_line_only() {
 
     let buf = render(&textarea, 10, 3);
 
-    assert_eq!(row_text(&buf, 1), "beta", "styled the row we think we styled");
-    assert_eq!(buf[(0, 1)].style().fg, Some(Color::Yellow), "beta not styled");
-    assert_ne!(buf[(0, 2)].style().fg, Some(Color::Yellow), "gamma wrongly styled");
+    assert_eq!(
+        row_text(&buf, 1),
+        "beta",
+        "styled the row we think we styled"
+    );
+    assert_eq!(
+        buf[(0, 1)].style().fg,
+        Some(Color::Yellow),
+        "beta not styled"
+    );
+    assert_ne!(
+        buf[(0, 2)].style().fg,
+        Some(Color::Yellow),
+        "gamma wrongly styled"
+    );
 }
 
 #[test]
@@ -51,8 +63,16 @@ fn lines_past_the_end_of_the_styles_are_unstyled() {
 
     let buf = render(&textarea, 10, 3);
 
-    assert_eq!(buf[(0, 1)].style().fg, Some(Color::Yellow), "beta not styled");
-    assert_ne!(buf[(0, 2)].style().fg, Some(Color::Yellow), "gamma styled past the end");
+    assert_eq!(
+        buf[(0, 1)].style().fg,
+        Some(Color::Yellow),
+        "beta not styled"
+    );
+    assert_ne!(
+        buf[(0, 2)].style().fg,
+        Some(Color::Yellow),
+        "gamma styled past the end"
+    );
 }
 
 #[test]
@@ -82,8 +102,16 @@ fn the_cursor_line_style_still_wins() {
     let buf = render(&textarea, 10, 2);
 
     // The cursor sits on row 0, which must keep the cursor-line colour.
-    assert_eq!(buf[(0, 0)].style().fg, Some(Color::Green), "cursor line lost its style");
-    assert_eq!(buf[(0, 1)].style().fg, Some(Color::Yellow), "other line lost its style");
+    assert_eq!(
+        buf[(0, 0)].style().fg,
+        Some(Color::Green),
+        "cursor line lost its style"
+    );
+    assert_eq!(
+        buf[(0, 1)].style().fg,
+        Some(Color::Yellow),
+        "other line lost its style"
+    );
 }
 
 #[test]
@@ -95,8 +123,16 @@ fn line_numbers_can_be_overridden() {
 
     let buf = render(&textarea, 20, 2);
 
-    assert!(row_text(&buf, 0).trim_start().starts_with("2 "), "got {:?}", row_text(&buf, 0));
-    assert!(row_text(&buf, 1).trim_start().starts_with("4 "), "got {:?}", row_text(&buf, 1));
+    assert!(
+        row_text(&buf, 0).trim_start().starts_with("2 "),
+        "got {:?}",
+        row_text(&buf, 0)
+    );
+    assert!(
+        row_text(&buf, 1).trim_start().starts_with("4 "),
+        "got {:?}",
+        row_text(&buf, 1)
+    );
 }
 
 /// The gutter pads with `lnum_len - num_digits(row + 1)`, an unsigned
@@ -110,8 +146,16 @@ fn the_gutter_widens_for_overridden_numbers() {
 
     let buf = render(&textarea, 20, 2);
 
-    assert!(row_text(&buf, 0).trim_start().starts_with("9998 "), "got {:?}", row_text(&buf, 0));
-    assert!(row_text(&buf, 1).trim_start().starts_with("9999 "), "got {:?}", row_text(&buf, 1));
+    assert!(
+        row_text(&buf, 0).trim_start().starts_with("9998 "),
+        "got {:?}",
+        row_text(&buf, 0)
+    );
+    assert!(
+        row_text(&buf, 1).trim_start().starts_with("9999 "),
+        "got {:?}",
+        row_text(&buf, 1)
+    );
 }
 
 #[test]
@@ -121,8 +165,16 @@ fn without_overrides_numbering_is_unchanged() {
 
     let buf = render(&textarea, 20, 2);
 
-    assert!(row_text(&buf, 0).trim_start().starts_with("1 "), "got {:?}", row_text(&buf, 0));
-    assert!(row_text(&buf, 1).trim_start().starts_with("2 "), "got {:?}", row_text(&buf, 1));
+    assert!(
+        row_text(&buf, 0).trim_start().starts_with("1 "),
+        "got {:?}",
+        row_text(&buf, 0)
+    );
+    assert!(
+        row_text(&buf, 1).trim_start().starts_with("2 "),
+        "got {:?}",
+        row_text(&buf, 1)
+    );
 }
 
 #[test]
@@ -133,8 +185,16 @@ fn rows_without_an_override_fall_back_to_their_position() {
 
     let buf = render(&textarea, 20, 3);
 
-    assert!(row_text(&buf, 0).trim_start().starts_with("42 "), "got {:?}", row_text(&buf, 0));
-    assert!(row_text(&buf, 1).trim_start().starts_with("2 "), "got {:?}", row_text(&buf, 1));
+    assert!(
+        row_text(&buf, 0).trim_start().starts_with("42 "),
+        "got {:?}",
+        row_text(&buf, 0)
+    );
+    assert!(
+        row_text(&buf, 1).trim_start().starts_with("2 "),
+        "got {:?}",
+        row_text(&buf, 1)
+    );
 }
 
 #[test]
@@ -147,7 +207,11 @@ fn clear_line_numbers_restores_natural_numbering() {
     let buf = render(&textarea, 20, 2);
 
     assert!(textarea.line_numbers().is_empty());
-    assert!(row_text(&buf, 0).trim_start().starts_with("1 "), "got {:?}", row_text(&buf, 0));
+    assert!(
+        row_text(&buf, 0).trim_start().starts_with("1 "),
+        "got {:?}",
+        row_text(&buf, 0)
+    );
 }
 
 /// A minimum width lets a caller reserve gutter room the buffer does not yet
@@ -162,8 +226,16 @@ fn a_minimum_width_reserves_gutter_room() {
 
     let buf = render(&textarea, 20, 2);
 
-    assert!(row_text(&buf, 0).trim_end().ends_with("   1 a"), "got {:?}", row_text(&buf, 0));
-    assert!(row_text(&buf, 1).trim_end().ends_with("   2 b"), "got {:?}", row_text(&buf, 1));
+    assert!(
+        row_text(&buf, 0).trim_end().ends_with("   1 a"),
+        "got {:?}",
+        row_text(&buf, 0)
+    );
+    assert!(
+        row_text(&buf, 1).trim_end().ends_with("   2 b"),
+        "got {:?}",
+        row_text(&buf, 1)
+    );
 }
 
 /// The minimum only ever raises the width. A buffer already wider than the
@@ -178,7 +250,11 @@ fn a_minimum_narrower_than_the_content_is_ignored() {
 
     let buf = render(&textarea, 20, 2);
 
-    assert!(row_text(&buf, 0).trim_start().starts_with("9998 "), "got {:?}", row_text(&buf, 0));
+    assert!(
+        row_text(&buf, 0).trim_start().starts_with("9998 "),
+        "got {:?}",
+        row_text(&buf, 0)
+    );
 }
 
 #[test]
