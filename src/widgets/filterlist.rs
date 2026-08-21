@@ -168,24 +168,38 @@ impl FilterList {
         u16::try_from(longest + BORDERS as usize).unwrap_or(u16::MAX)
     }
 
-    /// One row of the pane: its number, whether it is on, which way it
-    /// filters, and its pattern.
+    /// A pane row's label and the filter behind it, search row included.
     ///
     /// Row 0 is the live search when one exists, marked `/` rather than a
     /// number — it has no number, because it does not occupy a position in
     /// `filters`. Its precedence here matches its precedence in `verdict`.
     ///
+    /// The single source of truth for the row-to-filter mapping: `row_text`
+    /// and `render`'s per-row styling both call this rather than keeping
+    /// their own copy of the offset. Splitting the label and the filter
+    /// lookup into two functions that each redo the `(search, row)` match
+    /// is exactly how they could disagree about which filter a row is —
+    /// this returns both from the one place the mapping is written down.
+    fn resolve_row(filters: &FilterSet, row: usize) -> Option<(String, &Filter)> {
+        match (filters.search(), row) {
+            (Some(search), 0) => Some(("/".to_string(), search)),
+            (search, row) => {
+                let index = row - usize::from(search.is_some());
+                filters
+                    .filters()
+                    .get(index)
+                    .map(|filter| ((index + 1).to_string(), filter))
+            }
+        }
+    }
+
+    /// One row of the pane: its number, whether it is on, which way it
+    /// filters, and its pattern.
+    ///
     /// The sense is spelled out because excluding filters carry no colour —
     /// nothing else on the row would distinguish them.
     fn row_text(filters: &FilterSet, row: usize) -> String {
-        let (label, filter) = match (filters.search(), row) {
-            (Some(search), 0) => ("/".to_string(), Some(search)),
-            (search, row) => {
-                let index = row - usize::from(search.is_some());
-                ((index + 1).to_string(), filters.filters().get(index))
-            }
-        };
-        let Some(filter) = filter else {
+        let Some((label, filter)) = Self::resolve_row(filters, row) else {
             return String::new();
         };
         let mark = if filter.enabled { 'x' } else { ' ' };
@@ -194,14 +208,6 @@ impl FilterList {
             Sense::Exclude => "exc",
         };
         format!("{}[{}] {} {}", label, mark, sense, filter.pattern.as_str())
-    }
-
-    /// The filter a pane row refers to, search row included.
-    fn row_filter(filters: &FilterSet, row: usize) -> Option<&Filter> {
-        match (filters.search(), row) {
-            (Some(search), 0) => Some(search),
-            (search, row) => filters.filters().get(row - usize::from(search.is_some())),
-        }
     }
 
     pub fn render(&mut self, filters: &FilterSet, area: Rect, buf: &mut Buffer) {
@@ -227,27 +233,32 @@ impl FilterList {
 
         let items: Vec<ListItem> = (0..filters.row_count())
             .map(|row| {
-                // `row_count` bounds this loop, so every row in range has a
-                // filter behind it — the search at row 0, a numbered filter
-                // at every row after.
-                let filter = Self::row_filter(filters, row).expect("row within row_count");
-                let style = if !filter.enabled {
-                    // Matches the file view's precedent for dimming
-                    // (`src/filter.rs`'s `DIM_STYLE`): `Modifier::DIM` alone is
-                    // silently ignored by many terminals, so an explicit grey
-                    // foreground is what actually shows the difference. The
-                    // `[ ]` marker still carries the signal if colour fails.
-                    DIM_STYLE
-                } else {
-                    match filter.sense {
-                        // An including filter wears its own colour, so the pane
-                        // and the file view agree at a glance. The search is
-                        // always `Sense::Include`, so it takes this branch too,
-                        // showing `SEARCH_STYLE` the same way.
-                        Sense::Include => filter.style,
-                        Sense::Exclude => Style::default().fg(Color::DarkGray),
-                    }
-                };
+                // `row_count` bounds this loop, so `resolve_row` always
+                // resolves here in practice; falling back to the default
+                // style on `None` rather than panicking keeps that a
+                // property of the loop bound, not a promise `resolve_row`
+                // also has to keep.
+                let style = Self::resolve_row(filters, row)
+                    .map(|(_, filter)| {
+                        if !filter.enabled {
+                            // Matches the file view's precedent for dimming
+                            // (`src/filter.rs`'s `DIM_STYLE`): `Modifier::DIM` alone is
+                            // silently ignored by many terminals, so an explicit grey
+                            // foreground is what actually shows the difference. The
+                            // `[ ]` marker still carries the signal if colour fails.
+                            DIM_STYLE
+                        } else {
+                            match filter.sense {
+                                // An including filter wears its own colour, so the pane
+                                // and the file view agree at a glance. The search is
+                                // always `Sense::Include`, so it takes this branch too,
+                                // showing `SEARCH_STYLE` the same way.
+                                Sense::Include => filter.style,
+                                Sense::Exclude => Style::default().fg(Color::DarkGray),
+                            }
+                        }
+                    })
+                    .unwrap_or_default();
                 ListItem::new(Self::row_text(filters, row)).style(style)
             })
             .collect();
@@ -422,6 +433,58 @@ mod tests {
         assert!(
             (0..area.width).any(|x| buf[(x, 1)].style().fg == expected),
             "the filter's colour is not shown anywhere on its row"
+        );
+    }
+
+    /// No other test in this file draws the pane with a search present:
+    /// `rendered`'s callers never set one, and the `lib.rs` tests that set a
+    /// search never draw. `resolve_row` is the single source of truth that
+    /// `row_text` and `render`'s styling both read the row-to-filter mapping
+    /// from (see its doc comment) — if the two ever disagreed, the natural
+    /// failure is not a wrong colour but a panic, since `render` used to
+    /// `.expect()` its lookup. Pinning the search row and a numbered filter
+    /// row to their own distinct styles in the same render is what would
+    /// catch that disagreement before it reaches a crash.
+    #[test]
+    fn the_search_row_and_a_filter_row_are_each_styled_correctly() {
+        let mut filters = set_of(&["ERROR"], &[]);
+        filters.set_search("timeout").expect("valid pattern");
+        filters.search_set_enabled(false);
+        let mut list = FilterList::default();
+        let area = Rect::new(0, 0, 30, 8);
+        let mut buf = Buffer::empty(area);
+
+        list.render(&filters, area, &mut buf);
+
+        assert!(
+            (0..area.width).any(|x| buf[(x, 1)].style().fg == DIM_STYLE.fg),
+            "the disabled search row (row 0) should use the dim style"
+        );
+        let expected = filters.filters()[0].style.fg;
+        assert!(
+            (0..area.width).any(|x| buf[(x, 2)].style().fg == expected),
+            "the numbered filter's own colour is not shown on its row"
+        );
+    }
+
+    /// `preferred_width` must size the column from every row, search
+    /// included. Reverting its loop bound from `row_count()` to `len()`
+    /// silently drops the last row from consideration; putting the longer
+    /// pattern on the *last* filter, rather than the first or the search,
+    /// means that drop is not masked by some other row happening to already
+    /// be the longest.
+    #[test]
+    fn preferred_width_accounts_for_every_row_including_the_last_when_a_search_exists() {
+        let mut filters = set_of(&["a", "a pattern much longer than the rest"], &[]);
+        filters.set_search("x").expect("valid pattern");
+        let list = FilterList::default();
+
+        let width = list.preferred_width(&filters) as usize;
+        let last_row_text = FilterList::row_text(&filters, filters.row_count() - 1);
+
+        assert!(
+            width >= last_row_text.chars().count() + BORDERS as usize,
+            "preferred_width ({width}) is too narrow for the last row: {last_row_text:?}"
         );
     }
 

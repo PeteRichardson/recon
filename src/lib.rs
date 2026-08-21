@@ -5001,4 +5001,96 @@ mod tests {
             "the first filter was toggled instead of the second"
         );
     }
+
+    /// `FilterCommand::ToggleSearch`'s dispatch is untested elsewhere: unlike
+    /// `Toggle(index)`, which routes through the already-covered
+    /// `toggle_enabled`, nothing presses `space` on the search row through
+    /// the real key path. Both directions are asserted because a mutation
+    /// that always disables the search (rather than flipping it) passes the
+    /// first press — it starts enabled, and disabling is the right move —
+    /// and only fails on the second, when the correct behaviour is to
+    /// re-enable it.
+    #[test]
+    fn space_on_the_search_row_toggles_search_enabled_both_ways() {
+        let mut app = app_over_file("pane_toggle_search", "alpha\nbeta\n");
+        key(&mut app, KeyCode::Char('t'));
+        app.filters.add("alpha").expect("valid pattern");
+        key(&mut app, KeyCode::Char('/'));
+        typed(&mut app, "beta");
+        key(&mut app, KeyCode::Enter);
+
+        key(&mut app, KeyCode::Char('f'));
+        key(&mut app, KeyCode::Char(' '));
+
+        assert!(
+            !app.filters.search().expect("search still set").enabled,
+            "space on the search row should have disabled it"
+        );
+
+        key(&mut app, KeyCode::Char(' '));
+
+        assert!(
+            app.filters.search().expect("search still set").enabled,
+            "a second space should have re-enabled the search"
+        );
+    }
+
+    /// `filter_pane_height` must count the search row too. Reverting it to
+    /// `self.filters.len()` gives a pane one row short whenever a search
+    /// exists alongside at least one filter, clipping the last row — a
+    /// numbered filter is required alongside the search because with zero
+    /// filters `preferred_height`'s `.max(1)` floor produces the same answer
+    /// either way, masking the bug.
+    #[test]
+    fn filter_pane_height_counts_the_search_row_too() {
+        let mut app = app_over_file("pane_height_search", "alpha\nbeta\n");
+        app.filters.add("alpha").expect("valid pattern");
+        app.filters.set_search("beta").expect("valid pattern");
+
+        let height = app.filter_pane_height();
+        let expected = app
+            .filter_list()
+            .expect("filter pane exists")
+            .preferred_height(app.filters.row_count());
+
+        assert_eq!(
+            height, expected,
+            "filter_pane_height did not count the search row"
+        );
+    }
+
+    /// Both paths that clear the search — `Esc` and the pane's `d` on the
+    /// search row — funnel through `refresh_view`, which reclamps the
+    /// pane's selection to the new `row_count`. Nothing pinned that down: a
+    /// future path that cleared the search without going through
+    /// `refresh_view` would leave the selection pointing past the end of a
+    /// now-shorter list. Selecting row 1 — the numbered filter, the last row
+    /// while the search still occupies row 0 — before clearing makes that
+    /// observable: it is out of range the moment the search row disappears.
+    #[test]
+    fn clearing_the_search_leaves_the_selection_in_range() {
+        let mut app = app_over_file("pane_clear_search_selection", "alpha\nbeta\n");
+        key(&mut app, KeyCode::Char('t'));
+        app.filters.add("alpha").expect("valid pattern");
+        key(&mut app, KeyCode::Char('/'));
+        typed(&mut app, "beta");
+        key(&mut app, KeyCode::Enter);
+
+        key(&mut app, KeyCode::Char('f'));
+        key(&mut app, KeyCode::Char('j'));
+        assert_eq!(
+            app.filter_list().and_then(|list| list.selected()),
+            Some(1),
+            "setup: selection should be on the numbered filter's row"
+        );
+
+        key(&mut app, KeyCode::Esc);
+
+        assert!(app.filters.search().is_none(), "setup: search not cleared");
+        assert_eq!(
+            app.filter_list().and_then(|list| list.selected()),
+            Some(0),
+            "selection was left pointing past the end after the search row disappeared"
+        );
+    }
 }
