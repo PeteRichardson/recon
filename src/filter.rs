@@ -176,9 +176,14 @@ impl FilterSet {
     }
 
     /// Drop the live search. A no-op when there is none.
-    pub fn clear_search(&mut self) {
-        self.search = None;
+    ///
+    /// Reports whether there was a search to drop, the same shape as
+    /// `promote_search`: a caller can skip the `refresh_view` it would
+    /// otherwise pay for on every press — see the `Esc` binding.
+    pub fn clear_search(&mut self) -> bool {
+        let had_search = self.search.take().is_some();
         self.forget_capture();
+        had_search
     }
 
     pub fn search(&self) -> Option<&Filter> {

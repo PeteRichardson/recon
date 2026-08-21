@@ -594,7 +594,7 @@ impl App<'_> {
                 // early while `self.search` is `Some`, so Esc there cancels the
                 // prompt rather than reaching past it.
                 //
-                // Guarded on `.is_empty()`, unlike `n`/`N` above: that guard was
+                // Guarded on `.is_empty()`, unlike `n`/`N` below: that guard was
                 // wrong for them because crossterm attaches SHIFT to every
                 // uppercase letter a real terminal sends. Esc isn't a
                 // printable character, so there is no case to attach SHIFT to;
@@ -603,8 +603,15 @@ impl App<'_> {
                 // carries no modifiers at all, so `is_empty()` is simply
                 // correct here rather than a trap.
                 KeyCode::Esc if key.modifiers.is_empty() => {
-                    self.filters.clear_search();
-                    self.refresh_view();
+                    // `clear_search` reports whether there was one to drop, the
+                    // same shape `p`'s `promote_search` guard uses just below:
+                    // `refresh_view` is not free — `evaluate` is
+                    // O(lines × filters) — and Esc is a key people tap out of
+                    // habit, so it should not pay for a re-evaluate when there
+                    // was nothing to clear.
+                    if self.filters.clear_search() {
+                        self.refresh_view();
+                    }
                     return Ok(());
                 }
                 // Global rather than pane-scoped: the user has just searched
@@ -899,7 +906,9 @@ impl App<'_> {
                 let enabled = self.filters.search().is_some_and(|search| search.enabled);
                 self.filters.search_set_enabled(!enabled);
             }
-            FilterCommand::DeleteSearch => self.filters.clear_search(),
+            FilterCommand::DeleteSearch => {
+                self.filters.clear_search();
+            }
         }
         // Deleting the last filter used to collapse the pane, so focus had to
         // be pushed off it. The pane stays now, so focus stays too — moving it
@@ -4676,6 +4685,30 @@ mod tests {
         assert_eq!(app.filters.len(), 1, "Esc touched the numbered filters");
     }
 
+    /// `refresh_view` runs `Document::evaluate`, which is O(lines × filters)
+    /// — not free — and Esc is a key people tap out of habit, so clearing an
+    /// empty search must not pay for it. Nothing in the filter set itself
+    /// tells "refreshed and found nothing new" apart from "never refreshed",
+    /// so this reaches for `apply_view`'s own tell instead: it only
+    /// overwrites `last_visible` when the visible set it just computed
+    /// differs from what is already there. Seeding a value that can never
+    /// match the real one means a leftover mismatch after Esc is direct
+    /// evidence that `refresh_view` never ran.
+    #[test]
+    fn escape_with_no_search_does_not_refresh() {
+        let mut app = app_over_file("esc_no_refresh", "alpha\n");
+        key(&mut app, KeyCode::Char('t'));
+        app.last_visible = Some(vec![usize::MAX]);
+
+        key(&mut app, KeyCode::Esc);
+
+        assert_eq!(
+            app.last_visible,
+            Some(vec![usize::MAX]),
+            "Esc refreshed the view with nothing to clear"
+        );
+    }
+
     /// Probe, keep, probe again — a filter set assembled without retyping a
     /// regex that was hard to get right. Feeds #8.
     #[test]
@@ -4707,7 +4740,23 @@ mod tests {
         }
 
         assert_eq!(app.filters.len(), 2);
-        assert_eq!(app.document.match_count(), 2);
+        // Not `match_count`: it counts `Included` and `Searched` verdicts
+        // identically, and `apply_search`'s own refresh already set it to 2
+        // the moment the live search matched — before either promotion ran.
+        // Checking the verdicts themselves is what actually depends on `p`'s
+        // `refresh_view`: promoting moves a line from the search's slot to a
+        // numbered one, and only a re-evaluate updates its `Verdict` to
+        // reflect that move.
+        assert_eq!(
+            app.document.verdicts()[1],
+            Verdict::Included(0),
+            "beta's verdict was not updated after being promoted"
+        );
+        assert_eq!(
+            app.document.verdicts()[2],
+            Verdict::Included(1),
+            "gamma's verdict was not updated after being promoted"
+        );
     }
 
     #[test]
