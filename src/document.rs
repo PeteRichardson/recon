@@ -60,7 +60,7 @@ impl Document {
         self.match_count = self
             .verdicts
             .iter()
-            .filter(|verdict| matches!(verdict, Verdict::Included(_)))
+            .filter(|verdict| matches!(verdict, Verdict::Included(_) | Verdict::Searched))
             .count();
         self.recompute_visible();
     }
@@ -82,7 +82,7 @@ impl Document {
                 // unmatched lines only.
                 (_, Verdict::Excluded) => false,
                 (Mode::Dimmed, _) => true,
-                (Mode::FilteredOnly, Verdict::Included(_)) => true,
+                (Mode::FilteredOnly, Verdict::Included(_) | Verdict::Searched) => true,
                 (Mode::FilteredOnly, Verdict::Unmatched) => false,
             })
             .map(|(index, _)| index)
@@ -181,6 +181,12 @@ mod tests {
         set
     }
 
+    fn set_searching(pattern: &str) -> FilterSet {
+        let mut set = FilterSet::new();
+        set.set_search(pattern).expect("valid pattern");
+        set
+    }
+
     #[test]
     fn a_new_document_has_a_verdict_for_every_line() {
         let document = doc(&["one", "two", "three"]);
@@ -218,6 +224,23 @@ mod tests {
     fn match_count_reports_included_lines_only() {
         let mut document = doc(&["foo a", "bar", "foo b"]);
         document.evaluate(&set_with(&["foo"]));
+
+        assert_eq!(document.match_count(), 2);
+    }
+
+    #[test]
+    fn a_searched_line_is_visible_when_unmatched_lines_are_hidden() {
+        let mut document = doc(&["alpha", "beta", "gamma"]);
+        document.set_mode(Mode::FilteredOnly);
+        document.evaluate(&set_searching("beta"));
+
+        assert_eq!(document.visible(), &[1]);
+    }
+
+    #[test]
+    fn match_count_includes_searched_lines() {
+        let mut document = doc(&["foo a", "bar", "foo b"]);
+        document.evaluate(&set_searching("foo"));
 
         assert_eq!(document.match_count(), 2);
     }

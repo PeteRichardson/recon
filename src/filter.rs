@@ -35,6 +35,18 @@ pub(crate) const DIM_STYLE: Style = Style::new()
     .fg(Color::Indexed(DIM_GREY))
     .add_modifier(Modifier::DIM);
 
+/// The colour reserved for the live search.
+///
+/// Deliberately outside `PALETTE`: drawing from it would make the search's
+/// colour depend on how many filters happen to exist, so it would shift as
+/// filters come and go. A fixed colour gives the user one rule — white means
+/// what you just typed.
+///
+/// White *and* bold, for the reason `pane_block` gives about focus: a single
+/// visual channel fails on a theme with weak contrast and in a terminal with
+/// no colour at all.
+pub(crate) const SEARCH_STYLE: Style = Style::new().fg(Color::White).add_modifier(Modifier::BOLD);
+
 /// Whether a filter selects lines or removes them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Sense {
@@ -47,6 +59,11 @@ pub enum Sense {
 pub enum Verdict {
     /// Matched an including filter; carries its index, for colouring.
     Included(usize),
+    /// Matched the live search rather than a numbered filter.
+    ///
+    /// Carries no index: the search lives in its own slot, precisely so that
+    /// setting and clearing it cannot renumber the filters the user built.
+    Searched,
     /// Matched no including filter.
     Unmatched,
     /// Removed by an excluding filter.
@@ -64,11 +81,21 @@ pub struct Filter {
 #[derive(Debug, Default)]
 pub struct FilterSet {
     filters: Vec<Filter>,
+    /// The live search: at most one, replaced by each `/`, and never an
+    /// element of `filters`.
+    ///
+    /// `Verdict::Included(usize)` is a *position* in `filters` — see
+    /// `remove`'s doc comment. Were the search stored there, every `/` and
+    /// every `Esc` would renumber the user's filters as a side effect of
+    /// typing a search.
+    search: Option<Filter>,
     /// Enabled flags captured by `disable_all_remembering`, awaiting a restore.
     ///
     /// Held separately from the filters so that a filter removed in the
     /// meantime simply drops out of the restore rather than resurrecting.
     remembered: Option<Vec<bool>>,
+    /// The search slot's enabled flag, captured alongside `remembered`.
+    remembered_search: Option<bool>,
 }
 
 impl FilterSet {
@@ -108,7 +135,7 @@ impl FilterSet {
         // A pending capture describes a set that no longer exists. Keeping it
         // would strand it: `!` would see an enabled filter, try to capture,
         // find one already pending, and do nothing at all — forever.
-        self.remembered = None;
+        self.forget_capture();
         Ok(())
     }
 
@@ -128,8 +155,66 @@ impl FilterSet {
         // A pending capture describes a set that no longer exists. Keeping it
         // would strand it: `!` would see an enabled filter, try to capture,
         // find one already pending, and do nothing at all — forever.
-        self.remembered = None;
+        self.forget_capture();
         Ok(())
+    }
+
+    /// Set the live search, replacing any previous one.
+    ///
+    /// One search at a time, like vim's search register: a second `/` is a
+    /// new question, not another filter.
+    pub fn set_search(&mut self, pattern: &str) -> Result<(), regex::Error> {
+        let pattern = Regex::new(pattern)?;
+        self.search = Some(Filter {
+            pattern,
+            sense: Sense::Include,
+            enabled: true,
+            style: SEARCH_STYLE,
+        });
+        self.forget_capture();
+        Ok(())
+    }
+
+    /// Drop the live search. A no-op when there is none.
+    pub fn clear_search(&mut self) {
+        self.search = None;
+        self.forget_capture();
+    }
+
+    pub fn search(&self) -> Option<&Filter> {
+        self.search.as_ref()
+    }
+
+    /// Enable or disable the search, reporting whether there was one.
+    pub fn search_set_enabled(&mut self, enabled: bool) -> bool {
+        match self.search.as_mut() {
+            Some(search) => {
+                search.enabled = enabled;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Rows the filter pane draws: one per numbered filter, plus the search
+    /// row when a search exists.
+    ///
+    /// Distinct from `len`, which counts only the numbered filters and is
+    /// what `Verdict::Included` indexes into. The pane needs the larger
+    /// number; nothing else does.
+    pub fn row_count(&self) -> usize {
+        self.filters.len() + usize::from(self.search.is_some())
+    }
+
+    /// Drop a pending `!` capture, both halves together.
+    ///
+    /// A capture describes a set that no longer exists once the set changes.
+    /// Keeping it would strand it — see `add`. Both fields go, always:
+    /// dropping only one leaves the capture half-valid, which is worse than
+    /// dropping neither.
+    fn forget_capture(&mut self) {
+        self.remembered = None;
+        self.remembered_search = None;
     }
 
     /// Whether any enabled filter removes lines.
@@ -143,6 +228,9 @@ impl FilterSet {
     pub fn set_all_enabled(&mut self, enabled: bool) {
         for filter in &mut self.filters {
             filter.enabled = enabled;
+        }
+        if let Some(search) = self.search.as_mut() {
+            search.enabled = enabled;
         }
     }
 
@@ -197,9 +285,8 @@ impl FilterSet {
             return;
         }
         self.remembered = Some(self.filters.iter().map(|f| f.enabled).collect());
-        for filter in &mut self.filters {
-            filter.enabled = false;
-        }
+        self.remembered_search = self.search.as_ref().map(|search| search.enabled);
+        self.set_all_enabled(false);
     }
 
     /// Put back exactly the state `disable_all_remembering` captured.
@@ -213,6 +300,12 @@ impl FilterSet {
         for (filter, was_enabled) in self.filters.iter_mut().zip(remembered) {
             filter.enabled = was_enabled;
         }
+        // Taken unconditionally, so a capture made while no search existed
+        // does not linger and get applied to an unrelated later search.
+        let remembered_search = self.remembered_search.take();
+        if let (Some(search), Some(was_enabled)) = (self.search.as_mut(), remembered_search) {
+            search.enabled = was_enabled;
+        }
     }
 
     pub fn has_remembered(&self) -> bool {
@@ -221,6 +314,7 @@ impl FilterSet {
 
     pub fn any_enabled(&self) -> bool {
         self.filters.iter().any(|filter| filter.enabled)
+            || self.search.as_ref().is_some_and(|search| search.enabled)
     }
 
     /// Decide how `line` should be presented.
@@ -237,6 +331,16 @@ impl FilterSet {
             filter.enabled && filter.sense == Sense::Exclude && filter.pattern.is_match(line)
         }) {
             return Verdict::Excluded;
+        }
+
+        // The live search outranks the numbered filters: the user's attention
+        // is on the pattern they just typed, so it wins the colour on a line
+        // that several things match.
+        if let Some(search) = &self.search
+            && search.enabled
+            && search.pattern.is_match(line)
+        {
+            return Verdict::Searched;
         }
 
         self.filters
@@ -266,6 +370,7 @@ impl FilterSet {
     pub fn style_for(&self, verdict: Verdict) -> Option<Style> {
         match verdict {
             Verdict::Included(index) => self.filters.get(index).map(|f| f.style),
+            Verdict::Searched => Some(SEARCH_STYLE),
             Verdict::Unmatched if self.any_including() => Some(DIM_STYLE),
             Verdict::Unmatched | Verdict::Excluded => None,
         }
@@ -660,5 +765,160 @@ mod tests {
             "nothing was captured any more, so restore is a no-op"
         );
         assert!(set.filters()[1].enabled, "still enabled, exactly as added");
+    }
+
+    #[test]
+    fn a_search_matches_like_an_including_filter() {
+        let mut set = FilterSet::new();
+        set.set_search("timeout").expect("valid pattern");
+
+        assert_eq!(set.verdict("conn timeout"), Verdict::Searched);
+        assert_eq!(set.verdict("all fine"), Verdict::Unmatched);
+    }
+
+    /// The user's attention is on the pattern they just typed, so it wins the
+    /// colour on a line a numbered filter also matches.
+    #[test]
+    fn the_search_outranks_a_numbered_filter() {
+        let mut set = set_with(&["ERROR"]);
+        set.set_search("timeout").expect("valid pattern");
+
+        assert_eq!(set.verdict("ERROR timeout on socket"), Verdict::Searched);
+        assert_eq!(set.verdict("ERROR disk full"), Verdict::Included(0));
+    }
+
+    /// Exclusion runs first and beats everything, so search inherits the rule
+    /// rather than needing one of its own.
+    #[test]
+    fn exclusion_beats_the_search() {
+        let mut set = FilterSet::new();
+        set.add_excluding("heartbeat").expect("valid pattern");
+        set.set_search("timeout").expect("valid pattern");
+
+        assert_eq!(set.verdict("heartbeat timeout"), Verdict::Excluded);
+    }
+
+    /// One search at a time, like vim's search register: a second `/` replaces
+    /// the first rather than stacking another filter.
+    #[test]
+    fn setting_a_search_replaces_the_previous_one() {
+        let mut set = FilterSet::new();
+        set.set_search("foo").expect("valid pattern");
+        set.set_search("bar").expect("valid pattern");
+
+        assert_eq!(set.verdict("bar line"), Verdict::Searched);
+        assert_eq!(set.verdict("foo line"), Verdict::Unmatched);
+    }
+
+    /// The whole point of the separate slot: `/` and `Esc` must never renumber
+    /// the filters the user built, because `Verdict::Included` is a position.
+    #[test]
+    fn the_search_does_not_occupy_a_numbered_slot() {
+        let mut set = set_with(&["alpha", "beta"]);
+        set.set_search("gamma").expect("valid pattern");
+
+        assert_eq!(set.len(), 2, "the search must not join the numbered set");
+        assert_eq!(set.verdict("beta line"), Verdict::Included(1));
+
+        set.clear_search();
+        assert_eq!(set.verdict("beta line"), Verdict::Included(1));
+    }
+
+    #[test]
+    fn clearing_a_search_removes_it() {
+        let mut set = FilterSet::new();
+        set.set_search("foo").expect("valid pattern");
+        set.clear_search();
+
+        assert_eq!(set.verdict("foo line"), Verdict::Unmatched);
+        assert!(set.search().is_none());
+    }
+
+    #[test]
+    fn an_invalid_search_pattern_is_reported_and_changes_nothing() {
+        let mut set = FilterSet::new();
+        set.set_search("foo").expect("valid pattern");
+
+        assert!(set.set_search("[").is_err());
+        assert_eq!(
+            set.verdict("foo line"),
+            Verdict::Searched,
+            "the old search was lost"
+        );
+    }
+
+    #[test]
+    fn a_disabled_search_matches_nothing() {
+        let mut set = FilterSet::new();
+        set.set_search("foo").expect("valid pattern");
+        set.set_all_enabled(false);
+
+        assert_eq!(set.verdict("foo line"), Verdict::Unmatched);
+    }
+
+    /// The search carries a colour of its own, outside `PALETTE`, so it never
+    /// shifts as filters are added and removed.
+    #[test]
+    fn the_search_style_is_reserved_rather_than_drawn_from_the_palette() {
+        assert!(
+            !PALETTE
+                .iter()
+                .any(|colour| SEARCH_STYLE.fg == Some(*colour)),
+            "the search colour would move as the palette rotates"
+        );
+        let mut set = FilterSet::new();
+        set.set_search("foo").expect("valid pattern");
+        assert_eq!(set.style_for(Verdict::Searched), Some(SEARCH_STYLE));
+    }
+
+    /// `!` must round-trip the search slot too, or it stops meaning "back to an
+    /// unfiltered view".
+    #[test]
+    fn disabling_all_remembers_the_search_slot() {
+        let mut set = set_with(&["foo"]);
+        set.set_search("bar").expect("valid pattern");
+
+        set.disable_all_remembering();
+        assert!(!set.any_enabled(), "the search kept the set enabled");
+        assert_eq!(set.verdict("bar line"), Verdict::Unmatched);
+
+        set.restore_remembered();
+        assert_eq!(set.verdict("bar line"), Verdict::Searched);
+    }
+
+    /// A search that the user had deliberately toggled off must not come back on.
+    #[test]
+    fn restoring_does_not_switch_a_disabled_search_back_on() {
+        let mut set = FilterSet::new();
+        set.set_search("bar").expect("valid pattern");
+        set.search_set_enabled(false);
+
+        set.disable_all_remembering();
+        set.restore_remembered();
+
+        assert_eq!(set.verdict("bar line"), Verdict::Unmatched);
+    }
+
+    /// A capture describes a set that no longer exists once the search changes,
+    /// exactly as it does when a filter is added — see `add`'s comment.
+    #[test]
+    fn changing_the_search_drops_a_pending_capture() {
+        let mut set = set_with(&["foo"]);
+        set.disable_all_remembering();
+
+        set.set_search("bar").expect("valid pattern");
+        assert!(!set.has_remembered());
+
+        set.clear_search();
+        assert!(!set.has_remembered());
+    }
+
+    #[test]
+    fn row_count_includes_the_search_row() {
+        let mut set = set_with(&["foo", "bar"]);
+        assert_eq!(set.row_count(), 2);
+
+        set.set_search("baz").expect("valid pattern");
+        assert_eq!(set.row_count(), 3);
     }
 }
