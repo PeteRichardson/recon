@@ -440,11 +440,12 @@ mod tests {
     /// `rendered`'s callers never set one, and the `lib.rs` tests that set a
     /// search never draw. `resolve_row` is the single source of truth that
     /// `row_text` and `render`'s styling both read the row-to-filter mapping
-    /// from (see its doc comment) — if the two ever disagreed, the natural
-    /// failure is not a wrong colour but a panic, since `render` used to
-    /// `.expect()` its lookup. Pinning the search row and a numbered filter
-    /// row to their own distinct styles in the same render is what would
-    /// catch that disagreement before it reaches a crash.
+    /// from (see its doc comment), which is what keeps them from drifting
+    /// apart the way two separate copies of the same mapping could. Pinning
+    /// the search row and a numbered filter row to their own distinct
+    /// styles in the same render is the regression test for that: a future
+    /// change that broke the mapping would show up here as a colour
+    /// mismatch.
     #[test]
     fn the_search_row_and_a_filter_row_are_each_styled_correctly() {
         let mut filters = set_of(&["ERROR"], &[]);
