@@ -607,6 +607,27 @@ impl App<'_> {
                     self.refresh_view();
                     return Ok(());
                 }
+                // Global rather than pane-scoped: the user has just searched
+                // and should not have to go and find the filter pane to keep
+                // the result.
+                //
+                // Guarded on `.is_empty()`, same reasoning as `q`/`f`/`!`
+                // above rather than `n`/`N`/`H`: `p` is lowercase, and
+                // crossterm only attaches SHIFT to uppercase characters, so
+                // there is no real-terminal case this guard would make
+                // unreachable. Leaving Ctrl-P and Alt-P unclaimed here lets
+                // them fall through to the focused widget, matching every
+                // other plain-letter global binding on this branch.
+                KeyCode::Char('p') if key.modifiers.is_empty() => {
+                    // `promote_search` pays nothing when the slot is empty;
+                    // `refresh_view` is not free — `evaluate` is
+                    // O(lines × filters) — so it is only paid for when the
+                    // set actually changed. `p` will be pressed speculatively.
+                    if self.filters.promote_search() {
+                        self.refresh_view();
+                    }
+                    return Ok(());
+                }
                 // `f` moves focus; creating a filter is `i` / `x` once the
                 // pane has it. That costs a keystroke from outside the pane
                 // and none from inside, in exchange for one focus key per
@@ -4647,6 +4668,77 @@ mod tests {
         key(&mut app, KeyCode::Esc);
 
         assert_eq!(app.filters.len(), 1, "Esc touched the numbered filters");
+    }
+
+    /// Probe, keep, probe again — a filter set assembled without retyping a
+    /// regex that was hard to get right. Feeds #8.
+    #[test]
+    fn p_promotes_the_search_and_frees_the_slot() {
+        let mut app = app_over_file("p_promote", "alpha\nbeta\n");
+        key(&mut app, KeyCode::Char('t'));
+        key(&mut app, KeyCode::Char('/'));
+        typed(&mut app, "beta");
+        key(&mut app, KeyCode::Enter);
+
+        key(&mut app, KeyCode::Char('p'));
+
+        assert_eq!(app.filters.len(), 1, "the search did not become a filter");
+        assert!(
+            app.filters.search().is_none(),
+            "the slot is not free for the next probe"
+        );
+    }
+
+    #[test]
+    fn two_probes_promote_into_two_filters() {
+        let mut app = app_over_file("p_twice", "alpha\nbeta\ngamma\n");
+        key(&mut app, KeyCode::Char('t'));
+        for pattern in ["beta", "gamma"] {
+            key(&mut app, KeyCode::Char('/'));
+            typed(&mut app, pattern);
+            key(&mut app, KeyCode::Enter);
+            key(&mut app, KeyCode::Char('p'));
+        }
+
+        assert_eq!(app.filters.len(), 2);
+        assert_eq!(app.document.match_count(), 2);
+    }
+
+    #[test]
+    fn p_with_no_search_does_nothing() {
+        let mut app = app_over_file("p_noop", "alpha\n");
+        key(&mut app, KeyCode::Char('t'));
+
+        key(&mut app, KeyCode::Char('p'));
+
+        assert!(app.filters.is_empty());
+    }
+
+    /// Same reasoning as `ctrl_modified_letters_still_reach_the_file_view`:
+    /// a modified `p` must fall through rather than be swallowed by the
+    /// promote binding, which only claims the bare, unmodified key.
+    #[test]
+    fn ctrl_p_does_not_promote_the_search() {
+        let mut app = app_over_file("p_ctrl", "alpha\nbeta\n");
+        key(&mut app, KeyCode::Char('t'));
+        key(&mut app, KeyCode::Char('/'));
+        typed(&mut app, "beta");
+        key(&mut app, KeyCode::Enter);
+
+        app.handle_event(event::Event::Key(event::KeyEvent::new(
+            KeyCode::Char('p'),
+            KeyModifiers::CONTROL,
+        )))
+        .unwrap();
+
+        assert!(
+            app.filters.is_empty(),
+            "Ctrl-P was taken as a promote command"
+        );
+        assert!(
+            app.filters.search().is_some(),
+            "Ctrl-P consumed the search slot"
+        );
     }
 
     /// `?` is reserved for the help view (#25). With n/N covering both
