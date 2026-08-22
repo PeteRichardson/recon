@@ -36,6 +36,80 @@ pub(crate) const PREVIEW_LINES: usize = 50_000;
 /// to reach before anyone noticed it.
 const MAX_PREVIEW_BYTES: u64 = 10 << 20;
 
+/// Pane height assumed before this pane has rendered even once.
+///
+/// Deliberately generous rather than small. An over-large window costs a few
+/// hundred extra `String` clones for a single frame; an under-large one leaves
+/// the bottom of the pane blank until the next rebuild, which is a visible
+/// defect. Taller than any realistic terminal, so the first frame is always
+/// fully populated and the real height takes over from the second.
+pub(crate) const ASSUMED_PANE_HEIGHT: u16 = 200;
+
+/// How many screens of the visible set `TextArea` is given: the viewport plus
+/// one screen of slack above and below.
+///
+/// The slack is what keeps today's scroll behaviour intact. With a window of
+/// exactly the viewport, every single `j` would run off the buffer's end and
+/// force a `set_lines` rebuild — resetting the viewport and re-entering the
+/// `pending_screen_row` machinery on the hottest path in the app. With a screen
+/// either side, ordinary movement (`j`, `k`, `Ctrl-E`, `Ctrl-Y`, and a page in
+/// either direction) happens entirely inside the buffer and `TextArea` handles
+/// it exactly as before.
+///
+/// Three screens is ~72 lines on a 24-row terminal. The memory this issue
+/// exists to reclaim is measured in gigabytes; this is not a tradeoff.
+const WINDOW_SCREENS: usize = 3;
+
+/// The slice of the visible set to hand `TextArea`, as `(start, end)` indices
+/// into it, given where the cursor sits in that set.
+///
+/// Returns the whole visible set when it is no longer than the window. That
+/// degenerate case is not a special path — it is what makes a single code path
+/// serve every file size without a threshold, and it is the case almost every
+/// test in this repo exercises, since a fixture shorter than three screens is
+/// windowed to itself and behaves exactly as it did before #7.
+pub(crate) fn window_for(visible_len: usize, height: u16, row: usize) -> (usize, usize) {
+    let height = height.max(1) as usize;
+    let span = height * WINDOW_SCREENS;
+    if visible_len <= span {
+        return (0, visible_len);
+    }
+    // `height` of slack above the cursor, pulled back at the tail so the window
+    // stays a full span rather than shrinking against the end of the document.
+    let start = row.saturating_sub(height).min(visible_len - span);
+    (start, start + span)
+}
+
+/// Whether the window `start..end` still holds `row` comfortably, or a rebuild
+/// is owed.
+///
+/// **The middle-third rule.** The window is three screens; its middle third is
+/// one screen. Keeping the cursor inside that third guarantees at least one
+/// full screen of buffer beyond it in each direction, so any single move of at
+/// most a page completes inside the buffer and `TextArea` never clamps it
+/// short.
+///
+/// That guarantee is the point, not the tidiness. With a half-screen margin the
+/// *second* consecutive `PageDown` runs into the buffer's end and is silently
+/// truncated — the page moves less than a page, and the user sees a stutter
+/// with no explanation.
+///
+/// A side that is already the end of the document never triggers a rebuild:
+/// there is nothing further to window onto.
+pub(crate) fn window_holds(visible_len: usize, start: usize, end: usize, row: usize) -> bool {
+    if row < start || row >= end.max(start + 1) {
+        return false;
+    }
+    let third = (end - start) / WINDOW_SCREENS;
+    if third == 0 {
+        // Too short to have thirds; holding the row at all is enough.
+        return true;
+    }
+    let room_above = start == 0 || row >= start + third;
+    let room_below = end >= visible_len || row < end - third;
+    room_above && room_below
+}
+
 /// Shown in place of the contents when a file is not UTF-8.
 const BINARY_MESSAGE: &str = "<binary file: not valid UTF-8>";
 
@@ -113,6 +187,26 @@ pub struct FileView<'a> {
     /// the same question against a viewport already disturbed by the first
     /// rebuild — see `scroll_cursor_to_row`.
     pending_screen_row: Option<u16>,
+    /// Visible-set index of the buffer's **first row** (#7).
+    ///
+    /// `TextArea` holds a window of the visible set, not all of it, so
+    /// `textarea.cursor().0` is an index into that window. The visible-set row
+    /// is `window_start + textarea.cursor().0` — see `cursor_visible_row`,
+    /// which is the only place that arithmetic is written down.
+    ///
+    /// Zero whenever the window is the whole visible set, which is every
+    /// document shorter than three screens.
+    window_start: usize,
+    /// Height of the area this pane last rendered into, for sizing the window.
+    ///
+    /// `apply_view` runs outside `render` and has no `Rect` of its own, so the
+    /// previous frame's height is the best available estimate. `area.height`
+    /// rather than the inner text height: it over-estimates by the two border
+    /// rows, and over-estimating a window is free while under-estimating it
+    /// leaves the pane's bottom rows blank.
+    ///
+    /// `None` until the first render — see `ASSUMED_PANE_HEIGHT`.
+    last_height: Option<u16>,
 }
 
 impl FileView<'_> {
@@ -130,6 +224,11 @@ impl FileView<'_> {
     pub fn load(&mut self, path: &Path) {
         self.filename = path.display().to_string();
         self.textarea = TextArea::new(read_lines(path));
+        // This buffer is the file's own lines, not a window onto a visible set,
+        // so row 0 of it is row 0 of the document. Leaving a previous file's
+        // offset here would misreport the cursor's line until the next
+        // `apply_view` — see `cursor_visible_row`.
+        self.window_start = 0;
         self.showing_directory = path.is_dir();
         self.truncated = false;
         // The whole file is here, so its length is a fact rather than a guess.
@@ -159,6 +258,8 @@ impl FileView<'_> {
         let preview = read_preview_with_caps(path, max_lines, max_bytes);
         self.showing_directory = path.is_dir();
         self.textarea = TextArea::new(preview.lines);
+        // See `load`: a fresh buffer is never a window onto anything.
+        self.window_start = 0;
         self.truncated = preview.truncated;
         self.estimated_lines = preview.estimated_lines;
         // Size the gutter for the whole file, not for the slice of it on
@@ -260,13 +361,52 @@ impl FileView<'_> {
     /// it. The filename is left alone, since it still describes where these
     /// lines came from.
     pub fn show_lines_with_cursor(&mut self, lines: Vec<String>, row: usize) {
+        self.show_window(lines, 0, row);
+    }
+
+    /// Replace the buffer with a **window** of the visible set: `lines` are
+    /// visible rows `window_start..window_start + lines.len()`, and `row` is
+    /// the cursor's row *within that window*.
+    ///
+    /// `show_lines_with_cursor` is this with a window of zero offset, which is
+    /// what an unwindowed document (anything shorter than three screens) always
+    /// produces.
+    pub fn show_window(&mut self, lines: Vec<String>, window_start: usize, row: usize) {
         // set_lines rejects an empty vector; an empty buffer is one blank line.
         let lines = if lines.is_empty() {
             vec![String::new()]
         } else {
             lines
         };
+        self.window_start = window_start;
         self.textarea.set_lines(lines, (row, 0));
+    }
+
+    /// Visible-set index of the buffer's first row.
+    pub fn window_start(&self) -> usize {
+        self.window_start
+    }
+
+    /// Visible-set index of the buffer's last row, exclusive.
+    pub fn window_end(&self) -> usize {
+        self.window_start + self.textarea.lines().len()
+    }
+
+    /// Where the cursor sits in the **visible set**, translating out of the
+    /// window.
+    ///
+    /// The one place `textarea.cursor().0` is read for a vertical position.
+    /// Everything else goes through here, because getting the translation wrong
+    /// fails silently — it yields a line number off by `window_start`, which
+    /// looks entirely plausible.
+    pub fn cursor_visible_row(&self) -> usize {
+        self.window_start + self.textarea.cursor().0
+    }
+
+    /// The pane height to size a window against: the area last rendered into,
+    /// or a generous assumption before the first render.
+    pub fn window_height(&self) -> u16 {
+        self.last_height.unwrap_or(ASSUMED_PANE_HEIGHT)
     }
 
     /// Which row of the pane the cursor is currently drawn on.
@@ -696,6 +836,9 @@ fn digits(n: usize) -> u8 {
 /// Widget impl for `FileView`
 impl Widget for &mut FileView<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
+        // Recorded for the *next* `apply_view`, which runs outside render and
+        // has no area of its own to size a window against. See `last_height`.
+        self.last_height = Some(area.height);
         if self.hide_line_numbers || self.gutter_blank || self.showing_directory {
             self.textarea.remove_line_number();
         } else {
@@ -749,6 +892,114 @@ mod tests {
 
     fn contents(view: &FileView<'_>) -> String {
         view.textarea.lines().join("\n")
+    }
+
+    // ---- window arithmetic (#7) ----------------------------------------
+
+    /// The degenerate case, and the one almost every other test in this repo
+    /// runs in: a document shorter than three screens is windowed to itself,
+    /// so nothing about the buffer or the cursor changes.
+    #[test]
+    fn a_short_document_is_its_own_window() {
+        assert_eq!(window_for(50, 24, 0), (0, 50));
+        assert_eq!(window_for(50, 24, 49), (0, 50));
+        // Exactly a full span still fits whole.
+        assert_eq!(window_for(72, 24, 40), (0, 72));
+    }
+
+    #[test]
+    fn a_long_document_gets_three_screens_around_the_cursor() {
+        let (start, end) = window_for(10_000, 24, 5_000);
+
+        assert_eq!(end - start, 72, "three screens of 24");
+        assert_eq!(start, 5_000 - 24, "one screen of slack above the cursor");
+    }
+
+    #[test]
+    fn the_window_does_not_run_off_the_start() {
+        assert_eq!(window_for(10_000, 24, 3), (0, 72));
+    }
+
+    /// Pulled back rather than truncated, so the buffer stays a full span and
+    /// the last screen of the file is not rendered against a stub.
+    #[test]
+    fn the_window_is_pulled_back_at_the_end() {
+        let (start, end) = window_for(10_000, 24, 9_999);
+
+        assert_eq!(end, 10_000);
+        assert_eq!(end - start, 72);
+    }
+
+    /// A zero-height pane is possible mid-resize; `window_for` must not divide
+    /// or multiply its way into a panic or an empty buffer.
+    #[test]
+    fn a_zero_height_pane_still_yields_a_window() {
+        let (start, end) = window_for(10_000, 0, 500);
+
+        assert!(end > start, "a zero-height pane must still hold something");
+    }
+
+    // ---- the middle-third rule ------------------------------------------
+
+    #[test]
+    fn the_middle_third_holds() {
+        // window 0..72, thirds at 24 and 48
+        assert!(window_holds(10_000, 0, 72, 30));
+        assert!(window_holds(10_000, 0, 72, 47));
+    }
+
+    #[test]
+    fn leaving_the_middle_third_downwards_needs_a_rebuild() {
+        assert!(!window_holds(10_000, 0, 72, 48));
+    }
+
+    #[test]
+    fn leaving_the_middle_third_upwards_needs_a_rebuild() {
+        assert!(!window_holds(10_000, 100, 172, 123));
+    }
+
+    /// There is nothing above row 0 to window onto, so the top third of the
+    /// first window is legitimately reachable without a rebuild. Without this,
+    /// sitting on line 1 would rebuild on every keystroke forever.
+    #[test]
+    fn the_document_start_is_not_a_margin() {
+        assert!(window_holds(10_000, 0, 72, 0));
+    }
+
+    #[test]
+    fn the_document_end_is_not_a_margin() {
+        assert!(window_holds(10_000, 9_928, 10_000, 9_999));
+    }
+
+    /// An unwindowed document is both ends at once, so it can never ask for a
+    /// rebuild — which is what keeps small files on exactly today's code path.
+    #[test]
+    fn an_unwindowed_document_never_needs_a_rebuild() {
+        for row in 0..50 {
+            assert!(window_holds(50, 0, 50, row), "row {row} forced a rebuild");
+        }
+    }
+
+    /// The guarantee the rule exists for: after a page-sized move the cursor is
+    /// still inside the buffer, so `TextArea` delivered the whole page rather
+    /// than clamping at the buffer's end.
+    #[test]
+    fn a_page_of_movement_always_lands_inside_the_buffer() {
+        let height = 24usize;
+        let visible = 10_000usize;
+        let mut row = 5_000usize;
+        let (mut start, mut end) = window_for(visible, height as u16, row);
+
+        for page in 0..20 {
+            row += height;
+            assert!(
+                row < end,
+                "page {page} ran past the buffer end ({row} >= {end})"
+            );
+            if !window_holds(visible, start, end, row) {
+                (start, end) = window_for(visible, height as u16, row);
+            }
+        }
     }
 
     /// Every fixture file name claimed so far in this process. `fixture` and

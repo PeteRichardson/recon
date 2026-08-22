@@ -141,7 +141,19 @@ impl Document {
 
     /// The text of the visible lines, for rebuilding the view's buffer.
     pub fn visible_lines(&self) -> Vec<String> {
-        self.visible
+        self.visible_lines_range(0, self.visible.len())
+    }
+
+    /// The text of visible rows `start..end`, for rebuilding the view's buffer
+    /// from a window rather than the whole visible set.
+    ///
+    /// The range is clamped rather than panicking on a stale bound: the window
+    /// is computed from a pane height captured on the previous frame, and a
+    /// filter change between frames can shorten the visible set under it. A
+    /// short buffer for one frame is a cosmetic glitch; an index panic takes
+    /// the whole TUI down.
+    pub fn visible_lines_range(&self, start: usize, end: usize) -> Vec<String> {
+        self.window(start, end)
             .iter()
             .map(|&source| self.lines[source].clone())
             .collect()
@@ -149,10 +161,32 @@ impl Document {
 
     /// One style slot per *visible* line, aligned with `visible_lines`.
     pub fn visible_styles(&self, filters: &ActiveFilters) -> Vec<Option<Style>> {
-        self.visible
+        self.visible_styles_range(filters, 0, self.visible.len())
+    }
+
+    /// One style slot per row of visible `start..end`, aligned with
+    /// `visible_lines_range` over the same bounds.
+    ///
+    /// Windowing this matters more than it looks: unlike the gutter numbers,
+    /// the style vector was never gated on hiding, so an unfiltered million-line
+    /// file rebuilt a million-entry vector on every navigator arrow key.
+    pub fn visible_styles_range(
+        &self,
+        filters: &ActiveFilters,
+        start: usize,
+        end: usize,
+    ) -> Vec<Option<Style>> {
+        self.window(start, end)
             .iter()
             .map(|&source| filters.style_for(self.verdicts[source]))
             .collect()
+    }
+
+    /// `visible[start..end]`, with both bounds clamped to the visible set.
+    fn window(&self, start: usize, end: usize) -> &[usize] {
+        let end = end.min(self.visible.len());
+        let start = start.min(end);
+        &self.visible[start..end]
     }
 
     /// One flag per *visible* line, aligned with `visible_lines`: whether the
@@ -170,13 +204,30 @@ impl Document {
     /// no next line and is never marked, which is what keeps an unfiltered
     /// document unmarked throughout.
     pub fn visible_group_ends(&self) -> Vec<bool> {
-        self.visible
-            .iter()
-            .enumerate()
-            .map(|(row, &source)| match self.visible.get(row + 1) {
-                Some(&next) => next != source + 1,
-                // Nothing visible after it: a gap only if the file continues.
-                None => source + 1 < self.lines.len(),
+        self.visible_group_ends_range(0, self.visible.len())
+    }
+
+    /// `visible_group_ends` over visible rows `start..end` only.
+    ///
+    /// **Peeks one row past `end`**, which is the whole reason this is not a
+    /// slice of the full vector. A row's mark asks "is the next source line
+    /// hidden?", and for the final *visible* row it means "does the file
+    /// continue below?". Sliced naively, the window's last row would be
+    /// mistaken for the document's last row and marked wrong — a gap marker
+    /// appearing or vanishing purely because of where the window happens to
+    /// stop. Reading `visible[end]` when it exists keeps every mark
+    /// independent of the window.
+    pub fn visible_group_ends_range(&self, start: usize, end: usize) -> Vec<bool> {
+        let end = end.min(self.visible.len());
+        let start = start.min(end);
+        (start..end)
+            .map(|row| {
+                let source = self.visible[row];
+                match self.visible.get(row + 1) {
+                    Some(&next) => next != source + 1,
+                    // Nothing visible after it: a gap only if the file continues.
+                    None => source + 1 < self.lines.len(),
+                }
             })
             .collect()
     }
@@ -279,6 +330,89 @@ mod tests {
         document.evaluate(&set_searching("foo"));
 
         assert_eq!(document.match_count(), 2);
+    }
+
+    // ---- windowed accessors (#7) ---------------------------------------
+
+    /// Everything visible, which is what `visible_lines_range` and friends are
+    /// windowing over. `Document::new` leaves `visible` empty until something
+    /// evaluates, so an unfiltered pass is the "no filters yet" baseline.
+    fn shown(lines: &[&str]) -> Document {
+        let mut document = doc(lines);
+        document.evaluate(&ActiveFilters::new());
+        document
+    }
+
+    #[test]
+    fn visible_lines_range_returns_only_the_window() {
+        let document = shown(&["a", "b", "c", "d", "e"]);
+
+        assert_eq!(
+            document.visible_lines_range(1, 4),
+            vec!["b".to_string(), "c".to_string(), "d".to_string()]
+        );
+    }
+
+    /// The window is computed from a pane height captured on the previous
+    /// frame, so a filter change can shorten the visible set under it. Clamping
+    /// costs a short buffer for one frame; panicking takes the TUI down.
+    #[test]
+    fn visible_lines_range_clamps_a_stale_end() {
+        let document = shown(&["a", "b"]);
+
+        assert_eq!(document.visible_lines_range(1, 999), vec!["b".to_string()]);
+    }
+
+    #[test]
+    fn visible_lines_range_clamps_a_start_past_the_end() {
+        let document = shown(&["a", "b"]);
+
+        assert!(document.visible_lines_range(9, 999).is_empty());
+    }
+
+    #[test]
+    fn visible_styles_range_lines_up_with_its_window() {
+        let mut document = doc(&["alpha", "beta", "gamma"]);
+        let filters = set_with(&["beta"]);
+        document.evaluate(&filters);
+
+        let windowed = document.visible_styles_range(&filters, 1, 3);
+
+        assert_eq!(windowed.len(), 2);
+        assert_eq!(windowed, document.visible_styles(&filters)[1..3].to_vec());
+    }
+
+    /// The regression this range method exists to prevent. Row 1 is followed by
+    /// a *hidden* line, so it is a group end — and must stay one when the
+    /// window stops right after it. Slicing a whole-set vector would give the
+    /// same answer; computing the range in isolation, without peeking at
+    /// `visible[end]`, would treat row 1 as the document's last row and ask the
+    /// wrong question.
+    #[test]
+    fn visible_group_ends_range_peeks_past_the_window() {
+        let mut document = doc(&["keep", "keep", "drop", "keep"]);
+        document.set_mode(Mode::FilteredOnly);
+        document.evaluate(&set_with(&["keep"]));
+
+        // Visible rows are sources 0, 1, 3 — source 2 is hidden.
+        assert_eq!(document.visible(), &[0, 1, 3]);
+
+        let windowed = document.visible_group_ends_range(0, 2);
+
+        assert_eq!(
+            windowed,
+            vec![false, true],
+            "row 1 is followed by a hidden line and must be marked a group end \
+             even though the window stops there"
+        );
+        assert_eq!(windowed, document.visible_group_ends()[0..2].to_vec());
+    }
+
+    #[test]
+    fn visible_group_ends_range_clamps_a_stale_end() {
+        let document = shown(&["a", "b"]);
+
+        assert_eq!(document.visible_group_ends_range(0, 999).len(), 2);
     }
 
     /// The vector handed to the textarea has one entry per line, so no line is
