@@ -13,9 +13,12 @@
 //! module owns the third: finding `config.toml`, parsing it, and folding it
 //! *under* whatever the CLI and environment already decided.
 //!
-//! The schema is deliberately empty. #18 delivers the mechanism; every actual
-//! setting lands in its own issue against it.
+//! #18 delivered the mechanism with an empty schema; every actual setting lands
+//! in its own issue against it. The first two are `editor.project` and
+//! `editor.file` (#42, #41), which is why this module now has a nested section
+//! to merge rather than nothing at all.
 
+use crate::editor;
 use clap::Parser;
 use serde::Deserialize;
 use std::fmt;
@@ -45,19 +48,84 @@ pub struct Config {
     /// selected; a file is opened with its own directory listed alongside.
     #[arg(default_value = ".")]
     pub path: String,
+
+    /// Command template `o` runs, e.g. `zed {project} {file}:{line}`.
+    ///
+    /// `Option`, not a `default_value`: the compiled-in default lives at the
+    /// bottom of [`editor::Templates::resolve`]'s ladder, below `$VISUAL` and
+    /// `$EDITOR`. A clap default would fill this in before the file layer ever
+    /// ran and win every argument it was never meant to enter.
+    #[arg(long, env = "RECON_EDITOR", value_name = "TEMPLATE")]
+    pub editor: Option<String>,
+
+    /// Command template `O` runs. Defaults to `--editor` with the `{project}`
+    /// argument dropped, so one setting normally configures both keys.
+    #[arg(
+        long = "file-editor",
+        env = "RECON_FILE_EDITOR",
+        value_name = "TEMPLATE"
+    )]
+    pub file_editor: Option<String>,
+
+    /// Print a ready-to-paste `[editor]` stanza and exit. Takes a flavour —
+    /// `zed`, `vscode`, `wezterm-nvim`, … — or `auto` to guess from `$TERM_PROGRAM`.
+    ///
+    /// Prints and nothing else: recon never writes `config.toml`, and it will
+    /// not write a shell rc either.
+    #[arg(
+        long,
+        value_name = "FLAVOUR",
+        num_args = 0..=1,
+        default_missing_value = "auto",
+    )]
+    pub print_editor_config: Option<String>,
+}
+
+/// The clap defaults, restated for the tests and callers that build a `Config`
+/// directly rather than parsing one.
+///
+/// The two must agree, which `default_matches_the_parsed_defaults` pins. A
+/// hand-written impl rather than `#[derive(Default)]` because `String::default`
+/// is `""` and clap's default for `path` is `"."` — deriving would silently
+/// introduce a second, different notion of "no arguments".
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            path: ".".to_string(),
+            editor: None,
+            file_editor: None,
+            print_editor_config: None,
+        }
+    }
 }
 
 /// The config file's contents, as parsed.
-///
-/// Empty until the first setting lands, which means **every** key is currently
-/// an unknown key. That is correct rather than a gap: there is nothing valid
-/// to write in the file yet, so anything in it is a mistake worth reporting.
 ///
 /// `Deserialize` only. Nothing serializes this — the file is hand-edited and
 /// recon never writes it.
 #[derive(Deserialize, Debug, Default, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
-pub struct FileConfig {}
+pub struct FileConfig {
+    /// `[editor]`. Absent when the file does not mention editors at all, which
+    /// is different from present-but-empty only in that neither sets anything —
+    /// both leave the ladder to the layers below.
+    pub editor: Option<EditorConfig>,
+}
+
+/// The `[editor]` table.
+///
+/// One key per binding, because `o` and `O` answer genuinely different
+/// questions and a user may well want `-n` on one of them. `file` is optional
+/// even so: leaving it out derives it from `project`, which is the case one
+/// line of config is meant to cover.
+#[derive(Deserialize, Debug, Default, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct EditorConfig {
+    /// The template `o` runs.
+    pub project: Option<String>,
+    /// The template `O` runs.
+    pub file: Option<String>,
+}
 
 /// Why a config file could not be turned into a [`FileConfig`].
 ///
@@ -190,12 +258,39 @@ impl Config {
 
     /// Fold the file layer under the layers already resolved.
     ///
-    /// Empty while the schema is. The exhaustive destructure is the point: add
-    /// a field to [`FileConfig`] and this stops compiling until the new setting
-    /// is actually merged here, so a setting cannot be added to the file format
-    /// and silently never applied.
+    /// The exhaustive destructure is the point: add a field to [`FileConfig`]
+    /// and this stops compiling until the new setting is actually merged here,
+    /// so a setting cannot be added to the file format and silently never
+    /// applied.
+    ///
+    /// `get_or_insert_with` is the direction of the whole chain in one call —
+    /// the file only fills a hole the CLI and environment left. Assigning would
+    /// invert it and make `config.toml` beat `--editor`.
     fn apply(&mut self, file: &FileConfig) {
-        let FileConfig {} = file;
+        let FileConfig { editor } = file;
+        let Some(EditorConfig { project, file }) = editor else {
+            return;
+        };
+        if let Some(project) = project {
+            self.editor.get_or_insert_with(|| project.clone());
+        }
+        if let Some(file) = file {
+            self.file_editor.get_or_insert_with(|| file.clone());
+        }
+    }
+
+    /// Resolve both editor templates, running the rungs below the config file.
+    ///
+    /// Reading `$VISUAL`/`$EDITOR` here rather than in `Config::load` keeps
+    /// [`editor::Templates::resolve`] pure and testable — the same rule
+    /// `config_path` follows for `$XDG_CONFIG_HOME`.
+    pub fn editor_templates(&self) -> editor::Templates {
+        editor::Templates::resolve(
+            self.editor.as_deref(),
+            self.file_editor.as_deref(),
+            std::env::var("VISUAL").ok().as_deref(),
+            std::env::var("EDITOR").ok().as_deref(),
+        )
     }
 }
 
@@ -328,7 +423,7 @@ mod tests {
         let path = Path::new("target/test-config/definitely-not-here.toml");
         assert_eq!(
             load_from(path).expect("missing file is fine"),
-            FileConfig {}
+            FileConfig::default()
         );
     }
 
@@ -337,7 +432,7 @@ mod tests {
         let path = fixture("empty.toml", "");
         assert_eq!(
             load_from(&path).expect("empty file is valid"),
-            FileConfig {}
+            FileConfig::default()
         );
     }
 
@@ -346,7 +441,10 @@ mod tests {
     #[test]
     fn comments_only_file_parses_to_defaults() {
         let path = fixture("comments.toml", "# recon config\n# nothing set yet\n");
-        assert_eq!(load_from(&path).expect("comments are valid"), FileConfig {});
+        assert_eq!(
+            load_from(&path).expect("comments are valid"),
+            FileConfig::default()
+        );
     }
 
     #[test]
@@ -406,15 +504,141 @@ mod tests {
 
     // ---- merge ---------------------------------------------------------
 
-    /// With an empty schema there is nothing for the file to override, so the
-    /// CLI layer must survive `apply` untouched. This test is what will catch
-    /// the first setting being merged the wrong way round.
+    /// The positional argument is CLI-only, so it must survive `apply`
+    /// untouched however much the file holds.
     #[test]
     fn apply_leaves_the_cli_layer_alone() {
         let mut config = Config {
             path: "src/lib.rs".to_string(),
+            ..Config::default()
         };
-        config.apply(&FileConfig {});
+        config.apply(&FileConfig::default());
         assert_eq!(config.path, "src/lib.rs");
+    }
+
+    /// The clap defaults and the hand-written `Default` are two statements of
+    /// the same thing, and this is what stops them drifting.
+    #[test]
+    fn default_matches_the_parsed_defaults() {
+        let parsed = Config::try_parse_from(["recon"]).expect("parses with no argument");
+        let default = Config::default();
+        assert_eq!(parsed.path, default.path);
+        assert_eq!(parsed.editor, default.editor);
+        assert_eq!(parsed.file_editor, default.file_editor);
+        assert_eq!(parsed.print_editor_config, default.print_editor_config);
+    }
+
+    // ---- the editor settings --------------------------------------------
+
+    #[test]
+    fn the_editor_flags_parse() {
+        let config = Config::try_parse_from([
+            "recon",
+            "--editor",
+            "code {project} -g {file}:{line}",
+            "--file-editor",
+            "code -g {file}:{line}",
+        ])
+        .expect("parses");
+        assert_eq!(
+            config.editor.as_deref(),
+            Some("code {project} -g {file}:{line}")
+        );
+        assert_eq!(config.file_editor.as_deref(), Some("code -g {file}:{line}"));
+    }
+
+    #[test]
+    fn an_editor_section_parses() {
+        let path = fixture(
+            "editor.toml",
+            "[editor]\nproject = 'zed {project} {file}:{line}'\nfile = 'zed -n {file}:{line}'\n",
+        );
+        let parsed = load_from(&path).expect("valid");
+        let editor = parsed.editor.expect("the section is present");
+        assert_eq!(
+            editor.project.as_deref(),
+            Some("zed {project} {file}:{line}")
+        );
+        assert_eq!(editor.file.as_deref(), Some("zed -n {file}:{line}"));
+    }
+
+    /// One line of config is meant to configure both keys, so `file` has to be
+    /// optional inside a section that sets `project`.
+    #[test]
+    fn an_editor_section_may_set_project_alone() {
+        let path = fixture(
+            "editor-project-only.toml",
+            "[editor]\nproject = 'subl {file}'\n",
+        );
+        let editor = load_from(&path).expect("valid").editor.expect("present");
+        assert_eq!(editor.project.as_deref(), Some("subl {file}"));
+        assert_eq!(editor.file, None);
+    }
+
+    /// `deny_unknown_fields` applies to the nested table too — a typo inside
+    /// `[editor]` is exactly as invisible as one at the top level.
+    #[test]
+    fn an_unknown_key_inside_editor_is_rejected_and_named() {
+        let path = fixture("editor-typo.toml", "[editor]\nporject = 'zed {file}'\n");
+        let err = load_from(&path).expect_err("a typo'd key must fail");
+        assert!(err.to_string().contains("porject"), "{err}");
+    }
+
+    /// The direction of the whole chain, on the settings that now have all four
+    /// layers. Getting this backwards would make `config.toml` beat `--editor`,
+    /// which is the bug `get_or_insert_with` exists to prevent.
+    #[test]
+    fn the_file_only_fills_holes_the_cli_left() {
+        let file = FileConfig {
+            editor: Some(EditorConfig {
+                project: Some("from-file {file}".to_string()),
+                file: Some("from-file-solo {file}".to_string()),
+            }),
+        };
+
+        let mut set_on_the_cli = Config {
+            editor: Some("from-cli {file}".to_string()),
+            ..Config::default()
+        };
+        set_on_the_cli.apply(&file);
+        assert_eq!(set_on_the_cli.editor.as_deref(), Some("from-cli {file}"));
+        // The hole the CLI left is still filled.
+        assert_eq!(
+            set_on_the_cli.file_editor.as_deref(),
+            Some("from-file-solo {file}")
+        );
+
+        let mut unset = Config::default();
+        unset.apply(&file);
+        assert_eq!(unset.editor.as_deref(), Some("from-file {file}"));
+    }
+
+    /// A file with no `[editor]` at all must leave both settings alone rather
+    /// than clearing them.
+    #[test]
+    fn a_file_without_an_editor_section_changes_nothing() {
+        let mut config = Config {
+            editor: Some("from-cli {file}".to_string()),
+            ..Config::default()
+        };
+        config.apply(&FileConfig::default());
+        assert_eq!(config.editor.as_deref(), Some("from-cli {file}"));
+    }
+
+    // ---- --print-editor-config -------------------------------------------
+
+    /// Bare, it means "guess"; with a value, it means that flavour. The bare
+    /// form is the one people will actually type.
+    #[test]
+    fn print_editor_config_takes_an_optional_flavour() {
+        let bare = Config::try_parse_from(["recon", "--print-editor-config"]).expect("parses");
+        assert_eq!(bare.print_editor_config.as_deref(), Some("auto"));
+
+        let named =
+            Config::try_parse_from(["recon", "--print-editor-config", "vscode"]).expect("parses");
+        assert_eq!(named.print_editor_config.as_deref(), Some("vscode"));
+
+        let absent = Config::try_parse_from(["recon"]).expect("parses");
+        assert_eq!(absent.print_editor_config, None);
     }
 }

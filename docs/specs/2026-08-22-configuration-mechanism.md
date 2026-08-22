@@ -1,6 +1,8 @@
 # Configuration mechanism — design
 
-**Status:** implemented (mechanism only; the schema is empty)
+**Status:** implemented. The schema was empty at first; the first settings
+(`editor.project`, `editor.file`) landed with #42 — see
+`docs/specs/2026-08-22-opening-an-editor.md`.
 **Date:** 2026-08-22
 **Issue:** #18
 
@@ -18,8 +20,11 @@ filter sets and will otherwise grow a private mechanism.
 This spec decides the mechanism once, so that adding a setting is a small,
 obvious edit rather than a design conversation.
 
-**It deliberately adds no settings.** The schema is empty. Every candidate
-listed at the bottom lands in its own issue against this one.
+**It deliberately added no settings.** The schema shipped empty, and every
+candidate listed at the bottom lands in its own issue against this one. #42
+was the first to do so, adding the `[editor]` table — including the first
+*nested* section, and so the first exercise of `apply`'s exhaustive
+destructure actually having something to merge.
 
 ## Precedence
 
@@ -200,9 +205,10 @@ The cost is that a config file written for a newer recon breaks an older one.
 That is accepted: recon is a single-user tool with no version skew to speak of,
 and the failure is loud and immediately fixable.
 
-**"there are no fields" is correct today, not a bug.** The schema is empty until
-the first setting lands, so every key is an unknown key — there is nothing valid
-to write in the file yet.
+**"there are no fields" was correct while the schema was empty**, and the
+message now names the real ones. `deny_unknown_fields` is applied to the
+nested `[editor]` table too: a typo *inside* a section is exactly as invisible
+as one at the top level, and exactly as worth reporting.
 
 ### What is *not* an error
 
