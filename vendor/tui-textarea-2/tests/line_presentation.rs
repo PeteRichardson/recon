@@ -1,6 +1,6 @@
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::style::{Color, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::widgets::Widget;
 use tui_textarea::{CursorRenderMode, TextArea};
 
@@ -262,6 +262,138 @@ fn the_minimum_width_is_zero_by_default() {
     let textarea = plain(&["a"]);
 
     assert_eq!(textarea.min_line_number_width(), 0);
+}
+
+/// Column 1 of a two-line buffer is the digit itself: the gutter is one
+/// column wide and `LineHighlighter::line_number` renders it as a leading
+/// pad, the number, then a trailing space.
+const DIGIT: u16 = 1;
+
+#[test]
+fn a_gutter_style_applies_to_the_named_row_only() {
+    let mut textarea = plain(&["alpha", "beta"]);
+    textarea.set_line_number_style(Style::default().fg(Color::DarkGray));
+    textarea.set_line_number_styles(vec![
+        None,
+        Some(Style::default().add_modifier(Modifier::UNDERLINED)),
+    ]);
+
+    let buf = render(&textarea, 20, 2);
+
+    assert!(
+        buf[(DIGIT, 1)]
+            .style()
+            .add_modifier
+            .contains(Modifier::UNDERLINED),
+        "row 1's number not underlined"
+    );
+    assert!(
+        !buf[(DIGIT, 0)]
+            .style()
+            .add_modifier
+            .contains(Modifier::UNDERLINED),
+        "row 0's number wrongly underlined"
+    );
+}
+
+/// The per-row entry *refines* the gutter style rather than replacing it, so
+/// a caller marking one row need not restate the colour every other row is
+/// already wearing.
+#[test]
+fn a_gutter_style_keeps_the_base_gutter_colour() {
+    let mut textarea = plain(&["alpha", "beta"]);
+    textarea.set_line_number_style(Style::default().fg(Color::DarkGray));
+    textarea.set_line_number_styles(vec![
+        None,
+        Some(Style::default().add_modifier(Modifier::UNDERLINED)),
+    ]);
+
+    let buf = render(&textarea, 20, 2);
+
+    assert_eq!(
+        buf[(DIGIT, 1)].style().fg,
+        Some(Color::DarkGray),
+        "the marked row lost the base gutter colour"
+    );
+}
+
+/// The line's *text* must stay untouched — the whole point of marking the
+/// gutter rather than the content is that it does not fight with the
+/// per-line styles already in use.
+#[test]
+fn a_gutter_style_leaves_the_line_text_alone() {
+    let mut textarea = plain(&["alpha", "beta"]);
+    textarea.set_line_number_style(Style::default().fg(Color::DarkGray));
+    textarea.set_line_number_styles(vec![
+        None,
+        Some(Style::default().add_modifier(Modifier::UNDERLINED)),
+    ]);
+
+    let buf = render(&textarea, 20, 2);
+
+    let text_col = DIGIT + 2; // pad, digit, space, then the text
+    assert_eq!(
+        row_text(&buf, 1),
+        " 2 beta",
+        "assumed the wrong text column"
+    );
+    assert!(
+        !buf[(text_col, 1)]
+            .style()
+            .add_modifier
+            .contains(Modifier::UNDERLINED),
+        "the underline bled into the line text"
+    );
+}
+
+#[test]
+fn rows_past_the_end_of_the_gutter_styles_are_plain() {
+    let mut textarea = plain(&["alpha", "beta", "gamma"]);
+    textarea.set_line_number_style(Style::default().fg(Color::DarkGray));
+    // Deliberately shorter than the buffer: must not panic or misapply.
+    textarea.set_line_number_styles(vec![
+        None,
+        Some(Style::default().add_modifier(Modifier::UNDERLINED)),
+    ]);
+
+    let buf = render(&textarea, 20, 3);
+
+    assert!(
+        !buf[(DIGIT, 2)]
+            .style()
+            .add_modifier
+            .contains(Modifier::UNDERLINED),
+        "row 2 styled past the end of the overrides"
+    );
+}
+
+#[test]
+fn gutter_styles_are_empty_by_default() {
+    let textarea = plain(&["alpha"]);
+
+    assert!(textarea.line_number_styles().is_empty());
+}
+
+#[test]
+fn clear_line_number_styles_restores_the_plain_gutter() {
+    let mut textarea = plain(&["alpha", "beta"]);
+    textarea.set_line_number_style(Style::default().fg(Color::DarkGray));
+    textarea.set_line_number_styles(vec![
+        None,
+        Some(Style::default().add_modifier(Modifier::UNDERLINED)),
+    ]);
+    textarea.clear_line_number_styles();
+
+    let buf = render(&textarea, 20, 2);
+
+    assert!(textarea.line_number_styles().is_empty());
+    assert!(
+        !buf[(DIGIT, 1)]
+            .style()
+            .add_modifier
+            .contains(Modifier::UNDERLINED),
+        "the underline survived the clear"
+    );
 }
 
 /// The gutter width feeds the cursor's screen column as well as the rendered

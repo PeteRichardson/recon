@@ -1009,6 +1009,16 @@ impl App<'_> {
         } else {
             Vec::new()
         };
+        // Gated on `hiding` for the same reason the gutter numbers are: with
+        // the whole file on screen every line's successor is the next one, so
+        // the marks would all be false anyway. Computing them regardless would
+        // be a vector the length of the file, rebuilt on every navigator arrow
+        // key, to say nothing.
+        let group_ends = if hiding {
+            self.document.visible_group_ends()
+        } else {
+            Vec::new()
+        };
         // Computed here, alongside `styles`, rather than inside the `view`
         // block below: both read `self.filters`, and grouping them keeps
         // every access to that field on the `&self` side of the borrow.
@@ -1050,6 +1060,7 @@ impl App<'_> {
             view.show_lines_with_cursor(lines, row);
         }
         view.set_line_numbers(numbers);
+        view.set_group_ends(group_ends);
         view.set_line_styles(styles);
         view.set_gutter_blank(nothing_visible);
         // `highlight`, when `Some`, was `Regex::as_str()` on a pattern that
@@ -1723,6 +1734,15 @@ mod tests {
 
     fn key(app: &mut App, code: KeyCode) {
         app.handle_event(event::Event::Key(code.into())).unwrap();
+    }
+
+    /// `key`, with Control held.
+    fn ctrl(app: &mut App, code: KeyCode) {
+        app.handle_event(event::Event::Key(event::KeyEvent::new(
+            code,
+            KeyModifiers::CONTROL,
+        )))
+        .unwrap();
     }
 
     fn typed(app: &mut App, text: &str) {
@@ -2820,6 +2840,85 @@ mod tests {
         assert_eq!(
             view_lines(&app),
             vec!["alpha".to_string(), "gamma".to_string()]
+        );
+    }
+
+    /// Which rows the gutter is currently marking as ending a group.
+    fn view_group_ends(app: &App) -> Vec<bool> {
+        app.widgets
+            .iter()
+            .find_map(|w| match w {
+                AppWidget::FileView(view) => Some(
+                    view.textarea
+                        .line_number_styles()
+                        .iter()
+                        .map(Option::is_some)
+                        .collect(),
+                ),
+                AppWidget::FileNav(_) | AppWidget::FilterList(_) => None,
+            })
+            .expect("no file view")
+    }
+
+    /// Issue #2. Hiding butts groups of matches against each other; the mark
+    /// on the last row of a group is what says the file did not run
+    /// continuously from one to the next.
+    #[test]
+    fn hiding_marks_the_last_row_of_each_group() {
+        let mut app = app_over_file(
+            "gap_marks",
+            "beta 1\nbeta 2\nalpha\nbeta 3\nbeta 4\ntrailing\n",
+        );
+        key(&mut app, KeyCode::Char('f'));
+        key(&mut app, KeyCode::Char('i'));
+        typed(&mut app, "beta");
+        key(&mut app, KeyCode::Enter);
+
+        ctrl(&mut app, KeyCode::Char('h'));
+
+        assert_eq!(view_lines(&app).len(), 4, "the gap was not hidden");
+        assert_eq!(view_group_ends(&app), vec![false, true, false, true]);
+    }
+
+    /// With nothing hidden there are no gaps, so nothing may be marked — the
+    /// mark has to mean something, and a file shown whole has no boundaries
+    /// to draw.
+    #[test]
+    fn nothing_is_marked_while_the_whole_file_is_shown() {
+        let mut app = app_over_file("gap_marks_off", "beta\nalpha\nbeta\n");
+        key(&mut app, KeyCode::Char('f'));
+        key(&mut app, KeyCode::Char('i'));
+        typed(&mut app, "beta");
+        key(&mut app, KeyCode::Enter);
+
+        assert_eq!(view_lines(&app).len(), 3, "sanity: nothing is hidden");
+        assert!(
+            view_group_ends(&app).iter().all(|end| !end),
+            "a gap was marked with no lines hidden"
+        );
+    }
+
+    /// The marks are indexed by buffer row, so they must be re-derived
+    /// whenever the visible set changes — a stale set would underline rows
+    /// that are no longer where a group ends.
+    #[test]
+    fn lifting_the_hiding_clears_the_marks() {
+        let mut app = app_over_file("gap_marks_restore", "beta\nalpha\nbeta\n");
+        key(&mut app, KeyCode::Char('f'));
+        key(&mut app, KeyCode::Char('i'));
+        typed(&mut app, "beta");
+        key(&mut app, KeyCode::Enter);
+        ctrl(&mut app, KeyCode::Char('h'));
+        assert!(
+            view_group_ends(&app).iter().any(|&end| end),
+            "sanity: hiding marked a gap"
+        );
+
+        ctrl(&mut app, KeyCode::Char('h'));
+
+        assert!(
+            view_group_ends(&app).iter().all(|end| !end),
+            "the marks survived the file coming back whole"
         );
     }
 

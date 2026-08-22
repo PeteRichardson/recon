@@ -208,6 +208,7 @@ pub struct TextArea<'a> {
     history: History,
     cursor_line_style: Style,
     line_number_style: Option<Style>,
+    line_number_styles: Vec<Option<Style>>,
     line_styles: Vec<Option<Style>>,
     line_numbers: Vec<usize>,
     min_line_number_width: u8,
@@ -331,6 +332,7 @@ impl<'a> TextArea<'a> {
             history: History::new(50),
             cursor_line_style: Style::default().add_modifier(Modifier::UNDERLINED),
             line_number_style: None,
+            line_number_styles: Vec::new(),
             line_styles: Vec::new(),
             line_numbers: Vec::new(),
             min_line_number_width: 0,
@@ -2070,6 +2072,15 @@ impl<'a> TextArea<'a> {
 
         if let Some(style) = self.line_number_style {
             if wrapped.first_in_row {
+                // The per-row entry patches rather than replaces, so a caller
+                // marking one row inherits the gutter's colour instead of
+                // restating it. Continuation rows keep the base style: their
+                // gutter is blank, and a modifier on empty columns reads as an
+                // artefact rather than as an annotation.
+                let style = match self.line_number_styles.get(wrapped.row) {
+                    Some(Some(over)) => style.patch(*over),
+                    _ => style,
+                };
                 hl.line_number(self.display_row(wrapped.row), lnum_len, style);
             } else {
                 hl.line_number_placeholder(lnum_len, style);
@@ -2415,6 +2426,50 @@ impl<'a> TextArea<'a> {
     /// Get the style of line number if set.
     pub fn line_number_style(&self) -> Option<Style> {
         self.line_number_style
+    }
+
+    /// Refine the gutter's style for individual lines, indexed by row.
+    ///
+    /// Each entry *patches* the style set by
+    /// [`TextArea::set_line_number_style`] rather than replacing it, so a
+    /// caller marking one row need not restate the colour every other row
+    /// already wears. Rows whose entry is `None`, and rows past the end of
+    /// `styles`, keep the base gutter style unchanged.
+    ///
+    /// This is for annotating the gutter itself — underlining the number that
+    /// ends a group of lines, say — leaving both the line's text and
+    /// [`TextArea::set_line_styles`] free for the line's own state. It has no
+    /// effect while the gutter is hidden, and applies only to the row the
+    /// number is drawn on: the blank continuation rows of a wrapped line keep
+    /// the base style, since a mark on empty gutter columns reads as an
+    /// artefact rather than as an annotation of anything.
+    ///
+    /// ```
+    /// use ratatui::style::{Color, Modifier, Style};
+    /// use tui_textarea::TextArea;
+    ///
+    /// let mut textarea = TextArea::new(vec!["a".to_string(), "b".to_string()]);
+    /// textarea.set_line_number_style(Style::default().fg(Color::DarkGray));
+    /// // Underline the second row's number; it stays dark gray.
+    /// textarea.set_line_number_styles(vec![
+    ///     None,
+    ///     Some(Style::default().add_modifier(Modifier::UNDERLINED)),
+    /// ]);
+    /// ```
+    pub fn set_line_number_styles(&mut self, styles: Vec<Option<Style>>) {
+        self.line_number_styles = styles;
+    }
+
+    /// The per-row gutter styles set by
+    /// [`TextArea::set_line_number_styles`]. Empty when none have been set.
+    pub fn line_number_styles(&self) -> &[Option<Style>] {
+        &self.line_number_styles
+    }
+
+    /// Remove all per-row gutter styles, returning the whole gutter to the
+    /// style set by [`TextArea::set_line_number_style`].
+    pub fn clear_line_number_styles(&mut self) {
+        self.line_number_styles.clear();
     }
 
     /// Set a style for each line, indexed by line number.

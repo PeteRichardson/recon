@@ -199,6 +199,26 @@ impl FileView<'_> {
         self.textarea.set_line_numbers(numbers);
     }
 
+    /// Mark the last line of each group of consecutive source lines, one flag
+    /// per buffer row.
+    ///
+    /// Hiding unmatched lines leaves groups of matches butted up against each
+    /// other with nothing to say how much was skipped between them (issue #2).
+    /// A set flag underlines that row's gutter number — deliberately the
+    /// number and not the text, which already carries the filter colours, and
+    /// deliberately a modifier rather than a whole separator row, which would
+    /// spend a line of the pane on every gap.
+    ///
+    /// Cleared by `load` and `preview`, as with `set_line_styles` and
+    /// `set_line_numbers` above.
+    pub fn set_group_ends(&mut self, ends: Vec<bool>) {
+        self.textarea.set_line_number_styles(
+            ends.into_iter()
+                .map(|end| end.then(|| Style::default().add_modifier(Modifier::UNDERLINED)))
+                .collect(),
+        );
+    }
+
     /// Suppress the gutter entirely, for the placeholder row shown when
     /// nothing is visible. See the `gutter_blank` field for why an empty
     /// `set_line_numbers` override is not enough on its own.
@@ -1110,6 +1130,25 @@ mod tests {
             .unwrap_or_else(|| panic!("no row containing {needle:?}"))
     }
 
+    /// Whether the row's gutter number is underlined. Anchored on the digit
+    /// itself rather than a fixed column: the pane's border and the gutter's
+    /// right-alignment padding both move it.
+    fn gutter_is_underlined(buf: &Buffer, y: u16) -> bool {
+        let digit = (0..buf.area.width)
+            .find(|&x| {
+                buf[(x, y)]
+                    .symbol()
+                    .chars()
+                    .next()
+                    .is_some_and(|c| c.is_ascii_digit())
+            })
+            .unwrap_or_else(|| panic!("no gutter digit on row {y}"));
+        buf[(digit, y)]
+            .style()
+            .add_modifier
+            .contains(Modifier::UNDERLINED)
+    }
+
     #[test]
     fn line_styles_reach_the_rendered_view() {
         let mut view = view_of("line_styles.txt", "alpha\nbeta\n");
@@ -1137,6 +1176,55 @@ mod tests {
 
         assert!(text.contains("2 beta"), "gutter not overridden:\n{text}");
         assert!(text.contains("4 delta"), "gutter not overridden:\n{text}");
+    }
+
+    /// Issue #2. The gutter number is underlined on the last line of a group,
+    /// which is the only thing on screen saying a run of matches stopped
+    /// there rather than continuing into the line below.
+    #[test]
+    fn a_group_end_underlines_its_gutter_number() {
+        let mut view = view_of("group_end.txt", "beta\ndelta\n");
+        view.set_group_ends(vec![true, false]);
+        let area = Rect::new(0, 0, 40, 6);
+        let mut buf = Buffer::empty(area);
+
+        (&mut view).render(area, &mut buf);
+
+        let beta = row_of(&buf, "beta");
+        let delta = row_of(&buf, "delta");
+        assert!(
+            gutter_is_underlined(&buf, beta),
+            "the group's last number is not underlined"
+        );
+        assert!(
+            !gutter_is_underlined(&buf, delta),
+            "a number mid-group is underlined"
+        );
+    }
+
+    /// The mark belongs to the gutter alone. Underlining the text would
+    /// collide with the filter colours already living there, which is the
+    /// whole reason the mark went into the gutter in the first place.
+    #[test]
+    fn a_group_end_leaves_the_line_text_unmarked() {
+        let mut view = view_of("group_end_text.txt", "beta\ndelta\n");
+        view.set_group_ends(vec![true, false]);
+        let area = Rect::new(0, 0, 40, 6);
+        let mut buf = Buffer::empty(area);
+
+        (&mut view).render(area, &mut buf);
+
+        let beta = row_of(&buf, "beta");
+        let text_col = (0..area.width)
+            .find(|&x| buf[(x, beta)].symbol() == "b")
+            .expect("no line text on the row");
+        assert!(
+            !buf[(text_col, beta)]
+                .style()
+                .add_modifier
+                .contains(Modifier::UNDERLINED),
+            "the mark bled into the line text"
+        );
     }
 
     /// An empty `line_numbers` override falls back to natural 1..N
@@ -1170,11 +1258,13 @@ mod tests {
         let mut view = view_of("reload_start.txt", "x\n");
         view.set_line_styles(vec![Some(Style::default().fg(Color::Yellow))]);
         view.set_line_numbers(vec![41]);
+        view.set_group_ends(vec![true]);
 
         view.load(&path);
 
         assert!(view.textarea.line_styles().is_empty());
         assert!(view.textarea.line_numbers().is_empty());
+        assert!(view.textarea.line_number_styles().is_empty());
     }
 
     /// The cursor line must not escape dimming: the textarea replaces rather

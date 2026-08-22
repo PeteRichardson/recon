@@ -119,6 +119,37 @@ replaces the buffer, clears history and resets the viewport, which a plain
 cursor move must not do. This exposes the existing private
 `clamp_cursor_to_buffer` as a cursor-only operation.
 
+### 6. Per-row gutter styles
+
+- `src/textarea.rs`, `struct TextArea`: added field
+  `line_number_styles: Vec<Option<Style>>`.
+- `src/textarea.rs`, `TextArea::new`: initialise it to `Vec::new()`.
+- `src/textarea.rs`: added `set_line_number_styles`, `line_number_styles`,
+  `clear_line_number_styles`, before `set_line_styles`.
+- `src/textarea.rs`, `line_spans_segment`: patch `line_number_style` with the
+  entry for `wrapped.row` before handing it to `hl.line_number`.
+- `tests/line_presentation.rs`: six new tests.
+
+Change 1 made a line's *text* individually styleable; this does the same for
+its number. `recon` hides unmatched lines, which collapses a file into groups
+of consecutive matches with invisible gaps between them, and marking the
+number that ends a group is how it draws those gaps.
+
+**The entry patches the base style rather than replacing it**, unlike change
+1, where each entry stands alone. The gutter has a base style that every row
+wears (`recon` uses dark gray); a caller marking one row wants to *add* to
+that, and replacing would silently drop the colour on exactly the rows it
+marked. The distinction is load-bearing enough to have its own test
+(`a_gutter_style_keeps_the_base_gutter_colour`).
+
+The mark lands only on `first_in_row`. A wrapped line's continuation rows get
+`line_number_placeholder` — blank columns — and a modifier drawn across those
+reads as an artefact rather than as an annotation of anything.
+
+No interaction with the gutter's width, so change 2's `WrapMode::None` caveat
+does not extend here: styling a number cannot change how many columns it
+needs.
+
 ### Local-only: removed `[profile.bench]`
 
 - `Cargo.toml`: dropped `[profile.bench] lto = "thin"`.

@@ -155,6 +155,32 @@ impl Document {
             .collect()
     }
 
+    /// One flag per *visible* line, aligned with `visible_lines`: whether the
+    /// source line after it is hidden.
+    ///
+    /// Hiding unmatched lines collapses a file into groups of consecutive
+    /// matches with nothing on screen to say how much was skipped between
+    /// them, so ten matched lines either side of a hundred hidden ones read as
+    /// twenty consecutive lines (issue #2). A set flag is where the view draws
+    /// the boundary.
+    ///
+    /// "The next source line is hidden" rather than "another group follows",
+    /// so a group running into trailing hidden lines is marked like any other
+    /// — the file really does continue below it. The last line of the file has
+    /// no next line and is never marked, which is what keeps an unfiltered
+    /// document unmarked throughout.
+    pub fn visible_group_ends(&self) -> Vec<bool> {
+        self.visible
+            .iter()
+            .enumerate()
+            .map(|(row, &source)| match self.visible.get(row + 1) {
+                Some(&next) => next != source + 1,
+                // Nothing visible after it: a gap only if the file continues.
+                None => source + 1 < self.lines.len(),
+            })
+            .collect()
+    }
+
     /// Where a source line sits in the visible list, if it is shown at all.
     pub fn visible_position(&self, source: usize) -> Option<usize> {
         self.visible.binary_search(&source).ok()
@@ -425,6 +451,63 @@ mod tests {
 
         assert_eq!(
             document.visible_styles(&filters).len(),
+            document.visible().len()
+        );
+    }
+
+    /// Issue #2. Hiding collapses a file into groups of consecutive matches
+    /// separated by invisible gaps; this is what marks where a group stops.
+    #[test]
+    fn a_group_ends_where_the_next_source_line_is_hidden() {
+        let mut document = doc(&["beta", "beta", "alpha", "beta", "beta"]);
+        document.set_mode(Mode::FilteredOnly);
+        document.evaluate(&set_with(&["beta"]));
+
+        assert_eq!(document.visible(), &[0, 1, 3, 4]);
+        assert_eq!(
+            document.visible_group_ends(),
+            vec![false, true, false, false]
+        );
+    }
+
+    /// The mark means "the next source line is not shown", so a group running
+    /// to the end of the file has nothing after it to mark.
+    #[test]
+    fn the_last_line_of_the_file_never_ends_a_group() {
+        let mut document = doc(&["alpha", "beta"]);
+        document.set_mode(Mode::FilteredOnly);
+        document.evaluate(&set_with(&["beta"]));
+
+        assert_eq!(document.visible_group_ends(), vec![false]);
+    }
+
+    /// Trailing hidden lines are a gap like any other — the group really does
+    /// stop there, and the rest of the file is below it.
+    #[test]
+    fn a_group_ends_where_the_rest_of_the_file_is_hidden() {
+        let mut document = doc(&["beta", "alpha"]);
+        document.set_mode(Mode::FilteredOnly);
+        document.evaluate(&set_with(&["beta"]));
+
+        assert_eq!(document.visible_group_ends(), vec![true]);
+    }
+
+    #[test]
+    fn nothing_ends_a_group_when_every_line_is_visible() {
+        let mut document = doc(&["alpha", "beta", "gamma"]);
+        document.evaluate(&set_with(&["beta"]));
+
+        assert_eq!(document.visible_group_ends(), vec![false; 3]);
+    }
+
+    #[test]
+    fn group_ends_line_up_with_visible_lines() {
+        let mut document = doc(&["alpha", "beta", "gamma", "beta again"]);
+        document.set_mode(Mode::FilteredOnly);
+        document.evaluate(&set_with(&["beta"]));
+
+        assert_eq!(
+            document.visible_group_ends().len(),
             document.visible().len()
         );
     }
