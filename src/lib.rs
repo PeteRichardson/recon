@@ -244,6 +244,14 @@ pub struct App<'a> {
     /// and left the previous file's buffer on screen. `None` is unequal to
     /// every `Some`, so the rebuild always happens.
     last_visible: Option<Vec<usize>>,
+    /// The window bounds `apply_view` last handed the file view, paired with
+    /// `last_visible` as the rebuild-skip key (#7).
+    ///
+    /// The visible set alone is no longer enough to decide a rebuild can be
+    /// skipped: scrolling into a new window leaves the visible set untouched
+    /// and still needs the buffer replaced. Omitting this is the subtlest bug
+    /// available here — the view would silently go on showing the old rows.
+    last_window: Option<(usize, usize)>,
     /// The single widget filling the screen, or `None` for the normal split.
     ///
     /// Hiding the left column and maximising the file view are the same thing,
@@ -295,6 +303,7 @@ impl App<'_> {
             filters: ActiveFilters::new(),
             document: Document::default(),
             last_visible: None,
+            last_window: None,
             zoom: None,
         };
         app.sync_document();
@@ -842,6 +851,28 @@ impl App<'_> {
             return Ok(());
         }
 
+        // Four file-view keys move the cursor further than a page and so
+        // cannot be left to the widget: `TextArea` holds a window of the
+        // visible set, and each of these means "the *document's* top" or "the
+        // next paragraph anywhere", not "the top of the buffer that happens to
+        // be loaded" (#7). Intercepted here, resolved against the whole visible
+        // set, and applied through `place_cursor_on_visible_row`, which brings
+        // the window with it.
+        //
+        // Same shape as `n`/`N` above, and for the same reason: only `App` can
+        // see the document. The cost is that the file view's bindings now live
+        // in two places, which is the drift #25 is about — hence one table,
+        // here, rather than four scattered arms.
+        if let event::Event::Key(key) = event
+            && key.modifiers.is_empty()
+            && matches!(self.widgets[self.active_widget], AppWidget::FileView(_))
+            && let Some(target) = self.long_range_target(key.code)
+        {
+            self.promote_truncated_preview();
+            self.place_cursor_on_visible_row(target);
+            return Ok(());
+        }
+
         // The file view upgrades its own truncated preview to a full load on
         // first interaction, which rebuilds the textarea and clears its line
         // styles. That happens inside the widget, so it never reaches
@@ -853,7 +884,49 @@ impl App<'_> {
             self.sync_document();
             self.refresh_view();
         }
+        // Ordinary movement stays inside the window by design, but a page at
+        // the edge of the middle third does not — see `window_holds`.
+        self.ensure_window();
         Ok(())
+    }
+
+    /// The visible-set row a long-range file-view key asks for, or `None` if
+    /// this key is not one of them.
+    ///
+    /// | Key | Means |
+    /// |---|---|
+    /// | `g` / `Home` | the first visible row |
+    /// | `G` / `End` | the last visible row |
+    /// | `}` | the next blank line below, or the last row |
+    /// | `{` | the previous blank line above, or the first row |
+    ///
+    /// Paragraph moves read `document.lines()`, which costs nothing extra:
+    /// this issue removes `TextArea`'s duplicate of the text, not `Document`'s.
+    /// Half B (#51) is what makes the text unavailable, and it will have to
+    /// answer this differently.
+    fn long_range_target(&self, code: KeyCode) -> Option<usize> {
+        let visible = self.document.visible();
+        if visible.is_empty() {
+            return None;
+        }
+        let last = visible.len() - 1;
+        let from = self
+            .document
+            .visible_position(self.cursor_source())
+            .unwrap_or(0);
+        let blank = |row: usize| {
+            self.document
+                .lines()
+                .get(visible[row])
+                .is_some_and(|line| line.trim().is_empty())
+        };
+        match code {
+            KeyCode::Char('g') | KeyCode::Home => Some(0),
+            KeyCode::Char('G') | KeyCode::End => Some(last),
+            KeyCode::Char('}') => Some(((from + 1)..=last).find(|&row| blank(row)).unwrap_or(last)),
+            KeyCode::Char('{') => Some((0..from).rev().find(|&row| blank(row)).unwrap_or(0)),
+            _ => None,
+        }
     }
 
     /// Force the file view's truncated preview to a full load, the same
@@ -945,6 +1018,9 @@ impl App<'_> {
         // buffer in place under numbers and styles sized for the filtered
         // subset.
         self.last_visible = None;
+        // Both halves of the rebuild-skip key, or the surviving half could
+        // still match and skip a rebuild this just decided is owed.
+        self.last_window = None;
     }
 
     /// Re-evaluate the filters and rebuild what the view shows.
@@ -1076,6 +1152,45 @@ impl App<'_> {
         self.refresh_view();
     }
 
+    /// The pane height to size the file view's window against — the area it
+    /// last rendered into, or a generous assumption before the first render.
+    fn file_view_window_height(&self) -> u16 {
+        self.widgets
+            .iter()
+            .find_map(|widget| match widget {
+                AppWidget::FileView(view) => Some(view.window_height()),
+                AppWidget::FileNav(_) | AppWidget::FilterList(_) => None,
+            })
+            .unwrap_or(widgets::fileview::ASSUMED_PANE_HEIGHT)
+    }
+
+    /// Rebuild the file view's window if the cursor has left the middle third
+    /// of the one it is holding (#7).
+    ///
+    /// Called after every event that can move the cursor. Cheap when nothing is
+    /// owed: two comparisons against bounds the view already knows. The rebuild
+    /// itself goes through `apply_view`, which recomputes the window from the
+    /// cursor's new position, so this decides only *whether*, never *where*.
+    fn ensure_window(&mut self) {
+        let visible_len = self.document.visible().len();
+        let needed = self
+            .widgets
+            .iter()
+            .find_map(|widget| match widget {
+                AppWidget::FileView(view) => Some(!widgets::fileview::window_holds(
+                    visible_len,
+                    view.window_start(),
+                    view.window_end(),
+                    view.cursor_visible_row(),
+                )),
+                AppWidget::FileNav(_) | AppWidget::FilterList(_) => None,
+            })
+            .unwrap_or(false);
+        if needed {
+            self.apply_view(self.cursor_source());
+        }
+    }
+
     /// Which row of the file view pane the cursor is currently drawn on.
     fn file_view_screen_row(&self) -> u16 {
         self.widgets
@@ -1131,19 +1246,32 @@ impl App<'_> {
 
         let hiding = self.document.visible().len() < self.document.lines().len();
         let nothing_visible = hiding && self.document.visible().is_empty();
-        let styles = self.document.visible_styles(&self.filters);
-        let numbers: Vec<usize> = if hiding {
-            self.document.visible().to_vec()
-        } else {
-            Vec::new()
-        };
-        // Gated on `hiding` for the same reason the gutter numbers are: with
-        // the whole file on screen every line's successor is the next one, so
-        // the marks would all be false anyway. Computing them regardless would
-        // be a vector the length of the file, rebuilt on every navigator arrow
-        // key, to say nothing.
+
+        // The window `TextArea` is given, rather than the whole visible set
+        // (#7). Sized from the pane height recorded on the previous frame —
+        // `apply_view` runs outside `render` and has no area of its own.
+        let row = self.document.visible_position(cursor_source).unwrap_or(0);
+        let (window_start, window_end) = widgets::fileview::window_for(
+            self.document.visible().len(),
+            self.file_view_window_height(),
+            row,
+        );
+
+        let styles = self
+            .document
+            .visible_styles_range(&self.filters, window_start, window_end);
+        // **Always** supplied now, where this was gated on `hiding`. Ungated
+        // the fork falls back to numbering the buffer 1..N, which is right only
+        // when the buffer *is* the file — a window starting at visible row
+        // 1,000 would be numbered 1, 2, 3. The reason for the old gate ("a
+        // vector the length of the file, rebuilt on every navigator arrow key")
+        // is gone: the vector is now the length of the window.
+        let numbers: Vec<usize> = self.document.visible()[window_start..window_end].to_vec();
+        // Still gated on `hiding`: with the whole file on screen every line's
+        // successor is the next one, so every mark would be false anyway.
         let group_ends = if hiding {
-            self.document.visible_group_ends()
+            self.document
+                .visible_group_ends_range(window_start, window_end)
         } else {
             Vec::new()
         };
@@ -1169,11 +1297,15 @@ impl App<'_> {
         // the same call, so the row is applied directly rather than jumped to
         // afterwards. (The rendered viewport is still `u16`-limited, though —
         // see `FileView::show_lines_with_cursor`.)
-        let row = self.document.visible_position(cursor_source).unwrap_or(0);
-        let rebuild = self.last_visible.as_deref() != Some(self.document.visible());
+        // Keyed on the window as well as the visible set: scrolling into a new
+        // window leaves the visible set untouched and still needs the buffer
+        // replaced.
+        let rebuild = self.last_visible.as_deref() != Some(self.document.visible())
+            || self.last_window != Some((window_start, window_end));
         let lines = if rebuild {
             self.last_visible = Some(self.document.visible().to_vec());
-            Some(self.document.visible_lines())
+            self.last_window = Some((window_start, window_end));
+            Some(self.document.visible_lines_range(window_start, window_end))
         } else {
             None
         };
@@ -1185,7 +1317,10 @@ impl App<'_> {
             return;
         };
         if let Some(lines) = lines {
-            view.show_lines_with_cursor(lines, row);
+            // `row` is an index into the visible set; the buffer now starts at
+            // `window_start`, so the cursor's row *within the buffer* is the
+            // difference.
+            view.show_window(lines, window_start, row.saturating_sub(window_start));
         }
         view.set_line_numbers(numbers);
         view.set_group_ends(group_ends);
@@ -1222,7 +1357,9 @@ impl App<'_> {
             .iter()
             .find_map(|widget| match widget {
                 AppWidget::FileView(view) => {
-                    let row = view.textarea.cursor().0;
+                    // Through the window: the textarea's own cursor row indexes
+                    // the buffer, which is a slice of the visible set (#7).
+                    let row = view.cursor_visible_row();
                     Some(self.document.source_at(row).unwrap_or(row))
                 }
                 AppWidget::FileNav(_) | AppWidget::FilterList(_) => None,
@@ -1272,12 +1409,43 @@ impl App<'_> {
         let Some(row) = self.document.visible_position(target) else {
             return;
         };
+        self.place_cursor_on_visible_row(row);
+    }
+
+    /// Put the cursor on `row` of the **visible set**, bringing the window with
+    /// it (#7).
+    ///
+    /// Every jump that can travel further than a page goes through here —
+    /// `n`/`N`, and the four keys intercepted in `handle_event` (`g`, `G`, `}`,
+    /// `{`). They all share one failure mode without it: `row` indexes the
+    /// visible set, `FileView::set_cursor_row` indexes the *buffer*, and a
+    /// windowed buffer holds three screens. Handing 50,050 to a 600-row buffer
+    /// silently clamps to row 599, landing the cursor nowhere near the hit and
+    /// reporting no error at all.
+    ///
+    /// `apply_view` is what moves the window: it sizes one around the row it is
+    /// given, so calling it with the *target's* source line guarantees the
+    /// buffer contains the target before the cursor is placed. The explicit
+    /// `set_cursor_row` afterwards is still needed — `apply_view` only places
+    /// the cursor when it actually rebuilds, and a target already inside the
+    /// current window rebuilds nothing.
+    fn place_cursor_on_visible_row(&mut self, row: usize) {
+        let source = self.document.source_at(row).unwrap_or(row);
+        self.apply_view(source);
+        let start = self
+            .widgets
+            .iter()
+            .find_map(|w| match w {
+                AppWidget::FileView(view) => Some(view.window_start()),
+                AppWidget::FileNav(_) | AppWidget::FilterList(_) => None,
+            })
+            .unwrap_or(0);
         if let Some(AppWidget::FileView(view)) = self
             .widgets
             .iter_mut()
             .find(|w| matches!(w, AppWidget::FileView(_)))
         {
-            view.set_cursor_row(row);
+            view.set_cursor_row(row.saturating_sub(start));
         }
     }
 
@@ -2247,8 +2415,11 @@ mod tests {
             path: dir.display().to_string(),
         });
 
+        // Asked of the *document*, not the view. Since #7 the textarea holds
+        // only a window of what is visible, so its length says how tall the
+        // pane is, not how much of the file was read.
         assert_eq!(
-            view_lines(&app).len(),
+            app.document.lines().len(),
             crate::widgets::fileview::PREVIEW_LINES,
             "the first entry was read in full instead of previewed"
         );
@@ -2897,10 +3068,19 @@ mod tests {
         key(&mut app, KeyCode::Enter);
 
         let preview_styles = view_line_styles(&app);
+        // Length asked of the document; alignment asked of the view. Since #7
+        // the style vector covers the *window*, so it is the document that says
+        // whether the preview was capped, and the buffer that says whether the
+        // styles line up with what is drawn.
         assert_eq!(
-            preview_styles.len(),
+            app.document.lines().len(),
             crate::widgets::fileview::PREVIEW_LINES,
             "sanity: preview is capped"
+        );
+        assert_eq!(
+            preview_styles.len(),
+            view_lines(&app).len(),
+            "styles do not line up with the buffer"
         );
         assert!(
             preview_styles[10].is_some(),
@@ -2918,8 +3098,13 @@ mod tests {
 
         let styles = view_line_styles(&app);
         assert_eq!(
-            styles.len(),
+            app.document.lines().len(),
             crate::widgets::fileview::PREVIEW_LINES + 100,
+            "the preview did not upgrade to a full load"
+        );
+        assert_eq!(
+            styles.len(),
+            view_lines(&app).len(),
             "style vector was not resynced to the fully loaded buffer"
         );
         assert!(
@@ -2980,6 +3165,207 @@ mod tests {
                 AppWidget::FileNav(_) | AppWidget::FilterList(_) => None,
             })
             .expect("no file view")
+    }
+
+    // ---- windowed viewport (#7) -----------------------------------------
+
+    /// Long enough to be windowed at any plausible pane height, short enough
+    /// to stay under `PREVIEW_LINES` so nothing here is also testing
+    /// truncation. Every tenth line is blank, giving `{` and `}` something to
+    /// find.
+    fn app_over_long_file(name: &str) -> App<'static> {
+        let body: String = (0..LONG_FILE_LINES)
+            .map(|i| {
+                if i % 10 == 0 {
+                    "\n".to_string()
+                } else {
+                    format!("line {i}\n")
+                }
+            })
+            .collect();
+        let mut app = app_over_file(name, &body);
+        // Gives the view a real pane height to size its window against;
+        // before the first render it assumes `ASSUMED_PANE_HEIGHT`.
+        draw(&mut app);
+        focus_file_view(&mut app);
+        app
+    }
+
+    const LONG_FILE_LINES: usize = 5_000;
+
+    /// **The structural form of #7's memory acceptance criterion.**
+    ///
+    /// The win is not measured in bytes — that is allocator- and
+    /// platform-dependent, and the classic flaky test. What causes the win is
+    /// directly assertable instead: the buffer holds a window, however long the
+    /// document is. Before this change the two numbers below were equal, and
+    /// the file was resident twice.
+    #[test]
+    fn the_view_holds_a_window_not_the_whole_document() {
+        let mut app = app_over_long_file("window_bounded");
+
+        // `G` forces a re-window against the real pane height, so this is not
+        // just measuring the pre-render assumption.
+        key(&mut app, KeyCode::Char('G'));
+
+        assert_eq!(
+            app.document.visible().len(),
+            LONG_FILE_LINES,
+            "sanity: the document still holds every line"
+        );
+        let held = view_lines(&app).len();
+        assert!(
+            held <= 3 * AREA.height as usize,
+            "the buffer holds {held} lines for a {}-row pane — not a window",
+            AREA.height
+        );
+    }
+
+    /// `g` means the document's first line, not the first line of whichever
+    /// window happens to be loaded. Without interception this lands on
+    /// `window_start`, which looks entirely plausible and is wrong.
+    #[test]
+    fn g_jumps_to_the_documents_first_line() {
+        let mut app = app_over_long_file("window_g_top");
+        key(&mut app, KeyCode::Char('G'));
+        assert_ne!(cursor_source(&app), 0, "sanity: moved away from the top");
+
+        key(&mut app, KeyCode::Char('g'));
+
+        assert_eq!(cursor_source(&app), 0);
+    }
+
+    #[test]
+    fn capital_g_jumps_to_the_documents_last_line() {
+        let mut app = app_over_long_file("window_g_bottom");
+
+        key(&mut app, KeyCode::Char('G'));
+
+        assert_eq!(cursor_source(&app), LONG_FILE_LINES - 1);
+    }
+
+    /// A paragraph move can travel further than the window. Resolved against
+    /// the document, `}` finds the next blank line; left to the widget it would
+    /// stop at the buffer's edge.
+    #[test]
+    fn brace_moves_by_paragraph_across_the_whole_document() {
+        let mut app = app_over_long_file("window_paragraph");
+
+        key(&mut app, KeyCode::Char('}'));
+        // Line 0 is blank and the cursor starts there, so the next blank below
+        // is line 10.
+        assert_eq!(cursor_source(&app), 10);
+
+        key(&mut app, KeyCode::Char('}'));
+        assert_eq!(cursor_source(&app), 20);
+
+        key(&mut app, KeyCode::Char('{'));
+        assert_eq!(cursor_source(&app), 10);
+    }
+
+    /// The off-by-`window_start` failure this change is most exposed to.
+    /// `textarea.cursor().0` indexes the buffer; the source line is
+    /// `window_start` further down. Reading it untranslated yields a line
+    /// number that is wrong but entirely believable.
+    #[test]
+    fn the_cursor_reports_its_source_line_from_inside_a_window() {
+        let mut app = app_over_long_file("window_cursor_source");
+
+        key(&mut app, KeyCode::Char('G'));
+
+        let view = app
+            .widgets
+            .iter()
+            .find_map(|w| match w {
+                AppWidget::FileView(v) => Some(v),
+                _ => None,
+            })
+            .expect("no file view");
+        assert!(
+            view.window_start() > 0,
+            "sanity: the end of the file must be a moved window"
+        );
+        assert_eq!(cursor_source(&app), LONG_FILE_LINES - 1);
+    }
+
+    /// A window starting at visible row N must number its gutter from N, not
+    /// from 1. This is why the numbers override became unconditional.
+    #[test]
+    fn the_gutter_numbers_a_window_by_its_source_lines() {
+        let mut app = app_over_long_file("window_gutter");
+
+        key(&mut app, KeyCode::Char('G'));
+
+        let numbers = view_line_numbers(&app);
+        assert_eq!(
+            numbers.last().copied(),
+            Some(LONG_FILE_LINES - 1),
+            "the last row of the last window must be the file's last line"
+        );
+        assert!(
+            numbers[0] > 0,
+            "a window at the end of the file must not renumber from the top"
+        );
+    }
+
+    /// Paging repeatedly must walk the document, not stall at a window edge.
+    /// This is the case the middle-third rule exists for: with a smaller margin
+    /// the second page runs into the buffer's end and is silently truncated.
+    #[test]
+    fn paging_down_repeatedly_walks_past_window_boundaries() {
+        let mut app = app_over_long_file("window_paging");
+        let mut last = cursor_source(&app);
+
+        for page in 0..40 {
+            key(&mut app, KeyCode::PageDown);
+            let now = cursor_source(&app);
+            assert!(now >= last, "page {page} moved backwards: {last} -> {now}");
+            last = now;
+        }
+
+        assert!(
+            last > 3 * AREA.height as usize,
+            "paging never left the first window (reached line {last})"
+        );
+    }
+
+    /// End to end through the real render path, against a window that has
+    /// *moved*. The scroll machinery is the risky part of this change — the
+    /// pending-scroll priming render, the viewport reset by `set_lines` — and
+    /// the other tests here read the buffer rather than the screen. This one
+    /// checks that what is actually painted is the end of the file.
+    #[test]
+    fn a_moved_window_renders_the_lines_it_holds() {
+        let mut app = app_over_long_file("window_render");
+
+        key(&mut app, KeyCode::Char('G'));
+        let screen = rendered(&mut app);
+
+        assert!(
+            screen.contains(&format!("line {}", LONG_FILE_LINES - 1)),
+            "the last line of the file was not painted:\n{screen}"
+        );
+        assert!(
+            !screen.contains("line 1 "),
+            "the top of the file is still on screen after jumping to the end:\n{screen}"
+        );
+    }
+
+    /// `n` targets a row in the visible set, which a windowed buffer does not
+    /// contain. Handing that row straight to the textarea clamps it to the
+    /// buffer's last line — silently, and nowhere near the match.
+    #[test]
+    fn n_reaches_a_match_far_outside_the_window() {
+        let mut app = app_over_long_file("window_n_far");
+        key(&mut app, KeyCode::Char('f'));
+        key(&mut app, KeyCode::Char('i'));
+        typed(&mut app, "line 4321$");
+        key(&mut app, KeyCode::Enter);
+        focus_file_view(&mut app);
+
+        key(&mut app, KeyCode::Char('n'));
+
+        assert_eq!(cursor_source(&app), 4321);
     }
 
     #[test]
@@ -3106,10 +3492,16 @@ mod tests {
         assert_eq!(view_line_styles(&app).len(), view_lines(&app).len());
     }
 
-    /// With nothing excluded the buffer is the whole file and the gutter is
-    /// left to number itself.
+    /// With nothing excluded the gutter numbers the file straight through.
+    ///
+    /// This used to assert the override was *absent*, letting the fork number
+    /// the buffer 1..N itself. #7 made the override unconditional, because a
+    /// windowed buffer starting at visible row 1,000 would otherwise be
+    /// numbered 1, 2, 3. The invariant worth protecting was never "no
+    /// override" — it was "the numbers are the file's own", which is what this
+    /// now checks directly.
     #[test]
-    fn without_hiding_the_gutter_is_not_overridden() {
+    fn without_hiding_the_gutter_numbers_the_file_straight_through() {
         let mut app = app_over_file("no_hiding", "alpha\nbeta\n");
 
         key(&mut app, KeyCode::Char('f'));
@@ -3118,16 +3510,16 @@ mod tests {
         key(&mut app, KeyCode::Enter);
 
         assert_eq!(view_lines(&app).len(), 2);
-        assert!(
-            view_line_numbers(&app).is_empty(),
-            "the gutter was overridden when nothing is hidden"
+        assert_eq!(
+            view_line_numbers(&app),
+            vec![0, 1],
+            "the gutter must number an unhidden file straight through"
         );
     }
 
     /// Lifting the hiding must restore the whole buffer. Leaving a stale subset
-    /// behind is worse than never hiding: the gutter override is cleared at the
-    /// same moment, so the remaining rows would renumber from 1 and claim to be
-    /// the whole file.
+    /// behind is worse than never hiding: the remaining rows would renumber
+    /// from 1 and claim to be the whole file.
     #[test]
     fn disabling_an_excluding_filter_restores_the_hidden_lines() {
         let mut app = app_over_file("exclude_restore", "alpha\nnoise\ngamma\n");
@@ -3153,9 +3545,10 @@ mod tests {
             view_lines(&app).len(),
             "styles no longer line up with the buffer"
         );
-        assert!(
-            view_line_numbers(&app).is_empty(),
-            "the gutter is still overridden with nothing hidden"
+        assert_eq!(
+            view_line_numbers(&app),
+            vec![0, 1, 2],
+            "the gutter must renumber back to the file's own lines"
         );
     }
 
@@ -3165,7 +3558,7 @@ mod tests {
             .iter()
             .find_map(|w| match w {
                 AppWidget::FileView(view) => {
-                    let row = view.textarea.cursor().0;
+                    let row = view.cursor_visible_row();
                     Some(app.document.source_at(row).unwrap_or(row))
                 }
                 AppWidget::FileNav(_) | AppWidget::FilterList(_) => None,
@@ -3624,7 +4017,13 @@ mod tests {
             TARGET,
             "did not return to the same line past the u16 boundary"
         );
-        assert_eq!(view_lines(&app).len(), TOTAL, "context did not come back");
+        // The *document* is whole again. The view holds a window of it since
+        // #7, so its length measures the pane rather than the file.
+        assert_eq!(
+            app.document.visible().len(),
+            TOTAL,
+            "context did not come back"
+        );
     }
 
     /// Toggling into hidden mode from a line that is not a match snaps forward

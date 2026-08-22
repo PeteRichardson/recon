@@ -486,10 +486,17 @@ whole width outright.
 
 ## Known Limitations
 
-- **Files are read entirely into memory.** `read_lines` in
-  `src/widgets/fileview.rs` collects the whole file into a `Vec<String>`.
-  A multi-gigabyte log will be fully resident. There is no streaming or
-  memory-mapped path.  This is github issue #7.
+- **Files are read entirely into memory — once, not twice.** `read_lines` in
+  `src/widgets/fileview.rs` collects the whole file into a `Vec<String>`, and
+  `Document` holds it. A multi-gigabyte log is fully resident, and there is
+  still no streaming or memory-mapped path.
+
+  It used to be resident *twice*: the view was handed its own `Vec<String>` of
+  every visible line, so an unfiltered file cost about 3× its size on disk. The
+  view now holds only a window of three screens
+  (`docs/specs/2026-08-22-windowed-textarea-viewport.md`, github issue #7),
+  which takes that to ~1.5×. Replacing `Document`'s own copy with a line-offset
+  index is the remaining half, github issue #51.
 - **Previews are bounded, full loads are not.** While the navigator has focus,
   only `PREVIEW_LINES` (50,000) lines or `MAX_PREVIEW_BYTES` (10 MiB) are read,
   whichever comes first. The full read happens once you focus the view.
