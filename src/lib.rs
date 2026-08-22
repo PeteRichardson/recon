@@ -115,12 +115,39 @@ const HIDE_BADGE_STYLE: Style = Style::new()
     .add_modifier(ratatui::style::Modifier::BOLD);
 
 /// What an open prompt will do with the pattern being typed.
+///
+/// The `Edit` variants are what makes a filter's pattern changeable at all:
+/// before them the only way to correct one was `d` and a full retype, which
+/// pushed the replacement to the end of the set and so changed its colour and
+/// its precedence in `verdict`. Committing one overwrites in place instead.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 enum PromptKind {
     #[default]
     Search,
     Filter,
     Exclude,
+    /// Replace the pattern of the numbered filter at `index`.
+    ///
+    /// `sense` is carried purely so the prompt can draw the right sigil — the
+    /// filter's own sense is untouched by the edit. Without it an excluding
+    /// filter would edit under a `filter:` prompt, reading as though
+    /// committing were about to turn it into an including one.
+    ///
+    /// The index is captured when the prompt opens and could in principle name
+    /// a filter that is gone by the time `Enter` arrives. It cannot today: the
+    /// prompt consumes every key while it is open, so nothing can delete a
+    /// filter in between. `replace_filter` handles the case anyway rather than
+    /// resting on that.
+    Edit {
+        index: usize,
+        sense: filter::Sense,
+    },
+    /// Replace the live search's pattern.
+    ///
+    /// Carries no index because the search does not have one — it lives in its
+    /// own slot on the `ActiveFilters`, which is the whole reason `/` does not
+    /// renumber the filters the user built.
+    EditSearch,
 }
 
 /// A search pattern being typed at the bottom of the screen.
@@ -132,14 +159,35 @@ struct SearchPrompt {
 }
 
 impl SearchPrompt {
+    /// The prefix the prompt draws, which names what committing will do.
+    ///
+    /// An edit shows the same sigil as the `i`, `x` or `/` that would have
+    /// created the thing being edited, because it produces the same kind of
+    /// thing. What differs is where it lands, and the pre-filled pattern
+    /// already says that: a prompt that opens with text in it is editing
+    /// something, and one that opens empty is making something new.
+    fn sigil(&self) -> &'static str {
+        match self.kind {
+            PromptKind::Search | PromptKind::EditSearch => "/",
+            PromptKind::Filter
+            | PromptKind::Edit {
+                sense: filter::Sense::Include,
+                ..
+            } => "filter: ",
+            PromptKind::Exclude
+            | PromptKind::Edit {
+                sense: filter::Sense::Exclude,
+                ..
+            } => "exclude: ",
+        }
+    }
+
     /// What the bottom line shows: the error if the pattern was rejected,
     /// otherwise the pattern being typed behind its sigil.
     fn line(&self) -> String {
-        match (&self.error, self.kind) {
-            (Some(error), _) => error.clone(),
-            (None, PromptKind::Filter) => format!("filter: {}", self.pattern),
-            (None, PromptKind::Exclude) => format!("exclude: {}", self.pattern),
-            (None, PromptKind::Search) => format!("/{}", self.pattern),
+        match &self.error {
+            Some(error) => error.clone(),
+            None => format!("{}{}", self.sigil(), self.pattern),
         }
     }
 }
@@ -279,6 +327,13 @@ impl App<'_> {
                     PromptKind::Search => self.run_search(&pattern),
                     PromptKind::Filter => self.add_filter(&pattern),
                     PromptKind::Exclude => self.add_excluding_filter(&pattern),
+                    PromptKind::Edit { index, .. } => self.replace_filter(index, &pattern),
+                    // Straight to `apply_search`, deliberately not through
+                    // `run_search`: that dispatches on the *focused* pane, and
+                    // the filter pane — the only pane this prompt can be
+                    // opened from — has an arm there that does nothing at all.
+                    // Routing through it would discard the pattern silently.
+                    PromptKind::EditSearch => self.apply_search(&pattern),
                 };
                 if outcome.is_ok() {
                     self.search = None;
@@ -325,6 +380,11 @@ impl App<'_> {
             // filter pane has focus (see its guard in `handle_event`), and the
             // prompt swallows every key including `Tab` while it is open. Kept
             // so this match stays exhaustive against a fourth `AppWidget`.
+            //
+            // The pane *can* open a search prompt — `c` on the search row —
+            // but that commits through `apply_search` rather than here,
+            // precisely because this arm does nothing. Routing it through this
+            // function would swallow the edited pattern in silence.
             AppWidget::FilterList(_) => None,
         };
 
@@ -371,6 +431,26 @@ impl App<'_> {
     fn add_excluding_filter(&mut self, pattern: &str) -> Result<(), regex::Error> {
         self.filters.add_excluding(pattern)?;
         self.refresh_view();
+        Ok(())
+    }
+
+    /// Overwrite one filter's pattern, keeping its position — and with it the
+    /// colour and the precedence that position decides.
+    ///
+    /// `refresh_view`'s full `Document::evaluate`, not `recompute_visible`:
+    /// the pattern is what decides which lines match, so the cached verdicts
+    /// are stale in a way only a re-evaluate can fix. Narrower than a delete —
+    /// the numbering is untouched, so only *this* filter's verdicts can have
+    /// changed — but `evaluate` is the only thing that recomputes any of them.
+    ///
+    /// A filter that has vanished is reported as `Ok` rather than an error:
+    /// the pattern the user typed is fine, there is simply nothing left to put
+    /// it on, and leaving the prompt open under `E486: invalid pattern` would
+    /// blame the pattern for it. Unreachable today — see `PromptKind::Edit`.
+    fn replace_filter(&mut self, index: usize, pattern: &str) -> Result<(), regex::Error> {
+        if self.filters.set_pattern(index, pattern)? {
+            self.refresh_view();
+        }
         Ok(())
     }
 
@@ -903,12 +983,15 @@ impl App<'_> {
     /// This borrows the pane and the `ActiveFilters` together — something
     /// neither `FilterList` nor `Action` can do on their own, since the pane
     /// only ever borrows the set to render it — applies whatever command the
-    /// pane reports, moves focus off the pane if the set is now empty (which
-    /// also carries the zoom along, since `focus_next` already keeps that
-    /// invariant), and re-evaluates. A delete renumbers the remaining
+    /// pane reports, and re-evaluates. A delete renumbers the remaining
     /// filters, so `refresh_view`'s full `Document::evaluate` is required
     /// here: every cached `Verdict::Included` is a positional index that a
     /// patch would leave stale.
+    ///
+    /// The two `Edit` commands are the exception and return before that
+    /// re-evaluate: they only open a prompt, and nothing about the set changes
+    /// until it commits — at which point `replace_filter` or `apply_search`
+    /// does the re-evaluating instead.
     ///
     /// Takes the whole `KeyEvent`, not just its `KeyCode`: `FilterList::handle_key`
     /// needs the modifiers to guard `space`/`d`/`j`/`k` against CONTROL and
@@ -962,6 +1045,37 @@ impl App<'_> {
             }
             FilterCommand::DeleteSearch => {
                 self.filters.clear_search();
+            }
+            // The two commands that change nothing yet — they open a prompt,
+            // and the set is only touched if it commits. Both return early
+            // rather than falling through to the `refresh_view` below: there
+            // is nothing to re-evaluate, and `evaluate` is O(lines × filters).
+            FilterCommand::Edit(index) => {
+                // The row the pane reported is one it drew, so the filter is
+                // there; falling out silently rather than indexing keeps that
+                // a property of the pane's own bounds, not a promise this
+                // function has to make.
+                if let Some(filter) = self.filters.filters().get(index) {
+                    self.search = Some(SearchPrompt {
+                        pattern: filter.pattern.as_str().to_string(),
+                        kind: PromptKind::Edit {
+                            index,
+                            sense: filter.sense,
+                        },
+                        ..SearchPrompt::default()
+                    });
+                }
+                return;
+            }
+            FilterCommand::EditSearch => {
+                if let Some(search) = self.filters.search() {
+                    self.search = Some(SearchPrompt {
+                        pattern: search.pattern.as_str().to_string(),
+                        kind: PromptKind::EditSearch,
+                        ..SearchPrompt::default()
+                    });
+                }
+                return;
             }
         }
         // Deleting the last filter used to collapse the pane, so focus had to
@@ -4677,6 +4791,205 @@ mod tests {
         assert_eq!(app.filters.len(), 2, "Ctrl-D deleted a filter");
     }
 
+    /// `c` reopens the prompt over the selected filter's own pattern. Starting
+    /// it empty would be no better than `d` then `f i`, which is the retyping
+    /// this binding exists to remove.
+    #[test]
+    fn c_opens_the_prompt_prefilled_with_the_selected_pattern() {
+        let mut app = app_with_two_filters("pane_edit_prefill");
+        focus_filter_pane(&mut app);
+        key(&mut app, KeyCode::Char('j'));
+
+        key(&mut app, KeyCode::Char('c'));
+
+        let prompt = app.search.as_ref().expect("the prompt should be open");
+        assert_eq!(prompt.pattern, "beta");
+        assert_eq!(
+            prompt.line(),
+            "filter: beta",
+            "an edit should read like the `i` that would have created it"
+        );
+    }
+
+    /// The point of the whole issue: the edited filter keeps its slot, so it
+    /// keeps its colour and its precedence. Deleting and retyping put the
+    /// replacement at the end and silently reordered the set.
+    #[test]
+    fn committing_an_edit_replaces_the_pattern_in_place() {
+        let mut app = app_with_two_filters("pane_edit_commit");
+        focus_filter_pane(&mut app);
+        let colour = app.filters.filters()[0].style;
+
+        key(&mut app, KeyCode::Char('c'));
+        typed(&mut app, "X");
+        key(&mut app, KeyCode::Enter);
+
+        assert_eq!(app.filters.len(), 2, "the edit added a filter");
+        assert_eq!(app.filters.filters()[0].pattern.as_str(), "alphaX");
+        assert_eq!(
+            app.filters.filters()[0].style,
+            colour,
+            "the filter lost its colour, so it moved"
+        );
+        assert_eq!(app.filters.filters()[1].pattern.as_str(), "beta");
+        assert!(app.search.is_none(), "the prompt should have closed");
+    }
+
+    /// The pattern decides which lines match, so an edit owes the document a
+    /// full `evaluate` — not the `recompute_visible` a mode flip gets away
+    /// with. Without it the pane shows the new pattern over the old pattern's
+    /// colouring.
+    #[test]
+    fn committing_an_edit_restyles_the_view() {
+        let mut app = app_over_file("pane_edit_view", "alpha\nbeta\ngamma\n");
+        key(&mut app, KeyCode::Char('f'));
+        key(&mut app, KeyCode::Char('i'));
+        typed(&mut app, "alpha");
+        key(&mut app, KeyCode::Enter);
+        let before = view_line_styles(&app);
+
+        key(&mut app, KeyCode::Char('c'));
+        for _ in 0.."alpha".len() {
+            key(&mut app, KeyCode::Backspace);
+        }
+        typed(&mut app, "gamma");
+        key(&mut app, KeyCode::Enter);
+
+        assert_ne!(
+            view_line_styles(&app),
+            before,
+            "the view still reflects the old pattern"
+        );
+    }
+
+    /// Same contract `f i` has: the prompt stays open over an intact filter, so
+    /// the typo can be corrected rather than retyped from nothing.
+    #[test]
+    fn an_invalid_edit_reports_and_leaves_the_filter_alone() {
+        let mut app = app_with_two_filters("pane_edit_invalid");
+        focus_filter_pane(&mut app);
+
+        key(&mut app, KeyCode::Char('c'));
+        typed(&mut app, "[");
+        key(&mut app, KeyCode::Enter);
+
+        let prompt = app.search.as_ref().expect("the prompt should stay open");
+        assert_eq!(prompt.line(), INVALID_PATTERN);
+        assert_eq!(
+            app.filters.filters()[0].pattern.as_str(),
+            "alpha",
+            "a rejected pattern overwrote the filter"
+        );
+    }
+
+    #[test]
+    fn escape_abandons_an_edit_and_leaves_the_filter_untouched() {
+        let mut app = app_with_two_filters("pane_edit_escape");
+        focus_filter_pane(&mut app);
+
+        key(&mut app, KeyCode::Char('c'));
+        typed(&mut app, "X");
+        key(&mut app, KeyCode::Esc);
+
+        assert!(app.search.is_none());
+        assert_eq!(app.filters.filters()[0].pattern.as_str(), "alpha");
+    }
+
+    /// Backspacing past the start cancels the prompt, as in vim — and a
+    /// pre-filled prompt is the first place that rule is reachable by
+    /// *deleting what was already there*. It must abandon the edit, exactly as
+    /// `Esc` does, rather than commit an empty pattern: an empty regex matches
+    /// every line, so the filter would silently start colouring the whole file.
+    #[test]
+    fn backspacing_an_edit_away_cancels_it_rather_than_emptying_the_filter() {
+        let mut app = app_with_two_filters("pane_edit_backspace");
+        focus_filter_pane(&mut app);
+
+        key(&mut app, KeyCode::Char('c'));
+        for _ in 0.."alpha".len() + 1 {
+            key(&mut app, KeyCode::Backspace);
+        }
+
+        assert!(app.search.is_none(), "the prompt should have cancelled");
+        assert_eq!(
+            app.filters.filters()[0].pattern.as_str(),
+            "alpha",
+            "backspacing out of the prompt emptied the filter"
+        );
+    }
+
+    /// An edit changes the pattern and nothing else. The sense in particular
+    /// has to survive, and it is what the prompt's sigil must report — an
+    /// excluding filter editing under a `filter:` prompt would read as though
+    /// committing were about to turn it into an including one.
+    #[test]
+    fn editing_an_excluding_filter_keeps_its_sense() {
+        let mut app = app_over_file("pane_edit_exclude", "alpha\nbeta\n");
+        key(&mut app, KeyCode::Char('f'));
+        key(&mut app, KeyCode::Char('x'));
+        typed(&mut app, "alpha");
+        key(&mut app, KeyCode::Enter);
+
+        key(&mut app, KeyCode::Char('c'));
+        assert_eq!(
+            app.search.as_ref().expect("prompt open").line(),
+            "exclude: alpha"
+        );
+        typed(&mut app, "X");
+        key(&mut app, KeyCode::Enter);
+
+        assert_eq!(app.filters.filters()[0].sense, filter::Sense::Exclude);
+        assert_eq!(app.filters.filters()[0].pattern.as_str(), "alphaX");
+    }
+
+    /// A filter the user had switched off must not come back on just because
+    /// its pattern was corrected.
+    #[test]
+    fn editing_preserves_the_filters_enabled_state() {
+        let mut app = app_with_two_filters("pane_edit_enabled");
+        focus_filter_pane(&mut app);
+
+        key(&mut app, KeyCode::Char(' '));
+        key(&mut app, KeyCode::Char('c'));
+        typed(&mut app, "X");
+        key(&mut app, KeyCode::Enter);
+
+        assert!(
+            !app.filters.filters()[0].enabled,
+            "the edit switched a disabled filter back on"
+        );
+    }
+
+    /// The same modifier guard `Ctrl-D` and `Ctrl-Space` get. `Ctrl-C` is the
+    /// interrupt every terminal user has in their fingers, and it must not
+    /// open a prompt that then swallows every following key.
+    #[test]
+    fn ctrl_c_does_not_open_an_edit_prompt() {
+        let mut app = app_with_two_filters("pane_ctrl_c");
+        focus_filter_pane(&mut app);
+
+        app.handle_event(event::Event::Key(KeyEvent::new(
+            KeyCode::Char('c'),
+            KeyModifiers::CONTROL,
+        )))
+        .unwrap();
+
+        assert!(app.search.is_none(), "Ctrl-C opened the edit prompt");
+    }
+
+    /// With no filters the pane draws its hint and has no selection, so `c` has
+    /// nothing to address. It must be inert rather than opening a prompt whose
+    /// `Enter` would silently do nothing.
+    #[test]
+    fn c_on_an_empty_set_opens_nothing() {
+        let mut app = app_over_file("pane_edit_empty", "alpha\n");
+        key(&mut app, KeyCode::Char('f'));
+
+        key(&mut app, KeyCode::Char('c'));
+
+        assert!(app.search.is_none());
+    }
+
     /// Same defect, for the toggle binding.
     #[test]
     fn ctrl_space_does_not_toggle_the_selected_filter() {
@@ -5530,6 +5843,72 @@ mod tests {
             app.filters.search().expect("search still set").enabled,
             "a second space should have re-enabled the search"
         );
+    }
+
+    /// `c` reaches the search row exactly as `space` and `d` do. Leaving it
+    /// inert there would make the key look broken on one row of a pane where
+    /// every other binding works on all of them.
+    ///
+    /// It commits through `apply_search` rather than `run_search`: the latter
+    /// dispatches on the *focused* pane, and the filter pane's arm there does
+    /// nothing at all — so routing this through it would open a prompt whose
+    /// `Enter` silently discarded the pattern.
+    #[test]
+    fn c_on_the_search_row_edits_the_search() {
+        let mut app = app_over_file("pane_edit_search", "alpha\nbeta\ngamma\n");
+        key(&mut app, KeyCode::Char('t'));
+        app.filters.add("alpha").expect("valid pattern");
+        key(&mut app, KeyCode::Char('/'));
+        typed(&mut app, "beta");
+        key(&mut app, KeyCode::Enter);
+
+        key(&mut app, KeyCode::Char('f'));
+        key(&mut app, KeyCode::Char('c'));
+
+        let prompt = app.search.as_ref().expect("the prompt should be open");
+        assert_eq!(prompt.pattern, "beta");
+        assert_eq!(prompt.line(), "/beta", "the search row edits under `/`");
+
+        // Backspace first, so this covers editing the pre-filled text rather
+        // than only appending to it.
+        key(&mut app, KeyCode::Backspace);
+        typed(&mut app, "a2");
+        key(&mut app, KeyCode::Enter);
+
+        assert_eq!(
+            app.filters
+                .search()
+                .expect("the search should still be set")
+                .pattern
+                .as_str(),
+            "beta2"
+        );
+        assert_eq!(
+            app.filters.len(),
+            1,
+            "editing the search touched the numbered set"
+        );
+    }
+
+    /// An edit of the search row must not renumber anything: the search lives
+    /// in its own slot precisely so that setting it cannot shift the filters
+    /// a `Verdict::Included` indexes into.
+    #[test]
+    fn editing_the_search_does_not_promote_it_into_the_numbered_set() {
+        let mut app = app_over_file("pane_edit_search_slot", "alpha\nbeta\n");
+        key(&mut app, KeyCode::Char('t'));
+        app.filters.add("alpha").expect("valid pattern");
+        key(&mut app, KeyCode::Char('/'));
+        typed(&mut app, "beta");
+        key(&mut app, KeyCode::Enter);
+
+        key(&mut app, KeyCode::Char('f'));
+        key(&mut app, KeyCode::Char('c'));
+        typed(&mut app, "2");
+        key(&mut app, KeyCode::Enter);
+
+        assert_eq!(app.filters.len(), 1);
+        assert_eq!(app.filters.verdict("alpha line"), Verdict::Included(0));
     }
 
     /// `filter_pane_height` must count the search row too. Reverting it to

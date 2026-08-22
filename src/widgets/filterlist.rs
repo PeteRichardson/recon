@@ -143,6 +143,13 @@ impl FilterList {
                 Some(index) => FilterCommand::Delete(index),
                 None => FilterCommand::DeleteSearch,
             }),
+            // `c` for change, as in vim. `Enter` is deliberately left unbound
+            // here: it is the key that *commits* the prompt this one opens, so
+            // binding both would give one key two jobs a keystroke apart.
+            KeyCode::Char('c') => Some(match target(self.selected()?) {
+                Some(index) => FilterCommand::Edit(index),
+                None => FilterCommand::EditSearch,
+            }),
             _ => None,
         }
     }
@@ -773,5 +780,28 @@ mod tests {
         let command = list.handle_key(KeyEvent::from(KeyCode::Char('d')), 1, true);
 
         assert_eq!(command, Some(FilterCommand::DeleteSearch));
+    }
+
+    /// `c` uses the same row-to-filter translation `space` and `d` do, so it
+    /// inherits the off-by-one below the search row — and must be pinned
+    /// against it the same way.
+    #[test]
+    fn c_below_the_search_row_edits_the_right_filter() {
+        let mut list = FilterList::default();
+        list.state.select(Some(1));
+
+        let command = list.handle_key(KeyEvent::from(KeyCode::Char('c')), 2, true);
+
+        assert_eq!(command, Some(FilterCommand::Edit(0)));
+    }
+
+    #[test]
+    fn c_on_the_search_row_edits_the_search() {
+        let mut list = FilterList::default();
+        list.state.select(Some(0));
+
+        let command = list.handle_key(KeyEvent::from(KeyCode::Char('c')), 1, true);
+
+        assert_eq!(command, Some(FilterCommand::EditSearch));
     }
 }
