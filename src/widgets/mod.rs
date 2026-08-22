@@ -72,15 +72,29 @@ pub enum AppWidget<'a> {
 /// so it reports what the user asked for and lets `App` — the set's owner —
 /// carry it out. This is not carried on `Action`: that enum is about a
 /// widget asking `App` to show a *file* (`Load`/`Preview`), and a filter
-/// mutation is a different kind of request that would only muddy it.
+/// request is a different kind of thing that would only muddy it.
+///
+/// The line this enum draws is **"needs the pane's selection"**, not "mutates
+/// the set". `i` and `x` are not variants here even though they do end in a
+/// mutation, because they address no row — they are `App`'s own keys that
+/// happen to be typed while this pane has focus, and `App` handles them
+/// directly. `Edit` is a variant despite only opening a prompt, because it
+/// asks about *the selected row*, and the row-to-filter mapping lives in this
+/// module (see `filter_index_for_row`, which is deliberately the single place
+/// that translation happens).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FilterCommand {
     Toggle(usize),
     Delete(usize),
+    /// Reopen the prompt over this filter's existing pattern, to overwrite it
+    /// in place. The one variant `App` answers by opening a prompt rather than
+    /// by changing the set — nothing is mutated until that prompt commits.
+    Edit(usize),
     /// The search row, which carries no index: the live search lives in its
     /// own slot on the `ActiveFilters`, not at a position in `filters`.
     ToggleSearch,
     DeleteSearch,
+    EditSearch,
 }
 
 impl AppWidget<'_> {

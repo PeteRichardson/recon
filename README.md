@@ -47,7 +47,9 @@ motions throughout.
 
 - **A filter stack, not a single pattern** — `f` focuses the filter pane, then
   `i` adds an include filter and `x` an exclude; each one is listed, numbered,
-  and independently toggled with `space`. The filter pane is on screen whenever
+  independently toggled with `space`, and editable in place with `c` — a
+  near-miss regex is corrected where it stands rather than deleted and retyped
+  into a different slot. The filter pane is on screen whenever
   the navigator is, showing `press f i to add` until you define your first
   filter, so the layout never shifts under you as the set grows and shrinks.
 - **Dim or hide, on one keystroke** — `Ctrl-H` toggles unmatched lines between
@@ -296,8 +298,13 @@ While a search or filter prompt is open it consumes every key, so `q` and
 | --- | --- |
 | printable characters | Append to the pattern |
 | `Backspace` | Delete the last character; on an empty pattern, cancel |
-| `Enter` | Run the search, or add the filter |
+| `Enter` | Run the search, or add the filter — or, for a prompt opened with `c`, overwrite the filter being edited |
 | `Esc` | Cancel |
+
+A prompt opened with `c` starts pre-filled with the pattern being edited, with
+the cursor at the end; every other prompt starts empty. That is the tell for
+which one you are in: text already there means you are changing something, an
+empty prompt means you are making something new.
 
 Searching is by regular expression in both panes — the file view matches line
 contents, the navigator matches entry names, so `^foo` anchors to the start of
@@ -421,6 +428,19 @@ screen whenever the navigator is:
 | `j` / `Down` | Select the next filter |
 | `space` | Enable or disable the selected filter |
 | `d` | Delete the selected filter |
+| `c` | Change the selected filter's pattern — reopens the prompt over it |
+
+`c` edits in place: the filter keeps its slot, and so keeps its colour, its
+sense and whether it is enabled. That matters because a slot is a precedence —
+the *first* matching filter decides a line's colour — so the only way to change
+a pattern before this existed, `d` followed by a full retype, put the
+replacement at the end and silently reordered the set. `Esc` abandons the edit;
+backspacing past the start does the same, so an edit can never leave an empty
+pattern behind. A pattern that will not compile reports `E486: invalid pattern`
+and leaves the prompt open over the intact filter, exactly as `i` does.
+
+`Enter` is deliberately unbound here. It is the key that *commits* the prompt
+`c` opens, and giving it both jobs a keystroke apart would be a trap.
 
 `i` and `x` work only while this pane has focus, which is what `f` is for —
 `f i` and `f x` reach them from anywhere, and `f` is a no-op when the pane
@@ -441,9 +461,15 @@ nothing to move focus off.
 
 A live search draws as one more row, at the top, marked `/` instead of a
 number — it has none, because it does not occupy a slot in the numbered set.
-`space` and `d` reach it exactly as they reach a numbered filter: `space`
-toggles the flag that also drives its highlight in the file view, and `d`
-clears it, same as `Esc`. `p` is what moves it into the numbered set proper.
+`space`, `d` and `c` reach it exactly as they reach a numbered filter: `space`
+toggles the flag that also drives its highlight in the file view, `d` clears
+it, same as `Esc`, and `c` reopens it under `/` for editing. `p` is what moves
+it into the numbered set proper.
+
+Committing an edit of the search row behaves exactly as retyping `/` does,
+including moving to the first hit and switching the search back on if it had
+been toggled off — it is the same operation, reached from the pane instead of
+from a keystroke.
 
 The pane never widens the left column to fit its hint: the column is sized by
 the navigator's longest entry. The hint gives way instead, which is why it has

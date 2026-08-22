@@ -282,6 +282,41 @@ impl ActiveFilters {
         true
     }
 
+    /// Replace one filter's pattern, keeping everything else about it —
+    /// reporting whether it existed.
+    ///
+    /// The filter stays at `index`, which is the point: `verdict` returns the
+    /// *first* match, so a position is a precedence, and `style_for` looks a
+    /// colour up by the same number. Deleting and re-adding — the only way to
+    /// change a pattern before this existed — put the replacement at the end
+    /// and silently reordered the set.
+    ///
+    /// Compiles before it mutates, the same discipline `add` follows: a
+    /// pattern that will not compile leaves the old one in place, so the
+    /// prompt has something intact to stay open over.
+    ///
+    /// Deliberately does **not** `forget_capture`. Every other mutator here
+    /// drops a pending `!` capture because it changes the set's *shape* —
+    /// `remembered` is a `Vec<bool>` aligned to `filters` by position, so an
+    /// add or a remove invalidates it. An edit changes neither the length nor
+    /// any enabled flag, so the capture still describes this set exactly and
+    /// dropping it would strand a restore for nothing.
+    ///
+    /// Callers must re-evaluate: the verdicts cached against the old pattern
+    /// are stale. Unlike `remove`, only *this* filter's verdicts can have
+    /// changed — the numbering is untouched — but `Document::evaluate` is the
+    /// only thing that recomputes them, so a full pass is what a caller owes.
+    pub fn set_pattern(&mut self, index: usize, pattern: &str) -> Result<bool, regex::Error> {
+        let compiled = Regex::new(pattern)?;
+        match self.filters.get_mut(index) {
+            Some(filter) => {
+                filter.pattern = compiled;
+                Ok(true)
+            }
+            None => Ok(false),
+        }
+    }
+
     /// Enable or disable one filter, reporting whether it existed.
     pub fn set_enabled(&mut self, index: usize, enabled: bool) -> bool {
         match self.filters.get_mut(index) {
@@ -1095,5 +1130,95 @@ mod tests {
         set.promote_search();
 
         assert!(!set.has_remembered());
+    }
+
+    /// The whole point of editing in place rather than deleting and retyping:
+    /// the filter keeps its position, so it keeps its colour and its
+    /// precedence in `verdict`. Retyping put the replacement at the end and
+    /// silently reordered the set.
+    #[test]
+    fn editing_a_pattern_keeps_the_filter_at_its_index() {
+        let mut set = set_with(&["alpha", "beta"]);
+        let colour = set.filters()[0].style;
+
+        assert!(set.set_pattern(0, "gamma").expect("valid pattern"));
+
+        assert_eq!(set.len(), 2, "editing must not grow the set");
+        assert_eq!(set.verdict("gamma line"), Verdict::Included(0));
+        assert_eq!(set.verdict("beta line"), Verdict::Included(1));
+        assert_eq!(set.filters()[0].style, colour, "the colour moved with it");
+    }
+
+    #[test]
+    fn editing_a_pattern_replaces_the_old_one() {
+        let mut set = set_with(&["alpha"]);
+
+        set.set_pattern(0, "gamma").expect("valid pattern");
+
+        assert_eq!(
+            set.verdict("alpha line"),
+            Verdict::Unmatched,
+            "the old pattern still matches"
+        );
+    }
+
+    /// An edit changes the pattern and nothing else — a filter the user had
+    /// toggled off must not come back on, and an excluding filter must not
+    /// quietly become an including one.
+    #[test]
+    fn editing_preserves_the_sense_and_the_enabled_state() {
+        let mut set = set_excluding(&["heartbeat"]);
+        set.set_enabled(0, false);
+
+        set.set_pattern(0, "keepalive").expect("valid pattern");
+
+        assert!(!set.filters()[0].enabled, "a disabled filter came back on");
+        assert_eq!(set.filters()[0].sense, Sense::Exclude);
+
+        set.set_enabled(0, true);
+        assert_eq!(set.verdict("a keepalive line"), Verdict::Excluded);
+    }
+
+    /// The same discipline `add` follows: compile first, mutate second, so a
+    /// rejected pattern leaves the previous one intact and the prompt has
+    /// something to stay open over.
+    #[test]
+    fn an_invalid_edit_is_reported_and_leaves_the_filter_untouched() {
+        let mut set = set_with(&["alpha"]);
+
+        assert!(set.set_pattern(0, "[").is_err());
+
+        assert_eq!(set.verdict("alpha line"), Verdict::Included(0));
+    }
+
+    #[test]
+    fn editing_out_of_range_reports_failure_and_changes_nothing() {
+        let mut set = set_with(&["alpha"]);
+
+        assert!(!set.set_pattern(5, "gamma").expect("valid pattern"));
+        assert_eq!(set.len(), 1);
+        assert_eq!(set.verdict("alpha line"), Verdict::Included(0));
+    }
+
+    /// Unlike `add` and `remove`, an edit leaves the set's *shape* alone — same
+    /// length, same enabled flags — so a pending `!` capture still describes it
+    /// exactly and must survive. Dropping it here would strand the restore for
+    /// no reason.
+    #[test]
+    fn editing_keeps_a_pending_capture_valid() {
+        let mut set = set_with(&["alpha", "beta"]);
+        set.set_enabled(1, false);
+        set.disable_all_remembering();
+
+        set.set_pattern(0, "gamma").expect("valid pattern");
+        assert!(set.has_remembered(), "the capture is still accurate");
+
+        set.restore_remembered();
+
+        assert!(set.filters()[0].enabled);
+        assert!(
+            !set.filters()[1].enabled,
+            "a filter the user had off came back on"
+        );
     }
 }
