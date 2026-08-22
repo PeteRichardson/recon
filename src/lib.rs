@@ -396,8 +396,13 @@ impl App<'_> {
     ///
     /// Not zero while no filter exists: `preferred_height` floors at one
     /// content row even for an empty set, so its hint has somewhere to draw
-    /// (see `EMPTY_HINTS`). This is zero only when the pane itself is absent
-    /// from `self.widgets` — a zoomed layout — which `unwrap_or` covers.
+    /// (see `EMPTY_HINTS`).
+    ///
+    /// The `unwrap_or(0)` is defensive and unreachable as things stand:
+    /// `self.widgets` is built once with all three panes and never shortened,
+    /// which `render` asserts, so `filter_list` always finds one. Zooming does
+    /// not remove a pane either — `self.zoom` names which pane to draw alone,
+    /// leaving `widgets` untouched — so it does not reach this branch.
     fn filter_pane_height(&self) -> u16 {
         self.filter_list()
             .map(|list| list.preferred_height(self.filters.row_count()))
