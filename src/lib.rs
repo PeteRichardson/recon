@@ -392,8 +392,12 @@ impl App<'_> {
         })
     }
 
-    /// Rows the filter pane wants, which is none while no filter exists — so
-    /// it costs nothing to a user who never defines one.
+    /// Rows the filter pane wants when it is on screen.
+    ///
+    /// Not zero while no filter exists: `preferred_height` floors at one
+    /// content row even for an empty set, so its hint has somewhere to draw
+    /// (see `EMPTY_HINTS`). This is zero only when the pane itself is absent
+    /// from `self.widgets` — a zoomed layout — which `unwrap_or` covers.
     fn filter_pane_height(&self) -> u16 {
         self.filter_list()
             .map(|list| list.preferred_height(self.filters.row_count()))

@@ -37,6 +37,23 @@ const BORDERS: u16 = 2;
 /// sentence of advice is worse than none.
 const EMPTY_HINTS: [&str; 3] = ["press f i to add", "press f i", "f i"];
 
+/// Map a pane row to the numbered filter it addresses, or `None` when the
+/// row is the live search's own row (row 0, and only when `has_search`).
+///
+/// A free function taking `has_search` rather than a method on `FilterSet`,
+/// because `FilterList::handle_key` has no `FilterSet` in scope — only the
+/// bool it was told — while `resolve_row` does have one and calls this too.
+/// Before this was pulled out, `handle_key` and `resolve_row` each carried
+/// their own copy of this `(has_search, row)` match, which is exactly how
+/// they could disagree about which filter a row addresses.
+fn filter_index_for_row(has_search: bool, row: usize) -> Option<usize> {
+    match (has_search, row) {
+        (true, 0) => None,
+        (true, row) => Some(row - 1),
+        (false, row) => Some(row),
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct FilterList {
     pub state: ListState,
@@ -104,15 +121,11 @@ impl FilterList {
             return None;
         }
         // Row 0 is the live search when one exists, so every row below it
-        // addresses a filter one lower. Doing this translation here, once,
-        // keeps the offset out of `App` entirely.
-        let target = |row: usize| -> Option<usize> {
-            match (has_search, row) {
-                (true, 0) => None,
-                (true, row) => Some(row - 1),
-                (false, row) => Some(row),
-            }
-        };
+        // addresses a filter one lower. `target` is a thin wrapper over
+        // `filter_index_for_row`, the same translation `resolve_row` uses,
+        // so `space` and `d` below share one mapping with each other and
+        // with the pane's own labels rather than each keeping a copy.
+        let target = |row: usize| filter_index_for_row(has_search, row);
         match key.code {
             KeyCode::Char('j') | KeyCode::Down => {
                 self.select_next(rows);
@@ -140,8 +153,8 @@ impl FilterList {
     /// An empty set used to ask for nothing, which collapsed the pane out of
     /// the layout entirely. It is now on screen whenever the navigator is, so
     /// the floor is one content row rather than zero — see `EMPTY_HINTS`.
-    pub fn preferred_height(&self, len: usize) -> u16 {
-        u16::try_from(len.max(1))
+    pub fn preferred_height(&self, rows: usize) -> u16 {
+        u16::try_from(rows.max(1))
             .unwrap_or(u16::MAX)
             .saturating_add(BORDERS)
     }
@@ -174,22 +187,20 @@ impl FilterList {
     /// number — it has no number, because it does not occupy a position in
     /// `filters`. Its precedence here matches its precedence in `verdict`.
     ///
-    /// The single source of truth for the row-to-filter mapping: `row_text`
-    /// and `render`'s per-row styling both call this rather than keeping
-    /// their own copy of the offset. Splitting the label and the filter
-    /// lookup into two functions that each redo the `(search, row)` match
-    /// is exactly how they could disagree about which filter a row is —
-    /// this returns both from the one place the mapping is written down.
+    /// `row_text` and `render`'s per-row styling both call this rather than
+    /// keeping their own copy of the label/filter lookup. It is built on
+    /// `filter_index_for_row`, the single source of truth for the
+    /// `(has_search, row) -> filter` mapping itself — `handle_key` needs
+    /// that same mapping without a `FilterSet` in scope, so it calls that
+    /// free function directly rather than this one.
     fn resolve_row(filters: &FilterSet, row: usize) -> Option<(String, &Filter)> {
-        match (filters.search(), row) {
-            (Some(search), 0) => Some(("/".to_string(), search)),
-            (search, row) => {
-                let index = row - usize::from(search.is_some());
-                filters
-                    .filters()
-                    .get(index)
-                    .map(|filter| ((index + 1).to_string(), filter))
-            }
+        let has_search = filters.search().is_some();
+        match filter_index_for_row(has_search, row) {
+            None => filters.search().map(|search| ("/".to_string(), search)),
+            Some(index) => filters
+                .filters()
+                .get(index)
+                .map(|filter| ((index + 1).to_string(), filter)),
         }
     }
 
@@ -712,6 +723,46 @@ mod tests {
         let command = list.handle_key(KeyEvent::from(KeyCode::Char(' ')), set.row_count(), true);
 
         assert_eq!(command, Some(FilterCommand::ToggleSearch));
+    }
+
+    /// Cross-checks `handle_key`'s row-to-filter translation against
+    /// `resolve_row`'s, the two callers `filter_index_for_row` unifies. Before
+    /// that extraction each kept its own copy of the `(has_search, row)`
+    /// match, so a future edit to one without the other — the issue #8
+    /// scenario in the review that prompted this test — would toggle or
+    /// delete a different filter than the row on screen names. Checks every
+    /// row over a set with both numbered filters and a search, so both the
+    /// search row and the off-by-one shift below it are covered.
+    #[test]
+    fn handle_key_and_resolve_row_agree_on_which_filter_a_row_addresses() {
+        let mut set = FilterSet::new();
+        set.add("alpha").expect("valid pattern");
+        set.add("beta").expect("valid pattern");
+        set.set_search("gamma").expect("valid pattern");
+        let mut list = FilterList::default();
+
+        for row in 0..set.row_count() {
+            list.state.select(Some(row));
+            let command = list
+                .handle_key(KeyEvent::from(KeyCode::Char(' ')), set.row_count(), true)
+                .unwrap_or_else(|| panic!("row {row}: no command"));
+            let (label, _) =
+                FilterList::resolve_row(&set, row).unwrap_or_else(|| panic!("row {row}: no row"));
+
+            match command {
+                FilterCommand::ToggleSearch => assert_eq!(
+                    label, "/",
+                    "row {row}: handle_key says the search, resolve_row says {label}"
+                ),
+                FilterCommand::Toggle(index) => assert_eq!(
+                    label,
+                    (index + 1).to_string(),
+                    "row {row}: handle_key resolved filter {index}, resolve_row's label \
+                     for this row is {label}"
+                ),
+                other => panic!("row {row}: unexpected command {other:?}"),
+            }
+        }
     }
 
     #[test]

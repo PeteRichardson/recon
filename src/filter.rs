@@ -103,10 +103,16 @@ impl FilterSet {
         Self::default()
     }
 
+    /// Whether there are any *numbered* filters. The live search is not one
+    /// of these — see `row_count`, which counts it and is what the pane
+    /// sizes itself against.
     pub fn is_empty(&self) -> bool {
         self.filters.is_empty()
     }
 
+    /// How many *numbered* filters there are. The live search is not one of
+    /// these — see `row_count`, which counts it and is what the pane sizes
+    /// itself against.
     pub fn len(&self) -> usize {
         self.filters.len()
     }

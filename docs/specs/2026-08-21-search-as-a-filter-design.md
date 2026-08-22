@@ -152,8 +152,10 @@ The README sentence needs a corresponding rewrite.
 /// Set the live search, replacing any previous one. One search at a time.
 pub fn set_search(&mut self, pattern: &str) -> Result<(), regex::Error>;
 
-/// Drop the live search. No-op if there is none.
-pub fn clear_search(&mut self);
+/// Drop the live search. No-op if there is none. Reports whether there was
+/// one to drop, the same shape as `promote_search`: the `Esc` binding uses
+/// this to skip the `refresh_view` a no-op press would otherwise pay for.
+pub fn clear_search(&mut self) -> bool;
 
 /// Move the live search into the numbered set, preserving its enabled
 /// state, and empty the slot. Reports whether there was one to promote.

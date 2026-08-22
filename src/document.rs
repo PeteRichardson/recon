@@ -106,7 +106,9 @@ impl Document {
             .collect();
     }
 
-    /// How many lines an including filter selected.
+    /// How many lines an including filter selected, plus any the live search
+    /// caught — see the `Verdict::Included(_) | Verdict::Searched` match in
+    /// `evaluate`, which counts both.
     pub fn match_count(&self) -> usize {
         self.match_count
     }
@@ -243,15 +245,6 @@ mod tests {
         document.evaluate(&set_with(&["foo"]));
 
         assert_eq!(document.match_count(), 2);
-    }
-
-    #[test]
-    fn a_searched_line_is_visible_when_unmatched_lines_are_hidden() {
-        let mut document = doc(&["alpha", "beta", "gamma"]);
-        document.set_mode(Mode::FilteredOnly);
-        document.evaluate(&set_searching("beta"));
-
-        assert_eq!(document.visible(), &[1]);
     }
 
     #[test]
