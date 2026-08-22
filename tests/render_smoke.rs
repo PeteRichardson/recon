@@ -68,6 +68,7 @@ fn press(app: &mut App, code: KeyCode) {
 fn renders_file_contents_into_buffer() {
     let config = Config {
         path: "Cargo.toml".to_string(),
+        ..Config::default()
     };
     let mut app = App::new(&config);
     let area = Rect::new(0, 0, 80, 24);
@@ -101,6 +102,7 @@ fn nav_pane_rows(buf: &Buffer) -> Vec<String> {
 fn nav_pane_renders_directory_entries() {
     let config = Config {
         path: "Cargo.toml".to_string(),
+        ..Config::default()
     };
     let mut app = App::new(&config);
     let area = Rect::new(0, 0, 80, 24);
@@ -179,6 +181,7 @@ fn highlight(app: &mut App, name: &str) {
 fn enter_on_a_file_loads_it_into_the_view() {
     let config = Config {
         path: "Cargo.toml".to_string(),
+        ..Config::default()
     };
     let mut app = App::new(&config);
     assert!(
@@ -201,6 +204,7 @@ fn enter_on_a_file_loads_it_into_the_view() {
 fn moving_onto_a_file_loads_it_without_enter() {
     let config = Config {
         path: "Cargo.toml".to_string(),
+        ..Config::default()
     };
     let mut app = App::new(&config);
 
@@ -230,6 +234,7 @@ fn moving_onto_a_directory_shows_that_it_is_a_directory() {
 
     let config = Config {
         path: dir.join("alpha.rs").display().to_string(),
+        ..Config::default()
     };
     let mut app = App::new(&config);
 
@@ -277,6 +282,7 @@ fn enter_on_a_directory_relists_and_previews_its_first_entry() {
 
     let config = Config {
         path: dir.join("alpha.rs").display().to_string(),
+        ..Config::default()
     };
     let mut app = App::new(&config);
 
@@ -313,6 +319,7 @@ fn tab_moves_focus_to_the_file_view() {
     // A long file, so that a page-down actually has somewhere to scroll to.
     let config = Config {
         path: "src/widgets/filenav.rs".to_string(),
+        ..Config::default()
     };
     let mut app = App::new(&config);
 
@@ -329,6 +336,7 @@ fn tab_moves_focus_to_the_file_view() {
 fn nav_pane_snaps_to_its_contents() {
     let config = Config {
         path: "Cargo.toml".to_string(),
+        ..Config::default()
     };
     let mut app = App::new(&config);
     let mut buf = Buffer::empty(AREA);
@@ -367,6 +375,7 @@ fn click(app: &mut App, kind: MouseEventKind, column: u16) {
 fn dragging_the_divider_resizes_the_panes_on_screen() {
     let config = Config {
         path: "Cargo.toml".to_string(),
+        ..Config::default()
     };
     let mut app = App::new(&config);
     let mut buf = Buffer::empty(AREA);

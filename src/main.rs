@@ -22,6 +22,22 @@ fn main() -> Result<()> {
     // carry on" would be "carry on silently".
     let config = Config::load()?;
 
+    // Before the terminal, for the same reason the config error is: this prints
+    // a snippet to be copied out of the scrollback, and the alternate screen
+    // would take it away the moment it was drawn. It also *only* prints —
+    // recon never writes `config.toml` (see `Cargo.toml`) and will not write a
+    // shell rc either, so there is nothing to undo afterwards.
+    if let Some(flavour) = &config.print_editor_config {
+        print!(
+            "{}",
+            recon::editor::print_editor_config(
+                flavour,
+                std::env::var("TERM_PROGRAM").ok().as_deref(),
+            )?
+        );
+        return Ok(());
+    }
+
     let terminal = init_terminal()?;
     App::new(&config).run(terminal)?;
     restore_terminal()?;

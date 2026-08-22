@@ -36,6 +36,7 @@ motions throughout.
 - [Quick Start](#quick-start)
 - [Usage](#usage)
 - [Keybindings](#keybindings)
+- [Opening an editor](#opening-an-editor)
 - [Known Limitations](#known-limitations)
 - [Vendored dependency](#vendored-dependency)
 - [Development](#development)
@@ -96,6 +97,11 @@ motions throughout.
   stutter. Ordinary files are well inside those bounds and are simply read.
 - **Mouse resize** — drag the pane divider; double-click it to return to
   auto-sizing.
+- **Straight into your editor** — `o` opens the selected file's enclosing
+  *project* at the line under the cursor. The editor is a command template
+  rather than a hard-coded list, so zed, VS Code, Sublime, IntelliJ and even
+  `nvim`-in-a-new-terminal-window are all one line of config; run
+  `recon --print-editor-config` for a ready-made one.
 
 ---
 
@@ -231,6 +237,7 @@ Global (`src/lib.rs`), handled before the focused pane sees the key:
 | `!` | Disable every filter, remembering which were on; restores exactly that (or enables all, if none were on to remember) |
 | `b` | Hide the left column — both the navigator and the filter pane — and focus the file view; press again to restore the split (focus stays in the file view; `e` returns it) |
 | `z` | Maximise the focused pane, or restore the split — works in the navigator too, for long filenames |
+| `o` | Open the selected file's enclosing **project** in your editor, at the line the cursor is on — see [Opening an editor](#opening-an-editor) |
 
 `?` is unbound. It used to search backward; `n`/`N` cover both directions now,
 so it is reserved for the help view instead (issue #25).
@@ -484,6 +491,99 @@ whole width outright.
 
 ---
 
+## Opening an editor
+
+`o` hands the selected file to your editor, opened at the line the cursor is on,
+with the **enclosing project** alongside it. It works from any pane — the file
+it means is whatever the view is showing, which already follows the navigator's
+selection.
+
+The project is found by walking up from the file until a marker turns up:
+`.git` (a directory, or the file a linked worktree uses), `Cargo.toml`,
+`package.json`, `pyproject.toml`, `setup.py` or `go.mod`. With no marker
+anywhere above, `o` opens the file's own directory, so it always does something.
+
+### Configuring it
+
+The editor is a **command template**, not a list of supported editors. recon
+fills in three placeholders and runs the result:
+
+| Placeholder | Meaning |
+| --- | --- |
+| `{project}` | the project root found by the walk-up |
+| `{file}` | absolute path of the selected file |
+| `{line}` | 1-based cursor line |
+
+The default is `zed {project} {file}:{line}`. To change it, put a stanza in
+`config.toml` — `--print-editor-config` writes one for you, on stdout:
+
+```console
+$ recon --print-editor-config vscode
+# recon editor templates (vscode)
+# Paste into ~/.config/recon/config.toml — recon never writes it for you.
+# {project} = project root, {file} = the file, {line} = the cursor's line.
+[editor]
+project = 'code {project} -g {file}:{line}'
+file = 'code -g {file}:{line}'
+```
+
+Bare `--print-editor-config` guesses a flavour from `$TERM_PROGRAM`. The known
+ones are `zed`, `vscode`, `sublime`, `idea`, `terminal-nvim`, `iterm-nvim`,
+`wezterm-nvim`, `kitty-nvim` and `ghostty-nvim`. It only ever **prints** — recon
+writes neither `config.toml` nor your shell rc.
+
+`editor.file` is the template for `O` (github issue #41, not bound yet). Leave
+it out and it is derived from `editor.project` by dropping the `{project}`
+argument, so one line normally configures both. Write both when you want them to
+differ — `-n` on just the file one, say.
+
+Resolution order, following recon's usual chain with one deliberate exception:
+
+```text
+--editor flag
+RECON_EDITOR             recon-specific
+config.toml              [editor] project
+$VISUAL / $EDITOR        generic, so it ranks BELOW the config file
+zed {project} {file}:{line}
+```
+
+`$VISUAL`/`$EDITOR` sit below the file on purpose: they are not recon's
+variables, and someone with a global `EDITOR=vim` who has *also* written a recon
+editor template plainly meant the template to win. A bare command name found
+there gains a `{file}`, so `EDITOR=vim` still opens the file.
+
+### Terminal editors
+
+There is no special support for `vim`/`nvim`, and none is needed: open them in a
+**new terminal window** and recon's own screen is never touched. A new window is
+just another command, so it is the same template with a different string in it:
+
+```toml
+[editor]
+project = 'wezterm cli spawn --cwd {project} -- nvim +{line} {file}'
+file = 'wezterm cli spawn -- nvim +{line} {file}'
+```
+
+Prefer the native forms (`wezterm`, `kitty`, `ghostty`) over the `osascript`
+ones — they have no nested shell string to quote. Note that `kitty @` needs
+`allow_remote_control yes` and `wezterm cli spawn` needs a running mux, so
+either can fail on a default install.
+
+### Safety
+
+The template is split into arguments **once**, before any path is put into it,
+and nothing is ever handed to `sh -c`. A file path containing a space, a quote
+or a `$` therefore cannot change how the command is split — there is nothing
+left to split by the time it arrives.
+
+The editor is started detached, with stdin/stdout/stderr nulled so it cannot
+draw over the TUI, and reaped so no zombie is left behind. A missing or failing
+command is reported on the status row; recon keeps running either way.
+
+Full reasoning: `docs/specs/2026-08-22-opening-an-editor.md`.
+
+---
+
 ## Known Limitations
 
 - **Files are read entirely into memory — once, not twice.** `read_lines` in
@@ -509,14 +609,17 @@ whole width outright.
   github issue #27.
 - **Non-UTF-8 files are not viewable.** A file that isn't valid UTF-8 renders
   as `<binary file: not valid UTF-8>` rather than as bytes.
-- **Nothing is configurable yet.** The mechanism exists — recon reads
+- **Almost nothing is configurable yet.** recon reads
   `$XDG_CONFIG_HOME/recon/config.toml`, falling back to
   `~/.config/recon/config.toml` on every platform including macOS, under a
-  `CLI > env > file > defaults` precedence chain — but **no setting uses it
-  yet**, so the schema is empty and any key in the file is reported as an
+  `CLI > env > file > defaults` precedence chain. The only settings so far are
+  the two editor templates below; every other key in the file is reported as an
   unknown key. Settings land one issue at a time against github issue #18; see
   `docs/specs/2026-08-22-configuration-mechanism.md` for the rules and the list
   of candidates.
+- **`o` opens the project; opening the bare file is not bound yet.** `O` is
+  github issue #41, and by construction it is one key and one template field
+  away — `editor.file` is already read, derived and tested.
 - **Nothing is persisted.** Filter sets live only for the session — there is no
   way to save or reload a filter set. Re-typing them is the only option after a
   restart.   This is github issue #8

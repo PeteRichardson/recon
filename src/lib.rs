@@ -203,10 +203,12 @@ enum NavWidth {
 
 pub mod config;
 pub mod document;
+pub mod editor;
 pub mod filter;
 mod widgets;
 pub use config::Config;
 use document::{Document, Mode};
+use editor::Launcher;
 use filter::{ActiveFilters, Verdict};
 use widgets::filenav::FileNav;
 use widgets::fileview::FileView;
@@ -257,6 +259,54 @@ pub struct App<'a> {
     /// Hiding the left column and maximising the file view are the same thing,
     /// so they share this one field. Two separate flags could disagree.
     zoom: Option<usize>,
+    /// Both editor command templates, resolved once at startup.
+    ///
+    /// Resolved at startup but *split* per keypress, so a typo in one template
+    /// is reported by the key that uses it rather than refusing to start a log
+    /// viewer over a setting most sessions never touch.
+    editor: editor::Templates,
+    /// How `o` actually starts an editor.
+    ///
+    /// Boxed behind the trait so tests can swap in a double that records the
+    /// argv it would have run — there is no way to launch a real editor in CI,
+    /// and the recorded command is the entire testable surface of "spawn".
+    launcher: Box<dyn Launcher>,
+    /// A transient message owning the status row until the next event.
+    ///
+    /// The row is otherwise derived purely from filter state and has nowhere to
+    /// put "that editor is not installed". Transient rather than dismissible:
+    /// it is a report, not a dialog, and anything the user does next clears it.
+    status_message: Option<StatusMessage>,
+    /// Where an editor that has *exited* non-zero reports itself.
+    ///
+    /// Out of band because the failure arrives long after the keypress —
+    /// `spawn` only says the process started. Drained on the render loop, which
+    /// already wakes 60 times a second.
+    editor_outcomes: Option<std::sync::mpsc::Receiver<String>>,
+}
+
+/// A one-off message shown on the status row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct StatusMessage {
+    text: String,
+    /// Drawn red. Not derivable from the text — "opened src/lib.rs" and
+    /// "zed: No such file or directory" are the same shape.
+    error: bool,
+}
+
+/// Which of the two editor bindings is being carried out.
+///
+/// One enum rather than two methods: template resolution, argv splitting,
+/// substitution, spawning and error reporting are identical for both keys, and
+/// #41 (`O`) is meant to cost one key and one match arm — not a second copy of
+/// `open_in_editor`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EditorScope {
+    /// `o` — walk up to the enclosing project.
+    Project,
+    /// `O` (#41) — the file alone, no walk-up.
+    #[allow(dead_code, reason = "the `O` binding lands in #41; this is its arm")]
+    File,
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
@@ -287,6 +337,11 @@ impl App<'_> {
             _ => view.load(argument),
         }
 
+        // Created here rather than lazily on the first `o`: the sender has to
+        // outlive every launcher clone, and a channel built on demand would
+        // need a second field to remember whether it already existed.
+        let (outcomes_tx, outcomes_rx) = std::sync::mpsc::channel();
+
         let mut app = Self {
             state: AppState::Running,
             widgets: vec![
@@ -305,6 +360,10 @@ impl App<'_> {
             last_visible: None,
             last_window: None,
             zoom: None,
+            editor: config.editor_templates(),
+            launcher: Box::new(editor::ProcessLauncher::new(outcomes_tx)),
+            status_message: None,
+            editor_outcomes: Some(outcomes_rx),
         };
         app.sync_document();
         app.refresh_view();
@@ -648,6 +707,11 @@ impl App<'_> {
 
     /// Handle any events that have occurred since the last time the app was rendered.
     fn handle_events(&mut self) -> Result<()> {
+        // Here rather than in `handle_event`: an editor exits on its own
+        // schedule, so nothing the user does is guaranteed to arrive after it.
+        // This loop already wakes 60 times a second whether or not anything
+        // happened, which is exactly the property the report needs.
+        self.drain_editor_outcomes();
         let timeout = Duration::from_secs_f32(1.0 / 60.0);
         if event::poll(timeout)? {
             let event = event::read()?;
@@ -660,6 +724,14 @@ impl App<'_> {
     ///
     /// Split out from the polling loop so that it can be driven directly.
     pub fn handle_event(&mut self, event: event::Event) -> Result<()> {
+        // The status message lasts until the next *keypress*, and deliberately
+        // not until the next event: mouse capture is on, so a mouse moving
+        // across the terminal would wipe "zed: No such file or directory" off
+        // the row before it could be read.
+        if matches!(event, event::Event::Key(_)) {
+            self.status_message = None;
+        }
+
         // An open prompt takes precedence over every other binding.
         if self.search.is_some() {
             if let event::Event::Key(key) = event {
@@ -830,6 +902,24 @@ impl App<'_> {
                     self.zoom_focused();
                     return Ok(());
                 }
+                // Global rather than pane-scoped, like `!` and `p`: the file
+                // the user means is whatever the file view is showing, and
+                // that follows the navigator's selection already. Having to
+                // focus a particular pane first would make `o` fail in the one
+                // place it is most natural to press — while browsing the
+                // navigator.
+                //
+                // Guarded on `.is_empty()`, same reasoning as `q`/`f`/`p`: `o`
+                // is lowercase, so crossterm never attaches SHIFT to it, and
+                // leaving Ctrl-O and Alt-O unclaimed lets them fall through to
+                // the focused widget. `O` is deliberately *not* bound here —
+                // it is #41, and it arrives as one more arm calling the same
+                // method with the other template.
+                KeyCode::Char('o') if key.modifiers.is_empty() => {
+                    let template = self.editor.project.clone();
+                    self.open_in_editor(&template, EditorScope::Project);
+                    return Ok(());
+                }
                 _ => {}
             }
         }
@@ -962,6 +1052,113 @@ impl App<'_> {
             self.promote_file_view();
             self.sync_document();
             self.refresh_view();
+        }
+    }
+
+    /// Hand the selected file to an editor.
+    ///
+    /// Every step after the walk-up is shared by both bindings, which is what
+    /// makes #41 (`O`) one key and one `match` arm rather than a second copy of
+    /// this: `scope` decides whether to climb, and the template decides what
+    /// the command looks like. Nothing else differs.
+    ///
+    /// Failures are reported on the status row and swallowed. recon is a
+    /// viewer; a missing editor is not a reason to bring the TUI down over a
+    /// key the user may have pressed by accident.
+    fn open_in_editor(&mut self, template: &str, scope: EditorScope) {
+        let name = self.widgets.iter().find_map(|widget| match widget {
+            AppWidget::FileView(view) => Some(view.filename.clone()),
+            AppWidget::FileNav(_) | AppWidget::FilterList(_) => None,
+        });
+        let Some(name) = name.filter(|name| !name.is_empty()) else {
+            self.report("nothing to open", true);
+            return;
+        };
+
+        // `filename` is set even when the read failed — the pane shows the
+        // error in place of the file's text — so a path that is not there is
+        // the ordinary "the argument was a typo" case, not an impossible one.
+        let relative = std::path::Path::new(&name);
+        if !relative.exists() {
+            self.report(&format!("cannot open {name}: no such file"), true);
+            return;
+        }
+
+        // Absolute, per the `{file}` contract. recon's working directory is not
+        // the editor's — a GUI editor launched from a dock or a launcher agent
+        // inherits neither — so a relative path is the one input guaranteed to
+        // be interpreted differently at the far end.
+        //
+        // `std::path::absolute` rather than `canonicalize`: it does not touch
+        // the filesystem and does not resolve symlinks, so the editor opens the
+        // path the navigator is showing rather than wherever it happens to
+        // point. For a file reached through a symlinked directory, that is the
+        // one the user can find their way back to.
+        let Ok(file) = std::path::absolute(relative) else {
+            self.report(&format!("cannot resolve {name}"), true);
+            return;
+        };
+
+        let project = match scope {
+            EditorScope::Project => editor::project_root(&file),
+            // No walk-up. `O` exists precisely for `~/.zshrc` kept inside a
+            // dotfiles repo, where climbing would fling open the whole repo —
+            // and the file template has no `{project}` in it to receive this
+            // anyway, so it is only ever a fallback for a hand-written one.
+            EditorScope::File => file.parent().unwrap_or(&file).to_path_buf(),
+        };
+
+        // 1-based: `cursor_source` indexes the document's lines, and every
+        // editor's `:line` argument counts from one.
+        let line = self.cursor_source() + 1;
+        let argv = match editor::editor_command(template, &project, &file, line) {
+            Ok(argv) => argv,
+            // A template error is the user's typo in a setting, and it can only
+            // be reported here: it is not caught at startup, precisely so a bad
+            // template does not stop recon opening a log.
+            Err(err) => {
+                self.report(&err.to_string(), true);
+                return;
+            }
+        };
+
+        // `editor_command` rejects an empty template, so there is always a
+        // program — read defensively anyway rather than indexing, since this
+        // runs inside a TUI where a panic takes the terminal with it.
+        let program = argv.first().cloned().unwrap_or_default();
+        match self.launcher.spawn(&argv) {
+            // Reported rather than silent: a GUI editor can take seconds to
+            // raise a window, and a key that appears to have done nothing is a
+            // key that gets pressed again.
+            Ok(()) => self.report(&format!("{program}: opening {}", file.display()), false),
+            Err(err) => self.report(&format!("{program}: {err}"), true),
+        }
+    }
+
+    /// Put a one-off message on the status row, replacing any previous one.
+    fn report(&mut self, text: &str, error: bool) {
+        self.status_message = Some(StatusMessage {
+            text: text.to_string(),
+            error,
+        });
+    }
+
+    /// Move any editor exit reports onto the status row.
+    ///
+    /// `try_recv` in a loop, never `recv`: this runs on the render loop and
+    /// must not block. Only the last message survives — the row holds one line,
+    /// and the most recent failure is the one the user is still wondering
+    /// about.
+    fn drain_editor_outcomes(&mut self) {
+        let Some(outcomes) = self.editor_outcomes.as_ref() else {
+            return;
+        };
+        let mut latest = None;
+        while let Ok(message) = outcomes.try_recv() {
+            latest = Some(message);
+        }
+        if let Some(text) = latest {
+            self.report(&text, true);
         }
     }
 
@@ -1796,12 +1993,23 @@ impl Widget for &mut App<'_> {
         // competes with it. The badge stays because the mode it reports is
         // still armed while a filter is being typed — which is precisely when
         // the pane is about to change underfoot.
-        let (text, style) = match self.search.as_ref() {
-            Some(prompt) if prompt.error.is_some() => {
+        //
+        // A transient message sits between the prompt and the derived status
+        // text: it is more urgent than a filter count (it reports something
+        // that just happened, and only lives until the next keypress) and less
+        // urgent than a prompt (which the user is actively typing into).
+        let (text, style) = match (self.search.as_ref(), self.status_message.as_ref()) {
+            (Some(prompt), _) if prompt.error.is_some() => {
                 (prompt.line(), Style::default().fg(Color::Red))
             }
-            Some(prompt) => (prompt.line(), Style::default()),
-            None => (status, Style::default().fg(Color::DarkGray)),
+            (Some(prompt), _) => (prompt.line(), Style::default()),
+            (None, Some(message)) if message.error => {
+                (message.text.clone(), Style::default().fg(Color::Red))
+            }
+            // Not dimmed like the derived row below: this one is a report the
+            // user is meant to notice, and it is gone by the next keystroke.
+            (None, Some(message)) => (message.text.clone(), Style::default()),
+            (None, None) => (status, Style::default().fg(Color::DarkGray)),
         };
         // Two writes at two styles, rather than converting the row to
         // `Line`/`Span`s: a bigger diff through the prompt path that shares
@@ -1873,6 +2081,7 @@ mod tests {
         }
         App::new(&Config {
             path: dir.join("placeholder").display().to_string(),
+            ..Config::default()
         })
     }
 
@@ -2367,6 +2576,7 @@ mod tests {
         let file = fixture_path(name, body);
         App::new(&Config {
             path: file.display().to_string(),
+            ..Config::default()
         })
     }
 
@@ -2383,6 +2593,7 @@ mod tests {
 
         let mut app = App::new(&Config {
             path: dir.display().to_string(),
+            ..Config::default()
         });
 
         let shown = rendered(&mut app);
@@ -2413,6 +2624,7 @@ mod tests {
 
         let app = App::new(&Config {
             path: dir.display().to_string(),
+            ..Config::default()
         });
 
         // Asked of the *document*, not the view. Since #7 the textarea holds
@@ -3053,6 +3265,7 @@ mod tests {
 
         let mut app = App::new(&Config {
             path: dir.join("placeholder").display().to_string(),
+            ..Config::default()
         });
 
         // The nav pane previews the log rather than reading the whole
@@ -4615,6 +4828,7 @@ mod tests {
         let file = fixture_path("zoom_view_parity", "alpha\n");
         let config = Config {
             path: file.display().to_string(),
+            ..Config::default()
         };
 
         let mut with_z = App::new(&config);
@@ -5676,6 +5890,7 @@ mod tests {
 
         let mut app = App::new(&Config {
             path: dir.join("placeholder").display().to_string(),
+            ..Config::default()
         });
         // The startup argument names a file that does not exist, so `App::new`
         // loads that (an error message, not real content) and the navigator
@@ -6068,6 +6283,7 @@ mod tests {
 
         let mut app = App::new(&Config {
             path: dir.join("placeholder").display().to_string(),
+            ..Config::default()
         });
         // The navigator falls back to the first real entry (the log) and
         // previews it, exactly as `upgrading_a_truncated_preview_resyncs_styles_without_reloading`
@@ -6117,6 +6333,7 @@ mod tests {
 
         let mut app = App::new(&Config {
             path: dir.join("placeholder").display().to_string(),
+            ..Config::default()
         });
         key(&mut app, KeyCode::Down);
         focus_file_view(&mut app);
@@ -6438,5 +6655,270 @@ mod tests {
         key(&mut app, KeyCode::Esc);
 
         assert!(app.file_view_highlight().is_none());
+    }
+
+    // ---- `o`: open the enclosing project (#42) ---------------------------
+
+    use editor::double::RecordingLauncher;
+    use std::rc::Rc;
+
+    /// A fixture project: `target/test-appdirs/<name>/` with a `go.mod` marker
+    /// in it and `log.txt` inside a `logs/` subdirectory, so the walk-up has an
+    /// actual level to climb.
+    ///
+    /// `go.mod` rather than `Cargo.toml` purely so nothing under `target/`
+    /// looks like a crate to any tool that goes wandering; every marker in the
+    /// table is proved equivalent by `every_marker_in_the_table_is_recognised`
+    /// over in `editor.rs`.
+    /// The template is pinned to the compiled-in default rather than left to
+    /// resolve, and that is not belt-and-braces: `Config::editor_templates`
+    /// reads the real `$VISUAL`/`$EDITOR`, so on any machine whose developer
+    /// has one set (`hx`, here) these tests would assert against *their*
+    /// editor. Pinning the top rung takes the environment out of it. The ladder
+    /// below is unit-tested with the environment injected, in `editor.rs`.
+    fn app_over_project(name: &str, body: &str) -> (App<'static>, std::path::PathBuf) {
+        claim_fixture_dir(name);
+        let root = std::path::Path::new("target/test-appdirs").join(name);
+        fs::remove_dir_all(&root).ok();
+        fs::create_dir_all(root.join("logs")).expect("create fixture project");
+        fs::write(root.join("go.mod"), "module fixture\n").expect("write marker");
+        let file = root.join("logs/log.txt");
+        fs::write(&file, body).expect("write fixture");
+        let app = App::new(&Config {
+            path: file.display().to_string(),
+            editor: Some(editor::DEFAULT_PROJECT_TEMPLATE.to_string()),
+            ..Config::default()
+        });
+        (
+            app,
+            std::path::absolute(&root).expect("absolute fixture root"),
+        )
+    }
+
+    /// Swap in the recording double and hand back a handle the test can read
+    /// afterwards. `Rc`, not a clone: the app and the test must see the same
+    /// recording, and `Launcher` takes `&self` so no mutability is shared.
+    fn record_launches(app: &mut App, launcher: RecordingLauncher) -> Rc<RecordingLauncher> {
+        let launcher = Rc::new(launcher);
+        app.launcher = Box::new(Rc::clone(&launcher));
+        launcher
+    }
+
+    fn absolute(path: &std::path::Path) -> String {
+        std::path::absolute(path)
+            .expect("absolute path")
+            .display()
+            .to_string()
+    }
+
+    /// The headline acceptance criterion: `o` opens the *enclosing project* of
+    /// the selected file, at the line the cursor is on.
+    #[test]
+    fn o_opens_the_enclosing_project_at_the_cursors_line() {
+        let (mut app, root) = app_over_project("o_project", "alpha\nbeta\ngamma\n");
+        let launcher = record_launches(&mut app, RecordingLauncher::default());
+
+        key(&mut app, KeyCode::Char('o'));
+
+        assert_eq!(
+            launcher.only_command(),
+            [
+                "zed".to_string(),
+                absolute(&root),
+                format!("{}:1", absolute(&root.join("logs/log.txt"))),
+            ]
+        );
+    }
+
+    /// The line is the cursor's, not always 1 — and it is 1-based, because
+    /// every editor's `:line` argument is.
+    #[test]
+    fn the_editor_lands_on_the_line_the_cursor_is_on() {
+        let (mut app, root) = app_over_project("o_line", "alpha\nbeta\ngamma\ndelta\n");
+        let launcher = record_launches(&mut app, RecordingLauncher::default());
+
+        focus_file_view(&mut app);
+        key(&mut app, KeyCode::Down);
+        key(&mut app, KeyCode::Down);
+        key(&mut app, KeyCode::Char('o'));
+
+        let argv = launcher.only_command();
+        assert_eq!(
+            argv.last().expect("a file argument"),
+            &format!("{}:3", absolute(&root.join("logs/log.txt")))
+        );
+    }
+
+    /// Global, not pane-scoped. The navigator is where `o` is most natural to
+    /// press, so requiring the file view to be focused first would break it in
+    /// the one place it matters most.
+    #[test]
+    fn o_works_from_the_navigator_pane() {
+        let (mut app, _root) = app_over_project("o_from_nav", "alpha\n");
+        let launcher = record_launches(&mut app, RecordingLauncher::default());
+
+        assert!(
+            matches!(app.widgets[app.active_widget], AppWidget::FileNav(_)),
+            "the navigator should have focus at startup"
+        );
+        key(&mut app, KeyCode::Char('o'));
+
+        assert!(!launcher.is_empty(), "`o` did nothing from the navigator");
+    }
+
+    /// The template is a setting, so a configured one has to actually reach the
+    /// command — this is the whole ladder in `config.rs` proved end to end.
+    #[test]
+    fn a_configured_template_is_what_runs() {
+        claim_fixture_dir("o_template");
+        let root = std::path::Path::new("target/test-appdirs/o_template");
+        fs::remove_dir_all(root).ok();
+        fs::create_dir_all(root).expect("create fixture dir");
+        fs::write(root.join("go.mod"), "module fixture\n").expect("write marker");
+        let file = root.join("log.txt");
+        fs::write(&file, "alpha\n").expect("write fixture");
+
+        let mut app = App::new(&Config {
+            path: file.display().to_string(),
+            editor: Some("code {project} -g {file}:{line}".to_string()),
+            ..Config::default()
+        });
+        let launcher = record_launches(&mut app, RecordingLauncher::default());
+
+        key(&mut app, KeyCode::Char('o'));
+
+        assert_eq!(
+            launcher.only_command(),
+            [
+                "code".to_string(),
+                absolute(root),
+                "-g".to_string(),
+                format!("{}:1", absolute(&file)),
+            ]
+        );
+    }
+
+    /// A missing or failing command must say so, and recon must keep running.
+    #[test]
+    fn a_failing_command_is_reported_on_the_status_row() {
+        let (mut app, _root) = app_over_project("o_fail", "alpha\n");
+        record_launches(&mut app, RecordingLauncher::failing("no such file"));
+
+        key(&mut app, KeyCode::Char('o'));
+
+        let row = status_line(&mut app);
+        assert!(
+            row.contains("zed"),
+            "the row does not name the command: {row}"
+        );
+        assert!(
+            row.contains("no such file"),
+            "the row does not say why: {row}"
+        );
+        assert!(app.is_running(), "a failed launch brought the app down");
+    }
+
+    /// A typo in the template is the user's, and it can only be caught here:
+    /// templates are deliberately not validated at startup, so that a bad one
+    /// never stops recon opening a log.
+    #[test]
+    fn a_broken_template_is_reported_rather_than_run() {
+        claim_fixture_dir("o_broken_template");
+        let root = std::path::Path::new("target/test-appdirs/o_broken_template");
+        fs::remove_dir_all(root).ok();
+        fs::create_dir_all(root).expect("create fixture dir");
+        let file = root.join("log.txt");
+        fs::write(&file, "alpha\n").expect("write fixture");
+
+        let mut app = App::new(&Config {
+            path: file.display().to_string(),
+            editor: Some("zed 'unclosed".to_string()),
+            ..Config::default()
+        });
+        let launcher = record_launches(&mut app, RecordingLauncher::default());
+
+        key(&mut app, KeyCode::Char('o'));
+
+        assert!(launcher.is_empty(), "a broken template still ran something");
+        let row = status_line(&mut app);
+        assert!(row.contains("unclosed"), "the row does not explain: {row}");
+    }
+
+    /// The startup argument can name a file that is not there — the pane shows
+    /// the error in place of its text — and `o` must not hand that path to an
+    /// editor as though it existed.
+    #[test]
+    fn o_refuses_a_file_that_is_not_there() {
+        claim_fixture_dir("o_missing");
+        let dir = std::path::Path::new("target/test-appdirs/o_missing");
+        fs::remove_dir_all(dir).ok();
+        fs::create_dir_all(dir).expect("create fixture dir");
+
+        let mut app = App::new(&Config {
+            path: dir.join("nope.log").display().to_string(),
+            ..Config::default()
+        });
+        let launcher = record_launches(&mut app, RecordingLauncher::default());
+
+        key(&mut app, KeyCode::Char('o'));
+
+        assert!(
+            launcher.is_empty(),
+            "a missing file was handed to an editor"
+        );
+        assert!(status_line(&mut app).contains("no such file"));
+    }
+
+    /// Transient means transient: the next keypress takes the row back.
+    #[test]
+    fn the_status_message_lasts_until_the_next_keypress() {
+        let (mut app, _root) = app_over_project("o_transient", "alpha\n");
+        record_launches(&mut app, RecordingLauncher::failing("boom"));
+
+        key(&mut app, KeyCode::Char('o'));
+        assert!(status_line(&mut app).contains("boom"));
+
+        key(&mut app, KeyCode::Tab);
+        assert!(
+            !status_line(&mut app).contains("boom"),
+            "the message outlived the keypress after it"
+        );
+    }
+
+    /// A mouse move must *not* clear it. Mouse capture is on, so anything less
+    /// deliberate than a keypress would wipe the message before it was read.
+    #[test]
+    fn a_mouse_event_does_not_clear_the_status_message() {
+        let (mut app, _root) = app_over_project("o_mouse", "alpha\n");
+        record_launches(&mut app, RecordingLauncher::failing("boom"));
+
+        key(&mut app, KeyCode::Char('o'));
+        mouse(&mut app, MouseEventKind::Moved, 60);
+
+        assert!(status_line(&mut app).contains("boom"));
+    }
+
+    /// An open prompt outranks the message: the user is typing into that row.
+    #[test]
+    fn a_prompt_outranks_the_status_message() {
+        let (mut app, _root) = app_over_project("o_prompt", "alpha\n");
+        record_launches(&mut app, RecordingLauncher::failing("boom"));
+
+        key(&mut app, KeyCode::Char('o'));
+        key(&mut app, KeyCode::Char('/'));
+
+        assert_eq!(prompt_line(&mut app), "/");
+    }
+
+    /// `o` is only claimed unmodified, so Ctrl-O still reaches the focused
+    /// widget — the same guard `q`, `f` and `p` use.
+    #[test]
+    fn ctrl_o_is_not_the_open_key() {
+        let (mut app, _root) = app_over_project("o_ctrl", "alpha\n");
+        let launcher = record_launches(&mut app, RecordingLauncher::default());
+
+        ctrl(&mut app, KeyCode::Char('o'));
+
+        assert!(launcher.is_empty(), "Ctrl-O was swallowed as the open key");
     }
 }
