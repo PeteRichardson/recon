@@ -1,10 +1,10 @@
 //! The pane listing the filters that have been defined.
 //!
-//! It renders from a borrowed `FilterSet` rather than owning one: `App` owns
+//! It renders from a borrowed `ActiveFilters` rather than owning one: `App` owns
 //! the set, and a copy here could go stale the moment a filter changed.
 
 use super::FilterCommand;
-use crate::filter::{DIM_STYLE, Filter, FilterSet, Sense};
+use crate::filter::{ActiveFilters, DIM_STYLE, Filter, Sense};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::prelude::{Buffer, Color, Modifier, Rect, Style, Widget};
 use ratatui::widgets::{List, ListItem, ListState, StatefulWidget};
@@ -40,8 +40,8 @@ const EMPTY_HINTS: [&str; 3] = ["press f i to add", "press f i", "f i"];
 /// Map a pane row to the numbered filter it addresses, or `None` when the
 /// row is the live search's own row (row 0, and only when `has_search`).
 ///
-/// A free function taking `has_search` rather than a method on `FilterSet`,
-/// because `FilterList::handle_key` has no `FilterSet` in scope — only the
+/// A free function taking `has_search` rather than a method on `ActiveFilters`,
+/// because `FilterList::handle_key` has no `ActiveFilters` in scope — only the
 /// bool it was told — while `resolve_row` does have one and calls this too.
 /// Before this was pulled out, `handle_key` and `resolve_row` each carried
 /// their own copy of this `(has_search, row)` match, which is exactly how
@@ -97,7 +97,7 @@ impl FilterList {
     ///
     /// Selection movement is handled here because it is the pane's own
     /// state; mutations are only reported, never applied, because the
-    /// `FilterSet` they act on belongs to `App` — this pane only borrows one
+    /// `ActiveFilters` they act on belongs to `App` — this pane only borrows one
     /// to render it.
     ///
     /// Guarded against CONTROL and ALT the same way every global binding in
@@ -173,7 +173,7 @@ impl FilterList {
     /// guidance, not content: it yields to the navigator rather than widening
     /// the column, and `render` simply omits it when the column is too narrow
     /// to hold it.
-    pub fn preferred_width(&self, filters: &FilterSet) -> u16 {
+    pub fn preferred_width(&self, filters: &ActiveFilters) -> u16 {
         let longest = (0..filters.row_count())
             .map(|row| Self::row_text(filters, row).chars().count())
             .max()
@@ -191,9 +191,9 @@ impl FilterList {
     /// keeping their own copy of the label/filter lookup. It is built on
     /// `filter_index_for_row`, the single source of truth for the
     /// `(has_search, row) -> filter` mapping itself — `handle_key` needs
-    /// that same mapping without a `FilterSet` in scope, so it calls that
+    /// that same mapping without a `ActiveFilters` in scope, so it calls that
     /// free function directly rather than this one.
-    fn resolve_row(filters: &FilterSet, row: usize) -> Option<(String, &Filter)> {
+    fn resolve_row(filters: &ActiveFilters, row: usize) -> Option<(String, &Filter)> {
         let has_search = filters.search().is_some();
         match filter_index_for_row(has_search, row) {
             None => filters.search().map(|search| ("/".to_string(), search)),
@@ -209,7 +209,7 @@ impl FilterList {
     ///
     /// The sense is spelled out because excluding filters carry no colour —
     /// nothing else on the row would distinguish them.
-    fn row_text(filters: &FilterSet, row: usize) -> String {
+    fn row_text(filters: &ActiveFilters, row: usize) -> String {
         let Some((label, filter)) = Self::resolve_row(filters, row) else {
             return String::new();
         };
@@ -221,7 +221,7 @@ impl FilterList {
         format!("{}[{}] {} {}", label, mark, sense, filter.pattern.as_str())
     }
 
-    pub fn render(&mut self, filters: &FilterSet, area: Rect, buf: &mut Buffer) {
+    pub fn render(&mut self, filters: &ActiveFilters, area: Rect, buf: &mut Buffer) {
         // An empty set draws the hint instead of no rows at all. `DIM_STYLE`
         // is the same grey the file view and the disabled-filter rows use, so
         // the hint reads as chrome rather than as a filter someone defined.
@@ -290,8 +290,8 @@ impl FilterList {
 mod tests {
     use super::*;
 
-    fn set_of(includes: &[&str], excludes: &[&str]) -> FilterSet {
-        let mut set = FilterSet::new();
+    fn set_of(includes: &[&str], excludes: &[&str]) -> ActiveFilters {
+        let mut set = ActiveFilters::new();
         for pattern in includes {
             set.add(pattern).expect("valid pattern");
         }
@@ -301,7 +301,7 @@ mod tests {
         set
     }
 
-    fn rendered(list: &mut FilterList, filters: &FilterSet, width: u16) -> Vec<String> {
+    fn rendered(list: &mut FilterList, filters: &ActiveFilters, width: u16) -> Vec<String> {
         let area = Rect::new(0, 0, width, 8);
         let mut buf = Buffer::empty(area);
         list.render(filters, area, &mut buf);
@@ -582,7 +582,7 @@ mod tests {
     fn the_hint_does_not_widen_the_column() {
         let list = FilterList::default();
 
-        let width = list.preferred_width(&FilterSet::new()) as usize;
+        let width = list.preferred_width(&ActiveFilters::new()) as usize;
 
         assert!(
             width < EMPTY_HINTS[EMPTY_HINTS.len() - 1].chars().count(),
@@ -596,7 +596,7 @@ mod tests {
     #[test]
     fn a_column_too_narrow_for_the_sentence_still_shows_the_binding() {
         let mut list = FilterList::default();
-        let filters = FilterSet::new();
+        let filters = ActiveFilters::new();
         let area = Rect::new(0, 0, 11, 3);
         let mut buf = Buffer::empty(area);
 
@@ -618,7 +618,7 @@ mod tests {
     #[test]
     fn a_narrow_pane_omits_the_hint_rather_than_clipping_it() {
         let mut list = FilterList::default();
-        let filters = FilterSet::new();
+        let filters = ActiveFilters::new();
         // One column short of the *shortest* hint, derived rather than
         // hard-coded: adding a shorter fallback moves this threshold, and a
         // literal width would quietly start testing a pane that does fit one.
@@ -640,7 +640,7 @@ mod tests {
     #[test]
     fn an_empty_pane_draws_the_hint() {
         let mut list = FilterList::default();
-        let filters = FilterSet::new();
+        let filters = ActiveFilters::new();
         let area = Rect::new(0, 0, 30, 3);
         let mut buf = Buffer::empty(area);
 
@@ -667,7 +667,7 @@ mod tests {
     #[test]
     fn the_hint_is_dimmed() {
         let mut list = FilterList::default();
-        let filters = FilterSet::new();
+        let filters = ActiveFilters::new();
         let area = Rect::new(0, 0, 30, 3);
         let mut buf = Buffer::empty(area);
 
@@ -682,7 +682,7 @@ mod tests {
 
     #[test]
     fn the_search_row_is_drawn_first_and_carries_a_slash() {
-        let mut set = FilterSet::new();
+        let mut set = ActiveFilters::new();
         set.add("ERROR").expect("valid pattern");
         set.set_search("timeout").expect("valid pattern");
 
@@ -692,7 +692,7 @@ mod tests {
 
     #[test]
     fn without_a_search_the_numbered_filters_start_at_row_zero() {
-        let mut set = FilterSet::new();
+        let mut set = ActiveFilters::new();
         set.add("ERROR").expect("valid pattern");
 
         assert_eq!(FilterList::row_text(&set, 0), "1[x] inc ERROR");
@@ -702,7 +702,7 @@ mod tests {
     /// filter 0, not filter 1.
     #[test]
     fn space_below_the_search_row_toggles_the_right_filter() {
-        let mut set = FilterSet::new();
+        let mut set = ActiveFilters::new();
         set.add("ERROR").expect("valid pattern");
         set.set_search("timeout").expect("valid pattern");
         let mut list = FilterList::default();
@@ -715,7 +715,7 @@ mod tests {
 
     #[test]
     fn space_on_the_search_row_toggles_the_search() {
-        let mut set = FilterSet::new();
+        let mut set = ActiveFilters::new();
         set.set_search("timeout").expect("valid pattern");
         let mut list = FilterList::default();
         list.state.select(Some(0));
@@ -735,7 +735,7 @@ mod tests {
     /// search row and the off-by-one shift below it are covered.
     #[test]
     fn handle_key_and_resolve_row_agree_on_which_filter_a_row_addresses() {
-        let mut set = FilterSet::new();
+        let mut set = ActiveFilters::new();
         set.add("alpha").expect("valid pattern");
         set.add("beta").expect("valid pattern");
         set.set_search("gamma").expect("valid pattern");

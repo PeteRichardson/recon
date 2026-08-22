@@ -79,7 +79,7 @@ pub struct Filter {
 }
 
 #[derive(Debug, Default)]
-pub struct FilterSet {
+pub struct ActiveFilters {
     filters: Vec<Filter>,
     /// The live search: at most one, replaced by each `/`, and never an
     /// element of `filters`.
@@ -98,7 +98,7 @@ pub struct FilterSet {
     remembered_search: Option<bool>,
 }
 
-impl FilterSet {
+impl ActiveFilters {
     pub fn new() -> Self {
         Self::default()
     }
@@ -429,8 +429,8 @@ impl FilterSet {
 mod tests {
     use super::*;
 
-    fn set_with(patterns: &[&str]) -> FilterSet {
-        let mut set = FilterSet::new();
+    fn set_with(patterns: &[&str]) -> ActiveFilters {
+        let mut set = ActiveFilters::new();
         for pattern in patterns {
             set.add(pattern).expect("valid pattern");
         }
@@ -440,7 +440,7 @@ mod tests {
     /// With no filters at all, nothing is dimmed — a plain file reads normally.
     #[test]
     fn an_empty_set_leaves_every_line_unmatched() {
-        let set = FilterSet::new();
+        let set = ActiveFilters::new();
 
         assert_eq!(set.verdict("anything"), Verdict::Unmatched);
         assert!(set.is_empty());
@@ -478,7 +478,7 @@ mod tests {
 
     #[test]
     fn an_invalid_pattern_is_reported() {
-        let mut set = FilterSet::new();
+        let mut set = ActiveFilters::new();
 
         assert!(set.add("[").is_err());
         assert!(set.is_empty(), "a rejected pattern must not be added");
@@ -519,7 +519,7 @@ mod tests {
 
     #[test]
     fn successive_filters_get_distinct_colours() {
-        let mut set = FilterSet::new();
+        let mut set = ActiveFilters::new();
         set.add("a").expect("valid");
         set.add("b").expect("valid");
 
@@ -530,8 +530,8 @@ mod tests {
         );
     }
 
-    fn set_excluding(patterns: &[&str]) -> FilterSet {
-        let mut set = FilterSet::new();
+    fn set_excluding(patterns: &[&str]) -> ActiveFilters {
+        let mut set = ActiveFilters::new();
         for pattern in patterns {
             set.add_excluding(pattern).expect("valid pattern");
         }
@@ -576,7 +576,7 @@ mod tests {
 
     #[test]
     fn an_invalid_excluding_pattern_is_reported() {
-        let mut set = FilterSet::new();
+        let mut set = ActiveFilters::new();
 
         assert!(set.add_excluding("[").is_err());
         assert!(set.is_empty(), "a rejected pattern must not be added");
@@ -762,7 +762,7 @@ mod tests {
 
     #[test]
     fn removing_from_an_already_empty_set_reports_failure() {
-        let mut set = FilterSet::new();
+        let mut set = ActiveFilters::new();
 
         assert!(!set.remove(0));
         assert!(set.is_empty());
@@ -817,7 +817,7 @@ mod tests {
 
     #[test]
     fn a_search_matches_like_an_including_filter() {
-        let mut set = FilterSet::new();
+        let mut set = ActiveFilters::new();
         set.set_search("timeout").expect("valid pattern");
 
         assert_eq!(set.verdict("conn timeout"), Verdict::Searched);
@@ -839,7 +839,7 @@ mod tests {
     /// rather than needing one of its own.
     #[test]
     fn exclusion_beats_the_search() {
-        let mut set = FilterSet::new();
+        let mut set = ActiveFilters::new();
         set.add_excluding("heartbeat").expect("valid pattern");
         set.set_search("timeout").expect("valid pattern");
 
@@ -850,7 +850,7 @@ mod tests {
     /// the first rather than stacking another filter.
     #[test]
     fn setting_a_search_replaces_the_previous_one() {
-        let mut set = FilterSet::new();
+        let mut set = ActiveFilters::new();
         set.set_search("foo").expect("valid pattern");
         set.set_search("bar").expect("valid pattern");
 
@@ -874,7 +874,7 @@ mod tests {
 
     #[test]
     fn clearing_a_search_removes_it() {
-        let mut set = FilterSet::new();
+        let mut set = ActiveFilters::new();
         set.set_search("foo").expect("valid pattern");
         set.clear_search();
 
@@ -884,7 +884,7 @@ mod tests {
 
     #[test]
     fn an_invalid_search_pattern_is_reported_and_changes_nothing() {
-        let mut set = FilterSet::new();
+        let mut set = ActiveFilters::new();
         set.set_search("foo").expect("valid pattern");
 
         assert!(set.set_search("[").is_err());
@@ -897,7 +897,7 @@ mod tests {
 
     #[test]
     fn a_disabled_search_matches_nothing() {
-        let mut set = FilterSet::new();
+        let mut set = ActiveFilters::new();
         set.set_search("foo").expect("valid pattern");
         set.set_all_enabled(false);
 
@@ -914,7 +914,7 @@ mod tests {
                 .any(|colour| SEARCH_STYLE.fg == Some(*colour)),
             "the search colour would move as the palette rotates"
         );
-        let mut set = FilterSet::new();
+        let mut set = ActiveFilters::new();
         set.set_search("foo").expect("valid pattern");
         assert_eq!(set.style_for(Verdict::Searched), Some(SEARCH_STYLE));
     }
@@ -937,7 +937,7 @@ mod tests {
     /// A search that the user had deliberately toggled off must not come back on.
     #[test]
     fn restoring_does_not_switch_a_disabled_search_back_on() {
-        let mut set = FilterSet::new();
+        let mut set = ActiveFilters::new();
         set.set_search("bar").expect("valid pattern");
         set.search_set_enabled(false);
 
@@ -976,7 +976,7 @@ mod tests {
     /// searched in order to reach.
     #[test]
     fn a_search_alone_does_not_dim() {
-        let mut set = FilterSet::new();
+        let mut set = ActiveFilters::new();
         set.set_search("foo").expect("valid pattern");
 
         assert_eq!(set.style_for(Verdict::Unmatched), None);
@@ -986,7 +986,7 @@ mod tests {
     /// a bare search. This is the asymmetry the two predicates exist for.
     #[test]
     fn a_search_alone_still_counts_for_hiding() {
-        let mut set = FilterSet::new();
+        let mut set = ActiveFilters::new();
         set.set_search("foo").expect("valid pattern");
 
         assert!(
@@ -1017,7 +1017,7 @@ mod tests {
 
     #[test]
     fn a_disabled_search_counts_for_neither() {
-        let mut set = FilterSet::new();
+        let mut set = ActiveFilters::new();
         set.set_search("foo").expect("valid pattern");
         set.search_set_enabled(false);
 
@@ -1069,7 +1069,7 @@ mod tests {
     /// Promoting must not silently switch on a search the user had toggled off.
     #[test]
     fn promoting_preserves_the_enabled_state() {
-        let mut set = FilterSet::new();
+        let mut set = ActiveFilters::new();
         set.set_search("beta").expect("valid pattern");
         set.search_set_enabled(false);
 
@@ -1088,7 +1088,7 @@ mod tests {
 
     #[test]
     fn promoting_drops_a_pending_capture() {
-        let mut set = FilterSet::new();
+        let mut set = ActiveFilters::new();
         set.set_search("beta").expect("valid pattern");
         set.disable_all_remembering();
 

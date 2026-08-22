@@ -158,7 +158,7 @@ pub mod document;
 pub mod filter;
 mod widgets;
 use document::{Document, Mode};
-use filter::{FilterSet, Verdict};
+use filter::{ActiveFilters, Verdict};
 use widgets::filenav::FileNav;
 use widgets::fileview::FileView;
 use widgets::filterlist::FilterList;
@@ -186,7 +186,7 @@ pub struct App<'a> {
     last_divider_click: Option<Instant>,
     /// Open while a search pattern is being typed.
     search: Option<SearchPrompt>,
-    filters: FilterSet,
+    filters: ActiveFilters,
     document: Document,
     /// Source line indices the file view's buffer was last rebuilt from, or
     /// `None` when what the buffer holds is unknown and a rebuild is owed
@@ -252,7 +252,7 @@ impl App<'_> {
             dragging: false,
             last_divider_click: None,
             search: None,
-            filters: FilterSet::new(),
+            filters: ActiveFilters::new(),
             document: Document::default(),
             last_visible: None,
             zoom: None,
@@ -406,7 +406,7 @@ impl App<'_> {
     }
 
     /// The filter pane, which owns its own selection and rendering state
-    /// independent of the `FilterSet` model `App` holds.
+    /// independent of the `ActiveFilters` model `App` holds.
     fn filter_list(&self) -> Option<&FilterList> {
         self.widgets.iter().find_map(|widget| match widget {
             AppWidget::FilterList(list) => Some(list),
@@ -761,7 +761,7 @@ impl App<'_> {
 
         // Filter pane keys are routed here rather than through the generic
         // `handle_events` dispatch below: applying them means mutating the
-        // `FilterSet`, which only `App` owns, so `FilterList` cannot carry
+        // `ActiveFilters`, which only `App` owns, so `FilterList` cannot carry
         // them out itself — see `handle_filter_key`.
         if let event::Event::Key(key) = event
             && matches!(self.widgets[self.active_widget], AppWidget::FilterList(_))
@@ -900,7 +900,7 @@ impl App<'_> {
 
     /// Handle a key aimed at the filter pane.
     ///
-    /// This borrows the pane and the `FilterSet` together — something
+    /// This borrows the pane and the `ActiveFilters` together — something
     /// neither `FilterList` nor `Action` can do on their own, since the pane
     /// only ever borrows the set to render it — applies whatever command the
     /// pane reports, moves focus off the pane if the set is now empty (which
@@ -918,7 +918,7 @@ impl App<'_> {
         // `i` and `x` are handled here rather than in `FilterList::handle_key`
         // because they open a prompt, and `self.search` is `App`'s. They are
         // deliberately not `FilterCommand` variants: that enum describes
-        // mutations of the `FilterSet`, and opening a prompt is not one — see
+        // mutations of the `ActiveFilters`, and opening a prompt is not one — see
         // its doc comment in `widgets/mod.rs`.
         //
         // `e` would read better than `x` for "exclude" and cannot be used: the
@@ -1086,7 +1086,7 @@ impl App<'_> {
         view.set_line_styles(styles);
         view.set_gutter_blank(nothing_visible);
         // `highlight`, when `Some`, was `Regex::as_str()` on a pattern that
-        // `FilterSet::set_search` already compiled once; re-parsing the same
+        // `ActiveFilters::set_search` already compiled once; re-parsing the same
         // string here is deterministic and cannot fail today. Even so, this
         // is the hottest path in the app — every filter mutation and every
         // navigator preview reaches it — so a future regression here should
@@ -1208,7 +1208,7 @@ impl App<'_> {
         // `row_count`, not `len`: a live search with no numbered filters is
         // still one filter as far as this row is concerned — `len` alone
         // would report "0 filters" while a search was visibly active. See
-        // `FilterSet::row_count`, which the filter pane counts rows by for
+        // `ActiveFilters::row_count`, which the filter pane counts rows by for
         // exactly this reason.
         let count = self.filters.row_count();
         let noun = if count == 1 { "filter" } else { "filters" };
@@ -1387,12 +1387,17 @@ impl App<'_> {
 /// impl for the filter pane so it actually draws something.
 ///
 /// `AppWidget::FilterList`'s arm of that impl deliberately renders nothing —
-/// it has no `FilterSet` to render against, since `App` owns the one true
+/// it has no `ActiveFilters` to render against, since `App` owns the one true
 /// set and a copy on the widget could go stale the moment a filter changed.
 /// Both branches of `App::render` (the ordinary split and the zoom special
 /// case) go through this helper, so the filter pane cannot go blank in one
 /// of them while working in the other.
-fn render_widget(widget: &mut AppWidget<'_>, filters: &FilterSet, area: Rect, buf: &mut Buffer) {
+fn render_widget(
+    widget: &mut AppWidget<'_>,
+    filters: &ActiveFilters,
+    area: Rect,
+    buf: &mut Buffer,
+) {
     match widget {
         AppWidget::FilterList(list) => list.render(filters, area, buf),
         AppWidget::FileNav(_) | AppWidget::FileView(_) => widget.render(area, buf),
@@ -4709,9 +4714,9 @@ mod tests {
     ///
     /// Two filters, deleting the first — this test's original form — cannot
     /// actually distinguish a full re-evaluate from a naive patch: on a
-    /// naive patch (splice the `FilterSet` but leave cached verdicts alone),
+    /// naive patch (splice the `ActiveFilters` but leave cached verdicts alone),
     /// the stale `Verdict::Included(1)` left over from the deleted filter's
-    /// own line would index *past* the now-length-1 `FilterSet` — `None`,
+    /// own line would index *past* the now-length-1 `ActiveFilters` — `None`,
     /// not a collision — and the test would fail via `.expect()` panicking,
     /// before the colour assertion it advertises ever ran.
     ///
