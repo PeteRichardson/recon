@@ -283,6 +283,34 @@ pub struct App<'a> {
     /// `spawn` only says the process started. Drained on the render loop, which
     /// already wakes 60 times a second.
     editor_outcomes: Option<std::sync::mpsc::Receiver<String>>,
+    /// What `<space>` captured on its way into a peek, or `None` when not
+    /// peeking (#48).
+    ///
+    /// Its presence *is* the peek flag — a separate `bool` could disagree with
+    /// it, and the one thing this feature promises is that the second press
+    /// puts back exactly what the first took away.
+    peek: Option<PeekState>,
+    /// Set when a prompt commits, so the `Enter` that committed it cannot also
+    /// toggle the filter under the cursor (#48).
+    ///
+    /// Cleared by any key that is not `Enter`, and consumed by the first one
+    /// that is. Deliberately event-counted rather than timed: a keypress count
+    /// is exactly reproducible in a test, where "within 200ms" is not, and the
+    /// two only disagree when a user deliberately presses `Enter` twice in a
+    /// row — which costs them one extra press and is indistinguishable from
+    /// the bounce anyway.
+    swallow_next_enter: bool,
+}
+
+/// What a peek has to put back when it ends (#48).
+///
+/// The mode *and* the filter flags, because `<space>` changes both: it is the
+/// four-key "hide off, filters off, read, filters on, hide on" cycle from the
+/// issue collapsed into one key and its undo.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PeekState {
+    mode: Mode,
+    flags: filter::EnabledFlags,
 }
 
 /// A one-off message shown on the status row.
@@ -363,6 +391,8 @@ impl App<'_> {
             launcher: Box::new(editor::ProcessLauncher::new(outcomes_tx)),
             status_message: None,
             editor_outcomes: Some(outcomes_rx),
+            peek: None,
+            swallow_next_enter: false,
         };
         app.sync_document();
         app.refresh_view();
@@ -396,6 +426,11 @@ impl App<'_> {
                 };
                 if outcome.is_ok() {
                     self.search = None;
+                    // Arm the bounce guard (#48). Only on the branch that
+                    // actually closes the prompt: a rejected pattern leaves it
+                    // open, so the next `Enter` is another commit attempt and
+                    // never reaches the filter pane to be swallowed.
+                    self.swallow_next_enter = true;
                 } else if let Some(prompt) = self.search.as_mut() {
                     prompt.error = Some(INVALID_PATTERN.to_string());
                 }
@@ -534,6 +569,45 @@ impl App<'_> {
         self.document.set_mode(mode);
         self.document.recompute_visible();
         self.apply_view(cursor_source);
+    }
+
+    /// `<space>`: show the plain file, or put the filtered view back (#48).
+    ///
+    /// The issue's complaint is a four-key cycle — leave hide mode, clear the
+    /// filters, read the code, then undo both — repeated at every match. This
+    /// is that cycle as one key and its own undo.
+    ///
+    /// **A destination, not a flip.** Peeking always lands on `Mode::Dimmed`
+    /// with every filter off, which renders an ordinary undimmed file (see
+    /// `ActiveFilters::verdict` — a fully disabled set leaves every line
+    /// `Unmatched`). Toggling the mode literally would send a peek that started
+    /// in `Dimmed` to `FilteredOnly` with nothing enabled, and `FilteredOnly`
+    /// shows only `Included` lines: an empty pane. Ending the peek restores
+    /// what was captured, so from hide mode the round trip still reads as the
+    /// mode flip the issue asked for.
+    ///
+    /// The capture is held here rather than in `ActiveFilters::remembered`,
+    /// which `!` owns — see `enabled_flags` for why sharing one slot loses the
+    /// other feature's undo.
+    fn toggle_peek(&mut self) {
+        match self.peek.take() {
+            Some(peek) => {
+                self.filters.apply_enabled_flags(&peek.flags);
+                self.document.set_mode(peek.mode);
+            }
+            None => {
+                self.peek = Some(PeekState {
+                    mode: self.document.mode(),
+                    flags: self.filters.enabled_flags(),
+                });
+                self.filters.set_all_enabled(false);
+                self.document.set_mode(Mode::Dimmed);
+            }
+        }
+        // The full `evaluate`, not `recompute_visible` as `toggle_hiding` uses:
+        // the enabled flags changed, so every line's verdict can differ. The
+        // mode moved too, which `refresh_view` picks up on the same pass.
+        self.refresh_view();
     }
 
     /// The nav pane, which owns the entry names the automatic width is based on.
@@ -739,6 +813,21 @@ impl App<'_> {
             return Ok(());
         }
 
+        // The bounce guard (#48). `Enter` both commits a prompt and toggles a
+        // filter, and those are one keystroke apart, so the `Enter` that closed
+        // a prompt must not fall through and switch a filter off.
+        //
+        // Placed after the prompt guard so it can only ever see the keypress
+        // *following* the commit, and before every binding so no pane can act
+        // on the swallowed key. Any other key means the user is still working
+        // and the next `Enter` is meant.
+        if let event::Event::Key(key) = event
+            && std::mem::take(&mut self.swallow_next_enter)
+            && key.code == KeyCode::Enter
+        {
+            return Ok(());
+        }
+
         if let event::Event::Key(key) = event {
             match key.code {
                 // Guarded to an empty modifier set so a modified key — e.g.
@@ -832,6 +921,19 @@ impl App<'_> {
                 // because opening a prompt is `App`'s to do.
                 KeyCode::Char('f') if key.modifiers.is_empty() => {
                     self.reveal_and_focus(self.filter_list_index());
+                    return Ok(());
+                }
+                // Global, and claimed above every pane rather than in any of
+                // them (#48). The whole point of the key is that it means one
+                // thing everywhere: a `<space>` that toggled hide mode in two
+                // panes and a filter in the third is the pane-dependent meaning
+                // this replaced, and recovering from the wrong one cost seconds
+                // every time.
+                //
+                // That is also why the filter pane gave `space` up for `Enter`
+                // rather than keeping both — see `FilterList::handle_key`.
+                KeyCode::Char(' ') if key.modifiers.is_empty() => {
+                    self.toggle_peek();
                     return Ok(());
                 }
                 KeyCode::Char('!') if key.modifiers.is_empty() => {
@@ -4067,7 +4169,7 @@ mod tests {
 
         // The pane's own key, not `!` — this is the criterion this test adds.
         focus_filter_pane(&mut app);
-        key(&mut app, KeyCode::Char(' '));
+        key(&mut app, KeyCode::Enter);
         draw(&mut app);
 
         assert_ne!(
@@ -5341,15 +5443,30 @@ mod tests {
             typed(&mut app, pattern);
             key(&mut app, KeyCode::Enter);
         }
+        settle(&mut app);
         app
     }
 
+    /// Disarm the bounce guard the setup above leaves behind (#48).
+    ///
+    /// The helper's last keystroke is the `Enter` that commits a pattern, which
+    /// arms the guard — so without this the *first* `Enter` a test presses is
+    /// swallowed as a bounce, and every `Enter`-driven test would be asserting
+    /// against the guard rather than the binding.
+    ///
+    /// `Esc` because it moves no selection and, with no live search set, is a
+    /// genuine no-op: its arm is guarded on `clear_search()` reporting that
+    /// there was something to clear.
+    fn settle(app: &mut App) {
+        key(app, KeyCode::Esc);
+    }
+
     #[test]
-    fn space_toggles_the_selected_filter() {
+    fn enter_toggles_the_selected_filter_from_the_pane() {
         let mut app = app_with_two_filters("pane_toggle");
         focus_filter_pane(&mut app);
 
-        key(&mut app, KeyCode::Char(' '));
+        key(&mut app, KeyCode::Enter);
 
         assert!(!app.filters.filters()[0].enabled);
     }
@@ -5361,7 +5478,7 @@ mod tests {
         focus_filter_pane(&mut app);
         let before = view_line_styles(&app);
 
-        key(&mut app, KeyCode::Char(' '));
+        key(&mut app, KeyCode::Enter);
 
         assert_ne!(before, view_line_styles(&app), "the view did not follow");
     }
@@ -5555,7 +5672,7 @@ mod tests {
         let mut app = app_with_two_filters("pane_edit_enabled");
         focus_filter_pane(&mut app);
 
-        key(&mut app, KeyCode::Char(' '));
+        key(&mut app, KeyCode::Enter);
         key(&mut app, KeyCode::Char('c'));
         typed(&mut app, "X");
         key(&mut app, KeyCode::Enter);
@@ -5598,12 +5715,12 @@ mod tests {
 
     /// Same defect, for the toggle binding.
     #[test]
-    fn ctrl_space_does_not_toggle_the_selected_filter() {
+    fn ctrl_enter_does_not_toggle_the_selected_filter() {
         let mut app = app_with_two_filters("pane_ctrl_space");
         focus_filter_pane(&mut app);
 
         app.handle_event(event::Event::Key(KeyEvent::new(
-            KeyCode::Char(' '),
+            KeyCode::Enter,
             KeyModifiers::CONTROL,
         )))
         .unwrap();
@@ -5773,7 +5890,7 @@ mod tests {
         focus_filter_pane(&mut app);
 
         key(&mut app, KeyCode::Char('j'));
-        key(&mut app, KeyCode::Char(' '));
+        key(&mut app, KeyCode::Enter);
 
         assert!(app.filters.filters()[0].enabled, "toggled the wrong filter");
         assert!(
@@ -5786,7 +5903,7 @@ mod tests {
         // since filter 1 is already disabled, that would re-enable it rather
         // than disabling filter 0, so the assertions below would fail.
         key(&mut app, KeyCode::Char('k'));
-        key(&mut app, KeyCode::Char(' '));
+        key(&mut app, KeyCode::Enter);
 
         assert!(
             !app.filters.filters()[0].enabled,
@@ -6409,7 +6526,7 @@ mod tests {
         key(&mut app, KeyCode::Char('f'));
         key(&mut app, KeyCode::Char('j'));
         key(&mut app, KeyCode::Char('j'));
-        key(&mut app, KeyCode::Char(' '));
+        key(&mut app, KeyCode::Enter);
 
         assert!(
             !app.filters.filters()[1].enabled,
@@ -6430,7 +6547,7 @@ mod tests {
     /// and only fails on the second, when the correct behaviour is to
     /// re-enable it.
     #[test]
-    fn space_on_the_search_row_toggles_search_enabled_both_ways() {
+    fn enter_on_the_search_row_toggles_search_enabled_both_ways() {
         let mut app = app_over_file("pane_toggle_search", "alpha\nbeta\n");
         key(&mut app, KeyCode::Char('t'));
         app.filters.add("alpha").expect("valid pattern");
@@ -6439,14 +6556,14 @@ mod tests {
         key(&mut app, KeyCode::Enter);
 
         key(&mut app, KeyCode::Char('f'));
-        key(&mut app, KeyCode::Char(' '));
+        key(&mut app, KeyCode::Enter);
 
         assert!(
             !app.filters.search().expect("search still set").enabled,
             "space on the search row should have disabled it"
         );
 
-        key(&mut app, KeyCode::Char(' '));
+        key(&mut app, KeyCode::Enter);
 
         assert!(
             app.filters.search().expect("search still set").enabled,
@@ -7171,5 +7288,217 @@ mod tests {
 
         assert!(launcher.is_empty(), "`O` fired from inside a prompt");
         assert_eq!(prompt_line(&mut app), "/O");
+    }
+
+    // ---- `<space>`: peek at the plain file (#48) -------------------------
+
+    /// Every enabled flag, filters then search — the state a peek has to put
+    /// back untouched.
+    fn enabled_flags(app: &App) -> (Vec<bool>, Option<bool>) {
+        (
+            app.filters.filters().iter().map(|f| f.enabled).collect(),
+            app.filters.search().map(|search| search.enabled),
+        )
+    }
+
+    /// A two-line file with one enabled filter on `beta`, hiding unmatched
+    /// lines — the state the issue describes pressing `<space>` from.
+    fn app_hiding(name: &str) -> App<'static> {
+        let mut app = app_over_file(name, "alpha\nbeta\n");
+        key(&mut app, KeyCode::Char('f'));
+        key(&mut app, KeyCode::Char('i'));
+        typed(&mut app, "beta");
+        key(&mut app, KeyCode::Enter);
+        key(&mut app, KeyCode::Char('H'));
+        app
+    }
+
+    /// The headline acceptance criterion: one keypress replaces the four-key
+    /// cycle in the issue — mode flips and every filter comes off, leaving the
+    /// plain file.
+    #[test]
+    fn space_shows_the_plain_unfiltered_file() {
+        let mut app = app_hiding("space_plain");
+        assert_eq!(
+            view_lines(&app),
+            vec!["beta".to_string()],
+            "sanity: not hiding to begin with"
+        );
+
+        key(&mut app, KeyCode::Char(' '));
+
+        assert_eq!(app.document.mode(), Mode::Dimmed, "still hiding");
+        assert_eq!(
+            view_lines(&app),
+            vec!["alpha".to_string(), "beta".to_string()],
+            "the whole file is not on screen"
+        );
+        assert!(
+            view_line_styles(&app).iter().all(Option::is_none),
+            "the peek left filter colouring behind"
+        );
+    }
+
+    /// The property the issue states outright: *"Hitting `<space>` twice in a
+    /// row gets you back to exactly where you were."*
+    #[test]
+    fn space_twice_restores_everything_exactly() {
+        let mut app = app_hiding("space_round_trip");
+        let mode = app.document.mode();
+        let lines = view_lines(&app);
+        let styles = view_line_styles(&app);
+        let flags = enabled_flags(&app);
+        let cursor = app.cursor_source();
+
+        key(&mut app, KeyCode::Char(' '));
+        key(&mut app, KeyCode::Char(' '));
+
+        assert_eq!(app.document.mode(), mode, "the mode did not come back");
+        assert_eq!(view_lines(&app), lines, "the visible set did not come back");
+        assert_eq!(view_line_styles(&app), styles, "the colouring did not");
+        assert_eq!(enabled_flags(&app), flags, "the filter flags did not");
+        assert_eq!(app.cursor_source(), cursor, "the cursor moved");
+    }
+
+    /// A peek from `Mode::Dimmed` must not flip *to* `FilteredOnly`: with every
+    /// filter just turned off, nothing is `Included`, so a literal mode toggle
+    /// would show an empty pane. The peek is a destination, not a flip.
+    #[test]
+    fn space_from_dimmed_mode_does_not_empty_the_pane() {
+        let mut app = app_over_file("space_from_dimmed", "alpha\nbeta\n");
+        key(&mut app, KeyCode::Char('f'));
+        key(&mut app, KeyCode::Char('i'));
+        typed(&mut app, "beta");
+        key(&mut app, KeyCode::Enter);
+        assert_eq!(app.document.mode(), Mode::Dimmed, "sanity: dimming");
+
+        key(&mut app, KeyCode::Char(' '));
+
+        assert_eq!(
+            view_lines(&app),
+            vec!["alpha".to_string(), "beta".to_string()],
+            "the peek emptied the pane"
+        );
+    }
+
+    /// Global, like `!` and `o`: the file the user means is whatever the view
+    /// is showing, so the peek must not require focusing a particular pane.
+    #[test]
+    fn space_peeks_from_the_navigator_pane() {
+        let mut app = app_hiding("space_from_nav");
+        key(&mut app, KeyCode::Char('e'));
+        assert!(
+            matches!(app.widgets[app.active_widget], AppWidget::FileNav(_)),
+            "sanity: the navigator should have focus"
+        );
+
+        key(&mut app, KeyCode::Char(' '));
+
+        assert_eq!(app.document.mode(), Mode::Dimmed, "`space` did nothing");
+    }
+
+    /// The peek and `!` both turn every filter off, and they must not share one
+    /// slot: a peek taken while `!` is holding a capture would overwrite it,
+    /// and `!` would then restore all-disabled forever.
+    #[test]
+    fn the_peek_leaves_the_bang_capture_alone() {
+        let mut app = app_hiding("space_vs_bang");
+        let flags = enabled_flags(&app);
+
+        key(&mut app, KeyCode::Char('!'));
+        key(&mut app, KeyCode::Char(' '));
+        key(&mut app, KeyCode::Char(' '));
+        key(&mut app, KeyCode::Char('!'));
+
+        assert_eq!(
+            enabled_flags(&app),
+            flags,
+            "`!` could not restore what it captured after a peek"
+        );
+    }
+
+    /// An open prompt outranks every binding — `space` is an ordinary
+    /// character to type into a pattern.
+    #[test]
+    fn space_typed_into_a_prompt_is_text_not_a_peek() {
+        let mut app = app_hiding("space_prompt");
+        // `/` is deliberately inert while the filter pane has focus — that pane
+        // has nothing to search over — and `app_hiding` leaves it focused, so
+        // the prompt has to be opened from the file view.
+        key(&mut app, KeyCode::Char('t'));
+        let mode = app.document.mode();
+
+        key(&mut app, KeyCode::Char('/'));
+        key(&mut app, KeyCode::Char(' '));
+
+        assert_eq!(app.document.mode(), mode, "the peek fired from a prompt");
+        // The pattern itself, not the rendered row: the row carries the HIDE
+        // badge here, and a trailing space does not survive rendering.
+        assert_eq!(
+            app.search.as_ref().map(|prompt| prompt.pattern.as_str()),
+            Some(" "),
+            "the space did not reach the pattern"
+        );
+    }
+
+    // ---- `Enter`: the filter pane's toggle, and its bounce guard (#48) ----
+
+    /// The reason `Enter` was left unbound here until now: it is also the key
+    /// that *commits* the prompt `i`, `x` and `c` open. A doubled press would
+    /// otherwise commit the pattern and then silently switch a filter off.
+    #[test]
+    fn the_enter_that_commits_a_prompt_does_not_also_toggle() {
+        let mut app = app_hiding("enter_bounce");
+        focus_filter_pane(&mut app);
+        key(&mut app, KeyCode::Char('j'));
+        key(&mut app, KeyCode::Char('c'));
+        key(&mut app, KeyCode::Enter);
+        let flags = enabled_flags(&app);
+
+        key(&mut app, KeyCode::Enter);
+
+        assert_eq!(enabled_flags(&app), flags, "the bounce toggled a filter");
+    }
+
+    /// The guard swallows exactly one `Enter`, and only the one immediately
+    /// after the commit — any other key in between means the user is still
+    /// working the pane and meant it.
+    #[test]
+    fn an_enter_after_an_intervening_key_still_toggles() {
+        let mut app = app_hiding("enter_after_key");
+        focus_filter_pane(&mut app);
+        key(&mut app, KeyCode::Char('j'));
+        key(&mut app, KeyCode::Char('c'));
+        key(&mut app, KeyCode::Enter);
+        key(&mut app, KeyCode::Char('k'));
+        let flags = enabled_flags(&app);
+
+        key(&mut app, KeyCode::Enter);
+
+        assert_ne!(
+            enabled_flags(&app),
+            flags,
+            "the guard outlived its keypress"
+        );
+    }
+
+    /// Only one. A second doubled press is a deliberate toggle, not a bounce.
+    #[test]
+    fn the_guard_swallows_only_a_single_enter() {
+        let mut app = app_hiding("enter_one_guard");
+        focus_filter_pane(&mut app);
+        key(&mut app, KeyCode::Char('j'));
+        key(&mut app, KeyCode::Char('c'));
+        key(&mut app, KeyCode::Enter);
+        let flags = enabled_flags(&app);
+
+        key(&mut app, KeyCode::Enter);
+        key(&mut app, KeyCode::Enter);
+
+        assert_ne!(
+            enabled_flags(&app),
+            flags,
+            "the second Enter was swallowed too"
+        );
     }
 }

@@ -135,7 +135,18 @@ impl FilterList {
                 self.select_previous(rows);
                 None
             }
-            KeyCode::Char(' ') => Some(match target(self.selected()?) {
+            // `Enter`, not `space`: #48 made `space` the global peek, because
+            // a key that toggles a filter in this pane and flips hide mode
+            // everywhere else is the pane-dependent meaning that change exists
+            // to remove.
+            //
+            // `Enter` is also the key that *commits* the prompt `c`, `i` and
+            // `x` open, which is why it was left unbound here until now — a
+            // doubled press would commit a pattern and then silently switch a
+            // filter off. `App` swallows exactly one `Enter` immediately after
+            // a commit; see `swallow_next_enter` in `lib.rs`. The guard lives
+            // there rather than here because only `App` knows a prompt closed.
+            KeyCode::Enter => Some(match target(self.selected()?) {
                 Some(index) => FilterCommand::Toggle(index),
                 None => FilterCommand::ToggleSearch,
             }),
@@ -143,9 +154,7 @@ impl FilterList {
                 Some(index) => FilterCommand::Delete(index),
                 None => FilterCommand::DeleteSearch,
             }),
-            // `c` for change, as in vim. `Enter` is deliberately left unbound
-            // here: it is the key that *commits* the prompt this one opens, so
-            // binding both would give one key two jobs a keystroke apart.
+            // `c` for change, as in vim.
             KeyCode::Char('c') => Some(match target(self.selected()?) {
                 Some(index) => FilterCommand::Edit(index),
                 None => FilterCommand::EditSearch,
@@ -705,31 +714,47 @@ mod tests {
         assert_eq!(FilterList::row_text(&set, 0), "1[x] inc ERROR");
     }
 
-    /// The offset is the whole risk in this task: `space` on row 1 must toggle
+    /// The offset is the whole risk in this task: `Enter` on row 1 must toggle
     /// filter 0, not filter 1.
     #[test]
-    fn space_below_the_search_row_toggles_the_right_filter() {
+    fn enter_below_the_search_row_toggles_the_right_filter() {
         let mut set = ActiveFilters::new();
         set.add("ERROR").expect("valid pattern");
         set.set_search("timeout").expect("valid pattern");
         let mut list = FilterList::default();
         list.state.select(Some(1));
 
-        let command = list.handle_key(KeyEvent::from(KeyCode::Char(' ')), set.row_count(), true);
+        let command = list.handle_key(KeyEvent::from(KeyCode::Enter), set.row_count(), true);
 
         assert_eq!(command, Some(FilterCommand::Toggle(0)));
     }
 
     #[test]
-    fn space_on_the_search_row_toggles_the_search() {
+    fn enter_on_the_search_row_toggles_the_search() {
         let mut set = ActiveFilters::new();
         set.set_search("timeout").expect("valid pattern");
         let mut list = FilterList::default();
         list.state.select(Some(0));
 
-        let command = list.handle_key(KeyEvent::from(KeyCode::Char(' ')), set.row_count(), true);
+        let command = list.handle_key(KeyEvent::from(KeyCode::Enter), set.row_count(), true);
 
         assert_eq!(command, Some(FilterCommand::ToggleSearch));
+    }
+
+    /// `space` gave this pane up in #48: it became the global peek, and a
+    /// pane that still claimed it would swallow the peek whenever the filter
+    /// pane happened to be focused — the exact confusion the change exists to
+    /// remove.
+    #[test]
+    fn space_no_longer_toggles_a_filter() {
+        let mut set = ActiveFilters::new();
+        set.add("ERROR").expect("valid pattern");
+        let mut list = FilterList::default();
+        list.state.select(Some(0));
+
+        let command = list.handle_key(KeyEvent::from(KeyCode::Char(' ')), set.row_count(), false);
+
+        assert_eq!(command, None, "`space` is still claimed by the filter pane");
     }
 
     /// Cross-checks `handle_key`'s row-to-filter translation against
@@ -751,7 +776,7 @@ mod tests {
         for row in 0..set.row_count() {
             list.state.select(Some(row));
             let command = list
-                .handle_key(KeyEvent::from(KeyCode::Char(' ')), set.row_count(), true)
+                .handle_key(KeyEvent::from(KeyCode::Enter), set.row_count(), true)
                 .unwrap_or_else(|| panic!("row {row}: no command"));
             let (label, _) =
                 FilterList::resolve_row(&set, row).unwrap_or_else(|| panic!("row {row}: no row"));

@@ -48,7 +48,7 @@ motions throughout.
 
 - **A filter stack, not a single pattern** — `f` focuses the filter pane, then
   `i` adds an include filter and `x` an exclude; each one is listed, numbered,
-  independently toggled with `space`, and editable in place with `c` — a
+  independently toggled with `Enter`, and editable in place with `c` — a
   near-miss regex is corrected where it stands rather than deleted and retyped
   into a different slot. The filter pane is on screen whenever
   the navigator is, showing `press f i to add` until you define your first
@@ -168,7 +168,7 @@ The file opens in the centre pane with its directory listed on the left. Then:
 | `i` `WARN` `Enter` | Add a second filter, in its own colour — `f` already moved focus, so `i` alone is enough |
 | `x` `healthcheck` `Enter` | Drop `healthcheck` lines from view entirely |
 | `Ctrl-H` | Hide the dimmed lines — only `ERROR` and `WARN` remain |
-| `space` | Toggle the selected filter off and on |
+| `Enter` | Toggle the selected filter off and on |
 | `!` | Disable all filters — the whole file returns |
 | `q` | Quit |
 
@@ -234,6 +234,7 @@ Global (`src/lib.rs`), handled before the focused pane sees the key:
 | `e` | Focus the navigator, revealing the left column if `b` or `z` hid it |
 | `t` | Focus the file view |
 | `f` | Focus the filter pane — filters are then added with `i` and `x` from inside it |
+| `space` | **Peek at the plain file** — drop every filter and stop hiding, so the code reads normally. Press again to put the filtered view back exactly as it was. See [Peeking at the plain file](#peeking-at-the-plain-file) |
 | `Ctrl-H` / `H` | Toggle between dimming unmatched lines and hiding them |
 | `!` | Disable every filter, remembering which were on; restores exactly that (or enables all, if none were on to remember) |
 | `b` | Hide the left column — both the navigator and the filter pane — and focus the file view; press again to restore the split (focus stays in the file view; `e` returns it) |
@@ -339,8 +340,8 @@ File view pane (`src/widgets/fileview.rs`):
 | `n` / `N` | Move to the next / previous *interesting* line |
 | `Ctrl-e` / `Ctrl-y` | Scroll one line down / up |
 | `Ctrl-d` / `Ctrl-u` | Scroll half a page down / up |
-| `Ctrl-b` / `PageUp` / `Space` | Scroll a page up |
-| `Ctrl-f` / `PageDown` / `Enter` | Scroll a page down |
+| `[` / `Ctrl-b` / `PageUp` | Scroll a page up |
+| `]` / `Ctrl-f` / `PageDown` | Scroll a page down |
 
 `b` and `e` are global window commands rather than vim word motions: the
 trade was deliberate, since returning to the navigator from a maximised file
@@ -435,7 +436,7 @@ screen whenever the navigator is:
 | `x` | Add an exclude filter — its matches leave the view entirely |
 | `k` / `Up` | Select the previous filter |
 | `j` / `Down` | Select the next filter |
-| `space` | Enable or disable the selected filter |
+| `Enter` | Enable or disable the selected filter |
 | `d` | Delete the selected filter |
 | `c` | Change the selected filter's pattern — reopens the prompt over it |
 
@@ -448,8 +449,16 @@ backspacing past the start does the same, so an edit can never leave an empty
 pattern behind. A pattern that will not compile reports `E486: invalid pattern`
 and leaves the prompt open over the intact filter, exactly as `i` does.
 
-`Enter` is deliberately unbound here. It is the key that *commits* the prompt
-`c` opens, and giving it both jobs a keystroke apart would be a trap.
+`Enter` took the toggle over from `space`, which is now the global peek. A key
+that toggled a filter in this pane and flipped hide mode in the other two is
+exactly the pane-dependent meaning that change removed — and recovering from the
+wrong one cost a few seconds every time it happened.
+
+`Enter` is also the key that *commits* the prompt `i`, `x` and `c` open, one
+keystroke earlier. So the `Enter` immediately after a commit is **swallowed**: a
+doubled press finishes the pattern and does nothing else, rather than quietly
+switching a filter off. Any other key in between and the next `Enter` toggles as
+normal, so the guard costs at most one extra press when you really did mean two.
 
 `i` and `x` work only while this pane has focus, which is what `f` is for —
 `f i` and `f x` reach them from anywhere, and `f` is a no-op when the pane
@@ -470,7 +479,7 @@ nothing to move focus off.
 
 A live search draws as one more row, at the top, marked `/` instead of a
 number — it has none, because it does not occupy a slot in the numbered set.
-`space`, `d` and `c` reach it exactly as they reach a numbered filter: `space`
+`Enter`, `d` and `c` reach it exactly as they reach a numbered filter: `Enter`
 toggles the flag that also drives its highlight in the file view, `d` clears
 it, same as `Esc`, and `c` reopens it under `/` for editing. `p` is what moves
 it into the numbered set proper.
@@ -492,6 +501,34 @@ and may still take the column narrower, and `b` or `z` give the file view the
 whole width outright.
 
 ---
+
+## Peeking at the plain file
+
+Filters answer "where is it?". Once you have landed on the line, the next
+question is "what does this code *do*?" — and for that the filtering is in the
+way. Hiding shows you the match and nothing around it; dimming leaves the
+surroundings on screen but hard to read.
+
+`space` handles that in one key. It drops every filter and stops hiding, so the
+file reads as an ordinary file. Press it again and the filtered view comes back
+**exactly** as it was — same filters, same colours, same hide mode, same line
+under the cursor.
+
+It replaces a four-key round trip you would otherwise repeat at every match:
+leave hide mode, clear the filters, read, restore the filters, restore hide
+mode. It works from any pane, and it always means the same thing — which is why
+the filter pane's toggle moved to `Enter`.
+
+Two neighbours it is easy to confuse:
+
+| Key | Does |
+| --- | --- |
+| `space` | Filters off **and** hiding off, for reading. One key back to exactly where you were |
+| `!` | Filters off, hide mode untouched. Its own independent memory of what was on |
+| `H` | Hide mode only, filters untouched |
+
+`space` and `!` keep separate memories, so using one never disturbs what the
+other would restore.
 
 ## Opening an editor
 
