@@ -92,6 +92,28 @@ const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 /// Shown in the prompt when a pattern will not compile, after vim's error.
 const INVALID_PATTERN: &str = "E486: invalid pattern";
 
+/// The badge saying hide-unmatched-lines mode is armed, and the style that
+/// makes it loud enough to notice mid-skim.
+///
+/// Six columns rather than a spelled-out `[HIDE MODE ON]`, on a row that also
+/// has to carry a filter count and the directory on a narrow terminal. A
+/// filled colour block reads louder than a glyph at a quarter of the width —
+/// which is the point, since issue #36 rejected a dim status-bar icon by name.
+///
+/// Both are config-schema candidates for #18, text and style alike.
+///
+/// **Filled block means state; brackets or a border mean action.** That is the
+/// established TUI idiom — vim's statusline mode indicator, tmux status
+/// segments and powerline segments are all filled blocks nobody clicks, while
+/// buttons get `[ OK ]` or `< Cancel >`. Mouse control is planned (click a
+/// file to view it, click a filter to toggle it), so the rule is recorded here
+/// rather than re-derived: anything painted like this badge is not clickable.
+const HIDE_BADGE_TEXT: &str = " HIDE ";
+const HIDE_BADGE_STYLE: Style = Style::new()
+    .fg(Color::Black)
+    .bg(Color::LightYellow)
+    .add_modifier(ratatui::style::Modifier::BOLD);
+
 /// What an open prompt will do with the pattern being typed.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 enum PromptKind {
@@ -1408,7 +1430,29 @@ impl Widget for &mut App<'_> {
         // to show, so the objection that answered — spending a row to say
         // nothing — no longer applies.
         let [area, prompt_area] = Layout::vertical([Min(0), Length(1)]).areas(area);
-        let status = self.status_bar_text(prompt_area.width as usize);
+
+        // The badge mirrors the mode and nothing else. `▼` answers a
+        // different question — "are lines missing from the pane right now?" —
+        // and is deliberately false when hide mode is armed with nothing
+        // including, because the #36 guard in `Document::recompute_visible` is
+        // showing the whole file. Both facts are worth reporting, so they get
+        // an indicator each; conflating them means one of them lies.
+        //
+        // Painting the badge here rather than inside `status_text` is what
+        // makes that unconditional structurally: `status_text` returns early
+        // with an empty string when there are no filters and no search, which
+        // is exactly the state the issue was reported from. A badge threaded
+        // through that function would need a second conditional to dodge the
+        // early return, and a conditional can go stale.
+        let badge = (self.document.mode() == Mode::FilteredOnly).then_some(HIDE_BADGE_TEXT);
+        // One column of separation, so the colour block never abuts the text
+        // beside it. Taken out of the status text's budget rather than added
+        // to the row, so `status_bar_text`'s existing priority order — filter
+        // state first, then whatever the path can elide itself into — still
+        // has an accurate width to work with on a narrow terminal.
+        let badge_width = badge.map_or(0, |text| text.chars().count() + 1);
+        let room = (prompt_area.width as usize).saturating_sub(badge_width);
+        let status = self.status_bar_text(room);
 
         // A zoomed pane takes the whole pane area; the others are not drawn.
         // This deliberately falls through to the status/prompt drawing below
@@ -1469,7 +1513,10 @@ impl Widget for &mut App<'_> {
             }
         }
 
-        // An open prompt takes the whole row; nothing else competes with it.
+        // An open prompt takes the rest of the row; nothing but the badge
+        // competes with it. The badge stays because the mode it reports is
+        // still armed while a filter is being typed — which is precisely when
+        // the pane is about to change underfoot.
         let (text, style) = match self.search.as_ref() {
             Some(prompt) if prompt.error.is_some() => {
                 (prompt.line(), Style::default().fg(Color::Red))
@@ -1477,11 +1524,23 @@ impl Widget for &mut App<'_> {
             Some(prompt) => (prompt.line(), Style::default()),
             None => (status, Style::default().fg(Color::DarkGray)),
         };
+        // Two writes at two styles, rather than converting the row to
+        // `Line`/`Span`s: a bigger diff through the prompt path that shares
+        // this row, for no gain until something wants a third style here.
+        if let Some(badge) = badge {
+            buf.set_stringn(
+                prompt_area.x,
+                prompt_area.y,
+                badge,
+                prompt_area.width as usize,
+                HIDE_BADGE_STYLE,
+            );
+        }
         buf.set_stringn(
-            prompt_area.x,
+            prompt_area.x + badge_width as u16,
             prompt_area.y,
             text,
-            prompt_area.width as usize,
+            room,
             style,
         );
     }
@@ -3579,6 +3638,169 @@ mod tests {
             "no funnel shown for an excluding filter while dimmed: {}",
             status_line(&mut app)
         );
+    }
+
+    /// Issue #36's remaining half. `▼` answers "are lines missing right now?",
+    /// which is deliberately false here — with nothing including, the #36 guard
+    /// in `Document::recompute_visible` shows the whole file. But hide mode
+    /// *is* armed: define a filter and the pane visibly starts hiding, with no
+    /// second keypress. This is the state the issue was reported against, and
+    /// the one the funnel can never cover without lying.
+    #[test]
+    fn the_badge_shows_hide_mode_with_no_filters_at_all() {
+        let mut app = app_over_file("badge_bare", "alpha\nbeta\n");
+        assert!(
+            !status_line(&mut app).contains(HIDE_BADGE_TEXT.trim()),
+            "sanity: no badge before Ctrl-H"
+        );
+
+        key(&mut app, KeyCode::Char('H'));
+
+        assert_eq!(
+            app.document.mode(),
+            Mode::FilteredOnly,
+            "sanity: hide mode is armed"
+        );
+        assert!(
+            status_line(&mut app).contains(HIDE_BADGE_TEXT.trim()),
+            "hide mode armed with nothing on the row saying so: {}",
+            status_line(&mut app)
+        );
+    }
+
+    #[test]
+    fn the_badge_shows_hide_mode_alongside_enabled_filters() {
+        let mut app = app_over_file("badge_enabled", "alpha\nbeta\n");
+        key(&mut app, KeyCode::Char('f'));
+        key(&mut app, KeyCode::Char('i'));
+        typed(&mut app, "beta");
+        key(&mut app, KeyCode::Enter);
+
+        key(&mut app, KeyCode::Char('H'));
+
+        let row = status_line(&mut app);
+        assert!(row.contains(HIDE_BADGE_TEXT.trim()), "no badge: {row}");
+        assert!(
+            row.contains('▼'),
+            "sanity: the funnel still fires too: {row}"
+        );
+    }
+
+    /// The badge tracks the mode, not the filter set, so `!` must not take it
+    /// away — the mode is still armed and re-enabling the filters resumes
+    /// hiding immediately. This is also where `▼` and the badge visibly
+    /// disagree, which is the whole reason they are two indicators.
+    #[test]
+    fn the_badge_survives_disabling_every_filter() {
+        let mut app = app_over_file("badge_disabled", "alpha\nbeta\n");
+        key(&mut app, KeyCode::Char('f'));
+        key(&mut app, KeyCode::Char('i'));
+        typed(&mut app, "beta");
+        key(&mut app, KeyCode::Enter);
+
+        key(&mut app, KeyCode::Char('!'));
+        key(&mut app, KeyCode::Char('H'));
+
+        let row = status_line(&mut app);
+        assert!(
+            row.contains(HIDE_BADGE_TEXT.trim()),
+            "badge went away with the filters, but the mode did not: {row}"
+        );
+        assert!(
+            !row.contains('▼'),
+            "sanity: the funnel stays honest and off here: {row}"
+        );
+    }
+
+    #[test]
+    fn no_badge_while_dimming() {
+        let mut app = app_over_file("badge_dimmed", "alpha\nbeta\n");
+        key(&mut app, KeyCode::Char('f'));
+        key(&mut app, KeyCode::Char('x'));
+        typed(&mut app, "beta");
+        key(&mut app, KeyCode::Enter);
+
+        assert_eq!(app.document.mode(), Mode::Dimmed, "sanity: still dimming");
+        let row = status_line(&mut app);
+        assert!(
+            !row.contains(HIDE_BADGE_TEXT.trim()),
+            "badge claimed hide mode while dimming: {row}"
+        );
+        assert!(row.contains('▼'), "sanity: the funnel is on: {row}");
+    }
+
+    /// The issue rejected "a dim tiny icon" by name. Reverse video is what
+    /// makes this louder than the `DarkGray` row it sits on, so the styling is
+    /// the feature, not decoration — assert on it rather than on the text.
+    #[test]
+    fn the_badge_is_painted_prominently_not_dimmed() {
+        let mut app = app_over_file("badge_style", "alpha\nbeta\n");
+        key(&mut app, KeyCode::Char('H'));
+
+        let mut buf = Buffer::empty(AREA);
+        app.render(AREA, &mut buf);
+        let y = AREA.height - 1;
+
+        // Every column of the badge, not just one: a colour block with a gap
+        // in it is not the thing the issue asked for. Compared field by field
+        // rather than as a whole `Style` because a painted cell also carries a
+        // default `underline_color` that the constant never mentions.
+        for x in 0..HIDE_BADGE_TEXT.chars().count() as u16 {
+            let style = buf[(x, y)].style();
+            assert_eq!(style.fg, HIDE_BADGE_STYLE.fg, "column {x} foreground");
+            assert_eq!(style.bg, HIDE_BADGE_STYLE.bg, "column {x} background");
+            assert_eq!(
+                style.add_modifier, HIDE_BADGE_STYLE.add_modifier,
+                "column {x} modifiers"
+            );
+            assert!(
+                !style.add_modifier.contains(Modifier::DIM),
+                "the badge is the dim glyph the issue rejected"
+            );
+            assert!(
+                style.bg.is_some() && style.fg.is_some(),
+                "reverse video needs both a foreground and a background"
+            );
+        }
+    }
+
+    /// The badge is drawn ahead of the status text and takes columns from its
+    /// budget, so a narrow row has to keep eliding the path from the left
+    /// rather than letting anything run past the edge.
+    #[test]
+    fn a_narrow_row_keeps_the_badge_and_still_elides_the_directory() {
+        let mut app = app_over_file("badge_narrow", "alpha\nbeta\n");
+        key(&mut app, KeyCode::Char('H'));
+
+        let width = 40;
+        let row = status_line_at(&mut app, width);
+
+        assert!(row.contains(HIDE_BADGE_TEXT.trim()), "badge dropped: {row}");
+        assert!(
+            row.chars().count() <= width as usize,
+            "the row overflowed {width} columns: {row}"
+        );
+        assert!(
+            row.contains('…'),
+            "the directory stopped eliding from the left: {row}"
+        );
+    }
+
+    /// An open prompt shares the row rather than displacing the badge. Hide
+    /// mode is armed while a filter is being typed, and typing one is exactly
+    /// when the pane is about to change under you.
+    #[test]
+    fn an_open_prompt_still_shows_the_badge() {
+        let mut app = app_over_file("badge_prompt", "alpha\nbeta\n");
+        key(&mut app, KeyCode::Char('H'));
+
+        key(&mut app, KeyCode::Char('f'));
+        key(&mut app, KeyCode::Char('i'));
+        typed(&mut app, "foo");
+
+        let row = status_line(&mut app);
+        assert!(row.contains(HIDE_BADGE_TEXT.trim()), "badge dropped: {row}");
+        assert!(row.contains("filter: foo"), "prompt lost: {row}");
     }
 
     /// An excluding-only filter set never produces an `Included` verdict, so

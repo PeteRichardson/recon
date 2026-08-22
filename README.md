@@ -273,6 +273,17 @@ what makes skimming work: set a filter, press `Ctrl-H`, then walk the
 navigator with `j`. Each file is drawn hidden, so the ones with no matches
 come up blank and the ones worth opening are the ones with anything in them.
 
+Because the toggle survives file loads, it is easy to forget it is on — so
+while hiding, the bottom row carries a reverse-video **HIDE** badge. It tracks
+the mode and only the mode: it is there the instant you press `Ctrl-H` and gone
+the instant you press it again, whether or not any filter is currently removing
+lines. The `▼` funnel beside it answers the other question — whether lines are
+actually missing from the pane right now — which is why the two do not always
+appear together. Hide mode with every filter disabled shows the badge without
+the funnel, because nothing is being hidden yet; an excluding filter while
+dimming shows the funnel without the badge, because lines are gone without hide
+mode having anything to do with it.
+
 Behaviour change: `Ctrl-h` no longer moves the cursor left in the file view.
 It used to — the file view matches `h` regardless of modifiers — but the
 global `Ctrl-H` binding is now handled first and returns before the view ever
