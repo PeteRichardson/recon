@@ -9,7 +9,9 @@ members = ["vendor/tui-textarea-2"]
 
 [dependencies]
 ratatui = "0.30.2"
-clap = { version = "4.6.6", features = ["derive"] }
+# `env` is what gives `#[arg(long, env = "RECON_FOO")]` CLI > env precedence
+# without a hand-written merge. See docs/specs/2026-08-22-configuration-mechanism.md.
+clap = { version = "4.6.6", features = ["derive", "env"] }
 crossterm = "0.29"
 env_logger = "0.11.11"
 log = "0.4.33"
@@ -17,6 +19,18 @@ color-eyre = "0.6.5"
 tui-textarea-2 = { version = "0.12.1", features = ["search"] }
 regex = "1"
 jiff = "0.2.35"
+serde = { version = "1.0.229", features = ["derive"] }
+# Read-only on purpose: `default-features = false` drops the `display` feature,
+# which is the serializer. `toml::to_string` therefore does not exist in this
+# build, so the "recon never writes config.toml" decision cannot be broken by
+# accident — it fails to compile. Restoring a write path means adding
+# `toml_edit`, never re-enabling `display`; see the spec's "If a write path
+# ever lands".
+toml = { version = "1.1.4", default-features = false, features = [
+    "parse",
+    "serde",
+    "std",
+] }
 
 [patch.crates-io]
 tui-textarea-2 = { path = "vendor/tui-textarea-2" }

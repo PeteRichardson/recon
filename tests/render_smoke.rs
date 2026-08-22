@@ -263,17 +263,29 @@ fn moving_onto_a_directory_shows_that_it_is_a_directory() {
 /// went on looking at a file from the one you had just left.
 #[test]
 fn enter_on_a_directory_relists_and_previews_its_first_entry() {
+    // Own fixture directory, for the same reason as the test above: this
+    // walked the repo's own `src/` and named `document.rs` as the entry that
+    // sorts first, so adding `src/config.rs` broke a test about pressing
+    // Enter. What sorts first in recon's source tree is not this test's
+    // subject.
+    let dir = std::path::Path::new("target/test-navdirs/render_enter_dir");
+    std::fs::remove_dir_all(dir).ok();
+    std::fs::create_dir_all(dir.join("beta_dir")).expect("create fixture dir");
+    std::fs::write(dir.join("alpha.rs"), "content\n").expect("write fixture");
+    std::fs::write(dir.join("beta_dir/first.rs"), "the first entry's text\n").expect("write");
+    std::fs::write(dir.join("beta_dir/second.rs"), "the second entry's text\n").expect("write");
+
     let config = Config {
-        path: "Cargo.toml".to_string(),
+        path: dir.join("alpha.rs").display().to_string(),
     };
     let mut app = App::new(&config);
 
-    highlight(&mut app, "src");
+    highlight(&mut app, "beta_dir");
     let view_before = view_text(&mut app);
     // Selecting a directory now previews its *contents*, so the probe for
     // "a directory is selected" is a name from inside it.
     assert!(
-        view_before.contains("lib.rs"),
+        view_before.contains("first.rs"),
         "precondition: a directory is selected:\n{view_before}"
     );
 
@@ -283,16 +295,15 @@ fn enter_on_a_directory_relists_and_previews_its_first_entry() {
     (&mut app).render(AREA, &mut buf);
     let nav = nav_pane_rows(&buf).join("\n");
     assert!(
-        nav.contains("lib.rs"),
-        "nav did not descend into src:\n{nav}"
+        nav.contains("second.rs"),
+        "nav did not descend into beta_dir:\n{nav}"
     );
 
-    // `src/document.rs` sorts first, and its first line is a module doc
-    // comment — the cursor landed on it and it was previewed.
-    assert_eq!(highlighted_name(&mut app), "document.rs");
+    // `first.rs` sorts first, so the cursor landed on it and previewed it.
+    assert_eq!(highlighted_name(&mut app), "first.rs");
     let view_after = view_text(&mut app);
     assert!(
-        view_after.contains("The loaded file"),
+        view_after.contains("the first entry's text"),
         "the first entry was not previewed:\n{view_after}"
     );
 }
