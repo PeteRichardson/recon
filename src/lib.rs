@@ -317,8 +317,14 @@ impl App<'_> {
 
     /// Set the live search filter and move to its first hit.
     ///
-    /// Defined as "set it, then do exactly what `n` does", so there is one
-    /// movement path rather than two — and so the buffer rebuild that adding
+    /// Defined as "set it, then do exactly what `n` does" — which includes
+    /// the truncated-preview promotion `n` performs before stepping (see
+    /// `promote_truncated_preview`). Without that, a pattern that only
+    /// matches beyond a large preview's cap would evaluate against the
+    /// preview alone: the cursor would not move, and the status line would
+    /// read as "no matches" over a file that in fact has one.
+    ///
+    /// One movement path rather than two, and the buffer rebuild that adding
     /// a filter triggers in `Mode::FilteredOnly` is completed by
     /// `refresh_view` before anything moves a cursor through it.
     ///
@@ -326,6 +332,7 @@ impl App<'_> {
     /// prompt can stay open over an intact previous search.
     fn apply_search(&mut self, pattern: &str) -> Result<(), regex::Error> {
         self.filters.set_search(pattern)?;
+        self.promote_truncated_preview();
         self.refresh_view();
         self.step_to_interesting(false);
         Ok(())
@@ -676,17 +683,10 @@ impl App<'_> {
                         && matches!(self.widgets[self.active_widget], AppWidget::FileView(_)) =>
                 {
                     // `n`/`N` bypass the widget's own `handle_events`, which is
-                    // where a truncated preview promotes itself to a full load
-                    // on first interaction (see `FileView::handle_events`).
-                    // Stepping through matches is exactly that kind of
-                    // interaction, so the promotion is repeated here — otherwise
-                    // `n` on a big file silently wraps inside the preview and
-                    // never reaches the rest of it.
-                    if self.file_view_truncated() {
-                        self.promote_file_view();
-                        self.sync_document();
-                        self.refresh_view();
-                    }
+                    // where a truncated preview normally promotes itself on
+                    // first interaction — see `promote_truncated_preview`,
+                    // which `apply_search` also calls for the same reason.
+                    self.promote_truncated_preview();
                     self.step_to_interesting(c == 'N');
                     return Ok(());
                 }
@@ -754,15 +754,38 @@ impl App<'_> {
     }
 
     /// Force the file view's truncated preview to a full load, the same
-    /// thing its own `handle_events` does on first interaction. Needed only
-    /// by `n`/`N`, which move the cursor directly rather than going through
-    /// that dispatch — see their arm in `handle_event`.
+    /// thing its own `handle_events` does on first interaction. Needed by
+    /// every path that moves the cursor or evaluates a pattern directly
+    /// rather than going through that dispatch — see `promote_truncated_preview`,
+    /// which wraps this for those callers.
     fn promote_file_view(&mut self) {
         for widget in &mut self.widgets {
             if let AppWidget::FileView(view) = widget {
                 let path = std::path::Path::new(&view.filename).to_path_buf();
                 view.load(&path);
             }
+        }
+    }
+
+    /// Promote a truncated preview to a full load and bring the document up
+    /// to date with it. No-op when the preview is not truncated.
+    ///
+    /// `n`/`N` and a committed `/` both bypass `FileView::handle_events`,
+    /// which is where a truncated preview normally promotes itself on first
+    /// interaction — one moves the cursor directly, the other evaluates a
+    /// pattern via `apply_search`, and neither goes through that dispatch.
+    /// Without this, either would silently act on the bounded preview alone:
+    /// `n` would wrap inside it forever, and `/` would report "no matches"
+    /// for a pattern that only occurs past the preview's cap.
+    ///
+    /// `refresh_view` is folded in here, guarded the same way, since a
+    /// promotion is pointless without the document catching up to the newly
+    /// loaded lines before anything steps a cursor through them.
+    fn promote_truncated_preview(&mut self) {
+        if self.file_view_truncated() {
+            self.promote_file_view();
+            self.sync_document();
+            self.refresh_view();
         }
     }
 
@@ -1115,19 +1138,29 @@ impl App<'_> {
     /// Dimming alone does not say *why* lines are dim, or that a filter is
     /// defined but currently disabled — the pane would just look ordinary.
     fn status_text(&self) -> String {
-        // `FilteredOnly` is not the only way lines leave the screen: an
-        // excluding filter (`x`) removes its matches in `Dimmed` mode too,
-        // which is the entire point of it. Showing the funnel only for
-        // `FilteredOnly` let `x` empty the pane with nothing on the status
-        // line saying so.
-        let hiding = self.document.mode() == Mode::FilteredOnly || self.filters.any_excluding();
+        // `FilteredOnly` only hides anything when something enabled is
+        // including: issue #36's guard in `Document::recompute_visible`
+        // shows the whole file instead once nothing is, so `any_including`
+        // has to gate the funnel here too — otherwise a filter that exists
+        // but is disabled (or a disabled search) would claim lines are
+        // hidden while the guard is already showing everything.
+        //
+        // An excluding filter (`x`) is counted on its own, regardless of
+        // mode: it removes its matches in `Dimmed` mode too, which is the
+        // entire point of it, so gating the funnel on `FilteredOnly` alone
+        // let `x` empty the pane with nothing on the status line saying so.
+        let hiding = (self.document.mode() == Mode::FilteredOnly && self.filters.any_including())
+            || self.filters.any_excluding();
         let funnel = if hiding { "▼ " } else { "" };
         if self.filters.is_empty() && self.filters.search().is_none() {
-            // Issue #36's guard means hiding with nothing including — no
-            // numbered filters, no live search — shows the whole file rather
-            // than blanking it (see `Document::recompute_visible`), so there
-            // is nothing to explain: the funnel would claim a state that
-            // cannot happen.
+            // With no filters and no search at all, `any_including` and
+            // `any_excluding` are both trivially false, so `hiding` above is
+            // always false too — there is nothing this early return could be
+            // discarding. Filters that exist but are all disabled are a
+            // different state, one the same `hiding` expression already
+            // keeps honest below (see the `!any_enabled` branch): nothing
+            // enabled can be including or excluding either, so the funnel
+            // stays off there as well.
             return String::new();
         }
         // `row_count`, not `len`: a live search with no numbered filters is
@@ -2593,6 +2626,36 @@ mod tests {
         assert!(
             status_line(&mut app).contains("disabled"),
             "no indication the filters are off: {}",
+            status_line(&mut app)
+        );
+    }
+
+    /// With every filter disabled, `any_including` is false, so issue #36's
+    /// guard in `Document::recompute_visible` shows the whole file even in
+    /// `FilteredOnly` mode — nothing is actually hidden. Gating `hiding` on
+    /// `mode == FilteredOnly` alone (rather than requiring `any_including`
+    /// too) would still show the funnel here, claiming lines were hidden
+    /// over a pane that is in fact showing everything.
+    #[test]
+    fn the_status_line_does_not_show_a_funnel_when_disabled_filters_cannot_hide_anything() {
+        let mut app = app_over_file("status_off_no_funnel", "alpha\nbeta\n");
+        key(&mut app, KeyCode::Char('f'));
+        key(&mut app, KeyCode::Char('i'));
+        typed(&mut app, "beta");
+        key(&mut app, KeyCode::Enter);
+
+        key(&mut app, KeyCode::Char('!'));
+        key(&mut app, KeyCode::Char('H'));
+
+        assert!(
+            status_line(&mut app).contains("disabled"),
+            "sanity: still reports disabled: {}",
+            status_line(&mut app)
+        );
+        assert!(
+            !status_line(&mut app).contains('▼'),
+            "funnel claimed lines were hidden while the #36 guard is \
+             showing everything: {}",
             status_line(&mut app)
         );
     }
@@ -4997,6 +5060,53 @@ mod tests {
             cursor_source(&app),
             hit_at,
             "n did not reach a hit beyond the truncated preview"
+        );
+    }
+
+    /// `apply_search` is documented as "set it, then do exactly what `n`
+    /// does" — including the truncated-preview promotion above. This drives
+    /// `/` through the real key path (unlike `n_promotes_a_truncated_preview_before_stepping`,
+    /// which sets the search directly via `filters.set_search` and so never
+    /// exercises `apply_search` at all) against a preview truncated the same
+    /// way, with the only hit past the boundary. If `apply_search` skips the
+    /// promotion, the pattern is evaluated against the preview alone: there
+    /// is no hit in range, `step_to_interesting` is a no-op, and the cursor
+    /// stays wherever it started.
+    #[test]
+    fn slash_promotes_a_truncated_preview_before_landing_on_a_hit() {
+        claim_fixture_dir("slash_truncated_promote");
+        let dir = std::path::Path::new("target/test-appdirs").join("slash_truncated_promote");
+        fs::remove_dir_all(&dir).ok();
+        fs::create_dir_all(&dir).expect("create fixture dir");
+        // Same shape as the `n` fixture above: past PREVIEW_LINES, with the
+        // only hit beyond the preview boundary.
+        let hit_at = crate::widgets::fileview::PREVIEW_LINES + 50;
+        let body: String = (0..crate::widgets::fileview::PREVIEW_LINES + 100)
+            .map(|i| {
+                if i == hit_at {
+                    "HIT line\n".to_string()
+                } else {
+                    format!("line {i}\n")
+                }
+            })
+            .collect();
+        fs::write(dir.join("big.log"), &body).expect("write fixture");
+
+        let mut app = App::new(&Config {
+            path: dir.join("placeholder").display().to_string(),
+        });
+        key(&mut app, KeyCode::Down);
+        focus_file_view(&mut app);
+        assert_eq!(cursor_source(&app), 0, "sanity: cursor starts at the top");
+
+        key(&mut app, KeyCode::Char('/'));
+        typed(&mut app, "HIT");
+        key(&mut app, KeyCode::Enter);
+
+        assert_eq!(
+            cursor_source(&app),
+            hit_at,
+            "/ did not reach a hit beyond the truncated preview"
         );
     }
 
