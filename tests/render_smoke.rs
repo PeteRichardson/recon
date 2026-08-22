@@ -325,10 +325,12 @@ fn tab_moves_focus_to_the_file_view() {
 
     press(&mut app, KeyCode::Tab);
     let before = view_pane(&mut app);
-    press(&mut app, KeyCode::Enter);
+    // `]` pages down. It took that job from `Enter` in #48, when `Enter` became
+    // the filter pane's toggle and `space` the global peek.
+    press(&mut app, KeyCode::Char(']'));
     let after = view_pane(&mut app);
 
-    assert_ne!(before, after, "Enter did not reach the focused file view");
+    assert_ne!(before, after, "`]` did not reach the focused file view");
 }
 
 /// The panes size themselves to the longest entry name, capped at a default.

@@ -577,15 +577,24 @@ impl FileView<'_> {
             | Input {
                 key: Key::PageUp, ..
             } => self.textarea.scroll(Scrolling::PageUp),
-            // Paired deliberately: Enter under the pinky pages down, space
-            // under the thumb pages back up.
+            // Paired deliberately, and sitting next to the `{`/`}` paragraph
+            // motions above: brackets move by page, braces by paragraph, both
+            // left-is-back and right-is-forward. Neither needs Shift, which is
+            // what `Ctrl-b` costs, and both exist on keyboards with no
+            // `PageUp`/`PageDown`.
+            //
+            // These replaced `space` and `Enter` in #48. `space` became the
+            // global peek and `Enter` the filter pane's toggle, so a file view
+            // that still paged on either would give one key two meanings — the
+            // thing #48 set out to remove.
             Input {
-                key: Key::Enter, ..
-            } => self.textarea.scroll(Scrolling::PageDown),
-            Input {
-                key: Key::Char(' '),
+                key: Key::Char('['),
                 ..
             } => self.textarea.scroll(Scrolling::PageUp),
+            Input {
+                key: Key::Char(']'),
+                ..
+            } => self.textarea.scroll(Scrolling::PageDown),
             Input {
                 key: Key::Char('f'),
                 ctrl: true,
@@ -1609,27 +1618,54 @@ mod tests {
         );
     }
 
-    /// `space` and `Enter` page in opposite directions, so a thumb on the
-    /// space bar and a pinky on Enter can scan a file in both directions.
+    /// `[` and `]` page in opposite directions, sitting next to the `{`/`}`
+    /// paragraph motions: brackets move by page, braces by paragraph, and both
+    /// keep left-is-back, right-is-forward.
+    ///
+    /// They replaced `space`/`Enter` in #48. `space` became the global peek and
+    /// `Enter` the filter pane's toggle, and neither can also page here.
     #[test]
-    fn space_pages_up_and_enter_pages_down() {
+    fn brackets_page_up_and_down() {
         let body: String = (0..200).map(|i| format!("line {i}\n")).collect();
-        let mut view = view_of("space_pages.txt", &body);
+        let mut view = view_of("bracket_pages.txt", &body);
         let area = Rect::new(0, 0, 40, 10);
         let mut buf = Buffer::empty(area);
         (&mut view).render(area, &mut buf);
 
-        send(&mut view, Key::Enter);
+        send(&mut view, Key::Char(']'));
         (&mut view).render(area, &mut buf);
-        let after_enter = view.textarea.cursor().0;
-        assert!(after_enter > 0, "Enter did not page down");
+        let after_forward = view.textarea.cursor().0;
+        assert!(after_forward > 0, "`]` did not page down");
 
-        send(&mut view, Key::Char(' '));
+        send(&mut view, Key::Char('['));
         (&mut view).render(area, &mut buf);
 
         assert!(
-            view.textarea.cursor().0 < after_enter,
-            "space did not page back up"
+            view.textarea.cursor().0 < after_forward,
+            "`[` did not page back up"
+        );
+    }
+
+    /// The keys `[` and `]` took over must not still page, or the file view
+    /// would quietly keep a second copy of a binding that now belongs to
+    /// another pane.
+    #[test]
+    fn space_and_enter_no_longer_page() {
+        let body: String = (0..200).map(|i| format!("line {i}\n")).collect();
+        let mut view = view_of("no_page_keys.txt", &body);
+        let area = Rect::new(0, 0, 40, 10);
+        let mut buf = Buffer::empty(area);
+        (&mut view).render(area, &mut buf);
+        let start = view.textarea.cursor().0;
+
+        send(&mut view, Key::Enter);
+        send(&mut view, Key::Char(' '));
+        (&mut view).render(area, &mut buf);
+
+        assert_eq!(
+            view.textarea.cursor().0,
+            start,
+            "space or Enter still moved the file view"
         );
     }
 

@@ -78,6 +78,17 @@ pub struct Filter {
     pub style: Style,
 }
 
+/// Every enabled flag in an [`ActiveFilters`], captured so it can be restored.
+///
+/// Opaque on purpose: it is a token to hand back to
+/// [`ActiveFilters::apply_enabled_flags`], not a structure to read or build.
+/// Positions in it are meaningless without the set it came from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnabledFlags {
+    filters: Vec<bool>,
+    search: Option<bool>,
+}
+
 #[derive(Debug, Default)]
 pub struct ActiveFilters {
     filters: Vec<Filter>,
@@ -375,6 +386,36 @@ impl ActiveFilters {
 
     pub fn has_remembered(&self) -> bool {
         self.remembered.is_some()
+    }
+
+    /// Capture every enabled flag for a caller to hold and hand back later.
+    ///
+    /// Deliberately *not* `disable_all_remembering`, even though the peek `App`
+    /// uses this for (#48) also turns everything off. That method owns a single
+    /// internal slot which `!` already uses; a peek writing to it would
+    /// overwrite a capture `!` was still holding, and `!` would then restore
+    /// all-disabled for the rest of the session. Two independent undo stacks
+    /// need two independent captures, so this one lives with its caller.
+    pub fn enabled_flags(&self) -> EnabledFlags {
+        EnabledFlags {
+            filters: self.filters.iter().map(|filter| filter.enabled).collect(),
+            search: self.search.as_ref().map(|search| search.enabled),
+        }
+    }
+
+    /// Put back what [`enabled_flags`](Self::enabled_flags) captured.
+    ///
+    /// `zip` rather than an index, and the same tolerance `restore_remembered`
+    /// has: a filter deleted since the capture simply drops out of the restore
+    /// rather than resurrecting, and one added since keeps whatever it has now.
+    /// A snapshot is a convenience, not a transaction.
+    pub fn apply_enabled_flags(&mut self, flags: &EnabledFlags) {
+        for (filter, was_enabled) in self.filters.iter_mut().zip(&flags.filters) {
+            filter.enabled = *was_enabled;
+        }
+        if let (Some(search), Some(was_enabled)) = (self.search.as_mut(), flags.search) {
+            search.enabled = was_enabled;
+        }
     }
 
     pub fn any_enabled(&self) -> bool {
