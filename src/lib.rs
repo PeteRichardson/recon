@@ -1,4 +1,3 @@
-use clap::Parser;
 use color_eyre::Result;
 use crossterm::event::{self, KeyCode, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::prelude::{Backend, Buffer, Color, Constraint, Layout, Rect, Style, Terminal, Widget};
@@ -202,24 +201,17 @@ enum NavWidth {
     Pinned(u16),
 }
 
+pub mod config;
 pub mod document;
 pub mod filter;
 mod widgets;
+pub use config::Config;
 use document::{Document, Mode};
 use filter::{ActiveFilters, Verdict};
 use widgets::filenav::FileNav;
 use widgets::fileview::FileView;
 use widgets::filterlist::FilterList;
 use widgets::{Action, AppWidget, FilterCommand};
-
-#[derive(Parser, Debug)]
-#[command(version, about, long_about = None)]
-pub struct Config {
-    /// File or directory to open. A directory is listed with its first entry
-    /// selected; a file is opened with its own directory listed alongside.
-    #[arg(default_value = ".")]
-    pub path: String,
-}
 
 #[derive(Default)]
 pub struct App<'a> {
@@ -2208,22 +2200,6 @@ mod tests {
         App::new(&Config {
             path: file.display().to_string(),
         })
-    }
-
-    /// The argument is optional and defaults to the current directory, so
-    /// bare `recon` is `recon .`.
-    #[test]
-    fn no_argument_defaults_to_the_current_directory() {
-        let config = Config::try_parse_from(["recon"]).expect("parses with no argument");
-
-        assert_eq!(config.path, ".");
-    }
-
-    #[test]
-    fn an_explicit_argument_still_wins() {
-        let config = Config::try_parse_from(["recon", "some/path.log"]).expect("parses");
-
-        assert_eq!(config.path, "some/path.log");
     }
 
     /// Launched on a directory, the view shows the first entry's contents —

@@ -1,4 +1,3 @@
-use clap::Parser;
 use color_eyre::{Result, config::HookBuilder, eyre};
 use crossterm::{
     event::{DisableMouseCapture, EnableMouseCapture},
@@ -14,7 +13,14 @@ fn main() -> Result<()> {
     install_error_hooks()?;
 
     setup_logging();
-    let config = Config::parse();
+    // Before `init_terminal`, and that ordering is load-bearing rather than
+    // incidental. A config error printed after raw mode and the alternate
+    // screen are in place is wiped off the screen a frame later, so the only
+    // place a bad `config.toml` can be reported legibly is here — on stderr,
+    // on the normal screen, where the existing `[DEBUG] Config { .. }` line
+    // already goes. Hence a hard failure rather than a warning: "warn and
+    // carry on" would be "carry on silently".
+    let config = Config::load()?;
 
     let terminal = init_terminal()?;
     App::new(&config).run(terminal)?;

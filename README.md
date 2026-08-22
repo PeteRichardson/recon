@@ -502,9 +502,17 @@ whole width outright.
   github issue #27.
 - **Non-UTF-8 files are not viewable.** A file that isn't valid UTF-8 renders
   as `<binary file: not valid UTF-8>` rather than as bytes.
+- **Nothing is configurable yet.** The mechanism exists — recon reads
+  `$XDG_CONFIG_HOME/recon/config.toml`, falling back to
+  `~/.config/recon/config.toml` on every platform including macOS, under a
+  `CLI > env > file > defaults` precedence chain — but **no setting uses it
+  yet**, so the schema is empty and any key in the file is reported as an
+  unknown key. Settings land one issue at a time against github issue #18; see
+  `docs/specs/2026-08-22-configuration-mechanism.md` for the rules and the list
+  of candidates.
 - **Nothing is persisted.** Filter sets live only for the session — there is no
-  config file and no way to save or reload a filter set. Re-typing them is the
-  only option after a restart.   This is github issue #8
+  way to save or reload a filter set. Re-typing them is the only option after a
+  restart.   This is github issue #8
 - `n` and `N` are line-oriented: a line matching the search three times is one
   stop, not three. `recon` is a line-focused tool, and one rule for filter hits
   and search hits alike beats two.
