@@ -63,7 +63,9 @@ motions throughout.
   feeds `Ctrl-H`. `n` and `N` step between *interesting* lines, whether the
   filters or the search made them so.
 - **Line numbers stay honest** — the gutter shows original file line numbers
-  even while filtered, so gaps in the numbering mark what was hidden.
+  even while filtered, so gaps in the numbering mark what was hidden. While
+  hiding, the last number of each run of consecutive lines is underlined, so
+  the boundaries are visible without reading the numbers to find them.
 - **Filters outlive the file** — load another log and the filter set stays put,
   along with the `Ctrl-H` hide toggle. `!` disables everything at once and
   remembers what was on, so it's one keystroke back to an unfiltered view
@@ -258,7 +260,10 @@ configured with `stty erase ^H`, where the Backspace *key* itself sends
 `0x08` — the same byte crossterm reports as `Ctrl-H` — so pressing Backspace
 would otherwise toggle hiding instead of doing nothing in this app. The gutter
 keeps the original line numbers either way, so a gap in the numbering is how
-you tell something was left out. Toggling back returns you to the exact line
+you tell something was left out — and while hiding, the last number before
+each gap is underlined, since ten matched lines, a hundred hidden ones and ten
+more matched lines otherwise read as twenty consecutive lines unless you stop
+to compare the numbers. Toggling back returns you to the exact line
 you were on, which is the point: the hidden view is for finding a line, not
 for living in.
 
