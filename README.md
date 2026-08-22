@@ -98,8 +98,9 @@ motions throughout.
 - **Mouse resize** — drag the pane divider; double-click it to return to
   auto-sizing.
 - **Straight into your editor** — `o` opens the selected file's enclosing
-  *project* at the line under the cursor. The editor is a command template
-  rather than a hard-coded list, so zed, VS Code, Sublime, IntelliJ and even
+  *project* at the line under the cursor; `O` opens the file *alone*, for the
+  `.zshrc` you just want open fast. The editor is a command template rather than
+  a hard-coded list, so zed, VS Code, Sublime, IntelliJ and even
   `nvim`-in-a-new-terminal-window are all one line of config; run
   `recon --print-editor-config` for a ready-made one.
 
@@ -238,6 +239,7 @@ Global (`src/lib.rs`), handled before the focused pane sees the key:
 | `b` | Hide the left column — both the navigator and the filter pane — and focus the file view; press again to restore the split (focus stays in the file view; `e` returns it) |
 | `z` | Maximise the focused pane, or restore the split — works in the navigator too, for long filenames |
 | `o` | Open the selected file's enclosing **project** in your editor, at the line the cursor is on — see [Opening an editor](#opening-an-editor) |
+| `O` | Open the selected **file alone**, at the same line — no project, no walk-up |
 
 `?` is unbound. It used to search backward; `n`/`N` cover both directions now,
 so it is reserved for the help view instead (issue #25).
@@ -503,6 +505,19 @@ The project is found by walking up from the file until a marker turns up:
 `package.json`, `pyproject.toml`, `setup.py` or `go.mod`. With no marker
 anywhere above, `o` opens the file's own directory, so it always does something.
 
+`O` opens the **file alone** and skips the walk-up entirely. The two are
+siblings, not duplicates:
+
+| Key | Hands the editor | Walk-up? | For |
+| --- | --- | --- | --- |
+| `o` | project root + file + line | yes | a file in a codebase, where the surrounding context matters |
+| `O` | file + line | no | `.zshrc`, `.ssh/config`, any one-off file you want open *fast* |
+
+There is deliberately no single auto-detecting key. It would break on exactly
+the case `O` exists for — dotfiles kept in a git repo, where `~/.zshrc` *does*
+have a marker above it, so auto-detect would fling open the whole dotfiles repo.
+Two explicit keys never lie about which one you asked for.
+
 ### Configuring it
 
 The editor is a **command template**, not a list of supported editors. recon
@@ -532,19 +547,25 @@ ones are `zed`, `vscode`, `sublime`, `idea`, `terminal-nvim`, `iterm-nvim`,
 `wezterm-nvim`, `kitty-nvim` and `ghostty-nvim`. It only ever **prints** — recon
 writes neither `config.toml` nor your shell rc.
 
-`editor.file` is the template for `O` (github issue #41, not bound yet). Leave
-it out and it is derived from `editor.project` by dropping the `{project}`
-argument, so one line normally configures both. Write both when you want them to
-differ — `-n` on just the file one, say.
+`editor.file` is the template for `O`, and `{project}` is not substituted there
+— there is no project. Leave it out and it is derived from `editor.project` by
+dropping the `{project}` argument, so one line normally configures both. Write
+both when you want them to differ — `-n` on just the file one, say.
+
+New window versus reusing an existing one is a word in the template, not a
+separate key: `zed -n {file}:{line}` always gets a fresh window, `zed
+{file}:{line}` lets Zed decide. Because the two templates are separate settings,
+each key carries its own window habit with no extra machinery.
 
 Resolution order, following recon's usual chain with one deliberate exception:
 
 ```text
---editor flag
-RECON_EDITOR             recon-specific
-config.toml              [editor] project
+--editor flag                                --file-editor flag
+RECON_EDITOR             recon-specific      RECON_FILE_EDITOR
+config.toml              [editor] project    [editor] file
+                                             derive from project, dropping {project}
 $VISUAL / $EDITOR        generic, so it ranks BELOW the config file
-zed {project} {file}:{line}
+zed {project} {file}:{line}                  zed {file}:{line}
 ```
 
 `$VISUAL`/`$EDITOR` sit below the file on purpose: they are not recon's
@@ -617,9 +638,6 @@ Full reasoning: `docs/specs/2026-08-22-opening-an-editor.md`.
   unknown key. Settings land one issue at a time against github issue #18; see
   `docs/specs/2026-08-22-configuration-mechanism.md` for the rules and the list
   of candidates.
-- **`o` opens the project; opening the bare file is not bound yet.** `O` is
-  github issue #41, and by construction it is one key and one template field
-  away — `editor.file` is already read, derived and tested.
 - **Nothing is persisted.** Filter sets live only for the session — there is no
   way to save or reload a filter set. Re-typing them is the only option after a
   restart.   This is github issue #8

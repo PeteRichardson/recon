@@ -1,6 +1,6 @@
 # Opening an editor from recon
 
-**Issue:** #42 (`o`, the project key). #41 (`O`, the file key) is a follow-on.
+**Issue:** #42 (`o`, the project key) and #41 (`O`, the file key).
 **Status:** implemented
 **Depends on:** #18 (the configuration mechanism), which supplies the ladder
 this hangs off.
@@ -24,9 +24,10 @@ o  ->  project_root(file)      walk up to the enclosing project
    ->  Launcher::spawn(argv)   detached, reaped, failure reported
 ```
 
-Everything except the first step is shared with `O`. That is deliberate: #41 is
-one key, one `match` arm and one template field, not a second copy of any of
-this.
+Everything except the first step is shared with `O`. That is what made #41 one
+key, one `match` arm and one template field rather than a second copy of any of
+this — `EditorScope` decides whether to climb, the template decides what the
+command looks like, and nothing else differs.
 
 ## `o` and `O` are siblings, not duplicates
 
@@ -186,8 +187,8 @@ viewer over a setting most sessions never touch.
 
 ```toml
 [editor]
-project = 'zed {project} {file}:{line}'   # o  — #42
-file    = 'zed {file}:{line}'             # O  — #41
+project = 'zed {project} {file}:{line}'   # o  — the project key
+file    = 'zed {file}:{line}'             # O  — the file key
 ```
 
 If `file` is unset it is **derived from `project` by dropping the `{project}`
@@ -332,5 +333,3 @@ follows and for the same reason: `std::env::set_var` is process-global and
 - **Writing any config, anywhere.** Print only.
 - **Validating templates at startup.** A bad template must not stop recon
   opening a log; it is reported by the key that uses it.
-- **`O` itself.** #41, and by construction it costs one key, one template field
-  and one `match` arm.

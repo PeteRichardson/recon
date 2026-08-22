@@ -297,15 +297,14 @@ struct StatusMessage {
 /// Which of the two editor bindings is being carried out.
 ///
 /// One enum rather than two methods: template resolution, argv splitting,
-/// substitution, spawning and error reporting are identical for both keys, and
-/// #41 (`O`) is meant to cost one key and one match arm — not a second copy of
+/// substitution, spawning and error reporting are identical for both keys, so
+/// `O` costs one key and one match arm rather than a second copy of
 /// `open_in_editor`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum EditorScope {
     /// `o` — walk up to the enclosing project.
     Project,
-    /// `O` (#41) — the file alone, no walk-up.
-    #[allow(dead_code, reason = "the `O` binding lands in #41; this is its arm")]
+    /// `O` — the file alone, no walk-up.
     File,
 }
 
@@ -912,12 +911,30 @@ impl App<'_> {
                 // Guarded on `.is_empty()`, same reasoning as `q`/`f`/`p`: `o`
                 // is lowercase, so crossterm never attaches SHIFT to it, and
                 // leaving Ctrl-O and Alt-O unclaimed lets them fall through to
-                // the focused widget. `O` is deliberately *not* bound here —
-                // it is #41, and it arrives as one more arm calling the same
-                // method with the other template.
+                // the focused widget.
                 KeyCode::Char('o') if key.modifiers.is_empty() => {
                     let template = self.editor.project.clone();
                     self.open_in_editor(&template, EditorScope::Project);
+                    return Ok(());
+                }
+                // `O` (#41): the same method, the other template, no walk-up.
+                // Everything that makes the key work — resolution, splitting,
+                // substitution, spawning, error reporting — is already shared,
+                // so the sibling really does cost one arm.
+                //
+                // Not guarded on `.is_empty()`, unlike `o` directly above:
+                // crossterm attaches SHIFT to every uppercase character a real
+                // terminal sends, so that guard would make `O` unreachable
+                // outside a test harness. Excluding CONTROL/ALT instead is the
+                // convention `H` and `n`/`N` already follow, and it keeps
+                // Ctrl-O and Alt-O falling through exactly as before.
+                KeyCode::Char('O')
+                    if !key
+                        .modifiers
+                        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+                {
+                    let template = self.editor.file.clone();
+                    self.open_in_editor(&template, EditorScope::File);
                     return Ok(());
                 }
                 _ => {}
@@ -1058,9 +1075,9 @@ impl App<'_> {
     /// Hand the selected file to an editor.
     ///
     /// Every step after the walk-up is shared by both bindings, which is what
-    /// makes #41 (`O`) one key and one `match` arm rather than a second copy of
-    /// this: `scope` decides whether to climb, and the template decides what
-    /// the command looks like. Nothing else differs.
+    /// made `O` one key and one `match` arm rather than a second copy of this:
+    /// `scope` decides whether to climb, and the template decides what the
+    /// command looks like. Nothing else differs.
     ///
     /// Failures are reported on the status row and swallowed. recon is a
     /// viewer; a missing editor is not a reason to bring the TUI down over a
@@ -6920,5 +6937,239 @@ mod tests {
         ctrl(&mut app, KeyCode::Char('o'));
 
         assert!(launcher.is_empty(), "Ctrl-O was swallowed as the open key");
+    }
+
+    // ---- `O`: open the file alone (#41) ----------------------------------
+
+    /// `key`, with Shift held — what a real terminal sends for an uppercase
+    /// character. `key(Char('O'))` alone is the harness-only case; both have to
+    /// work, which is why `O` is guarded on CONTROL/ALT rather than on
+    /// `.is_empty()`.
+    fn shift(app: &mut App, code: KeyCode) {
+        app.handle_event(event::Event::Key(event::KeyEvent::new(
+            code,
+            KeyModifiers::SHIFT,
+        )))
+        .unwrap();
+    }
+
+    /// The headline acceptance criterion: `O` opens the file *alone*, at the
+    /// cursor's line, with no project argument — and the fixture is inside a
+    /// project, so this also proves no walk-up happened.
+    #[test]
+    fn shift_o_opens_the_file_alone_at_the_cursors_line() {
+        let (mut app, root) = app_over_project("O_file", "alpha\nbeta\ngamma\n");
+        let launcher = record_launches(&mut app, RecordingLauncher::default());
+
+        shift(&mut app, KeyCode::Char('O'));
+
+        assert_eq!(
+            launcher.only_command(),
+            [
+                "zed".to_string(),
+                format!("{}:1", absolute(&root.join("logs/log.txt"))),
+            ]
+        );
+    }
+
+    /// Stated separately from the argv assertion above because it is the point
+    /// of the key: `~/.zshrc` inside a dotfiles repo has a marker above it, and
+    /// `O` exists so that marker is never consulted.
+    #[test]
+    fn shift_o_performs_no_walk_up_even_inside_a_project() {
+        let (mut app, root) = app_over_project("O_no_walk_up", "alpha\n");
+        let launcher = record_launches(&mut app, RecordingLauncher::default());
+
+        shift(&mut app, KeyCode::Char('O'));
+
+        let argv = launcher.only_command();
+        assert!(
+            !argv.contains(&absolute(&root)),
+            "`O` climbed to the project root anyway: {argv:?}"
+        );
+        assert_eq!(argv.len(), 2, "`O` passed more than a program and a file");
+    }
+
+    /// The cursor's line, 1-based, on this path too — the shared half of
+    /// `open_in_editor` proved through the other key.
+    #[test]
+    fn shift_o_lands_on_the_line_the_cursor_is_on() {
+        let (mut app, root) = app_over_project("O_line", "alpha\nbeta\ngamma\ndelta\n");
+        let launcher = record_launches(&mut app, RecordingLauncher::default());
+
+        focus_file_view(&mut app);
+        key(&mut app, KeyCode::Down);
+        key(&mut app, KeyCode::Down);
+        shift(&mut app, KeyCode::Char('O'));
+
+        assert_eq!(
+            launcher.only_command().last().expect("a file argument"),
+            &format!("{}:3", absolute(&root.join("logs/log.txt")))
+        );
+    }
+
+    /// Global, not pane-scoped, exactly like `o`.
+    #[test]
+    fn shift_o_works_from_the_navigator_pane() {
+        let (mut app, _root) = app_over_project("O_from_nav", "alpha\n");
+        let launcher = record_launches(&mut app, RecordingLauncher::default());
+
+        assert!(
+            matches!(app.widgets[app.active_widget], AppWidget::FileNav(_)),
+            "the navigator should have focus at startup"
+        );
+        shift(&mut app, KeyCode::Char('O'));
+
+        assert!(!launcher.is_empty(), "`O` did nothing from the navigator");
+    }
+
+    /// A harness that sends no modifier at all must still reach the key. The
+    /// tests above pin the real terminal's SHIFT; this pins the other case, so
+    /// neither guard can be tightened into breaking the other.
+    #[test]
+    fn shift_o_is_reached_with_no_modifier_attached() {
+        let (mut app, _root) = app_over_project("O_bare", "alpha\n");
+        let launcher = record_launches(&mut app, RecordingLauncher::default());
+
+        key(&mut app, KeyCode::Char('O'));
+
+        assert!(!launcher.is_empty(), "a bare `O` did not reach the key");
+    }
+
+    /// The derive rung, end to end: one line of config for `o` makes `O` work,
+    /// by dropping the `{project}` entry rather than by string surgery.
+    #[test]
+    fn the_file_template_is_derived_from_the_project_template() {
+        claim_fixture_dir("O_derived");
+        let root = std::path::Path::new("target/test-appdirs/O_derived");
+        fs::remove_dir_all(root).ok();
+        fs::create_dir_all(root).expect("create fixture dir");
+        fs::write(root.join("go.mod"), "module fixture\n").expect("write marker");
+        let file = root.join("log.txt");
+        fs::write(&file, "alpha\n").expect("write fixture");
+
+        let mut app = App::new(&Config {
+            path: file.display().to_string(),
+            editor: Some("code {project} -g {file}:{line}".to_string()),
+            ..Config::default()
+        });
+        let launcher = record_launches(&mut app, RecordingLauncher::default());
+
+        shift(&mut app, KeyCode::Char('O'));
+
+        assert_eq!(
+            launcher.only_command(),
+            [
+                "code".to_string(),
+                "-g".to_string(),
+                format!("{}:1", absolute(&file)),
+            ]
+        );
+    }
+
+    /// An explicit `editor.file` outranks the derived one — the rung above it
+    /// on the ladder, proved through the key rather than in isolation.
+    #[test]
+    fn an_explicit_file_template_beats_the_derived_one() {
+        claim_fixture_dir("O_explicit");
+        let root = std::path::Path::new("target/test-appdirs/O_explicit");
+        fs::remove_dir_all(root).ok();
+        fs::create_dir_all(root).expect("create fixture dir");
+        let file = root.join("log.txt");
+        fs::write(&file, "alpha\n").expect("write fixture");
+
+        let mut app = App::new(&Config {
+            path: file.display().to_string(),
+            editor: Some("code {project} -g {file}:{line}".to_string()),
+            file_editor: Some("subl -n {file}:{line}".to_string()),
+            ..Config::default()
+        });
+        let launcher = record_launches(&mut app, RecordingLauncher::default());
+
+        shift(&mut app, KeyCode::Char('O'));
+
+        assert_eq!(
+            launcher.only_command(),
+            [
+                "subl".to_string(),
+                "-n".to_string(),
+                format!("{}:1", absolute(&file)),
+            ]
+        );
+    }
+
+    /// `o` must keep its own template when the two differ — the one assertion
+    /// that catches the arms being wired to the same field.
+    #[test]
+    fn the_two_keys_do_not_share_a_template() {
+        claim_fixture_dir("O_distinct");
+        let root = std::path::Path::new("target/test-appdirs/O_distinct");
+        fs::remove_dir_all(root).ok();
+        fs::create_dir_all(root).expect("create fixture dir");
+        let file = root.join("log.txt");
+        fs::write(&file, "alpha\n").expect("write fixture");
+
+        let mut app = App::new(&Config {
+            path: file.display().to_string(),
+            editor: Some("zed {project} {file}:{line}".to_string()),
+            file_editor: Some("subl {file}:{line}".to_string()),
+            ..Config::default()
+        });
+        let launcher = record_launches(&mut app, RecordingLauncher::default());
+
+        key(&mut app, KeyCode::Char('o'));
+
+        assert_eq!(
+            launcher.only_command().first().expect("a program"),
+            "zed",
+            "`o` ran the file template"
+        );
+    }
+
+    /// A failing launch reports and recon keeps running on this path too.
+    #[test]
+    fn a_failing_shift_o_is_reported_on_the_status_row() {
+        let (mut app, _root) = app_over_project("O_fail", "alpha\n");
+        record_launches(&mut app, RecordingLauncher::failing("no such file"));
+
+        shift(&mut app, KeyCode::Char('O'));
+
+        let row = status_line(&mut app);
+        assert!(
+            row.contains("no such file"),
+            "the row does not say why: {row}"
+        );
+        assert!(app.is_running(), "a failed launch brought the app down");
+    }
+
+    /// Ctrl-O and Alt-O stay unclaimed, so they fall through to the focused
+    /// widget — the same tolerance `H` and `n`/`N` use.
+    #[test]
+    fn ctrl_shift_o_is_not_the_open_key() {
+        let (mut app, _root) = app_over_project("O_ctrl", "alpha\n");
+        let launcher = record_launches(&mut app, RecordingLauncher::default());
+
+        ctrl(&mut app, KeyCode::Char('O'));
+
+        assert!(
+            launcher.is_empty(),
+            "Ctrl-Shift-O was swallowed as the open key"
+        );
+    }
+
+    /// An open prompt outranks every binding, and an uppercase global is the
+    /// one most likely to break that: `O` is an ordinary character to type into
+    /// a search. The guard is the early return `handle_event` already makes for
+    /// `self.search`, so this pins the behaviour rather than adding to it.
+    #[test]
+    fn shift_o_typed_into_a_prompt_is_text_not_the_open_key() {
+        let (mut app, _root) = app_over_project("O_prompt", "alpha\n");
+        let launcher = record_launches(&mut app, RecordingLauncher::default());
+
+        key(&mut app, KeyCode::Char('/'));
+        shift(&mut app, KeyCode::Char('O'));
+
+        assert!(launcher.is_empty(), "`O` fired from inside a prompt");
+        assert_eq!(prompt_line(&mut app), "/O");
     }
 }
