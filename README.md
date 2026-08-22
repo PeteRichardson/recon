@@ -591,7 +591,7 @@ Layout:
 | `src/main.rs` | Entry point: terminal setup, error hooks, logging |
 | `src/lib.rs` | `App` — layout, global keys, pane focus, prompts |
 | `src/document.rs` | The loaded file and its visible-line set |
-| `src/filter.rs` | `FilterSet` — the filter stack and its evaluation |
+| `src/filter.rs` | `ActiveFilters` — the filter stack and its evaluation |
 | `src/widgets/filenav.rs` | Directory navigator pane |
 | `src/widgets/fileview.rs` | File view pane |
 | `src/widgets/filterlist.rs` | Filter list pane |

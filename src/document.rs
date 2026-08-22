@@ -1,6 +1,6 @@
 //! The loaded file and what the filters made of it.
 
-use crate::filter::{FilterSet, Verdict};
+use crate::filter::{ActiveFilters, Verdict};
 use ratatui::style::Style;
 
 /// Which lines the file view shows.
@@ -29,7 +29,7 @@ pub struct Document {
     /// Whether anything was marking lines at the last `evaluate` — a numbered
     /// including filter, or the live search.
     ///
-    /// Cached rather than asked of the `FilterSet` inside
+    /// Cached rather than asked of the `ActiveFilters` inside
     /// `recompute_visible`, so that method keeps taking no arguments and stays
     /// independent of the filter set. That independence is what makes the
     /// `Ctrl-H` path cheap: the toggle re-derives `visible` from the verdicts
@@ -61,7 +61,7 @@ impl Document {
     }
 
     /// Recompute every line's verdict. Call when the lines or the filters change.
-    pub fn evaluate(&mut self, filters: &FilterSet) {
+    pub fn evaluate(&mut self, filters: &ActiveFilters) {
         self.verdicts = self
             .lines
             .iter()
@@ -117,7 +117,7 @@ impl Document {
     ///
     /// Always covers every line, so a shorter vector can never leave trailing
     /// lines wearing styles computed for a previously loaded file.
-    pub fn line_styles(&self, filters: &FilterSet) -> Vec<Option<Style>> {
+    pub fn line_styles(&self, filters: &ActiveFilters) -> Vec<Option<Style>> {
         self.verdicts
             .iter()
             .map(|verdict| filters.style_for(*verdict))
@@ -148,7 +148,7 @@ impl Document {
     }
 
     /// One style slot per *visible* line, aligned with `visible_lines`.
-    pub fn visible_styles(&self, filters: &FilterSet) -> Vec<Option<Style>> {
+    pub fn visible_styles(&self, filters: &ActiveFilters) -> Vec<Option<Style>> {
         self.visible
             .iter()
             .map(|&source| filters.style_for(self.verdicts[source]))
@@ -218,16 +218,16 @@ mod tests {
         Document::new(lines.iter().map(|l| l.to_string()).collect())
     }
 
-    fn set_with(patterns: &[&str]) -> FilterSet {
-        let mut set = FilterSet::new();
+    fn set_with(patterns: &[&str]) -> ActiveFilters {
+        let mut set = ActiveFilters::new();
         for pattern in patterns {
             set.add(pattern).expect("valid pattern");
         }
         set
     }
 
-    fn set_searching(pattern: &str) -> FilterSet {
-        let mut set = FilterSet::new();
+    fn set_searching(pattern: &str) -> ActiveFilters {
+        let mut set = ActiveFilters::new();
         set.set_search(pattern).expect("valid pattern");
         set
     }
@@ -319,7 +319,7 @@ mod tests {
     #[test]
     fn an_unfiltered_document_styles_nothing() {
         let mut document = doc(&["alpha", "beta"]);
-        let filters = FilterSet::new();
+        let filters = ActiveFilters::new();
         document.evaluate(&filters);
 
         let styles = document.line_styles(&filters);
@@ -338,8 +338,8 @@ mod tests {
         assert_ne!(styles[0].unwrap().fg, styles[1].unwrap().fg);
     }
 
-    fn set_excluding(patterns: &[&str]) -> FilterSet {
-        let mut set = FilterSet::new();
+    fn set_excluding(patterns: &[&str]) -> ActiveFilters {
+        let mut set = ActiveFilters::new();
         for pattern in patterns {
             set.add_excluding(pattern).expect("valid pattern");
         }
@@ -372,7 +372,7 @@ mod tests {
     fn hiding_with_no_filters_shows_the_whole_file() {
         let mut document = doc(&["alpha", "beta", "gamma"]);
         document.set_mode(Mode::FilteredOnly);
-        document.evaluate(&FilterSet::new());
+        document.evaluate(&ActiveFilters::new());
 
         assert_eq!(document.visible(), &[0, 1, 2]);
     }
@@ -417,7 +417,7 @@ mod tests {
     #[test]
     fn the_guard_survives_a_mode_toggle_without_re_evaluating() {
         let mut document = doc(&["alpha", "beta"]);
-        document.evaluate(&FilterSet::new());
+        document.evaluate(&ActiveFilters::new());
 
         document.set_mode(Mode::FilteredOnly);
         document.recompute_visible();

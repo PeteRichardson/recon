@@ -68,7 +68,7 @@ pub enum AppWidget<'a> {
 
 /// What a keypress in the filter pane asks `App` to do.
 ///
-/// `FilterList` cannot mutate the `FilterSet` it only borrows for rendering,
+/// `FilterList` cannot mutate the `ActiveFilters` it only borrows for rendering,
 /// so it reports what the user asked for and lets `App` — the set's owner —
 /// carry it out. This is not carried on `Action`: that enum is about a
 /// widget asking `App` to show a *file* (`Load`/`Preview`), and a filter
@@ -78,7 +78,7 @@ pub enum FilterCommand {
     Toggle(usize),
     Delete(usize),
     /// The search row, which carries no index: the live search lives in its
-    /// own slot on the `FilterSet`, not at a position in `filters`.
+    /// own slot on the `ActiveFilters`, not at a position in `filters`.
     ToggleSearch,
     DeleteSearch,
 }
@@ -105,7 +105,7 @@ impl AppWidget<'_> {
             // Keys aimed at this pane are intercepted earlier, by
             // `App::handle_event`, and routed through `App::handle_filter_key`
             // instead of reaching here: applying them means mutating the
-            // `FilterSet`, and this widget only ever borrows one, so it
+            // `ActiveFilters`, and this widget only ever borrows one, so it
             // cannot carry out its own commands. This arm exists only so the
             // match stays exhaustive; it never actually runs for a key.
             Self::FilterList(_) => Ok(None),
@@ -118,7 +118,7 @@ impl Widget for &mut AppWidget<'_> {
         match self {
             AppWidget::FileNav(w) => w.render(area, buf),
             AppWidget::FileView(w) => w.render(area, buf),
-            // `FilterList::render` needs a borrowed `FilterSet`, which this
+            // `FilterList::render` needs a borrowed `ActiveFilters`, which this
             // type has no way to hold: `App` owns the one true set, and a
             // copy here could go stale the moment a filter changed. Rather
             // than give `AppWidget` one, `App::render` special-cases this
