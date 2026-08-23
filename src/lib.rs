@@ -205,6 +205,7 @@ pub mod config;
 pub mod document;
 pub mod editor;
 pub mod filter;
+pub mod help;
 mod widgets;
 pub use config::Config;
 use document::{Document, Mode};
@@ -300,6 +301,13 @@ pub struct App<'a> {
     /// row — which costs them one extra press and is indistinguishable from
     /// the bounce anyway.
     swallow_next_enter: bool,
+    /// Whether the keymap overlay is covering the panes (#25).
+    ///
+    /// A plain flag rather than a fourth `AppWidget`: the three panes are
+    /// persistent and reachable with `Tab`, and help is transient and dismissed
+    /// by the next key. Joining that cycle would mean tabbing past help forever
+    /// after using it once.
+    help: bool,
 }
 
 /// What a peek has to put back when it ends (#48).
@@ -393,6 +401,7 @@ impl App<'_> {
             editor_outcomes: Some(outcomes_rx),
             peek: None,
             swallow_next_enter: false,
+            help: false,
         };
         app.sync_document();
         app.refresh_view();
@@ -813,6 +822,25 @@ impl App<'_> {
             return Ok(());
         }
 
+        // The overlay is dismissed by the next key, and that key does nothing
+        // else — it is a reference you glance at and put away, so anything that
+        // required aiming at a particular key to close it would be one more
+        // thing to have read the README to know (#25).
+        //
+        // After the prompt guard, so `?` inside a prompt is typed rather than
+        // acted on, and before every other binding, so the dismissing key
+        // cannot also quit, move a cursor, or open an editor.
+        //
+        // Only a *key* closes it. Mouse capture is on, so a mouse crossing the
+        // terminal would otherwise wipe the overlay mid-read — the same
+        // reasoning `status_message` gets above.
+        if self.help {
+            if matches!(event, event::Event::Key(_)) {
+                self.help = false;
+            }
+            return Ok(());
+        }
+
         // The bounce guard (#48). `Enter` both commits a prompt and toggles a
         // filter, and those are one keystroke apart, so the `Enter` that closed
         // a prompt must not fall through and switch a filter off.
@@ -840,6 +868,23 @@ impl App<'_> {
                 }
                 KeyCode::Tab => {
                     self.focus_next();
+                    return Ok(());
+                }
+                // `?` and not `F1`: it is the conventional help key in every
+                // pager and file manager this app borrows from, and it is free
+                // — it used to run a backward search, which `n`/`N` cover from
+                // both directions now.
+                //
+                // Not guarded on `.is_empty()`: `?` is Shift-`/` on most
+                // layouts, and crossterm reports the modifier, so that guard
+                // would make the key unreachable outside a test harness. This
+                // is the same trap `O` and `n`/`N` document.
+                KeyCode::Char('?')
+                    if !key
+                        .modifiers
+                        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+                {
+                    self.help = true;
                     return Ok(());
                 }
                 // The filter pane has nothing to search over, so the prompt
@@ -2106,6 +2151,16 @@ impl Widget for &mut App<'_> {
                 };
                 render_widget(w, &self.filters, widget_area, buf);
             }
+        }
+
+        // Last, so it covers whatever the panes just drew — and over `area`,
+        // which is everything above the status row rather than the whole
+        // frame. The row below carries the HIDE badge and the current
+        // directory, and both are still true while the keymap is up; hiding
+        // them would mean the one screen that explains `Ctrl-H` is also the one
+        // screen that stops showing whether it is on.
+        if self.help {
+            help::render(area, buf);
         }
 
         // An open prompt takes the rest of the row; nothing but the badge
@@ -7499,6 +7554,148 @@ mod tests {
             enabled_flags(&app),
             flags,
             "the second Enter was swallowed too"
+        );
+    }
+
+    /// Tall and wide on purpose: `AREA` is ten rows, and the overlay flows its
+    /// sections into however many columns the area allows, so a ten-row buffer
+    /// would clip away everything these tests assert on.
+    const HELP_AREA: Rect = Rect {
+        x: 0,
+        y: 0,
+        width: 160,
+        height: 44,
+    };
+
+    /// The whole rendered frame as text, at `HELP_AREA`.
+    fn screen(app: &mut App) -> String {
+        let mut buf = Buffer::empty(HELP_AREA);
+        app.render(HELP_AREA, &mut buf);
+        (0..HELP_AREA.height)
+            .map(|y| {
+                (0..HELP_AREA.width)
+                    .map(|x| buf[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn question_mark_opens_the_help_overlay() {
+        let mut app = app_over("help_open", &["a.rs"]);
+
+        key(&mut app, KeyCode::Char('?'));
+
+        let screen = screen(&mut app);
+        assert!(
+            screen.contains("Quit"),
+            "the help overlay did not draw:\n{screen}"
+        );
+    }
+
+    /// A real terminal sends `?` as Shift-`/`, so an `is_empty()` guard would
+    /// make the binding unreachable outside a test harness — the trap `O` and
+    /// `n`/`N` already document.
+    #[test]
+    fn shift_does_not_stop_the_help_overlay_opening() {
+        let mut app = app_over("help_shift", &["a.rs"]);
+
+        app.handle_event(event::Event::Key(event::KeyEvent::new(
+            KeyCode::Char('?'),
+            KeyModifiers::SHIFT,
+        )))
+        .unwrap();
+
+        assert!(app.help, "Shift-? did not reach the help binding");
+    }
+
+    #[test]
+    fn any_key_closes_the_help_overlay() {
+        let mut app = app_over("help_close", &["a.rs"]);
+        key(&mut app, KeyCode::Char('?'));
+
+        key(&mut app, KeyCode::Char('j'));
+
+        let screen = screen(&mut app);
+        assert!(
+            !screen.contains("Quit"),
+            "the help overlay outlived its dismissing key:\n{screen}"
+        );
+    }
+
+    /// The dismissing key is consumed. Otherwise the key that closes help also
+    /// acts, and the most likely one to be pressed is `q`.
+    #[test]
+    fn the_key_that_closes_help_does_nothing_else() {
+        let mut app = app_over("help_swallow", &["a.rs"]);
+        key(&mut app, KeyCode::Char('?'));
+
+        key(&mut app, KeyCode::Char('q'));
+
+        assert!(app.is_running(), "the key that closed help also quit");
+    }
+
+    /// A mouse moving across the terminal must not wipe the overlay away — the
+    /// same reasoning `handle_event` already applies to the status message.
+    #[test]
+    fn a_mouse_event_does_not_close_the_help_overlay() {
+        let mut app = app_over("help_mouse", &["a.rs"]);
+        key(&mut app, KeyCode::Char('?'));
+
+        mouse(&mut app, MouseEventKind::Moved, 10);
+
+        assert!(app.help, "a mouse event closed the help overlay");
+    }
+
+    /// An open prompt consumes every key, `?` included — it is a perfectly
+    /// ordinary character in a regular expression.
+    #[test]
+    fn question_mark_is_typed_into_an_open_prompt() {
+        let mut app = app_over("help_prompt", &["a.rs"]);
+        key(&mut app, KeyCode::Char('/'));
+
+        typed(&mut app, "ab?");
+
+        assert!(!app.help, "`?` opened help from inside a prompt");
+        assert_eq!(prompt_line(&mut app), "/ab?");
+    }
+
+    /// The overlay covers the panes, not the status row: the row carries the
+    /// HIDE badge and the current directory, and both stay true while help is
+    /// up.
+    #[test]
+    fn the_help_overlay_leaves_the_status_row_alone() {
+        let mut app = app_over("help_status", &["a.rs"]);
+        let before = prompt_line(&mut app);
+
+        key(&mut app, KeyCode::Char('?'));
+
+        assert_eq!(prompt_line(&mut app), before);
+    }
+
+    /// `?` spends the post-commit `Enter` guard (#48) exactly as any other key
+    /// does — the guard's whole rule is "cleared by any key that is not
+    /// `Enter`". Otherwise reading the keymap between a commit and a toggle
+    /// leaves a guard armed with nothing left to guard against, and the next
+    /// deliberate `Enter` silently does nothing.
+    #[test]
+    fn reading_the_keymap_spends_the_post_commit_enter_guard() {
+        let mut app = app_hiding("help_enter_guard");
+        focus_filter_pane(&mut app);
+        key(&mut app, KeyCode::Char('j'));
+        key(&mut app, KeyCode::Char('c'));
+        key(&mut app, KeyCode::Enter);
+        let flags = enabled_flags(&app);
+
+        key(&mut app, KeyCode::Char('?'));
+        key(&mut app, KeyCode::Enter);
+        key(&mut app, KeyCode::Enter);
+
+        assert_ne!(
+            enabled_flags(&app),
+            flags,
+            "the guard outlived the key that should have spent it"
         );
     }
 }

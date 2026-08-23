@@ -218,14 +218,24 @@ recon app.log 2>/dev/null
 
 ## Keybindings
 
-There is no separate keybindings reference beyond this section; the
-authoritative source is `App::handle_event` in `src/lib.rs` for the global
-keys, and each widget's `handle_events` for the rest.
+Press `?` in the app for the same list on screen. The authoritative source is
+still `App::handle_event` in `src/lib.rs` for the global keys, and each
+widget's `handle_events` for the rest; this section and the in-app overlay both
+describe it.
+
+Those three would drift silently, so they don't have to be checked by hand:
+`KEYMAP` in `src/help.rs` is the table the overlay draws, and
+`every_bound_key_is_documented` reads the source files back at test time and
+fails when a key is bound in a `Char(..)` arm and named by no row. Adding a
+binding without documenting it breaks the build. The test says nothing about
+*this* section, which is still hand-maintained — so a new key needs a row here
+too.
 
 Global (`src/lib.rs`), handled before the focused pane sees the key:
 
 | Key(s) | Action |
 | --- | --- |
+| `?` | Show the keymap overlay — every binding on one screen. Any key closes it, and that key does nothing else |
 | `q` | Quit |
 | `Tab` | Move focus to the next of three panes — navigator, file view, filter pane. All three are always on screen, so the cycle never skips one |
 | `/` | In the navigator, search filenames. In the file view, set a live search — a filter of its own, which moves you to its next hit from the cursor exactly as `n` would |
@@ -242,8 +252,22 @@ Global (`src/lib.rs`), handled before the focused pane sees the key:
 | `o` | Open the selected file's enclosing **project** in your editor, at the line the cursor is on — see [Opening an editor](#opening-an-editor) |
 | `O` | Open the selected **file alone**, at the same line — no project, no walk-up |
 
-`?` is unbound. It used to search backward; `n`/`N` cover both directions now,
-so it is reserved for the help view instead (issue #25).
+`?` used to search backward. `n`/`N` cover both directions now, which is what
+freed it for the overlay — it is the conventional help key in the pagers and
+file managers recon borrows the rest of its bindings from.
+
+The overlay is a centred panel rather than a fourth pane: the three panes are
+permanent and `Tab` walks between them, while help is something you glance at
+and put away. Joining that cycle would mean tabbing past it forever after using
+it once. It flows into as many columns as the terminal can hold, so the whole
+keymap fits one screen with nothing to scroll — which is what lets *any* key
+close it, rather than reserving some keys for scrolling. The status row stays
+visible underneath, so the HIDE badge still tells the truth while you are
+reading about `Ctrl-H`. On a terminal too small for the whole table, the bottom
+border says how many rows were cut.
+
+The overlay shows every binding, not just the focused pane's. Context-sensitive
+help is a genuine improvement and deliberately deferred; see issue #25.
 
 Mouse: drag the divider between the panes to resize them; double-click it to
 return to auto-sizing the left column to whichever of the navigator or the
