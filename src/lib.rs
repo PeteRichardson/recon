@@ -589,14 +589,31 @@ impl App<'_> {
     /// filters, read the code, then undo both — repeated at every match. This
     /// is that cycle as one key and its own undo.
     ///
-    /// **A destination, not a flip.** Peeking always lands on `Mode::Dimmed`
-    /// with every filter off, which renders an ordinary undimmed file (see
-    /// `ActiveFilters::verdict` — a fully disabled set leaves every line
-    /// `Unmatched`). Toggling the mode literally would send a peek that started
-    /// in `Dimmed` to `FilteredOnly` with nothing enabled, and `FilteredOnly`
-    /// shows only `Included` lines: an empty pane. Ending the peek restores
-    /// what was captured, so from hide mode the round trip still reads as the
-    /// mode flip the issue asked for.
+    /// **A flip, not a destination** (#65). The mode toggles, which is what #48
+    /// asked for in as many words; ending the peek restores what was captured.
+    ///
+    /// This was originally written the other way — forcing `Mode::Dimmed` —
+    /// on the premise that flipping *into* `FilteredOnly` with every filter
+    /// just disabled would show only `Included` lines and blank the pane. That
+    /// premise was already false when it was written: `recompute_visible`'s #36
+    /// guard makes `FilteredOnly` show the whole file when nothing is
+    /// including. Recorded because the mistake is easy to make twice, and the
+    /// arm below looks wrong until you know about the guard.
+    ///
+    /// It rests on what hide mode *means*, which is not "hide every unmatched
+    /// line" but:
+    ///
+    /// > if something is including, hide unmatched lines; if nothing is, show
+    /// > everything.
+    ///
+    /// So hiding is a standing preference — armed or not — rather than a
+    /// description of what is currently on screen. That is why the ` HIDE `
+    /// badge appearing over a plain, unfiltered file is honest rather than a
+    /// lie: see `HIDE_BADGE_TEXT`, whose doc already says *armed*.
+    ///
+    /// The rendered lines are identical either way, which is precisely why the
+    /// original deviation from #48 went unnoticed for so long. The badge is the
+    /// only visible difference.
     ///
     /// The capture is held here rather than in `ActiveFilters::remembered`,
     /// which `!` owns — see `enabled_flags` for why sharing one slot loses the
@@ -613,7 +630,13 @@ impl App<'_> {
                     flags: self.filters.enabled_flags(),
                 });
                 self.filters.set_all_enabled(false);
-                self.document.set_mode(Mode::Dimmed);
+                // The same flip `toggle_hiding` does, deliberately: `<space>`
+                // and `Ctrl-H` move the mode identically, and only the filter
+                // switching below is the peek's own.
+                self.document.set_mode(match self.document.mode() {
+                    Mode::Dimmed => Mode::FilteredOnly,
+                    Mode::FilteredOnly => Mode::Dimmed,
+                });
             }
         }
         // The full `evaluate`, not `recompute_visible` as `toggle_hiding` uses:
@@ -7450,9 +7473,12 @@ mod tests {
         assert_eq!(app.cursor_source(), cursor, "the cursor moved");
     }
 
-    /// A peek from `Mode::Dimmed` must not flip *to* `FilteredOnly`: with every
-    /// filter just turned off, nothing is `Included`, so a literal mode toggle
-    /// would show an empty pane. The peek is a destination, not a flip.
+    /// A peek from `Mode::Dimmed` must not empty the pane. It doesn't, and the
+    /// reason is `Document::recompute_visible`'s #36 guard rather than anything
+    /// the peek does: with nothing including, `FilteredOnly` shows the whole
+    /// file. This test predates #65 and passed under the old forced-`Dimmed`
+    /// peek too — it is kept because the *guard* is what it is really pinning,
+    /// and that guard is now load-bearing for `<space>`.
     #[test]
     fn space_from_dimmed_mode_does_not_empty_the_pane() {
         let mut app = app_over_file("space_from_dimmed", "alpha\nbeta\n");
@@ -7468,6 +7494,74 @@ mod tests {
             view_lines(&app),
             vec!["alpha".to_string(), "beta".to_string()],
             "the peek emptied the pane"
+        );
+    }
+
+    /// #65, the headline: #48 asked for `<space>` to **toggle** dimmed/hide, and
+    /// the peek forced `Mode::Dimmed` instead. From the dimmed view that made
+    /// `<space>` a pure filter switch — indistinguishable from `!`.
+    ///
+    /// It is safe to flip because hide mode does not mean "hide every unmatched
+    /// line"; it means "*if* something is including, hide unmatched lines".
+    /// With the filters off there is nothing to hide against, so
+    /// `recompute_visible`'s #36 guard shows the whole file either way.
+    #[test]
+    fn space_from_dimmed_mode_arms_hiding() {
+        let mut app = app_over_file("space_arms_hiding", "alpha\nbeta\n");
+        key(&mut app, KeyCode::Char('f'));
+        key(&mut app, KeyCode::Char('i'));
+        typed(&mut app, "beta");
+        key(&mut app, KeyCode::Enter);
+        assert_eq!(app.document.mode(), Mode::Dimmed, "sanity: dimming");
+
+        key(&mut app, KeyCode::Char(' '));
+
+        assert_eq!(
+            app.document.mode(),
+            Mode::FilteredOnly,
+            "`<space>` did not toggle the mode"
+        );
+    }
+
+    /// The other half of the toggle, and the half that already worked. Pinned
+    /// alongside its opposite so a future change cannot fix one direction by
+    /// breaking the other.
+    #[test]
+    fn space_from_hide_mode_disarms_hiding() {
+        let mut app = app_hiding("space_disarms_hiding");
+        assert_eq!(
+            app.document.mode(),
+            Mode::FilteredOnly,
+            "sanity: hiding to begin with"
+        );
+
+        key(&mut app, KeyCode::Char(' '));
+
+        assert_eq!(app.document.mode(), Mode::Dimmed, "hiding did not come off");
+    }
+
+    /// The mode a peek leaves armed is real, so the badge that reports it must
+    /// appear — even though the plain file is on screen and nothing is being
+    /// hidden. The badge tracks what is *armed*, which is what makes the flip
+    /// honest rather than a lie on the status row (see `HIDE_BADGE_TEXT`).
+    #[test]
+    fn the_hide_badge_reports_a_peek_that_armed_hiding() {
+        let mut app = app_over_file("space_badge", "alpha\nbeta\n");
+        key(&mut app, KeyCode::Char('f'));
+        key(&mut app, KeyCode::Char('i'));
+        typed(&mut app, "beta");
+        key(&mut app, KeyCode::Enter);
+        assert!(
+            !status_line(&mut app).contains(HIDE_BADGE_TEXT.trim()),
+            "sanity: no badge while merely dimming"
+        );
+
+        key(&mut app, KeyCode::Char(' '));
+
+        let row = status_line(&mut app);
+        assert!(
+            row.contains(HIDE_BADGE_TEXT.trim()),
+            "the peek armed hiding but the badge does not say so: {row}"
         );
     }
 

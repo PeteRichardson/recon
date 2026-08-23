@@ -244,7 +244,7 @@ Global (`src/lib.rs`), handled before the focused pane sees the key:
 | `e` | Focus the navigator, revealing the left column if `b` or `z` hid it |
 | `t` | Focus the file view |
 | `f` | Focus the filter pane — filters are then added with `i` and `x` from inside it |
-| `space` | **Peek at the plain file** — drop every filter and stop hiding, so the code reads normally. Press again to put the filtered view back exactly as it was. See [Peeking at the plain file](#peeking-at-the-plain-file) |
+| `space` | **Peek at the plain file** — drop every filter and flip the hide mode, so the code reads normally. Press again to put the filtered view back exactly as it was. See [Peeking at the plain file](#peeking-at-the-plain-file) |
 | `Ctrl-H` / `H` | Toggle between dimming unmatched lines and hiding them |
 | `!` | Disable every filter, remembering which were on; restores exactly that (or enables all, if none were on to remember) |
 | `b` | Hide the left column — both the navigator and the filter pane — and focus the file view; press again to restore the split (focus stays in the file view; `e` returns it) |
@@ -571,10 +571,10 @@ question is "what does this code *do*?" — and for that the filtering is in the
 way. Hiding shows you the match and nothing around it; dimming leaves the
 surroundings on screen but hard to read.
 
-`space` handles that in one key. It drops every filter and stops hiding, so the
-file reads as an ordinary file. Press it again and the filtered view comes back
-**exactly** as it was — same filters, same colours, same hide mode, same line
-under the cursor.
+`space` handles that in one key. It drops every filter and flips the hide mode,
+so the file reads as an ordinary file. Press it again and the filtered view
+comes back **exactly** as it was — same filters, same colours, same hide mode,
+same line under the cursor.
 
 It replaces a four-key round trip you would otherwise repeat at every match:
 leave hide mode, clear the filters, read, restore the filters, restore hide
@@ -585,12 +585,31 @@ Two neighbours it is easy to confuse:
 
 | Key | Does |
 | --- | --- |
-| `space` | Filters off **and** hiding off, for reading. One key back to exactly where you were |
+| `space` | Filters off **and** hide mode flipped, for reading. One key back to exactly where you were |
 | `!` | Filters off, hide mode untouched. Its own independent memory of what was on |
 | `H` | Hide mode only, filters untouched |
 
 `space` and `!` keep separate memories, so using one never disturbs what the
 other would restore.
+
+### Why the ` HIDE ` badge can appear over a plain file
+
+Peeking from the dimmed view flips hiding **on** while showing you the whole
+unfiltered file, so the badge lights up over a file where nothing is hidden.
+That is not a contradiction, because hide mode does not mean "hide every
+unmatched line". It means:
+
+> if something is including — a filter or the search — hide unmatched lines; if
+> nothing is, show everything.
+
+So it is a standing preference, armed or not, rather than a description of what
+is currently on screen. `space` turns every filter off, which leaves hiding
+nothing to bite on; the badge reports that hiding is *armed*, and it will take
+effect the moment the filters come back.
+
+This is also why the flip is safe at all. Flipping into hide mode with no
+filters left enabled would blank the pane, were it not for the rule above —
+which is enforced in `Document::recompute_visible` and predates this key.
 
 ## Opening an editor
 
