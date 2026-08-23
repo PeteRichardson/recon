@@ -64,6 +64,43 @@ const MIN_AUTO_NAV_WIDTH: u16 = 20;
 /// content row, bottom border), not enough to call comfortable.
 const MIN_NAV_HEIGHT: u16 = 3;
 
+/// Rows the filter pane sizes itself to *automatically*, at minimum.
+///
+/// The height analogue of `MIN_AUTO_NAV_WIDTH`, and it exists for the same
+/// kind of reason: a pane sized purely by its contents is not necessarily a
+/// pane sized usefully. An empty set asked for three rows — a title on the
+/// top border, one row for the hint, a bottom border — which is the smallest
+/// thing that can be drawn rather than a considered size, and it read as an
+/// afterthought stuck under the navigator. #44 asks for the pane to look like
+/// the headline feature it is before the first filter exists, on the grounds
+/// that recon is heading further in a filter-forward direction, not less.
+///
+/// A floor, not a fixed height: a larger set still gets the rows it asks for,
+/// up to the same two caps in `filter_pane_split_height` that have always
+/// bounded it. Those caps also outrank this floor, so a short terminal is
+/// unaffected — the navigator's floor and the half share are still what
+/// govern there, and this only shows up once there is room to honour it.
+///
+/// Eight is a judgement call, as `MIN_AUTO_NAV_WIDTH`'s twenty is: six
+/// content rows inside the borders, which holds a working filter set without
+/// scrolling while still leaving the navigator the larger share of any
+/// terminal tall enough for the floor to apply at all. Like that constant, a
+/// good candidate for a config entry.
+const MIN_AUTO_FILTER_HEIGHT: u16 = 8;
+
+/// Fewest rows a *dragged* filter pane may be left with — the height
+/// analogue of `MIN_PANE_WIDTH`, and its counterpart in the same way
+/// `MIN_AUTO_FILTER_HEIGHT` is `MIN_AUTO_NAV_WIDTH`'s.
+///
+/// Distinct from `MIN_AUTO_FILTER_HEIGHT` above, which bounds a height nobody
+/// asked for; this bounds a decision, and so is much smaller: top border, one
+/// content row, bottom border. A user dragging the pane down to nothing
+/// evidently wants it out of the way, and the app's answer to that is to keep
+/// one usable row rather than to argue — the same trade `MIN_PANE_WIDTH`
+/// makes, and the same reason a collapsed-but-focusable pane is the outcome
+/// to avoid (see `MIN_NAV_HEIGHT`).
+const MIN_FILTER_HEIGHT: u16 = 3;
+
 /// Columns the file view needs to stay genuinely readable, not merely
 /// present — derived, not tuned:
 /// - 2 for its own left and right border columns.
@@ -201,6 +238,37 @@ enum NavWidth {
     Pinned(u16),
 }
 
+/// How the filter pane's height is decided — `NavWidth` on the other axis.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+enum FilterHeight {
+    /// Size to the filter set, floored at `MIN_AUTO_FILTER_HEIGHT`.
+    #[default]
+    Auto,
+    /// Held at the height the user dragged to.
+    ///
+    /// A height rather than the boundary row the drag actually reported: the
+    /// pane is anchored to the bottom of the left column, so the row that
+    /// means "six rows of filters" moves whenever the terminal is resized,
+    /// and a stored row would silently mean something different afterwards.
+    Pinned(u16),
+}
+
+/// Which pane boundary a drag in progress is moving.
+///
+/// The two dividers are hit-tested against different things — one a column,
+/// one a row within the left column — but share a drag: a mouse that went
+/// down on one must keep moving that one until it comes up, whatever it
+/// passes over on the way. Naming the axis in the state is what guarantees
+/// that; two independent `bool`s could both be set and would have to encode
+/// the same invariant by convention.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Divider {
+    /// Between the left column and the file view.
+    Vertical,
+    /// Between the navigator and the filter pane stacked below it.
+    Horizontal,
+}
+
 pub mod config;
 pub mod document;
 pub mod editor;
@@ -225,8 +293,22 @@ pub struct App<'a> {
     /// Boundary column from the last render, for hit-testing mouse events that
     /// arrive before the next frame.
     divider: u16,
-    dragging: bool,
-    last_divider_click: Option<Instant>,
+    filter_height: FilterHeight,
+    /// The filter pane's rectangle from the last render.
+    ///
+    /// Its top edge is the horizontal divider — the counterpart of `divider`
+    /// above, and hit-tested the same way, against the last frame. Its bottom
+    /// edge is kept too, because that is what turns a dragged row into a
+    /// height: the pane runs from the boundary the mouse is holding down to
+    /// the bottom of the left column, and only a render knows where that is.
+    filter_area: Rect,
+    dragging: Option<Divider>,
+    /// The last divider click, and which divider it was on.
+    ///
+    /// The axis is part of the record, not decoration: without it, a click on
+    /// one divider followed quickly by a click on the other reads as a
+    /// double-click and resets a pane the user never aimed at.
+    last_divider_click: Option<(Divider, Instant)>,
     /// Open while a search pattern is being typed.
     search: Option<SearchPrompt>,
     filters: ActiveFilters,
@@ -387,7 +469,9 @@ impl App<'_> {
             active_widget: 0,
             nav_width: NavWidth::Auto,
             divider: 0,
-            dragging: false,
+            filter_height: FilterHeight::Auto,
+            filter_area: Rect::ZERO,
+            dragging: None,
             last_divider_click: None,
             search: None,
             filters: match &config.filter_palette {
@@ -703,10 +787,32 @@ impl App<'_> {
     /// before this cap existed; on a tall one the half-based one is tighter
     /// and gives the navigator a proportional share instead of the bare
     /// floor.
+    ///
+    /// The preferred height is floored at `MIN_AUTO_FILTER_HEIGHT` before
+    /// either cap applies, which is what makes the pane open at a usable size
+    /// with nothing in it (#44). Deliberately *inside* the caps rather than
+    /// applied to the result: a floor that outranked them would hand an empty
+    /// pane eight of a twelve-row column, which is the navigator-starving
+    /// behaviour the caps exist to prevent — and it would do it for a pane
+    /// that has nothing to show.
+    /// A dragged height skips both the starting floor and the half cap, and
+    /// keeps only the navigator's floor. Both of the ones it skips exist to
+    /// stop *automatic* sizing producing a silly split; a drag is a decision,
+    /// and the same reasoning `MIN_AUTO_NAV_WIDTH` and `MIN_PANE_WIDTH` split
+    /// on the other axis applies unchanged. What it keeps is the one bound
+    /// that is not about taste: a navigator squeezed to nothing while still
+    /// focusable strands the user on a cursor they cannot see.
     fn filter_pane_split_height(&self, left_height: u16) -> u16 {
-        self.filter_pane_height()
-            .min(left_height / 2)
-            .min(left_height.saturating_sub(MIN_NAV_HEIGHT))
+        let wanted = match self.filter_height {
+            FilterHeight::Auto => self
+                .filter_pane_height()
+                .max(MIN_AUTO_FILTER_HEIGHT)
+                .min(left_height / 2),
+            FilterHeight::Pinned(rows) => rows.max(MIN_FILTER_HEIGHT),
+        };
+        // Applied last, and to both branches, so that on a terminal too short
+        // to honour any of this the navigator is what survives.
+        wanted.min(left_height.saturating_sub(MIN_NAV_HEIGHT))
     }
 
     /// Whether the file view is showing a bounded preview rather than the
@@ -757,40 +863,75 @@ impl App<'_> {
     /// so the file view keeps its scroll-wheel behaviour.
     fn handle_divider(&mut self, mouse: MouseEvent) -> bool {
         match mouse.kind {
-            MouseEventKind::Down(MouseButton::Left) if self.on_divider(mouse.column) => {
+            MouseEventKind::Down(MouseButton::Left) => {
+                let Some(divider) = self.divider_at(mouse.column, mouse.row) else {
+                    return false;
+                };
                 let now = Instant::now();
-                let double_click = self
-                    .last_divider_click
-                    .is_some_and(|last| now.duration_since(last) <= DOUBLE_CLICK);
+                let double_click = self.last_divider_click.is_some_and(|(last, at)| {
+                    last == divider && now.duration_since(at) <= DOUBLE_CLICK
+                });
 
                 if double_click {
-                    self.nav_width = NavWidth::Auto;
+                    match divider {
+                        Divider::Vertical => self.nav_width = NavWidth::Auto,
+                        Divider::Horizontal => self.filter_height = FilterHeight::Auto,
+                    }
                     self.last_divider_click = None;
                 } else {
-                    self.dragging = true;
-                    self.last_divider_click = Some(now);
+                    self.dragging = Some(divider);
+                    self.last_divider_click = Some((divider, now));
                 }
                 true
             }
-            MouseEventKind::Drag(MouseButton::Left) if self.dragging => {
-                self.nav_width = NavWidth::Pinned(mouse.column);
+            MouseEventKind::Drag(MouseButton::Left) => {
+                match self.dragging {
+                    Some(Divider::Vertical) => self.nav_width = NavWidth::Pinned(mouse.column),
+                    // The pane runs from wherever the mouse now is to the
+                    // bottom of the left column, which is the one part of the
+                    // last frame's geometry a row alone cannot supply.
+                    Some(Divider::Horizontal) => {
+                        self.filter_height = FilterHeight::Pinned(
+                            self.filter_area.bottom().saturating_sub(mouse.row),
+                        );
+                    }
+                    None => return false,
+                }
                 // A real drag rules out the next click being a double-click,
-                // which would otherwise discard the width just set.
+                // which would otherwise discard the size just set.
                 self.last_divider_click = None;
                 true
             }
-            MouseEventKind::Up(MouseButton::Left) if self.dragging => {
-                self.dragging = false;
+            MouseEventKind::Up(MouseButton::Left) if self.dragging.is_some() => {
+                self.dragging = None;
                 true
             }
             _ => false,
         }
     }
 
-    /// The divider is the pair of adjacent borders between the panes, with a
-    /// column of slack either side so it is not fiddly to grab.
-    fn on_divider(&self, column: u16) -> bool {
-        column.abs_diff(self.divider) <= 1
+    /// The divider under `(column, row)`, if either is.
+    ///
+    /// A divider is the pair of adjacent borders between two panes, with a
+    /// cell of slack either side so it is not fiddly to grab.
+    ///
+    /// The vertical one is tested first and so wins the single corner where
+    /// the two meet. That is an arbitrary choice between two reasonable ones,
+    /// but it has to be made somewhere and pinned — see
+    /// `the_vertical_divider_wins_where_the_two_cross`.
+    ///
+    /// The horizontal one is additionally bounded to the left column, because
+    /// that is the only place it exists: without that half of the test, a
+    /// click anywhere across the file view at the same height would resize
+    /// the filter pane.
+    fn divider_at(&self, column: u16, row: u16) -> Option<Divider> {
+        if column.abs_diff(self.divider) <= 1 {
+            Some(Divider::Vertical)
+        } else if column < self.divider && row.abs_diff(self.filter_area.y) <= 1 {
+            Some(Divider::Horizontal)
+        } else {
+            None
+        }
     }
 
     /// This is the main event loop for the app.
@@ -1998,12 +2139,13 @@ impl App<'_> {
         // A drag in progress has no divider to keep tracking once zoomed —
         // the `Drag` arm in `handle_divider` only checks `self.dragging`, not
         // whether a divider is actually on screen — so it would otherwise
-        // keep silently re-pinning `nav_width` while nothing is drawn to
-        // explain why, with the new width only appearing on un-zoom. Zooming
-        // (in either direction) cancels it outright. Unzooming is a no-op
-        // here in practice, since a drag can only start via a click that
-        // `on_divider` accepted, and that can't happen while already zoomed.
-        self.dragging = false;
+        // keep silently re-pinning `nav_width` or `filter_height` while
+        // nothing is drawn to explain why, with the new size only appearing
+        // on un-zoom. Zooming (in either direction) cancels it outright.
+        // Unzooming is a no-op here in practice, since a drag can only start
+        // via a click that `divider_at` accepted, and that can't happen while
+        // already zoomed.
+        self.dragging = None;
         self.zoom = match self.zoom {
             Some(index) if index == target => None,
             _ => Some(target),
@@ -2136,6 +2278,20 @@ impl Widget for &mut App<'_> {
             // any real terminal width — is a second, independent reason a
             // stray hit-test could not land on it even without that guarantee.
             self.divider = u16::MAX;
+            // The horizontal divider is parked for the same reason and by the
+            // same argument — but it has to be parked at `u16::MAX` rather
+            // than zeroed. `divider_at` reaches its row test only for a column
+            // strictly left of `self.divider`, and *every* column is strictly
+            // left of `u16::MAX`, so the parked vertical divider is no guard
+            // at all here: a zeroed rect would put the horizontal divider on
+            // row 0 and let a click on the top row of a zoomed pane resize
+            // something invisible.
+            self.filter_area = Rect {
+                x: 0,
+                y: u16::MAX,
+                width: 0,
+                height: 0,
+            };
             for (i, widget) in self.widgets.iter_mut().enumerate() {
                 widget.set_active(i == self.active_widget);
             }
@@ -2159,9 +2315,12 @@ impl Widget for &mut App<'_> {
             let [nav_area, filter_area] =
                 Layout::vertical([Min(0), Length(filter_height)]).areas(left);
 
-            // Remember the boundary so mouse events landing before the next
-            // frame can be tested against it.
+            // Remember the boundaries so mouse events landing before the next
+            // frame can be tested against them. The filter pane's whole rect
+            // is kept, not just its top edge: a drag needs the bottom of the
+            // left column to turn the row it is holding into a height.
             self.divider = area.x + nav_width;
+            self.filter_area = filter_area;
 
             for (i, w) in self.widgets.iter_mut().enumerate() {
                 w.set_active(i == self.active_widget);
@@ -2290,20 +2449,54 @@ mod tests {
         app.render(AREA, &mut buf);
     }
 
-    fn mouse(app: &mut App, kind: MouseEventKind, column: u16) {
+    fn mouse_at(app: &mut App, kind: MouseEventKind, column: u16, row: u16) {
         app.handle_event(event::Event::Mouse(MouseEvent {
             kind,
             column,
-            row: 3,
+            row,
             modifiers: KeyModifiers::empty(),
         }))
         .unwrap();
+    }
+
+    /// Row 3 is inside the navigator on every fixture area used here, and so
+    /// is clear of the horizontal divider's own hit test — these helpers are
+    /// about the vertical divider, and a row that could land on both would
+    /// make which one they exercise a matter of hit-test ordering.
+    fn mouse(app: &mut App, kind: MouseEventKind, column: u16) {
+        mouse_at(app, kind, column, 3);
     }
 
     fn drag_to(app: &mut App, from: u16, to: u16) {
         mouse(app, MouseEventKind::Down(MouseButton::Left), from);
         mouse(app, MouseEventKind::Drag(MouseButton::Left), to);
         mouse(app, MouseEventKind::Up(MouseButton::Left), to);
+    }
+
+    /// Column 1 is well inside the left column on every fixture area used
+    /// here, so the vertical divider's hit test cannot claim these events —
+    /// the mirror of the note on `mouse` above.
+    const INSIDE_LEFT_COLUMN: u16 = 1;
+
+    fn drag_rows_to(app: &mut App, from: u16, to: u16) {
+        mouse_at(
+            app,
+            MouseEventKind::Down(MouseButton::Left),
+            INSIDE_LEFT_COLUMN,
+            from,
+        );
+        mouse_at(
+            app,
+            MouseEventKind::Drag(MouseButton::Left),
+            INSIDE_LEFT_COLUMN,
+            to,
+        );
+        mouse_at(
+            app,
+            MouseEventKind::Up(MouseButton::Left),
+            INSIDE_LEFT_COLUMN,
+            to,
+        );
     }
 
     /// The name is comfortably longer than `MIN_AUTO_NAV_WIDTH` on purpose:
@@ -2477,6 +2670,183 @@ mod tests {
             MIN_FILE_VIEW_WIDTH,
             "a hard drag to the far edge did not stop at the file view's floor"
         );
+    }
+
+    /// The left column's rows on `AREA`, which every horizontal-divider test
+    /// below reasons about: the status row is taken off the top-level split
+    /// before the columns are laid out.
+    const LEFT_HEIGHT: u16 = AREA.height - 1;
+
+    /// #44's second half. The pane's height was content-driven and nothing
+    /// else, which the original design called "no comparable target to drag"
+    /// — true while it collapsed to nothing when empty, and no longer true
+    /// now it opens at `MIN_AUTO_FILTER_HEIGHT` whatever it holds.
+    ///
+    /// Dragging *up* makes the pane taller, because the divider is its top
+    /// border: the pane is anchored to the bottom of the column, so what the
+    /// drag moves is where it starts, not where it ends.
+    #[test]
+    fn dragging_the_horizontal_divider_pins_the_filter_panes_height() {
+        let mut app = app_over("hdrag", &["a.rs"]);
+        draw(&mut app);
+        let divider = app.filter_area.y;
+
+        drag_rows_to(&mut app, divider, divider - 2);
+
+        // Two rows up from the boundary, on a column whose bottom is
+        // `LEFT_HEIGHT`, is two rows more pane than it had.
+        assert_eq!(app.filter_height, FilterHeight::Pinned(LEFT_HEIGHT - 3));
+        assert_eq!(app.filter_pane_split_height(LEFT_HEIGHT), LEFT_HEIGHT - 3);
+    }
+
+    /// The counterpart of `the_floor_does_not_apply_to_a_dragged_width`, and
+    /// the reason the two floors are separate constants: a drag is a
+    /// decision, so it may leave the pane well under the height it opens at.
+    ///
+    /// Measured against a 40-row column, where automatic sizing would give
+    /// `MIN_AUTO_FILTER_HEIGHT` — on `AREA` the caps would produce a small
+    /// number anyway and the test would pass without the drag being honoured.
+    #[test]
+    fn the_starting_height_does_not_apply_to_a_dragged_height() {
+        let mut app = app_over("hdrag_small", &["a.rs"]);
+        draw(&mut app);
+        let divider = app.filter_area.y;
+
+        // Down to exactly the drag floor: `LEFT_HEIGHT - MIN_FILTER_HEIGHT`
+        // is the boundary row that leaves three rows below it.
+        drag_rows_to(&mut app, divider, LEFT_HEIGHT - MIN_FILTER_HEIGHT);
+
+        assert_eq!(
+            app.filter_pane_split_height(40),
+            MIN_FILTER_HEIGHT,
+            "the starting height overrode a deliberate drag"
+        );
+    }
+
+    /// A drag past the bottom of the column asks for a pane of no rows at
+    /// all. It gets `MIN_FILTER_HEIGHT` — enough to still be visible and so
+    /// still be recognisably the thing that was just dragged, rather than a
+    /// pane that vanishes while keeping focus (see `MIN_NAV_HEIGHT`).
+    #[test]
+    fn dragging_cannot_collapse_the_filter_pane() {
+        let mut app = app_over("hdrag_collapse", &["a.rs"]);
+        draw(&mut app);
+        let divider = app.filter_area.y;
+
+        drag_rows_to(&mut app, divider, AREA.height * 2);
+
+        assert_eq!(
+            app.filter_pane_split_height(LEFT_HEIGHT),
+            MIN_FILTER_HEIGHT,
+            "the filter pane collapsed"
+        );
+    }
+
+    /// The other end: a drag to the top of the column asks for everything.
+    /// The navigator's floor is what stops it, and it stops it at exactly the
+    /// floor — the half cap governs automatic sizing only, so a drag can
+    /// legitimately take more than half.
+    #[test]
+    fn dragging_cannot_collapse_the_navigator() {
+        let mut app = app_over("hdrag_nav_floor", &["a.rs"]);
+        draw(&mut app);
+        let divider = app.filter_area.y;
+
+        drag_rows_to(&mut app, divider, 0);
+
+        let filter_height = app.filter_pane_split_height(LEFT_HEIGHT);
+        assert_eq!(
+            LEFT_HEIGHT - filter_height,
+            MIN_NAV_HEIGHT,
+            "the navigator did not keep exactly its floor"
+        );
+        assert!(
+            filter_height > LEFT_HEIGHT / 2,
+            "the half cap bound a drag it has no business binding: \
+             {filter_height}"
+        );
+    }
+
+    #[test]
+    fn double_clicking_the_horizontal_divider_restores_automatic_sizing() {
+        let mut app = app_over("hdbl", &["a.rs"]);
+        draw(&mut app);
+        let divider = app.filter_area.y;
+        drag_rows_to(&mut app, divider, divider - 2);
+        // Without this, the test passes just as well when the drag never
+        // happened — `Auto` is the state it starts in.
+        assert_ne!(
+            app.filter_height,
+            FilterHeight::Auto,
+            "sanity: the drag did not pin a height to restore from"
+        );
+        draw(&mut app);
+
+        let divider = app.filter_area.y;
+        mouse_at(
+            &mut app,
+            MouseEventKind::Down(MouseButton::Left),
+            INSIDE_LEFT_COLUMN,
+            divider,
+        );
+        mouse_at(
+            &mut app,
+            MouseEventKind::Down(MouseButton::Left),
+            INSIDE_LEFT_COLUMN,
+            divider,
+        );
+
+        assert_eq!(app.filter_height, FilterHeight::Auto);
+    }
+
+    /// The horizontal divider only exists inside the left column. Without the
+    /// column half of the hit test, every row of the file view at the same
+    /// height would resize the filter pane — including a click on the very
+    /// line the user is reading.
+    #[test]
+    fn the_horizontal_divider_is_not_hit_from_the_file_view() {
+        let mut app = app_over("hdrag_right", &["a.rs"]);
+        draw(&mut app);
+        let row = app.filter_area.y;
+        let in_file_view = AREA.width - 2;
+
+        mouse_at(
+            &mut app,
+            MouseEventKind::Down(MouseButton::Left),
+            in_file_view,
+            row,
+        );
+        mouse_at(
+            &mut app,
+            MouseEventKind::Drag(MouseButton::Left),
+            in_file_view,
+            0,
+        );
+
+        assert_eq!(app.filter_height, FilterHeight::Auto);
+    }
+
+    /// The two dividers cross at one corner. The vertical one spans the whole
+    /// height and is the older, more-reached-for target, so it wins there —
+    /// an arbitrary choice, but one that has to be made and pinned, since a
+    /// silent flip would move the wrong pane under a user aiming for a corner.
+    #[test]
+    fn the_vertical_divider_wins_where_the_two_cross() {
+        let mut app = app_over("cross", &["a.rs"]);
+        draw(&mut app);
+        let column = app.divider;
+        let row = app.filter_area.y;
+
+        mouse_at(
+            &mut app,
+            MouseEventKind::Down(MouseButton::Left),
+            column,
+            row,
+        );
+        mouse_at(&mut app, MouseEventKind::Drag(MouseButton::Left), 60, row);
+
+        assert_eq!(app.nav_width, NavWidth::Pinned(60));
+        assert_eq!(app.filter_height, FilterHeight::Auto);
     }
 
     fn key(app: &mut App, code: KeyCode) {
@@ -2665,7 +3035,7 @@ mod tests {
         mouse(&mut app, MouseEventKind::Down(MouseButton::Left), 90);
         mouse(&mut app, MouseEventKind::Drag(MouseButton::Left), 60);
 
-        assert!(!app.dragging);
+        assert_eq!(app.dragging, None);
         assert_eq!(app.nav_width(AREA), before);
     }
 
@@ -5104,12 +5474,16 @@ mod tests {
         let before = app.nav_width(AREA);
 
         mouse(&mut app, MouseEventKind::Down(MouseButton::Left), divider);
-        assert!(app.dragging, "sanity: the divider click started a drag");
+        assert_eq!(
+            app.dragging,
+            Some(Divider::Vertical),
+            "sanity: the divider click started a drag"
+        );
 
         key(&mut app, KeyCode::Char('b'));
         mouse(&mut app, MouseEventKind::Drag(MouseButton::Left), 60);
 
-        assert!(!app.dragging, "the drag survived into the zoom");
+        assert_eq!(app.dragging, None, "the drag survived into the zoom");
         assert_eq!(
             app.nav_width(AREA),
             before,
@@ -5545,6 +5919,94 @@ mod tests {
             20 - filter_height > MIN_NAV_HEIGHT,
             "the navigator was pinned at its bare floor despite ample room \
              (filter_height = {filter_height})"
+        );
+    }
+
+    /// #44: the pane is a headline feature and read as an afterthought at the
+    /// three rows an empty set asked for — a title, one line of hint, a
+    /// border. It now opens at `MIN_AUTO_FILTER_HEIGHT` whatever it holds, so
+    /// the room to define filters in is visible before the first one exists.
+    ///
+    /// Driven through `filter_pane_split_height` rather than a render, for
+    /// the same reason the two tests above are: the arithmetic is the claim,
+    /// and inspecting cells to recover a height only obscures which floor
+    /// produced it.
+    #[test]
+    fn an_empty_filter_pane_still_opens_at_its_starting_height() {
+        let app = app_over_file("empty_filter_height", "alpha\n");
+
+        assert_eq!(app.filters.row_count(), 0, "the fixture defined a filter");
+        // 40 rows is comfortably clear of both caps (half is 20, the
+        // navigator's floor leaves 37), so the floor is unambiguously what
+        // this measures.
+        assert_eq!(
+            app.filter_pane_split_height(40),
+            MIN_AUTO_FILTER_HEIGHT,
+            "an empty pane did not claim its starting height"
+        );
+    }
+
+    /// #44's claim is visual, and every other test of it drives
+    /// `filter_pane_split_height` directly — a method the renderer merely
+    /// calls, and could stop calling. This one goes through `render` on an
+    /// ordinary terminal and reads back the rect the pane was actually
+    /// handed.
+    #[test]
+    fn an_empty_filter_pane_renders_at_its_starting_height() {
+        let mut app = app_over("empty_filter_render", &["a.rs"]);
+        let tall = Rect {
+            x: 0,
+            y: 0,
+            width: 120,
+            height: 40,
+        };
+        let mut buf = Buffer::empty(tall);
+
+        (&mut app).render(tall, &mut buf);
+
+        assert_eq!(app.filter_area.height, MIN_AUTO_FILTER_HEIGHT);
+        assert_eq!(
+            app.filter_area.bottom(),
+            tall.height - 1,
+            "the pane is not sitting on the bottom of the left column \
+             (the status row is the one below it)"
+        );
+    }
+
+    /// The starting height is a floor, not a fixed size: a set larger than it
+    /// still gets the rows it asks for. Guards the difference between
+    /// `.max(MIN_AUTO_FILTER_HEIGHT)` and assigning it, which the test above
+    /// alone cannot tell apart.
+    #[test]
+    fn the_starting_height_does_not_cap_a_larger_filter_set() {
+        let mut app = app_over_file("tall_filter_set", "alpha\n");
+        for i in 0..12 {
+            key(&mut app, KeyCode::Char('f'));
+            key(&mut app, KeyCode::Char('i'));
+            typed(&mut app, &format!("f{i}"));
+            key(&mut app, KeyCode::Enter);
+        }
+
+        // 12 filters want 14 rows, and a 40-row column can spare them.
+        assert_eq!(
+            app.filter_pane_split_height(40),
+            12 + 2,
+            "the starting height capped a set that asked for more"
+        );
+    }
+
+    /// The starting height is the pane's *preference*, so it is subject to
+    /// the same two caps `preferred_height` always was — it does not get to
+    /// claim eight rows out of a twelve-row column just because it is a
+    /// floor. Here the half cap is the tighter of the two and governs.
+    #[test]
+    fn the_starting_height_still_yields_to_the_half_cap() {
+        let app = app_over_file("empty_filter_short", "alpha\n");
+
+        assert_eq!(
+            app.filter_pane_split_height(12),
+            6,
+            "the starting height overrode the half cap"
         );
     }
 
