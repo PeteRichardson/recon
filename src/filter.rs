@@ -8,14 +8,28 @@ use ratatui::style::{Color, Modifier, Style};
 use regex::Regex;
 
 /// Colours assigned to successive filters, so two filters are never
-/// indistinguishable. Wraps once exhausted.
-const PALETTE: [Color; 6] = [
-    Color::Yellow,
-    Color::Cyan,
-    Color::Green,
-    Color::Magenta,
-    Color::Blue,
-    Color::Red,
+/// indistinguishable. Wraps once exhausted, and is replaced wholesale by
+/// `[filters] palette` in `config.toml` — see [`crate::config::FiltersConfig`].
+///
+/// **Fixed 256-colour indices rather than `Color::Yellow` and friends.** The
+/// named variants are ANSI slots 0–15, whose actual appearance the terminal's
+/// theme decides; recon cannot promise contrast between two colours it does not
+/// choose. That is what #62 hit — the palette's yellow and green were slots 3
+/// and 2, which a great many themes render as near-neighbours, and reordering
+/// them would only have delayed the collision to the fourth filter.
+///
+/// The six below are spaced around the hue wheel with no pair closer than 180
+/// in RGB distance, which `every_default_palette_pair_is_visibly_distinct`
+/// pins. Change one and that test is what tells you whether the replacement
+/// still reads as its own colour. The same greyscale-ramp reasoning applies
+/// here as to [`DIM_GREY`].
+const DEFAULT_PALETTE: [Color; 6] = [
+    Color::Indexed(220), // gold        #ffd700
+    Color::Indexed(51),  // cyan        #00ffff
+    Color::Indexed(46),  // pure green  #00ff00
+    Color::Indexed(201), // magenta     #ff00ff
+    Color::Indexed(105), // periwinkle  #8787ff
+    Color::Indexed(196), // red         #ff0000
 ];
 
 /// How lines matching no including filter are rendered.
@@ -37,7 +51,7 @@ pub(crate) const DIM_STYLE: Style = Style::new()
 
 /// The colour reserved for the live search.
 ///
-/// Deliberately outside `PALETTE`: drawing from it would make the search's
+/// Deliberately outside `DEFAULT_PALETTE`: drawing from it would make the search's
 /// colour depend on how many filters happen to exist, so it would shift as
 /// filters come and go. A fixed colour gives the user one rule — white means
 /// what you just typed.
@@ -89,8 +103,51 @@ pub struct EnabledFlags {
     search: Option<bool>,
 }
 
+/// The colours successive filters are drawn from, in order.
+///
+/// A newtype rather than a bare `Vec<Color>` so that [`ActiveFilters`] can keep
+/// deriving `Default`: the derive would give an empty vector, and an empty
+/// palette is the one value `Palette::colour`'s modulo cannot survive.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Palette(Vec<Color>);
+
+impl Default for Palette {
+    fn default() -> Self {
+        Self(DEFAULT_PALETTE.to_vec())
+    }
+}
+
+impl Palette {
+    /// Build a palette from configured colours, falling back to the built-in
+    /// list when there are none.
+    ///
+    /// The fallback exists because [`Self::colour`]'s modulo divides by the
+    /// length, so an empty list panics on the *first* filter added — after
+    /// startup, with a file already open. `config::FiltersConfig` rejects
+    /// `palette = []` earlier and with a message that names the file, so this
+    /// arm should be unreachable in practice; it is here because a panic is
+    /// the wrong way to find out otherwise.
+    fn new(colours: Vec<Color>) -> Self {
+        if colours.is_empty() {
+            Self::default()
+        } else {
+            Self(colours)
+        }
+    }
+
+    /// The colour for the filter at `position`, wrapping once the list runs
+    /// out. A user who configures two colours gets them alternating, which is
+    /// a legitimate thing to want and not an error.
+    fn colour(&self, position: usize) -> Color {
+        self.0[position % self.0.len()]
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct ActiveFilters {
+    /// Where filter colours come from. Whole-list replacement, never a merge —
+    /// see [`crate::config::FiltersConfig`] for why.
+    palette: Palette,
     filters: Vec<Filter>,
     /// The live search: at most one, replaced by each `/`, and never an
     /// element of `filters`.
@@ -114,6 +171,13 @@ impl ActiveFilters {
         Self::default()
     }
 
+    pub fn with_palette(palette: Vec<Color>) -> Self {
+        Self {
+            palette: Palette::new(palette),
+            ..Self::default()
+        }
+    }
+
     /// Whether there are any *numbered* filters. The live search is not one
     /// of these — see `row_count`, which counts it and is what the pane
     /// sizes itself against.
@@ -134,7 +198,7 @@ impl ActiveFilters {
 
     /// The colour the next filter added will take.
     fn next_style(&self) -> Style {
-        Style::default().fg(PALETTE[self.filters.len() % PALETTE.len()])
+        Style::default().fg(self.palette.colour(self.filters.len()))
     }
 
     /// Add an including filter, colouring it distinctly from its
@@ -511,6 +575,127 @@ mod tests {
             set.add(pattern).expect("valid pattern");
         }
         set
+    }
+
+    // ---- the default palette -------------------------------------------
+
+    /// The xterm 256-colour cube's five levels, in order. Indices 16..=231 are
+    /// a 6×6×6 cube over these; 232..=255 are a separate greyscale ramp.
+    const CUBE_LEVELS: [u8; 6] = [0, 95, 135, 175, 215, 255];
+
+    /// What an indexed colour actually renders as, so two of them can be
+    /// compared. Only 16..=255 have fixed values — 0..=15 are the terminal's
+    /// own ANSI slots and mean whatever the user's theme says they mean, which
+    /// is the whole reason `DEFAULT_PALETTE` does not use them.
+    fn indexed_rgb(index: u8) -> Option<(i32, i32, i32)> {
+        match index {
+            0..=15 => None,
+            16..=231 => {
+                let offset = usize::from(index - 16);
+                Some((
+                    i32::from(CUBE_LEVELS[offset / 36]),
+                    i32::from(CUBE_LEVELS[(offset % 36) / 6]),
+                    i32::from(CUBE_LEVELS[offset % 6]),
+                ))
+            }
+            _ => {
+                let level = i32::from(8 + 10 * (index - 232));
+                Some((level, level, level))
+            }
+        }
+    }
+
+    fn rgb_of(colour: Color) -> Option<(i32, i32, i32)> {
+        match colour {
+            Color::Indexed(index) => indexed_rgb(index),
+            Color::Rgb(r, g, b) => Some((i32::from(r), i32::from(g), i32::from(b))),
+            _ => None,
+        }
+    }
+
+    fn distance(a: (i32, i32, i32), b: (i32, i32, i32)) -> f64 {
+        let (dr, dg, db) = (a.0 - b.0, a.1 - b.1, a.2 - b.2);
+        f64::from(dr * dr + dg * dg + db * db).sqrt()
+    }
+
+    /// #62: the palette's first and third entries were `Color::Yellow` and
+    /// `Color::Green`, which are ANSI slots 3 and 2 — the terminal decides what
+    /// they look like. On a great many themes it decides they look nearly
+    /// identical, and no amount of reordering fixes a colour recon does not
+    /// choose. Fixed shades are the only way the contrast below can be a
+    /// promise rather than a hope.
+    #[test]
+    fn the_default_palette_names_no_theme_dependent_colour() {
+        for (position, colour) in DEFAULT_PALETTE.iter().enumerate() {
+            assert!(
+                rgb_of(*colour).is_some(),
+                "palette entry {position} is {colour:?}, whose appearance the \
+                 terminal theme decides; use an indexed or RGB colour"
+            );
+        }
+    }
+
+    /// The distance below which two filter colours read as "the same one" at a
+    /// glance. Yellow-vs-green was the complaint; this is what stops any pair
+    /// from drifting back into it.
+    const MIN_SEPARATION: f64 = 150.0;
+
+    #[test]
+    fn every_default_palette_pair_is_visibly_distinct() {
+        for (i, first) in DEFAULT_PALETTE.iter().enumerate() {
+            for (j, second) in DEFAULT_PALETTE.iter().enumerate().skip(i + 1) {
+                let (a, b) = (
+                    rgb_of(*first).expect("palette colours have fixed values"),
+                    rgb_of(*second).expect("palette colours have fixed values"),
+                );
+                let apart = distance(a, b);
+                assert!(
+                    apart >= MIN_SEPARATION,
+                    "filters {} and {} are only {apart:.0} apart ({first:?} {a:?} vs \
+                     {second:?} {b:?}); {MIN_SEPARATION} is the minimum",
+                    i + 1,
+                    j + 1,
+                );
+            }
+        }
+    }
+
+    // ---- a configured palette ------------------------------------------
+
+    /// #62's second half: the built-in shades are a default, not a decree.
+    #[test]
+    fn a_configured_palette_replaces_the_default() {
+        let mut set = ActiveFilters::with_palette(vec![Color::Red, Color::Blue]);
+        set.add("alpha").expect("valid pattern");
+        set.add("beta").expect("valid pattern");
+
+        assert_eq!(set.filters()[0].style.fg, Some(Color::Red));
+        assert_eq!(set.filters()[1].style.fg, Some(Color::Blue));
+    }
+
+    /// A configured palette wraps exactly as the built-in one does, so a user
+    /// who lists two colours gets them alternating rather than an error on the
+    /// third filter.
+    #[test]
+    fn a_configured_palette_wraps_once_exhausted() {
+        let mut set = ActiveFilters::with_palette(vec![Color::Red, Color::Blue]);
+        for pattern in ["alpha", "beta", "gamma"] {
+            set.add(pattern).expect("valid pattern");
+        }
+
+        assert_eq!(set.filters()[2].style.fg, Some(Color::Red));
+    }
+
+    /// An empty list would make `next_style`'s modulo divide by zero and panic
+    /// on the first filter added. `with_palette` is the last place that can
+    /// still refuse it — see `config::FiltersConfig`, which rejects it earlier
+    /// and with a better message.
+    #[test]
+    fn an_empty_configured_palette_falls_back_to_the_default() {
+        let mut set = ActiveFilters::with_palette(Vec::new());
+        set.add("alpha").expect("valid pattern");
+
+        assert_eq!(set.filters()[0].style.fg, Some(DEFAULT_PALETTE[0]));
     }
 
     /// With no filters at all, nothing is dimmed — a plain file reads normally.
@@ -980,12 +1165,12 @@ mod tests {
         assert_eq!(set.verdict("foo line"), Verdict::Unmatched);
     }
 
-    /// The search carries a colour of its own, outside `PALETTE`, so it never
+    /// The search carries a colour of its own, outside `DEFAULT_PALETTE`, so it never
     /// shifts as filters are added and removed.
     #[test]
     fn the_search_style_is_reserved_rather_than_drawn_from_the_palette() {
         assert!(
-            !PALETTE
+            !DEFAULT_PALETTE
                 .iter()
                 .any(|colour| SEARCH_STYLE.fg == Some(*colour)),
             "the search colour would move as the palette rotates"
@@ -1120,8 +1305,8 @@ mod tests {
 
     /// `next_style` reads `self.filters.len()`, so it must be called before the
     /// push that grows `filters`, not after — call it after and it reads one
-    /// too many and returns `PALETTE[2]` instead of `PALETTE[1]`. A mere
-    /// inequality would not catch that swap: `PALETTE[2]` is still unequal to
+    /// too many and returns `DEFAULT_PALETTE[2]` instead of `DEFAULT_PALETTE[1]`. A mere
+    /// inequality would not catch that swap: `DEFAULT_PALETTE[2]` is still unequal to
     /// both filter 0's colour and to `SEARCH_STYLE`. Pinning the exact colour
     /// is the only assertion that sees the off-by-one.
     #[test]
@@ -1132,7 +1317,7 @@ mod tests {
 
         assert_eq!(
             set.filters()[1].style.fg,
-            Some(PALETTE[1]),
+            Some(DEFAULT_PALETTE[1]),
             "index 1 is where the promoted filter actually lands"
         );
         assert_ne!(
