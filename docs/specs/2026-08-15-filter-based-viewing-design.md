@@ -244,6 +244,14 @@ The left column splits horizontally: file nav on top, filters beneath.
   empty — rather than a free-standing user preference the way the vertical
   divider's width is, so there is no comparable target to drag. It belongs
   to neither 2c-i nor 2c-ii's scope; revisiting it is not currently planned.
+
+  **Superseded by #44.** The premise stopped holding once the pane stopped
+  collapsing when empty: it now opens at a fixed starting height whatever it
+  holds, which makes its height exactly the free-standing preference this
+  said it was not, and so gives the drag the target this said was missing.
+  Both halves shipped together for that reason — the starting height is what
+  makes the divider worth having, and the divider is what makes a starting
+  height you disagree with survivable.
 - `Tab` cycles three panes; the filter pane is skipped while collapsed.
 
 ### Filters persist across files

@@ -95,8 +95,9 @@ motions throughout.
 - **Cheap navigation** — moving through the navigator renders a bounded preview
   (50,000 lines / 10 MiB), so scrolling a directory of very large logs doesn't
   stutter. Ordinary files are well inside those bounds and are simply read.
-- **Mouse resize** — drag the pane divider; double-click it to return to
-  auto-sizing.
+- **Mouse resize** — drag either pane divider: the vertical one to set the left
+  column's width, the horizontal one under the navigator to set how tall the
+  filter pane is. Double-click either to return it to auto-sizing.
 - **Straight into your editor** — `o` opens the selected file's enclosing
   *project* at the line under the cursor; `O` opens the file *alone*, for the
   `.zshrc` you just want open fast. The editor is a command template rather than
@@ -269,9 +270,16 @@ border says how many rows were cut.
 The overlay shows every binding, not just the focused pane's. Context-sensitive
 help is a genuine improvement and deliberately deferred; see issue #25.
 
-Mouse: drag the divider between the panes to resize them; double-click it to
-return to auto-sizing the left column to whichever of the navigator or the
-filter pane currently needs more room.
+Mouse: drag the vertical divider between the columns to resize them;
+double-click it to return to auto-sizing the left column to whichever of the
+navigator or the filter pane currently needs more room.
+
+The horizontal divider — the border between the navigator and the filter pane
+below it — drags the same way, and sets how many rows the filter pane gets.
+Dragging it *up* makes the pane taller, since the pane is anchored to the
+bottom of the column and what moves is where it begins. Double-click it to go
+back to automatic sizing. Neither drag can squeeze the navigator out of
+existence: it keeps three rows whatever you ask for.
 
 Filters colour the lines they match and dim the rest; they are regular
 expressions, like search. A filter set describes a log format rather than one
@@ -523,6 +531,13 @@ every pane on screen. It still widens for longer names, up to its cap. The
 floor applies to automatic sizing only — dragging the divider is a decision
 and may still take the column narrower, and `b` or `z` give the file view the
 whole width outright.
+
+The pane's *height* has a floor for the same reason, and it applies even with
+no filters defined: eight rows, so the pane you define filters in is visible
+before the first one exists rather than being a title and a hint wedged under
+the navigator. A larger set still gets the rows it asks for, up to half the
+column. Both bounds govern automatic sizing only — drag the horizontal divider
+and the pane is whatever height you left it at, down to a single row.
 
 ---
 
