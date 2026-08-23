@@ -279,6 +279,44 @@ file, so it survives loading another file — `!` is the single keystroke back t
 an unfiltered view without discarding the set. Nothing is hidden: filters only
 change how lines are presented.
 
+#### The filter palette
+
+Successive filters take successive colours, wrapping once the list runs out.
+The built-in six are fixed 256-colour shades — gold, cyan, green, magenta,
+periwinkle, red — rather than `Color::Yellow` and friends, because the named
+variants are ANSI slots whose actual appearance your terminal theme decides,
+and recon cannot promise contrast between two colours it doesn't choose.
+
+Override the whole list in `config.toml`:
+
+```toml
+[filters]
+palette = ['#ffd700', '#00d7ff', '46', '201']
+```
+
+Each entry is a string, in one of three forms:
+
+| Form | Example | Note |
+|---|---|---|
+| Hex triple | `'#00d7ff'` | Exactly `#RRGGBB`; the shade you asked for |
+| 256-colour index | `'46'` | Quoted — TOML `46` unquoted is a number, not a colour |
+| Colour name | `'magenta'` | One of the sixteen ANSI slots, so **your theme decides how it looks** |
+
+The names are `black`, `red`, `green`, `yellow`, `blue`, `magenta`, `cyan`,
+`gray`, `dark-gray`, and `light-` variants of the six chromatic ones plus
+`white`. `bright-` works as a synonym for `light-`, and spaces, dashes and
+underscores are interchangeable. Prefer hex or an index unless you *want* the
+colour to follow your theme — a name is the theme dependency this palette was
+changed to avoid.
+
+The list replaces the built-in palette **wholesale**, not slot by slot: its
+length is part of the setting, since that's what decides when colours start
+repeating. Four colours means the fifth filter reuses the first. Omit the key
+to keep recon's own; `palette = []` is refused at startup, and so is a value
+that isn't a colour — both errors name the file and the line.
+
+The live search's colour is deliberately outside the palette — see below.
+
 The live search set by `/` is one of these filters, not a separate mode: it
 takes its own colour, answers to `!`, and loses to an exclude the same as any
 numbered one. It differs in one place — dimming. A numbered *including*
@@ -694,9 +732,10 @@ Full reasoning: `docs/specs/2026-08-22-opening-an-editor.md`.
 - **Almost nothing is configurable yet.** recon reads
   `$XDG_CONFIG_HOME/recon/config.toml`, falling back to
   `~/.config/recon/config.toml` on every platform including macOS, under a
-  `CLI > env > file > defaults` precedence chain. The only settings so far are
-  the two editor templates below; every other key in the file is reported as an
-  unknown key. Settings land one issue at a time against github issue #18; see
+  `CLI > env > file > defaults` precedence chain. The settings so far are the
+  two editor templates below and `[filters] palette`; every other key in the
+  file is reported as an unknown key. Settings land one issue at a time
+  against github issue #18; see
   `docs/specs/2026-08-22-configuration-mechanism.md` for the rules and the list
   of candidates.
 - **Nothing is persisted.** Filter sets live only for the session — there is no

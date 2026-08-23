@@ -24,7 +24,16 @@ obvious edit rather than a design conversation.
 candidate listed at the bottom lands in its own issue against this one. #42
 was the first to do so, adding the `[editor]` table — including the first
 *nested* section, and so the first exercise of `apply`'s exhaustive
-destructure actually having something to merge.
+destructure actually having something to merge. #62 added the second table,
+`[filters]`, and with it the first setting that is a *list* and the first to
+need step 4's range check as a real `deserialize_with` rather than a note.
+
+Adding `[filters]` also surfaced a latent bug in `apply`: the `[editor]` merge
+was written as `let ... else { return }`, which a second section would have
+silently skipped whenever the file set `[filters]` but no `[editor]`. Each
+section now merges inside its own `if let`. **Step 3 below is not enough on its
+own** — the exhaustive destructure proves a field is *mentioned*, not that
+control flow reaches it.
 
 ## Precedence
 
@@ -282,6 +291,7 @@ and so each has somewhere to land:
 
 | Candidate | Source | Note |
 |---|---|---|
+| ~~Filter palette~~ | #62 | **Landed.** `[filters] palette`, a whole-list replacement — the first setting that is neither a string nor a scalar, and the first to need a `deserialize_with` for a range check (`palette = []` divides by zero downstream) |
 | `>>` selection marker, optional | #15 | Blocked on this issue; the marker was removed outright in the meantime |
 | Saved filter sets | #8 | TOML too, so there is one parser rather than two |
 | Directory / executable colours | #15 | Style overrides |

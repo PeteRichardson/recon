@@ -16,10 +16,14 @@
 //! #18 delivered the mechanism with an empty schema; every actual setting lands
 //! in its own issue against it. The first two are `editor.project` and
 //! `editor.file` (#42, #41), which is why this module now has a nested section
-//! to merge rather than nothing at all.
+//! to merge rather than nothing at all. `filters.palette` (#62) is the third,
+//! and the first that is a list rather than a string — see [`FiltersConfig`]
+//! for why it replaces the built-in palette wholesale, and
+//! `non_empty_palette` for the one value it has to refuse.
 
 use crate::editor;
 use clap::Parser;
+use ratatui::style::Color;
 use serde::Deserialize;
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -79,6 +83,18 @@ pub struct Config {
         default_missing_value = "auto",
     )]
     pub print_editor_config: Option<String>,
+
+    /// The colours successive filters take, or `None` to use the compiled-in
+    /// palette. See [`FiltersConfig::palette`].
+    ///
+    /// `#[arg(skip)]` because there is deliberately no flag for this: a palette
+    /// is a settled preference, not a per-invocation decision, and a six-colour
+    /// list is a miserable thing to type at a shell. It still lives on `Config`
+    /// rather than being read straight from the file, so that every resolved
+    /// setting is reachable from one place — and so that adding a flag later is
+    /// a one-line change here rather than a new path through the app.
+    #[arg(skip)]
+    pub filter_palette: Option<Vec<Color>>,
 }
 
 /// The clap defaults, restated for the tests and callers that build a `Config`
@@ -95,6 +111,7 @@ impl Default for Config {
             editor: None,
             file_editor: None,
             print_editor_config: None,
+            filter_palette: None,
         }
     }
 }
@@ -110,6 +127,95 @@ pub struct FileConfig {
     /// is different from present-but-empty only in that neither sets anything —
     /// both leave the ladder to the layers below.
     pub editor: Option<EditorConfig>,
+    /// `[filters]`. Same absent-vs-empty reasoning as `editor`.
+    pub filters: Option<FiltersConfig>,
+}
+
+/// The `[filters]` table.
+#[derive(Deserialize, Debug, Default, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct FiltersConfig {
+    /// The colours successive filters take, replacing the built-in palette
+    /// **wholesale** rather than slot by slot.
+    ///
+    /// Whole-list replacement because the list's *length* is a setting too: it
+    /// decides when colours start repeating. A per-slot merge could not express
+    /// "give me three colours and cycle them", and would leave a user who
+    /// overrode two entries still guessing what the other four were.
+    ///
+    /// Each entry is written as a *string*, in one of three forms: a colour
+    /// name (`red`, `bright-white`), a hex triple (`#00FF00`), or a 256-colour
+    /// index (`'220'`). The index has to be quoted — bare `220` is a TOML
+    /// integer, and this list is of strings.
+    ///
+    /// `Color` rather than `String` because a config file's job is to fail at
+    /// *parse* time: storing the spellings would push "that isn't a colour"
+    /// past startup and into the first filter the user adds. See
+    /// `non_empty_palette`, which does the conversion and owns the message.
+    #[serde(default, deserialize_with = "non_empty_palette")]
+    pub palette: Option<Vec<Color>>,
+}
+
+/// The colour names `Color::from_str` accepts, for the error message. Kept
+/// here rather than derived because ratatui offers no way to enumerate them,
+/// and a message that lists nothing is the problem this exists to fix.
+///
+/// `bright-` is accepted as a synonym for `light-`, and spaces, dashes and
+/// underscores are all ignored, so `light red`, `light-red` and `lightred` are
+/// one name. Naming any of these is a *theme-dependent* choice — see
+/// `filter::DEFAULT_PALETTE` for why recon's own defaults do not.
+const COLOUR_NAMES: &str = "black, red, green, yellow, blue, magenta, cyan, \
+     gray, dark-gray, light-red, light-green, light-yellow, light-blue, \
+     light-magenta, light-cyan, white";
+
+/// Parse the palette, refusing an empty list and explaining a bad colour.
+///
+/// **Empty.** `palette = []` is the one value the renderer cannot use: filter
+/// colours are picked by `index % palette.len()`, so an empty palette divides
+/// by zero on the *first* filter the user adds — well after startup, with a
+/// file already open and nothing on screen to connect the crash to a config
+/// file. Failing here means the message names the file and recon never starts.
+///
+/// **Unparseable.** Entries arrive as `String` and go through
+/// `Color::from_str` here rather than via ratatui's own `Deserialize`,
+/// purely for the error message: ratatui's is "Failed to parse Colors", which
+/// never says what a *good* value looks like. In a file the user hand-edits,
+/// that is the whole difference between fixing the typo and going to read
+/// ratatui's source. The accepted forms are identical either way.
+///
+/// `default` alongside `deserialize_with` because the latter would otherwise
+/// make the key mandatory, which is the opposite of what an `Option` says.
+fn non_empty_palette<'de, D>(deserializer: D) -> Result<Option<Vec<Color>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::Error;
+    use std::str::FromStr;
+
+    let Some(spellings) = Option::<Vec<String>>::deserialize(deserializer)? else {
+        return Ok(None);
+    };
+
+    if spellings.is_empty() {
+        return Err(D::Error::custom(
+            "[filters] palette needs at least one colour; omit the key entirely \
+             to use recon's built-in palette",
+        ));
+    }
+
+    spellings
+        .iter()
+        .map(|spelling| {
+            Color::from_str(spelling).map_err(|_| {
+                D::Error::custom(format!(
+                    "{spelling:?} is not a colour. Use a name ({COLOUR_NAMES}), \
+                     a hex triple (#RRGGBB), or a 256-colour index as a string \
+                     (\"0-255\", e.g. \"220\")"
+                ))
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map(Some)
 }
 
 /// The `[editor]` table.
@@ -266,16 +372,27 @@ impl Config {
     /// `get_or_insert_with` is the direction of the whole chain in one call —
     /// the file only fills a hole the CLI and environment left. Assigning would
     /// invert it and make `config.toml` beat `--editor`.
+    ///
+    /// Each section merges inside its own `if let` rather than after an early
+    /// `return`. One `let ... else { return }` per section would make a file
+    /// that sets `[filters]` but no `[editor]` skip the filter merge entirely —
+    /// a bug whose symptom is "my setting parses fine and does nothing".
     fn apply(&mut self, file: &FileConfig) {
-        let FileConfig { editor } = file;
-        let Some(EditorConfig { project, file }) = editor else {
-            return;
-        };
-        if let Some(project) = project {
-            self.editor.get_or_insert_with(|| project.clone());
+        let FileConfig { editor, filters } = file;
+
+        if let Some(EditorConfig { project, file }) = editor {
+            if let Some(project) = project {
+                self.editor.get_or_insert_with(|| project.clone());
+            }
+            if let Some(file) = file {
+                self.file_editor.get_or_insert_with(|| file.clone());
+            }
         }
-        if let Some(file) = file {
-            self.file_editor.get_or_insert_with(|| file.clone());
+
+        if let Some(FiltersConfig { palette }) = filters
+            && let Some(palette) = palette
+        {
+            self.filter_palette.get_or_insert_with(|| palette.clone());
         }
     }
 
@@ -594,6 +711,7 @@ mod tests {
                 project: Some("from-file {file}".to_string()),
                 file: Some("from-file-solo {file}".to_string()),
             }),
+            ..FileConfig::default()
         };
 
         let mut set_on_the_cli = Config {
@@ -640,5 +758,135 @@ mod tests {
 
         let absent = Config::try_parse_from(["recon"]).expect("parses");
         assert_eq!(absent.print_editor_config, None);
+    }
+
+    // ---- the filter palette ----------------------------------------------
+
+    /// #62's second half. The list replaces the built-in palette wholesale —
+    /// see [`FiltersConfig`] for why it is not a per-slot merge.
+    #[test]
+    fn a_filters_palette_parses() {
+        let path = fixture(
+            "filters-palette.toml",
+            "[filters]\npalette = ['red', 'blue', 'green']\n",
+        );
+        let filters = load_from(&path).expect("valid").filters.expect("present");
+        assert_eq!(
+            filters.palette,
+            Some(vec![Color::Red, Color::Blue, Color::Green])
+        );
+    }
+
+    /// All three spellings ratatui's own parser accepts, because a user who
+    /// wants a colour outside the sixteen ANSI names needs one of the other
+    /// two and should not have to discover which by trial and error.
+    #[test]
+    fn a_palette_entry_may_be_a_name_a_hex_or_an_index() {
+        let path = fixture(
+            "filters-palette-forms.toml",
+            "[filters]\npalette = ['magenta', '#00FF00', '220']\n",
+        );
+        let filters = load_from(&path).expect("valid").filters.expect("present");
+        assert_eq!(
+            filters.palette,
+            Some(vec![
+                Color::Magenta,
+                Color::Rgb(0, 255, 0),
+                Color::Indexed(220),
+            ])
+        );
+    }
+
+    #[test]
+    fn an_unparseable_colour_is_a_parse_error_naming_the_file() {
+        let path = fixture(
+            "filters-palette-bad.toml",
+            "[filters]\npalette = ['red', 'octarine']\n",
+        );
+        let err = load_from(&path).expect_err("an unknown colour must fail");
+        assert!(
+            matches!(err, ConfigError::Parse { .. }),
+            "expected a parse error, got {err:?}"
+        );
+        assert!(
+            err.to_string().contains("filters-palette-bad.toml"),
+            "the error must name the file: {err}"
+        );
+    }
+
+    /// ratatui's own message for a bad colour is "Failed to parse Colors",
+    /// which does not say what a good one looks like. In a hand-edited config
+    /// file that is the difference between a one-second fix and a trip to the
+    /// source, so recon replaces it.
+    #[test]
+    fn an_unparseable_colour_says_what_is_accepted() {
+        let path = fixture(
+            "filters-palette-guidance.toml",
+            "[filters]\npalette = ['octarine']\n",
+        );
+        let rendered = load_from(&path)
+            .expect_err("an unknown colour must fail")
+            .to_string();
+
+        assert!(
+            rendered.contains("octarine"),
+            "the error must quote the offending value: {rendered}"
+        );
+        for expected in ["#RRGGBB", "0-255", "magenta"] {
+            assert!(
+                rendered.contains(expected),
+                "the error must show the {expected:?} form: {rendered}"
+            );
+        }
+    }
+
+    /// `palette = []` reads as "no colours at all", which is not a thing a
+    /// filter list can be rendered with — `ActiveFilters` would divide by zero
+    /// on the first filter added, i.e. long after startup, with the file
+    /// already open. Rejecting it here trades a panic for a message that names
+    /// the file.
+    #[test]
+    fn an_empty_palette_is_rejected() {
+        let path = fixture("filters-palette-empty.toml", "[filters]\npalette = []\n");
+        let err = load_from(&path).expect_err("an empty palette must fail");
+        let rendered = err.to_string();
+        assert!(
+            rendered.contains("at least one colour"),
+            "the error must say what is wrong: {rendered}"
+        );
+    }
+
+    /// `deny_unknown_fields` reaches into `[filters]` too, same as `[editor]`.
+    #[test]
+    fn an_unknown_key_inside_filters_is_rejected_and_named() {
+        let path = fixture("filters-typo.toml", "[filters]\npallete = ['red']\n");
+        let err = load_from(&path).expect_err("a typo'd key must fail");
+        assert!(err.to_string().contains("pallete"), "{err}");
+    }
+
+    /// There is no CLI flag for the palette, so the file layer is the only one
+    /// that can set it — but `apply` must still fold it in, or the setting
+    /// parses and then silently never applies.
+    #[test]
+    fn the_file_palette_reaches_the_resolved_config() {
+        let file = FileConfig {
+            filters: Some(FiltersConfig {
+                palette: Some(vec![Color::Red, Color::Blue]),
+            }),
+            ..FileConfig::default()
+        };
+
+        let mut config = Config::default();
+        config.apply(&file);
+        assert_eq!(config.filter_palette, Some(vec![Color::Red, Color::Blue]));
+    }
+
+    /// A file with no `[filters]` leaves the palette unset, which is what makes
+    /// the compiled-in default the default.
+    #[test]
+    fn a_file_without_a_filters_section_leaves_the_palette_unset() {
+        let mut config = Config::default();
+        config.apply(&FileConfig::default());
+        assert_eq!(config.filter_palette, None);
     }
 }

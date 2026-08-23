@@ -390,7 +390,10 @@ impl App<'_> {
             dragging: false,
             last_divider_click: None,
             search: None,
-            filters: ActiveFilters::new(),
+            filters: match &config.filter_palette {
+                Some(palette) => ActiveFilters::with_palette(palette.clone()),
+                None => ActiveFilters::new(),
+            },
             document: Document::default(),
             last_visible: None,
             last_window: None,
@@ -2720,6 +2723,38 @@ mod tests {
 
         let styles: Vec<_> = app.filters.filters().iter().map(|f| f.style.fg).collect();
         assert_ne!(styles[0], styles[1]);
+    }
+
+    /// #62: `[filters] palette` is parsed and merged in `config`, but the value
+    /// is only worth anything if `App::new` actually hands it to the filter set.
+    /// This is the seam where a correctly-parsed setting would otherwise be
+    /// silently dropped.
+    #[test]
+    fn a_configured_palette_colours_the_filters() {
+        let dir = std::path::Path::new("target/test-appdirs").join("configured_palette");
+        fs::remove_dir_all(&dir).ok();
+        fs::create_dir_all(&dir).expect("create fixture dir");
+        fs::write(dir.join("a.rs"), "x").expect("write fixture");
+
+        let mut app = App::new(&Config {
+            path: dir.join("placeholder").display().to_string(),
+            filter_palette: Some(vec![Color::Rgb(1, 2, 3), Color::Rgb(4, 5, 6)]),
+            ..Config::default()
+        });
+
+        for pattern in ["foo", "bar"] {
+            key(&mut app, KeyCode::Char('f'));
+            key(&mut app, KeyCode::Char('i'));
+            typed(&mut app, pattern);
+            key(&mut app, KeyCode::Enter);
+        }
+
+        let styles: Vec<_> = app.filters.filters().iter().map(|f| f.style.fg).collect();
+        assert_eq!(
+            styles,
+            vec![Some(Color::Rgb(1, 2, 3)), Some(Color::Rgb(4, 5, 6))],
+            "the configured palette never reached the filter set"
+        );
     }
 
     /// Returns the styles the file view is currently rendering with.
