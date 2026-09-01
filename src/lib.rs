@@ -112,6 +112,7 @@ pub mod editor;
 pub mod filter;
 pub mod help;
 mod layout;
+mod path;
 mod viewport;
 mod widgets;
 pub use config::Config;
@@ -1035,15 +1036,17 @@ impl App<'_> {
         // inherits neither — so a relative path is the one input guaranteed to
         // be interpreted differently at the far end.
         //
-        // `std::path::absolute` rather than `canonicalize`: it does not touch
-        // the filesystem and does not resolve symlinks, so the editor opens the
+        // `lexical_absolute` rather than `canonicalize`: it does not touch the
+        // filesystem and does not resolve symlinks, so the editor opens the
         // path the navigator is showing rather than wherever it happens to
         // point. For a file reached through a symlinked directory, that is the
         // one the user can find their way back to.
-        let Ok(file) = std::path::absolute(relative) else {
-            self.report(&format!("cannot resolve {name}"), true);
-            return;
-        };
+        //
+        // That claim was false until #78. `FileNav::set_dir` canonicalized, so
+        // the navigator had *already* resolved the link before this ran and
+        // there was nothing left here to preserve. All three sites share this
+        // one function now, which is what makes the sentence above true.
+        let file = path::lexical_absolute(relative);
 
         let project = match scope {
             EditorScope::Project => editor::project_root(&file),
@@ -4467,9 +4470,10 @@ mod tests {
         assert_ne!(before, after, "the layout did not change");
         assert!(after.contains("alpha"), "the file view went missing");
         // `../` is the probe for "the navigator is drawn": every listing has
-        // a parent entry, and a canonicalized path in the block title cannot
-        // contain `..`. This used to look for the `>>` selection marker,
-        // which no longer exists — leaving the assertion vacuously true.
+        // a parent entry, and the block title cannot contain `..` because
+        // `set_dir` collapses it (#78). This used to look for the `>>`
+        // selection marker, which no longer exists — leaving the assertion
+        // vacuously true.
         assert!(!after.contains("../"), "the navigator is still on screen");
     }
 
@@ -4662,7 +4666,7 @@ mod tests {
     #[test]
     fn z_zooms_the_navigator_when_it_has_focus() {
         // A distinctive marker, not "alpha": the navigator titles its block
-        // with the canonicalized checkout path, which could itself contain
+        // with the absolutised checkout path, which could itself contain
         // "alpha" on some checkout — the negative assertion below would then
         // pass or fail depending on where the repo happens to be checked
         // out, rather than on what the test claims to check.
