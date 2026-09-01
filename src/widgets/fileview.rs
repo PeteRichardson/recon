@@ -5,7 +5,7 @@ use crate::widgets::filenav::Entry;
 use color_eyre::Result;
 use ratatui::prelude::{Buffer, Color, Modifier, Rect, Style, Widget};
 use std::fs::File;
-use std::io::{BufRead, BufReader, ErrorKind, Read};
+use std::io::{BufRead, BufReader, Cursor, Read};
 use std::path::Path;
 use tui_textarea::{CursorMove, Input, Key, Scrolling, TextArea};
 
@@ -110,8 +110,23 @@ pub(crate) fn window_holds(visible_len: usize, start: usize, end: usize, row: us
     room_above && room_below
 }
 
-/// Shown in place of the contents when a file is not UTF-8.
-const BINARY_MESSAGE: &str = "<binary file: not valid UTF-8>";
+/// Shown in place of the contents when a file is not a document at all.
+///
+/// It used to say `not valid UTF-8`, which was both the check and a libel: a
+/// single stray byte in a log condemned the whole file. The verdict now rests
+/// on a NUL in the file's head, so the message names what was actually found
+/// — undecodable bytes on their own no longer stop the file being read.
+const BINARY_MESSAGE: &str = "<binary file: contains NUL bytes>";
+
+/// How much of a file's head is sniffed for a NUL byte before deciding it is
+/// binary rather than text.
+///
+/// Bounded because the decision has to be made before any of the file is
+/// shown, and unbounded means reading a two-gigabyte log twice. A NUL past
+/// this window is treated as ordinary data, on the same terms as any other
+/// undecodable byte: it costs a replacement character where it sits and
+/// nothing more.
+const BINARY_SNIFF_BYTES: usize = 8 << 10;
 
 /// Shown when the navigator's selection is a directory with nothing in it.
 ///
@@ -609,12 +624,49 @@ impl FileView<'_> {
     }
 }
 
+/// Whether the head of `reader` looks like binary rather than text, along with
+/// the bytes that had to be read to decide — they are the file's first bytes
+/// and belong back in front of the stream.
+///
+/// A NUL byte is the signal, not a decode error. A decode error says one byte
+/// in the file is not UTF-8, which is routine in a log; a NUL in the first few
+/// KiB says the file is not a document at all.
+fn sniff_binary<R: Read>(reader: &mut R) -> std::io::Result<(bool, Vec<u8>)> {
+    let mut head = Vec::new();
+    (&mut *reader)
+        .take(BINARY_SNIFF_BYTES as u64)
+        .read_to_end(&mut head)?;
+    Ok((head.contains(&0), head))
+}
+
+/// Read one newline-terminated line, decoded lossily. `None` at end of file.
+///
+/// Lossy, not fatal: one bad byte in a two-gigabyte log must not cost the
+/// other two gigabytes. U+FFFD marks the spot in place and the read carries
+/// on, which is the whole difference from `lines()` — that short-circuits the
+/// entire file on its first undecodable byte.
+fn read_lossy_line<R: BufRead>(
+    reader: &mut R,
+    buf: &mut Vec<u8>,
+) -> std::io::Result<Option<String>> {
+    buf.clear();
+    if reader.read_until(b'\n', buf)? == 0 {
+        return Ok(None);
+    }
+    Ok(Some(
+        String::from_utf8_lossy(buf)
+            .trim_end_matches(['\n', '\r'])
+            .to_string(),
+    ))
+}
+
 /// Read `path` into lines, or a single-line message describing why it could not
 /// be read.
 ///
 /// `File::open` succeeds on a directory on Unix and only fails when read, so
-/// the two error paths are kept distinct: `InvalidData` means the bytes are not
-/// UTF-8, anything else is reported verbatim from the OS.
+/// that case is recognised up front; anything else the OS refuses is reported
+/// verbatim. A file whose head holds a NUL is reported as binary; one that
+/// merely holds undecodable bytes is read anyway, a U+FFFD per bad sequence.
 fn read_lines(path: &Path) -> Vec<String> {
     // See `read_preview`: a directory opens fine and then fails to read, so
     // it is recognised up front rather than surfacing an OS error string.
@@ -626,14 +678,27 @@ fn read_lines(path: &Path) -> Vec<String> {
         Err(err) => return vec![format!("<{err}>")],
     };
 
-    match BufReader::new(file)
-        .lines()
-        .collect::<std::io::Result<Vec<_>>>()
-    {
-        Ok(lines) => lines,
-        Err(err) if err.kind() == ErrorKind::InvalidData => vec![BINARY_MESSAGE.to_string()],
-        Err(err) => vec![format!("<{err}>")],
+    let mut reader = BufReader::new(file);
+    let (binary, head) = match sniff_binary(&mut reader) {
+        Ok(sniffed) => sniffed,
+        Err(err) => return vec![format!("<{err}>")],
+    };
+    if binary {
+        return vec![BINARY_MESSAGE.to_string()];
     }
+
+    // The sniffed bytes are content, so they go back in front of the rest.
+    let mut reader = Cursor::new(head).chain(reader);
+    let mut lines = Vec::new();
+    let mut buf = Vec::new();
+    loop {
+        match read_lossy_line(&mut reader, &mut buf) {
+            Ok(Some(line)) => lines.push(line),
+            Ok(None) => break,
+            Err(err) => return vec![format!("<{err}>")],
+        }
+    }
+    lines
 }
 
 /// Read at most a screenful of `path`, reporting whether anything was left.
@@ -672,17 +737,23 @@ fn read_preview_with_caps(path: &Path, max_lines: usize, max_bytes: u64) -> Prev
     let file_bytes = file.metadata().ok().map(|meta| meta.len());
 
     let mut reader = BufReader::new(file.take(max_bytes));
+    let (binary, head) = match sniff_binary(&mut reader) {
+        Ok(sniffed) => sniffed,
+        Err(err) => return Preview::message(format!("<{err}>")),
+    };
+    if binary {
+        return Preview::message(BINARY_MESSAGE.to_string());
+    }
+
+    // The sniffed bytes are content, so they go back in front of the rest.
+    let mut reader = Cursor::new(head).chain(reader);
     let mut lines = Vec::new();
-    let mut line = String::new();
+    let mut buf = Vec::new();
 
     while lines.len() < max_lines {
-        line.clear();
-        match reader.read_line(&mut line) {
-            Ok(0) => break,
-            Ok(_) => lines.push(line.trim_end_matches(['\n', '\r']).to_string()),
-            Err(err) if err.kind() == ErrorKind::InvalidData => {
-                return Preview::message(BINARY_MESSAGE.to_string());
-            }
+        match read_lossy_line(&mut reader, &mut buf) {
+            Ok(Some(line)) => lines.push(line),
+            Ok(None) => break,
             Err(err) => return Preview::message(format!("<{err}>")),
         }
     }
@@ -690,7 +761,7 @@ fn read_preview_with_caps(path: &Path, max_lines: usize, max_bytes: u64) -> Prev
     // Either the line budget ran out, or the byte allowance did. A file that
     // ends exactly on a cap is reported as truncated, which only costs a
     // redundant re-read the first time the view is used.
-    let remaining = reader.into_inner().limit();
+    let remaining = reader.into_inner().1.into_inner().limit();
     let truncated = lines.len() == max_lines || remaining == 0;
     let estimated_lines = if truncated {
         estimate_lines(file_bytes, max_bytes - remaining, lines.len())
@@ -1272,6 +1343,65 @@ mod tests {
         assert_eq!(view.textarea.lines().len(), 3);
     }
 
+    /// A log with one corrupt byte in it is still a log. The bad byte costs
+    /// itself — one U+FFFD — and nothing else: every other line is still
+    /// there, in place, on its own row.
+    #[test]
+    fn a_stray_invalid_byte_does_not_discard_the_preview() {
+        let path = byte_fixture(
+            "preview_stray_byte.log",
+            b"alpha\nbra\xffvo\ncharlie\n".as_slice(),
+        );
+        let mut view = FileView::new("Cargo.toml".to_string());
+
+        view.preview(&path);
+
+        let lines = view.textarea.lines();
+        assert_eq!(lines.len(), 3, "lines lost to one bad byte: {lines:?}");
+        assert_eq!(lines[0], "alpha");
+        assert_eq!(lines[1], "bra\u{fffd}vo", "bad byte not replaced in place");
+        assert_eq!(lines[2], "charlie");
+    }
+
+    /// The uncapped read agrees with the preview: one bad byte is one bad
+    /// byte, not a two-gigabyte file rendered as a single message.
+    #[test]
+    fn a_stray_invalid_byte_does_not_discard_the_loaded_file() {
+        let path = byte_fixture(
+            "load_stray_byte.log",
+            b"alpha\nbra\xffvo\ncharlie\n".as_slice(),
+        );
+        let mut view = FileView::new("Cargo.toml".to_string());
+
+        view.load(&path);
+
+        let lines = view.textarea.lines();
+        assert_eq!(lines.len(), 3, "lines lost to one bad byte: {lines:?}");
+        assert_eq!(lines[0], "alpha");
+        assert_eq!(lines[1], "bra\u{fffd}vo", "bad byte not replaced in place");
+        assert_eq!(lines[2], "charlie");
+    }
+
+    /// What makes a file binary is a NUL, not a decode error — the sniff is
+    /// bounded to the head of the file, so a NUL further in is data, not a
+    /// verdict on the whole file.
+    #[test]
+    fn a_nul_past_the_sniff_window_is_not_a_binary_verdict() {
+        let mut bytes = vec![b'x'; BINARY_SNIFF_BYTES];
+        bytes.extend_from_slice(b"\ntail\0end\n");
+        let path = byte_fixture("late_nul.log", &bytes);
+        let mut view = FileView::new("Cargo.toml".to_string());
+
+        view.load(&path);
+
+        let lines = view.textarea.lines();
+        assert_ne!(
+            lines[0], BINARY_MESSAGE,
+            "a NUL past the sniff window condemned the whole file"
+        );
+        assert_eq!(lines.len(), 2, "lines lost to a late NUL: {lines:?}");
+    }
+
     #[test]
     fn preview_reports_a_binary_file() {
         let path = byte_fixture("preview_binary.bin", &[0xff, 0xfe, 0x00, 0x80]);
@@ -1279,7 +1409,7 @@ mod tests {
 
         view.preview(&path);
 
-        assert_eq!(contents(&view), "<binary file: not valid UTF-8>");
+        assert_eq!(contents(&view), "<binary file: contains NUL bytes>");
         assert!(
             !view.truncated,
             "an error message is not a truncated preview"
@@ -1353,7 +1483,7 @@ mod tests {
         let text = contents(&view);
         assert!(text.contains("lib.rs"), "not the listing: {text}");
         assert!(
-            !text.contains("not valid UTF-8"),
+            !text.contains("binary file"),
             "directory misreported as binary: {text}"
         );
         assert!(
@@ -1369,7 +1499,7 @@ mod tests {
 
         view.load(&path);
 
-        assert_eq!(contents(&view), "<binary file: not valid UTF-8>");
+        assert_eq!(contents(&view), "<binary file: contains NUL bytes>");
     }
 
     /// Whether any cell in row `y` carries `colour` as its foreground.

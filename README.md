@@ -761,8 +761,12 @@ Full reasoning: `docs/specs/2026-08-22-opening-an-editor.md`.
   costs a millisecond to read. Read, document clone and a filter pass together
   run about 1 ms/MB, so 10 MiB bounds the worst case near 10 ms. This is
   github issue #27.
-- **Non-UTF-8 files are not viewable.** A file that isn't valid UTF-8 renders
-  as `<binary file: not valid UTF-8>` rather than as bytes.
+- **Binary files are not viewable.** A file with a NUL byte in its first 8 KiB
+  renders as `<binary file: contains NUL bytes>` rather than as bytes. Text
+  that merely holds an undecodable byte here and there is read normally: each
+  bad sequence becomes a `�` in place and every other line survives intact, so
+  one corrupt byte in a log costs itself and nothing else. This is github
+  issue #70.
 - **Almost nothing is configurable yet.** recon reads
   `$XDG_CONFIG_HOME/recon/config.toml`, falling back to
   `~/.config/recon/config.toml` on every platform including macOS, under a
