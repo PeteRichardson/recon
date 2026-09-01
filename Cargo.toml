@@ -7,6 +7,78 @@ license = "MIT"
 [workspace]
 members = ["vendor/tui-textarea-2"]
 
+# Pedantic is on, and CI's `-D warnings` turns every one of these into a build
+# failure (#82). It lives here rather than as a `-W clippy::pedantic` flag on
+# the CI step so that a local `cargo clippy` enforces exactly what CI does —
+# a flag only CI passes is a gate you discover you have failed after pushing.
+#
+# `priority = -1` is what lets the individual `allow`s below override the group;
+# without it Cargo rejects the table as ambiguous.
+#
+# Every exception is declined deliberately and says why. The count is zero, so
+# anything new that appears here is genuinely new. Prefer fixing a site to
+# adding a line — and if you do add one, add the reason with it.
+#
+# Note this is `[lints]`, not `[workspace.lints]`: it must not reach
+# vendor/tui-textarea-2, which is kept verbatim from crates.io apart from the
+# changes in its PATCH.md and is not held to this repo's lint standard.
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+
+# Terminal geometry is `u16` (ratatui's `Rect`) and lengths are `usize`, so
+# every width/column calculation crosses the two. The values are bounded by
+# what a terminal can display, and 11 of the 14 sites are test code asserting
+# against a const fixture string's `.len()`. `try_from` at each would be noise
+# around an invariant the type system cannot express here. The sites where
+# truncation would actually be a *bug* rather than an impossibility — the
+# cursor row and scroll delta in `fileview.rs` — are written with `try_from`
+# and saturation instead; see `cursor_screen_row`.
+cast_possible_truncation = "allow"
+
+# `handle_events` on `FileNav` and `FileView` take `Event`/`Input` by value
+# because they consume it by matching, and the two `new(path: String)` ctors
+# take an owned `String` because they store it. Borrowing would push a clone to
+# every caller to save one here.
+needless_pass_by_value = "allow"
+
+# The arms are identical *today* by coincidence, not by meaning: the `Mode`
+# arms in `document.rs` and the key arms in `fileview.rs` are each documented
+# separately and change independently. Merging them would couple two decisions
+# that only happen to agree.
+match_same_arms = "allow"
+
+# Both sites are `handle_events`, whose `Result` is interface symmetry across
+# the widgets — `FileNav`'s can fail, `FileView`'s currently cannot. Narrowing
+# the one that cannot would make the two panes' dispatch differ in shape for
+# no reason, and would have to be widened again the first time it can.
+unnecessary_wraps = "allow"
+
+# `FilterList::preferred_height`/`preferred_width` are methods for the same
+# reason: every pane answers the layout with the same call shape, and taking
+# `&self` is what makes them interchangeable at the call site.
+unused_self = "allow"
+
+# Both are the top-level event dispatch — one long, flat `match` over keys.
+# Splitting it into helpers to satisfy a line count would scatter the one
+# place you can currently read the whole keymap.
+too_many_lines = "allow"
+
+# `FileView`'s bools are independent view flags, not a state enum in disguise;
+# they are set and read in unrelated places and no combination is invalid.
+struct_excessive_bools = "allow"
+
+# `args` and `argv` in `editor.rs` — the standard names for the whole vector
+# and its tail. Renaming either to satisfy the lint would make both worse.
+similar_names = "allow"
+
+# recon ships a binary. `pub` on these 12 functions means "reachable from the
+# crate's own tests", not "published API" — there is no downstream caller to
+# write an `# Errors` contract for. Each returns `color_eyre::Result` and
+# propagates an underlying io/regex/parse failure verbatim, so the section
+# would restate the call below it. The prose docs that matter here describe
+# what the function is *for*, and those are already written.
+missing_errors_doc = "allow"
+
 [dependencies]
 ratatui = "0.30.2"
 # `env` is what gives `#[arg(long, env = "RECON_FOO")]` CLI > env precedence

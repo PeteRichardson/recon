@@ -51,6 +51,7 @@ pub const DEFAULT_PROJECT_TEMPLATE: &str = "zed {project} {file}:{line}";
 /// Deliberately hand-rolled rather than delegating to `git2::Repository::discover`.
 /// That pulls libgit2 in for one function and only ever finds `.git`, which
 /// misses every non-git project in the table above.
+#[must_use]
 pub fn project_root(path: &Path) -> PathBuf {
     // Absolutised first, and that is a correctness step rather than a tidying
     // one. `Path::parent` walks a *relative* path down to `""` and stops, and
@@ -124,7 +125,7 @@ impl std::error::Error for TemplateError {}
 /// outside quotes escapes whatever follows it.
 ///
 /// Grouping alone is what the `osascript -e '…'` terminal-editor templates
-/// need: the whole AppleScript has to survive as a single argv entry, and a
+/// need: the whole `AppleScript` has to survive as a single argv entry, and a
 /// plain whitespace split shatters it into fifteen. Everything else a shell
 /// does is not merely unnecessary here but actively unwanted — see the module
 /// docs on why substitution deliberately happens *after* this.
@@ -222,6 +223,7 @@ pub fn split_template(template: &str) -> Result<Vec<String>, TemplateError> {
 ///
 /// Entries are substituted whole, never re-split, so `{file}:{line}` stays one
 /// argument no matter what the path contains.
+#[must_use]
 pub fn substitute(argv: &[String], project: &Path, file: &Path, line: usize) -> Vec<String> {
     let project = project.display().to_string();
     let file = file.display().to_string();
@@ -271,6 +273,7 @@ pub fn substitute(argv: &[String], project: &Path, file: &Path, line: usize) -> 
 /// without knowing every editor's CLI, which is exactly the enum this design
 /// refuses to hard-code. Anyone writing such a template writes `editor.file`
 /// explicitly; `--print-editor-config` emits both keys for that reason.
+#[must_use]
 pub fn drop_project(argv: &[String]) -> Vec<String> {
     argv.iter()
         .filter(|entry| entry.as_str() != "{project}")
@@ -467,6 +470,7 @@ pub struct ProcessLauncher {
 }
 
 impl ProcessLauncher {
+    #[must_use]
     pub fn new(outcomes: Sender<String>) -> Self {
         Self {
             outcomes: Some(outcomes),
@@ -698,7 +702,10 @@ pub(crate) mod double {
         /// The single command recorded, or a panic naming what was there
         /// instead. Every test here expects exactly one.
         pub fn only_command(&self) -> Vec<String> {
-            let commands = self.commands.lock().unwrap_or_else(|p| p.into_inner());
+            let commands = self
+                .commands
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             assert_eq!(commands.len(), 1, "expected one command: {commands:?}");
             commands[0].clone()
         }
@@ -706,7 +713,7 @@ pub(crate) mod double {
         pub fn is_empty(&self) -> bool {
             self.commands
                 .lock()
-                .unwrap_or_else(|p| p.into_inner())
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .is_empty()
         }
     }
@@ -715,7 +722,7 @@ pub(crate) mod double {
         fn spawn(&self, argv: &[String]) -> std::io::Result<()> {
             self.commands
                 .lock()
-                .unwrap_or_else(|p| p.into_inner())
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .push(argv.to_vec());
             match &self.fail_with {
                 Some(message) => Err(std::io::Error::new(
@@ -753,7 +760,7 @@ mod tests {
     fn claim_fixture_name(name: &str) {
         let mut names = EDITOR_FIXTURE_NAMES
             .lock()
-            .unwrap_or_else(|poison| poison.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         assert!(
             !names.iter().any(|used| used == name),
             "editor fixture name {name:?} is already in use by another test — pick a unique name"
@@ -904,7 +911,7 @@ mod tests {
     }
 
     /// The whole reason splitting is quote-aware. A whitespace split turns this
-    /// AppleScript into fifteen arguments, and `osascript` runs the first word
+    /// `AppleScript` into fifteen arguments, and `osascript` runs the first word
     /// of it as an entire script.
     #[test]
     fn the_osascript_form_survives_as_one_argv_entry() {

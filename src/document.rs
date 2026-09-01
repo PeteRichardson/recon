@@ -40,6 +40,7 @@ pub struct Document {
 }
 
 impl Document {
+    #[must_use]
     pub fn new(lines: Vec<String>) -> Self {
         let verdicts = vec![Verdict::Unmatched; lines.len()];
         Self {
@@ -52,10 +53,12 @@ impl Document {
         }
     }
 
+    #[must_use]
     pub fn lines(&self) -> &[String] {
         &self.lines
     }
 
+    #[must_use]
     pub fn verdicts(&self) -> &[Verdict] {
         &self.verdicts
     }
@@ -109,6 +112,7 @@ impl Document {
     /// How many lines an including filter selected, plus any the live search
     /// caught — see the `Verdict::Included(_) | Verdict::Searched` match in
     /// `evaluate`, which counts both.
+    #[must_use]
     pub fn match_count(&self) -> usize {
         self.match_count
     }
@@ -117,6 +121,7 @@ impl Document {
     ///
     /// Always covers every line, so a shorter vector can never leave trailing
     /// lines wearing styles computed for a previously loaded file.
+    #[must_use]
     pub fn line_styles(&self, filters: &ActiveFilters) -> Vec<Option<Style>> {
         self.verdicts
             .iter()
@@ -124,6 +129,7 @@ impl Document {
             .collect()
     }
 
+    #[must_use]
     pub fn mode(&self) -> Mode {
         self.mode
     }
@@ -135,11 +141,13 @@ impl Document {
     }
 
     /// Source line indices currently on screen, in order.
+    #[must_use]
     pub fn visible(&self) -> &[usize] {
         &self.visible
     }
 
     /// The text of the visible lines, for rebuilding the view's buffer.
+    #[must_use]
     pub fn visible_lines(&self) -> Vec<String> {
         self.visible_lines_range(0, self.visible.len())
     }
@@ -152,6 +160,7 @@ impl Document {
     /// filter change between frames can shorten the visible set under it. A
     /// short buffer for one frame is a cosmetic glitch; an index panic takes
     /// the whole TUI down.
+    #[must_use]
     pub fn visible_lines_range(&self, start: usize, end: usize) -> Vec<String> {
         self.window(start, end)
             .iter()
@@ -160,6 +169,7 @@ impl Document {
     }
 
     /// One style slot per *visible* line, aligned with `visible_lines`.
+    #[must_use]
     pub fn visible_styles(&self, filters: &ActiveFilters) -> Vec<Option<Style>> {
         self.visible_styles_range(filters, 0, self.visible.len())
     }
@@ -170,6 +180,7 @@ impl Document {
     /// Windowing this matters more than it looks: unlike the gutter numbers,
     /// the style vector was never gated on hiding, so an unfiltered million-line
     /// file rebuilt a million-entry vector on every navigator arrow key.
+    #[must_use]
     pub fn visible_styles_range(
         &self,
         filters: &ActiveFilters,
@@ -203,6 +214,7 @@ impl Document {
     /// — the file really does continue below it. The last line of the file has
     /// no next line and is never marked, which is what keeps an unfiltered
     /// document unmarked throughout.
+    #[must_use]
     pub fn visible_group_ends(&self) -> Vec<bool> {
         self.visible_group_ends_range(0, self.visible.len())
     }
@@ -217,6 +229,7 @@ impl Document {
     /// appearing or vanishing purely because of where the window happens to
     /// stop. Reading `visible[end]` when it exists keeps every mark
     /// independent of the window.
+    #[must_use]
     pub fn visible_group_ends_range(&self, start: usize, end: usize) -> Vec<bool> {
         let end = end.min(self.visible.len());
         let start = start.min(end);
@@ -233,11 +246,13 @@ impl Document {
     }
 
     /// Where a source line sits in the visible list, if it is shown at all.
+    #[must_use]
     pub fn visible_position(&self, source: usize) -> Option<usize> {
         self.visible.binary_search(&source).ok()
     }
 
     /// The source index of the visible row at `visible_row`.
+    #[must_use]
     pub fn source_at(&self, visible_row: usize) -> Option<usize> {
         self.visible.get(visible_row).copied()
     }
@@ -248,6 +263,7 @@ impl Document {
     /// Used when a mode change hides the line the cursor was on: snapping
     /// forward lands on the match the user was navigating towards, and the
     /// backward fallback stops the cursor being lost when nothing follows.
+    #[must_use]
     pub fn nearest_visible(&self, source: usize) -> Option<usize> {
         match self.visible.binary_search(&source) {
             Ok(_) => Some(source),
@@ -266,7 +282,7 @@ mod tests {
     use ratatui::style::Modifier;
 
     fn doc(lines: &[&str]) -> Document {
-        Document::new(lines.iter().map(|l| l.to_string()).collect())
+        Document::new(lines.iter().map(std::string::ToString::to_string).collect())
     }
 
     fn set_with(patterns: &[&str]) -> ActiveFilters {

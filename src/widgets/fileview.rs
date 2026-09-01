@@ -1,5 +1,5 @@
 use crate::widgets::filenav::Entry;
-/// FileView Widget
+/// `FileView` Widget
 ///
 ///
 use color_eyre::Result;
@@ -431,7 +431,13 @@ impl FileView<'_> {
     /// and the view lurches whenever a filter changes.
     pub fn cursor_screen_row(&self) -> u16 {
         let (top, _) = self.textarea.scroll_top();
-        self.textarea.cursor().0.saturating_sub(top as usize) as u16
+        // The subtraction is a screen offset, so it fits `u16` for any pane a
+        // terminal can actually draw. `try_from` rather than `as` because
+        // nothing in the *type* says so — the cursor is a buffer index, and a
+        // cursor left below the viewport by a bug would wrap to a small row
+        // under `as` and silently scroll the view somewhere plausible.
+        // Saturating turns that into a visibly pinned cursor instead.
+        u16::try_from(self.textarea.cursor().0.saturating_sub(usize::from(top))).unwrap_or(u16::MAX)
     }
 
     /// Request that the cursor be scrolled onto `row` of the pane the next
@@ -475,12 +481,19 @@ impl FileView<'_> {
         (&self.textarea).render(area, &mut scratch);
 
         let cursor = self.textarea.cursor().0;
-        let desired_top = cursor.saturating_sub(row as usize);
+        let desired_top = cursor.saturating_sub(usize::from(row));
         let (current_top, _) = self.textarea.scroll_top();
-        let delta = desired_top as i64 - current_top as i64;
+        // A line index only exceeds `i64::MAX` in a file no filesystem can
+        // hold, but `as` would make that case scroll *backwards* rather than
+        // to the end, so saturate instead.
+        let delta = i64::try_from(desired_top).unwrap_or(i64::MAX) - i64::from(current_top);
         if delta != 0 {
-            self.textarea
-                .scroll((delta.clamp(i16::MIN as i64, i16::MAX as i64) as i16, 0));
+            // Clamped into `i16` range first, so the conversion cannot fail.
+            // `unwrap_or(0)` keeps that a skipped scroll rather than a panic
+            // in a render path if the clamp above is ever changed.
+            let step =
+                i16::try_from(delta.clamp(i64::from(i16::MIN), i64::from(i16::MAX))).unwrap_or(0);
+            self.textarea.scroll((step, 0));
         }
     }
 
@@ -967,11 +980,25 @@ impl Widget for &mut FileView<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fmt::Write as _;
     use std::fs;
     use std::sync::Mutex;
 
     fn contents(view: &FileView<'_>) -> String {
         view.textarea.lines().join("\n")
+    }
+
+    /// `n` newline-terminated lines, `line 0` through `line n-1`.
+    ///
+    /// One buffer appended to, not `(0..n).map(|i| format!(...)).collect()`:
+    /// the latter allocates and drops a `String` per line, which is quadratic
+    /// and showed up across ~15 fixtures in this file and `lib.rs` (#90).
+    /// `write!` into a `String` cannot fail, hence the discarded result.
+    fn numbered_lines(n: usize) -> String {
+        (0..n).fold(String::new(), |mut body, i| {
+            let _ = writeln!(body, "line {i}");
+            body
+        })
     }
 
     // ---- window arithmetic (#7) ----------------------------------------
@@ -1094,7 +1121,7 @@ mod tests {
     fn claim_fixture_name(name: &str) {
         let mut names = FIXTURE_NAMES
             .lock()
-            .unwrap_or_else(|poison| poison.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         assert!(
             !names.iter().any(|used| used == name),
             "fixture file name {name:?} is already in use by another test — pick a unique name"
@@ -1124,7 +1151,7 @@ mod tests {
     }
 
     fn long_file(name: &str, lines: usize) -> std::path::PathBuf {
-        let body: String = (0..lines).map(|i| format!("line {i}\n")).collect();
+        let body = numbered_lines(lines);
         fixture(name, &body)
     }
 
@@ -1639,7 +1666,7 @@ mod tests {
         );
     }
 
-    /// Loading a file rebuilds the TextArea, which drops both. Phase 2 must
+    /// Loading a file rebuilds the `TextArea`, which drops both. Phase 2 must
     /// re-apply them after every load; this pins the behaviour so that is not
     /// discovered by surprise.
     #[test]
@@ -1756,7 +1783,7 @@ mod tests {
     /// `Enter` the filter pane's toggle, and neither can also page here.
     #[test]
     fn brackets_page_up_and_down() {
-        let body: String = (0..200).map(|i| format!("line {i}\n")).collect();
+        let body = numbered_lines(200);
         let mut view = view_of("bracket_pages.txt", &body);
         let area = Rect::new(0, 0, 40, 10);
         let mut buf = Buffer::empty(area);
@@ -1781,7 +1808,7 @@ mod tests {
     /// another pane.
     #[test]
     fn space_and_enter_no_longer_page() {
-        let body: String = (0..200).map(|i| format!("line {i}\n")).collect();
+        let body = numbered_lines(200);
         let mut view = view_of("no_page_keys.txt", &body);
         let area = Rect::new(0, 0, 40, 10);
         let mut buf = Buffer::empty(area);
@@ -1824,7 +1851,7 @@ mod tests {
     /// indirectly, through a whole filter toggle.
     #[test]
     fn scroll_cursor_to_row_primes_the_viewport_before_scrolling() {
-        let body: String = (0..200).map(|i| format!("line {i}\n")).collect();
+        let body = numbered_lines(200);
         let mut view = view_of("scroll_cursor_prime.txt", &body);
         let area = Rect::new(0, 0, 40, 8);
         let mut buf = Buffer::empty(area);
@@ -1865,7 +1892,7 @@ mod tests {
     /// "no-op" claim the new design no longer makes true.
     #[test]
     fn a_scroll_requested_before_any_render_is_applied_on_the_first_render() {
-        let body: String = (0..200).map(|i| format!("line {i}\n")).collect();
+        let body = numbered_lines(200);
         let mut view = view_of("scroll_cursor_no_area.txt", &body);
 
         let lines = view.textarea.lines().to_vec();
@@ -1900,7 +1927,7 @@ mod tests {
     /// replace it.
     #[test]
     fn a_second_pending_scroll_before_the_next_render_does_not_overwrite_the_first() {
-        let body: String = (0..200).map(|i| format!("line {i}\n")).collect();
+        let body = numbered_lines(200);
         let mut view = view_of("scroll_get_or_insert.txt", &body);
         let area = Rect::new(0, 0, 40, 8);
         let mut buf = Buffer::empty(area);
@@ -2174,9 +2201,11 @@ mod tests {
     /// longer, which a byte-blind estimate would read as a much longer file.
     #[test]
     fn the_estimate_scales_with_line_length() {
-        let body: String = (0..5000)
-            .map(|i| format!("line {i} {}\n", "x".repeat(200)))
-            .collect();
+        let padding = "x".repeat(200);
+        let body = (0..5000).fold(String::new(), |mut body, i| {
+            let _ = writeln!(body, "line {i} {padding}");
+            body
+        });
         let path = fixture("gutter_wide.txt", &body);
         let mut view = FileView::new("Cargo.toml".to_string());
 

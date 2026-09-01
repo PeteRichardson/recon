@@ -305,6 +305,7 @@ fn config_path_from(xdg_config_home: Option<&str>, home: Option<&str>) -> Option
 
 /// Where recon looks for `config.toml`, or `None` when the environment names
 /// no home to look in.
+#[must_use]
 pub fn config_path() -> Option<PathBuf> {
     config_path_from(
         std::env::var("XDG_CONFIG_HOME").ok().as_deref(),
@@ -401,6 +402,7 @@ impl Config {
     /// Reading `$VISUAL`/`$EDITOR` here rather than in `Config::load` keeps
     /// [`editor::Templates::resolve`] pure and testable — the same rule
     /// `config_path` follows for `$XDG_CONFIG_HOME`.
+    #[must_use]
     pub fn editor_templates(&self) -> editor::Templates {
         editor::Templates::resolve(
             self.editor.as_deref(),
@@ -425,7 +427,7 @@ mod tests {
     fn claim_fixture_name(name: &str) {
         let mut names = CONFIG_FIXTURE_NAMES
             .lock()
-            .unwrap_or_else(|poison| poison.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         assert!(
             !names.iter().any(|used| used == name),
             "config fixture name {name:?} is already in use by another test — pick a unique name"

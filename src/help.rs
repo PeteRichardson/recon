@@ -452,7 +452,7 @@ fn total_width(columns: &[Column]) -> usize {
 /// count walked back down if they do not fit. Walking back down costs rows off
 /// the bottom, which is why it only happens on a terminal too narrow to hold
 /// the columns the height asked for.
-fn layout<'a>(rows: &[Row<'a>], inner: Rect) -> Vec<Column> {
+fn layout(rows: &[Row<'_>], inner: Rect) -> Vec<Column> {
     let height = usize::from(inner.height).max(1);
     let width = usize::from(inner.width);
     let mut count = rows.len().div_ceil(height).max(1);
@@ -472,7 +472,7 @@ fn layout<'a>(rows: &[Row<'a>], inner: Rect) -> Vec<Column> {
 ///
 /// The cap is what drops rows when `count` has been walked down below what the
 /// height wanted; `shown` is how the caller learns it happened.
-fn pack<'a>(rows: &[Row<'a>], count: usize, height: usize) -> Vec<Column> {
+fn pack(rows: &[Row<'_>], count: usize, height: usize) -> Vec<Column> {
     let per_column = rows.len().div_ceil(count).min(height).max(1);
     let mut columns: Vec<Column> = Vec::new();
     let mut x = 0;
