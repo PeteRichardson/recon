@@ -2418,15 +2418,53 @@ mod tests {
     /// `remove_dir_all`/`create_dir_all` the same path. That race is exactly
     /// what caused a real, release-only flake: both tests "succeeded" and
     /// just clobbered each other's files depending on interleaving.
+    ///
+    /// **Compared case-insensitively, because the filesystem is** (#69). This
+    /// guard was `used == name` and so had a hole exactly the shape of the bug
+    /// it exists to prevent: macOS ships case-insensitive APFS, so `o_ctrl` and
+    /// `O_ctrl` name one directory, and five `o_*`/`O_*` fixture pairs sat on
+    /// top of each other undetected. The failure was a `NotFound` on
+    /// `fs::write` roughly one run in five — one test's `remove_dir_all`
+    /// landing between the other's `create_dir_all` and its `fs::write`.
+    ///
+    /// Deliberately not conditioned on the host filesystem. A guard that only
+    /// fired on macOS would let a colliding pair be added on Linux and
+    /// rediscovered by whoever next ran the suite on a Mac; refusing the pair
+    /// everywhere costs nothing but a fixture rename.
+    ///
+    /// `eq_ignore_ascii_case` rather than a full Unicode case fold: fixture
+    /// names here are hand-written ASCII identifiers, and the ASCII form needs
+    /// no allocation. A non-ASCII fixture name would slip through, which is a
+    /// smaller hole than the one this closes and not one this suite can reach.
     fn claim_fixture_dir(name: &str) {
         let mut names = FIXTURE_DIR_NAMES
             .lock()
             .unwrap_or_else(|poison| poison.into_inner());
         assert!(
-            !names.iter().any(|used| used == name),
-            "fixture directory name {name:?} is already in use by another test — pick a unique name"
+            !names.iter().any(|used| used.eq_ignore_ascii_case(name)),
+            "fixture directory name {name:?} is already in use by another test \
+             (compared case-insensitively — macOS treats {name:?} and its \
+             other-case spellings as one directory) — pick a unique name"
         );
         names.push(name.to_string());
+    }
+
+    /// Two fixture names differing only in case are a collision, not two names.
+    ///
+    /// macOS ships a case-insensitive filesystem by default, so
+    /// `target/test-appdirs/o_ctrl` and `target/test-appdirs/O_ctrl` are one
+    /// directory. A case-sensitive guard sees two distinct strings, says
+    /// nothing, and lets the two tests race to `remove_dir_all` and
+    /// `create_dir_all` the same path — one of them deleting the other's
+    /// `logs/` between its `create_dir_all` and its `fs::write` (#69).
+    ///
+    /// The probe names are deliberately not any real fixture's: claiming a name
+    /// here consumes it for the rest of the process.
+    #[test]
+    #[should_panic(expected = "already in use")]
+    fn a_fixture_name_differing_only_in_case_is_a_collision() {
+        claim_fixture_dir("zz_case_probe");
+        claim_fixture_dir("ZZ_CASE_PROBE");
     }
 
     /// An app listing a directory with known entry names.
@@ -7650,7 +7688,7 @@ mod tests {
     /// project, so this also proves no walk-up happened.
     #[test]
     fn shift_o_opens_the_file_alone_at_the_cursors_line() {
-        let (mut app, root) = app_over_project("O_file", "alpha\nbeta\ngamma\n");
+        let (mut app, root) = app_over_project("shift_o_file", "alpha\nbeta\ngamma\n");
         let launcher = record_launches(&mut app, RecordingLauncher::default());
 
         shift(&mut app, KeyCode::Char('O'));
@@ -7669,7 +7707,7 @@ mod tests {
     /// `O` exists so that marker is never consulted.
     #[test]
     fn shift_o_performs_no_walk_up_even_inside_a_project() {
-        let (mut app, root) = app_over_project("O_no_walk_up", "alpha\n");
+        let (mut app, root) = app_over_project("shift_o_no_walk_up", "alpha\n");
         let launcher = record_launches(&mut app, RecordingLauncher::default());
 
         shift(&mut app, KeyCode::Char('O'));
@@ -7686,7 +7724,7 @@ mod tests {
     /// `open_in_editor` proved through the other key.
     #[test]
     fn shift_o_lands_on_the_line_the_cursor_is_on() {
-        let (mut app, root) = app_over_project("O_line", "alpha\nbeta\ngamma\ndelta\n");
+        let (mut app, root) = app_over_project("shift_o_line", "alpha\nbeta\ngamma\ndelta\n");
         let launcher = record_launches(&mut app, RecordingLauncher::default());
 
         focus_file_view(&mut app);
@@ -7703,7 +7741,7 @@ mod tests {
     /// Global, not pane-scoped, exactly like `o`.
     #[test]
     fn shift_o_works_from_the_navigator_pane() {
-        let (mut app, _root) = app_over_project("O_from_nav", "alpha\n");
+        let (mut app, _root) = app_over_project("shift_o_from_nav", "alpha\n");
         let launcher = record_launches(&mut app, RecordingLauncher::default());
 
         assert!(
@@ -7720,7 +7758,7 @@ mod tests {
     /// neither guard can be tightened into breaking the other.
     #[test]
     fn shift_o_is_reached_with_no_modifier_attached() {
-        let (mut app, _root) = app_over_project("O_bare", "alpha\n");
+        let (mut app, _root) = app_over_project("shift_o_bare", "alpha\n");
         let launcher = record_launches(&mut app, RecordingLauncher::default());
 
         key(&mut app, KeyCode::Char('O'));
@@ -7732,8 +7770,8 @@ mod tests {
     /// by dropping the `{project}` entry rather than by string surgery.
     #[test]
     fn the_file_template_is_derived_from_the_project_template() {
-        claim_fixture_dir("O_derived");
-        let root = std::path::Path::new("target/test-appdirs/O_derived");
+        claim_fixture_dir("shift_o_derived");
+        let root = std::path::Path::new("target/test-appdirs/shift_o_derived");
         fs::remove_dir_all(root).ok();
         fs::create_dir_all(root).expect("create fixture dir");
         fs::write(root.join("go.mod"), "module fixture\n").expect("write marker");
@@ -7763,8 +7801,8 @@ mod tests {
     /// on the ladder, proved through the key rather than in isolation.
     #[test]
     fn an_explicit_file_template_beats_the_derived_one() {
-        claim_fixture_dir("O_explicit");
-        let root = std::path::Path::new("target/test-appdirs/O_explicit");
+        claim_fixture_dir("shift_o_explicit");
+        let root = std::path::Path::new("target/test-appdirs/shift_o_explicit");
         fs::remove_dir_all(root).ok();
         fs::create_dir_all(root).expect("create fixture dir");
         let file = root.join("log.txt");
@@ -7794,8 +7832,8 @@ mod tests {
     /// that catches the arms being wired to the same field.
     #[test]
     fn the_two_keys_do_not_share_a_template() {
-        claim_fixture_dir("O_distinct");
-        let root = std::path::Path::new("target/test-appdirs/O_distinct");
+        claim_fixture_dir("shift_o_distinct");
+        let root = std::path::Path::new("target/test-appdirs/shift_o_distinct");
         fs::remove_dir_all(root).ok();
         fs::create_dir_all(root).expect("create fixture dir");
         let file = root.join("log.txt");
@@ -7821,7 +7859,7 @@ mod tests {
     /// A failing launch reports and recon keeps running on this path too.
     #[test]
     fn a_failing_shift_o_is_reported_on_the_status_row() {
-        let (mut app, _root) = app_over_project("O_fail", "alpha\n");
+        let (mut app, _root) = app_over_project("shift_o_fail", "alpha\n");
         record_launches(&mut app, RecordingLauncher::failing("no such file"));
 
         shift(&mut app, KeyCode::Char('O'));
@@ -7838,7 +7876,7 @@ mod tests {
     /// widget — the same tolerance `H` and `n`/`N` use.
     #[test]
     fn ctrl_shift_o_is_not_the_open_key() {
-        let (mut app, _root) = app_over_project("O_ctrl", "alpha\n");
+        let (mut app, _root) = app_over_project("shift_o_ctrl", "alpha\n");
         let launcher = record_launches(&mut app, RecordingLauncher::default());
 
         ctrl(&mut app, KeyCode::Char('O'));
@@ -7855,7 +7893,7 @@ mod tests {
     /// `self.search`, so this pins the behaviour rather than adding to it.
     #[test]
     fn shift_o_typed_into_a_prompt_is_text_not_the_open_key() {
-        let (mut app, _root) = app_over_project("O_prompt", "alpha\n");
+        let (mut app, _root) = app_over_project("shift_o_prompt", "alpha\n");
         let launcher = record_launches(&mut app, RecordingLauncher::default());
 
         key(&mut app, KeyCode::Char('/'));
