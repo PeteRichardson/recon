@@ -238,13 +238,15 @@ fn moving_onto_a_directory_shows_that_it_is_a_directory() {
     };
     let mut app = App::new(&config);
 
-    highlight(&mut app, "alpha.rs"); // `beta_dir` sorts next
+    // `beta_dir` sits directly above `alpha.rs`: directories sort first (#96),
+    // so the step onto it is upwards.
+    highlight(&mut app, "alpha.rs");
     assert!(
         view_text(&mut app).contains("content"),
         "precondition: the file is on screen"
     );
 
-    press(&mut app, KeyCode::Down);
+    press(&mut app, KeyCode::Up);
 
     assert_eq!(highlighted_name(&mut app), "beta_dir");
     let shown = view_text(&mut app);

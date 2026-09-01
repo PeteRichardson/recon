@@ -455,6 +455,12 @@ directory rather than one is deliberate — the colour is caught first, the
 bold survives a theme with weak colour contrast, and the slash survives no
 colour at all.
 
+Entries are *ordered* the same way `yazi`, `ls` and Finder order them:
+directories first, then case-insensitively by name. A listing sorted by raw
+bytes instead puts every capitalised name in a block above every lowercase one
+— `Cargo.toml`, `README.md`, `app.log` — which is the half that makes a
+directory hard to scan.
+
 Colour reports the file's *mode*, not whether it can be viewed: plenty of
 executable scripts are readable text. What can be viewed is answered by the
 view pane, which reads the actual bytes. Moving the selection onto a
