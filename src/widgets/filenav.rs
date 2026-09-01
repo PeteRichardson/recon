@@ -7,6 +7,7 @@ use crossterm::event::{Event, KeyCode};
 use ratatui::prelude::{Buffer, Color, Modifier, Rect, Style, Widget};
 use ratatui::widgets::{List, ListItem, ListState, StatefulWidget};
 use regex::Regex;
+use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -30,7 +31,12 @@ enum Select {
     First,
     /// A named entry, falling back to `First` when it is not there — the
     /// file was deleted, or the climb reached the filesystem root.
-    Named(String),
+    ///
+    /// The name as the OS gives it, for the same reason `Entry::name` is —
+    /// climbing out of a directory whose name is not valid UTF-8 has to match
+    /// that directory in the parent's listing, and a lossy name matches
+    /// nothing.
+    Named(OsString),
 }
 
 /// Applied to entries matching the current search pattern.
@@ -98,7 +104,18 @@ pub enum Kind {
 /// directory it names.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Entry {
-    pub name: String,
+    /// The name as the OS gives it, not as Rust would like it to be.
+    ///
+    /// An `OsString` rather than a `String` because on Unix a filename is
+    /// bytes, and not necessarily UTF-8. Storing the lossy conversion turned
+    /// every invalid byte into U+FFFD, and `selected_path` then joined *that*
+    /// back onto the directory — producing a path that does not exist, so
+    /// previewing, loading and opening in an editor all silently addressed
+    /// nothing while the file sat listed in the pane beside them.
+    ///
+    /// The lossy conversion happens once, in `display()`, where a replacement
+    /// character is the correct and harmless answer.
+    pub name: OsString,
     pub kind: Kind,
     /// Bytes, for a file. `None` for a directory — a `stat` there reports the
     /// size of the directory *file*, not of what is in it, so showing it
@@ -132,11 +149,27 @@ impl Entry {
     /// is what every other tool writes — and it is the one cue that survives a
     /// terminal with no colour at all, which is exactly the case where the
     /// dimming says nothing.
+    ///
+    /// The one place the name is converted lossily. A name that is not valid
+    /// UTF-8 cannot be drawn as it is, and U+FFFD is what every other tool
+    /// shows for it — but nothing that has to *find* the file again reads this.
     pub(crate) fn display(&self) -> String {
+        let name = self.name.to_string_lossy();
         match self.kind {
-            Kind::Dir | Kind::Parent => format!("{}/", self.name),
-            _ => self.name.clone(),
+            Kind::Dir | Kind::Parent => format!("{name}/"),
+            _ => name.into_owned(),
         }
+    }
+
+    /// The name a search pattern is matched against.
+    ///
+    /// Lossy like `display()`, but without the trailing `/`: the slash is a
+    /// drawing decision, and a search for `dir$` has to match the directory it
+    /// names. A name that is not valid UTF-8 is matched on its U+FFFD form —
+    /// that is what the pane shows, and so what a user can write a pattern
+    /// against.
+    fn matchable(&self) -> std::borrow::Cow<'_, str> {
+        self.name.to_string_lossy()
     }
 }
 
@@ -177,7 +210,7 @@ impl FileNav<'_> {
         };
         let select = path
             .file_name()
-            .map(|name| Select::Named(name.to_string_lossy().into_owned()))
+            .map(|name| Select::Named(name.to_owned()))
             .unwrap_or(Select::First);
         nav.set_dir(dir, select);
         nav
@@ -222,7 +255,7 @@ impl FileNav<'_> {
     /// `None` at the filesystem root, where there is no parent to climb to
     /// and the pane stays exactly as it was.
     fn go_to_parent(&mut self) -> Option<Action> {
-        let leaving = self.dir.file_name()?.to_string_lossy().into_owned();
+        let leaving = self.dir.file_name()?.to_owned();
         let parent = self.dir.parent()?.to_path_buf();
         self.set_dir(parent, Select::Named(leaving));
         self.preview_selection()
@@ -239,7 +272,7 @@ impl FileNav<'_> {
             .iter()
             .map(|entry| {
                 let style = match matcher {
-                    Some(pattern) if pattern.is_match(&entry.name) => MATCH_STYLE,
+                    Some(pattern) if pattern.is_match(&entry.matchable()) => MATCH_STYLE,
                     _ => entry.style(),
                 };
                 ListItem::new(entry.display()).style(style)
@@ -284,7 +317,7 @@ impl FileNav<'_> {
                     (start + offset) % count
                 }
             })
-            .find(|&index| matcher.is_match(&self.entries[index].name))?;
+            .find(|&index| matcher.is_match(&self.entries[index].matchable()))?;
 
         self.state.select(Some(found));
         self.preview_selection()
@@ -416,7 +449,7 @@ impl FileNav<'_> {
 /// back out rather than being stranded in an empty pane. Nothing here panics.
 fn read_dir_entries(dir: &Path) -> Vec<Entry> {
     let mut entries = vec![Entry {
-        name: PARENT.to_string(),
+        name: PARENT.into(),
         // Its own kind, not `Kind::Dir`. It behaves like a directory in every
         // way that matters to navigation, but it is drawn as chrome — see
         // `PARENT_STYLE`.
@@ -446,8 +479,34 @@ pub(crate) fn sorted_entries(dir: &Path) -> std::io::Result<Vec<Entry>> {
     let mut listed: Vec<Entry> = fs::read_dir(dir)?
         .filter_map(|entry| Some(describe(&entry.ok()?)))
         .collect();
-    listed.sort_by(|a, b| a.name.cmp(&b.name));
+    // `sort_by_cached_key` rather than `sort_by`: the key allocates, and this
+    // computes it once per entry instead of twice per comparison.
+    listed.sort_by_cached_key(sort_key);
     Ok(listed)
+}
+
+/// Directories first, then case-insensitively by name.
+///
+/// The order `ls`, Finder and `yazi` all use — the same `yazi` whose palette
+/// `EXEC_STYLE` follows. `String`'s `Ord` is bytewise, which put every
+/// capitalised name in a block above every lowercase one (`Cargo.toml`,
+/// `README.md`, `app.log`, `src`) and interleaved directories among files.
+///
+/// The raw name comes last so that two names differing only in case have one
+/// fixed order rather than inheriting whatever `read_dir` happened to yield.
+/// It also keeps names that are not valid UTF-8 ordered by their actual bytes:
+/// the lossy fold collapses every invalid byte to the same U+FFFD, so without
+/// it a directory of them would have no stable order at all.
+///
+/// `Kind::Parent` never reaches here — `read_dir_entries` prepends `..` after
+/// this has run, which is what keeps it pinned to the top rather than sorted
+/// among the directories.
+fn sort_key(entry: &Entry) -> (bool, String, OsString) {
+    (
+        entry.kind != Kind::Dir,
+        entry.name.to_string_lossy().to_lowercase(),
+        entry.name.clone(),
+    )
 }
 
 /// Describe one listed entry: what it is, how big, and when it changed.
@@ -473,7 +532,9 @@ fn describe(entry: &fs::DirEntry) -> Entry {
         Kind::Plain
     };
     Entry {
-        name: entry.file_name().to_string_lossy().into_owned(),
+        // Exactly the bytes `readdir` returned. Converting here is what made a
+        // non-UTF-8 name unopenable — see `Entry::name`.
+        name: entry.file_name(),
         kind,
         size: if is_dir {
             None
@@ -999,7 +1060,8 @@ mod tests {
             "arg_dir",
             "listed the parent"
         );
-        assert_eq!(selected_name(&nav), "alpha.txt");
+        // `beta_dir` rather than `alpha.txt`: directories sort first (#96).
+        assert_eq!(selected_name(&nav), "beta_dir");
     }
 
     /// `j` at the bottom of the listing must stay on the last entry. It used
@@ -1037,7 +1099,7 @@ mod tests {
     #[test]
     fn parent_entry_comes_first() {
         let nav = FileNav::new("Cargo.toml".to_string());
-        assert_eq!(nav.entries.first().map(|e| e.name.as_str()), Some(PARENT));
+        assert_eq!(names(&nav).first().map(String::as_str), Some(PARENT));
     }
 
     /// The view lists a directory with size and modification time, and both
@@ -1075,13 +1137,249 @@ mod tests {
         );
     }
 
+    /// The real repo root, in the pane's own order — a guard that the listing
+    /// is sorted at all, over a directory nobody curated for the test.
     #[test]
     fn entries_after_parent_are_sorted() {
         let nav = FileNav::new("Cargo.toml".to_string());
-        let rest: Vec<&str> = names(&nav)[1..].to_vec();
-        let mut sorted = rest.clone();
-        sorted.sort_unstable();
-        assert_eq!(rest, sorted);
+        let rest = &nav.entries[1..];
+        let mut sorted = rest.to_vec();
+        sorted.sort_by_cached_key(sort_key);
+
+        assert_eq!(drawn(rest), drawn(&sorted));
+    }
+
+    // ---- #96: how the listing is ordered --------------------------------
+
+    fn entry(name: &str, kind: Kind) -> Entry {
+        Entry {
+            name: name.into(),
+            kind,
+            size: None,
+            modified: None,
+        }
+    }
+
+    /// Entries as drawn, so the assertions below read in the order the user
+    /// actually sees and a directory is visibly one.
+    fn drawn(entries: &[Entry]) -> Vec<String> {
+        entries.iter().map(Entry::display).collect()
+    }
+
+    fn listing(nav: &FileNav<'_>) -> Vec<String> {
+        drawn(&nav.entries)
+    }
+
+    fn sort_fixture(name: &str, dirs: &[&str], files: &[&str]) -> FileNav<'static> {
+        let dir = Path::new("target/test-navdirs").join(name);
+        fs::remove_dir_all(&dir).ok();
+        fs::create_dir_all(&dir).expect("create fixture dir");
+        for sub in dirs {
+            fs::create_dir_all(dir.join(sub)).expect("create fixture subdir");
+        }
+        for file in files {
+            fs::write(dir.join(file), "x").expect("write fixture");
+        }
+        FileNav::new(dir.join("placeholder").display().to_string())
+    }
+
+    /// Bytewise order put every capitalised name in a block above every
+    /// lowercase one, so `Cargo.toml` and `README.md` sorted above `app.log`
+    /// regardless of letter. `ls`, Finder and `yazi` all fold case instead.
+    #[test]
+    fn entries_sort_case_insensitively() {
+        let nav = sort_fixture(
+            "sort_case",
+            &[],
+            &["Cargo.toml", "app.log", "README.md", "beta.rs"],
+        );
+
+        assert_eq!(
+            listing(&nav),
+            ["../", "app.log", "beta.rs", "Cargo.toml", "README.md"]
+        );
+    }
+
+    /// Directories group at the top rather than interleaving with files, which
+    /// is what every other file lister this pane's palette follows does.
+    #[test]
+    fn directories_sort_before_files() {
+        let nav = sort_fixture(
+            "sort_dirs_first",
+            &["src", "zeta_dir"],
+            &["app.log", "beta.rs"],
+        );
+
+        assert_eq!(
+            listing(&nav),
+            ["../", "src/", "zeta_dir/", "app.log", "beta.rs"]
+        );
+    }
+
+    /// Case folding must not make two names compare equal and let their order
+    /// wobble between listings. `sort_by` is stable, but its input — the order
+    /// `read_dir` happens to yield — is not.
+    ///
+    /// Built in memory rather than on disk: the two names this needs are the
+    /// same file on a case-insensitive volume, which is the default on macOS.
+    #[test]
+    fn names_differing_only_in_case_have_a_fixed_order() {
+        let mut entries = vec![
+            entry("Readme.md", Kind::Plain),
+            entry("README.md", Kind::Plain),
+        ];
+
+        entries.sort_by_cached_key(sort_key);
+
+        assert_eq!(drawn(&entries), ["README.md", "Readme.md"]);
+    }
+
+    /// A tie broken on the raw name, so it is broken the same way every time
+    /// regardless of the order `read_dir` yielded.
+    #[test]
+    fn the_case_tiebreak_does_not_depend_on_the_starting_order() {
+        let mut reversed = vec![
+            entry("README.md", Kind::Plain),
+            entry("Readme.md", Kind::Plain),
+        ];
+
+        reversed.sort_by_cached_key(sort_key);
+
+        assert_eq!(drawn(&reversed), ["README.md", "Readme.md"]);
+    }
+
+    // ---- #71: names that are not valid UTF-8 -----------------------------
+
+    /// A name that is not valid UTF-8.
+    ///
+    /// A lone `0xff` can never appear in UTF-8, so `to_string_lossy` replaces
+    /// it with U+FFFD — and a path rebuilt from *that* names a file which does
+    /// not exist.
+    #[cfg(unix)]
+    fn non_utf8_name() -> std::ffi::OsString {
+        use std::os::unix::ffi::OsStringExt;
+        std::ffi::OsString::from_vec(b"broken\xffname.txt".to_vec())
+    }
+
+    /// Create the fixture, or `None` on a filesystem that refuses the name.
+    ///
+    /// APFS and HFS+ enforce valid UTF-8 in filenames and reject this one with
+    /// `EILSEQ`, so on macOS there is no such file to list and nothing to
+    /// assert. ext4, XFS, tmpfs and every other Unix filesystem take arbitrary
+    /// bytes, which is where these two tests actually run.
+    #[cfg(unix)]
+    fn non_utf8_fixture(name: &str, make: fn(&Path) -> std::io::Result<()>) -> Option<PathBuf> {
+        let dir = Path::new("target/test-navdirs").join(name);
+        fs::remove_dir_all(&dir).ok();
+        fs::create_dir_all(&dir).expect("create fixture dir");
+        match make(&dir) {
+            Ok(()) => Some(dir),
+            Err(err) => {
+                eprintln!("skipping {name}: this filesystem rejects non-UTF-8 names ({err})");
+                None
+            }
+        }
+    }
+
+    /// The pane listed the file, and then could not open the file it listed:
+    /// `selected_path` joined the lossy name back onto the directory, giving a
+    /// path with a U+FFFD in it that no `open` will ever find.
+    #[cfg(unix)]
+    #[test]
+    fn a_non_utf8_filename_resolves_to_the_file_on_disk() {
+        let raw = non_utf8_name();
+        let Some(dir) = non_utf8_fixture("non_utf8_name", |dir| {
+            fs::write(dir.join(non_utf8_name()), "x")
+        }) else {
+            return;
+        };
+
+        let mut nav = FileNav::new(dir.join("placeholder").display().to_string());
+        assert_eq!(
+            nav.entries.len(),
+            2,
+            "expected `..` and the one fixture file"
+        );
+        nav.state.select(Some(1));
+
+        let path = nav.selected_path().expect("an entry is selected");
+
+        assert_eq!(
+            path.file_name(),
+            Some(raw.as_os_str()),
+            "the name was mangled on the way back to a path"
+        );
+        assert!(path.is_file(), "{path:?} does not exist on disk");
+    }
+
+    /// The same defect in the other direction: climbing out of a directory
+    /// selects it by name in the parent's listing, and a lossy name matches
+    /// nothing there — so the cursor fell back to the first entry instead.
+    #[cfg(unix)]
+    #[test]
+    fn climbing_out_of_a_non_utf8_directory_lands_back_on_it() {
+        let raw = non_utf8_name();
+        let Some(dir) = non_utf8_fixture("non_utf8_dir", |dir| {
+            fs::create_dir_all(dir.join(non_utf8_name()))?;
+            fs::write(dir.join("aaa_first.txt"), "x")
+        }) else {
+            return;
+        };
+
+        let mut nav = FileNav::new(dir.join(&raw).join("inner").display().to_string());
+        assert_eq!(
+            nav.dir.file_name(),
+            Some(raw.as_os_str()),
+            "precondition: the pane is inside the odd directory"
+        );
+
+        press(&mut nav, KeyCode::Char('h'));
+
+        let landed = nav.selected_path().expect("nothing selected");
+        assert_eq!(
+            landed.file_name(),
+            Some(raw.as_os_str()),
+            "did not land on the directory just left"
+        );
+    }
+
+    /// The join that #71 is about, without a filesystem that has to accept the
+    /// name — the defect was in rebuilding the path, not in reading the name.
+    #[cfg(unix)]
+    #[test]
+    fn selected_path_joins_the_name_as_the_os_gave_it() {
+        let raw = non_utf8_name();
+        let mut nav = FileNav {
+            dir: PathBuf::from("/tmp/somewhere"),
+            entries: vec![Entry {
+                name: raw.clone(),
+                kind: Kind::Plain,
+                size: None,
+                modified: None,
+            }],
+            ..Default::default()
+        };
+        nav.state.select(Some(0));
+
+        assert_eq!(
+            nav.selected_path(),
+            Some(PathBuf::from("/tmp/somewhere").join(&raw))
+        );
+    }
+
+    /// A name that cannot be rendered still has to be *drawn* — lossily, which
+    /// is the one place a replacement character is the right answer.
+    #[cfg(unix)]
+    #[test]
+    fn a_non_utf8_name_is_drawn_lossily() {
+        let odd = Entry {
+            name: non_utf8_name(),
+            kind: Kind::Plain,
+            size: None,
+            modified: None,
+        };
+
+        assert_eq!(odd.display(), "broken\u{fffd}name.txt");
     }
 
     #[test]
@@ -1120,14 +1418,20 @@ mod tests {
         nav_over(name, &["alpha.rs", "beta.rs", "beta2.rs", "gamma.rs"])
     }
 
-    fn selected_name<'n>(nav: &'n FileNav<'_>) -> &'n str {
-        &nav.entries[nav.state.selected().expect("nothing selected")].name
+    fn selected_name(nav: &FileNav<'_>) -> String {
+        nav.entries[nav.state.selected().expect("nothing selected")]
+            .name
+            .to_string_lossy()
+            .into_owned()
     }
 
     /// Entry names in listing order, for assertions that are about the
     /// listing rather than about how a row is drawn.
-    fn names<'n>(nav: &'n FileNav<'_>) -> Vec<&'n str> {
-        nav.entries.iter().map(|e| e.name.as_str()).collect()
+    fn names(nav: &FileNav<'_>) -> Vec<String> {
+        nav.entries
+            .iter()
+            .map(|e| e.name.to_string_lossy().into_owned())
+            .collect()
     }
 
     #[test]
@@ -1318,7 +1622,9 @@ mod tests {
         let dir = Path::new("target/test-navdirs/move_onto_dir");
         fs::create_dir_all(dir.join("beta_dir")).expect("create subdir");
         nav.set_dir(dir.to_path_buf(), Select::First);
-        select(&mut nav, "alpha.rs"); // `beta_dir` sorts next
+        // `beta_dir` sorts directly under `..`, ahead of `alpha.rs`, since
+        // directories come first (#96).
+        select(&mut nav, PARENT);
 
         let action = press(&mut nav, KeyCode::Down);
 
