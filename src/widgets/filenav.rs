@@ -508,15 +508,23 @@ impl Widget for &mut FileNav<'_> {
         if self.active {
             highlight_style = highlight_style.fg(Color::Green);
         }
-        let list = self
-            .navlist
-            .clone()
-            .block(crate::widgets::pane_block(
-                self.dir.display().to_string(),
-                self.active,
-            ))
-            .highlight_style(highlight_style);
-        StatefulWidget::render(&list, area, buf, &mut self.state);
+        // The block is drawn separately rather than attached to the list, and
+        // the list is moved rather than cloned. Both of `Block`- and
+        // `highlight_style`-attaching take `self` by value, and the obvious
+        // way to satisfy that — `self.navlist.clone()` — deep-copies every
+        // `ListItem`, and with it every `Line` and `Span`, once per frame.
+        // `App::run` redraws unconditionally at 60 Hz, so a five-thousand
+        // entry directory paid for five thousand copies a second while the
+        // user sat still (#72). A `Block` is a handful of scalars, so
+        // rebuilding it per frame costs nothing; `mem::take` is a pointer
+        // swap whatever the entry count.
+        let block = crate::widgets::pane_block(self.dir.display().to_string(), self.active);
+        let inner = block.inner(area);
+        block.render(area, buf);
+
+        let list = std::mem::take(&mut self.navlist).highlight_style(highlight_style);
+        StatefulWidget::render(&list, inner, buf, &mut self.state);
+        self.navlist = list;
     }
 }
 
@@ -1485,6 +1493,28 @@ mod tests {
         let text: String = buf.content().iter().map(|c| c.symbol()).collect();
         assert!(text.contains("alpha.rs"), "entries not drawn:\n{text}");
         assert!(text.contains(PARENT), "parent entry not drawn:\n{text}");
+    }
+
+    /// `render` moves `navlist` out of the pane to style it and moves it back,
+    /// rather than cloning the whole item vector once a frame. That leaves the
+    /// pane momentarily holding an empty list, so the second frame is the one
+    /// that catches a missing hand-back — the first would draw fine either way.
+    #[test]
+    fn a_second_render_draws_the_same_entries() {
+        let mut nav = nav_over("render_twice", &["alpha.rs", "beta.rs"]);
+        let area = Rect::new(0, 0, 20, 10);
+
+        let mut first = Buffer::empty(area);
+        nav.render(area, &mut first);
+        let mut second = Buffer::empty(area);
+        nav.render(area, &mut second);
+
+        let text: String = second.content().iter().map(|c| c.symbol()).collect();
+        assert!(
+            text.contains("alpha.rs"),
+            "entries lost by frame two:\n{text}"
+        );
+        assert_eq!(first, second, "consecutive frames differ");
     }
 
     /// The block title tracks the directory being listed, so the user can tell
