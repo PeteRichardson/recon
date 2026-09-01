@@ -2,9 +2,7 @@ pub mod filenav;
 pub mod fileview;
 pub mod filterlist;
 
-use color_eyre::Result;
-use crossterm::event::Event;
-use ratatui::prelude::{Buffer, Color, Rect, Style, Widget};
+use ratatui::prelude::{Color, Style};
 use ratatui::widgets::{Block, BorderType};
 use std::path::PathBuf;
 
@@ -45,25 +43,37 @@ pub enum Action {
     Preview(PathBuf),
 }
 
-/// The three panes, as one type so `App` can hold them in a single list and
-/// dispatch focus by index.
+/// Which of the three panes is receiving input.
 ///
-/// `clippy::large_enum_variant` fires here because the variants differ sharply
-/// in size — `FileView` is 824 bytes (it owns a `TextArea`), `FileNav` 496 and
-/// `FilterList` 32 — and boxing the largest is the usual answer. It is the
-/// wrong answer here. Exactly three of these ever exist, in `App::widgets`, so
-/// the total over-allocation is about 1.1 KB for the life of the process,
-/// while the box would add a heap indirection to `render` and `handle_events`
-/// on the file view — the pane that redraws every frame and takes nearly every
-/// keystroke. Paying a per-frame cost to save a kilobyte once is a bad trade.
+/// The panes themselves are three named fields on `App`, so this names one
+/// rather than indexing a collection. That is the whole difference from the
+/// `Vec<AppWidget>` this replaced: "the file view" is a value you can write
+/// down, not a position you have to go and find, so the twenty linear scans
+/// that used to search for a variant are field reads (#73).
 ///
-/// Revisit if `AppWidget` ever lands in a collection that grows with the file
-/// or the directory, where the waste would scale with it.
-#[allow(clippy::large_enum_variant)]
-pub enum AppWidget<'a> {
-    FileNav(filenav::FileNav<'a>),
-    FileView(fileview::FileView<'a>),
-    FilterList(filterlist::FilterList),
+/// `Nav` is the default because the navigator is where a session starts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Focus {
+    #[default]
+    Nav,
+    View,
+    Filters,
+}
+
+impl Focus {
+    /// The next pane in the `Tab` cycle, wrapping.
+    ///
+    /// Written out rather than derived from a count: the cycle order is a
+    /// deliberate left-to-right, top-to-bottom reading of the layout, and an
+    /// arithmetic version would silently reorder if the variants were ever
+    /// rearranged for an unrelated reason.
+    pub fn next(self) -> Self {
+        match self {
+            Self::Nav => Self::View,
+            Self::View => Self::Filters,
+            Self::Filters => Self::Nav,
+        }
+    }
 }
 
 /// What a keypress in the filter pane asks `App` to do.
@@ -97,57 +107,15 @@ pub enum FilterCommand {
     EditSearch,
 }
 
-impl AppWidget<'_> {
-    /// Mark this widget as the one currently receiving input.
-    pub fn set_active(&mut self, active: bool) {
-        match self {
-            Self::FileNav(w) => w.active = active,
-            Self::FileView(w) => w.active = active,
-            Self::FilterList(w) => w.active = active,
-        }
-    }
-
-    /// Feed an event to this widget, returning any action it wants `App` to
-    /// perform on its behalf.
-    pub fn handle_events(&mut self, event: Event) -> Result<Option<Action>> {
-        match self {
-            Self::FileNav(w) => w.handle_events(event),
-            Self::FileView(w) => {
-                w.handle_events(event.into())?;
-                Ok(None)
-            }
-            // Keys aimed at this pane are intercepted earlier, by
-            // `App::handle_event`, and routed through `App::handle_filter_key`
-            // instead of reaching here: applying them means mutating the
-            // `ActiveFilters`, and this widget only ever borrows one, so it
-            // cannot carry out its own commands. This arm exists only so the
-            // match stays exhaustive; it never actually runs for a key.
-            Self::FilterList(_) => Ok(None),
-        }
-    }
-}
-
-impl Widget for &mut AppWidget<'_> {
-    fn render(self, area: Rect, buf: &mut Buffer) {
-        match self {
-            AppWidget::FileNav(w) => w.render(area, buf),
-            AppWidget::FileView(w) => w.render(area, buf),
-            // `FilterList::render` needs a borrowed `ActiveFilters`, which this
-            // type has no way to hold: `App` owns the one true set, and a
-            // copy here could go stale the moment a filter changed. Rather
-            // than give `AppWidget` one, `App::render` special-cases this
-            // variant and calls `FilterList::render` directly with the set
-            // it owns — see `render_widget` in `lib.rs`. This arm exists
-            // only so `AppWidget` remains a normal `Widget`; it deliberately
-            // draws nothing and is not expected to ever actually run.
-            //
-            // `render_widget` is the only thing keeping that promise: a
-            // future caller reaching for `widget.render(...)` directly would
-            // otherwise get a silent blank pane. Loud in every debug test
-            // run, without changing release behaviour.
-            AppWidget::FilterList(_) => {
-                debug_assert!(false, "render the filter pane through render_widget");
-            }
-        }
-    }
-}
+// There is deliberately no `Widget` impl covering all three panes.
+//
+// One of them could never satisfy it: `FilterList::render` needs a borrowed
+// `ActiveFilters`, `App` owns the only true set, and a copy held beside the
+// pane could go stale the moment a filter changed. The old `AppWidget` enum
+// implemented `Widget` anyway and left that variant drawing nothing behind a
+// `debug_assert!(false)`, with a free `render_widget` function existing purely
+// to route around the impl it could not use (#75).
+//
+// `App::render` now calls each pane directly with the arguments that pane
+// actually needs, so the routing is structural rather than a convention a
+// runtime assertion has to police.
