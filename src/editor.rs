@@ -60,11 +60,17 @@ pub fn project_root(path: &Path) -> PathBuf {
     // already passes an absolute path; this makes the function safe for anyone
     // who does not.
     //
-    // `absolute` rather than `canonicalize`: no filesystem access, no symlink
-    // resolution, and the project reported is the one on the path the user
-    // navigated. Falls back to the path as given if the cwd is unreadable,
-    // which is the only way it can fail.
-    let absolute = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
+    // `lexical_absolute` rather than `canonicalize`: no filesystem access, no
+    // symlink resolution, and the project reported is the one on the path the
+    // user navigated. Falls back to the path as given if the cwd is
+    // unreadable, which is the only way it can fail.
+    //
+    // Shared with `FileNav::set_dir` and `App::open_in_editor` since #78 —
+    // this is the codebase's one path-resolution rule. It also collapses `..`,
+    // which plain `absolute` leaves in place: the loop below climbs with
+    // `Path::parent`, and a literal `..` segment would make it walk back down
+    // into the directory it had just left.
+    let absolute = crate::path::lexical_absolute(path);
     let start = if absolute.is_dir() {
         absolute.as_path()
     } else {

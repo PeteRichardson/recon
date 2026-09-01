@@ -218,12 +218,23 @@ impl FileNav<'_> {
 
     /// Re-list the pane at `dir`, selecting its first entry.
     ///
-    /// The path is canonicalized so that walking into a directory and back out
-    /// again lands on the original path rather than accumulating `src/..`
-    /// segments. Canonicalization fails on a path that does not exist, in
-    /// which case the path is kept as-is and the listing comes back empty.
+    /// The path is absolutised and its `.` / `..` segments collapsed, so that
+    /// walking into a directory and back out again lands on the original path
+    /// rather than accumulating `src/..` segments.
+    ///
+    /// This used to be `fs::canonicalize`, which did the same two jobs and a
+    /// third nobody asked for: it resolved symlinks (#78). `editor::project_root`
+    /// and `App::open_in_editor` both deliberately do not, and both say so at
+    /// length — so descending into a symlinked directory left the navigator
+    /// showing one path and `o` opening another. `lexical_absolute` is now the
+    /// single rule all three share; see its doc comment for why the collapse is
+    /// lexical rather than filesystem-truthful.
+    ///
+    /// Unlike canonicalization this cannot fail on a path that does not exist,
+    /// so a bad path now lists empty at the path the user actually named,
+    /// rather than at whatever the unresolved fallback happened to be.
     fn set_dir(&mut self, dir: PathBuf, select: Select) {
-        self.dir = fs::canonicalize(&dir).unwrap_or(dir);
+        self.dir = crate::path::lexical_absolute(&dir);
         self.entries = read_dir_entries(&self.dir);
         self.rebuild_list();
         self.state = ListState::default().with_selected(Some(self.index_of(&select)));
@@ -1868,5 +1879,63 @@ mod tests {
         nav.handle_events(Event::Key(KeyEvent::from(KeyCode::Char('k'))))
             .unwrap();
         assert_eq!(nav.state.selected(), Some(0), "k should move back up");
+    }
+
+    /// #78: the navigator must show the path the user walked, not wherever a
+    /// symlink points. `set_dir` used to call `fs::canonicalize`, which
+    /// resolved the link — so `o` (which absolutises without resolving) opened
+    /// a path the navigator had never displayed. The two rules disagreed on
+    /// the one case both were written to settle.
+    #[cfg(unix)]
+    #[test]
+    fn descending_into_a_symlinked_directory_keeps_the_link_path() {
+        let root = Path::new("target/test-navdirs/symlink_descend");
+        fs::remove_dir_all(root).ok();
+        fs::create_dir_all(root.join("real")).expect("create real");
+        fs::write(root.join("real/inside.txt"), "x").expect("write");
+        std::os::unix::fs::symlink("real", root.join("link")).expect("symlink");
+
+        let mut nav = FileNav::new(root.join("placeholder").display().to_string());
+        select(&mut nav, "link");
+        nav.activate_selection();
+
+        assert!(
+            nav.dir.ends_with("symlink_descend/link"),
+            "the navigator resolved the symlink away: {:?}",
+            nav.dir
+        );
+        assert!(
+            names(&nav).iter().any(|n| n == "inside.txt"),
+            "sanity: the linked directory's contents should still list"
+        );
+    }
+
+    /// The other half of #78's fix: dropping `canonicalize` must not cost the
+    /// absolutising it was really providing. `Path::parent` on a bare `.` is
+    /// `None`, so without it `go_to_parent` cannot climb out of the directory
+    /// recon was launched in.
+    #[test]
+    fn a_relative_start_directory_can_still_be_climbed_out_of() {
+        let mut nav = FileNav::new(".".to_string());
+
+        assert!(
+            nav.dir.is_absolute(),
+            "a relative argument must be absolutised: {:?}",
+            nav.dir
+        );
+        assert!(
+            nav.go_to_parent().is_some(),
+            "could not climb out of a relative start directory"
+        );
+    }
+
+    /// `recon ..` should title itself with the parent directory, not with
+    /// `<cwd>/..` — and climbing out of it must not land back in the cwd.
+    #[test]
+    fn a_parent_argument_is_collapsed_rather_than_kept_literally() {
+        let nav = FileNav::new("..".to_string());
+        let cwd = std::env::current_dir().expect("cwd");
+
+        assert_eq!(nav.dir, cwd.parent().expect("cwd has a parent"));
     }
 }
