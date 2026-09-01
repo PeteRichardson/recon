@@ -167,10 +167,12 @@ pub struct ActiveFilters {
 }
 
 impl ActiveFilters {
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
+    #[must_use]
     pub fn with_palette(palette: Vec<Color>) -> Self {
         Self {
             palette: Palette::new(palette),
@@ -181,6 +183,7 @@ impl ActiveFilters {
     /// Whether there are any *numbered* filters. The live search is not one
     /// of these — see `row_count`, which counts it and is what the pane
     /// sizes itself against.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.filters.is_empty()
     }
@@ -188,10 +191,12 @@ impl ActiveFilters {
     /// How many *numbered* filters there are. The live search is not one of
     /// these — see `row_count`, which counts it and is what the pane sizes
     /// itself against.
+    #[must_use]
     pub fn len(&self) -> usize {
         self.filters.len()
     }
 
+    #[must_use]
     pub fn filters(&self) -> &[Filter] {
         &self.filters
     }
@@ -267,6 +272,7 @@ impl ActiveFilters {
         had_search
     }
 
+    #[must_use]
     pub fn search(&self) -> Option<&Filter> {
         self.search.as_ref()
     }
@@ -288,6 +294,7 @@ impl ActiveFilters {
     /// Distinct from `len`, which counts only the numbered filters and is
     /// what `Verdict::Included` indexes into. The pane needs the larger
     /// number; nothing else does.
+    #[must_use]
     pub fn row_count(&self) -> usize {
         self.filters.len() + usize::from(self.search.is_some())
     }
@@ -323,6 +330,7 @@ impl ActiveFilters {
     }
 
     /// Whether any enabled filter removes lines.
+    #[must_use]
     pub fn any_excluding(&self) -> bool {
         self.filters
             .iter()
@@ -448,6 +456,7 @@ impl ActiveFilters {
         }
     }
 
+    #[must_use]
     pub fn has_remembered(&self) -> bool {
         self.remembered.is_some()
     }
@@ -460,6 +469,7 @@ impl ActiveFilters {
     /// overwrite a capture `!` was still holding, and `!` would then restore
     /// all-disabled for the rest of the session. Two independent undo stacks
     /// need two independent captures, so this one lives with its caller.
+    #[must_use]
     pub fn enabled_flags(&self) -> EnabledFlags {
         EnabledFlags {
             filters: self.filters.iter().map(|filter| filter.enabled).collect(),
@@ -482,6 +492,7 @@ impl ActiveFilters {
         }
     }
 
+    #[must_use]
     pub fn any_enabled(&self) -> bool {
         self.filters.iter().any(|filter| filter.enabled)
             || self.search.as_ref().is_some_and(|search| search.enabled)
@@ -493,6 +504,7 @@ impl ActiveFilters {
     /// so an empty or fully disabled set renders an ordinary, undimmed file
     /// rather than a wholly dimmed one. The first matching filter wins, which
     /// is what makes the set's order meaningful.
+    #[must_use]
     pub fn verdict(&self, line: &str) -> Verdict {
         // Exclusion is applied after inclusion and overrides it, so a line an
         // including filter selected is still removed if an excluding filter
@@ -527,6 +539,7 @@ impl ActiveFilters {
     ///
     /// Drives hiding (including the `Ctrl-H` guard in `Document`) and `n`/`N`.
     /// Public because `Document` caches it at `evaluate` time.
+    #[must_use]
     pub fn any_including(&self) -> bool {
         self.any_numbered_including() || self.search.as_ref().is_some_and(|search| search.enabled)
     }
@@ -555,6 +568,7 @@ impl ActiveFilters {
     /// `Unmatched` dims only when a *numbered* including filter is active. The
     /// live search does not trigger dimming on its own; see `any_numbered_including`
     /// for why.
+    #[must_use]
     pub fn style_for(&self, verdict: Verdict) -> Option<Style> {
         match verdict {
             Verdict::Included(index) => self.filters.get(index).map(|f| f.style),

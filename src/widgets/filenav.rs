@@ -1,4 +1,4 @@
-/// FileNav
+/// `FileNav`
 ///
 use crate::filter::DIM_STYLE;
 use crate::widgets::Action;
@@ -210,8 +210,7 @@ impl FileNav<'_> {
         };
         let select = path
             .file_name()
-            .map(|name| Select::Named(name.to_owned()))
-            .unwrap_or(Select::First);
+            .map_or(Select::First, |name| Select::Named(name.to_owned()));
         nav.set_dir(dir, select);
         nav
     }
@@ -1807,7 +1806,11 @@ mod tests {
 
         nav.render(area, &mut buf);
 
-        let text: String = buf.content().iter().map(|c| c.symbol()).collect();
+        let text: String = buf
+            .content()
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect();
         assert!(text.contains("alpha.rs"), "entries not drawn:\n{text}");
         assert!(text.contains(PARENT), "parent entry not drawn:\n{text}");
     }
@@ -1826,7 +1829,11 @@ mod tests {
         let mut second = Buffer::empty(area);
         nav.render(area, &mut second);
 
-        let text: String = second.content().iter().map(|c| c.symbol()).collect();
+        let text: String = second
+            .content()
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect();
         assert!(
             text.contains("alpha.rs"),
             "entries lost by frame two:\n{text}"

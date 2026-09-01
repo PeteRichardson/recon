@@ -49,6 +49,13 @@ jobs:
       - name: Format
         run: cargo fmt -p recon --check
 
+      # No `-W clippy::pedantic` here on purpose. The pedantic group is turned
+      # on in Cargo.toml's `[lints.clippy]`, so `-D warnings` below promotes it
+      # to a failure without the flag — and, more to the point, a plain local
+      # `cargo clippy` enforces exactly what this step does. A lint level that
+      # only exists on the CI command line is one you find out you have broken
+      # after pushing. Cargo.toml is where the declined lints and their reasons
+      # live too; see the comments there before adding another (#82).
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 

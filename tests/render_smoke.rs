@@ -76,7 +76,11 @@ fn renders_file_contents_into_buffer() {
 
     (&mut app).render(area, &mut buf);
 
-    let text: String = buf.content().iter().map(|c| c.symbol()).collect();
+    let text: String = buf
+        .content()
+        .iter()
+        .map(ratatui::buffer::Cell::symbol)
+        .collect();
     assert!(
         text.contains("tui-textarea-2"),
         "textarea did not render file contents:\n{text}"
@@ -184,8 +188,13 @@ fn enter_on_a_file_loads_it_into_the_view() {
         ..Config::default()
     };
     let mut app = App::new(&config);
+    // `[package]`, this file's first line — not `[dependencies]`, which this
+    // assertion used until adding a comment block to Cargo.toml pushed that
+    // header below the pane and failed a test that had nothing to do with the
+    // change (#82). The claim is "the file named on the CLI is in the view at
+    // startup", and only the top of it is guaranteed to be on screen.
     assert!(
-        view_pane(&mut app).contains("[dependencies]"),
+        view_pane(&mut app).contains("[package]"),
         "expected Cargo.toml in the view at startup"
     );
 

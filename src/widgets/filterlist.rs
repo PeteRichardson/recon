@@ -84,12 +84,11 @@ impl FilterList {
     /// Pull the selection back into range after the set has shrunk, and drop
     /// it entirely when nothing is left.
     pub fn clamp_selection(&mut self, len: usize) {
-        match len {
-            0 => self.state.select(None),
-            _ => {
-                let index = self.state.selected().unwrap_or(0).min(len - 1);
-                self.state.select(Some(index));
-            }
+        if len == 0 {
+            self.state.select(None);
+        } else {
+            let index = self.state.selected().unwrap_or(0).min(len - 1);
+            self.state.select(Some(index));
         }
     }
 
@@ -267,14 +266,7 @@ impl FilterList {
                 // also has to keep.
                 let style = Self::resolve_row(filters, row)
                     .map(|(_, filter)| {
-                        if !filter.enabled {
-                            // Matches the file view's precedent for dimming
-                            // (`src/filter.rs`'s `DIM_STYLE`): `Modifier::DIM` alone is
-                            // silently ignored by many terminals, so an explicit grey
-                            // foreground is what actually shows the difference. The
-                            // `[ ]` marker still carries the signal if colour fails.
-                            DIM_STYLE
-                        } else {
+                        if filter.enabled {
                             match filter.sense {
                                 // An including filter wears its own colour, so the pane
                                 // and the file view agree at a glance. The search is
@@ -283,6 +275,13 @@ impl FilterList {
                                 Sense::Include => filter.style,
                                 Sense::Exclude => Style::default().fg(Color::DarkGray),
                             }
+                        } else {
+                            // Matches the file view's precedent for dimming
+                            // (`src/filter.rs`'s `DIM_STYLE`): `Modifier::DIM` alone is
+                            // silently ignored by many terminals, so an explicit grey
+                            // foreground is what actually shows the difference. The
+                            // `[ ]` marker still carries the signal if colour fails.
+                            DIM_STYLE
                         }
                     })
                     .unwrap_or_default();

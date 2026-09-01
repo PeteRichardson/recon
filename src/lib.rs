@@ -292,6 +292,7 @@ enum AppState {
 }
 
 impl App<'_> {
+    #[must_use]
     pub fn new(config: &Config) -> Self {
         let argument = std::path::Path::new(&config.path);
         let nav = FileNav::new(config.path.clone());
@@ -558,25 +559,22 @@ impl App<'_> {
     /// which `!` owns — see `enabled_flags` for why sharing one slot loses the
     /// other feature's undo.
     fn toggle_peek(&mut self) {
-        match self.peek.take() {
-            Some(peek) => {
-                self.filters.apply_enabled_flags(&peek.flags);
-                self.document.set_mode(peek.mode);
-            }
-            None => {
-                self.peek = Some(PeekState {
-                    mode: self.document.mode(),
-                    flags: self.filters.enabled_flags(),
-                });
-                self.filters.set_all_enabled(false);
-                // The same flip `toggle_hiding` does, deliberately: `<space>`
-                // and `Ctrl-H` move the mode identically, and only the filter
-                // switching below is the peek's own.
-                self.document.set_mode(match self.document.mode() {
-                    Mode::Dimmed => Mode::FilteredOnly,
-                    Mode::FilteredOnly => Mode::Dimmed,
-                });
-            }
+        if let Some(peek) = self.peek.take() {
+            self.filters.apply_enabled_flags(&peek.flags);
+            self.document.set_mode(peek.mode);
+        } else {
+            self.peek = Some(PeekState {
+                mode: self.document.mode(),
+                flags: self.filters.enabled_flags(),
+            });
+            self.filters.set_all_enabled(false);
+            // The same flip `toggle_hiding` does, deliberately: `<space>`
+            // and `Ctrl-H` move the mode identically, and only the filter
+            // switching below is the peek's own.
+            self.document.set_mode(match self.document.mode() {
+                Mode::Dimmed => Mode::FilteredOnly,
+                Mode::FilteredOnly => Mode::Dimmed,
+            });
         }
         // The full `evaluate`, not `recompute_visible` as `toggle_hiding` uses:
         // the enabled flags changed, so every line's verdict can differ. The
@@ -1020,7 +1018,7 @@ impl App<'_> {
         if name.is_empty() {
             self.report("nothing to open", true);
             return;
-        };
+        }
 
         // `filename` is set even when the read failed — the pane shows the
         // error in place of the file's text — so a path that is not there is
@@ -1676,8 +1674,22 @@ mod tests {
     use crossterm::event::{KeyEvent, MouseButton, MouseEvent, MouseEventKind};
     use ratatui::prelude::Buffer;
     use ratatui::style::Modifier; // the tests assert on Modifier::DIM
+    use std::fmt::Write as _;
     use std::fs;
     use std::sync::Mutex;
+
+    /// `n` newline-terminated lines, `line 0` through `line n-1`.
+    ///
+    /// One buffer appended to, not `(0..n).map(|i| format!(...)).collect()`:
+    /// the latter allocates and drops a `String` per line, which is quadratic
+    /// and showed up across ~15 fixtures in this file and `widgets/fileview.rs`
+    /// (#90). `write!` into a `String` cannot fail, hence the discarded result.
+    fn numbered_lines(n: usize) -> String {
+        (0..n).fold(String::new(), |mut body, i| {
+            let _ = writeln!(body, "line {i}");
+            body
+        })
+    }
 
     const AREA: Rect = Rect {
         x: 0,
@@ -1717,7 +1729,7 @@ mod tests {
     fn claim_fixture_dir(name: &str) {
         let mut names = FIXTURE_DIR_NAMES
             .lock()
-            .unwrap_or_else(|poison| poison.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         assert!(
             !names.iter().any(|used| used.eq_ignore_ascii_case(name)),
             "fixture directory name {name:?} is already in use by another test \
@@ -2329,7 +2341,11 @@ mod tests {
 
         let mut buf = Buffer::empty(AREA);
         (&mut app).render(AREA, &mut buf);
-        let text: String = buf.content().iter().map(|c| c.symbol()).collect();
+        let text: String = buf
+            .content()
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect();
         assert!(
             text.contains("GAMMA MARKER"),
             "matched file was not previewed"
@@ -2537,7 +2553,7 @@ mod tests {
         // means: below the cap the two are the same thing, deliberately, since
         // reading a log-sized file whole costs well under a millisecond.
         let lines = crate::widgets::fileview::PREVIEW_LINES + 100;
-        let body: String = (0..lines).map(|i| format!("line {i}\n")).collect();
+        let body = numbered_lines(lines);
         fs::write(dir.join("big.log"), &body).expect("write");
 
         let app = App::new(&Config {
@@ -3002,9 +3018,7 @@ mod tests {
 
         // Past the preview's line cap, so the view truncates and there is an
         // estimate to report.
-        let body: String = (0..crate::widgets::fileview::PREVIEW_LINES + 100)
-            .map(|i| format!("line {i}\n"))
-            .collect();
+        let body = numbered_lines(crate::widgets::fileview::PREVIEW_LINES + 100);
         let dir = std::path::Path::new("target/test-appdirs/status_preview");
         fs::write(dir.join("big.txt"), &body).expect("write");
         app.perform(Action::Preview(dir.join("big.txt")));
@@ -3248,7 +3262,7 @@ mod tests {
     /// global `f` handler that moves focus to the filter pane.
     #[test]
     fn ctrl_f_scrolls_the_file_view_instead_of_focusing_the_filter_pane() {
-        let body: String = (0..100).map(|i| format!("line {i}\n")).collect();
+        let body = numbered_lines(100);
         let mut app = app_over_file("ctrl_f_scroll", &body);
         draw(&mut app); // establish the file view's rendered size
         focus_file_view(&mut app);
@@ -3700,7 +3714,7 @@ mod tests {
             width: 40,
             height: 13,
         };
-        let body: String = (0..200).map(|i| format!("line {i}\n")).collect();
+        let body = numbered_lines(200);
         let mut app = app_over_file("no_op_filter_viewport", &body);
         focus_file_view(&mut app);
 
@@ -3748,7 +3762,7 @@ mod tests {
     /// rebuild this test is about.
     #[test]
     fn toggling_a_filter_leaves_the_cursor_on_the_same_screen_row() {
-        let body: String = (0..200).map(|i| format!("line {i}\n")).collect();
+        let body = numbered_lines(200);
         let mut app = app_over_file("scroll_hold", &body);
         key(&mut app, KeyCode::Char('f'));
         key(&mut app, KeyCode::Char('x'));
@@ -3820,7 +3834,7 @@ mod tests {
     /// exists for. The screen row must still hold.
     #[test]
     fn toggling_a_filter_above_the_cursor_also_leaves_the_cursor_on_the_same_screen_row() {
-        let body: String = (0..200).map(|i| format!("line {i}\n")).collect();
+        let body = numbered_lines(200);
         let mut app = app_over_file("scroll_hold_above", &body);
         key(&mut app, KeyCode::Char('f'));
         key(&mut app, KeyCode::Char('x'));
@@ -3886,7 +3900,7 @@ mod tests {
     /// one interaction the pane exists for.
     #[test]
     fn toggling_a_filter_from_the_pane_leaves_the_cursor_on_the_same_screen_row() {
-        let body: String = (0..200).map(|i| format!("line {i}\n")).collect();
+        let body = numbered_lines(200);
         let mut app = app_over_file("pane_scroll_hold", &body);
         key(&mut app, KeyCode::Char('f'));
         key(&mut app, KeyCode::Char('x'));
@@ -4044,7 +4058,7 @@ mod tests {
     /// and land on that exact line with its context around it.
     #[test]
     fn the_round_trip_returns_to_the_chosen_line() {
-        let body: String = (0..20).map(|i| format!("line {i}\n")).collect();
+        let body = numbered_lines(20);
         let mut app = app_over_file("round_trip", &body);
         key(&mut app, KeyCode::Char('f'));
         key(&mut app, KeyCode::Char('i'));
@@ -5461,7 +5475,7 @@ mod tests {
         focus_filter_pane(&mut app);
 
         key(&mut app, KeyCode::Char('c'));
-        for _ in 0.."alpha".len() + 1 {
+        for _ in 0..="alpha".len() {
             key(&mut app, KeyCode::Backspace);
         }
 
