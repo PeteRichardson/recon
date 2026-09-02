@@ -1,5 +1,6 @@
 /// `FileNav`
 ///
+use crate::document::Mode;
 use crate::filter::DIM_STYLE;
 use crate::widgets::Action;
 use color_eyre::Result;
@@ -223,6 +224,14 @@ pub struct FileNav<'a> {
     matcher: Option<Regex>,
     /// Direction the search was started in, so `n` repeats and `N` reverses.
     search_reverse: bool,
+    /// Whether rows answered `Match::No` are dimmed or removed. Pushed in by
+    /// `App` so it is always the file view's mode too: one key, one meaning,
+    /// both panes (#119).
+    mode: Mode,
+    /// Indices into `entries` of the rows currently listed, in order — the
+    /// model `Document` uses for lines. `visible[0]` is always `..`, and
+    /// `state.selected()` indexes *this*, not `entries`.
+    visible: Vec<usize>,
 }
 
 impl FileNav<'_> {
@@ -274,8 +283,11 @@ impl FileNav<'_> {
     fn set_dir(&mut self, dir: PathBuf, select: Select) {
         self.dir = crate::path::lexical_absolute(&dir);
         self.entries = read_dir_entries(&self.dir);
-        self.rebuild_list();
-        self.state = ListState::default().with_selected(Some(self.index_of(&select)));
+        // Fresh entries are all `Unknown`, so every row is visible whatever
+        // the mode; `rebuild_visible` also rebuilds the drawn list.
+        self.rebuild_visible();
+        self.state = ListState::default();
+        self.select_entry(self.index_of(&select));
     }
 
     /// Resolve a `Select` against the listing just built.
@@ -321,8 +333,9 @@ impl FileNav<'_> {
         // `preferred_width` was #84.
         let mut widest = 0;
         let items: Vec<ListItem> = self
-            .entries
+            .visible
             .iter()
+            .map(|&index| &self.entries[index])
             .map(|entry| {
                 let style = match matcher {
                     // Asked for by name: the search highlight outranks the answer.
@@ -364,7 +377,7 @@ impl FileNav<'_> {
     /// checks the current entry last so a lone match holds its place.
     fn step_search(&mut self, reverse: bool) -> Option<Action> {
         let matcher = self.matcher.as_ref()?;
-        let count = self.entries.len();
+        let count = self.visible.len();
         if count == 0 {
             return None;
         }
@@ -378,7 +391,7 @@ impl FileNav<'_> {
                     (start + offset) % count
                 }
             })
-            .find(|&index| matcher.is_match(&self.entries[index].matchable()))?;
+            .find(|&row| matcher.is_match(&self.entries[self.visible[row]].matchable()))?;
 
         self.state.select(Some(found));
         self.preview_selection()
@@ -465,8 +478,8 @@ impl FileNav<'_> {
     /// `pub(crate)` for `App::new`, which builds the file view from whatever
     /// the navigator selected rather than from the command-line argument.
     pub(crate) fn selected_path(&self) -> Option<PathBuf> {
-        let selected = self.state.selected()?;
-        Some(self.dir.join(&self.entries.get(selected)?.name))
+        let index = self.selected_entry()?;
+        Some(self.dir.join(&self.entries.get(index)?.name))
     }
 
     /// Every file in the listing, as `(entries index, absolute path)`.
@@ -504,10 +517,66 @@ impl FileNav<'_> {
         }
     }
 
-    /// Rebuild the drawn rows from the current answers.
+    /// Rebuild the drawn rows from the current answers. A `No` answer can hide
+    /// a row in `FilteredOnly` mode, so this is `rebuild_visible`.
     #[allow(dead_code)]
     pub(crate) fn restyle(&mut self) {
+        self.rebuild_visible();
+    }
+
+    /// Dim or hide rows answered `No`. The same `Mode` the file view uses.
+    #[allow(dead_code)]
+    pub(crate) fn set_mode(&mut self, mode: Mode) {
+        self.mode = mode;
+        self.rebuild_visible();
+    }
+
+    /// Recompute which rows are listed, redraw them, and keep the selection on
+    /// the entry it was on — or on a neighbour if that entry vanished.
+    ///
+    /// Directories and `..` are always listed: they have no answer. `Unknown`
+    /// is always listed: you do not hide what you have not read. Only `No` is
+    /// removed, and only in `FilteredOnly`.
+    #[allow(dead_code)]
+    pub(crate) fn rebuild_visible(&mut self) {
+        let keep = self.selected_entry();
+        let row_before = self.state.selected();
+        let mode = self.mode;
+        let visible: Vec<usize> = self
+            .entries
+            .iter()
+            .enumerate()
+            .filter(|(_, entry)| {
+                matches!(entry.kind, Kind::Dir | Kind::Parent)
+                    || mode == Mode::Dimmed
+                    || entry.matched != Match::No
+            })
+            .map(|(index, _)| index)
+            .collect();
+        self.visible = visible;
         self.rebuild_list();
+        // The same rule `FilterList::clamp_selection` follows: never `None`
+        // while there is a row to be on, and `..` is always a row.
+        let row = keep
+            .and_then(|index| self.visible.iter().position(|&v| v == index))
+            .or_else(|| row_before.map(|row| row.min(self.visible.len().saturating_sub(1))))
+            .unwrap_or(0);
+        self.state.select((!self.visible.is_empty()).then_some(row));
+    }
+
+    /// The `entries` index of the selected row.
+    #[allow(dead_code)]
+    pub(crate) fn selected_entry(&self) -> Option<usize> {
+        self.visible.get(self.state.selected()?).copied()
+    }
+
+    /// Select by `entries` index. A hidden entry cannot be selected; the
+    /// selection is left where it was.
+    #[allow(dead_code)]
+    pub(crate) fn select_entry(&mut self, index: usize) {
+        if let Some(row) = self.visible.iter().position(|&v| v == index) {
+            self.state.select(Some(row));
+        }
     }
 
     /// Ask for the highlighted entry to be previewed.
@@ -532,7 +601,7 @@ impl FileNav<'_> {
         // Asks the kind rather than comparing the name: a real entry called
         // `..` cannot exist, so the two agree, but the kind is the field that
         // actually carries the distinction.
-        if self.entries.get(self.state.selected()?)?.kind == Kind::Parent {
+        if self.entries.get(self.selected_entry()?)?.kind == Kind::Parent {
             return self.go_to_parent();
         }
 
@@ -562,7 +631,7 @@ impl FileNav<'_> {
     /// it, because `List` clamps the highlight for drawing. `FilterList`
     /// already clamps the same way.
     fn select_next(&mut self) {
-        let last = self.entries.len().saturating_sub(1);
+        let last = self.visible.len().saturating_sub(1);
         let next = self
             .state
             .selected()
@@ -1495,6 +1564,9 @@ mod tests {
                 modified: None,
                 matched: Match::Unknown,
             }],
+            // Built by hand rather than through `set_dir`, so `visible` has
+            // to be populated the same way `rebuild_visible` would.
+            visible: vec![0],
             ..Default::default()
         };
         nav.state.select(Some(0));
@@ -1566,10 +1638,14 @@ mod tests {
 
     /// Entry names in listing order, for assertions that are about the
     /// listing rather than about how a row is drawn.
+    ///
+    /// Reads `visible`, not `entries` directly: the point is what is
+    /// *listed*, and a hidden row must not appear here even though it is
+    /// still in `entries`.
     fn names(nav: &FileNav<'_>) -> Vec<String> {
-        nav.entries
+        nav.visible
             .iter()
-            .map(|e| e.name.to_string_lossy().into_owned())
+            .map(|&i| nav.entries[i].name.to_string_lossy().into_owned())
             .collect()
     }
 
@@ -2214,5 +2290,93 @@ mod tests {
         nav.go_to_parent();
 
         assert!(nav.entries().iter().all(|e| e.matched == Match::Unknown));
+    }
+
+    // ---- hide mode --------------------------------------------------------
+
+    #[test]
+    fn hide_mode_removes_no_answers_and_keeps_unknown_and_directories() {
+        let nav = nav_over("hide_basic", &["no.log", "unk.log", "yes.log"]);
+        std::fs::create_dir_all(nav.dir().join("sub")).expect("subdir");
+        let mut nav = FileNav::new(nav.dir().join("placeholder").display().to_string());
+        let idx = |nav: &FileNav<'_>, name: &str| {
+            nav.entries().iter().position(|e| e.name == name).unwrap()
+        };
+        nav.set_answer(idx(&nav, "no.log"), Match::No);
+        nav.set_answer(idx(&nav, "yes.log"), Match::Yes(Style::default()));
+
+        nav.set_mode(Mode::FilteredOnly);
+        assert_eq!(names(&nav), vec![PARENT, "sub", "unk.log", "yes.log"]);
+
+        nav.set_mode(Mode::Dimmed);
+        // Directories sort before files (#96) whatever the mode — this is
+        // `entries`' own order, `rebuild_visible` in `Dimmed` just keeps all
+        // of it.
+        assert_eq!(
+            names(&nav),
+            vec![PARENT, "sub", "no.log", "unk.log", "yes.log"]
+        );
+    }
+
+    #[test]
+    fn the_selection_follows_its_entry_across_a_rebuild() {
+        let mut nav = nav_over("hide_follow", &["no.log", "yes.log"]);
+        let (no, yes) = (nav.files()[0].0, nav.files()[1].0);
+        nav.set_answer(no, Match::No);
+        nav.set_answer(yes, Match::Yes(Style::default()));
+        nav.select_entry(yes);
+
+        nav.set_mode(Mode::FilteredOnly);
+
+        assert_eq!(nav.selected_entry(), Some(yes));
+        assert_eq!(nav.selected_path().unwrap().file_name().unwrap(), "yes.log");
+    }
+
+    #[test]
+    fn a_selection_whose_row_vanishes_clamps_to_a_neighbour_never_to_none() {
+        let mut nav = nav_over("hide_clamp", &["a.log", "no.log"]);
+        let no = nav.files()[1].0;
+        nav.set_answer(no, Match::No);
+        nav.select_entry(no);
+
+        nav.set_mode(Mode::FilteredOnly);
+
+        assert!(nav.selected_entry().is_some());
+        assert_ne!(nav.selected_entry(), Some(no));
+    }
+
+    /// `j`, `Enter` and the filename search all walk the *visible* rows.
+    #[test]
+    fn movement_and_activation_see_only_visible_rows() {
+        let mut nav = nav_over("hide_walk", &["a.log", "no.log", "z.log"]);
+        let no = nav.files()[1].0;
+        nav.set_answer(no, Match::No);
+        nav.set_mode(Mode::FilteredOnly);
+        nav.select_entry(nav.files()[0].0);
+
+        nav.handle_events(Event::Key(KeyEvent::from(KeyCode::Char('j'))));
+        assert_eq!(
+            nav.selected_path().unwrap().file_name().unwrap(),
+            "z.log",
+            "j landed on a hidden row"
+        );
+
+        nav.search("no", false).expect("valid pattern");
+        assert_eq!(
+            nav.selected_path().unwrap().file_name().unwrap(),
+            "z.log",
+            "search found a hidden row"
+        );
+    }
+
+    #[test]
+    fn a_new_listing_shows_everything_again() {
+        let mut nav = nav_over("hide_reset", &["no.log"]);
+        nav.set_answer(nav.files()[0].0, Match::No);
+        nav.set_mode(Mode::FilteredOnly);
+        assert_eq!(names(&nav), vec![PARENT]);
+
+        nav.go_to_parent();
+        assert!(names(&nav).len() > 1);
     }
 }
