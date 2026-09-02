@@ -2157,6 +2157,9 @@ mod tests {
         let mut nav = nav_over("match_no", &["a.log", "b.log"]);
         let (a, b) = (nav.files()[0].0, nav.files()[1].0);
 
+        // Capture b.log's style before any answers are set
+        let plain = name_style(&mut nav, "b.log");
+
         nav.set_answer(a, Match::No);
         nav.set_answer(b, Match::Unknown);
         nav.restyle();
@@ -2173,10 +2176,7 @@ mod tests {
             "a.log should have DIM modifier"
         );
 
-        assert_ne!(
-            b_style.fg, DIM_STYLE.fg,
-            "b.log should not be dimmed (different fg)"
-        );
+        assert_eq!(b_style, plain, "an unknown answer changed the row");
     }
 
     #[test]
