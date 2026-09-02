@@ -101,6 +101,23 @@ pub(crate) enum Kind {
     Parent,
 }
 
+/// Whether a file would show a line under the active filters — the answer the
+/// navigator is *told*, never one it works out (#119).
+///
+/// `Yes` carries a ready style: the colour of the filter that selected the
+/// file, decided by `App`, which is the only thing that can see the filters.
+/// The navigator needs to know nothing about filters to draw it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[allow(dead_code)]
+pub(crate) enum Match {
+    /// Not yet scanned, or the feature is off. Drawn plain, never hidden:
+    /// you do not hide what you have not read.
+    #[default]
+    Unknown,
+    No,
+    Yes(Style),
+}
+
 /// One row of the listing: its name, and what it is.
 ///
 /// `name` stays exactly as it is on disk — the trailing `/` on a directory is
@@ -133,6 +150,8 @@ pub(crate) struct Entry {
     /// rendering decision (and a width-dependent one), and doing it here would
     /// bake a format into the listing every consumer then has to live with.
     pub modified: Option<std::time::SystemTime>,
+    /// See [`Match`]. Always `Unknown` for a directory and for `..`.
+    pub matched: Match,
 }
 
 impl Entry {
@@ -306,8 +325,13 @@ impl FileNav<'_> {
             .iter()
             .map(|entry| {
                 let style = match matcher {
+                    // Asked for by name: the search highlight outranks the answer.
                     Some(pattern) if pattern.is_match(&entry.matchable()) => MATCH_STYLE,
-                    _ => entry.style(),
+                    _ => match entry.matched {
+                        Match::Yes(style) => style,
+                        Match::No => DIM_STYLE,
+                        Match::Unknown => entry.style(),
+                    },
                 };
                 let text = entry.display();
                 widest = widest.max(UnicodeWidthStr::width(text.as_str()));
@@ -445,6 +469,47 @@ impl FileNav<'_> {
         Some(self.dir.join(&self.entries.get(selected)?.name))
     }
 
+    /// Every file in the listing, as `(entries index, absolute path)`.
+    /// Directories and `..` are not files and are never scanned.
+    #[allow(dead_code)]
+    pub(crate) fn files(&self) -> Vec<(usize, PathBuf)> {
+        self.entries
+            .iter()
+            .enumerate()
+            .filter(|(_, entry)| !matches!(entry.kind, Kind::Dir | Kind::Parent))
+            .map(|(index, entry)| (index, self.dir.join(&entry.name)))
+            .collect()
+    }
+
+    /// The absolute path at `index`, so a result can be checked against the
+    /// row it was requested for before being applied to it.
+    #[allow(dead_code)]
+    pub(crate) fn path_at(&self, index: usize) -> Option<PathBuf> {
+        self.entries
+            .get(index)
+            .map(|entry| self.dir.join(&entry.name))
+    }
+
+    /// Record an answer for one row, reporting whether it changed. Does not
+    /// redraw — a burst of answers arrives together, so the caller calls
+    /// `restyle` once afterwards rather than paying a list rebuild per row.
+    #[allow(dead_code)]
+    pub(crate) fn set_answer(&mut self, index: usize, matched: Match) -> bool {
+        match self.entries.get_mut(index) {
+            Some(entry) if entry.matched != matched => {
+                entry.matched = matched;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Rebuild the drawn rows from the current answers.
+    #[allow(dead_code)]
+    pub(crate) fn restyle(&mut self) {
+        self.rebuild_list();
+    }
+
     /// Ask for the highlighted entry to be previewed.
     ///
     /// Directories included. They used to be filtered out here, on the
@@ -521,6 +586,7 @@ fn read_dir_entries(dir: &Path) -> Vec<Entry> {
         // in it, and the navigator shows neither field anyway.
         size: None,
         modified: None,
+        matched: Match::Unknown,
     }];
 
     // A directory that cannot be read still offers the way out: `..` alone,
@@ -611,6 +677,7 @@ fn describe(entry: &fs::DirEntry) -> Entry {
             meta.as_ref().map(fs::Metadata::len)
         },
         modified: meta.as_ref().and_then(|meta| meta.modified().ok()),
+        matched: Match::Unknown,
     }
 }
 
@@ -1226,6 +1293,7 @@ mod tests {
             kind,
             size: None,
             modified: None,
+            matched: Match::Unknown,
         }
     }
 
@@ -1425,6 +1493,7 @@ mod tests {
                 kind: Kind::Plain,
                 size: None,
                 modified: None,
+                matched: Match::Unknown,
             }],
             ..Default::default()
         };
@@ -1446,6 +1515,7 @@ mod tests {
             kind: Kind::Plain,
             size: None,
             modified: None,
+            matched: Match::Unknown,
         };
 
         assert_eq!(odd.display(), "broken\u{fffd}name.txt");
@@ -2038,5 +2108,111 @@ mod tests {
         let cwd = std::env::current_dir().expect("cwd");
 
         assert_eq!(nav.dir, cwd.parent().expect("cwd has a parent"));
+    }
+
+    // ---- filter matches ---------------------------------------------------
+
+    fn row_style_of(nav: &mut FileNav<'_>, name: &str) -> Style {
+        name_style(nav, name)
+    }
+
+    #[test]
+    fn files_lists_every_non_directory_with_its_index_and_absolute_path() {
+        let nav = nav_over("match_files", &["a.log", "b.log"]);
+        std::fs::create_dir_all(nav.dir().join("sub")).expect("subdir");
+        let nav = FileNav::new(nav.dir().join("placeholder").display().to_string());
+
+        let files = nav.files();
+        let names: Vec<_> = files
+            .iter()
+            .map(|(_, p)| p.file_name().unwrap().to_owned())
+            .collect();
+        assert_eq!(
+            names,
+            ["a.log", "b.log"],
+            "directories and .. must not be listed"
+        );
+        assert!(
+            files
+                .iter()
+                .all(|(i, p)| nav.path_at(*i).as_ref() == Some(p))
+        );
+        assert!(files.iter().all(|(_, p)| p.is_absolute()));
+    }
+
+    #[test]
+    fn a_yes_answer_draws_the_name_in_the_style_it_was_given() {
+        let mut nav = nav_over("match_yes", &["a.log"]);
+        let index = nav.files()[0].0;
+        let style = Style::default().fg(Color::Magenta);
+
+        assert!(nav.set_answer(index, Match::Yes(style)));
+        nav.restyle();
+
+        assert_eq!(row_style_of(&mut nav, "a.log").fg, Some(Color::Magenta));
+    }
+
+    #[test]
+    fn a_no_answer_dims_the_name_and_unknown_leaves_it_alone() {
+        let mut nav = nav_over("match_no", &["a.log", "b.log"]);
+        let (a, b) = (nav.files()[0].0, nav.files()[1].0);
+
+        nav.set_answer(a, Match::No);
+        nav.set_answer(b, Match::Unknown);
+        nav.restyle();
+
+        // Move selection to parent so neither row is selected when we extract styles
+        select(&mut nav, PARENT);
+
+        let a_style = name_style(&mut nav, "a.log");
+        let b_style = name_style(&mut nav, "b.log");
+
+        assert_eq!(a_style.fg, DIM_STYLE.fg, "a.log should be dimmed");
+        assert!(
+            a_style.add_modifier.contains(Modifier::DIM),
+            "a.log should have DIM modifier"
+        );
+
+        assert_ne!(
+            b_style.fg, DIM_STYLE.fg,
+            "b.log should not be dimmed (different fg)"
+        );
+    }
+
+    #[test]
+    fn set_answer_reports_whether_anything_changed() {
+        let mut nav = nav_over("match_changed", &["a.log"]);
+        let index = nav.files()[0].0;
+
+        assert!(!nav.set_answer(index, Match::Unknown), "unknown to unknown");
+        assert!(nav.set_answer(index, Match::No));
+        assert!(!nav.set_answer(index, Match::No));
+        assert!(!nav.set_answer(99, Match::No), "no such row");
+    }
+
+    /// The filename search asked for that name by name; it keeps its highlight.
+    #[test]
+    fn a_search_hit_stays_yellow_whatever_its_answer() {
+        let mut nav = nav_over("match_search", &["a.log"]);
+        let index = nav.files()[0].0;
+        nav.search("a", false).expect("valid pattern");
+        nav.set_answer(index, Match::No);
+        nav.restyle();
+
+        // The search match outranks the answer, so it stays yellow regardless
+        let style = name_style(&mut nav, "a.log");
+        assert_eq!(style.fg, MATCH_STYLE.fg, "search hit should stay yellow");
+    }
+
+    #[test]
+    fn a_new_listing_forgets_every_answer() {
+        let mut nav = nav_over("match_reset", &["a.log"]);
+        nav.set_answer(nav.files()[0].0, Match::No);
+        std::fs::create_dir_all(nav.dir().join("sub")).expect("subdir");
+
+        nav.set_dir(nav.dir().join("sub"), Select::First);
+        nav.go_to_parent();
+
+        assert!(nav.entries().iter().all(|e| e.matched == Match::Unknown));
     }
 }
