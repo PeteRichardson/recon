@@ -180,11 +180,17 @@ impl Entry {
 
 #[derive(Debug, Default)]
 pub struct FileNav<'a> {
-    pub dir: PathBuf,        // directory currently being listed
-    pub entries: Vec<Entry>, // `PARENT` followed by the sorted contents of `dir`
-    pub navlist: List<'a>,
-    pub state: ListState,
-    pub active: bool,
+    /// Directory currently being listed.
+    dir: PathBuf,
+    /// `PARENT` followed by the sorted contents of `dir`.
+    ///
+    /// Private because `entries[0]` must be the `..` row — `index_of` and
+    /// `activate_selection` both depend on it — and because `navlist` must stay
+    /// in step with this, which only `rebuild_list` keeps true (#81).
+    entries: Vec<Entry>,
+    navlist: List<'a>,
+    state: ListState,
+    active: bool,
     /// Terminal columns the widest row needs, measured when the listing is
     /// built rather than on every frame.
     ///
@@ -404,6 +410,30 @@ impl FileNav<'_> {
     /// to re-measure a listing that had not changed (#84).
     pub fn preferred_width(&self) -> u16 {
         u16::try_from(self.widest + BORDERS).unwrap_or(u16::MAX)
+    }
+
+    /// Give or take focus. The only writer of `active` (#81).
+    pub(crate) fn set_active(&mut self, active: bool) {
+        self.active = active;
+    }
+
+    /// The directory currently being listed.
+    pub(crate) fn dir(&self) -> &Path {
+        &self.dir
+    }
+
+    /// The listing, for tests that assert on what is in the pane.
+    #[cfg(test)]
+    pub(crate) fn entries(&self) -> &[Entry] {
+        &self.entries
+    }
+
+    /// The row the cursor is on, for tests. Production asks for the *path*
+    /// instead — see `selected_path`, which is the only correct way to turn a
+    /// selection into something that can be opened.
+    #[cfg(test)]
+    pub(crate) fn selected(&self) -> Option<usize> {
+        self.state.selected()
     }
 
     /// The path the cursor is sitting on.

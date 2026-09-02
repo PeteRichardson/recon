@@ -586,7 +586,7 @@ impl App<'_> {
     /// Whether the file view is showing a bounded preview rather than the
     /// whole file.
     fn file_view_truncated(&self) -> bool {
-        self.view.truncated
+        self.view.is_truncated()
     }
 
     /// This is the main event loop for the app.
@@ -1005,7 +1005,7 @@ impl App<'_> {
     /// rather than going through that dispatch — see `promote_truncated_preview`,
     /// which wraps this for those callers.
     fn promote_file_view(&mut self) {
-        let path = std::path::Path::new(&self.view.filename).to_path_buf();
+        let path = self.view.filename().to_path_buf();
         self.view.load(&path);
     }
 
@@ -1042,8 +1042,8 @@ impl App<'_> {
     /// viewer; a missing editor is not a reason to bring the TUI down over a
     /// key the user may have pressed by accident.
     fn open_in_editor(&mut self, template: &str, scope: EditorScope) {
-        let name = self.view.filename.clone();
-        if name.is_empty() {
+        let relative = self.view.filename().to_path_buf();
+        if relative.as_os_str().is_empty() {
             self.report("nothing to open", true);
             return;
         }
@@ -1051,9 +1051,11 @@ impl App<'_> {
         // `filename` is set even when the read failed — the pane shows the
         // error in place of the file's text — so a path that is not there is
         // the ordinary "the argument was a typo" case, not an impossible one.
-        let relative = std::path::Path::new(&name);
         if !relative.exists() {
-            self.report(&format!("cannot open {name}: no such file"), true);
+            self.report(
+                &format!("cannot open {}: no such file", relative.display()),
+                true,
+            );
             return;
         }
 
@@ -1072,7 +1074,7 @@ impl App<'_> {
         // the navigator had *already* resolved the link before this ran and
         // there was nothing left here to preserve. All three sites share this
         // one function now, which is what makes the sentence above true.
-        let file = path::lexical_absolute(relative);
+        let file = path::lexical_absolute(&relative);
 
         let project = match scope {
             EditorScope::Project => editor::project_root(&file),
@@ -1163,7 +1165,7 @@ impl App<'_> {
     /// filters see only the truncated slice until the view is focused and
     /// loads the file in full.
     fn sync_document(&mut self) {
-        let lines = self.view.textarea.lines().to_vec();
+        let lines = self.view.lines().to_vec();
         // The hide toggle describes how the user is reading, not which file
         // they are reading, so it outlives the document exactly as the filter
         // set does — and for the same reason. The filters survived a load
@@ -1377,7 +1379,7 @@ impl App<'_> {
     /// it is a guess marked as one.
     fn total_lines_text(&self) -> (String, bool) {
         let loaded = self.document.lines().len();
-        match (self.view.truncated, self.view.estimated_lines) {
+        match (self.view.is_truncated(), self.view.estimated_lines()) {
             // Truncated with nothing to scale from: the count is still the
             // preview's, so it stays flagged even without a better number.
             (true, None) => (loaded.to_string(), true),
@@ -1388,7 +1390,7 @@ impl App<'_> {
 
     /// The directory the navigator is listing.
     fn nav_dir(&self) -> &std::path::Path {
-        self.nav.dir.as_path()
+        self.nav.dir()
     }
 
     /// The whole bottom row: filter state first, then the directory in
@@ -1493,8 +1495,8 @@ impl App<'_> {
     /// Three assignments rather than an enumerate-and-compare over a vec: the
     /// index that loop compared against no longer exists (#73).
     fn set_active_pane(&mut self) {
-        self.nav.active = self.focus == Focus::Nav;
-        self.view.active = self.focus == Focus::View;
+        self.nav.set_active(self.focus == Focus::Nav);
+        self.view.set_active(self.focus == Focus::View);
         self.filters_pane.active = self.focus == Focus::Filters;
     }
 
@@ -2352,7 +2354,7 @@ mod tests {
 
         assert!(app.search.is_none(), "prompt stayed open");
         let nav = &app.nav;
-        assert_eq!(nav.entries[nav.state.selected().unwrap()].name, "gamma.rs");
+        assert_eq!(nav.entries()[nav.selected().unwrap()].name, "gamma.rs");
     }
 
     #[test]
@@ -2537,7 +2539,7 @@ mod tests {
 
     /// Returns the styles the file view is currently rendering with.
     fn view_line_styles(app: &App) -> Vec<Option<Style>> {
-        app.view.textarea.line_styles().to_vec()
+        app.view.textarea().line_styles().to_vec()
     }
 
     /// Create (or recreate) `target/test-appdirs/<name>/log.txt` with `body`,
@@ -2586,7 +2588,7 @@ mod tests {
         (&mut app).render(area, &mut buf);
 
         let top = |app: &App| -> usize {
-            let (scroll, _) = app.view.textarea.scroll_top();
+            let (scroll, _) = app.view.textarea().scroll_top();
             app.view.window_start() + scroll as usize
         };
 
@@ -3481,16 +3483,16 @@ mod tests {
     }
 
     fn view_cursor_row(app: &App) -> usize {
-        app.view.textarea.cursor().0
+        app.view.textarea().cursor().0
     }
 
     /// The text the file view is currently showing, one entry per row.
     fn view_lines(app: &App) -> Vec<String> {
-        app.view.textarea.lines().to_vec()
+        app.view.textarea().lines().to_vec()
     }
 
     fn view_line_numbers(app: &App) -> Vec<usize> {
-        app.view.textarea.line_numbers().to_vec()
+        app.view.textarea().line_numbers().to_vec()
     }
 
     // ---- windowed viewport (#7) -----------------------------------------
@@ -3710,7 +3712,7 @@ mod tests {
     /// Which rows the gutter is currently marking as ending a group.
     fn view_group_ends(app: &App) -> Vec<bool> {
         app.view
-            .textarea
+            .textarea()
             .line_number_styles()
             .iter()
             .map(Option::is_some)
@@ -3883,8 +3885,8 @@ mod tests {
     /// whose `u16` argument would silently truncate on the large-file test
     /// below.
     fn move_cursor_to_visible_row(app: &mut App, row: usize) {
-        let lines = app.view.textarea.lines().to_vec();
-        app.view.textarea.set_lines(lines, (row, 0));
+        let lines = app.view.textarea().lines().to_vec();
+        app.view.textarea_mut().set_lines(lines, (row, 0));
     }
 
     /// The row (if any) whose rendered text contains `needle`.
@@ -6353,7 +6355,7 @@ mod tests {
         );
         let nav = &app.nav;
         assert_eq!(
-            nav.entries[nav.state.selected().unwrap()].name,
+            nav.entries()[nav.selected().unwrap()].name,
             "zebra.log",
             "the nav search did not move the selection"
         );
