@@ -100,6 +100,9 @@ pub(crate) enum FilterCommand {
     /// in place. The one variant `App` answers by opening a prompt rather than
     /// by changing the set — nothing is mutated until that prompt commits.
     Edit(usize),
+    /// Flip the selected numbered filter between `Include` and `Context`. No
+    /// search variant: the search always selects, so it has no context form.
+    ToggleContext(usize),
     /// The search row, which carries no index: the live search lives in its
     /// own slot on the `ActiveFilters`, not at a position in `filters`.
     ToggleSearch,

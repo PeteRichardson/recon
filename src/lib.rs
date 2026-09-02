@@ -1280,6 +1280,9 @@ impl App<'_> {
             FilterCommand::Delete(index) => {
                 self.filters.remove(index);
             }
+            FilterCommand::ToggleContext(index) => {
+                self.filters.toggle_context(index);
+            }
             FilterCommand::ToggleSearch => {
                 let enabled = self.filters.search().is_some_and(|search| search.enabled);
                 self.filters.search_set_enabled(!enabled);
@@ -5695,6 +5698,18 @@ mod tests {
             "alpha",
             "backspacing out of the prompt emptied the filter"
         );
+    }
+
+    #[test]
+    fn m_in_the_filter_pane_flips_the_selected_filter_to_context_and_back() {
+        let mut app = app_with_two_filters("ctx_toggle");
+        key(&mut app, KeyCode::Char('f'));
+
+        key(&mut app, KeyCode::Char('m'));
+        assert_eq!(app.filters.filters()[0].sense, filter::Sense::Context);
+
+        key(&mut app, KeyCode::Char('m'));
+        assert_eq!(app.filters.filters()[0].sense, filter::Sense::Include);
     }
 
     /// An edit changes the pattern and nothing else. The sense in particular
