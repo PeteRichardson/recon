@@ -232,6 +232,7 @@ impl FilterList {
         let mark = if filter.enabled { 'x' } else { ' ' };
         let sense = match filter.sense {
             Sense::Include => "inc",
+            Sense::Context => "inc",
             Sense::Exclude => "exc",
         };
         format!("{}[{}] {} {}", label, mark, sense, filter.pattern.as_str())
@@ -273,7 +274,7 @@ impl FilterList {
                                 // and the file view agree at a glance. The search is
                                 // always `Sense::Include`, so it takes this branch too,
                                 // showing `SEARCH_STYLE` the same way.
-                                Sense::Include => filter.style,
+                                Sense::Include | Sense::Context => filter.style,
                                 Sense::Exclude => Style::default().fg(Color::DarkGray),
                             }
                         } else {
