@@ -10,6 +10,7 @@ use regex::Regex;
 use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
+use unicode_width::UnicodeWidthStr;
 
 /// The entry that climbs to the parent directory.
 pub const PARENT: &str = "..";
@@ -44,6 +45,10 @@ enum Select {
 /// Outranks the kind styles below. A search hit is the transient, task-driven
 /// signal, and an entry's kind is still carried by its trailing `/` and its
 /// bold — so letting the match win costs nothing that was not said twice over.
+/// Columns of chrome around the listing. There is no selection marker to
+/// reserve room for since #15 removed it (see #19 for its return).
+const BORDERS: usize = 2;
+
 const MATCH_STYLE: Style = Style::new().fg(Color::Yellow);
 
 /// Directories: bright blue and bold, and `rebuild_list` adds a trailing `/`.
@@ -180,6 +185,15 @@ pub struct FileNav<'a> {
     pub navlist: List<'a>,
     pub state: ListState,
     pub active: bool,
+    /// Terminal columns the widest row needs, measured when the listing is
+    /// built rather than on every frame.
+    ///
+    /// `preferred_width` used to call `Entry::display()` for every entry to
+    /// find the longest — a heap allocation per entry, at 60 Hz, purely to
+    /// re-measure something that can only change when `entries` does (#84).
+    /// Kept in step by `rebuild_list`, which is the one place the drawn rows
+    /// are built, so this cannot go stale even by a path `set_dir` never takes.
+    widest: usize,
     /// Current search pattern, matched against entry names.
     matcher: Option<Regex>,
     /// Direction the search was started in, so `n` repeats and `N` reverses.
@@ -277,6 +291,10 @@ impl FileNav<'_> {
     /// so the current match still reads as selected.
     fn rebuild_list(&mut self) {
         let matcher = self.matcher.as_ref();
+        // One pass builds the rows and measures them. `display()` allocates,
+        // and this is the one place it has to — doing it again per frame in
+        // `preferred_width` was #84.
+        let mut widest = 0;
         let items: Vec<ListItem> = self
             .entries
             .iter()
@@ -285,9 +303,12 @@ impl FileNav<'_> {
                     Some(pattern) if pattern.is_match(&entry.matchable()) => MATCH_STYLE,
                     _ => entry.style(),
                 };
-                ListItem::new(entry.display()).style(style)
+                let text = entry.display();
+                widest = widest.max(UnicodeWidthStr::width(text.as_str()));
+                ListItem::new(text).style(style)
             })
             .collect();
+        self.widest = widest;
         self.navlist = List::new(items);
     }
 
@@ -369,18 +390,15 @@ impl FileNav<'_> {
     /// Only the two borders are added — there is no selection marker to
     /// reserve room for since #15 removed it (see #19 for its return).
     ///
-    /// Measured in `char`s rather than display width, so wide glyphs (CJK,
-    /// emoji) are under-measured and their names will clip.
+    /// Measured in terminal columns, not `char`s. A CJK ideograph or an emoji
+    /// occupies two columns, so counting chars sized the pane to about half the
+    /// width it needed and clipped every row (#97).
+    ///
+    /// A field read. `App::nav_width` calls this from inside `App::render`, so
+    /// the old version allocated a `String` per directory entry on every frame
+    /// to re-measure a listing that had not changed (#84).
     pub fn preferred_width(&self) -> u16 {
-        const BORDERS: usize = 2;
-
-        let longest = self
-            .entries
-            .iter()
-            .map(|entry| entry.display().chars().count())
-            .max()
-            .unwrap_or(0);
-        u16::try_from(longest + BORDERS).unwrap_or(u16::MAX)
+        u16::try_from(self.widest + BORDERS).unwrap_or(u16::MAX)
     }
 
     /// The path the cursor is sitting on.
@@ -1562,6 +1580,43 @@ mod tests {
         assert_eq!(
             nav.preferred_width(),
             "much_longer_name.rs".len() as u16 + 2
+        );
+    }
+
+    /// A CJK name occupies two terminal columns per ideograph, so a pane sized
+    /// by `char` count comes out about half the width it needs and clips every
+    /// row (#97).
+    #[test]
+    fn preferred_width_counts_display_columns_not_chars() {
+        let nav = nav_over("widths_cjk", &["日本語のファイル.rs"]);
+
+        // 8 ideographs at 2 columns each, `の` included, plus `.rs` at 1 each,
+        // plus two borders. Counting chars would give 11 + 2.
+        assert_eq!(nav.preferred_width(), 16 + 3 + 2);
+    }
+
+    /// The cache #84 introduces must not outlive the listing it was measured
+    /// from. Recomputing here from `entries` catches staleness on *any*
+    /// mutation path, not just the two `set_dir` reaches.
+    #[test]
+    fn the_cached_width_matches_a_fresh_computation() {
+        let mut nav = nav_over("widths_cache", &["a.rs", "much_longer_name.rs"]);
+
+        let fresh = |nav: &FileNav<'_>| {
+            nav.entries
+                .iter()
+                .map(|entry| UnicodeWidthStr::width(entry.display().as_str()))
+                .max()
+                .unwrap_or(0) as u16
+                + 2
+        };
+        assert_eq!(nav.preferred_width(), fresh(&nav));
+
+        nav.go_to_parent();
+        assert_eq!(
+            nav.preferred_width(),
+            fresh(&nav),
+            "climbing to the parent left the width measuring the old listing"
         );
     }
 
