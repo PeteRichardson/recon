@@ -178,17 +178,34 @@ The file opens in the centre pane with its directory listed on the left. Then:
 ## Usage
 
 ```
-Usage: recon [PATH]
+Usage: recon [OPTIONS] [PATH]
 
 Arguments:
-  [PATH]  File or directory to open. A directory is listed with its first
-          entry selected; a file is opened with its own directory listed
-          alongside [default: .]
+  [PATH]  File or directory to open. A directory is listed with its first entry
+          selected; a file is opened with its own directory listed alongside
+          [default: .]
 
 Options:
-  -h, --help     Print help
-  -V, --version  Print version
+      --editor <TEMPLATE>
+          Command template `o` runs, e.g. `zed {project} {file}:{line}` [env:
+          RECON_EDITOR=]
+      --file-editor <TEMPLATE>
+          Command template `O` runs. Defaults to `--editor` with the `{project}`
+          argument dropped, so one setting normally configures both keys [env:
+          RECON_FILE_EDITOR=]
+      --print-editor-config [<FLAVOUR>]
+          Print a ready-to-paste `[editor]` stanza and exit. Takes a flavour —
+          `zed`, `vscode`, `wezterm-nvim`, … — or `auto` to guess from
+          `$TERM_PROGRAM`
+  -h, --help
+          Print help (see more with '--help')
+  -V, --version
+          Print version
 ```
+
+This block is checked against the binary: `readme_usage_block_matches_the_real_help`
+in `src/config.rs` renders `recon -h` at 80 columns and fails if it has drifted.
+Regenerate by running the test and pasting what it prints.
 
 The argument is optional, and takes either a file or a directory:
 
