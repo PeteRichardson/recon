@@ -501,7 +501,6 @@ impl FileNav<'_> {
 
     /// The absolute path at `index`, so a result can be checked against the
     /// row it was requested for before being applied to it.
-    #[allow(dead_code)]
     pub(crate) fn path_at(&self, index: usize) -> Option<PathBuf> {
         self.entries
             .get(index)
