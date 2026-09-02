@@ -136,6 +136,7 @@ use editor::Launcher;
 use filter::ActiveFilters;
 use layout::{Divider, FilterHeight, NavWidth};
 use widgets::filenav::FileNav;
+use widgets::filenav::Match;
 use widgets::fileview::FileView;
 use widgets::filterlist::FilterList;
 use widgets::{Action, FilterCommand, Focus};
@@ -258,6 +259,33 @@ pub struct App<'a> {
     /// next key. Joining that cycle would mean tabbing past help forever after
     /// using it once.
     help: bool,
+    /// Runs the navigator's file scans (#119). A `Box<dyn Scan>` for the same
+    /// reason `launcher` is: tests swap in a recording double.
+    scanner: Box<dyn scan::Scan>,
+    /// Where the scanner's results arrive. Drained on the render tick.
+    ///
+    /// The draining (`drain_scan_results`) is a later task (#119); tests
+    /// install a channel here so `refresh_scan`'s scanner double can be
+    /// exercised without a real one.
+    #[allow(dead_code)]
+    scan_results: Option<std::sync::mpsc::Receiver<scan::Scanned>>,
+    /// Every file's bitsets, keyed on the pattern list they were read for.
+    scan_cache: ScanCache,
+    /// What the last `refresh_scan` saw. Unchanged means nothing to do — the
+    /// guard that keeps `j` in the file view from stat-ing the folder.
+    last_scan: Option<ScanState>,
+    /// When `poll_stamps` last re-stat'd the listing.
+    ///
+    /// `poll_stamps` itself is a later task (#119); the field is added here so
+    /// `App`'s scan fields land together.
+    #[allow(dead_code)]
+    last_poll: Option<Instant>,
+    /// The active file's stamp moved since it was loaded. Shown as a badge,
+    /// cleared by `r`.
+    ///
+    /// Set and read by later tasks (#119); see `last_poll`.
+    #[allow(dead_code)]
+    view_stale: bool,
 }
 
 /// What a peek has to put back when it ends (#48).
@@ -278,6 +306,41 @@ struct StatusMessage {
     /// Drawn red. Not derivable from the text — "opened src/lib.rs" and
     /// "zed: No such file or directory" are the same shape.
     error: bool,
+}
+
+/// The scan cache: one [`scan::Record`] per file, valid for exactly one
+/// pattern list in one directory.
+///
+/// `key` changing shifts bit positions, so every record means something
+/// else; the whole cache is dropped and `id` bumped so in-flight results from
+/// the old one are ignored on arrival. `dir` changing means different files.
+/// A single file's record is dropped alone when its stamp moves.
+#[derive(Debug, Default)]
+struct ScanCache {
+    id: u64,
+    key: Vec<String>,
+    dir: std::path::PathBuf,
+    records: std::collections::HashMap<std::path::PathBuf, scan::Record>,
+}
+
+impl ScanCache {
+    fn fresh(id: u64, key: Vec<String>, dir: std::path::PathBuf) -> Self {
+        Self {
+            id,
+            key,
+            dir,
+            records: std::collections::HashMap::new(),
+        }
+    }
+}
+
+/// Everything `refresh_scan` depends on. Equal to last time ⇒ nothing to do.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ScanState {
+    key: Vec<String>,
+    selects: u64,
+    exclude: u64,
+    dir: std::path::PathBuf,
 }
 
 /// Which of the two editor bindings is being carried out.
@@ -327,6 +390,7 @@ impl App<'_> {
         // outlive every launcher clone, and a channel built on demand would
         // need a second field to remember whether it already existed.
         let (outcomes_tx, outcomes_rx) = std::sync::mpsc::channel();
+        let (scan_tx, scan_rx) = std::sync::mpsc::channel();
 
         let mut app = Self {
             state: AppState::Running,
@@ -356,6 +420,12 @@ impl App<'_> {
             peek: None,
             swallow_next_enter: false,
             help: false,
+            scanner: Box::new(scan::Scanner::new(scan_tx)),
+            scan_results: Some(scan_rx),
+            scan_cache: ScanCache::default(),
+            last_scan: None,
+            last_poll: None,
+            view_stale: false,
         };
         app.sync_document();
         app.refresh_view();
@@ -654,9 +724,18 @@ impl App<'_> {
         Ok(drained)
     }
 
-    /// Dispatch a single event: app-wide keys first, then the focused widget.
+    /// Dispatch a single event, then let the navigator's scan catch up.
     ///
-    /// Split out from the polling loop so that it can be driven directly.
+    /// Split out from the polling loop so that it can be driven directly. The
+    /// one thing added around `dispatch_event` is `refresh_scan`: the dispatch
+    /// has two dozen early returns, and the scan guard has to run after every
+    /// one of them.
+    pub fn handle_event(&mut self, event: event::Event) {
+        self.dispatch_event(event);
+        self.refresh_scan(false);
+    }
+
+    /// Dispatch a single event: app-wide keys first, then the focused widget.
     ///
     /// Returns nothing. Dispatch cannot fail: every arm either mutates `App`
     /// or hands the event to a pane that also cannot fail. It used to return
@@ -664,7 +743,7 @@ impl App<'_> {
     /// roughly a hundred tests, and taught a reader to skim past `?` in a file
     /// where `Config::load`, `editor_command` and `set_highlight` genuinely can
     /// fail (#80).
-    pub fn handle_event(&mut self, event: event::Event) {
+    fn dispatch_event(&mut self, event: event::Event) {
         // The status message lasts until the next *keypress*, and deliberately
         // not until the next event: mouse capture is on, so a mouse moving
         // across the terminal would wipe "zed: No such file or directory" off
@@ -1153,6 +1232,117 @@ impl App<'_> {
         };
         self.report(&text, true);
         true
+    }
+
+    /// Decide whether the navigator's answers need work, and start it (#119).
+    ///
+    /// Cheap-idempotent unless `force`: it compares the pattern list, the
+    /// masks and the directory to what it saw last time and returns at once
+    /// if nothing moved. Runs after every event, so that guard is what keeps a
+    /// keystroke in the file view from stat-ing two hundred files.
+    ///
+    /// When it proceeds, every file the navigator lists is answered from the
+    /// cache if it can be — `Record::answer` — and put on a request if it
+    /// cannot. A toggle whose every answer is cached issues no request and
+    /// touches no thread; that is the whole point of caching bitsets rather
+    /// than answers.
+    fn refresh_scan(&mut self, force: bool) {
+        let matcher = self.filters.matcher();
+        let dir = self.nav.dir().to_path_buf();
+        let state = matcher.as_ref().map(|m| {
+            let (selects, exclude) = m.masks();
+            ScanState {
+                key: self.filters.pattern_key(),
+                selects,
+                exclude,
+                dir: dir.clone(),
+            }
+        });
+        if !force && state == self.last_scan {
+            return;
+        }
+        self.last_scan = state;
+
+        let Some(matcher) = matcher else {
+            // Nothing selects: the feature is off, not "nothing matches".
+            for (index, _) in self.nav.files() {
+                self.nav.set_answer(index, Match::Unknown);
+            }
+            self.scanner.cancel();
+            self.nav.restyle();
+            return;
+        };
+
+        let key = self.filters.pattern_key();
+        if self.scan_cache.key != key || self.scan_cache.dir != dir {
+            self.scan_cache = ScanCache::fresh(self.scan_cache.id + 1, key, dir);
+        }
+
+        let mut pending = Vec::new();
+        for (index, path) in self.nav.files() {
+            let stamp = scan::stamp(&path).ok();
+            if self
+                .scan_cache
+                .records
+                .get(&path)
+                .is_some_and(|record| record.stamp != stamp)
+            {
+                self.scan_cache.records.remove(&path);
+            }
+            let answer = self
+                .scan_cache
+                .records
+                .get(&path)
+                .map(|record| self.answer_to_match(record, &matcher));
+            let matched = if let Some(matched @ (Match::Yes(_) | Match::No)) = answer {
+                matched
+            } else {
+                let progress = self
+                    .scan_cache
+                    .records
+                    .get(&path)
+                    .map(|record| record.progress.clone())
+                    .unwrap_or_default();
+                pending.push((index, path, progress));
+                Match::Unknown
+            };
+            self.nav.set_answer(index, matched);
+        }
+
+        if pending.is_empty() {
+            self.scanner.cancel();
+        } else {
+            self.scanner.start(scan::Request {
+                cache_id: self.scan_cache.id,
+                matcher,
+                files: pending,
+            });
+        }
+        self.nav.restyle();
+    }
+
+    /// A record's answer as the navigator's `Match`, with the owning filter's
+    /// colour on a yes.
+    fn answer_to_match(&self, record: &scan::Record, matcher: &filter::Matcher) -> Match {
+        match record.answer(matcher) {
+            Some(true) => Match::Yes(self.match_style(record.owner(matcher))),
+            Some(false) => Match::No,
+            None => Match::Unknown,
+        }
+    }
+
+    /// The style the view would draw a line selected by `owner` with. The
+    /// navigator draws the file's name in it, so the two panes agree at a
+    /// glance and the colour says *which* filter picked the file.
+    fn match_style(&self, owner: Option<filter::Owner>) -> Style {
+        match owner {
+            Some(filter::Owner::Search) => filter::SEARCH_STYLE,
+            Some(filter::Owner::Filter(index)) => self
+                .filters
+                .style_for(filter::Verdict::Included(index))
+                .unwrap_or_default(),
+            None => Style::default(),
+        }
     }
 
     /// Carry out an action on behalf of the widget that raised it.
@@ -7814,6 +8004,211 @@ mod tests {
             enabled_flags(&app),
             flags,
             "the guard outlived the key that should have spent it"
+        );
+    }
+
+    // ---- navigator filter matches (#119) ----------------------------------
+
+    use scan::double::RecordingScanner;
+    use std::sync::mpsc::Sender;
+
+    /// Swap in the recording double and a channel the test controls.
+    fn record_scans(app: &mut App) -> (Rc<RecordingScanner>, Sender<scan::Scanned>) {
+        let scanner = Rc::new(RecordingScanner::default());
+        app.scanner = Box::new(Rc::clone(&scanner));
+        let (tx, rx) = std::sync::mpsc::channel();
+        app.scan_results = Some(rx);
+        (scanner, tx)
+    }
+
+    fn app_over_logs(name: &str) -> App<'static> {
+        app_over(name, &["a.log", "b.log"])
+    }
+
+    #[test]
+    fn adding_a_filter_starts_a_scan_of_every_file() {
+        let mut app = app_over_logs("scan_start");
+        let (scanner, _tx) = record_scans(&mut app);
+
+        app.add_filter("alpha").expect("valid pattern");
+        app.refresh_scan(false);
+
+        let requests = scanner.requests();
+        assert_eq!(requests.len(), 1);
+        let names: Vec<_> = requests[0]
+            .files
+            .iter()
+            .map(|(_, p, _)| p.file_name().unwrap().to_owned())
+            .collect();
+        assert_eq!(names, ["a.log", "b.log"]);
+    }
+
+    #[test]
+    fn nothing_selecting_means_no_scan_and_no_answers() {
+        let mut app = app_over_logs("scan_off");
+        let (scanner, _tx) = record_scans(&mut app);
+
+        app.refresh_scan(false);
+        assert!(scanner.requests().is_empty(), "empty set");
+
+        app.filters.add_excluding("noise").expect("valid pattern");
+        app.refresh_scan(false);
+        assert!(scanner.requests().is_empty(), "exclude only");
+    }
+
+    /// The guard: an unchanged state is free. `j` in the file view must not
+    /// stat the folder.
+    #[test]
+    fn an_unchanged_state_issues_nothing() {
+        let mut app = app_over_logs("scan_guard");
+        let (scanner, _tx) = record_scans(&mut app);
+        app.add_filter("alpha").expect("valid pattern");
+        app.refresh_scan(false);
+        assert_eq!(scanner.requests().len(), 1);
+
+        app.refresh_scan(false);
+        app.refresh_scan(false);
+
+        assert_eq!(scanner.requests().len(), 1);
+    }
+
+    #[test]
+    fn force_bypasses_the_guard() {
+        let mut app = app_over_logs("scan_force");
+        let (scanner, _tx) = record_scans(&mut app);
+        app.add_filter("alpha").expect("valid pattern");
+        app.refresh_scan(false);
+
+        app.refresh_scan(true);
+
+        assert_eq!(scanner.requests().len(), 2);
+    }
+
+    /// The point of the bitset cache: with every answer known, a toggle issues
+    /// no request and touches no thread.
+    #[test]
+    fn a_toggle_with_every_answer_cached_issues_no_scan() {
+        let mut app = app_over_logs("scan_cached");
+        let (scanner, _tx) = record_scans(&mut app);
+        app.add_filter("alpha").expect("valid pattern");
+        app.add_filter("beta").expect("valid pattern");
+        app.refresh_scan(false);
+        let request = &scanner.requests()[0];
+        // Pretend the scan finished: every file read to EOF, one matched beta.
+        for (i, (index, path, _)) in request.files.iter().enumerate() {
+            let seen = if i == 0 { vec![0, 0b10] } else { vec![0] };
+            app.scan_cache.records.insert(
+                path.clone(),
+                scan::Record {
+                    stamp: scan::stamp(path).ok(),
+                    progress: scan::Progress {
+                        seen,
+                        scanned_to: 1,
+                        eof: true,
+                    },
+                },
+            );
+            let _ = index;
+        }
+
+        app.filters.set_enabled(1, false);
+        app.refresh_scan(false);
+        app.filters.set_enabled(1, true);
+        app.refresh_scan(false);
+        app.filters.toggle_context(0);
+        app.refresh_scan(false);
+
+        assert_eq!(scanner.requests().len(), 1, "a toggle re-scanned");
+        assert!(matches!(
+            app.nav.entries()[app.nav.files()[0].0].matched,
+            widgets::filenav::Match::Yes(_)
+        ));
+        assert_eq!(
+            app.nav.entries()[app.nav.files()[1].0].matched,
+            widgets::filenav::Match::No
+        );
+    }
+
+    #[test]
+    fn a_pattern_change_drops_the_cache_and_bumps_its_id() {
+        let mut app = app_over_logs("scan_key");
+        let (scanner, _tx) = record_scans(&mut app);
+        app.add_filter("alpha").expect("valid pattern");
+        app.refresh_scan(false);
+        let first = scanner.requests()[0].cache_id;
+
+        app.add_filter("beta").expect("valid pattern");
+        app.refresh_scan(false);
+
+        assert_ne!(scanner.requests()[1].cache_id, first);
+    }
+
+    /// Peek drops every filter and puts them back; the round trip is free.
+    #[test]
+    fn a_peek_round_trip_issues_no_scan() {
+        let mut app = app_over_logs("scan_peek");
+        let (scanner, _tx) = record_scans(&mut app);
+        app.add_filter("alpha").expect("valid pattern");
+        app.refresh_scan(false);
+        for (_, path, _) in &scanner.requests()[0].files {
+            app.scan_cache.records.insert(
+                path.clone(),
+                scan::Record {
+                    stamp: scan::stamp(path).ok(),
+                    progress: scan::Progress {
+                        seen: vec![0],
+                        scanned_to: 1,
+                        eof: true,
+                    },
+                },
+            );
+        }
+        app.refresh_scan(true);
+        let before = scanner.requests().len();
+
+        key(&mut app, KeyCode::Char(' '));
+        assert!(
+            app.nav
+                .entries()
+                .iter()
+                .all(|e| e.matched == widgets::filenav::Match::Unknown),
+            "peek must un-dim"
+        );
+        key(&mut app, KeyCode::Char(' '));
+
+        assert_eq!(scanner.requests().len(), before);
+        assert_eq!(
+            app.nav.entries()[app.nav.files()[0].0].matched,
+            widgets::filenav::Match::No
+        );
+    }
+
+    #[test]
+    fn a_matched_file_takes_the_colour_of_the_filter_that_selected_it() {
+        let mut app = app_over_logs("scan_colour");
+        let (scanner, _tx) = record_scans(&mut app);
+        app.add_filter("alpha").expect("valid pattern");
+        app.add_filter("beta").expect("valid pattern");
+        app.refresh_scan(false);
+        let (_, path, _) = scanner.requests()[0].files[0].clone();
+        app.scan_cache.records.insert(
+            path.clone(),
+            scan::Record {
+                stamp: scan::stamp(&path).ok(),
+                progress: scan::Progress {
+                    seen: vec![0b10],
+                    scanned_to: 1,
+                    eof: true,
+                },
+            },
+        );
+
+        app.refresh_scan(true);
+
+        let expected = app.filters.filters()[1].style;
+        assert_eq!(
+            app.nav.entries()[app.nav.files()[0].0].matched,
+            widgets::filenav::Match::Yes(expected)
         );
     }
 }
