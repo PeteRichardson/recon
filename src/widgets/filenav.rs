@@ -527,7 +527,6 @@ impl FileNav<'_> {
     }
 
     /// Dim or hide rows answered `No`. The same `Mode` the file view uses.
-    #[allow(dead_code)]
     pub(crate) fn set_mode(&mut self, mode: Mode) {
         self.mode = mode;
         self.rebuild_visible();

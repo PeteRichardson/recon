@@ -579,6 +579,14 @@ impl App<'_> {
         Ok(())
     }
 
+    /// The one place the mode is set. `Ctrl-H`/`H` is one key with one meaning
+    /// in both panes: non-matching *lines* dim or hide in the view, and
+    /// non-matching *files* dim or hide in the navigator (#119).
+    fn set_mode(&mut self, mode: Mode) {
+        self.document.set_mode(mode);
+        self.nav.set_mode(mode);
+    }
+
     /// Flip between dimming unmatched lines and hiding them.
     ///
     /// Unlike a filter change, this always rebuilds the buffer: which rows
@@ -597,7 +605,7 @@ impl App<'_> {
             Mode::FilteredOnly => Mode::Dimmed,
         };
         let cursor_source = self.cursor_source();
-        self.document.set_mode(mode);
+        self.set_mode(mode);
         self.document.recompute_visible();
         self.apply_view(cursor_source);
     }
@@ -640,7 +648,7 @@ impl App<'_> {
     fn toggle_peek(&mut self) {
         if let Some(peek) = self.peek.take() {
             self.filters.apply_enabled_flags(&peek.flags);
-            self.document.set_mode(peek.mode);
+            self.set_mode(peek.mode);
         } else {
             self.peek = Some(PeekState {
                 mode: self.document.mode(),
@@ -650,7 +658,7 @@ impl App<'_> {
             // The same flip `toggle_hiding` does, deliberately: `<space>`
             // and `Ctrl-H` move the mode identically, and only the filter
             // switching below is the peek's own.
-            self.document.set_mode(match self.document.mode() {
+            self.set_mode(match self.document.mode() {
                 Mode::Dimmed => Mode::FilteredOnly,
                 Mode::FilteredOnly => Mode::Dimmed,
             });
@@ -1436,7 +1444,7 @@ impl App<'_> {
         // here and undid the `Ctrl-H` that made the skim possible.
         let mode = self.document.mode();
         self.document = Document::new(lines);
-        self.document.set_mode(mode);
+        self.set_mode(mode);
         // The buffer the view is showing belongs to the *previous* document,
         // so the record of what it was built from is meaningless now.
         // Clearing it forces the next `apply_view` to rebuild: two different
@@ -8374,5 +8382,62 @@ mod tests {
         drop(tx);
 
         assert!(!app.drain_scan_results());
+    }
+
+    /// The navigator's listed rows, read by rendering it — `entries` and
+    /// `visible` are private to `filenav`, so this is the only way a test
+    /// outside that module can see which rows are actually drawn.
+    fn nav_rows(app: &mut App) -> Vec<String> {
+        let area = Rect::new(0, 0, 40, 20);
+        let mut buf = Buffer::empty(area);
+        (&mut app.nav).render(area, &mut buf);
+        (0..area.height)
+            .map(|y| {
+                (0..area.width)
+                    .map(|x| buf[(x, y)].symbol().to_string())
+                    .collect::<String>()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn hide_mode_hides_non_matching_files_in_the_navigator_too() {
+        let mut app = app_over_logs("hide_both");
+        let (_scanner, tx) = record_scans(&mut app);
+        app.add_filter("alpha").expect("valid pattern");
+        app.refresh_scan(false);
+        tx.send(scanned(&app, 0, vec![0], true)).expect("send");
+        tx.send(scanned(&app, 1, vec![0b1], false)).expect("send");
+        app.drain_scan_results();
+
+        ctrl(&mut app, KeyCode::Char('h'));
+        assert!(
+            !nav_rows(&mut app).iter().any(|r| r.contains("a.log")),
+            "a.log should be hidden"
+        );
+
+        ctrl(&mut app, KeyCode::Char('h'));
+        assert!(nav_rows(&mut app).iter().any(|r| r.contains("a.log")));
+    }
+
+    #[test]
+    fn peek_shows_every_file_and_restoring_hides_them_again() {
+        let mut app = app_over_logs("hide_peek");
+        let (_scanner, tx) = record_scans(&mut app);
+        app.add_filter("alpha").expect("valid pattern");
+        app.refresh_scan(false);
+        tx.send(scanned(&app, 0, vec![0], true)).expect("send");
+        app.drain_scan_results();
+        ctrl(&mut app, KeyCode::Char('h'));
+        assert!(!nav_rows(&mut app).iter().any(|r| r.contains("a.log")));
+
+        key(&mut app, KeyCode::Char(' '));
+        assert!(
+            nav_rows(&mut app).iter().any(|r| r.contains("a.log")),
+            "peek must show the plain listing"
+        );
+
+        key(&mut app, KeyCode::Char(' '));
+        assert!(!nav_rows(&mut app).iter().any(|r| r.contains("a.log")));
     }
 }
