@@ -87,7 +87,7 @@ const PARENT_STYLE: Style = DIM_STYLE;
 
 /// What an entry is, which is all the palette encodes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Kind {
+pub(crate) enum Kind {
     Dir,
     Executable,
     Plain,
@@ -108,7 +108,7 @@ pub enum Kind {
 /// have to strip it back off, and a search for `dir$` would fail to match the
 /// directory it names.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Entry {
+pub(crate) struct Entry {
     /// The name as the OS gives it, not as Rust would like it to be.
     ///
     /// An `OsString` rather than a `String` because on Unix a filename is
