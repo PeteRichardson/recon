@@ -2395,11 +2395,13 @@ mod tests {
     /// applied in columns — `{:<width$}` counts chars.
     #[test]
     fn the_listing_name_column_aligns_across_wide_glyphs() {
+        use crate::widgets::filenav::Match;
         let named = |name: &str| Entry {
             name: name.into(),
             kind: crate::widgets::filenav::Kind::Plain,
             size: Some(1),
             modified: None,
+            matched: Match::Unknown,
         };
         // Both names are 10 terminal columns wide: 3 ideographs (6) + `.txt`,
         // against 10 ASCII characters. Padded to 12, both rows must come out
