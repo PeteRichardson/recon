@@ -109,7 +109,6 @@ pub(crate) enum Kind {
 /// file, decided by `App`, which is the only thing that can see the filters.
 /// The navigator needs to know nothing about filters to draw it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-#[allow(dead_code)]
 pub(crate) enum Match {
     /// Not yet scanned, or the feature is off. Drawn plain, never hidden:
     /// you do not hide what you have not read.
@@ -491,7 +490,6 @@ impl FileNav<'_> {
 
     /// Every file in the listing, as `(entries index, absolute path)`.
     /// Directories and `..` are not files and are never scanned.
-    #[allow(dead_code)]
     pub(crate) fn files(&self) -> Vec<(usize, PathBuf)> {
         self.entries
             .iter()
@@ -513,7 +511,6 @@ impl FileNav<'_> {
     /// Record an answer for one row, reporting whether it changed. Does not
     /// redraw — a burst of answers arrives together, so the caller calls
     /// `restyle` once afterwards rather than paying a list rebuild per row.
-    #[allow(dead_code)]
     pub(crate) fn set_answer(&mut self, index: usize, matched: Match) -> bool {
         match self.entries.get_mut(index) {
             Some(entry) if entry.matched != matched => {
@@ -526,7 +523,6 @@ impl FileNav<'_> {
 
     /// Rebuild the drawn rows from the current answers. A `No` answer can hide
     /// a row in `FilteredOnly` mode, so this is `rebuild_visible`.
-    #[allow(dead_code)]
     pub(crate) fn restyle(&mut self) {
         self.rebuild_visible();
     }
