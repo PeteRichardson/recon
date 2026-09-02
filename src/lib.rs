@@ -1027,6 +1027,15 @@ impl App<'_> {
                     self.open_in_editor(&template, EditorScope::File);
                     return;
                 }
+                // Refresh from disk: rescan the listing and reload the file,
+                // keeping the reader's place. The one key that resolves the
+                // navigator and the view disagreeing about a file that
+                // changed underneath them (#119).
+                KeyCode::Char('r') => {
+                    self.refresh_scan(true);
+                    self.reload_active_file();
+                    return;
+                }
                 _ => {}
             }
         }
@@ -1106,6 +1115,31 @@ impl App<'_> {
     fn promote_file_view(&mut self) {
         let path = self.view.filename().to_path_buf();
         self.view.load(&path);
+    }
+
+    /// Re-read the active file, and put the cursor back on the line it was on.
+    ///
+    /// `load` rebuilds the buffer from the top, so this remembers the cursor's
+    /// *source* line first and re-places it afterwards — the machinery a
+    /// filter change already uses to rebuild without losing the reader's
+    /// place. A file that shrank underneath the cursor (logrotate) simply
+    /// clamps to what is left.
+    fn reload_active_file(&mut self) {
+        let path = self.view.filename().to_path_buf();
+        if path.as_os_str().is_empty() {
+            return;
+        }
+        let source = self.cursor_source();
+        self.view.load(&path);
+        self.sync_document();
+        self.document.evaluate(&self.filters);
+        let row = self
+            .document
+            .nearest_visible(source)
+            .and_then(|nearest| self.document.visible_position(nearest))
+            .unwrap_or(0);
+        self.place_cursor_on_visible_row(row);
+        self.view_stale = false;
     }
 
     /// Promote a truncated preview to a full load and bring the document up
@@ -8590,5 +8624,48 @@ mod tests {
             Some(first),
             "polled again inside the interval"
         );
+    }
+
+    #[test]
+    fn r_reloads_the_file_and_keeps_the_cursor_on_its_line() {
+        let mut app = app_over_file("r_reload", "one\ntwo\nthree\nfour\n");
+        key(&mut app, KeyCode::Char('t'));
+        key(&mut app, KeyCode::Char('j'));
+        key(&mut app, KeyCode::Char('j'));
+        assert_eq!(cursor_source(&app), 2);
+        fs::write(app.view.filename(), "one\ntwo\nthree\nfour\nfive\n").expect("rewrite");
+
+        key(&mut app, KeyCode::Char('r'));
+
+        assert_eq!(app.document.lines().len(), 5, "not reloaded");
+        assert_eq!(cursor_source(&app), 2, "the reader lost their place");
+    }
+
+    #[test]
+    fn r_clears_the_badge_and_forces_a_rescan() {
+        let mut app = app_over_logs("r_rescan");
+        let (scanner, _tx) = record_scans(&mut app);
+        app.add_filter("alpha").expect("valid pattern");
+        app.refresh_scan(false);
+        let before = scanner.requests().len();
+        app.view_stale = true;
+
+        key(&mut app, KeyCode::Char('r'));
+
+        assert!(!app.view_stale);
+        assert_eq!(scanner.requests().len(), before + 1);
+    }
+
+    #[test]
+    fn r_on_a_truncated_file_clamps_rather_than_losing_the_cursor() {
+        let mut app = app_over_file("r_shrunk", "one\ntwo\nthree\nfour\n");
+        key(&mut app, KeyCode::Char('t'));
+        key(&mut app, KeyCode::Char('G'));
+        fs::write(app.view.filename(), "one\n").expect("truncate");
+
+        key(&mut app, KeyCode::Char('r'));
+
+        assert_eq!(app.document.lines().len(), 1);
+        assert_eq!(cursor_source(&app), 0);
     }
 }
