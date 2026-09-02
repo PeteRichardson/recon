@@ -267,7 +267,6 @@ pub struct App<'a> {
     /// The draining (`drain_scan_results`) is a later task (#119); tests
     /// install a channel here so `refresh_scan`'s scanner double can be
     /// exercised without a real one.
-    #[allow(dead_code)]
     scan_results: Option<std::sync::mpsc::Receiver<scan::Scanned>>,
     /// Every file's bitsets, keyed on the pattern list they were read for.
     scan_cache: ScanCache,
@@ -714,7 +713,7 @@ impl App<'_> {
     fn handle_events(&mut self) -> Result<bool> {
         // Here rather than in `handle_event`: an editor exits on its own
         // schedule, so nothing the user does is guaranteed to arrive after it.
-        let drained = self.drain_editor_outcomes();
+        let drained = self.drain_editor_outcomes() | self.drain_scan_results();
         let timeout = Duration::from_secs_f32(1.0 / 60.0);
         if event::poll(timeout)? {
             let event = event::read()?;
@@ -1319,6 +1318,64 @@ impl App<'_> {
             });
         }
         self.nav.restyle();
+    }
+
+    /// Move scan results into the cache and the navigator, reporting whether
+    /// anything on screen changed.
+    ///
+    /// A result is dropped if its cache id is stale — the pattern list changed
+    /// while it was in flight, so its bitsets mean something else. Otherwise
+    /// it replaces the held record only if it read further; a cancelled
+    /// worker's partial can arrive after the fresh worker's complete. The row
+    /// it names is checked against the path it is for before the navigator is
+    /// told anything: the listing may have changed under it.
+    fn drain_scan_results(&mut self) -> bool {
+        let Some(results) = self.scan_results.as_ref() else {
+            return false;
+        };
+        let matcher = self.filters.matcher();
+        let mut changed = false;
+        loop {
+            let scanned = match results.try_recv() {
+                Ok(scanned) => scanned,
+                Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    log::warn!(
+                        "the scan worker is gone; answers stay unknown until the next change"
+                    );
+                    break;
+                }
+            };
+            if scanned.cache_id != self.scan_cache.id {
+                continue;
+            }
+            let further = self
+                .scan_cache
+                .records
+                .get(&scanned.path)
+                .is_none_or(|held| {
+                    scanned.progress.scanned_to > held.progress.scanned_to
+                        || (scanned.progress.eof && !held.progress.eof)
+                });
+            if !further {
+                continue;
+            }
+            let record = scan::Record {
+                stamp: scanned.stamp,
+                progress: scanned.progress,
+            };
+            let matched = matcher
+                .as_ref()
+                .map_or(Match::Unknown, |m| self.answer_to_match(&record, m));
+            self.scan_cache.records.insert(scanned.path.clone(), record);
+            if self.nav.path_at(scanned.index).as_ref() == Some(&scanned.path) {
+                changed |= self.nav.set_answer(scanned.index, matched);
+            }
+        }
+        if changed {
+            self.nav.restyle();
+        }
+        changed
     }
 
     /// A record's answer as the navigator's `Match`, with the owning filter's
@@ -8210,5 +8267,112 @@ mod tests {
             app.nav.entries()[app.nav.files()[0].0].matched,
             widgets::filenav::Match::Yes(expected)
         );
+    }
+
+    fn scanned(app: &App, row: usize, seen: Vec<u64>, eof: bool) -> scan::Scanned {
+        let (index, path) = app.nav.files()[row].clone();
+        scan::Scanned {
+            cache_id: app.scan_cache.id,
+            index,
+            stamp: scan::stamp(&path).ok(),
+            path,
+            progress: scan::Progress {
+                seen,
+                scanned_to: 1,
+                eof,
+            },
+        }
+    }
+
+    #[test]
+    fn a_result_answers_its_row_and_asks_for_a_redraw() {
+        let mut app = app_over_logs("drain_basic");
+        let (_scanner, tx) = record_scans(&mut app);
+        app.add_filter("alpha").expect("valid pattern");
+        app.refresh_scan(false);
+
+        tx.send(scanned(&app, 0, vec![0b1], false)).expect("send");
+        tx.send(scanned(&app, 1, vec![0], true)).expect("send");
+
+        assert!(
+            app.drain_scan_results(),
+            "answers arrived, the frame is stale"
+        );
+        assert!(matches!(
+            app.nav.entries()[app.nav.files()[0].0].matched,
+            Match::Yes(_)
+        ));
+        assert_eq!(app.nav.entries()[app.nav.files()[1].0].matched, Match::No);
+        assert!(!app.drain_scan_results(), "nothing new");
+    }
+
+    #[test]
+    fn a_result_from_a_replaced_cache_is_dropped() {
+        let mut app = app_over_logs("drain_stale");
+        let (_scanner, tx) = record_scans(&mut app);
+        app.add_filter("alpha").expect("valid pattern");
+        app.refresh_scan(false);
+        let mut stale = scanned(&app, 0, vec![0b1], false);
+        stale.cache_id += 1;
+
+        tx.send(stale).expect("send");
+
+        assert!(!app.drain_scan_results());
+        assert_eq!(
+            app.nav.entries()[app.nav.files()[0].0].matched,
+            Match::Unknown
+        );
+    }
+
+    /// A result that reaches further than the record held replaces it; one
+    /// that does not — a cancelled worker's partial — is ignored.
+    #[test]
+    fn a_result_is_kept_only_if_it_read_further() {
+        let mut app = app_over_logs("drain_further");
+        let (_scanner, tx) = record_scans(&mut app);
+        app.add_filter("alpha").expect("valid pattern");
+        app.refresh_scan(false);
+        let mut far = scanned(&app, 0, vec![0], true);
+        far.progress.scanned_to = 50;
+        let mut near = scanned(&app, 0, vec![0b1], false);
+        near.progress.scanned_to = 10;
+
+        tx.send(far).expect("send");
+        tx.send(near).expect("send");
+        app.drain_scan_results();
+
+        let (_, path) = &app.nav.files()[0];
+        assert_eq!(app.scan_cache.records[path].progress.scanned_to, 50);
+        assert_eq!(app.nav.entries()[app.nav.files()[0].0].matched, Match::No);
+    }
+
+    /// The row a result names may no longer be the file it was for.
+    #[test]
+    fn a_result_for_a_row_that_now_holds_another_file_updates_the_cache_only() {
+        let mut app = app_over_logs("drain_moved");
+        let (_scanner, tx) = record_scans(&mut app);
+        app.add_filter("alpha").expect("valid pattern");
+        app.refresh_scan(false);
+        let mut moved = scanned(&app, 0, vec![0b1], false);
+        moved.index = app.nav.files()[1].0;
+
+        tx.send(moved.clone()).expect("send");
+        app.drain_scan_results();
+
+        assert!(app.scan_cache.records.contains_key(&moved.path));
+        assert_eq!(
+            app.nav.entries()[moved.index].matched,
+            Match::Unknown,
+            "applied to the wrong row"
+        );
+    }
+
+    #[test]
+    fn a_disconnected_scanner_is_survived() {
+        let mut app = app_over_logs("drain_gone");
+        let (_scanner, tx) = record_scans(&mut app);
+        drop(tx);
+
+        assert!(!app.drain_scan_results());
     }
 }
