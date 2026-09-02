@@ -2506,6 +2506,128 @@ mod tests {
         file
     }
 
+    /// `[` keeps paging a full screen once the window has been rebuilt at the
+    /// pane's real height (#108).
+    ///
+    /// The window's slack was measured from the *cursor*, but a page scrolls
+    /// the *viewport*, whose top edge sits a full pane above the cursor when
+    /// `[` has parked it on the bottom row — which is exactly where `[` leaves
+    /// it. That left 3 buffer rows above the viewport on a 36-row terminal, so
+    /// `Viewport::scroll`'s `saturating_sub` clamped a 33-row page to 3, and
+    /// the re-anchor afterwards reproduced the same state indefinitely.
+    ///
+    /// The reproduction needs a real-height window, which is why it pages down
+    /// so far first: the startup window is built before any render at
+    /// `ASSUMED_PANE_HEIGHT`, is 600 rows wide, and hides the bug for the first
+    /// twelve pages. `]` is unaffected throughout — it parks the cursor on the
+    /// pane's *top* row, where the viewport's edge and the cursor coincide.
+    #[test]
+    fn page_up_keeps_paging_a_full_screen_after_the_window_is_rebuilt() {
+        let body = numbered_lines(7_000);
+        // 36 rows, as reported: a 35-row file-view pane, 33 rows inside its
+        // border. A page is one row short of the inner height.
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 120,
+            height: 36,
+        };
+        let mut app = app_over_file("page_up_full_screen.txt", &body);
+        let mut buf = Buffer::empty(area);
+        (&mut app).render(area, &mut buf);
+        key(&mut app, KeyCode::Char('t'));
+        (&mut app).render(area, &mut buf);
+
+        let top = |app: &App| -> usize {
+            let (scroll, _) = app.view.textarea.scroll_top();
+            app.view.window_start() + scroll as usize
+        };
+
+        // Far enough down that the startup window has been replaced by one
+        // sized to the real pane. Thirteen is the first page that does it.
+        for _ in 0..13 {
+            key(&mut app, KeyCode::Char(']'));
+            (&mut app).render(area, &mut buf);
+        }
+
+        // Every page up moves a full page, not just the first two.
+        for press in 1..=6 {
+            let before = top(&app);
+            key(&mut app, KeyCode::Char('['));
+            (&mut app).render(area, &mut buf);
+            let moved = before - top(&app);
+            assert_eq!(
+                moved,
+                33,
+                "`[` press {press} moved {moved} lines, not a full page \
+                 (view top {before} -> {})",
+                top(&app),
+            );
+        }
+    }
+
+    /// Scrolling line by line must not rebuild the buffer on every keystroke.
+    ///
+    /// This is the other half of #108 and the reason the window carries two
+    /// screens of slack rather than one. `window_holds` asks for a page of
+    /// buffer beyond each viewport edge so that a page never clamps; if
+    /// `window_for` laid down exactly that much, the requirement would be met
+    /// with zero margin and the first `j` that scrolled the viewport would owe
+    /// a rebuild — a `set_lines` per keystroke while holding `j`, which is the
+    /// cost #7 exists to avoid. The second screen is the margin.
+    #[test]
+    fn scrolling_line_by_line_does_not_rebuild_the_window_every_keystroke() {
+        let body = numbered_lines(7_000);
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 120,
+            height: 36,
+        };
+        let mut app = app_over_file("no_rebuild_thrash.txt", &body);
+        let mut buf = Buffer::empty(area);
+        (&mut app).render(area, &mut buf);
+        key(&mut app, KeyCode::Char('t'));
+        (&mut app).render(area, &mut buf);
+
+        // Page down far enough to replace the startup window — built before
+        // any render at `ASSUMED_PANE_HEIGHT`, it is 200 screens wide and would
+        // absorb every scroll below without ever rebuilding, which is a test
+        // that passes for the wrong reason.
+        for _ in 0..13 {
+            key(&mut app, KeyCode::Char(']'));
+            (&mut app).render(area, &mut buf);
+        }
+        // Get the cursor onto the pane's bottom row, where further `j` scrolls
+        // the viewport rather than just moving the cursor down it.
+        for _ in 0..40 {
+            key(&mut app, KeyCode::Down);
+            (&mut app).render(area, &mut buf);
+        }
+
+        let mut window = (app.view.window_start(), app.view.window_end());
+        let mut rebuilds = 0;
+        let presses = 60;
+        for _ in 0..presses {
+            key(&mut app, KeyCode::Down);
+            (&mut app).render(area, &mut buf);
+            let now = (app.view.window_start(), app.view.window_end());
+            if now != window {
+                rebuilds += 1;
+                window = now;
+            }
+        }
+
+        // Measured: with one screen of slack this is 30 rebuilds over 60
+        // presses — every other keystroke. With two it is 0, and a third screen
+        // buys nothing further, which is what fixes `SLACK_SCREENS` at 2.
+        assert!(
+            rebuilds <= presses / 10,
+            "{rebuilds} window rebuilds over {presses} single-line scrolls — \
+             the slack is not absorbing ordinary movement"
+        );
+    }
+
     fn app_over_file(name: &str, body: &str) -> App<'static> {
         let file = fixture_path(name, body);
         App::new(&Config {
@@ -3341,8 +3463,13 @@ mod tests {
             "sanity: the document still holds every line"
         );
         let held = view_lines(&app).len();
+        // Against the constant, not a literal: the window grew from three
+        // screens to five in #108, and a hard-coded 3 here made that read as a
+        // regression in the memory criterion rather than the deliberate
+        // widening of the slack that it was.
+        let span = crate::widgets::fileview::WINDOW_SCREENS * AREA.height as usize;
         assert!(
-            held <= 3 * AREA.height as usize,
+            held <= span,
             "the buffer holds {held} lines for a {}-row pane — not a window",
             AREA.height
         );
