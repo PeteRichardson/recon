@@ -412,6 +412,12 @@ impl FileView<'_> {
     }
 
     /// The pattern currently highlighted, if any.
+    ///
+    /// Test-only. `App::apply_view` writes the highlight and never reads it
+    /// back; the one caller is `App::file_view_highlight`, itself a test
+    /// helper (#76). Answers the issue's open question for this method: it is
+    /// a leftover, not reserved API.
+    #[cfg(test)]
     pub fn highlight(&self) -> Option<String> {
         self.textarea
             .search_pattern()
@@ -431,6 +437,11 @@ impl FileView<'_> {
     /// 65,535 lines; only landing the cursor on the right line survives past
     /// it. The filename is left alone, since it still describes where these
     /// lines came from.
+    /// Test-only. Production goes through `show_window`, which carries the
+    /// window offset this cannot express; this is that call with an offset of
+    /// zero, kept because several tests want the unwindowed form to compare a
+    /// windowed result against (#76).
+    #[cfg(test)]
     pub fn show_lines_with_cursor(&mut self, lines: Vec<String>, row: usize) {
         self.show_window(lines, 0, row);
     }

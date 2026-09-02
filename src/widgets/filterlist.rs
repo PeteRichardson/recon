@@ -56,17 +56,17 @@ fn filter_index_for_row(has_search: bool, row: usize) -> Option<usize> {
 }
 
 #[derive(Debug, Default)]
-pub struct FilterList {
+pub(crate) struct FilterList {
     pub state: ListState,
     pub active: bool,
 }
 
 impl FilterList {
-    pub fn selected(&self) -> Option<usize> {
+    pub(crate) fn selected(&self) -> Option<usize> {
         self.state.selected()
     }
 
-    pub fn select_next(&mut self, len: usize) {
+    pub(crate) fn select_next(&mut self, len: usize) {
         if len == 0 {
             return;
         }
@@ -74,7 +74,7 @@ impl FilterList {
         self.state.select(Some(next));
     }
 
-    pub fn select_previous(&mut self, len: usize) {
+    pub(crate) fn select_previous(&mut self, len: usize) {
         if len == 0 {
             return;
         }
@@ -84,7 +84,7 @@ impl FilterList {
 
     /// Pull the selection back into range after the set has shrunk, and drop
     /// it entirely when nothing is left.
-    pub fn clamp_selection(&mut self, len: usize) {
+    pub(crate) fn clamp_selection(&mut self, len: usize) {
         if len == 0 {
             self.state.select(None);
         } else {
@@ -108,7 +108,7 @@ impl FilterList {
     /// `KeyEvent`, not just its `KeyCode`, so the guard is possible at all;
     /// 2c-ii's `x` and digit bindings are also modifier-sensitive, so this
     /// signature is owed either way.
-    pub fn handle_key(
+    pub(crate) fn handle_key(
         &mut self,
         key: KeyEvent,
         rows: usize,
@@ -169,7 +169,7 @@ impl FilterList {
     /// An empty set used to ask for nothing, which collapsed the pane out of
     /// the layout entirely. It is now on screen whenever the navigator is, so
     /// the floor is one content row rather than zero — see `EMPTY_HINTS`.
-    pub fn preferred_height(&self, rows: usize) -> u16 {
+    pub(crate) fn preferred_height(&self, rows: usize) -> u16 {
         u16::try_from(rows.max(1))
             .unwrap_or(u16::MAX)
             .saturating_add(BORDERS)
@@ -189,7 +189,7 @@ impl FilterList {
     /// guidance, not content: it yields to the navigator rather than widening
     /// the column, and `render` simply omits it when the column is too narrow
     /// to hold it.
-    pub fn preferred_width(&self, filters: &ActiveFilters) -> u16 {
+    pub(crate) fn preferred_width(&self, filters: &ActiveFilters) -> u16 {
         let longest = (0..filters.row_count())
             .map(|row| UnicodeWidthStr::width(Self::row_text(filters, row).as_str()))
             .max()
@@ -237,7 +237,7 @@ impl FilterList {
         format!("{}[{}] {} {}", label, mark, sense, filter.pattern.as_str())
     }
 
-    pub fn render(&mut self, filters: &ActiveFilters, area: Rect, buf: &mut Buffer) {
+    pub(crate) fn render(&mut self, filters: &ActiveFilters, area: Rect, buf: &mut Buffer) {
         // An empty set draws the hint instead of no rows at all. `DIM_STYLE`
         // is the same grey the file view and the disabled-filter rows use, so
         // the hint reads as chrome rather than as a filter someone defined.

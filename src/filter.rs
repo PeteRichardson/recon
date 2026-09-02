@@ -5,7 +5,7 @@
 //! `^foo` anchors to the start of a line.
 
 use ratatui::style::{Color, Modifier, Style};
-use regex::Regex;
+use regex::{Regex, RegexSet};
 
 /// Colours assigned to successive filters, so two filters are never
 /// indistinguishable. Wraps once exhausted, and is replaced wholesale by
@@ -164,6 +164,23 @@ pub struct ActiveFilters {
     remembered: Option<Vec<bool>>,
     /// The search slot's enabled flag, captured alongside `remembered`.
     remembered_search: Option<bool>,
+    /// Every pattern in one automaton: `filters` in order, then the search.
+    ///
+    /// `verdict` used to run one `Regex::is_match` per filter per line, so a
+    /// filter change cost O(lines × filters) separate DFA walks over the same
+    /// bytes (#86). `RegexSet` walks them once and reports which patterns
+    /// matched, which is what this crate provides it for.
+    ///
+    /// `enabled` is deliberately **not** baked in. Toggling a filter is the
+    /// frequent operation — `space`, `d` and `!` all drive it — and it stays a
+    /// flag read at verdict time so it costs no recompile. Only the patterns
+    /// themselves are here, so only the seven methods that change a pattern
+    /// call `recompile`.
+    ///
+    /// `None` when `RegexSet::new` refused the set (its size limit is not the
+    /// sum of the individual ones). `verdict` then falls back to the original
+    /// per-filter scan: slower, never wrong.
+    compiled: Option<RegexSet>,
 }
 
 impl ActiveFilters {
@@ -218,6 +235,7 @@ impl ActiveFilters {
             enabled: true,
             style,
         });
+        self.recompile();
         // A pending capture describes a set that no longer exists. Keeping it
         // would strand it: `!` would see an enabled filter, try to capture,
         // find one already pending, and do nothing at all — forever.
@@ -238,6 +256,7 @@ impl ActiveFilters {
             enabled: true,
             style: Style::default(),
         });
+        self.recompile();
         // A pending capture describes a set that no longer exists. Keeping it
         // would strand it: `!` would see an enabled filter, try to capture,
         // find one already pending, and do nothing at all — forever.
@@ -257,6 +276,7 @@ impl ActiveFilters {
             enabled: true,
             style: SEARCH_STYLE,
         });
+        self.recompile();
         self.forget_capture();
         Ok(())
     }
@@ -268,6 +288,7 @@ impl ActiveFilters {
     /// otherwise pay for on every press — see the `Esc` binding.
     pub fn clear_search(&mut self) -> bool {
         let had_search = self.search.take().is_some();
+        self.recompile();
         self.forget_capture();
         had_search
     }
@@ -314,6 +335,9 @@ impl ActiveFilters {
         };
         search.style = self.next_style();
         self.filters.push(search);
+        // The pattern moved from the search slot to the numbered set, which
+        // changes the compiled order even though the pattern list has not.
+        self.recompile();
         self.forget_capture();
         true
     }
@@ -357,6 +381,7 @@ impl ActiveFilters {
             return false;
         }
         self.filters.remove(index);
+        self.recompile();
         if let Some(remembered) = self.remembered.as_mut()
             && index < remembered.len()
         {
@@ -394,6 +419,7 @@ impl ActiveFilters {
         match self.filters.get_mut(index) {
             Some(filter) => {
                 filter.pattern = compiled;
+                self.recompile();
                 Ok(true)
             }
             None => Ok(false),
@@ -401,6 +427,11 @@ impl ActiveFilters {
     }
 
     /// Enable or disable one filter, reporting whether it existed.
+    ///
+    /// Test-only. Production reaches the same state through `toggle_enabled`
+    /// (the `space` key) and `set_all_enabled` (`!`); this direct setter had no
+    /// caller outside the tests that use it to arrange a set (#76).
+    #[cfg(test)]
     pub fn set_enabled(&mut self, index: usize, enabled: bool) -> bool {
         match self.filters.get_mut(index) {
             Some(filter) => {
@@ -504,20 +535,58 @@ impl ActiveFilters {
     /// so an empty or fully disabled set renders an ordinary, undimmed file
     /// rather than a wholly dimmed one. The first matching filter wins, which
     /// is what makes the set's order meaningful.
+    /// One pass over the line, not one per filter. See `compiled`.
     #[must_use]
     pub fn verdict(&self, line: &str) -> Verdict {
+        let Some(set) = self.compiled.as_ref().filter(|set| self.in_step(set)) else {
+            return self.verdict_by_scanning(line);
+        };
+        let matched = set.matches(line);
+        let matched = |index: usize| matched.matched(index);
+
         // Exclusion is applied after inclusion and overrides it, so a line an
         // including filter selected is still removed if an excluding filter
         // also matches it.
-        if self.filters.iter().any(|filter| {
-            filter.enabled && filter.sense == Sense::Exclude && filter.pattern.is_match(line)
+        if self.filters.iter().enumerate().any(|(index, filter)| {
+            filter.enabled && filter.sense == Sense::Exclude && matched(index)
         }) {
             return Verdict::Excluded;
         }
 
         // The live search outranks the numbered filters: the user's attention
         // is on the pattern they just typed, so it wins the colour on a line
-        // that several things match.
+        // that several things match. It is compiled last, so its index is the
+        // one past the numbered filters.
+        if let Some(search) = &self.search
+            && search.enabled
+            && matched(self.filters.len())
+        {
+            return Verdict::Searched;
+        }
+
+        self.filters
+            .iter()
+            .enumerate()
+            .find(|&(index, filter)| {
+                filter.enabled && filter.sense == Sense::Include && matched(index)
+            })
+            .map_or(Verdict::Unmatched, |(index, _)| Verdict::Included(index))
+    }
+
+    /// The original per-filter scan, kept as the fallback for a set that would
+    /// not compile into a `RegexSet`.
+    ///
+    /// Also what runs if `compiled` were ever out of step with `filters` — see
+    /// `in_step`. That is a bug rather than a state to support, but indexing a
+    /// short `SetMatches` panics, and taking down a full-screen TUI is a much
+    /// worse way to report it than being slow.
+    fn verdict_by_scanning(&self, line: &str) -> Verdict {
+        if self.filters.iter().any(|filter| {
+            filter.enabled && filter.sense == Sense::Exclude && filter.pattern.is_match(line)
+        }) {
+            return Verdict::Excluded;
+        }
+
         if let Some(search) = &self.search
             && search.enabled
             && search.pattern.is_match(line)
@@ -532,6 +601,22 @@ impl ActiveFilters {
                 filter.enabled && filter.sense == Sense::Include && filter.pattern.is_match(line)
             })
             .map_or(Verdict::Unmatched, |(index, _)| Verdict::Included(index))
+    }
+
+    /// Whether the compiled set still describes this filter set.
+    fn in_step(&self, set: &RegexSet) -> bool {
+        set.len() == self.filters.len() + usize::from(self.search.is_some())
+    }
+
+    /// Rebuild the compiled set. Called by every method that adds, removes or
+    /// replaces a pattern — and by none that only flips an `enabled` flag.
+    fn recompile(&mut self) {
+        let patterns = self
+            .filters
+            .iter()
+            .chain(self.search.as_ref())
+            .map(|filter| filter.pattern.as_str());
+        self.compiled = RegexSet::new(patterns).ok();
     }
 
     /// Whether anything at all is marking lines — a numbered including filter,
@@ -741,6 +826,111 @@ mod tests {
         let set = set_with(&["foo", "foo.*bar"]);
 
         assert_eq!(set.verdict("foo and bar"), Verdict::Included(0));
+    }
+
+    // ---- the compiled set stays in step --------------------------------
+    //
+    // `verdict` matches against a `RegexSet` compiled once per set change
+    // rather than running one `Regex` per filter per line (#86). That cache is
+    // the whole risk of the change: a mutator that forgets to rebuild it does
+    // not fail loudly, it returns confidently wrong verdicts. One test per
+    // pattern-changing method, each asserting through `verdict` — the only
+    // thing that reads the cache — rather than at the cache itself.
+
+    #[test]
+    fn adding_a_filter_is_visible_to_verdict() {
+        let mut set = set_with(&["foo"]);
+        assert_eq!(set.verdict("bar"), Verdict::Unmatched);
+
+        set.add("bar").expect("valid pattern");
+
+        assert_eq!(set.verdict("bar"), Verdict::Included(1));
+    }
+
+    #[test]
+    fn adding_an_excluding_filter_is_visible_to_verdict() {
+        let mut set = set_with(&["foo"]);
+        assert_eq!(set.verdict("foo"), Verdict::Included(0));
+
+        set.add_excluding("foo").expect("valid pattern");
+
+        assert_eq!(set.verdict("foo"), Verdict::Excluded);
+    }
+
+    #[test]
+    fn removing_a_filter_is_visible_to_verdict() {
+        let mut set = set_with(&["foo", "bar"]);
+
+        assert!(set.remove(0));
+
+        // Not merely "no longer matches foo": everything renumbers, so a
+        // stale set would answer `Included(1)` for a line it should call
+        // `Included(0)`.
+        assert_eq!(set.verdict("foo"), Verdict::Unmatched);
+        assert_eq!(set.verdict("bar"), Verdict::Included(0));
+    }
+
+    #[test]
+    fn editing_a_pattern_is_visible_to_verdict() {
+        let mut set = set_with(&["foo"]);
+
+        assert!(set.set_pattern(0, "bar").expect("valid pattern"));
+
+        assert_eq!(set.verdict("foo"), Verdict::Unmatched);
+        assert_eq!(set.verdict("bar"), Verdict::Included(0));
+    }
+
+    #[test]
+    fn a_rejected_pattern_leaves_the_compiled_set_alone() {
+        let mut set = set_with(&["foo"]);
+
+        assert!(set.set_pattern(0, "[").is_err());
+
+        assert_eq!(
+            set.verdict("foo"),
+            Verdict::Included(0),
+            "a pattern that would not compile disturbed the set it was rejected from"
+        );
+    }
+
+    #[test]
+    fn setting_and_clearing_the_search_is_visible_to_verdict() {
+        let mut set = set_with(&["foo"]);
+
+        set.set_search("bar").expect("valid pattern");
+        assert_eq!(set.verdict("bar"), Verdict::Searched);
+
+        set.set_search("baz").expect("valid pattern");
+        assert_eq!(set.verdict("bar"), Verdict::Unmatched);
+        assert_eq!(set.verdict("baz"), Verdict::Searched);
+
+        assert!(set.clear_search());
+        assert_eq!(set.verdict("baz"), Verdict::Unmatched);
+    }
+
+    #[test]
+    fn promoting_the_search_is_visible_to_verdict() {
+        let mut set = set_with(&["foo"]);
+        set.set_search("bar").expect("valid pattern");
+
+        assert!(set.promote_search());
+
+        // It stops being the search and becomes filter 1.
+        assert_eq!(set.verdict("bar"), Verdict::Included(1));
+    }
+
+    /// Toggling `enabled` must *not* need a recompile — it is the frequent
+    /// operation, and `space`, `d` and `!` all drive it. Pinned so a future
+    /// change cannot quietly move the enabled flag into the compiled set.
+    #[test]
+    fn toggling_enabled_is_visible_to_verdict() {
+        let mut set = set_with(&["foo"]);
+
+        assert!(set.set_enabled(0, false));
+        assert_eq!(set.verdict("foo"), Verdict::Unmatched);
+
+        assert!(set.set_enabled(0, true));
+        assert_eq!(set.verdict("foo"), Verdict::Included(0));
     }
 
     #[test]
