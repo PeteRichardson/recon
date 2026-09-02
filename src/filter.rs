@@ -121,6 +121,113 @@ pub struct EnabledFlags {
     search: Option<bool>,
 }
 
+/// The bitset width. 63 numbered patterns plus the search; past this the
+/// navigator's file matching switches off rather than shifting out of range.
+const MAX_PATTERNS: usize = 64;
+
+/// Which filter selected a file, for its colour in the navigator.
+///
+/// `Search` outranks every numbered filter, as it does per line in `verdict`.
+/// Among numbered filters the lowest index wins — the view's "first matching
+/// filter wins", applied per file.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Owner {
+    Search,
+    Filter(usize),
+}
+
+impl Owner {
+    /// Lower is higher precedence. `Search` first, then filter order.
+    #[must_use]
+    pub fn rank(self) -> usize {
+        match self {
+            Self::Search => 0,
+            Self::Filter(index) => index + 1,
+        }
+    }
+}
+
+/// A `Send` snapshot of the filter set, for a scan thread to match with (#119).
+///
+/// `ActiveFilters` is neither `Send` nor `Clone`. This is the three things a
+/// scan needs from it: every pattern compiled into one `RegexSet` (cloning one
+/// is an `Arc` bump), and which positions currently select or exclude. The set
+/// covers every pattern whether or not it is enabled — a deliberate choice in
+/// #86 — which is what makes a line's `bits` independent of the enabled mask,
+/// and so reusable across toggles.
+///
+/// `Context` filters are in neither mask: they neither select nor exclude, so
+/// a line only a context filter hit contributes nothing to a file's answer.
+#[derive(Debug, Clone)]
+pub struct Matcher {
+    set: RegexSet,
+    /// Bit `i` set: `filters[i]` is enabled and `Sense::Include`; plus the
+    /// search's bit when it is present and enabled.
+    selects: u64,
+    /// Bit `i` set: `filters[i]` is enabled and `Sense::Exclude`.
+    exclude: u64,
+    /// The search's bit alone, or zero — so `owner` can rank it first.
+    search: u64,
+}
+
+impl Matcher {
+    /// Which patterns hit `line`, enabled or not.
+    #[must_use]
+    pub fn bits(&self, line: &str) -> u64 {
+        self.set
+            .matches(line)
+            .iter()
+            .fold(0, |bits, index| bits | (1 << index))
+    }
+
+    /// Whether a line with these hits selects its file. The hide-mode rule as
+    /// a bit test, minus the context sense.
+    #[must_use]
+    pub fn selects(&self, bits: u64) -> bool {
+        if bits & self.exclude != 0 {
+            return false;
+        }
+        if bits & self.search != 0 {
+            return true;
+        }
+        if bits == 0 {
+            return false;
+        }
+        // The first matching filter is the one with the lowest bit index;
+        // only Include filters (and Search) select files, not Context.
+        let first_matching_bit = 1u64 << bits.trailing_zeros();
+        first_matching_bit & self.selects != 0
+    }
+
+    /// Which filter selected a line with these hits, if any.
+    #[must_use]
+    pub fn owner(&self, bits: u64) -> Option<Owner> {
+        // Exclude prevents any selection
+        if bits & self.exclude != 0 {
+            return None;
+        }
+        // Search outranks all numbered filters
+        if bits & self.search != 0 {
+            return Some(Owner::Search);
+        }
+        // Find the lowest Include filter that matches.
+        // Since bits doesn't have the search bit here, bits & self.selects
+        // yields only Include filter bits.
+        let include_bits = bits & self.selects;
+        if include_bits == 0 {
+            return None;
+        }
+        Some(Owner::Filter(include_bits.trailing_zeros() as usize))
+    }
+
+    /// `(selects, exclude)`, for the caller that wants to know whether a
+    /// toggle changed anything a scan cares about.
+    #[must_use]
+    pub fn masks(&self) -> (u64, u64) {
+        (self.selects, self.exclude)
+    }
+}
+
 /// The colours successive filters are drawn from, in order.
 ///
 /// A newtype rather than a bare `Vec<Color>` so that [`ActiveFilters`] can keep
@@ -655,6 +762,59 @@ impl ActiveFilters {
         self.compiled = RegexSet::new(patterns).ok();
     }
 
+    /// The snapshot a scan thread matches with, or `None` when there is no
+    /// scan to run.
+    ///
+    /// `None` when nothing selects — no enabled `Include` and no enabled
+    /// search, which is the same "nothing to match against" guard `Document`
+    /// applies for #36 — and when the pattern count exceeds the bitset width.
+    #[must_use]
+    pub fn matcher(&self) -> Option<Matcher> {
+        let set = self.compiled.as_ref().filter(|set| self.in_step(set))?;
+        if set.len() > MAX_PATTERNS {
+            return None;
+        }
+        let mut selects = 0u64;
+        let mut exclude = 0u64;
+        for (index, filter) in self.filters.iter().enumerate() {
+            if !filter.enabled {
+                continue;
+            }
+            match filter.sense {
+                Sense::Include => selects |= 1 << index,
+                Sense::Exclude => exclude |= 1 << index,
+                Sense::Context => {}
+            }
+        }
+        let mut search = 0u64;
+        if self.search.as_ref().is_some_and(|search| search.enabled) {
+            search = 1 << self.filters.len();
+            selects |= search;
+        }
+        if selects == 0 {
+            return None;
+        }
+        Some(Matcher {
+            set: set.clone(),
+            selects,
+            exclude,
+            search,
+        })
+    }
+
+    /// Every pattern's source, in compiled order, search last. What a scan
+    /// cache is keyed on: a change here shifts bit positions, so cached
+    /// bitsets mean something else. Sense and enabled are deliberately not
+    /// part of it — they are masks over the same bits.
+    #[must_use]
+    pub fn pattern_key(&self) -> Vec<String> {
+        self.filters
+            .iter()
+            .chain(self.search.as_ref())
+            .map(|filter| filter.pattern.as_str().to_string())
+            .collect()
+    }
+
     /// Whether anything at all is marking lines — a numbered including filter,
     /// or the live search.
     ///
@@ -710,6 +870,138 @@ mod tests {
             set.add(pattern).expect("valid pattern");
         }
         set
+    }
+
+    // ---- the matcher snapshot --------------------------------------------
+
+    /// The invariant the navigator rests on: `selects` agrees with `verdict`
+    /// about which lines pick a file, across all three senses and the search.
+    #[test]
+    fn the_matcher_agrees_with_verdict_on_what_selects_a_file() {
+        let mut set = set_with(&["alpha", "beta", "delta"]);
+        set.toggle_context(1);
+        set.add_excluding("noise").expect("valid pattern");
+        set.set_search("gamma").expect("valid pattern");
+        let matcher = set.matcher().expect("something selects");
+
+        for line in [
+            "alpha",
+            "beta",
+            "delta",
+            "alpha noise",
+            "beta delta",
+            "gamma",
+            "gamma noise",
+            "beta gamma",
+            "nothing here",
+            "alpha beta",
+        ] {
+            let expected = match set.verdict(line) {
+                Verdict::Searched => true,
+                Verdict::Included(i) => set.filters()[i].sense == Sense::Include,
+                Verdict::Unmatched | Verdict::Excluded => false,
+            };
+            assert_eq!(
+                matcher.selects(matcher.bits(line)),
+                expected,
+                "matcher and verdict disagree on {line:?}"
+            );
+        }
+    }
+
+    /// The owner is the lowest *selecting* filter — which is not always the
+    /// filter `verdict` colours the line with. A line hit by context filter 1
+    /// and include filter 2 is drawn in filter 1's colour (first wins) but the
+    /// *file* is owned by filter 2: it is the one that selected it.
+    #[test]
+    fn the_owner_is_the_lowest_selecting_filter_and_search_outranks_them() {
+        let mut set = set_with(&["alpha", "beta", "delta"]);
+        set.toggle_context(1);
+        set.set_search("gamma").expect("valid pattern");
+        let matcher = set.matcher().expect("something selects");
+
+        assert_eq!(matcher.owner(matcher.bits("beta")), None);
+        assert_eq!(
+            matcher.owner(matcher.bits("beta delta")),
+            Some(Owner::Filter(2))
+        );
+        assert_eq!(
+            set.verdict("beta delta"),
+            Verdict::Included(1),
+            "the line is still beta's"
+        );
+        assert_eq!(
+            matcher.owner(matcher.bits("alpha delta")),
+            Some(Owner::Filter(0))
+        );
+        assert_eq!(
+            matcher.owner(matcher.bits("alpha gamma")),
+            Some(Owner::Search)
+        );
+    }
+
+    #[test]
+    fn a_disabled_filter_neither_selects_nor_excludes() {
+        let mut set = set_with(&["alpha"]);
+        set.add_excluding("noise").expect("valid pattern");
+        set.set_enabled(1, false);
+        let matcher = set.matcher().expect("alpha selects");
+
+        assert!(matcher.selects(matcher.bits("alpha noise")));
+    }
+
+    /// Nothing selecting means nothing to match against — the #36 guard.
+    #[test]
+    fn no_matcher_without_a_selecting_filter() {
+        assert!(ActiveFilters::new().matcher().is_none(), "empty set");
+
+        let mut context_only = set_with(&["alpha"]);
+        context_only.toggle_context(0);
+        assert!(context_only.matcher().is_none(), "context only");
+
+        let mut exclude_only = ActiveFilters::new();
+        exclude_only.add_excluding("noise").expect("valid pattern");
+        assert!(exclude_only.matcher().is_none(), "exclude only");
+
+        let mut disabled = set_with(&["alpha"]);
+        disabled.set_enabled(0, false);
+        assert!(disabled.matcher().is_none(), "disabled");
+
+        let mut search_only = ActiveFilters::new();
+        search_only.set_search("gamma").expect("valid pattern");
+        assert!(
+            search_only.matcher().is_some(),
+            "the search selects on its own"
+        );
+    }
+
+    /// 64 is the width of the bitset; the 65th pattern switches the feature off
+    /// rather than wrapping a shift.
+    #[test]
+    fn no_matcher_past_sixty_four_patterns() {
+        let mut set = ActiveFilters::new();
+        for i in 0..64 {
+            set.add(&format!("p{i}")).expect("valid pattern");
+        }
+        assert!(set.matcher().is_some());
+
+        set.add("p64").expect("valid pattern");
+        assert!(set.matcher().is_none());
+    }
+
+    #[test]
+    fn the_pattern_key_lists_every_pattern_with_the_search_last() {
+        let mut set = set_with(&["alpha", "beta"]);
+        set.set_search("gamma").expect("valid pattern");
+
+        assert_eq!(set.pattern_key(), vec!["alpha", "beta", "gamma"]);
+
+        set.toggle_context(0);
+        assert_eq!(
+            set.pattern_key(),
+            vec!["alpha", "beta", "gamma"],
+            "sense is not part of the key"
+        );
     }
 
     // ---- the default palette -------------------------------------------
