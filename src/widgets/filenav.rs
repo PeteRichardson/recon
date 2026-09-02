@@ -471,8 +471,14 @@ fn read_dir_entries(dir: &Path) -> Vec<Entry> {
     }];
 
     // A directory that cannot be read still offers the way out: `..` alone,
-    // rather than an empty box that reads as "recon is broken".
-    entries.extend(sorted_entries(dir).unwrap_or_default());
+    // rather than an empty box that reads as "recon is broken". The error is
+    // still swallowed on purpose — but it is logged on the way past (#83),
+    // because on screen an unreadable directory and a genuinely empty one are
+    // the same single `..` row.
+    match sorted_entries(dir) {
+        Ok(listed) => entries.extend(listed),
+        Err(err) => log::warn!("cannot list {}: {err}", dir.display()),
+    }
     entries
 }
 

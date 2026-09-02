@@ -353,11 +353,22 @@ fn load_from(path: &Path) -> Result<FileConfig, ConfigError> {
 
 /// The file layer of the precedence chain.
 pub fn load_file() -> Result<FileConfig, ConfigError> {
-    match config_path() {
-        Some(path) => load_from(&path),
-        // Nowhere to look is the same outcome as nothing to find.
-        None => Ok(FileConfig::default()),
+    // Nowhere to look is the same outcome as nothing to find.
+    let Some(path) = config_path() else {
+        log::debug!("no config home ($XDG_CONFIG_HOME, $HOME unset); no config file read");
+        return Ok(FileConfig::default());
+    };
+    // Which file was actually read is the first thing anyone asks when a
+    // setting does not take effect, and the answer depends on
+    // `$XDG_CONFIG_HOME` and `$HOME` — neither of which is visible from the
+    // symptom. Absence is logged too: "no config file" and "the wrong config
+    // file" look identical from the outside (#83).
+    if path.exists() {
+        log::debug!("reading config from {}", path.display());
+    } else {
+        log::debug!("no config file at {}", path.display());
     }
+    load_from(&path)
 }
 
 impl Config {

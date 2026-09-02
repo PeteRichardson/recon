@@ -507,13 +507,29 @@ impl Launcher for ProcessLauncher {
         // the main thread instead would freeze the UI for as long as the editor
         // runs, which for a terminal editor is the whole session.
         std::thread::spawn(move || {
-            let Ok(status) = child.wait() else { return };
+            let status = match child.wait() {
+                Ok(status) => status,
+                Err(err) => {
+                    log::warn!("could not wait for {name}: {err}");
+                    return;
+                }
+            };
             if !status.success()
                 && let Some(outcomes) = outcomes
             {
                 // A closed receiver means recon is shutting down, which is not
-                // worth reporting to anyone.
-                let _ = outcomes.send(format!("{name} exited with {status}"));
+                // worth reporting to anyone — hence `debug!` rather than
+                // `warn!`, and hence the send failure still being ignored (#83).
+                // Logged at all because "the editor exited badly and recon said
+                // nothing" is otherwise indistinguishable from "recon never
+                // launched it".
+                log::warn!("{name} exited with {status}");
+                if outcomes
+                    .send(format!("{name} exited with {status}"))
+                    .is_err()
+                {
+                    log::debug!("nothing left to report {name}'s exit to; shutting down");
+                }
             }
         });
         Ok(())
