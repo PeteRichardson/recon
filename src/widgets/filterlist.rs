@@ -159,6 +159,10 @@ impl FilterList {
                 Some(index) => FilterCommand::Edit(index),
                 None => FilterCommand::EditSearch,
             }),
+            // `m` as in *metadata*: the filter keeps showing its lines but
+            // stops choosing files in the navigator (#119). `target` is `None`
+            // on the search row, and the search has no context form.
+            KeyCode::Char('m') => target(self.selected()?).map(FilterCommand::ToggleContext),
             _ => None,
         }
     }
@@ -232,7 +236,7 @@ impl FilterList {
         let mark = if filter.enabled { 'x' } else { ' ' };
         let sense = match filter.sense {
             Sense::Include => "inc",
-            Sense::Context => "inc",
+            Sense::Context => "ctx",
             Sense::Exclude => "exc",
         };
         format!("{}[{}] {} {}", label, mark, sense, filter.pattern.as_str())
@@ -846,5 +850,36 @@ mod tests {
         let command = list.handle_key(KeyEvent::from(KeyCode::Char('c')), 1, true);
 
         assert_eq!(command, Some(FilterCommand::EditSearch));
+    }
+
+    #[test]
+    fn m_reports_a_context_toggle_for_the_selected_filter() {
+        let mut list = FilterList::default();
+        list.select_next(2);
+        list.select_next(2);
+
+        let command = list.handle_key(KeyEvent::from(KeyCode::Char('m')), 2, false);
+
+        assert_eq!(command, Some(FilterCommand::ToggleContext(1)));
+    }
+
+    /// The search cannot be context: it always selects. `m` on its row is nothing.
+    #[test]
+    fn m_on_the_search_row_does_nothing() {
+        let mut list = FilterList::default();
+        list.select_next(1);
+
+        assert_eq!(
+            list.handle_key(KeyEvent::from(KeyCode::Char('m')), 1, true),
+            None
+        );
+    }
+
+    #[test]
+    fn a_context_filter_reads_ctx_in_its_row() {
+        let mut filters = set_of(&["foo"], &[]);
+        filters.toggle_context(0);
+
+        assert_eq!(FilterList::row_text(&filters, 0), "1[x] ctx foo");
     }
 }

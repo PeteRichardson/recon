@@ -271,6 +271,10 @@ pub const KEYMAP: &[Section] = &[
                 keys: &["d"],
                 action: "Delete the selected filter",
             },
+            Binding {
+                keys: &["m"],
+                action: "Toggle selected filter to context mode",
+            },
         ],
     },
     Section {
