@@ -37,6 +37,17 @@ const HIDE_BADGE_STYLE: Style = Style::new()
     .bg(Color::LightYellow)
     .add_modifier(ratatui::style::Modifier::BOLD);
 
+/// The badge saying the file on screen is not the file on disk (#119).
+///
+/// Raised by `poll_stamps` when the *active* file's stamp moves, cleared by
+/// `r`. The navigator's answer for that file updates on its own; the view does
+/// not reload on its own. That is a real inconsistency between the panes, and
+/// the badge exists so it is never a silent one: one key resolves it.
+const STALE_BADGE_TEXT: &str = " changed on disk · r ";
+
+/// How often `poll_stamps` re-stats the listing while the feature is on.
+const POLL_INTERVAL: Duration = Duration::from_secs(2);
+
 /// What an open prompt will do with the pattern being typed.
 ///
 /// The `Edit` variants are what makes a filter's pattern changeable at all:
@@ -274,16 +285,9 @@ pub struct App<'a> {
     /// guard that keeps `j` in the file view from stat-ing the folder.
     last_scan: Option<ScanState>,
     /// When `poll_stamps` last re-stat'd the listing.
-    ///
-    /// `poll_stamps` itself is a later task (#119); the field is added here so
-    /// `App`'s scan fields land together.
-    #[allow(dead_code)]
     last_poll: Option<Instant>,
     /// The active file's stamp moved since it was loaded. Shown as a badge,
     /// cleared by `r`.
-    ///
-    /// Set and read by later tasks (#119); see `last_poll`.
-    #[allow(dead_code)]
     view_stale: bool,
 }
 
@@ -721,7 +725,7 @@ impl App<'_> {
     fn handle_events(&mut self) -> Result<bool> {
         // Here rather than in `handle_event`: an editor exits on its own
         // schedule, so nothing the user does is guaranteed to arrive after it.
-        let drained = self.drain_editor_outcomes() | self.drain_scan_results();
+        let drained = self.drain_editor_outcomes() | self.drain_scan_results() | self.poll_stamps();
         let timeout = Duration::from_secs_f32(1.0 / 60.0);
         if event::poll(timeout)? {
             let event = event::read()?;
@@ -1386,6 +1390,63 @@ impl App<'_> {
         changed
     }
 
+    /// Re-stat the listing every `POLL_INTERVAL` while the feature is on.
+    /// Returns whether anything changed.
+    ///
+    /// On the tick the render loop already wakes on, not a thread and not a
+    /// file-watching API: a few hundred `stat` calls every two seconds is
+    /// nothing, and it covers every listed file rather than only the active
+    /// one.
+    fn poll_stamps(&mut self) -> bool {
+        if self.filters.matcher().is_none() {
+            return false;
+        }
+        let now = Instant::now();
+        if self
+            .last_poll
+            .is_some_and(|last| now.duration_since(last) < POLL_INTERVAL)
+        {
+            return false;
+        }
+        self.last_poll = Some(now);
+        self.check_stamps()
+    }
+
+    /// Compare every recorded file's stamp to the disk; drop, forget and
+    /// rescan the ones that moved. The active file moving also raises the
+    /// badge. Split from `poll_stamps` so tests can call it without waiting.
+    fn check_stamps(&mut self) -> bool {
+        let Some(matcher) = self.filters.matcher() else {
+            return false;
+        };
+        let active = self.view.filename().to_path_buf();
+        let mut pending = Vec::new();
+        for (index, path) in self.nav.files() {
+            let Some(held) = self.scan_cache.records.get(&path) else {
+                continue;
+            };
+            if held.stamp == scan::stamp(&path).ok() {
+                continue;
+            }
+            self.scan_cache.records.remove(&path);
+            self.nav.set_answer(index, Match::Unknown);
+            if path == active {
+                self.view_stale = true;
+            }
+            pending.push((index, path, scan::Progress::default()));
+        }
+        if pending.is_empty() {
+            return false;
+        }
+        self.scanner.start(scan::Request {
+            cache_id: self.scan_cache.id,
+            matcher,
+            files: pending,
+        });
+        self.nav.restyle();
+        true
+    }
+
     /// A record's answer as the navigator's `Match`, with the owning filter's
     /// colour on a yes.
     fn answer_to_match(&self, record: &scan::Record, matcher: &filter::Matcher) -> Match {
@@ -1847,13 +1908,19 @@ impl Widget for &mut App<'_> {
         // is exactly the state the issue was reported from. A badge threaded
         // through that function would need a second conditional to dodge the
         // early return, and a conditional can go stale.
-        let badge = (self.document.mode() == Mode::FilteredOnly).then_some(HIDE_BADGE_TEXT);
+        let badges: Vec<&str> = [
+            (self.document.mode() == Mode::FilteredOnly).then_some(HIDE_BADGE_TEXT),
+            self.view_stale.then_some(STALE_BADGE_TEXT),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
         // One column of separation, so the colour block never abuts the text
         // beside it. Taken out of the status text's budget rather than added
         // to the row, so `status_bar_text`'s existing priority order — filter
         // state first, then whatever the path can elide itself into — still
         // has an accurate width to work with on a narrow terminal.
-        let badge_width = badge.map_or(0, |text| text.chars().count() + 1);
+        let badge_width: usize = badges.iter().map(|text| text.chars().count() + 1).sum();
         let room = (prompt_area.width as usize).saturating_sub(badge_width);
         let status = self.status_bar_text(room);
 
@@ -1959,14 +2026,16 @@ impl Widget for &mut App<'_> {
         // Two writes at two styles, rather than converting the row to
         // `Line`/`Span`s: a bigger diff through the prompt path that shares
         // this row, for no gain until something wants a third style here.
-        if let Some(badge) = badge {
+        let mut x = prompt_area.x;
+        for badge in &badges {
             buf.set_stringn(
-                prompt_area.x,
+                x,
                 prompt_area.y,
                 badge,
                 prompt_area.width as usize,
                 HIDE_BADGE_STYLE,
             );
+            x += u16::try_from(badge.chars().count() + 1).unwrap_or(u16::MAX);
         }
         buf.set_stringn(
             prompt_area.x + badge_width as u16,
@@ -8439,5 +8508,87 @@ mod tests {
 
         key(&mut app, KeyCode::Char(' '));
         assert!(!nav_rows(&mut app).iter().any(|r| r.contains("a.log")));
+    }
+
+    #[test]
+    fn a_file_that_changed_on_disk_is_rescanned() {
+        let mut app = app_over_logs("poll_changed");
+        let (scanner, tx) = record_scans(&mut app);
+        app.add_filter("alpha").expect("valid pattern");
+        app.refresh_scan(false);
+        tx.send(scanned(&app, 0, vec![0], true)).expect("send");
+        app.drain_scan_results();
+        assert_eq!(app.nav.entries()[app.nav.files()[0].0].matched, Match::No);
+        let (_, path) = app.nav.files()[0].clone();
+        fs::write(&path, "now alpha is here\nand more\n").expect("rewrite");
+
+        assert!(app.check_stamps());
+
+        assert_eq!(
+            app.nav.entries()[app.nav.files()[0].0].matched,
+            Match::Unknown
+        );
+        let last = scanner.requests().last().expect("a rescan").clone();
+        assert_eq!(last.files.len(), 1);
+        assert_eq!(last.files[0].1, path);
+    }
+
+    #[test]
+    fn an_unchanged_listing_is_free() {
+        let mut app = app_over_logs("poll_same");
+        let (scanner, tx) = record_scans(&mut app);
+        app.add_filter("alpha").expect("valid pattern");
+        app.refresh_scan(false);
+        tx.send(scanned(&app, 0, vec![0], true)).expect("send");
+        tx.send(scanned(&app, 1, vec![0], true)).expect("send");
+        app.drain_scan_results();
+        let before = scanner.requests().len();
+
+        assert!(!app.check_stamps());
+        assert_eq!(scanner.requests().len(), before);
+    }
+
+    #[test]
+    fn the_active_file_changing_raises_the_badge() {
+        let mut app = app_over_logs("poll_badge");
+        let (_scanner, tx) = record_scans(&mut app);
+        key(&mut app, KeyCode::Char('j'));
+        key(&mut app, KeyCode::Enter);
+        app.add_filter("alpha").expect("valid pattern");
+        app.refresh_scan(false);
+        // `j` from the default selection (already on `a.log`) lands on
+        // `b.log`, so it is row 1 — not row 0 — that becomes the active file
+        // `Enter` loads. Scanning row 0 here would leave `b.log` out of the
+        // cache and `check_stamps` would have nothing to compare it against.
+        tx.send(scanned(&app, 1, vec![0], true)).expect("send");
+        app.drain_scan_results();
+        assert!(!status_line(&mut app).contains("changed on disk"));
+        fs::write(app.view.filename(), "rewritten\n").expect("rewrite");
+
+        app.check_stamps();
+
+        assert!(
+            status_line(&mut app).contains("changed on disk"),
+            "{}",
+            status_line(&mut app)
+        );
+    }
+
+    #[test]
+    fn polling_is_rate_limited() {
+        let mut app = app_over_logs("poll_rate");
+        let _seam = record_scans(&mut app);
+        app.add_filter("alpha").expect("valid pattern");
+        app.refresh_scan(false);
+
+        app.poll_stamps();
+        let first = app.last_poll.expect("stamped");
+        app.poll_stamps();
+
+        assert_eq!(
+            app.last_poll,
+            Some(first),
+            "polled again inside the interval"
+        );
     }
 }
