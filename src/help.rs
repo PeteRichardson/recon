@@ -524,6 +524,11 @@ mod tests {
     /// the half-truth #25 is about.
     const SOURCES: &[(&str, &str)] = &[
         ("src/lib.rs", include_str!("lib.rs")),
+        // `long_range_target`'s `g`/`G`/`{`/`}` table, which moved here out of
+        // `impl App` when the viewport was split off. Keys bound in it are
+        // intercepted before the file view sees them — a third source, and one
+        // this list did not follow (#95).
+        ("src/viewport.rs", include_str!("viewport.rs")),
         ("src/widgets/filenav.rs", include_str!("widgets/filenav.rs")),
         (
             "src/widgets/fileview.rs",
@@ -587,6 +592,30 @@ mod tests {
             "these keys are bound but missing from KEYMAP in src/help.rs — \
              add a row for each, and the README's Keybindings section too:\n  {}",
             missing.join("\n  ")
+        );
+    }
+
+    /// The long-range table is a *third* place a key can be bound, and the
+    /// scan has to reach it.
+    ///
+    /// `g`, `G`, `{` and `}` are intercepted in `App::handle_event` before the
+    /// file view sees them, and resolved by `long_range_target` — which moved
+    /// out of `impl App` and into `src/viewport.rs` when the viewport was split
+    /// off. `SOURCES` did not follow it, so a fifth long-range key added there
+    /// would be bound and undocumented with nothing to say so (#95).
+    #[test]
+    fn the_long_range_table_is_scanned_too() {
+        let bound = bound_chars(include_str!("viewport.rs"));
+
+        assert!(
+            ['g', 'G', '{', '}'].iter().all(|c| bound.contains(c)),
+            "src/viewport.rs no longer holds the long-range table; \
+             this test and SOURCES both need to follow it: {bound:?}"
+        );
+        assert!(
+            SOURCES.iter().any(|(path, _)| *path == "src/viewport.rs"),
+            "src/viewport.rs binds keys, but every_bound_key_is_documented \
+             does not scan it"
         );
     }
 

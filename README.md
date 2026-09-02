@@ -259,17 +259,26 @@ What gets recorded:
 ## Keybindings
 
 Press `?` in the app for the same list on screen. The authoritative source is
-still `App::handle_event` in `src/lib.rs` for the global keys, and each
-widget's `handle_events` for the rest; this section and the in-app overlay both
-describe it.
+the code, in three places rather than two:
 
-Those three would drift silently, so they don't have to be checked by hand:
+- **`App::handle_event`** in `src/lib.rs`, for the global keys.
+- **Each widget's `handle_events`**, for the keys its own pane answers.
+- **`long_range_target`** in `src/viewport.rs`, for `g`, `G`, `{` and `}`.
+  These are *intercepted* — `App::handle_event` resolves them against the whole
+  visible set and returns before the file view sees the key, so they are bound
+  in two places and the interception wins. They have to be: the file view holds
+  a window of the visible set, and each of these means "the document's top" or
+  "the next paragraph anywhere", not "the top of whatever is loaded" (#7).
+
+This section and the in-app overlay both describe that code.
+
+The four would drift silently, so they don't have to be checked by hand:
 `KEYMAP` in `src/help.rs` is the table the overlay draws, and
-`every_bound_key_is_documented` reads the source files back at test time and
-fails when a key is bound in a `Char(..)` arm and named by no row. Adding a
-binding without documenting it breaks the build. The test says nothing about
-*this* section, which is still hand-maintained — so a new key needs a row here
-too.
+`every_bound_key_is_documented` reads all three source locations back at test
+time and fails when a key is bound in a `Char(..)` arm and named by no row.
+Adding a binding without documenting it breaks the build. The test says nothing
+about *this* section, which is still hand-maintained — so a new key needs a row
+here too.
 
 Global (`src/lib.rs`), handled before the focused pane sees the key:
 
