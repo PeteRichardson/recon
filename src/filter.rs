@@ -61,10 +61,28 @@ pub(crate) const DIM_STYLE: Style = Style::new()
 /// no colour at all.
 pub(crate) const SEARCH_STYLE: Style = Style::new().fg(Color::White).add_modifier(Modifier::BOLD);
 
-/// Whether a filter selects lines or removes them.
+/// Whether a filter selects lines, removes them, or shows them without
+/// counting them.
+///
+/// `Context` is the third kind (#119). A realistic set for a folder of logs
+/// holds patterns that *discriminate* — part of a bug's signature — and
+/// patterns that pick out metadata every log carries: the commit, the host.
+/// The second kind is wanted in the view and useless for choosing files. A
+/// `Context` filter is an `Include` for every purpose except one: it never
+/// selects a file in the navigator.
+///
+/// A variant rather than a flag on `Include`: an `Exclude` already never
+/// selects a file, so "selects?" is not orthogonal to sense but one more value
+/// of it — and the compiler then finds every `match` that needs to know.
+///
+/// Sense is the user's choice, per filter, in this set. It is not a property
+/// of the pattern: `^host: production-.*` is `Include` when the question is
+/// "which production logs have errors" and `Context` when it is "which logs
+/// have bug 57, and where did they run". Nothing derives it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Sense {
     Include,
+    Context,
     Exclude,
 }
 
@@ -426,6 +444,24 @@ impl ActiveFilters {
         }
     }
 
+    /// Flip a filter between `Include` and `Context`, reporting whether it
+    /// changed. An `Exclude` filter is left alone: it already selects nothing.
+    ///
+    /// No `recompile` — the pattern is untouched, so the compiled set is still
+    /// right — and no `forget_capture`, for the same reason `set_pattern` gives:
+    /// the set's shape is unchanged, so a pending `!` capture still describes it.
+    pub fn toggle_context(&mut self, index: usize) -> bool {
+        let Some(filter) = self.filters.get_mut(index) else {
+            return false;
+        };
+        filter.sense = match filter.sense {
+            Sense::Include => Sense::Context,
+            Sense::Context => Sense::Include,
+            Sense::Exclude => return false,
+        };
+        true
+    }
+
     /// Enable or disable one filter, reporting whether it existed.
     ///
     /// Test-only. Production reaches the same state through `toggle_enabled`
@@ -568,7 +604,7 @@ impl ActiveFilters {
             .iter()
             .enumerate()
             .find(|&(index, filter)| {
-                filter.enabled && filter.sense == Sense::Include && matched(index)
+                filter.enabled && filter.sense != Sense::Exclude && matched(index)
             })
             .map_or(Verdict::Unmatched, |(index, _)| Verdict::Included(index))
     }
@@ -598,7 +634,7 @@ impl ActiveFilters {
             .iter()
             .enumerate()
             .find(|(_, filter)| {
-                filter.enabled && filter.sense == Sense::Include && filter.pattern.is_match(line)
+                filter.enabled && filter.sense != Sense::Exclude && filter.pattern.is_match(line)
             })
             .map_or(Verdict::Unmatched, |(index, _)| Verdict::Included(index))
     }
@@ -645,7 +681,7 @@ impl ActiveFilters {
     fn any_numbered_including(&self) -> bool {
         self.filters
             .iter()
-            .any(|filter| filter.enabled && filter.sense == Sense::Include)
+            .any(|filter| filter.enabled && filter.sense != Sense::Exclude)
     }
 
     /// The style to render a line with, or `None` to leave it alone.
@@ -826,6 +862,48 @@ mod tests {
         let set = set_with(&["foo", "foo.*bar"]);
 
         assert_eq!(set.verdict("foo and bar"), Verdict::Included(0));
+    }
+
+    // ---- the third sense ------------------------------------------------
+
+    /// A context filter shows its lines exactly as an include filter does.
+    #[test]
+    fn a_context_filter_includes_its_lines() {
+        let mut set = set_with(&["foo"]);
+        assert!(set.toggle_context(0));
+
+        assert_eq!(set.filters()[0].sense, Sense::Context);
+        assert_eq!(set.verdict("foo"), Verdict::Included(0));
+        assert_eq!(
+            set.style_for(Verdict::Unmatched),
+            Some(DIM_STYLE),
+            "context dims the rest"
+        );
+    }
+
+    #[test]
+    fn toggle_context_round_trips_without_touching_the_pattern() {
+        let mut set = set_with(&["foo", "bar"]);
+        let before = set.filters()[1].style;
+
+        assert!(set.toggle_context(1));
+        assert!(set.toggle_context(1));
+
+        assert_eq!(set.filters()[1].sense, Sense::Include);
+        assert_eq!(set.filters()[1].pattern.as_str(), "bar");
+        assert_eq!(set.filters()[1].style, before);
+        assert_eq!(set.verdict("bar"), Verdict::Included(1));
+    }
+
+    /// An exclude filter is never context, and an index off the end is not a filter.
+    #[test]
+    fn toggle_context_leaves_excludes_and_missing_indices_alone() {
+        let mut set = set_with(&["foo"]);
+        set.add_excluding("noise").expect("valid pattern");
+
+        assert!(!set.toggle_context(1));
+        assert_eq!(set.filters()[1].sense, Sense::Exclude);
+        assert!(!set.toggle_context(7));
     }
 
     // ---- the compiled set stays in step --------------------------------
