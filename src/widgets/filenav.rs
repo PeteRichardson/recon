@@ -366,17 +366,24 @@ impl FileNav<'_> {
         Ok(self.step_search(reverse))
     }
 
-    /// Repeat the current search: `n` keeps its direction, `N` flips it.
+    /// `n`/`N`: the next filename-search match if a search is active, else
+    /// the next file the filters selected. The same "next interesting row"
+    /// the file view gives these keys (#119).
     fn repeat_search(&mut self, opposite: bool) -> Option<Action> {
-        self.step_search(self.search_reverse != opposite)
+        if self.matcher.is_some() {
+            return self.step_search(self.search_reverse != opposite);
+        }
+        self.step_to(opposite, |entry| matches!(entry.matched, Match::Yes(_)))
     }
 
-    /// Move the selection to the next matching entry, wrapping around.
-    ///
-    /// Starts one entry away from the cursor so a repeat always moves, and
-    /// checks the current entry last so a lone match holds its place.
     fn step_search(&mut self, reverse: bool) -> Option<Action> {
-        let matcher = self.matcher.as_ref()?;
+        let matcher = self.matcher.clone()?;
+        self.step_to(reverse, |entry| matcher.is_match(&entry.matchable()))
+    }
+
+    /// Walk the visible rows from the selection, wrapping, to the first that
+    /// `wanted` accepts; select it and ask for a preview.
+    fn step_to(&mut self, reverse: bool, wanted: impl Fn(&Entry) -> bool) -> Option<Action> {
         let count = self.visible.len();
         if count == 0 {
             return None;
@@ -391,7 +398,7 @@ impl FileNav<'_> {
                     (start + offset) % count
                 }
             })
-            .find(|&row| matcher.is_match(&self.entries[self.visible[row]].matchable()))?;
+            .find(|&row| wanted(&self.entries[self.visible[row]]))?;
 
         self.state.select(Some(found));
         self.preview_selection()
@@ -1731,6 +1738,59 @@ mod tests {
 
         assert!(action.is_none());
         assert_eq!(selected_name(&nav), "alpha.rs");
+    }
+
+    // ---- n / N over matches ----------------------------------------------
+
+    #[test]
+    fn n_steps_to_the_next_matching_file_when_no_search_is_active() {
+        let mut nav = nav_over("n_match", &["a.log", "b.log", "c.log"]);
+        let (a, c) = (nav.files()[0].0, nav.files()[2].0);
+        nav.set_answer(a, Match::Yes(Style::default()));
+        nav.set_answer(c, Match::Yes(Style::default()));
+        nav.restyle();
+        nav.select_entry(a);
+
+        let action = nav.handle_events(Event::Key(KeyEvent::from(KeyCode::Char('n'))));
+
+        assert_eq!(nav.selected_entry(), Some(c));
+        assert!(
+            matches!(action, Some(Action::Preview(_))),
+            "the step previews, like a search step"
+        );
+
+        nav.handle_events(Event::Key(KeyEvent::from(KeyCode::Char('n'))));
+        assert_eq!(nav.selected_entry(), Some(a), "wraps");
+
+        nav.handle_events(Event::Key(KeyEvent::from(KeyCode::Char('N'))));
+        assert_eq!(nav.selected_entry(), Some(c), "N reverses");
+    }
+
+    /// A filename search, once started, owns `n`/`N` — exactly as before.
+    #[test]
+    fn n_repeats_the_search_when_one_is_active() {
+        let mut nav = nav_over("n_search", &["a.log", "b.log", "c.log"]);
+        let c = nav.files()[2].0;
+        nav.set_answer(c, Match::Yes(Style::default()));
+        nav.search("b", false).expect("valid pattern");
+        nav.select_entry(nav.files()[0].0);
+
+        nav.handle_events(Event::Key(KeyEvent::from(KeyCode::Char('n'))));
+
+        assert_eq!(nav.selected_path().unwrap().file_name().unwrap(), "b.log");
+    }
+
+    #[test]
+    fn n_with_nothing_matching_and_no_search_goes_nowhere() {
+        let mut nav = nav_over("n_nothing", &["a.log"]);
+        let a = nav.files()[0].0;
+        nav.select_entry(a);
+
+        assert!(
+            nav.handle_events(Event::Key(KeyEvent::from(KeyCode::Char('n'))))
+                .is_none()
+        );
+        assert_eq!(nav.selected_entry(), Some(a));
     }
 
     #[test]
