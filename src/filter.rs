@@ -121,8 +121,9 @@ pub struct EnabledFlags {
     search: Option<bool>,
 }
 
-/// The bitset width. 63 numbered patterns plus the search; past this the
-/// navigator's file matching switches off rather than shifting out of range.
+/// The bitset width. Up to 64 patterns in total, the search included; past
+/// this the navigator's file matching switches off rather than shifting out
+/// of range.
 const MAX_PATTERNS: usize = 64;
 
 /// Which filter selected a file, for its colour in the navigator.
@@ -180,44 +181,26 @@ impl Matcher {
             .fold(0, |bits, index| bits | (1 << index))
     }
 
-    /// Whether a line with these hits selects its file. The hide-mode rule as
-    /// a bit test, minus the context sense.
+    /// Whether a line with these hits selects its file. A line selects when
+    /// an enabled `Include` filter or the search hits it, and no enabled
+    /// `Exclude` does.
     #[must_use]
     pub fn selects(&self, bits: u64) -> bool {
-        if bits & self.exclude != 0 {
-            return false;
-        }
-        if bits & self.search != 0 {
-            return true;
-        }
-        if bits == 0 {
-            return false;
-        }
-        // The first matching filter is the one with the lowest bit index;
-        // only Include filters (and Search) select files, not Context.
-        let first_matching_bit = 1u64 << bits.trailing_zeros();
-        first_matching_bit & self.selects != 0
+        bits & self.selects != 0 && bits & self.exclude == 0
     }
 
     /// Which filter selected a line with these hits, if any.
     #[must_use]
     pub fn owner(&self, bits: u64) -> Option<Owner> {
-        // Exclude prevents any selection
-        if bits & self.exclude != 0 {
+        if !self.selects(bits) {
             return None;
         }
-        // Search outranks all numbered filters
         if bits & self.search != 0 {
             return Some(Owner::Search);
         }
-        // Find the lowest Include filter that matches.
-        // Since bits doesn't have the search bit here, bits & self.selects
-        // yields only Include filter bits.
-        let include_bits = bits & self.selects;
-        if include_bits == 0 {
-            return None;
-        }
-        Some(Owner::Filter(include_bits.trailing_zeros() as usize))
+        Some(Owner::Filter(
+            (bits & self.selects).trailing_zeros() as usize
+        ))
     }
 
     /// `(selects, exclude)`, for the caller that wants to know whether a
@@ -874,10 +857,14 @@ mod tests {
 
     // ---- the matcher snapshot --------------------------------------------
 
-    /// The invariant the navigator rests on: `selects` agrees with `verdict`
-    /// about which lines pick a file, across all three senses and the search.
+    /// The invariant the navigator rests on, stated the way the spec states
+    /// it: a line selects its file when an enabled `Include` filter or the
+    /// search hits it and no enabled `Exclude` does. Deliberately *not*
+    /// derived from `verdict`'s index — that is a colouring rule (first match
+    /// wins), and a context filter can win the colour of a line an include
+    /// filter also hit. Selecting and colouring are different questions.
     #[test]
-    fn the_matcher_agrees_with_verdict_on_what_selects_a_file() {
+    fn the_matcher_agrees_with_the_spec_on_what_selects_a_file() {
         let mut set = set_with(&["alpha", "beta", "delta"]);
         set.toggle_context(1);
         set.add_excluding("noise").expect("valid pattern");
@@ -895,17 +882,31 @@ mod tests {
             "beta gamma",
             "nothing here",
             "alpha beta",
+            "beta noise",
+            "delta noise",
         ] {
-            let expected = match set.verdict(line) {
-                Verdict::Searched => true,
-                Verdict::Included(i) => set.filters()[i].sense == Sense::Include,
-                Verdict::Unmatched | Verdict::Excluded => false,
+            let hit = |sense: Sense| {
+                set.filters()
+                    .iter()
+                    .any(|f| f.enabled && f.sense == sense && f.pattern.is_match(line))
             };
+            let searched = set
+                .search()
+                .is_some_and(|s| s.enabled && s.pattern.is_match(line));
+            let expected = (hit(Sense::Include) || searched) && !hit(Sense::Exclude);
+
             assert_eq!(
                 matcher.selects(matcher.bits(line)),
                 expected,
-                "matcher and verdict disagree on {line:?}"
+                "matcher and the spec disagree on {line:?}"
             );
+            // A selected line is always one the view shows.
+            if expected {
+                assert!(
+                    matches!(set.verdict(line), Verdict::Included(_) | Verdict::Searched),
+                    "{line:?} selects its file but the view would not show it"
+                );
+            }
         }
     }
 
