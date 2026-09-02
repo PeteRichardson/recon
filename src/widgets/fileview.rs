@@ -6,7 +6,7 @@ use color_eyre::Result;
 use ratatui::prelude::{Buffer, Color, Modifier, Rect, Style, Widget};
 use std::fs::File;
 use std::io::{BufRead, BufReader, Cursor, Read};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use tui_textarea::{CursorMove, Input, Key, Scrolling, TextArea};
 use unicode_width::UnicodeWidthStr;
 
@@ -216,9 +216,17 @@ impl Preview {
 
 #[derive(Debug, Default)]
 pub struct FileView<'a> {
-    pub filename: String, // name of the log file to view
-    pub textarea: TextArea<'a>,
-    pub truncated: bool, // showing a bounded preview rather than the whole file
+    /// The file being shown, as a path rather than a rendering of one.
+    ///
+    /// A `String` here meant storing `Path::display()`, which is explicitly
+    /// lossy — so a name that is not valid UTF-8 came back as U+FFFD and every
+    /// site that round-tripped it into a `Path` to re-read the file addressed
+    /// something that does not exist (#79). Rendered at the one place that
+    /// should render it: the pane title.
+    filename: PathBuf,
+    textarea: TextArea<'a>,
+    /// Showing a bounded preview rather than the whole file.
+    truncated: bool,
     /// Roughly how many lines the whole file holds, while only a preview of it
     /// is loaded. `None` once the file is read in full, where the count is not
     /// a guess, and when there was nothing to estimate from.
@@ -226,8 +234,8 @@ pub struct FileView<'a> {
     /// `read_preview` has always computed this to size the gutter; keeping it
     /// is what lets the status row report a truthful total, since `truncated`
     /// alone says the document's length is wrong without saying what is right.
-    pub estimated_lines: Option<usize>,
-    pub active: bool,
+    estimated_lines: Option<usize>,
+    active: bool,
     /// Whether the line-number gutter is drawn. Toggled with `#`.
     hide_line_numbers: bool,
     /// Set when the buffer currently holds the single blank placeholder line
@@ -287,13 +295,45 @@ impl FileView<'_> {
         view
     }
 
+    /// The file being shown.
+    pub(crate) fn filename(&self) -> &Path {
+        &self.filename
+    }
+
+    /// The buffer's lines, for `App::sync_document`.
+    ///
+    /// An accessor rather than a `pub textarea`, because `window_start` must
+    /// match what the textarea currently holds — `cursor_visible_row` is the
+    /// only correct way to read a vertical position, and a caller mutating the
+    /// textarea directly breaks it silently, off by `window_start`, which
+    /// looks entirely plausible (#81).
+    pub(crate) fn lines(&self) -> &[String] {
+        self.textarea.lines()
+    }
+
+    /// Give or take focus. The only writer of `active` (#81).
+    pub(crate) fn set_active(&mut self, active: bool) {
+        self.active = active;
+    }
+
+    /// Whether the pane holds a bounded preview rather than the whole file.
+    pub(crate) fn is_truncated(&self) -> bool {
+        self.truncated
+    }
+
+    /// Roughly how many lines the whole file holds, while only a preview is
+    /// loaded. `None` once the file is read in full.
+    pub(crate) fn estimated_lines(&self) -> Option<usize> {
+        self.estimated_lines
+    }
+
     /// Show `path` in the pane, replacing whatever was there.
     ///
     /// A file that cannot be read is reported in the pane itself rather than
     /// bringing the TUI down, since any entry in the nav pane can be selected.
     /// Rebuilding the `TextArea` also resets the cursor and scroll position.
     pub fn load(&mut self, path: &Path) {
-        self.filename = path.display().to_string();
+        self.filename = path.to_path_buf();
         self.textarea = TextArea::new(read_lines(path));
         // This buffer is the file's own lines, not a window onto a visible set,
         // so row 0 of it is row 0 of the document. Leaving a previous file's
@@ -325,7 +365,7 @@ impl FileView<'_> {
     /// branch without building a multi-megabyte fixture. See
     /// `read_preview_with_caps` for why the seam is here.
     fn preview_with_caps(&mut self, path: &Path, max_lines: usize, max_bytes: u64) {
-        self.filename = path.display().to_string();
+        self.filename = path.to_path_buf();
         let preview = read_preview_with_caps(path, max_lines, max_bytes);
         self.showing_directory = path.is_dir();
         self.textarea = TextArea::new(preview.lines);
@@ -580,7 +620,7 @@ impl FileView<'_> {
         // The user is interacting with the view, so a preview is no longer
         // enough: they can now scroll past the end of it.
         if self.truncated {
-            let path = Path::new(&self.filename).to_path_buf();
+            let path = self.filename.clone();
             self.load(&path);
         }
 
@@ -1016,6 +1056,22 @@ fn digits(n: usize) -> u8 {
 }
 
 /// Widget impl for `FileView`
+/// Test-only reach into the textarea, for assertions about styles, scroll
+/// position and line numbers — none of which `App` has any business reading.
+///
+/// Its own `impl` block because `'a` is named nowhere else: on the main block
+/// it would be an elidable lifetime in every non-test build.
+#[cfg(test)]
+impl<'a> FileView<'a> {
+    pub(crate) fn textarea(&self) -> &TextArea<'a> {
+        &self.textarea
+    }
+
+    pub(crate) fn textarea_mut(&mut self) -> &mut TextArea<'a> {
+        &mut self.textarea
+    }
+}
+
 impl Widget for &mut FileView<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         // Recorded for the *next* `apply_view`, which runs outside render and
@@ -1050,8 +1106,10 @@ impl Widget for &mut FileView<'_> {
         self.textarea.set_cursor_line_style(style);
         self.textarea
             .set_search_style(Style::default().fg(Color::Black).bg(Color::Yellow));
+        // The one place the path is rendered, and the one place a lossy
+        // conversion is both correct and harmless — see the `filename` field.
         self.textarea.set_block(crate::widgets::pane_block(
-            self.filename.clone(),
+            self.filename.display().to_string(),
             self.active,
         ));
         // Apply any scroll requested since the last render — see
@@ -1525,6 +1583,39 @@ mod tests {
         assert!(!view.truncated);
     }
 
+    /// The pane must keep the path it was given, not a rendering of it.
+    ///
+    /// On Unix a filename is bytes. Storing `Path::display()` — explicitly
+    /// lossy — turned an invalid byte into U+FFFD, and every path that
+    /// round-tripped the field back into a `Path` to re-read the file then
+    /// addressed something that does not exist: `handle_events` promoting a
+    /// truncated preview, `App::promote_file_view`, and `App::open_in_editor`
+    /// (#79).
+    ///
+    /// Asserted on the stored value rather than by reading such a file back.
+    /// APFS rejects a filename that is not valid UTF-8 outright, and CI runs on
+    /// macOS, so a filesystem fixture could not reach this on any machine this
+    /// project builds on — while the lossy round trip is the defect itself and
+    /// needs no file to exist.
+    #[test]
+    #[cfg(unix)]
+    fn a_filename_that_is_not_utf8_survives_being_stored() {
+        use std::os::unix::ffi::OsStrExt;
+
+        // `\xff` is not a valid UTF-8 byte in any position.
+        let name = std::ffi::OsStr::from_bytes(b"log_\xffname.txt");
+        let path = Path::new("target/test-fixtures").join(name);
+
+        let mut view = FileView::default();
+        view.load(&path);
+
+        assert_eq!(
+            view.filename(),
+            path,
+            "the pane is holding a lossy rendering, so re-reading it addresses nothing"
+        );
+    }
+
     #[test]
     fn interacting_with_a_complete_file_changes_nothing() {
         let path = long_file("complete.txt", 3);
@@ -1644,7 +1735,10 @@ mod tests {
             "did not load lib.rs:\n{text}"
         );
         assert!(!text.contains("[dependencies]"), "old contents lingered");
-        assert!(view.filename.contains("lib.rs"), "title not updated");
+        assert!(
+            view.filename().to_string_lossy().contains("lib.rs"),
+            "title not updated"
+        );
     }
 
     /// A missing file must render a message, not panic the whole TUI.
