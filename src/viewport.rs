@@ -72,13 +72,17 @@ impl App<'_> {
         self.view.window_height()
     }
 
-    /// Rebuild the file view's window if the cursor has left the middle third
-    /// of the one it is holding (#7).
+    /// Rebuild the file view's window if the viewport has eaten into the screen
+    /// of slack the window keeps on either side of it (#7, #108).
     ///
     /// Called after every event that can move the cursor. Cheap when nothing is
     /// owed: two comparisons against bounds the view already knows. The rebuild
     /// itself goes through `apply_view`, which recomputes the window from the
     /// cursor's new position, so this decides only *whether*, never *where*.
+    ///
+    /// The cursor's screen row is part of the question, not just its row in the
+    /// visible set: the slack that matters is the buffer beyond the *viewport*,
+    /// and the viewport's top edge is `screen_row` rows above the cursor.
     pub(crate) fn ensure_window(&mut self) {
         let visible_len = self.document.visible().len();
         let needed = !widgets::fileview::window_holds(
@@ -86,6 +90,7 @@ impl App<'_> {
             self.view.window_start(),
             self.view.window_end(),
             self.view.cursor_visible_row(),
+            usize::from(self.file_view_screen_row()),
         );
         if needed {
             self.apply_view(self.cursor_source());
@@ -146,10 +151,13 @@ impl App<'_> {
         // (#7). Sized from the pane height recorded on the previous frame —
         // `apply_view` runs outside `render` and has no area of its own.
         let row = self.document.visible_position(cursor_source).unwrap_or(0);
+        // `screen_row` again: the window's slack is measured from the pane's
+        // edges, and the cursor is `screen_row` rows below the top one (#108).
         let (window_start, window_end) = widgets::fileview::window_for(
             self.document.visible().len(),
             self.file_view_window_height(),
             row,
+            usize::from(screen_row),
         );
 
         let styles = self

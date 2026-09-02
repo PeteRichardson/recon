@@ -45,68 +45,123 @@ const MAX_PREVIEW_BYTES: u64 = 10 << 20;
 /// fully populated and the real height takes over from the second.
 pub(crate) const ASSUMED_PANE_HEIGHT: u16 = 200;
 
+/// How many screens of slack the window keeps beyond **each edge of the
+/// viewport** — see `WINDOW_SCREENS` for why it is two rather than one.
+const SLACK_SCREENS: usize = 2;
+
 /// How many screens of the visible set `TextArea` is given: the viewport plus
-/// one screen of slack above and below.
+/// `SLACK_SCREENS` above and below.
 ///
 /// The slack is what keeps today's scroll behaviour intact. With a window of
 /// exactly the viewport, every single `j` would run off the buffer's end and
 /// force a `set_lines` rebuild — resetting the viewport and re-entering the
-/// `pending_screen_row` machinery on the hottest path in the app. With a screen
+/// `pending_screen_row` machinery on the hottest path in the app. With slack
 /// either side, ordinary movement (`j`, `k`, `Ctrl-E`, `Ctrl-Y`, and a page in
 /// either direction) happens entirely inside the buffer and `TextArea` handles
 /// it exactly as before.
 ///
-/// Three screens is ~72 lines on a 24-row terminal. The memory this issue
-/// exists to reclaim is measured in gigabytes; this is not a tradeoff.
-const WINDOW_SCREENS: usize = 3;
+/// **Two screens of slack, not one** (#108). The slack has two jobs, and they
+/// add rather than overlap:
+///
+/// - one screen so that a single page in either direction *completes* instead
+///   of being clamped by `Viewport::scroll`'s `saturating_sub`, and
+/// - one screen of headroom so that ordinary scrolling can eat into the slack
+///   for a while before a rebuild is owed.
+///
+/// With only one screen the two collide: the window would be built with exactly
+/// a page of slack, `window_holds` would demand exactly a page, and the very
+/// next `j` with the cursor on the pane's bottom row would owe a rebuild — a
+/// `set_lines` per keystroke while holding `j`, which is the cost #7 exists to
+/// avoid. Five screens is ~120 lines on a 24-row terminal. The memory that
+/// issue reclaims is measured in gigabytes; this is not a tradeoff.
+pub(crate) const WINDOW_SCREENS: usize = SLACK_SCREENS * 2 + 1;
 
 /// The slice of the visible set to hand `TextArea`, as `(start, end)` indices
-/// into it, given where the cursor sits in that set.
+/// into it, given where the cursor sits in that set and which row of the pane
+/// it is drawn on.
 ///
 /// Returns the whole visible set when it is no longer than the window. That
 /// degenerate case is not a special path — it is what makes a single code path
 /// serve every file size without a threshold, and it is the case almost every
 /// test in this repo exercises, since a fixture shorter than three screens is
 /// windowed to itself and behaves exactly as it did before #7.
-pub(crate) fn window_for(visible_len: usize, height: u16, row: usize) -> (usize, usize) {
+///
+/// **Anchored on the viewport, not the cursor** (#108). The slack has to be
+/// measured from the pane's edges because that is what a page scrolls: `[` and
+/// `]` move the viewport, and `TextArea` clamps that move to the buffer it has.
+/// The cursor sits somewhere *inside* the viewport — `[` leaves it on the
+/// bottom row, `]` on the top — so slack measured from the cursor is short by
+/// `screen_row` above and by `height - screen_row` below.
+///
+/// That shortfall was the whole of #108: on a 36-row terminal `[` parks the
+/// cursor 32 rows below the viewport's top edge, leaving `35 - 32 = 3` rows of
+/// buffer above it, and `Viewport::scroll`'s `saturating_sub` quietly clamped a
+/// 33-row page to 3. Subtracting `screen_row` as well puts `SLACK_SCREENS`
+/// above the viewport's top and the same below its bottom, whatever row the
+/// cursor happens to be on.
+pub(crate) fn window_for(
+    visible_len: usize,
+    height: u16,
+    row: usize,
+    screen_row: usize,
+) -> (usize, usize) {
     let height = height.max(1) as usize;
     let span = height * WINDOW_SCREENS;
     if visible_len <= span {
         return (0, visible_len);
     }
-    // `height` of slack above the cursor, pulled back at the tail so the window
-    // stays a full span rather than shrinking against the end of the document.
-    let start = row.saturating_sub(height).min(visible_len - span);
+    // Measured from the viewport's top edge, which is `screen_row` rows above
+    // the cursor. Pulled back at the tail so the window stays a full span
+    // rather than shrinking against the end of the document.
+    let viewport_top = row.saturating_sub(screen_row);
+    let start = viewport_top
+        .saturating_sub(height * SLACK_SCREENS)
+        .min(visible_len - span);
     (start, start + span)
 }
 
-/// Whether the window `start..end` still holds `row` comfortably, or a rebuild
-/// is owed.
+/// Whether the window `start..end` still leaves a full screen beyond the
+/// viewport in both directions, or a rebuild is owed.
 ///
-/// **The middle-third rule.** The window is three screens; its middle third is
-/// one screen. Keeping the cursor inside that third guarantees at least one
-/// full screen of buffer beyond it in each direction, so any single move of at
-/// most a page completes inside the buffer and `TextArea` never clamps it
-/// short.
+/// **A page of buffer beyond each viewport edge.** Keeping that much intact
+/// guarantees any single move of at most a page completes inside the buffer and
+/// `TextArea` never clamps it short. `window_for` lays down `SLACK_SCREENS`, so
+/// there is a screen of scrolling to spend before this comes due.
 ///
 /// That guarantee is the point, not the tidiness. With a half-screen margin the
 /// *second* consecutive `PageDown` runs into the buffer's end and is silently
 /// truncated — the page moves less than a page, and the user sees a stutter
 /// with no explanation.
 ///
+/// Measured from the viewport's edges rather than the cursor's row, matching
+/// `window_for`. The rule used to be "the cursor stays in the middle third",
+/// which is the same thing only when the cursor is centred: `[` parks it on the
+/// bottom row, where the middle-third test still passed with a full screen
+/// nominally above the *cursor* but only three rows above the *viewport*. See
+/// `window_for` for the arithmetic and #108 for what it cost.
+///
 /// A side that is already the end of the document never triggers a rebuild:
 /// there is nothing further to window onto.
-pub(crate) fn window_holds(visible_len: usize, start: usize, end: usize, row: usize) -> bool {
+pub(crate) fn window_holds(
+    visible_len: usize,
+    start: usize,
+    end: usize,
+    row: usize,
+    screen_row: usize,
+) -> bool {
     if row < start || row >= end.max(start + 1) {
         return false;
     }
-    let third = (end - start) / WINDOW_SCREENS;
-    if third == 0 {
+    // The height the window was built for; a full span is three screens of it.
+    let height = (end - start) / WINDOW_SCREENS;
+    if height == 0 {
         // Too short to have thirds; holding the row at all is enough.
         return true;
     }
-    let room_above = start == 0 || row >= start + third;
-    let room_below = end >= visible_len || row < end - third;
+    let viewport_top = row.saturating_sub(screen_row);
+    let viewport_bottom = viewport_top + height - 1;
+    let room_above = start == 0 || viewport_top >= start + height;
+    let room_below = end >= visible_len || viewport_bottom + height < end;
     room_above && room_below
 }
 
@@ -1004,78 +1059,140 @@ mod tests {
     // ---- window arithmetic (#7) ----------------------------------------
 
     /// The degenerate case, and the one almost every other test in this repo
-    /// runs in: a document shorter than three screens is windowed to itself,
-    /// so nothing about the buffer or the cursor changes.
+    /// runs in: a document shorter than the window is windowed to itself, so
+    /// nothing about the buffer or the cursor changes.
     #[test]
     fn a_short_document_is_its_own_window() {
-        assert_eq!(window_for(50, 24, 0), (0, 50));
-        assert_eq!(window_for(50, 24, 49), (0, 50));
+        assert_eq!(window_for(50, 24, 0, 0), (0, 50));
+        assert_eq!(window_for(50, 24, 49, 23), (0, 50));
         // Exactly a full span still fits whole.
-        assert_eq!(window_for(72, 24, 40), (0, 72));
+        assert_eq!(window_for(120, 24, 40, 0), (0, 120));
     }
 
     #[test]
-    fn a_long_document_gets_three_screens_around_the_cursor() {
-        let (start, end) = window_for(10_000, 24, 5_000);
+    fn a_long_document_gets_five_screens_around_the_viewport() {
+        // Cursor on the pane's top row, so the viewport's top edge is the
+        // cursor's own row and the slack below it is the whole difference.
+        let (start, end) = window_for(10_000, 24, 5_000, 0);
 
-        assert_eq!(end - start, 72, "three screens of 24");
-        assert_eq!(start, 5_000 - 24, "one screen of slack above the cursor");
+        assert_eq!(end - start, 120, "five screens of 24");
+        assert_eq!(
+            start,
+            5_000 - 48,
+            "two screens of slack above the viewport's top edge"
+        );
+    }
+
+    /// The #108 case. The cursor is on the pane's *bottom* row, where `[`
+    /// leaves it, so the viewport's top edge is a full pane above the cursor
+    /// and the window has to start from there — not from the cursor, which
+    /// would leave only `height - screen_row` rows above the viewport and clamp
+    /// the next page up to that.
+    #[test]
+    fn the_window_is_measured_from_the_viewport_not_the_cursor() {
+        let height = 24usize;
+        let row = 5_000usize;
+        let screen_row = height - 1;
+        let (start, end) = window_for(10_000, height as u16, row, screen_row);
+
+        let viewport_top = row - screen_row;
+        assert_eq!(
+            viewport_top - start,
+            height * SLACK_SCREENS,
+            "slack above the viewport's top edge"
+        );
+        let viewport_bottom = viewport_top + height - 1;
+        assert_eq!(
+            end - 1 - viewport_bottom,
+            height * SLACK_SCREENS,
+            "slack below the viewport's bottom edge"
+        );
     }
 
     #[test]
     fn the_window_does_not_run_off_the_start() {
-        assert_eq!(window_for(10_000, 24, 3), (0, 72));
+        assert_eq!(window_for(10_000, 24, 3, 0), (0, 120));
     }
 
     /// Pulled back rather than truncated, so the buffer stays a full span and
     /// the last screen of the file is not rendered against a stub.
     #[test]
     fn the_window_is_pulled_back_at_the_end() {
-        let (start, end) = window_for(10_000, 24, 9_999);
+        let (start, end) = window_for(10_000, 24, 9_999, 23);
 
         assert_eq!(end, 10_000);
-        assert_eq!(end - start, 72);
+        assert_eq!(end - start, 120);
     }
 
     /// A zero-height pane is possible mid-resize; `window_for` must not divide
     /// or multiply its way into a panic or an empty buffer.
     #[test]
     fn a_zero_height_pane_still_yields_a_window() {
-        let (start, end) = window_for(10_000, 0, 500);
+        let (start, end) = window_for(10_000, 0, 500, 0);
 
         assert!(end > start, "a zero-height pane must still hold something");
     }
 
-    // ---- the middle-third rule ------------------------------------------
+    // ---- the slack rule --------------------------------------------------
 
+    /// Freshly built, a window holds: `window_for` lays down two screens of
+    /// slack and `window_holds` asks for one.
     #[test]
-    fn the_middle_third_holds() {
-        // window 0..72, thirds at 24 and 48
-        assert!(window_holds(10_000, 0, 72, 30));
-        assert!(window_holds(10_000, 0, 72, 47));
+    fn a_freshly_built_window_holds() {
+        for screen_row in [0usize, 12, 23] {
+            let (start, end) = window_for(10_000, 24, 5_000, screen_row);
+            assert!(
+                window_holds(10_000, start, end, 5_000, screen_row),
+                "screen_row {screen_row} owed a rebuild immediately"
+            );
+        }
+    }
+
+    /// A window is owed a rebuild once the viewport has eaten into the slack
+    /// far enough that the *next* page would not fit. Window 0..120 was built
+    /// for height 24, so the viewport's bottom edge may reach row 95.
+    #[test]
+    fn running_the_slack_down_below_a_page_needs_a_rebuild() {
+        // Cursor on the pane's top row: viewport is [row, row + 23].
+        assert!(window_holds(10_000, 0, 120, 71, 0), "71 + 23 + 24 < 120");
+        assert!(!window_holds(10_000, 0, 120, 73, 0), "73 + 23 + 24 >= 120");
     }
 
     #[test]
-    fn leaving_the_middle_third_downwards_needs_a_rebuild() {
-        assert!(!window_holds(10_000, 0, 72, 48));
+    fn running_the_slack_down_upwards_needs_a_rebuild() {
+        // Window 100..220, height 24. The viewport's top edge must stay at or
+        // below 124 to keep a page above it.
+        assert!(window_holds(10_000, 100, 220, 124, 0));
+        assert!(!window_holds(10_000, 100, 220, 123, 0));
     }
 
+    /// The #108 regression at the `window_holds` end: the same cursor row holds
+    /// or does not depending on which row of the pane it is drawn on, because
+    /// that is what decides where the viewport's edges are. Under the old
+    /// cursor-only rule both of these answered the same way, and the `[` case
+    /// answered "holds" while only three rows sat above the viewport.
     #[test]
-    fn leaving_the_middle_third_upwards_needs_a_rebuild() {
-        assert!(!window_holds(10_000, 100, 172, 123));
+    fn the_screen_row_decides_where_the_viewport_edges_are() {
+        // Cursor at visible row 146, window 100..220, height 24.
+        // On the pane's top row the viewport is [146, 169], leaving 46 rows
+        // above it — comfortably more than the page it must be able to move.
+        assert!(window_holds(10_000, 100, 220, 146, 0));
+        // On the pane's bottom row the same cursor puts the viewport at
+        // [123, 146], leaving only 23 rows above it: a page up would clamp.
+        assert!(!window_holds(10_000, 100, 220, 146, 23));
     }
 
-    /// There is nothing above row 0 to window onto, so the top third of the
-    /// first window is legitimately reachable without a rebuild. Without this,
+    /// There is nothing above row 0 to window onto, so the top of the first
+    /// window is legitimately reachable without a rebuild. Without this,
     /// sitting on line 1 would rebuild on every keystroke forever.
     #[test]
     fn the_document_start_is_not_a_margin() {
-        assert!(window_holds(10_000, 0, 72, 0));
+        assert!(window_holds(10_000, 0, 120, 0, 0));
     }
 
     #[test]
     fn the_document_end_is_not_a_margin() {
-        assert!(window_holds(10_000, 9_928, 10_000, 9_999));
+        assert!(window_holds(10_000, 9_880, 10_000, 9_999, 23));
     }
 
     /// An unwindowed document is both ends at once, so it can never ask for a
@@ -1083,28 +1200,49 @@ mod tests {
     #[test]
     fn an_unwindowed_document_never_needs_a_rebuild() {
         for row in 0..50 {
-            assert!(window_holds(50, 0, 50, row), "row {row} forced a rebuild");
+            assert!(
+                window_holds(50, 0, 50, row, row.min(23)),
+                "row {row} forced a rebuild"
+            );
         }
     }
 
-    /// The guarantee the rule exists for: after a page-sized move the cursor is
-    /// still inside the buffer, so `TextArea` delivered the whole page rather
-    /// than clamping at the buffer's end.
+    /// The guarantee the rule exists for, driven the way the app drives it: a
+    /// page moves the *viewport*, and every page must complete inside the
+    /// buffer rather than being clamped at its edge.
+    ///
+    /// Both directions, and with the cursor on the pane row each key actually
+    /// leaves it on — `]` on the top row, `[` on the bottom. Pinning
+    /// `screen_row` to 0 would pass against the pre-#108 code.
     #[test]
-    fn a_page_of_movement_always_lands_inside_the_buffer() {
+    fn a_page_in_either_direction_always_fits_in_the_buffer() {
         let height = 24usize;
         let visible = 10_000usize;
-        let mut row = 5_000usize;
-        let (mut start, mut end) = window_for(visible, height as u16, row);
 
-        for page in 0..20 {
-            row += height;
-            assert!(
-                row < end,
-                "page {page} ran past the buffer end ({row} >= {end})"
-            );
-            if !window_holds(visible, start, end, row) {
-                (start, end) = window_for(visible, height as u16, row);
+        for (name, down, screen_row) in [("]", true, 0usize), ("[", false, height - 1)] {
+            let mut viewport_top = 5_000usize;
+            let (mut start, mut end) = window_for(visible, height as u16, viewport_top, 0);
+
+            for page in 0..20 {
+                if down {
+                    assert!(
+                        viewport_top + height - 1 + height < end,
+                        "`{name}` page {page}: only {} rows below the viewport, needs {height}",
+                        end - (viewport_top + height),
+                    );
+                    viewport_top += height;
+                } else {
+                    assert!(
+                        viewport_top >= start + height,
+                        "`{name}` page {page}: only {} rows above the viewport, needs {height}",
+                        viewport_top - start,
+                    );
+                    viewport_top -= height;
+                }
+                let row = viewport_top + screen_row;
+                if !window_holds(visible, start, end, row, screen_row) {
+                    (start, end) = window_for(visible, height as u16, row, screen_row);
+                }
             }
         }
     }
@@ -1781,26 +1919,32 @@ mod tests {
     ///
     /// They replaced `space`/`Enter` in #48. `space` became the global peek and
     /// `Enter` the filter pane's toggle, and neither can also page here.
+    ///
+    /// Asserts the **distance**, not just the direction. This test used to
+    /// check only that `]` moved the cursor off row 0 and that `[` moved it
+    /// back somewhere above that, which #108 slipped straight through: `[` was
+    /// paging three lines instead of thirty-three and every assertion here
+    /// still held. A page is the pane's inner height — the area less its two
+    /// border rows, with no overlap row kept.
     #[test]
     fn brackets_page_up_and_down() {
         let body = numbered_lines(200);
         let mut view = view_of("bracket_pages.txt", &body);
         let area = Rect::new(0, 0, 40, 10);
+        let page = area.height as usize - 2;
         let mut buf = Buffer::empty(area);
         (&mut view).render(area, &mut buf);
 
+        let top = |view: &FileView<'_>| view.textarea.scroll_top().0 as usize;
+        assert_eq!(top(&view), 0, "sanity: starts at the top of the file");
+
         send(&mut view, Key::Char(']'));
         (&mut view).render(area, &mut buf);
-        let after_forward = view.textarea.cursor().0;
-        assert!(after_forward > 0, "`]` did not page down");
+        assert_eq!(top(&view), page, "`]` did not page down a full screen");
 
         send(&mut view, Key::Char('['));
         (&mut view).render(area, &mut buf);
-
-        assert!(
-            view.textarea.cursor().0 < after_forward,
-            "`[` did not page back up"
-        );
+        assert_eq!(top(&view), 0, "`[` did not page back up a full screen");
     }
 
     /// The keys `[` and `]` took over must not still page, or the file view
