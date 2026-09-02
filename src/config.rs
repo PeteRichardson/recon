@@ -461,6 +461,73 @@ mod tests {
 
     // ---- what `--help` shows a user ------------------------------------
 
+    /// The width the README's `## Usage` block is rendered at.
+    ///
+    /// clap wraps to the terminal when it has one and not at all when it does
+    /// not, so a raw `recon -h` redirected to a file produces 169-column lines.
+    /// Pinning a width here is what makes the block both readable on GitHub and
+    /// byte-comparable in `readme_usage_block_matches_the_real_help` below. 80
+    /// matches the widest fenced block already in the README.
+    ///
+    /// Applied only when rendering for the README, never to the command the app
+    /// actually runs — a real `recon -h` should still wrap to the user's own
+    /// terminal.
+    const README_HELP_WIDTH: usize = 80;
+
+    /// The README's `## Usage` block, as embedded at compile time.
+    ///
+    /// `include_str!` rather than reading the file at run time, matching
+    /// `help.rs`'s `SOURCES`: no working-directory assumption, and the test
+    /// cannot pass by silently failing to find the file.
+    const README: &str = include_str!("../README.md");
+
+    /// Pull the first fenced block after the `## Usage` heading out of `README`.
+    fn readme_usage_block() -> String {
+        let after_heading = README
+            .split_once("\n## Usage\n")
+            .expect("README has no `## Usage` heading")
+            .1;
+        let fenced = after_heading
+            .split_once("```\n")
+            .expect("no fenced block after `## Usage`")
+            .1;
+        fenced
+            .split_once("```")
+            .expect("unterminated fenced block after `## Usage`")
+            .0
+            .trim_end()
+            .to_string()
+    }
+
+    /// The README's `## Usage` block is the CLI's contract, and it drifted three
+    /// flags behind the binary (#92) — `--editor`, `--file-editor` and
+    /// `--print-editor-config` were all missing, and so was `[OPTIONS]` in the
+    /// usage line itself. Every one of them was documented at length further
+    /// down the README, so this was drift in the one block a reader treats as
+    /// authoritative rather than a gap in coverage.
+    ///
+    /// This is `help.rs`'s `every_bound_key_is_documented` applied to the CLI
+    /// surface — that module's own doc names generating README sections as "the
+    /// obvious next step", and this is that step for the flags. Comparing
+    /// rendered output rather than checking for flag names means a *changed*
+    /// description fails too, not only an added flag.
+    #[test]
+    fn readme_usage_block_matches_the_real_help() {
+        use clap::CommandFactory;
+        let rendered = Config::command()
+            .term_width(README_HELP_WIDTH)
+            .render_help()
+            .to_string();
+        let rendered = rendered.trim_end();
+
+        assert_eq!(
+            readme_usage_block(),
+            rendered,
+            "\nREADME's `## Usage` block is out of date. Replace it with:\n\
+             \n```\n{rendered}\n```\n"
+        );
+    }
+
     /// `--help` is end-user documentation, and rationale aimed at whoever
     /// maintains the precedence chain must not leak into it (#91).
     ///

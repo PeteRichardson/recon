@@ -83,7 +83,14 @@ missing_errors_doc = "allow"
 ratatui = "0.30.2"
 # `env` is what gives `#[arg(long, env = "RECON_FOO")]` CLI > env precedence
 # without a hand-written merge. See docs/specs/2026-08-22-configuration-mechanism.md.
-clap = { version = "4.6.6", features = ["derive", "env"] }
+#
+# `wrap_help` (#92) costs one dependency, `terminal_size`, and buys two things.
+# Without it clap does not wrap help *at all*: `recon -h` emitted 169-column
+# lines that a terminal then soft-wrapped mid-word. It is also what makes
+# `term_width` do anything, and `term_width` is what lets the README's `## Usage`
+# block be rendered at a fixed 80 columns and compared byte-for-byte against the
+# real help — see `readme_usage_block_matches_the_real_help` in `config.rs`.
+clap = { version = "4.6.6", features = ["derive", "env", "wrap_help"] }
 crossterm = "0.29"
 env_logger = "0.11.11"
 log = "0.4.33"
