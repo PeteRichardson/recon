@@ -175,7 +175,7 @@ the active file on `r`.
 
 `m` toggles the selected filter between `Include` and `Context`, reported to `App` as a new
 `FilterCommand::ToggleContext(index)`, the same route `Toggle`/`Delete`/`Edit` take. The row
-glyph shows the sense: `i`, `m`, `x`.
+glyph shows the sense: `inc`, `ctx`, `exc`.
 
 Not touched: `Document`, `FileView`'s reading paths, the vendored fork.
 
@@ -307,8 +307,10 @@ active one.
 
 `r` is global and does two things:
 
-1. `refresh_scan(force: true)` — bypass the guard, re-stat everything, rescan what moved.
-   Partial progress from a cancelled in-flight worker is kept (same cache id).
+1. Re-list the directory before anything else, so a file created since the listing was
+   built appears; then `refresh_scan(force: true)` — bypass the guard, re-stat everything,
+   rescan what moved. Partial progress from a cancelled in-flight worker is kept (same cache
+   id).
 2. Reload the active file **with the cursor restored**: remember `cursor_source()`, `load`,
    `sync_document`, then `place_cursor_on_visible_row(document.nearest_visible(source))` and
    `refresh_view`. That is the machinery a filter change already uses to rebuild the buffer

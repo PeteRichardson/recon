@@ -27,7 +27,8 @@ use std::time::SystemTime;
 /// stays tiny — a real log has single-digit distinct match combinations — so a
 /// `Vec` with a linear `contains` beats a hash set. `scanned_to` is a byte
 /// offset at a line boundary, which is what lets a later scan resume rather
-/// than restart. `eof` says whether `seen` is complete.
+/// than restart. `eof` says whether `seen` is complete — or an error ended
+/// the read; either way nothing more can be read.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Progress {
     pub seen: Vec<u64>,
@@ -178,13 +179,23 @@ fn worker(request: Request, tx: &Sender<Scanned>, cancel: &AtomicBool) {
         let stamp = stamp(&path).ok();
         let progress = match File::open(&path) {
             Ok(mut file) => {
-                if let Err(err) = file.seek(SeekFrom::Start(progress.scanned_to)) {
+                // A seek failure leaves the file positioned who-knows-where,
+                // so scanning from `progress.scanned_to` as if the seek had
+                // worked would let `scan` add to an offset that no longer
+                // matches where the read actually started — overshooting the
+                // true `scanned_to` and reporting `eof: true` too early, a
+                // confident wrong answer. Starting over with
+                // `Progress::default()` costs a re-read but stays correct.
+                let progress = if let Err(err) = file.seek(SeekFrom::Start(progress.scanned_to)) {
                     log::warn!(
                         "{}: cannot resume at {}: {err}",
                         path.display(),
                         progress.scanned_to
                     );
-                }
+                    Progress::default()
+                } else {
+                    progress
+                };
                 scan(BufReader::new(file), &matcher, progress, cancel)
             }
             // Unreadable answers "no", complete: it will show nothing. Not

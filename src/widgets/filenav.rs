@@ -527,9 +527,31 @@ impl FileNav<'_> {
     }
 
     /// Dim or hide rows answered `No`. The same `Mode` the file view uses.
+    /// A no-op when the mode is unchanged: answer changes go through
+    /// `restyle`, never here, so every call with the same mode is wasted work
+    /// — and `App::sync_document` makes one on every file load and preview.
     pub(crate) fn set_mode(&mut self, mode: Mode) {
+        if self.mode == mode {
+            return;
+        }
         self.mode = mode;
         self.rebuild_visible();
+    }
+
+    /// Re-list `self.dir` from disk, keeping the selection on the entry it
+    /// names — or on the first entry if nothing was selected.
+    ///
+    /// The same mechanism `go_to_parent` uses, but landing on the directory
+    /// it is already showing rather than the one just left. Used by `r`
+    /// (#119) so a file created since the listing was built appears; the
+    /// fresh entries are all `Unknown` and are re-answered from the
+    /// path-keyed scan cache with no I/O for files that have not changed.
+    pub(crate) fn reload(&mut self) {
+        let select = self
+            .selected_entry()
+            .and_then(|index| self.entries.get(index))
+            .map_or(Select::First, |entry| Select::Named(entry.name.clone()));
+        self.set_dir(self.dir.clone(), select);
     }
 
     /// Recompute which rows are listed, redraw them, and keep the selection on
@@ -538,7 +560,6 @@ impl FileNav<'_> {
     /// Directories and `..` are always listed: they have no answer. `Unknown`
     /// is always listed: you do not hide what you have not read. Only `No` is
     /// removed, and only in `FilteredOnly`.
-    #[allow(dead_code)]
     pub(crate) fn rebuild_visible(&mut self) {
         let keep = self.selected_entry();
         let row_before = self.state.selected();
@@ -566,14 +587,12 @@ impl FileNav<'_> {
     }
 
     /// The `entries` index of the selected row.
-    #[allow(dead_code)]
     pub(crate) fn selected_entry(&self) -> Option<usize> {
         self.visible.get(self.state.selected()?).copied()
     }
 
     /// Select by `entries` index. A hidden entry cannot be selected; the
     /// selection is left where it was.
-    #[allow(dead_code)]
     pub(crate) fn select_entry(&mut self, index: usize) {
         if let Some(row) = self.visible.iter().position(|&v| v == index) {
             self.state.select(Some(row));
@@ -1631,7 +1650,7 @@ mod tests {
     }
 
     fn selected_name(nav: &FileNav<'_>) -> String {
-        nav.entries[nav.state.selected().expect("nothing selected")]
+        nav.entries[nav.selected_entry().expect("nothing selected")]
             .name
             .to_string_lossy()
             .into_owned()

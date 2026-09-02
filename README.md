@@ -300,7 +300,7 @@ Global (`src/lib.rs`), handled before the focused pane sees the key:
 | `z` | Maximise the focused pane, or restore the split — works in the navigator too, for long filenames |
 | `o` | Open the selected file's enclosing **project** in your editor, at the line the cursor is on — see [Opening an editor](#opening-an-editor) |
 | `O` | Open the selected **file alone**, at the same line — no project, no walk-up |
-| `r` | **Refresh from disk** — re-stat and rescan the navigator's listing, and reload the file in the view with the cursor kept on its line. The status row shows `changed on disk · r` when the open file's size or mtime has moved |
+| `r` | **Refresh from disk** — re-list, re-stat and rescan the navigator's listing (so a file created since the listing was built appears), and reload the file in the view with the cursor kept on its line. The status row shows `changed on disk · r` when the open file's size or mtime has moved |
 
 `?` used to search backward. `n`/`N` cover both directions now, which is what
 freed it for the overlay — it is the conventional help key in the pagers and
