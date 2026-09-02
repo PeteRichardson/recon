@@ -148,6 +148,10 @@ pub const KEYMAP: &[Section] = &[
                 keys: &["O"],
                 action: "Open the file alone in your editor",
             },
+            Binding {
+                keys: &["r"],
+                action: "Refresh from disk — rescan the listing, reload the file",
+            },
         ],
     },
     Section {
@@ -240,7 +244,7 @@ pub const KEYMAP: &[Section] = &[
             },
             Binding {
                 keys: &["n", "N"],
-                action: "Repeat the last search, forward / back",
+                action: "Next / previous search match, or matching file",
             },
         ],
     },
@@ -670,22 +674,22 @@ mod tests {
         }
     }
 
-    /// The case the whole layout exists for. A 140x44 terminal is unremarkable,
+    /// The case the whole layout exists for. A 142x44 terminal is unremarkable,
     /// and the keymap is the one screen where "most of it" is not good enough —
     /// the row you cannot see is exactly the one you opened it to find.
     ///
     /// It fails when the columns are sized against the *widest* row in the
     /// whole table rather than the widest in each column: two columns of the
-    /// global maximum need 139 columns, and this area has 138 to give.
+    /// global maximum need 159 columns, and this area has 140 to give.
     #[test]
     fn a_normal_terminal_shows_the_whole_keymap() {
         let rows = rows();
 
-        let columns = layout(&rows, inner(138, 42));
+        let columns = layout(&rows, inner(140, 42));
 
         assert_eq!(shown(&columns), rows.len(), "the keymap did not fit");
         assert!(
-            total_width(&columns) <= 138,
+            total_width(&columns) <= 140,
             "the columns overflowed the area they were fitted to"
         );
     }
@@ -696,7 +700,7 @@ mod tests {
     fn a_column_is_sized_to_its_own_widest_row() {
         let rows = rows();
 
-        let columns = layout(&rows, inner(138, 42));
+        let columns = layout(&rows, inner(140, 42));
 
         assert!(columns.len() > 1, "the table was not split into columns");
         assert!(
@@ -725,11 +729,11 @@ mod tests {
     }
 
     /// A panel sized to the keymap and centred, not a full-screen wash. The
-    /// keymap is about forty rows; on a sixty-row terminal the difference is
-    /// twenty rows of empty bordered box.
+    /// keymap is about sixty rows; on a sixty-four-row terminal the
+    /// difference is still visible as empty bordered box.
     #[test]
     fn the_overlay_is_a_centred_panel() {
-        let area = inner(170, 60);
+        let area = inner(170, 64);
         let mut buf = Buffer::empty(area);
 
         render(area, &mut buf);

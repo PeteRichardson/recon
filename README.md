@@ -300,6 +300,7 @@ Global (`src/lib.rs`), handled before the focused pane sees the key:
 | `z` | Maximise the focused pane, or restore the split — works in the navigator too, for long filenames |
 | `o` | Open the selected file's enclosing **project** in your editor, at the line the cursor is on — see [Opening an editor](#opening-an-editor) |
 | `O` | Open the selected **file alone**, at the same line — no project, no walk-up |
+| `r` | **Refresh from disk** — re-stat and rescan the navigator's listing, and reload the file in the view with the cursor kept on its line. The status row shows `changed on disk · r` when the open file's size or mtime has moved |
 
 `?` used to search backward. `n`/`N` cover both directions now, which is what
 freed it for the overlay — it is the conventional help key in the pagers and
@@ -479,7 +480,7 @@ Navigator pane (`src/widgets/filenav.rs`):
 | `j` / `Down` | Select the next entry |
 | `h` / `Left` | Go to the parent directory, landing on the directory just left |
 | `l` / `Right` / `Enter` | Open the selected entry — descend into a directory, or load a file |
-| `n` / `N` | Repeat the last search, forward / reversed |
+| `n` / `N` | Repeat the last filename search, forward / reversed — or, with no search active, move to the next / previous file the filters match |
 
 `h` and `l` act on the pane rather than on the row: `h` climbs out whatever is
 selected, and `l` is `Enter` in every case, including on a file. They mean
@@ -563,6 +564,7 @@ screen whenever the navigator is:
 | `Enter` | Enable or disable the selected filter |
 | `d` | Delete the selected filter |
 | `c` | Change the selected filter's pattern — reopens the prompt over it |
+| `m` | Toggle the selected filter between *include* and *context* — see below |
 
 `c` edits in place: the filter keeps its slot, and so keeps its colour, its
 sense and whether it is enabled. That matters because a slot is a precedence —
@@ -572,6 +574,31 @@ replacement at the end and silently reordered the set. `Esc` abandons the edit;
 backspacing past the start does the same, so an edit can never leave an empty
 pattern behind. A pattern that will not compile reports `E486: invalid pattern`
 and leaves the prompt open over the intact filter, exactly as `i` does.
+
+### Three senses, and which files the navigator marks
+
+Every numbered filter has a sense, shown in its row as `inc`, `ctx` or `exc`:
+
+| Sense | In the view | Marks the file in the navigator? |
+| --- | --- | --- |
+| `inc` — include | shows the line, in the filter's colour | **yes** |
+| `ctx` — context | shows the line, in the filter's colour | no |
+| `exc` — exclude | removes the line | no |
+
+With at least one include filter (or a live search) enabled, the navigator marks
+each file: a name drawn in a filter's colour has at least one line that filter
+selected; a dimmed name has none; a plain name has not been scanned yet. In hide
+mode (`Ctrl-H`), non-matching files leave the listing the way non-matching lines
+leave the view. The scan runs in the background and stops each file at its first
+matching line, and toggling a filter on or off usually re-answers the whole
+folder without reading anything.
+
+*Context* is for the patterns every log carries — the build's commit, the host —
+that you want to see in the view but that say nothing about which logs are
+interesting. Which sense a pattern has is your call, per set: `^host:
+production-.*` is an include when the question is "which production logs have
+errors" and context when it is "which logs have bug 57, and where did they run".
+New filters are include; `m` flips the selected one.
 
 `Enter` took the toggle over from `space`, which is now the global peek. A key
 that toggled a filter in this pane and flipped hide mode in the other two is
