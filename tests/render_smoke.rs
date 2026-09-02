@@ -61,7 +61,7 @@ fn view_text(app: &mut App) -> String {
 }
 
 fn press(app: &mut App, code: KeyCode) {
-    app.handle_event(Event::Key(KeyEvent::from(code))).unwrap();
+    app.handle_event(Event::Key(KeyEvent::from(code)));
 }
 
 #[test]
@@ -380,8 +380,7 @@ fn click(app: &mut App, kind: MouseEventKind, column: u16) {
         column,
         row: 3,
         modifiers: KeyModifiers::empty(),
-    }))
-    .unwrap();
+    }));
 }
 
 #[test]

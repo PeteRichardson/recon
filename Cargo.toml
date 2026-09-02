@@ -47,12 +47,6 @@ needless_pass_by_value = "allow"
 # that only happen to agree.
 match_same_arms = "allow"
 
-# Both sites are `handle_events`, whose `Result` is interface symmetry across
-# the widgets — `FileNav`'s can fail, `FileView`'s currently cannot. Narrowing
-# the one that cannot would make the two panes' dispatch differ in shape for
-# no reason, and would have to be widened again the first time it can.
-unnecessary_wraps = "allow"
-
 # `FilterList::preferred_height`/`preferred_width` are methods for the same
 # reason: every pane answers the layout with the same call shape, and taking
 # `&self` is what makes them interchangeable at the call site.
