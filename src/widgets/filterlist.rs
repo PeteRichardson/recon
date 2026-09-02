@@ -8,6 +8,7 @@ use crate::filter::{ActiveFilters, DIM_STYLE, Filter, Sense};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::prelude::{Buffer, Color, Modifier, Rect, Style, Widget};
 use ratatui::widgets::{List, ListItem, ListState, StatefulWidget};
+use unicode_width::UnicodeWidthStr;
 
 /// Rows of chrome the pane needs on top of one row per filter.
 const BORDERS: u16 = 2;
@@ -190,7 +191,7 @@ impl FilterList {
     /// to hold it.
     pub fn preferred_width(&self, filters: &ActiveFilters) -> u16 {
         let longest = (0..filters.row_count())
-            .map(|row| Self::row_text(filters, row).chars().count())
+            .map(|row| UnicodeWidthStr::width(Self::row_text(filters, row).as_str()))
             .max()
             .unwrap_or(0);
         u16::try_from(longest + BORDERS as usize).unwrap_or(u16::MAX)
@@ -402,6 +403,23 @@ mod tests {
         assert!(
             list.preferred_width(&long) > list.preferred_width(&short),
             "width should grow with the longest pattern"
+        );
+    }
+
+    /// A pattern can hold wide glyphs as readily as a filename can, and this
+    /// pane sizes itself the same way the navigator does — so it needs the
+    /// same measurement (#97).
+    #[test]
+    fn preferred_width_counts_display_columns_not_chars() {
+        let filters = set_of(&["日本語"], &[]);
+        let list = FilterList::default();
+
+        let row = FilterList::row_text(&filters, 0);
+        assert!(
+            usize::from(list.preferred_width(&filters))
+                >= UnicodeWidthStr::width(row.as_str()) + BORDERS as usize,
+            "too narrow for {row:?} at {} columns",
+            UnicodeWidthStr::width(row.as_str())
         );
     }
 

@@ -8,6 +8,7 @@ use std::fs::File;
 use std::io::{BufRead, BufReader, Cursor, Read};
 use std::path::Path;
 use tui_textarea::{CursorMove, Input, Key, Scrolling, TextArea};
+use unicode_width::UnicodeWidthStr;
 
 /// Lines read for a preview.
 ///
@@ -930,14 +931,15 @@ fn format_modified(time: std::time::SystemTime) -> Option<String> {
 fn listing_row(entry: &Entry, name_width: usize) -> String {
     let size = entry.size.map_or_else(|| "-".to_string(), format_size);
     let modified = entry.modified.and_then(format_modified).unwrap_or_default();
-    format!(
-        "{:<name_width$}  {:>SIZE_COLUMN$}  {}",
-        entry.display(),
-        size,
-        modified
-    )
-    .trim_end()
-    .to_string()
+    // Padded by hand rather than with `{:<name_width$}`, which counts `char`s.
+    // `name_width` is terminal columns, so a CJK name would otherwise be padded
+    // as though its ideographs were one column each and push its own size
+    // column one place right per glyph (#97).
+    let name = entry.display();
+    let pad = " ".repeat(name_width.saturating_sub(UnicodeWidthStr::width(name.as_str())));
+    format!("{name}{pad}  {size:>SIZE_COLUMN$}  {modified}")
+        .trim_end()
+        .to_string()
 }
 
 fn directory_listing(path: &Path, max_lines: usize) -> Preview {
@@ -955,7 +957,7 @@ fn directory_listing(path: &Path, max_lines: usize) -> Preview {
     // without every listing being as wide as the widest possible name.
     let name_width = shown
         .iter()
-        .map(|entry| entry.display().chars().count())
+        .map(|entry| UnicodeWidthStr::width(entry.display().as_str()))
         .max()
         .unwrap_or(0)
         .min(NAME_COLUMN_MAX);
@@ -2276,6 +2278,39 @@ mod tests {
         assert!(
             !text.contains(".."),
             "a look-ahead should not offer `..`, which is not actionable here: {text}"
+        );
+    }
+
+    /// The listing pads the name column so the size column lines up. Pad by
+    /// `char` count and a CJK name pushes its own size column one place right
+    /// per ideograph, so the columns stop being columns (#97).
+    ///
+    /// Both halves of the fix are needed and this fails if either is missing:
+    /// `name_width` must be measured in columns, *and* the padding must be
+    /// applied in columns — `{:<width$}` counts chars.
+    #[test]
+    fn the_listing_name_column_aligns_across_wide_glyphs() {
+        let named = |name: &str| Entry {
+            name: name.into(),
+            kind: crate::widgets::filenav::Kind::Plain,
+            size: Some(1),
+            modified: None,
+        };
+        // Both names are 10 terminal columns wide: 3 ideographs (6) + `.txt`,
+        // against 10 ASCII characters. Padded to 12, both rows must come out
+        // the same width — with `modified` empty, the row is exactly the padded
+        // name plus a fixed size column, so total width *is* the alignment.
+        let wide = named("日本語.txt");
+        let ascii = named("ascii.txt0");
+        assert_eq!(UnicodeWidthStr::width("日本語.txt"), 10);
+
+        let wide_row = listing_row(&wide, 12);
+        let ascii_row = listing_row(&ascii, 12);
+
+        assert_eq!(
+            UnicodeWidthStr::width(wide_row.as_str()),
+            UnicodeWidthStr::width(ascii_row.as_str()),
+            "the size columns do not start at the same place\n  wide: {wide_row:?}\n ascii: {ascii_row:?}"
         );
     }
 

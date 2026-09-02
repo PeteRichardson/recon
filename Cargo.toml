@@ -91,6 +91,12 @@ log = "0.4.33"
 color-eyre = "0.6.5"
 tui-textarea-2 = { version = "0.12.1", features = ["search"] }
 regex = "1"
+# Layout has to measure terminal columns, not chars: a CJK ideograph or an emoji
+# occupies two columns, so a pane sized by `char` count comes out about half the
+# width it needs and clips every row (#97). Costs no new crate — ratatui already
+# pulls this in, and the four sites that measure text now agree with the renderer
+# that draws it.
+unicode-width = "0.2"
 jiff = "0.2.35"
 serde = { version = "1.0.229", features = ["derive"] }
 # Read-only on purpose: `default-features = false` drops the `display` feature,
