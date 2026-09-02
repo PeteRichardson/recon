@@ -55,10 +55,18 @@ pub struct Config {
 
     /// Command template `o` runs, e.g. `zed {project} {file}:{line}`.
     ///
-    /// `Option`, not a `default_value`: the compiled-in default lives at the
-    /// bottom of [`editor::Templates::resolve`]'s ladder, below `$VISUAL` and
-    /// `$EDITOR`. A clap default would fill this in before the file layer ever
-    /// ran and win every argument it was never meant to enter.
+    /// Falls back to the `[editor]` stanza in `config.toml`, then `$VISUAL`,
+    /// then `$EDITOR`, then a built-in default.
+    //
+    // Below the `///` line on purpose (#91): everything from here down is for
+    // whoever maintains the precedence chain, and clap would print a `///` verbatim
+    // into `--help`. Same split, and the same reason, as the `about = None` on the
+    // struct above.
+    //
+    // `Option`, not a `default_value`: the compiled-in default lives at the bottom
+    // of `editor::Templates::resolve`'s ladder, below `$VISUAL` and `$EDITOR`. A
+    // clap default would fill this in before the file layer ever ran and win every
+    // argument it was never meant to enter.
     #[arg(long, env = "RECON_EDITOR", value_name = "TEMPLATE")]
     pub editor: Option<String>,
 
@@ -74,8 +82,13 @@ pub struct Config {
     /// Print a ready-to-paste `[editor]` stanza and exit. Takes a flavour —
     /// `zed`, `vscode`, `wezterm-nvim`, … — or `auto` to guess from `$TERM_PROGRAM`.
     ///
-    /// Prints and nothing else: recon never writes `config.toml`, and it will
-    /// not write a shell rc either.
+    /// Prints to stdout and changes nothing on disk: copy the stanza into your
+    /// `config.toml` yourself.
+    //
+    // The user-facing half of "recon never writes `config.toml`" (#91). The
+    // decision itself is enforced in `Cargo.toml`, which drops toml's `display`
+    // feature so the serializer does not exist in this build — a reader of
+    // `--help` needs the promise, not the mechanism.
     #[arg(
         long,
         value_name = "FLAVOUR",
@@ -444,6 +457,67 @@ mod tests {
         let path = dir.join(name);
         fs::write(&path, contents).expect("write config fixture");
         path
+    }
+
+    // ---- what `--help` shows a user ------------------------------------
+
+    /// `--help` is end-user documentation, and rationale aimed at whoever
+    /// maintains the precedence chain must not leak into it (#91).
+    ///
+    /// The struct itself already had this right — `about = None` is there so
+    /// its doc comment stays out of `--help` — but the same split was never
+    /// carried down to the fields, so `--editor` printed a paragraph about why
+    /// it is an `Option` rather than a `default_value`, complete with a rustdoc
+    /// intra-doc link rendered raw at a private module path.
+    ///
+    /// Checks the rendered text rather than the source: a `//` comment that
+    /// drifts back to `///` is exactly the regression, and only clap's own
+    /// output can see it. `-h` was never affected — clap takes only the first
+    /// paragraph — so this asserts against the long help specifically.
+    #[test]
+    fn long_help_carries_no_maintainer_rationale() {
+        use clap::CommandFactory;
+        let help = Config::command().render_long_help().to_string();
+
+        // A raw intra-doc link. Renders as a hyperlink in rustdoc and as
+        // literal brackets-and-backticks in a terminal, always at a path the
+        // reader cannot reach.
+        assert!(
+            !help.contains("[`"),
+            "`--help` contains a rustdoc intra-doc link:\n{help}"
+        );
+        // Phrases that only mean anything to someone reading this file.
+        for jargon in [
+            "default_value",
+            "clap default",
+            "the file layer",
+            "`Option`, not a",
+        ] {
+            assert!(
+                !help.contains(jargon),
+                "`--help` explains {jargon:?} to end users:\n{help}"
+            );
+        }
+    }
+
+    /// The flags still document themselves — the fix is to move the rationale
+    /// out, not to strip the help text down to nothing.
+    #[test]
+    fn long_help_still_describes_every_flag() {
+        use clap::CommandFactory;
+        let help = Config::command().render_long_help().to_string();
+
+        for expected in [
+            "Command template `o` runs",
+            "Command template `O` runs",
+            "$VISUAL",
+            "ready-to-paste",
+        ] {
+            assert!(
+                help.contains(expected),
+                "`--help` no longer mentions {expected:?}:\n{help}"
+            );
+        }
     }
 
     // ---- the CLI layer -------------------------------------------------
