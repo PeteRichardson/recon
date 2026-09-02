@@ -589,17 +589,29 @@ impl App<'_> {
     }
 
     /// This is the main event loop for the app.
+    ///
+    /// Draw once, then only when something happened. It used to redraw
+    /// unconditionally, which meant 60 full render passes a second on a
+    /// terminal nobody was touching (#85). ratatui diffs the cell buffer, so
+    /// the *writes* stayed small and the cost was invisible — but the render
+    /// tree is not diffed away, and every one of those passes still rebuilt
+    /// the navigator's `List`, every `Entry::display()` string, and every
+    /// filter row. For a log viewer that sits open on a desk all day that is
+    /// the difference between idling at 0% and idling at a few percent.
     pub fn run<B>(mut self, mut terminal: Terminal<B>) -> Result<()>
     where
         B: Backend,
         B::Error: std::error::Error + Send + Sync + 'static,
     {
+        let mut dirty = true;
         while self.is_running() {
-            terminal.draw(|frame| {
-                let area = frame.area();
-                frame.render_widget(&mut self, area);
-            })?;
-            self.handle_events()?;
+            if dirty {
+                terminal.draw(|frame| {
+                    let area = frame.area();
+                    frame.render_widget(&mut self, area);
+                })?;
+            }
+            dirty = self.handle_events()?;
         }
         Ok(())
     }
@@ -608,25 +620,41 @@ impl App<'_> {
         matches!(self.state, AppState::Running)
     }
 
-    /// Handle any events that have occurred since the last time the app was rendered.
-    fn handle_events(&mut self) -> Result<()> {
+    /// Handle any events that have occurred since the last time the app was
+    /// rendered, and say whether anything changed.
+    ///
+    /// Still `Result`, unlike the rest of the chain: `event::poll` and
+    /// `event::read` are genuine I/O and can genuinely fail. That is the whole
+    /// distinction #80 draws — a `Result` here means something, precisely
+    /// because the four functions below it no longer carry one they never use.
+    ///
+    /// The 1/60 s timeout stays. It is now a *wake* interval rather than a
+    /// frame interval: the loop still comes back 60 times a second to check
+    /// the editor channel, and draws only if it found something.
+    fn handle_events(&mut self) -> Result<bool> {
         // Here rather than in `handle_event`: an editor exits on its own
         // schedule, so nothing the user does is guaranteed to arrive after it.
-        // This loop already wakes 60 times a second whether or not anything
-        // happened, which is exactly the property the report needs.
-        self.drain_editor_outcomes();
+        let drained = self.drain_editor_outcomes();
         let timeout = Duration::from_secs_f32(1.0 / 60.0);
         if event::poll(timeout)? {
             let event = event::read()?;
-            self.handle_event(event)?;
+            self.handle_event(event);
+            return Ok(true);
         }
-        Ok(())
+        Ok(drained)
     }
 
     /// Dispatch a single event: app-wide keys first, then the focused widget.
     ///
     /// Split out from the polling loop so that it can be driven directly.
-    pub fn handle_event(&mut self, event: event::Event) -> Result<()> {
+    ///
+    /// Returns nothing. Dispatch cannot fail: every arm either mutates `App`
+    /// or hands the event to a pane that also cannot fail. It used to return
+    /// `Result<()>`, which cost a `?` at both call sites and an `.unwrap()` in
+    /// roughly a hundred tests, and taught a reader to skim past `?` in a file
+    /// where `Config::load`, `editor_command` and `set_highlight` genuinely can
+    /// fail (#80).
+    pub fn handle_event(&mut self, event: event::Event) {
         // The status message lasts until the next *keypress*, and deliberately
         // not until the next event: mouse capture is on, so a mouse moving
         // across the terminal would wipe "zed: No such file or directory" off
@@ -640,7 +668,7 @@ impl App<'_> {
             if let event::Event::Key(key) = event {
                 self.handle_search_key(key);
             }
-            return Ok(());
+            return;
         }
 
         // The overlay is dismissed by the next key, and that key does nothing
@@ -659,7 +687,7 @@ impl App<'_> {
             if matches!(event, event::Event::Key(_)) {
                 self.help = false;
             }
-            return Ok(());
+            return;
         }
 
         // The bounce guard (#48). `Enter` both commits a prompt and toggles a
@@ -674,7 +702,7 @@ impl App<'_> {
             && std::mem::take(&mut self.swallow_next_enter)
             && key.code == KeyCode::Enter
         {
-            return Ok(());
+            return;
         }
 
         if let event::Event::Key(key) = event {
@@ -685,11 +713,11 @@ impl App<'_> {
                 // here.
                 KeyCode::Char('q') if key.modifiers.is_empty() => {
                     self.state = AppState::Quit;
-                    return Ok(());
+                    return;
                 }
                 KeyCode::Tab => {
                     self.focus_next();
-                    return Ok(());
+                    return;
                 }
                 // `?` and not `F1`: it is the conventional help key in every
                 // pager and file manager this app borrows from, and it is free
@@ -706,7 +734,7 @@ impl App<'_> {
                         .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
                 {
                     self.help = true;
-                    return Ok(());
+                    return;
                 }
                 // The filter pane has nothing to search over, so the prompt
                 // is not opened at all while it has focus — opening it and
@@ -718,7 +746,7 @@ impl App<'_> {
                 // view (#25).
                 KeyCode::Char('/') if key.modifiers.is_empty() && self.focus != Focus::Filters => {
                     self.search = Some(SearchPrompt::default());
-                    return Ok(());
+                    return;
                 }
                 // Global, like `!`: the search is app state, not the file
                 // view's, and having to focus a particular pane to switch it
@@ -751,7 +779,7 @@ impl App<'_> {
                     if self.filters.clear_search() {
                         self.refresh_view();
                     }
-                    return Ok(());
+                    return;
                 }
                 // Global rather than pane-scoped: the user has just searched
                 // and should not have to go and find the filter pane to keep
@@ -772,7 +800,7 @@ impl App<'_> {
                     if self.filters.promote_search() {
                         self.refresh_view();
                     }
-                    return Ok(());
+                    return;
                 }
                 // `f` moves focus; creating a filter is `i` / `x` once the
                 // pane has it. That costs a keystroke from outside the pane
@@ -781,7 +809,7 @@ impl App<'_> {
                 // because opening a prompt is `App`'s to do.
                 KeyCode::Char('f') if key.modifiers.is_empty() => {
                     self.reveal_and_focus(Focus::Filters);
-                    return Ok(());
+                    return;
                 }
                 // Global, and claimed above every pane rather than in any of
                 // them (#48). The whole point of the key is that it means one
@@ -794,7 +822,7 @@ impl App<'_> {
                 // rather than keeping both — see `FilterList::handle_key`.
                 KeyCode::Char(' ') if key.modifiers.is_empty() => {
                     self.toggle_peek();
-                    return Ok(());
+                    return;
                 }
                 KeyCode::Char('!') if key.modifiers.is_empty() => {
                     // Three states, because "nothing is enabled" and "nothing
@@ -810,7 +838,7 @@ impl App<'_> {
                         self.filters.set_all_enabled(true);
                     }
                     self.refresh_view();
-                    return Ok(());
+                    return;
                 }
                 // Scoped to the file view rather than global: `n` in the
                 // navigator is the navigator's key, and hoisting the binding
@@ -833,7 +861,7 @@ impl App<'_> {
                     // which `apply_search` also calls for the same reason.
                     self.promote_truncated_preview();
                     self.step_to_interesting(c == 'N');
-                    return Ok(());
+                    return;
                 }
                 KeyCode::Char('H')
                     if !key
@@ -841,27 +869,27 @@ impl App<'_> {
                         .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
                 {
                     self.toggle_hiding();
-                    return Ok(());
+                    return;
                 }
                 KeyCode::Char('h') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                     self.toggle_hiding();
-                    return Ok(());
+                    return;
                 }
                 KeyCode::Char('b') if key.modifiers.is_empty() => {
                     self.zoom_file_view();
-                    return Ok(());
+                    return;
                 }
                 KeyCode::Char('e') if key.modifiers.is_empty() => {
                     self.reveal_and_focus(Focus::Nav);
-                    return Ok(());
+                    return;
                 }
                 KeyCode::Char('t') if key.modifiers.is_empty() => {
                     self.reveal_and_focus(Focus::View);
-                    return Ok(());
+                    return;
                 }
                 KeyCode::Char('z') if key.modifiers.is_empty() => {
                     self.zoom_focused();
-                    return Ok(());
+                    return;
                 }
                 // Global rather than pane-scoped, like `!` and `p`: the file
                 // the user means is whatever the file view is showing, and
@@ -877,7 +905,7 @@ impl App<'_> {
                 KeyCode::Char('o') if key.modifiers.is_empty() => {
                     let template = self.editor.project.clone();
                     self.open_in_editor(&template, EditorScope::Project);
-                    return Ok(());
+                    return;
                 }
                 // `O` (#41): the same method, the other template, no walk-up.
                 // Everything that makes the key work — resolution, splitting,
@@ -897,7 +925,7 @@ impl App<'_> {
                 {
                     let template = self.editor.file.clone();
                     self.open_in_editor(&template, EditorScope::File);
-                    return Ok(());
+                    return;
                 }
                 _ => {}
             }
@@ -906,7 +934,7 @@ impl App<'_> {
         if let event::Event::Mouse(mouse) = event
             && self.handle_divider(mouse)
         {
-            return Ok(());
+            return;
         }
 
         // Filter pane keys are routed here rather than through the generic
@@ -917,7 +945,7 @@ impl App<'_> {
             && self.focus == Focus::Filters
         {
             self.handle_filter_key(key);
-            return Ok(());
+            return;
         }
 
         // Four file-view keys move the cursor further than a page and so
@@ -939,7 +967,7 @@ impl App<'_> {
         {
             self.promote_truncated_preview();
             self.place_cursor_on_visible_row(target);
-            return Ok(());
+            return;
         }
 
         // The file view upgrades its own truncated preview to a full load on
@@ -948,9 +976,9 @@ impl App<'_> {
         // `perform` — resync here instead, without re-reading the file.
         let was_truncated = self.file_view_truncated();
         let action = match self.focus {
-            Focus::Nav => self.nav.handle_events(event)?,
+            Focus::Nav => self.nav.handle_events(event),
             Focus::View => {
-                self.view.handle_events(event.into())?;
+                self.view.handle_events(event.into());
                 None
             }
             // Unreachable: filter-pane keys returned above, through
@@ -968,7 +996,6 @@ impl App<'_> {
         // Ordinary movement stays inside the window by design, but a page at
         // the edge of the middle third does not — see `window_holds`.
         self.ensure_window();
-        Ok(())
     }
 
     /// Force the file view's truncated preview to a full load, the same
@@ -1096,17 +1123,24 @@ impl App<'_> {
     /// must not block. Only the last message survives — the row holds one line,
     /// and the most recent failure is the one the user is still wondering
     /// about.
-    fn drain_editor_outcomes(&mut self) {
+    ///
+    /// Returns whether it changed anything. An editor exits on its own
+    /// schedule, so this is the one source of change with no keypress behind
+    /// it — which makes it the reason `handle_events` cannot simply report
+    /// "did an event arrive?" and be done.
+    fn drain_editor_outcomes(&mut self) -> bool {
         let Some(outcomes) = self.editor_outcomes.as_ref() else {
-            return;
+            return false;
         };
         let mut latest = None;
         while let Ok(message) = outcomes.try_recv() {
             latest = Some(message);
         }
-        if let Some(text) = latest {
-            self.report(&text, true);
-        }
+        let Some(text) = latest else {
+            return false;
+        };
+        self.report(&text, true);
+        true
     }
 
     /// Carry out an action on behalf of the widget that raised it.
@@ -1783,8 +1817,7 @@ mod tests {
             column,
             row,
             modifiers: KeyModifiers::empty(),
-        }))
-        .unwrap();
+        }));
     }
 
     /// Row 3 is inside the navigator on every fixture area used here, and so
@@ -1940,11 +1973,9 @@ mod tests {
 
         // Walk onto the subdirectory and descend into it.
         for _ in 0..8 {
-            app.handle_event(event::Event::Key(KeyCode::Down.into()))
-                .unwrap();
+            app.handle_event(event::Event::Key(KeyCode::Down.into()));
         }
-        app.handle_event(event::Event::Key(KeyCode::Enter.into()))
-            .unwrap();
+        app.handle_event(event::Event::Key(KeyCode::Enter.into()));
         draw(&mut app);
 
         assert_eq!(app.nav_width(AREA), 55, "navigation overrode the drag");
@@ -2178,7 +2209,7 @@ mod tests {
     }
 
     fn key(app: &mut App, code: KeyCode) {
-        app.handle_event(event::Event::Key(code.into())).unwrap();
+        app.handle_event(event::Event::Key(code.into()));
     }
 
     /// `key`, with Control held.
@@ -2186,8 +2217,7 @@ mod tests {
         app.handle_event(event::Event::Key(event::KeyEvent::new(
             code,
             KeyModifiers::CONTROL,
-        )))
-        .unwrap();
+        )));
     }
 
     fn typed(app: &mut App, text: &str) {
@@ -3393,8 +3423,7 @@ mod tests {
         app.handle_event(event::Event::Key(KeyEvent::new(
             KeyCode::Char('f'),
             KeyModifiers::CONTROL,
-        )))
-        .unwrap();
+        )));
 
         assert!(app.search.is_none(), "Ctrl-f opened a filter prompt");
         assert!(
@@ -3854,8 +3883,7 @@ mod tests {
             app.handle_event(event::Event::Key(KeyEvent::new(
                 KeyCode::Char('f'),
                 KeyModifiers::CONTROL,
-            )))
-            .unwrap();
+            )));
         }
 
         let mut buf = Buffer::empty(area);
@@ -4175,8 +4203,7 @@ mod tests {
         app.handle_event(event::Event::Key(event::KeyEvent::new(
             KeyCode::Char('h'),
             KeyModifiers::CONTROL,
-        )))
-        .unwrap();
+        )));
 
         assert_eq!(view_lines(&app), vec!["beta".to_string()]);
     }
@@ -4922,8 +4949,7 @@ mod tests {
             app.handle_event(event::Event::Key(event::KeyEvent::new(
                 code,
                 KeyModifiers::CONTROL,
-            )))
-            .unwrap();
+            )));
             assert_eq!(app.zoom, None, "a Ctrl- key was taken as a zoom command");
         }
     }
@@ -5481,8 +5507,7 @@ mod tests {
         app.handle_event(event::Event::Key(KeyEvent::new(
             KeyCode::Char('d'),
             KeyModifiers::CONTROL,
-        )))
-        .unwrap();
+        )));
 
         assert_eq!(app.filters.len(), 2, "Ctrl-D deleted a filter");
     }
@@ -5667,8 +5692,7 @@ mod tests {
         app.handle_event(event::Event::Key(KeyEvent::new(
             KeyCode::Char('c'),
             KeyModifiers::CONTROL,
-        )))
-        .unwrap();
+        )));
 
         assert!(app.search.is_none(), "Ctrl-C opened the edit prompt");
     }
@@ -5695,8 +5719,7 @@ mod tests {
         app.handle_event(event::Event::Key(KeyEvent::new(
             KeyCode::Enter,
             KeyModifiers::CONTROL,
-        )))
-        .unwrap();
+        )));
 
         assert!(
             app.filters.filters()[0].enabled,
@@ -6239,8 +6262,7 @@ mod tests {
         app.handle_event(event::Event::Key(event::KeyEvent::new(
             KeyCode::Char('p'),
             KeyModifiers::CONTROL,
-        )))
-        .unwrap();
+        )));
 
         assert!(
             app.filters.is_empty(),
@@ -6350,8 +6372,7 @@ mod tests {
         app.handle_event(event::Event::Key(KeyEvent::new(
             KeyCode::Char('N'),
             KeyModifiers::SHIFT,
-        )))
-        .unwrap();
+        )));
 
         assert_eq!(
             cursor_source(&app),
@@ -6966,6 +6987,52 @@ mod tests {
         assert!(status_line(&mut app).contains("no such file"));
     }
 
+    // An editor exits on its own schedule, so its report is the one change
+    // that arrives with no keypress behind it. That makes `drain_editor_outcomes`
+    // the only thing standing between "redraw when something happened" and a
+    // status message that sits invisible until the user happens to press a key
+    // — which is why #85's conditional loop rests entirely on these three.
+
+    /// Nothing arrived, so nothing on screen changed.
+    #[test]
+    fn draining_an_empty_editor_channel_is_not_a_change() {
+        let (mut app, _root) = app_over_project("drain_empty", "alpha\n");
+        let (_tx, rx) = std::sync::mpsc::channel::<String>();
+        app.editor_outcomes = Some(rx);
+
+        assert!(!app.drain_editor_outcomes());
+    }
+
+    /// A drained message rewrites the status row, so the frame is stale.
+    #[test]
+    fn draining_an_editor_outcome_is_a_change() {
+        let (mut app, _root) = app_over_project("drain_message", "alpha\n");
+        let (tx, rx) = std::sync::mpsc::channel();
+        app.editor_outcomes = Some(rx);
+        tx.send("zed: No such file or directory".to_string())
+            .expect("send outcome");
+
+        assert!(app.drain_editor_outcomes());
+        assert!(status_line(&mut app).contains("No such file"));
+    }
+
+    /// Only the last message survives the drain — but the drain still happened,
+    /// so it still reports a change. Both halves matter: a loop told "no change"
+    /// here would leave the surviving message unpainted.
+    #[test]
+    fn draining_several_outcomes_keeps_the_last_and_still_reports_a_change() {
+        let (mut app, _root) = app_over_project("drain_several", "alpha\n");
+        let (tx, rx) = std::sync::mpsc::channel();
+        app.editor_outcomes = Some(rx);
+        tx.send("first".to_string()).expect("send first");
+        tx.send("second".to_string()).expect("send second");
+
+        assert!(app.drain_editor_outcomes());
+        let row = status_line(&mut app);
+        assert!(row.contains("second"), "the newest report is the one shown");
+        assert!(!row.contains("first"));
+    }
+
     /// Transient means transient: the next keypress takes the row back.
     #[test]
     fn the_status_message_lasts_until_the_next_keypress() {
@@ -7029,8 +7096,7 @@ mod tests {
         app.handle_event(event::Event::Key(event::KeyEvent::new(
             code,
             KeyModifiers::SHIFT,
-        )))
-        .unwrap();
+        )));
     }
 
     /// The headline acceptance criterion: `O` opens the file *alone*, at the
@@ -7583,8 +7649,7 @@ mod tests {
         app.handle_event(event::Event::Key(event::KeyEvent::new(
             KeyCode::Char('?'),
             KeyModifiers::SHIFT,
-        )))
-        .unwrap();
+        )));
 
         assert!(app.help, "Shift-? did not reach the help binding");
     }

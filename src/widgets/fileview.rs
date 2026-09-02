@@ -561,7 +561,10 @@ impl FileView<'_> {
         self.textarea.set_cursor_position((row, 0));
     }
 
-    pub fn handle_events(&mut self, input: Input) -> Result<()> {
+    /// Not a `Result`: every arm is a cursor move or a local toggle, and none
+    /// of them can fail (#80). The one genuinely fallible thing this pane does
+    /// — `set_highlight` — is called from `App::apply_view`, not from here.
+    pub fn handle_events(&mut self, input: Input) {
         // The user is interacting with the view, so a preview is no longer
         // enough: they can now scroll past the end of it.
         if self.truncated {
@@ -688,7 +691,6 @@ impl FileView<'_> {
             } => self.textarea.scroll(Scrolling::PageDown),
             _ => (),
         }
-        Ok(())
     }
 }
 
@@ -1322,8 +1324,7 @@ mod tests {
         view.handle_events(Input {
             key,
             ..Default::default()
-        })
-        .unwrap();
+        });
     }
 
     fn rendered(view: &mut FileView<'_>) -> String {
@@ -1503,8 +1504,7 @@ mod tests {
         view.handle_events(Input {
             key: Key::Down,
             ..Default::default()
-        })
-        .unwrap();
+        });
 
         // The upgrade goes through `load`, which is uncapped — so the whole
         // file arrives regardless of the cap the preview was taken with.
@@ -1521,8 +1521,7 @@ mod tests {
         view.handle_events(Input {
             key: Key::Down,
             ..Default::default()
-        })
-        .unwrap();
+        });
 
         assert_eq!(view.textarea.lines().len(), 3);
     }

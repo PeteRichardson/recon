@@ -333,33 +333,38 @@ impl FileNav<'_> {
         self.preview_selection()
     }
 
-    pub fn handle_events(&mut self, event: Event) -> Result<Option<Action>> {
+    /// Returns what the keypress asked `App` to do, if anything.
+    ///
+    /// Not a `Result`: nothing in here can fail. It used to return one for
+    /// symmetry with the rest of the chain, which is exactly what clippy's
+    /// `unnecessary_wraps` was flagging (#80).
+    pub fn handle_events(&mut self, event: Event) -> Option<Action> {
         if let Event::Key(key) = event {
             match key.code {
                 KeyCode::Up | KeyCode::Char('k') => {
                     self.select_previous();
-                    return Ok(self.preview_selection());
+                    return self.preview_selection();
                 }
                 KeyCode::Down | KeyCode::Char('j') => {
                     self.select_next();
-                    return Ok(self.preview_selection());
+                    return self.preview_selection();
                 }
                 // `h`/`l` act on the pane, mirroring the movement they mean
                 // in a file manager. `l` is `Enter` in every case, including
                 // on a file: a key that works on some rows and silently does
                 // nothing on others is worse than one that always does the
                 // obvious thing.
-                KeyCode::Left | KeyCode::Char('h') => return Ok(self.go_to_parent()),
+                KeyCode::Left | KeyCode::Char('h') => return self.go_to_parent(),
                 KeyCode::Enter | KeyCode::Right | KeyCode::Char('l') => {
-                    return Ok(self.activate_selection());
+                    return self.activate_selection();
                 }
-                KeyCode::Char('n') => return Ok(self.repeat_search(false)),
-                KeyCode::Char('N') => return Ok(self.repeat_search(true)),
+                KeyCode::Char('n') => return self.repeat_search(false),
+                KeyCode::Char('N') => return self.repeat_search(true),
                 _ => {}
             }
         }
 
-        Ok(None)
+        None
     }
 
     /// Columns needed to show the longest entry in full.
@@ -611,7 +616,7 @@ mod tests {
     use crossterm::event::KeyEvent;
 
     fn press(nav: &mut FileNav<'_>, code: KeyCode) -> Option<Action> {
-        nav.handle_events(Event::Key(KeyEvent::from(code))).unwrap()
+        nav.handle_events(Event::Key(KeyEvent::from(code)))
     }
 
     fn enter(nav: &mut FileNav<'_>) -> Option<Action> {
@@ -1885,12 +1890,10 @@ mod tests {
 
         let mut nav = FileNav::new("Cargo.toml".to_string());
         nav.state.select(Some(0));
-        nav.handle_events(Event::Key(KeyEvent::from(KeyCode::Char('j'))))
-            .unwrap();
+        nav.handle_events(Event::Key(KeyEvent::from(KeyCode::Char('j'))));
         assert_eq!(nav.state.selected(), Some(1), "j should move down");
 
-        nav.handle_events(Event::Key(KeyEvent::from(KeyCode::Char('k'))))
-            .unwrap();
+        nav.handle_events(Event::Key(KeyEvent::from(KeyCode::Char('k'))));
         assert_eq!(nav.state.selected(), Some(0), "k should move back up");
     }
 
