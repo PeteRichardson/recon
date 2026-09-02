@@ -12,9 +12,11 @@
 //! filter toggle re-answers a whole folder with no I/O. See the design at
 //! `docs/specs/2026-09-02-navigator-filter-matches-design.md`.
 
-use crate::filter::Matcher;
+use crate::filter::{Matcher, Owner};
 use std::io::BufRead;
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::SystemTime;
 
 /// How far one file has been read, and what its lines matched.
 ///
@@ -28,6 +30,60 @@ pub struct Progress {
     pub seen: Vec<u64>,
     pub scanned_to: u64,
     pub eof: bool,
+}
+
+/// `(mtime, len)` of a file when it was scanned. A mismatch on re-stat means
+/// the record is for a file that no longer exists in that form.
+pub type Stamp = (SystemTime, u64);
+
+/// Read a file's [`Stamp`].
+///
+/// # Errors
+/// Whatever `fs::metadata` reports — a missing file, no permission.
+pub fn stamp(path: &Path) -> std::io::Result<Stamp> {
+    let meta = std::fs::metadata(path)?;
+    Ok((meta.modified()?, meta.len()))
+}
+
+/// One file's scan state, held in `App`'s cache.
+///
+/// `stamp` is `None` when the file could not be stat'd; two `None`s compare
+/// equal, so an unreadable file is not re-tried on every poll.
+#[derive(Debug, Clone)]
+pub struct Record {
+    pub stamp: Option<Stamp>,
+    pub progress: Progress,
+}
+
+impl Record {
+    /// Whether the file matches under `m`, if that can be known from what has
+    /// been read. `None` means resume the scan from `progress.scanned_to`.
+    ///
+    /// Three outcomes, and the middle one is what makes early exit and the
+    /// cache coexist: a selecting bitset answers yes at once; `eof` with none
+    /// answers no; a partial read with none is the only case that costs I/O,
+    /// and only for the unread remainder.
+    #[must_use]
+    pub fn answer(&self, m: &Matcher) -> Option<bool> {
+        if self.progress.seen.iter().any(|&bits| m.selects(bits)) {
+            return Some(true);
+        }
+        if self.progress.eof {
+            return Some(false);
+        }
+        None
+    }
+
+    /// Which filter selected the file, for its colour: the highest-ranked
+    /// owner across every seen bitset.
+    #[must_use]
+    pub fn owner(&self, m: &Matcher) -> Option<Owner> {
+        self.progress
+            .seen
+            .iter()
+            .filter_map(|&bits| m.owner(bits))
+            .min_by_key(|owner| owner.rank())
+    }
 }
 
 /// Read lines from `reader` — already positioned at `from.scanned_to` — and
@@ -236,5 +292,80 @@ mod tests {
         );
 
         assert!(progress.seen.contains(&0b1));
+    }
+
+    // ---- records ---------------------------------------------------------
+
+    fn record(seen: &[u64], eof: bool) -> Record {
+        Record {
+            stamp: None,
+            progress: Progress {
+                seen: seen.to_vec(),
+                scanned_to: 0,
+                eof,
+            },
+        }
+    }
+
+    #[test]
+    fn a_seen_selecting_bitset_answers_yes_without_reading() {
+        let m = matcher(&["alpha"], &[]);
+        assert_eq!(record(&[0, 0b1], false).answer(&m), Some(true));
+    }
+
+    #[test]
+    fn eof_with_no_selecting_bitset_answers_no() {
+        let m = matcher(&["alpha"], &[]);
+        assert_eq!(record(&[0], true).answer(&m), Some(false));
+    }
+
+    #[test]
+    fn partial_with_no_selecting_bitset_needs_a_resume() {
+        let m = matcher(&["alpha"], &[]);
+        assert_eq!(record(&[0], false).answer(&m), None);
+    }
+
+    /// The same bitsets, a different mask: this is the toggle that costs no I/O.
+    #[test]
+    fn the_answer_follows_the_mask_not_the_scan() {
+        let mut set = ActiveFilters::new();
+        set.add("alpha").expect("valid pattern");
+        set.add_excluding("noise").expect("valid pattern");
+        let rec = record(&[0b11], true); // every alpha line also had noise
+
+        assert_eq!(rec.answer(&set.matcher().expect("selects")), Some(false));
+        set.set_enabled(1, false);
+        assert_eq!(rec.answer(&set.matcher().expect("selects")), Some(true));
+    }
+
+    #[test]
+    fn the_owner_is_the_highest_ranked_across_every_seen_bitset() {
+        let mut set = ActiveFilters::new();
+        set.add("alpha").expect("valid pattern");
+        set.add("beta").expect("valid pattern");
+        set.set_search("gamma").expect("valid pattern");
+        let m = set.matcher().expect("selects");
+
+        assert_eq!(
+            record(&[0b010, 0b001], false).owner(&m),
+            Some(Owner::Filter(0))
+        );
+        assert_eq!(
+            record(&[0b010, 0b100], false).owner(&m),
+            Some(Owner::Search)
+        );
+        assert_eq!(record(&[0], true).owner(&m), None);
+    }
+
+    #[test]
+    fn stamp_reads_mtime_and_length() {
+        let dir = std::path::Path::new("target/test-scan");
+        std::fs::create_dir_all(dir).expect("fixture dir");
+        let path = dir.join("stamp.txt");
+        std::fs::write(&path, "hello").expect("write");
+
+        let (_, len) = stamp(&path).expect("stat");
+        assert_eq!(len, 5);
+        assert!(stamp(&dir.join("missing.txt")).is_err());
     }
 }
