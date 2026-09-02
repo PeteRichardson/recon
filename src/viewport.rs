@@ -230,10 +230,18 @@ impl App<'_> {
         // is the hottest path in the app — every filter mutation and every
         // navigator preview reaches it — so a future regression here should
         // cost a stale highlight, not a panic that takes the whole TUI down.
-        // `let _ =` accepts that cosmetic failure mode deliberately, rather
+        // Swallowing it accepts that cosmetic failure mode deliberately, rather
         // than escalating it into one this codebase's own tests are better
-        // suited to catch.
-        let _ = view.set_highlight(highlight.as_deref());
+        // suited to catch — but it is logged on the way past (#83). "Cannot
+        // fail today" is a statement about today, and the symptom if it ever
+        // does is a highlight that quietly stops updating, with nothing
+        // anywhere to say why.
+        if let Err(err) = view.set_highlight(highlight.as_deref()) {
+            log::warn!(
+                "search highlight not applied for {:?}: {err}",
+                highlight.as_deref().unwrap_or(""),
+            );
+        }
         // Only a rebuild resets the viewport, so only a rebuild needs the
         // cursor nudged back onto `screen_row` — the whole point of
         // `scroll_cursor_to_row` is undoing that reset. Requesting it

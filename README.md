@@ -222,15 +222,37 @@ Starting in a directory of large logs does not read one of them in full.
 A file argument that does not exist still reports itself in the view pane,
 rather than silently opening whichever file happens to sort first.
 
-### A note on stderr
+### Logging
 
-`recon` logs its parsed config at DEBUG to stderr before starting the TUI, so
-you'll see one line like `[DEBUG] Config { file: "app.log" }` on launch.
-Redirect it if it's in your way:
+`recon` is quiet by default: nothing is written unless something actually goes
+wrong, and warnings are the only level that reaches you unasked.
+
+`RUST_LOG` selects what is recorded, using the usual
+[`env_logger`](https://docs.rs/env_logger) syntax:
 
 ```sh
-recon app.log 2>/dev/null
+RUST_LOG=recon=debug recon app.log
 ```
+
+Log output goes to **stderr** by default, which is a problem once the TUI is up:
+stderr writes to the normal screen, and `recon` is holding the alternate one, so
+a line logged mid-session is painted over the interface until the next redraw.
+Set `RECON_LOG` to a file to avoid that, and to capture the in-session messages
+at all:
+
+```sh
+RECON_LOG=/tmp/recon.log RUST_LOG=recon=debug recon app.log
+```
+
+The file is truncated on each run. If it cannot be opened, `recon` says so and
+carries on logging to stderr rather than refusing to start.
+
+What gets recorded:
+
+| Level | What |
+| --- | --- |
+| `warn` | a file or directory that could not be read, and why; an editor that exited badly or could not be waited on |
+| `debug` | which `config.toml` was read, or where `recon` looked and found none |
 
 ---
 

@@ -741,15 +741,24 @@ fn read_lines(path: &Path) -> Vec<String> {
     if path.is_dir() {
         return directory_listing(path, usize::MAX).lines;
     }
+    // Logged as well as shown (#83). The pane gets `<{err}>` in place of the
+    // file, which tells the user *that* it failed; the log is where the
+    // full path lives, and the pane's title is elided when the pane is narrow.
     let file = match File::open(path) {
         Ok(file) => file,
-        Err(err) => return vec![format!("<{err}>")],
+        Err(err) => {
+            log::warn!("cannot open {}: {err}", path.display());
+            return vec![format!("<{err}>")];
+        }
     };
 
     let mut reader = BufReader::new(file);
     let (binary, head) = match sniff_binary(&mut reader) {
         Ok(sniffed) => sniffed,
-        Err(err) => return vec![format!("<{err}>")],
+        Err(err) => {
+            log::warn!("cannot read the start of {}: {err}", path.display());
+            return vec![format!("<{err}>")];
+        }
     };
     if binary {
         return vec![BINARY_MESSAGE.to_string()];
@@ -763,7 +772,17 @@ fn read_lines(path: &Path) -> Vec<String> {
         match read_lossy_line(&mut reader, &mut buf) {
             Ok(Some(line)) => lines.push(line),
             Ok(None) => break,
-            Err(err) => return vec![format!("<{err}>")],
+            Err(err) => {
+                // The line number is worth having: this one fails partway
+                // through a file that opened cleanly, so "which line" is the
+                // only thing that distinguishes it from the two above.
+                log::warn!(
+                    "cannot read {} at line {}: {err}",
+                    path.display(),
+                    lines.len() + 1,
+                );
+                return vec![format!("<{err}>")];
+            }
         }
     }
     lines
