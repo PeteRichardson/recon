@@ -708,7 +708,7 @@ pub(crate) mod double {
     }
 
     impl RecordingLauncher {
-        pub fn failing(message: &str) -> Self {
+        pub(crate) fn failing(message: &str) -> Self {
             Self {
                 fail_with: Some(message.to_string()),
                 ..Self::default()
@@ -717,7 +717,7 @@ pub(crate) mod double {
 
         /// The single command recorded, or a panic naming what was there
         /// instead. Every test here expects exactly one.
-        pub fn only_command(&self) -> Vec<String> {
+        pub(crate) fn only_command(&self) -> Vec<String> {
             let commands = self
                 .commands
                 .lock()
@@ -726,7 +726,7 @@ pub(crate) mod double {
             commands[0].clone()
         }
 
-        pub fn is_empty(&self) -> bool {
+        pub(crate) fn is_empty(&self) -> bool {
             self.commands
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)

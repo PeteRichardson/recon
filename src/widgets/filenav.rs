@@ -12,7 +12,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 /// The entry that climbs to the parent directory.
-pub const PARENT: &str = "..";
+pub(crate) const PARENT: &str = "..";
 
 /// Where the cursor lands after the listing is rebuilt.
 ///

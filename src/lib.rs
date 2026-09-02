@@ -1,3 +1,11 @@
+//! `recon`: a terminal log viewer.
+
+// The public surface stays honest as more `_range` variants land. `pub`
+// suppresses the dead-code warning outright in a lib crate, which is how five
+// `Document` methods, `ActiveFilters::set_enabled` and two `FileView` methods
+// reached #76 without ever surfacing on their own.
+#![warn(unreachable_pub)]
+
 use color_eyre::Result;
 use crossterm::event::{self, KeyCode, KeyModifiers};
 use ratatui::prelude::{Backend, Buffer, Color, Constraint, Layout, Rect, Style, Terminal, Widget};
