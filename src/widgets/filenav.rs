@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use unicode_width::UnicodeWidthStr;
 
 /// The entry that climbs to the parent directory.
-pub const PARENT: &str = "..";
+pub(crate) const PARENT: &str = "..";
 
 /// Where the cursor lands after the listing is rebuilt.
 ///

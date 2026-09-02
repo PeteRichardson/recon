@@ -1,6 +1,6 @@
-pub mod filenav;
-pub mod fileview;
-pub mod filterlist;
+pub(crate) mod filenav;
+pub(crate) mod fileview;
+pub(crate) mod filterlist;
 
 use ratatui::prelude::{Color, Style};
 use ratatui::widgets::{Block, BorderType};
@@ -21,7 +21,7 @@ use std::path::PathBuf;
 ///
 /// One helper rather than four call sites styling their own blocks — the
 /// filter pane alone builds two, and they are exactly where a copy would drift.
-pub fn pane_block<'a>(title: impl Into<ratatui::text::Line<'a>>, active: bool) -> Block<'a> {
+pub(crate) fn pane_block<'a>(title: impl Into<ratatui::text::Line<'a>>, active: bool) -> Block<'a> {
     let block = Block::bordered().title(title);
     if active {
         block
@@ -53,7 +53,7 @@ pub enum Action {
 ///
 /// `Nav` is the default because the navigator is where a session starts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum Focus {
+pub(crate) enum Focus {
     #[default]
     Nav,
     View,
@@ -67,7 +67,7 @@ impl Focus {
     /// deliberate left-to-right, top-to-bottom reading of the layout, and an
     /// arithmetic version would silently reorder if the variants were ever
     /// rearranged for an unrelated reason.
-    pub fn next(self) -> Self {
+    pub(crate) fn next(self) -> Self {
         match self {
             Self::Nav => Self::View,
             Self::View => Self::Filters,
@@ -93,7 +93,7 @@ impl Focus {
 /// module (see `filter_index_for_row`, which is deliberately the single place
 /// that translation happens).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FilterCommand {
+pub(crate) enum FilterCommand {
     Toggle(usize),
     Delete(usize),
     /// Reopen the prompt over this filter's existing pattern, to overwrite it

@@ -15,17 +15,20 @@ pub enum Mode {
 
 /// A loaded file, with a cached verdict per line.
 ///
-/// Evaluating a filter set is O(lines × filters), which is not free on a large
-/// log, so verdicts are computed when the lines or the filters change rather
-/// than once per frame. `match_count` is cached alongside the verdicts for the
-/// same reason: `render` reads it every frame (via the status line), and
-/// rescanning the whole verdict vector at redraw rate would scale with the
-/// file rather than with how often the filters actually change.
+/// Evaluating a filter set is not free on a large log, so verdicts are computed
+/// when the lines or the filters change rather than once per frame.
+///
+/// There is deliberately no cached `match_count`. One used to sit here,
+/// documented as read by the status line every frame — it was not: the status
+/// row reports lines *shown*, counted from `visible`, and the two comments in
+/// `lib.rs` that mention `match_count` both say why it is the wrong number
+/// (it counts `Included` and `Searched` verdicts, so it read "0 matched" with
+/// only excluding filters active). Nothing outside this file ever called the
+/// getter (#77).
 #[derive(Debug, Default)]
 pub struct Document {
     lines: Vec<String>,
     verdicts: Vec<Verdict>,
-    match_count: usize,
     /// Whether anything was marking lines at the last `evaluate` — a numbered
     /// including filter, or the live search.
     ///
@@ -46,7 +49,6 @@ impl Document {
         Self {
             lines,
             verdicts,
-            match_count: 0,
             anything_including: false,
             mode: Mode::default(),
             visible: Vec::new(),
@@ -70,11 +72,6 @@ impl Document {
             .iter()
             .map(|line| filters.verdict(line))
             .collect();
-        self.match_count = self
-            .verdicts
-            .iter()
-            .filter(|verdict| matches!(verdict, Verdict::Included(_) | Verdict::Searched))
-            .count();
         self.anything_including = filters.any_including();
         self.recompute_visible();
     }
@@ -109,18 +106,11 @@ impl Document {
             .collect();
     }
 
-    /// How many lines an including filter selected, plus any the live search
-    /// caught — see the `Verdict::Included(_) | Verdict::Searched` match in
-    /// `evaluate`, which counts both.
-    #[must_use]
-    pub fn match_count(&self) -> usize {
-        self.match_count
-    }
-
     /// One style slot per line, for `FileView::set_line_styles`.
     ///
     /// Always covers every line, so a shorter vector can never leave trailing
     /// lines wearing styles computed for a previously loaded file.
+    #[cfg(test)]
     #[must_use]
     pub fn line_styles(&self, filters: &ActiveFilters) -> Vec<Option<Style>> {
         self.verdicts
@@ -147,6 +137,7 @@ impl Document {
     }
 
     /// The text of the visible lines, for rebuilding the view's buffer.
+    #[cfg(test)]
     #[must_use]
     pub fn visible_lines(&self) -> Vec<String> {
         self.visible_lines_range(0, self.visible.len())
@@ -169,6 +160,7 @@ impl Document {
     }
 
     /// One style slot per *visible* line, aligned with `visible_lines`.
+    #[cfg(test)]
     #[must_use]
     pub fn visible_styles(&self, filters: &ActiveFilters) -> Vec<Option<Style>> {
         self.visible_styles_range(filters, 0, self.visible.len())
@@ -214,6 +206,7 @@ impl Document {
     /// — the file really does continue below it. The last line of the file has
     /// no next line and is never marked, which is what keeps an unfiltered
     /// document unmarked throughout.
+    #[cfg(test)]
     #[must_use]
     pub fn visible_group_ends(&self) -> Vec<bool> {
         self.visible_group_ends_range(0, self.visible.len())
@@ -330,22 +323,6 @@ mod tests {
             document.verdicts(),
             &[Verdict::Included(0), Verdict::Unmatched]
         );
-    }
-
-    #[test]
-    fn match_count_reports_included_lines_only() {
-        let mut document = doc(&["foo a", "bar", "foo b"]);
-        document.evaluate(&set_with(&["foo"]));
-
-        assert_eq!(document.match_count(), 2);
-    }
-
-    #[test]
-    fn match_count_includes_searched_lines() {
-        let mut document = doc(&["foo a", "bar", "foo b"]);
-        document.evaluate(&set_searching("foo"));
-
-        assert_eq!(document.match_count(), 2);
     }
 
     // ---- windowed accessors (#7) ---------------------------------------
