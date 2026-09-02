@@ -4,6 +4,19 @@ version = "0.1.0"
 edition = "2024"
 license = "MIT"
 
+# `cargo machete` reports `tui-textarea-2` as unused. It is a false positive
+# (#94), and the obvious "fix" is to delete a dependency the build needs.
+#
+# The vendored fork renames its library target — `[lib] name = "tui_textarea"`
+# in `vendor/tui-textarea-2/Cargo.toml` — so `src/widgets/fileview.rs` imports
+# `tui_textarea`, while machete searches for `tui_textarea_2`, the identifier
+# derived from the *package* name, and finds nothing.
+#
+# Recorded here rather than in a comment on the dependency itself because this
+# is the section the tool actually reads.
+[package.metadata.cargo-machete]
+ignored = ["tui-textarea-2"]
+
 [workspace]
 members = ["vendor/tui-textarea-2"]
 
