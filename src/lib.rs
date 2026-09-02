@@ -122,6 +122,7 @@ pub mod filter;
 pub mod help;
 mod layout;
 mod path;
+pub mod scan;
 mod viewport;
 mod widgets;
 pub use config::Config;
