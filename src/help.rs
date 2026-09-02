@@ -277,7 +277,7 @@ pub const KEYMAP: &[Section] = &[
             },
             Binding {
                 keys: &["m"],
-                action: "Toggle selected filter to context mode",
+                action: "Toggle the selected filter between include and context",
             },
         ],
     },
@@ -674,22 +674,22 @@ mod tests {
         }
     }
 
-    /// The case the whole layout exists for. A 142x44 terminal is unremarkable,
+    /// The case the whole layout exists for. A 149x44 terminal is unremarkable,
     /// and the keymap is the one screen where "most of it" is not good enough —
     /// the row you cannot see is exactly the one you opened it to find.
     ///
     /// It fails when the columns are sized against the *widest* row in the
     /// whole table rather than the widest in each column: two columns of the
-    /// global maximum need 159 columns, and this area has 140 to give.
+    /// global maximum need 159 columns, and this area has 147 to give.
     #[test]
     fn a_normal_terminal_shows_the_whole_keymap() {
         let rows = rows();
 
-        let columns = layout(&rows, inner(140, 42));
+        let columns = layout(&rows, inner(147, 42));
 
         assert_eq!(shown(&columns), rows.len(), "the keymap did not fit");
         assert!(
-            total_width(&columns) <= 140,
+            total_width(&columns) <= 147,
             "the columns overflowed the area they were fitted to"
         );
     }
@@ -700,7 +700,7 @@ mod tests {
     fn a_column_is_sized_to_its_own_widest_row() {
         let rows = rows();
 
-        let columns = layout(&rows, inner(140, 42));
+        let columns = layout(&rows, inner(147, 42));
 
         assert!(columns.len() > 1, "the table was not split into columns");
         assert!(

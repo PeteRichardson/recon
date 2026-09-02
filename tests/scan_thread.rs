@@ -73,8 +73,14 @@ fn a_scanner_thread_answers_every_file_it_is_given() {
     assert!(gone.stamp.is_none());
 }
 
+/// A second `start()` while the first worker is still running does not lose
+/// either result: the cancelled worker still sends whatever partial progress
+/// it had, and the new worker sends its own. This does *not* prove the first
+/// worker was actually cancelled early — both results would still show up
+/// even if `start` never cancelled anything and both workers simply ran to
+/// completion — only that a handoff between workers never drops a result.
 #[test]
-fn a_new_request_cancels_the_old_one() {
+fn no_workers_result_is_lost_across_a_handoff() {
     let dir = Path::new("target/test-scan-thread-cancel");
     fs::create_dir_all(dir).expect("fixture dir");
     let big = dir.join("big.log");

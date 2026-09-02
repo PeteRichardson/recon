@@ -273,11 +273,10 @@ pub struct App<'a> {
     /// Runs the navigator's file scans (#119). A `Box<dyn Scan>` for the same
     /// reason `launcher` is: tests swap in a recording double.
     scanner: Box<dyn scan::Scan>,
-    /// Where the scanner's results arrive. Drained on the render tick.
-    ///
-    /// The draining (`drain_scan_results`) is a later task (#119); tests
-    /// install a channel here so `refresh_scan`'s scanner double can be
-    /// exercised without a real one.
+    /// Where the scanner's results arrive. Drained on the render tick by
+    /// `drain_scan_results`, alongside `drain_editor_outcomes` and
+    /// `poll_stamps`. Tests install their own channel here so `refresh_scan`'s
+    /// scanner double can be exercised without a real one.
     scan_results: Option<std::sync::mpsc::Receiver<scan::Scanned>>,
     /// Every file's bitsets, keyed on the pattern list they were read for.
     scan_cache: ScanCache,
@@ -1027,11 +1026,12 @@ impl App<'_> {
                     self.open_in_editor(&template, EditorScope::File);
                     return;
                 }
-                // Refresh from disk: rescan the listing and reload the file,
-                // keeping the reader's place. The one key that resolves the
-                // navigator and the view disagreeing about a file that
-                // changed underneath them (#119).
-                KeyCode::Char('r') => {
+                // Refresh from disk: re-list the directory, rescan it, and
+                // reload the file, keeping the reader's place. The one key
+                // that resolves the navigator and the view disagreeing about
+                // a file that changed underneath them (#119).
+                KeyCode::Char('r') if key.modifiers.is_empty() => {
+                    self.nav.reload();
                     self.refresh_scan(true);
                     self.reload_active_file();
                     return;
@@ -1446,15 +1446,22 @@ impl App<'_> {
         self.check_stamps()
     }
 
-    /// Compare every recorded file's stamp to the disk; drop, forget and
-    /// rescan the ones that moved. The active file moving also raises the
-    /// badge. Split from `poll_stamps` so tests can call it without waiting.
+    /// Compare every recorded file's stamp to the disk; drop and forget the
+    /// records that moved, then hand off to `refresh_scan(true)` to rescan
+    /// them. The active file moving also raises the badge. Split from
+    /// `poll_stamps` so tests can call it without waiting.
+    ///
+    /// Deliberately does not issue its own request: `refresh_scan`'s `pending`
+    /// is every file without a usable answer, which already covers the files
+    /// this drops. Issuing a narrower request here would hand `Scanner::start`
+    /// a file list that cancels an in-flight full scan without covering the
+    /// files it had not reached yet, stranding them `Unknown` until `r`.
     fn check_stamps(&mut self) -> bool {
-        let Some(matcher) = self.filters.matcher() else {
+        if self.filters.matcher().is_none() {
             return false;
-        };
+        }
         let active = self.view.filename().to_path_buf();
-        let mut pending = Vec::new();
+        let mut changed = false;
         for (index, path) in self.nav.files() {
             let Some(held) = self.scan_cache.records.get(&path) else {
                 continue;
@@ -1467,18 +1474,12 @@ impl App<'_> {
             if path == active {
                 self.view_stale = true;
             }
-            pending.push((index, path, scan::Progress::default()));
+            changed = true;
         }
-        if pending.is_empty() {
-            return false;
+        if changed {
+            self.refresh_scan(true);
         }
-        self.scanner.start(scan::Request {
-            cache_id: self.scan_cache.id,
-            matcher,
-            files: pending,
-        });
-        self.nav.restyle();
-        true
+        changed
     }
 
     /// A record's answer as the navigator's `Match`, with the owning filter's
@@ -8563,8 +8564,10 @@ mod tests {
             Match::Unknown
         );
         let last = scanner.requests().last().expect("a rescan").clone();
-        assert_eq!(last.files.len(), 1);
-        assert_eq!(last.files[0].1, path);
+        assert!(
+            last.files.iter().any(|(_, p, _)| *p == path),
+            "the changed file should be in the reissued request: {last:?}"
+        );
     }
 
     #[test]
@@ -8667,5 +8670,28 @@ mod tests {
 
         assert_eq!(app.document.lines().len(), 1);
         assert_eq!(cursor_source(&app), 0);
+    }
+
+    #[test]
+    fn r_re_lists_the_directory_so_a_new_file_appears() {
+        let mut app = app_over_logs("r_relist");
+        let dir = app.nav.dir().to_path_buf();
+        assert!(
+            !nav_rows(&mut app).iter().any(|r| r.contains("c.log")),
+            "c.log should not be listed before it exists"
+        );
+        fs::write(dir.join("c.log"), "x").expect("write new file");
+
+        key(&mut app, KeyCode::Char('r'));
+
+        assert!(
+            nav_rows(&mut app).iter().any(|r| r.contains("c.log")),
+            "c.log should appear once r re-lists the directory"
+        );
+        assert_eq!(
+            app.nav.selected_path(),
+            Some(dir.join("a.log")),
+            "selection should stay on the file it was on"
+        );
     }
 }
