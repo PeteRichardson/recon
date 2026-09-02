@@ -13,9 +13,12 @@
 //! `docs/specs/2026-09-02-navigator-filter-matches-design.md`.
 
 use crate::filter::{Matcher, Owner};
-use std::io::BufRead;
-use std::path::Path;
+use std::fs::File;
+use std::io::{BufRead, BufReader, Seek, SeekFrom};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::Sender;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::SystemTime;
 
 /// How far one file has been read, and what its lines matched.
@@ -83,6 +86,189 @@ impl Record {
             .iter()
             .filter_map(|&bits| m.owner(bits))
             .min_by_key(|owner| owner.rank())
+    }
+}
+
+/// One scan: which files, from where, matched with what.
+///
+/// `cache_id` is echoed on every [`Scanned`] so the receiver can drop results
+/// from a cache that has since been replaced. `files` carries each file's
+/// existing [`Progress`] so the worker resumes rather than restarts.
+#[derive(Debug, Clone)]
+pub struct Request {
+    pub cache_id: u64,
+    pub matcher: Matcher,
+    pub files: Vec<(usize, PathBuf, Progress)>,
+}
+
+/// One file's result. `index` is the navigator row the request named; the
+/// receiver checks it still names `path` before using it.
+#[derive(Debug, Clone)]
+pub struct Scanned {
+    pub cache_id: u64,
+    pub index: usize,
+    pub path: PathBuf,
+    pub stamp: Option<Stamp>,
+    pub progress: Progress,
+}
+
+/// Something that runs scan requests. `&self`, like `editor::Launcher`, so a
+/// test can hold an `Rc` to a recording double while `App` owns the box.
+pub trait Scan {
+    /// Start scanning. An in-flight scan is cancelled first; its partial
+    /// results still arrive.
+    fn start(&self, request: Request);
+    /// Stop the in-flight scan, if any.
+    fn cancel(&self);
+}
+
+/// The real thing: at most one worker thread, results over an `mpsc` channel.
+///
+/// Holds no cache and no state between requests — that is `App`'s. Its one
+/// piece of state is the cancel flag of the current worker.
+pub struct Scanner {
+    tx: Sender<Scanned>,
+    cancel: Mutex<Arc<AtomicBool>>,
+}
+
+impl Scanner {
+    #[must_use]
+    pub fn new(tx: Sender<Scanned>) -> Self {
+        Self {
+            tx,
+            cancel: Mutex::new(Arc::new(AtomicBool::new(false))),
+        }
+    }
+}
+
+impl Scan for Scanner {
+    fn start(&self, request: Request) {
+        self.cancel();
+        let flag = Arc::new(AtomicBool::new(false));
+        *self.cancel.lock().unwrap_or_else(PoisonError::into_inner) = Arc::clone(&flag);
+        let tx = self.tx.clone();
+        std::thread::spawn(move || worker(request, &tx, &flag));
+    }
+
+    fn cancel(&self) {
+        self.cancel
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .store(true, Ordering::Relaxed);
+    }
+}
+
+/// The thread body. One file at a time; a cancel between files stops the
+/// walk, a cancel inside one returns that file's partial progress — and it is
+/// still sent, so nothing read is thrown away.
+///
+/// The cancel check is *after* a file is processed, not before: a cancel can
+/// land the instant a new worker is spawned, before it has run a single
+/// instruction (thread creation is not instantaneous), and a check up front
+/// would then drop the first file's result entirely. `scan` already handles
+/// an already-cancelled flag — it returns `progress` unchanged on its first
+/// check — so the file's (possibly untouched) result still reaches `tx`.
+fn worker(request: Request, tx: &Sender<Scanned>, cancel: &AtomicBool) {
+    let Request {
+        cache_id,
+        matcher,
+        files,
+    } = request;
+    for (index, path, progress) in files {
+        let stamp = stamp(&path).ok();
+        let progress = match File::open(&path) {
+            Ok(mut file) => {
+                if let Err(err) = file.seek(SeekFrom::Start(progress.scanned_to)) {
+                    log::warn!(
+                        "{}: cannot resume at {}: {err}",
+                        path.display(),
+                        progress.scanned_to
+                    );
+                }
+                scan(BufReader::new(file), &matcher, progress, cancel)
+            }
+            // Unreadable answers "no", complete: it will show nothing. Not
+            // retried until its stamp changes.
+            Err(err) => {
+                log::warn!("{}: {err}", path.display());
+                Progress {
+                    eof: true,
+                    ..progress
+                }
+            }
+        };
+        let sent = tx.send(Scanned {
+            cache_id,
+            index,
+            path,
+            stamp,
+            progress,
+        });
+        if sent.is_err() || cancel.load(Ordering::Relaxed) {
+            return;
+        }
+    }
+}
+
+/// Runs nothing. So `App` can hold a `Box<dyn Scan>` in a `#[derive(Default)]`
+/// struct without the field becoming an `Option` — the same reason
+/// `editor::Launcher` has one. `App::new` replaces it with a real `Scanner`.
+struct NoScanner;
+
+impl Scan for NoScanner {
+    fn start(&self, _: Request) {}
+    fn cancel(&self) {}
+}
+
+impl Default for Box<dyn Scan> {
+    fn default() -> Self {
+        Box::new(NoScanner)
+    }
+}
+
+/// Test doubles. `pub(crate)` so `lib.rs`'s tests can install one.
+#[cfg(test)]
+pub(crate) mod double {
+    use super::{Request, Scan};
+    use std::sync::{Mutex, PoisonError};
+
+    /// Records every request and cancel, runs nothing.
+    #[derive(Default)]
+    pub(crate) struct RecordingScanner {
+        pub requests: Mutex<Vec<Request>>,
+        pub cancels: Mutex<usize>,
+    }
+
+    impl RecordingScanner {
+        pub(crate) fn requests(&self) -> Vec<Request> {
+            self.requests
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .clone()
+        }
+    }
+
+    impl Scan for RecordingScanner {
+        fn start(&self, request: Request) {
+            self.requests
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .push(request);
+        }
+
+        fn cancel(&self) {
+            *self.cancels.lock().unwrap_or_else(PoisonError::into_inner) += 1;
+        }
+    }
+
+    impl Scan for std::rc::Rc<RecordingScanner> {
+        fn start(&self, request: Request) {
+            (**self).start(request);
+        }
+
+        fn cancel(&self) {
+            (**self).cancel();
+        }
     }
 }
 
@@ -367,5 +553,63 @@ mod tests {
         let (_, len) = stamp(&path).expect("stat");
         assert_eq!(len, 5);
         assert!(stamp(&dir.join("missing.txt")).is_err());
+    }
+
+    // ---- the recording double --------------------------------------------
+
+    /// The double itself, not just its trait impl: a later task's `App`
+    /// tests lean on `requests()`/`cancels` reflecting reality, so that
+    /// contract is worth its own cheap check here rather than only being
+    /// exercised indirectly once `App` wires it in.
+    #[test]
+    fn the_recording_scanner_records_starts_and_counts_cancels() {
+        let recording = double::RecordingScanner::default();
+        assert!(recording.requests().is_empty());
+
+        recording.start(Request {
+            cache_id: 7,
+            matcher: matcher(&["alpha"], &[]),
+            files: vec![],
+        });
+        recording.cancel();
+
+        let requests = recording.requests();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].cache_id, 7);
+        assert_eq!(
+            *recording
+                .cancels
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner),
+            1
+        );
+    }
+
+    /// `Rc<RecordingScanner>` delegates rather than recording separately —
+    /// the point of the `Rc` impl, which lets a test keep a handle while
+    /// `App` owns the `Box<dyn Scan>`.
+    #[test]
+    fn an_rc_recording_scanner_shares_its_recording() {
+        let recording = std::rc::Rc::new(double::RecordingScanner::default());
+        let handle = std::rc::Rc::clone(&recording);
+
+        Scan::start(
+            &handle,
+            Request {
+                cache_id: 3,
+                matcher: matcher(&["alpha"], &[]),
+                files: vec![],
+            },
+        );
+        Scan::cancel(&handle);
+
+        assert_eq!(recording.requests().len(), 1);
+        assert_eq!(
+            *recording
+                .cancels
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner),
+            1
+        );
     }
 }
