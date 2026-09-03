@@ -7,6 +7,8 @@
 use crate::syntax::{Kind, KindSet};
 use ratatui::style::{Color, Modifier, Style};
 use regex::{Regex, RegexSet};
+use std::collections::BTreeMap;
+use std::path::PathBuf;
 
 /// Colours assigned to successive filters, so two filters are never
 /// indistinguishable. Wraps once exhausted, and is replaced wholesale by
@@ -205,6 +207,91 @@ pub struct Filter {
     pub sense: Sense,
     pub enabled: bool,
     pub style: Style,
+    /// The file's `name` for this filter, if it gave one (#128). `None` for
+    /// every typed filter; see `display_name`.
+    pub name: Option<String>,
+    /// Index into `ActiveFilters::sets`. 0 is the scratch set.
+    pub set: usize,
+}
+
+impl Filter {
+    /// What the pane calls this filter: the file's `name`, else the
+    /// predicate's own display. Profiles refer to filters by this string,
+    /// so it is also the filter's handle — `filtersets::parse` rejects two
+    /// filters in one set that would answer to the same one.
+    #[must_use]
+    pub fn display_name(&self) -> String {
+        self.name
+            .clone()
+            .unwrap_or_else(|| self.predicate.display())
+    }
+}
+
+/// Where a set came from, which decides what may be done to it (#128).
+///
+/// `File` carries its path from day one so that "unload this file" (#46) is
+/// a filter over origins later, not a new field then.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Origin {
+    /// The unnamed set typed filters land in. Always index 0, never in a file.
+    Scratch,
+    File(PathBuf),
+}
+
+/// A named group of filters, toggled as a unit (#128).
+///
+/// The filters themselves are not here: they are in `ActiveFilters::filters`,
+/// the flat known list, each carrying the index of its set. Keeping the list
+/// flat is what leaves `Verdict::Included(index)`, `Matcher` and the scan
+/// cache untouched by sets. A filter takes effect only when it is enabled
+/// *and* its set is — see `ActiveFilters::effective`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FilterSet {
+    pub name: String,
+    pub origin: Origin,
+    /// Pane position, lower first. The scratch set ignores it and is always first.
+    pub priority: i32,
+    /// Enabled at startup, and what a reset returns the flag to.
+    pub autoload: bool,
+    pub enabled: bool,
+    /// Named subsets of this set's filters, by `Filter::display_name`.
+    pub profiles: BTreeMap<String, Vec<String>>,
+}
+
+impl FilterSet {
+    fn scratch() -> Self {
+        Self {
+            name: String::new(),
+            origin: Origin::Scratch,
+            priority: i32::MIN,
+            autoload: true,
+            enabled: true,
+            profiles: BTreeMap::new(),
+        }
+    }
+}
+
+/// One filter as read from `filters.toml`, before it has a colour or a
+/// position. The loader's output and the model's input; the model owns the
+/// type because the model decides what a set *is*.
+#[derive(Debug, Clone)]
+pub struct LoadedFilter {
+    pub name: String,
+    pub predicate: Predicate,
+    pub sense: Sense,
+    /// The file's `colour`, or `None` for the next palette colour.
+    pub colour: Option<Color>,
+}
+
+/// One set as read from `filters.toml`.
+#[derive(Debug, Clone)]
+pub struct LoadedSet {
+    pub name: String,
+    pub path: PathBuf,
+    pub priority: i32,
+    pub autoload: bool,
+    pub profiles: BTreeMap<String, Vec<String>>,
+    pub filters: Vec<LoadedFilter>,
 }
 
 /// Every enabled flag in an [`ActiveFilters`], captured so it can be restored.
@@ -373,8 +460,11 @@ impl Palette {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct ActiveFilters {
+    /// Every set, scratch first (index 0), then in pane order. Filters point
+    /// into this by index; see `FilterSet`.
+    sets: Vec<FilterSet>,
     /// Where filter colours come from. Whole-list replacement, never a merge —
     /// see [`crate::config::FiltersConfig`] for why.
     palette: Palette,
@@ -413,6 +503,23 @@ pub struct ActiveFilters {
     /// sum of the individual ones). `verdict` then falls back to the original
     /// per-filter scan: slower, never wrong.
     compiled: Option<RegexSet>,
+}
+
+/// Hand-written rather than derived: the scratch set must exist from the
+/// start, so that every filter has a set to belong to.
+impl Default for ActiveFilters {
+    fn default() -> Self {
+        Self {
+            sets: vec![FilterSet::scratch()],
+            palette: Palette::default(),
+            combine: Combine::default(),
+            filters: Vec::new(),
+            search: None,
+            remembered: None,
+            remembered_search: None,
+            compiled: None,
+        }
+    }
 }
 
 impl ActiveFilters {
@@ -461,17 +568,14 @@ impl ActiveFilters {
     pub fn add(&mut self, pattern: &str) -> Result<(), regex::Error> {
         let compiled = Regex::new(pattern)?;
         let style = self.next_style();
-        self.filters.push(Filter {
+        self.insert_scratch(Filter {
             predicate: Predicate::Regex(compiled),
             sense: Sense::Include,
             enabled: true,
             style,
+            name: None,
+            set: 0,
         });
-        self.recompile();
-        // A pending capture describes a set that no longer exists. Keeping it
-        // would strand it: `!` would see an enabled filter, try to capture,
-        // find one already pending, and do nothing at all — forever.
-        self.forget_capture();
         Ok(())
     }
 
@@ -482,17 +586,14 @@ impl ActiveFilters {
     /// rendered.
     pub fn add_excluding(&mut self, pattern: &str) -> Result<(), regex::Error> {
         let pattern = Regex::new(pattern)?;
-        self.filters.push(Filter {
+        self.insert_scratch(Filter {
             predicate: Predicate::Regex(pattern),
             sense: Sense::Exclude,
             enabled: true,
             style: Style::default(),
+            name: None,
+            set: 0,
         });
-        self.recompile();
-        // A pending capture describes a set that no longer exists. Keeping it
-        // would strand it: `!` would see an enabled filter, try to capture,
-        // find one already pending, and do nothing at all — forever.
-        self.forget_capture();
         Ok(())
     }
 
@@ -505,14 +606,14 @@ impl ActiveFilters {
     /// user-facing creates one yet — that is #127's built-in set.
     pub fn add_definition(&mut self, kind: Kind) {
         let style = self.next_style();
-        self.filters.push(Filter {
+        self.insert_scratch(Filter {
             predicate: Predicate::Definition(kind),
             sense: Sense::Include,
             enabled: true,
             style,
+            name: None,
+            set: 0,
         });
-        self.recompile();
-        self.forget_capture();
     }
 
     /// Whether any filter is a definition predicate, and so needs the
@@ -525,6 +626,146 @@ impl ActiveFilters {
             .any(|filter| matches!(filter.predicate, Predicate::Definition(_)))
     }
 
+    /// Build the startup set (#128): the scratch set, then `sets` in the
+    /// order given — the loader has already sorted them by priority and
+    /// name — every file filter disabled, then each `autoload` set enabled,
+    /// which applies its `default` profile if it has one.
+    ///
+    /// A file filter's colour is its position in the known list, the same
+    /// rule `add` uses, unless the file named one. Assigned here, once, and
+    /// stored on the filter: toggling a set later changes what is shown and
+    /// what matches, never a colour.
+    #[must_use]
+    pub fn with_sets(palette: Option<Vec<Color>>, sets: &[LoadedSet]) -> Self {
+        let mut this = match palette {
+            Some(palette) => Self::with_palette(palette),
+            None => Self::new(),
+        };
+        for loaded in sets {
+            let index = this.sets.len();
+            this.sets.push(FilterSet {
+                name: loaded.name.clone(),
+                origin: Origin::File(loaded.path.clone()),
+                priority: loaded.priority,
+                autoload: loaded.autoload,
+                enabled: false,
+                profiles: loaded.profiles.clone(),
+            });
+            for filter in &loaded.filters {
+                let style = match filter.colour {
+                    Some(colour) => Style::default().fg(colour),
+                    None => this.next_style(),
+                };
+                this.filters.push(Filter {
+                    predicate: filter.predicate.clone(),
+                    sense: filter.sense,
+                    enabled: false,
+                    style,
+                    name: Some(filter.name.clone()),
+                    set: index,
+                });
+            }
+        }
+        this.recompile();
+        for index in 1..this.sets.len() {
+            if this.sets[index].autoload {
+                this.set_enabled_set(index, true);
+            }
+        }
+        this
+    }
+
+    /// Every set, scratch first, then in pane order.
+    #[must_use]
+    pub fn sets(&self) -> &[FilterSet] {
+        &self.sets
+    }
+
+    /// The filters in `set`, with their known-list indices.
+    pub fn filters_in(&self, set: usize) -> impl Iterator<Item = (usize, &Filter)> {
+        self.filters
+            .iter()
+            .enumerate()
+            .filter(move |(_, filter)| filter.set == set)
+    }
+
+    /// Whether the filter at `index` currently takes effect: on, and in a
+    /// set that is on. The one place the two flags meet; everything that
+    /// decides a line, a file, or a dim reads this and never `enabled`
+    /// alone. The flag-level operations — `!`, the peek, `toggle_enabled` —
+    /// deliberately do not: they act on the filter's own flag and leave the
+    /// set's to `set_enabled_set`.
+    fn effective(&self, index: usize) -> bool {
+        let filter = &self.filters[index];
+        filter.enabled && self.sets[filter.set].enabled
+    }
+
+    /// Enable or disable a named set. Enabling applies the set's `default`
+    /// profile if it has one; otherwise, and on disable, no filter flag
+    /// moves — a set re-enabled without a `default` shows the toggles it
+    /// had.
+    ///
+    /// Returns `false` for the scratch set, which is never toggled by hand,
+    /// and for an index that names no set.
+    pub fn set_enabled_set(&mut self, set: usize, enabled: bool) -> bool {
+        if set == 0 || set >= self.sets.len() {
+            return false;
+        }
+        self.sets[set].enabled = enabled;
+        if enabled && self.sets[set].profiles.contains_key("default") {
+            self.apply_profile(set, "default");
+        }
+        true
+    }
+
+    /// Flip a named set, reporting its new state — or `None` for the
+    /// scratch set and for an index that names no set.
+    pub fn toggle_set(&mut self, set: usize) -> Option<bool> {
+        let now = !self.sets.get(set)?.enabled;
+        self.set_enabled_set(set, now).then_some(now)
+    }
+
+    /// Enable exactly the profile's members within `set` and disable the
+    /// set's other filters. An action, not a binding: nothing remembers that
+    /// a profile was applied, and later toggles are the user's to make.
+    pub fn apply_profile(&mut self, set: usize, profile: &str) -> bool {
+        let Some(members) = self
+            .sets
+            .get(set)
+            .and_then(|meta| meta.profiles.get(profile))
+            .cloned()
+        else {
+            return false;
+        };
+        for filter in self.filters.iter_mut().filter(|f| f.set == set) {
+            filter.enabled = members.contains(&filter.display_name());
+        }
+        true
+    }
+
+    /// Where the scratch set's filters end: the first filter not in set 0.
+    fn scratch_end(&self) -> usize {
+        self.filters
+            .iter()
+            .position(|filter| filter.set != 0)
+            .unwrap_or(self.filters.len())
+    }
+
+    /// Put a typed filter at the end of the scratch range.
+    ///
+    /// An insert, not a push: file filters follow the scratch set in the
+    /// known list, and the list must stay contiguous by set. Every cached
+    /// `Verdict::Included` is a position, so callers re-evaluate — which
+    /// they already did, since a push had the same effect on the compiled
+    /// set. A pending `!` capture describes a set that no longer exists and
+    /// is dropped for the same reason it always was.
+    fn insert_scratch(&mut self, filter: Filter) {
+        let at = self.scratch_end();
+        self.filters.insert(at, filter);
+        self.recompile();
+        self.forget_capture();
+    }
+
     pub fn set_search(&mut self, pattern: &str) -> Result<(), regex::Error> {
         let pattern = Regex::new(pattern)?;
         self.search = Some(Filter {
@@ -532,6 +773,8 @@ impl ActiveFilters {
             sense: Sense::Include,
             enabled: true,
             style: SEARCH_STYLE,
+            name: None,
+            set: 0,
         });
         self.recompile();
         self.forget_capture();
@@ -591,11 +834,10 @@ impl ActiveFilters {
             return false;
         };
         search.style = self.next_style();
-        self.filters.push(search);
-        // The pattern moved from the search slot to the numbered set, which
-        // changes the compiled order even though the pattern list has not.
-        self.recompile();
-        self.forget_capture();
+        // The pattern moves from the search slot to the scratch set, which
+        // changes the compiled order even though the pattern list has not;
+        // `insert_scratch` recompiles.
+        self.insert_scratch(search);
         true
     }
 
@@ -644,7 +886,7 @@ impl ActiveFilters {
             self.filters
                 .iter()
                 .enumerate()
-                .filter(move |(_, filter)| filter.enabled && filter.sense == sense)
+                .filter(move |&(index, filter)| self.effective(index) && filter.sense == sense)
         };
         match self.combine {
             Combine::Or => self
@@ -652,7 +894,7 @@ impl ActiveFilters {
                 .iter()
                 .enumerate()
                 .find(|&(index, filter)| {
-                    filter.enabled && filter.sense != Sense::Exclude && hit(index)
+                    self.effective(index) && filter.sense != Sense::Exclude && hit(index)
                 })
                 .map_or(Verdict::Unmatched, |(index, _)| Verdict::Included(index)),
             Combine::And => {
@@ -674,7 +916,8 @@ impl ActiveFilters {
     pub fn any_excluding(&self) -> bool {
         self.filters
             .iter()
-            .any(|filter| filter.enabled && filter.sense == Sense::Exclude)
+            .enumerate()
+            .any(|(index, filter)| self.effective(index) && filter.sense == Sense::Exclude)
     }
 
     /// Enable or disable every filter at once, for the `!` toggle.
@@ -887,12 +1130,9 @@ impl ActiveFilters {
         // Exclusion is applied after inclusion and overrides it, so a line an
         // including filter selected is still removed if an excluding filter
         // also matches it.
-        if self
-            .filters
-            .iter()
-            .enumerate()
-            .any(|(index, filter)| filter.enabled && filter.sense == Sense::Exclude && hit(index))
-        {
+        if self.filters.iter().enumerate().any(|(index, filter)| {
+            self.effective(index) && filter.sense == Sense::Exclude && hit(index)
+        }) {
             return Verdict::Excluded;
         }
 
@@ -919,11 +1159,9 @@ impl ActiveFilters {
     /// worse way to report it than being slow.
     fn verdict_by_scanning(&self, line: &str, kinds: KindSet) -> Verdict {
         let holds = |filter: &Filter| filter.predicate.holds(line, kinds);
-        if self
-            .filters
-            .iter()
-            .any(|filter| filter.enabled && filter.sense == Sense::Exclude && holds(filter))
-        {
+        if self.filters.iter().enumerate().any(|(index, filter)| {
+            self.effective(index) && filter.sense == Sense::Exclude && holds(filter)
+        }) {
             return Verdict::Excluded;
         }
 
@@ -972,7 +1210,7 @@ impl ActiveFilters {
             // and a scan reads text it never parses: its bit stays out of
             // every mask, so it neither selects nor excludes a file. The
             // view still applies it per line.
-            if !filter.enabled || filter.predicate.as_regex().is_none() {
+            if !self.effective(index) || filter.predicate.as_regex().is_none() {
                 continue;
             }
             match filter.sense {
@@ -1037,7 +1275,8 @@ impl ActiveFilters {
     fn any_numbered_including(&self) -> bool {
         self.filters
             .iter()
-            .any(|filter| filter.enabled && filter.sense != Sense::Exclude)
+            .enumerate()
+            .any(|(index, filter)| self.effective(index) && filter.sense != Sense::Exclude)
     }
 
     /// The style to render a line with, or `None` to leave it alone.
@@ -1056,8 +1295,44 @@ impl ActiveFilters {
     }
 }
 
+/// Builders shared by this module's tests and the pane's.
+#[cfg(test)]
+pub(crate) mod test_support {
+    use super::{LoadedFilter, LoadedSet, Predicate, Sense};
+    use regex::Regex;
+    use std::collections::BTreeMap;
+    use std::path::PathBuf;
+
+    /// A file set named `name`, one include filter per pattern, each named
+    /// by its pattern.
+    pub(crate) fn loaded(
+        name: &str,
+        priority: i32,
+        autoload: bool,
+        patterns: &[&str],
+    ) -> LoadedSet {
+        LoadedSet {
+            name: name.to_string(),
+            path: PathBuf::from("test/filters.toml"),
+            priority,
+            autoload,
+            profiles: BTreeMap::new(),
+            filters: patterns
+                .iter()
+                .map(|pattern| LoadedFilter {
+                    name: (*pattern).to_string(),
+                    predicate: Predicate::Regex(Regex::new(pattern).expect("valid")),
+                    sense: Sense::Include,
+                    colour: None,
+                })
+                .collect(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    use super::test_support::loaded;
     use super::*;
 
     fn set_with(patterns: &[&str]) -> ActiveFilters {
@@ -1066,6 +1341,232 @@ mod tests {
             set.add(pattern).expect("valid pattern");
         }
         set
+    }
+
+    // ---- sets (#128) -------------------------------------------------------
+
+    fn flags(set: &ActiveFilters, of: usize) -> Vec<bool> {
+        set.filters_in(of).map(|(_, f)| f.enabled).collect()
+    }
+
+    fn with_default_profile() -> ActiveFilters {
+        let mut a = loaded("a", 50, false, &["x", "y", "z"]);
+        a.profiles
+            .insert("default".into(), vec!["x".into(), "z".into()]);
+        a.profiles
+            .insert("loud".into(), vec!["x".into(), "y".into(), "z".into()]);
+        ActiveFilters::with_sets(None, &[a])
+    }
+
+    /// A fresh `ActiveFilters` already has one set: the scratch set, so that
+    /// every filter lives in a set and nothing needs a "loose filter" case.
+    #[test]
+    fn a_new_set_has_only_the_scratch_set() {
+        let set = ActiveFilters::new();
+        assert_eq!(set.sets().len(), 1);
+        assert_eq!(set.sets()[0].origin, Origin::Scratch);
+        assert!(set.sets()[0].enabled);
+        assert_eq!(set.sets()[0].name, "");
+    }
+
+    #[test]
+    fn typed_filters_belong_to_the_scratch_set_and_are_named_by_their_pattern() {
+        let set = set_with(&["foo", "bar"]);
+        assert!(set.filters().iter().all(|filter| filter.set == 0));
+        assert_eq!(set.filters()[0].display_name(), "foo");
+    }
+
+    /// Loaded filters follow the scratch set in the known list, contiguous
+    /// by set, and start disabled.
+    #[test]
+    fn loaded_sets_follow_scratch_in_the_known_list() {
+        let set = ActiveFilters::with_sets(None, &[loaded("a", 50, false, &["x", "y"])]);
+        assert_eq!(set.sets().len(), 2);
+        assert_eq!(set.sets()[1].name, "a");
+        assert_eq!(
+            set.sets()[1].origin,
+            Origin::File(PathBuf::from("test/filters.toml"))
+        );
+        assert_eq!(set.filters().len(), 2);
+        assert!(set.filters().iter().all(|f| f.set == 1 && !f.enabled));
+        assert_eq!(set.filters()[0].display_name(), "x");
+    }
+
+    /// A loaded filter's colour is its known-list position in the palette —
+    /// the same rule `add` uses — unless the file named one.
+    #[test]
+    fn loaded_filters_are_coloured_by_position_or_by_the_file() {
+        let mut one = loaded("a", 50, false, &["x", "y"]);
+        one.filters[1].colour = Some(Color::Red);
+        let set = ActiveFilters::with_sets(None, &[one]);
+        assert_eq!(
+            set.filters()[0].style,
+            Style::default().fg(DEFAULT_PALETTE[0])
+        );
+        assert_eq!(set.filters()[1].style, Style::default().fg(Color::Red));
+    }
+
+    #[test]
+    fn autoload_sets_start_enabled() {
+        let set = ActiveFilters::with_sets(
+            None,
+            &[
+                loaded("a", 50, true, &["x"]),
+                loaded("b", 50, false, &["y"]),
+            ],
+        );
+        assert!(set.sets()[1].enabled);
+        assert!(!set.sets()[2].enabled);
+    }
+
+    /// A filter typed after loading is inserted at the end of the scratch
+    /// range, ahead of every file filter, and takes the next colour after
+    /// every known filter so it does not repeat a file filter's colour.
+    #[test]
+    fn a_typed_filter_lands_after_scratch_and_before_file_filters() {
+        let mut set = ActiveFilters::with_sets(None, &[loaded("a", 50, true, &["x", "y"])]);
+        set.add("typed").expect("valid");
+        set.add_excluding("second").expect("valid");
+        assert_eq!(set.filters()[0].display_name(), "typed");
+        assert_eq!(set.filters()[1].display_name(), "second");
+        assert_eq!(set.filters()[0].set, 0);
+        assert_eq!(set.filters()[2].set, 1);
+        assert_eq!(
+            set.filters()[0].style,
+            Style::default().fg(DEFAULT_PALETTE[2])
+        );
+        // The compiled set follows the new order: `typed` is index 0.
+        set.set_enabled(0, true);
+        assert_eq!(set.verdict("typed", KindSet::EMPTY), Verdict::Included(0));
+    }
+
+    /// A promoted search lands in the scratch set too, ahead of file filters.
+    #[test]
+    fn a_promoted_search_lands_in_the_scratch_set() {
+        let mut set = ActiveFilters::with_sets(None, &[loaded("a", 50, true, &["x"])]);
+        set.set_search("probe").expect("valid");
+        assert!(set.promote_search());
+        assert_eq!(set.filters()[0].display_name(), "probe");
+        assert_eq!(set.filters()[0].set, 0);
+        assert_eq!(set.filters()[1].set, 1);
+    }
+
+    /// The rule: a filter takes effect when it is enabled *and* its set is.
+    #[test]
+    fn a_filter_in_a_disabled_set_matches_nothing() {
+        let mut set = ActiveFilters::with_sets(None, &[loaded("a", 50, true, &["foo"])]);
+        set.set_enabled(0, true);
+        assert_eq!(set.verdict("foo", KindSet::EMPTY), Verdict::Included(0));
+        set.set_enabled_set(1, false);
+        assert_eq!(set.verdict("foo", KindSet::EMPTY), Verdict::Unmatched);
+        assert_eq!(
+            set.verdict_by_scanning("foo", KindSet::EMPTY),
+            Verdict::Unmatched
+        );
+        assert!(
+            set.filters()[0].enabled,
+            "the filter's own flag is untouched"
+        );
+    }
+
+    /// Exclusion follows the rule too: an exclude in a disabled set removes
+    /// nothing.
+    #[test]
+    fn an_exclude_in_a_disabled_set_removes_nothing() {
+        let mut a = loaded("a", 50, true, &["foo", "skip"]);
+        a.filters[1].sense = Sense::Exclude;
+        let mut set = ActiveFilters::with_sets(None, &[a]);
+        set.set_all_enabled(true);
+        assert_eq!(set.verdict("foo skip", KindSet::EMPTY), Verdict::Excluded);
+        set.set_enabled_set(1, false);
+        assert_eq!(set.verdict("foo skip", KindSet::EMPTY), Verdict::Unmatched);
+        assert!(!set.any_excluding());
+    }
+
+    /// The navigator's masks and dimming follow the same rule.
+    #[test]
+    fn the_matcher_and_dimming_ignore_filters_in_disabled_sets() {
+        let mut set = ActiveFilters::with_sets(None, &[loaded("a", 50, true, &["foo"])]);
+        set.set_enabled(0, true);
+        assert!(set.matcher().is_some());
+        assert_eq!(set.style_for(Verdict::Unmatched), Some(DIM_STYLE));
+        set.set_enabled_set(1, false);
+        assert!(
+            set.matcher().is_none(),
+            "nothing selects, so no scan to run"
+        );
+        assert_eq!(set.style_for(Verdict::Unmatched), None);
+    }
+
+    /// `!` is flag-level: it disables and restores across every known filter
+    /// and never touches a set's flag.
+    #[test]
+    fn bang_acts_on_filter_flags_across_sets_and_leaves_set_flags_alone() {
+        let mut set = ActiveFilters::with_sets(None, &[loaded("a", 50, true, &["x"])]);
+        set.add("typed").expect("valid");
+        set.set_enabled(1, true); // x
+        set.disable_all_remembering();
+        assert_eq!(flags(&set, 0), vec![false]);
+        assert_eq!(flags(&set, 1), vec![false]);
+        assert!(set.sets()[1].enabled);
+        set.restore_remembered();
+        assert_eq!(flags(&set, 0), vec![true]);
+        assert_eq!(flags(&set, 1), vec![true]);
+    }
+
+    /// Enabling a set with a `default` profile applies it.
+    #[test]
+    fn enabling_a_set_applies_its_default_profile() {
+        let mut set = with_default_profile();
+        assert!(set.set_enabled_set(1, true));
+        assert_eq!(flags(&set, 1), vec![true, false, true]);
+    }
+
+    /// `autoload` goes through the same path, so `default` applies at startup.
+    #[test]
+    fn autoload_applies_default() {
+        let mut a = loaded("a", 50, true, &["x", "y"]);
+        a.profiles.insert("default".into(), vec!["y".into()]);
+        let set = ActiveFilters::with_sets(None, &[a]);
+        assert_eq!(flags(&set, 1), vec![false, true]);
+    }
+
+    /// Without `default`, enabling keeps whatever flags the filters had, and
+    /// disabling touches none.
+    #[test]
+    fn enabling_a_set_without_default_keeps_the_flags() {
+        let mut set = ActiveFilters::with_sets(None, &[loaded("a", 50, false, &["x", "y"])]);
+        set.set_enabled(1, true);
+        set.set_enabled_set(1, true);
+        assert_eq!(flags(&set, 1), vec![false, true]);
+        set.set_enabled_set(1, false);
+        assert_eq!(flags(&set, 1), vec![false, true]);
+        assert_eq!(set.toggle_set(1), Some(true));
+        assert_eq!(flags(&set, 1), vec![false, true]);
+    }
+
+    /// A profile enables exactly its members and disables the rest of the set.
+    #[test]
+    fn a_profile_is_exact_and_touches_one_set() {
+        let mut set = with_default_profile();
+        set.add("typed").expect("valid");
+        set.set_enabled_set(1, true);
+        assert!(set.apply_profile(1, "loud"));
+        assert_eq!(flags(&set, 1), vec![true, true, true]);
+        assert!(set.apply_profile(1, "default"));
+        assert_eq!(flags(&set, 1), vec![true, false, true]);
+        assert!(!set.apply_profile(1, "nope"));
+        assert_eq!(flags(&set, 0), vec![true], "the scratch set is untouched");
+    }
+
+    /// The scratch set cannot be toggled through this path.
+    #[test]
+    fn the_scratch_set_is_not_toggleable() {
+        let mut set = set_with(&["foo"]);
+        assert!(!set.set_enabled_set(0, false));
+        assert_eq!(set.toggle_set(0), None);
+        assert_eq!(set.toggle_set(7), None);
+        assert!(set.sets()[0].enabled);
     }
 
     // ---- predicates (#123) -------------------------------------------------
