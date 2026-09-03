@@ -38,7 +38,7 @@ use syntect::easy::HighlightLines;
 use syntect::highlighting::{
     Color as SynColor, FontStyle, Style as SynStyle, Theme as SynTheme, ThemeSet,
 };
-use syntect::parsing::{SyntaxReference, SyntaxSet};
+use syntect::parsing::{ParseState, Scope, ScopeStack, SyntaxReference, SyntaxSet};
 use two_face::theme::LazyThemeSet;
 
 /// The theme used when neither the CLI, the environment nor `config.toml`
@@ -480,12 +480,368 @@ impl Highlighter {
     }
 }
 
+// ---- definitions (#123) ----------------------------------------------------
+
+/// A kind of definition a source line can start.
+///
+/// The four kinds every bundled grammar has some notion of. Traits, impls,
+/// modules and typedefs are real too and are left for a later row each; the
+/// scope table and keyword map below are the only two places a kind is
+/// described, so adding one is two lines.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Kind {
+    Function,
+    Class,
+    Struct,
+    Enum,
+}
+
+impl Kind {
+    pub const ALL: [Self; 4] = [Self::Function, Self::Class, Self::Struct, Self::Enum];
+
+    /// The `TextMate` scope a well-behaved grammar gives the *name* of a
+    /// definition of this kind. Rust, C, Go, Python and JavaScript all
+    /// follow the convention; see `keywords` for the ones that do not.
+    fn scope(self) -> &'static str {
+        match self {
+            Self::Function => "entity.name.function",
+            Self::Class => "entity.name.class",
+            Self::Struct => "entity.name.struct",
+            Self::Enum => "entity.name.enum",
+        }
+    }
+
+    /// The declaration keywords that start a definition of this kind, for
+    /// grammars that scope the keyword (`storage.type`) but leave the name
+    /// unscoped. bat's Swift grammar is the one that forced this: `class
+    /// Canvas` there is a `storage.type.swift` keyword followed by plain
+    /// text, and `func` names itself `entity.type.function.swift`, which is
+    /// not the convention either.
+    fn keywords(self) -> &'static [&'static str] {
+        match self {
+            Self::Function => &["fn", "func", "def", "fun"],
+            Self::Class => &["class"],
+            Self::Struct => &["struct"],
+            Self::Enum => &["enum"],
+        }
+    }
+
+    /// The plural noun the pane will call a filter of this kind.
+    #[must_use]
+    pub fn plural(self) -> &'static str {
+        match self {
+            Self::Function => "functions",
+            Self::Class => "classes",
+            Self::Struct => "structs",
+            Self::Enum => "enums",
+        }
+    }
+}
+
+impl fmt::Display for Kind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.plural())
+    }
+}
+
+/// The kinds of definition one line starts. A bitset, because a line can
+/// start more than one — `trait Area { fn area(&self); }` on one line is
+/// both a trait and a function, and that is the right answer for "lines
+/// that start a definition".
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct KindSet(u8);
+
+impl KindSet {
+    pub const EMPTY: Self = Self(0);
+
+    fn bit(kind: Kind) -> u8 {
+        match kind {
+            Kind::Function => 1,
+            Kind::Class => 2,
+            Kind::Struct => 4,
+            Kind::Enum => 8,
+        }
+    }
+
+    /// A set holding exactly `kinds`.
+    #[must_use]
+    pub fn of(kinds: &[Kind]) -> Self {
+        kinds.iter().fold(Self::EMPTY, |mut set, &kind| {
+            set.insert(kind);
+            set
+        })
+    }
+
+    #[must_use]
+    pub fn contains(self, kind: Kind) -> bool {
+        self.0 & Self::bit(kind) != 0
+    }
+
+    #[must_use]
+    pub fn is_empty(self) -> bool {
+        self.0 == 0
+    }
+
+    fn insert(&mut self, kind: Kind) {
+        self.0 |= Self::bit(kind);
+    }
+}
+
+/// The scopes `definitions` tests against, parsed once per call rather than
+/// once per token. `Scope::new` consults the global scope repository, which
+/// takes a lock.
+struct KindScopes {
+    named: [(Kind, Scope); 4],
+    storage_type: Scope,
+    meta_block: Scope,
+}
+
+impl KindScopes {
+    fn new() -> Self {
+        let scope = |text: &str| Scope::new(text).expect("a literal scope parses");
+        Self {
+            named: Kind::ALL.map(|kind| (kind, scope(kind.scope()))),
+            storage_type: scope("storage.type"),
+            meta_block: scope("meta.block"),
+        }
+    }
+
+    /// What one token says about its line. `text` is the token's own text;
+    /// `stack` the scopes open over it, innermost last.
+    fn note(&self, stack: &[Scope], text: &str, named: &mut KindSet, keyworded: &mut KindSet) {
+        let text = text.trim();
+        if text.is_empty() {
+            return;
+        }
+        for &(kind, scope) in &self.named {
+            if !stack.iter().any(|open| scope.is_prefix_of(*open)) {
+                continue;
+            }
+            // The Rust grammar names a closure's binding `entity.name.function`
+            // too: `let f = |x| x` would otherwise start a "function". A real
+            // definition's name is enclosed by `meta.function.*`; a closure's
+            // by the `meta.block.*` of the body it sits in. The nearest
+            // enclosing `meta.*` scope tells them apart.
+            if kind == Kind::Function
+                && stack
+                    .iter()
+                    .rev()
+                    .find(|open| open.build_string().starts_with("meta."))
+                    .is_some_and(|nearest| self.meta_block.is_prefix_of(*nearest))
+            {
+                continue;
+            }
+            named.insert(kind);
+        }
+        if stack
+            .iter()
+            .any(|open| self.storage_type.is_prefix_of(*open))
+        {
+            for kind in Kind::ALL {
+                if kind.keywords().contains(&text) {
+                    keyworded.insert(kind);
+                }
+            }
+        }
+    }
+}
+
+/// Which definition kinds each line of `lines`, read from `path`, starts —
+/// or `None` when no grammar claims the file, in which case no line starts
+/// anything.
+///
+/// A whole-file pass, unlike colouring, which [`Highlighter`] does lazily
+/// under a budget: a filter needs every line's answer at once, and the
+/// answer for a source file is the kind of thing that fits in memory (one
+/// byte per line). The cost is one parse of the file, on the order of ten
+/// microseconds per line, paid once per load and only when a definition
+/// filter exists — see `Document::evaluate`. Log files have no grammar and
+/// never pay it.
+///
+/// Two signals, combined per file. The grammar's `entity.name.<kind>` scope
+/// on a name is the primary one. A declaration keyword under `storage.type`
+/// is the fallback, and it is applied **only for kinds the grammar never
+/// named anywhere in this file**: C scopes `struct` in `struct point p;` as
+/// `storage.type` too, and since the C grammar does name real struct
+/// definitions, the fallback stays off for structs there. In a Swift file
+/// nothing is ever named, so the fallback carries all four kinds.
+#[must_use]
+pub fn definitions(path: &Path, lines: &[String]) -> Option<Vec<KindSet>> {
+    let syntax = detect(path, lines.first().map(String::as_str))?;
+    let scopes = KindScopes::new();
+    let mut state = ParseState::new(syntax);
+    let mut stack = ScopeStack::new();
+    let mut named = vec![KindSet::EMPTY; lines.len()];
+    let mut keyworded = vec![KindSet::EMPTY; lines.len()];
+
+    for (row, line) in lines.iter().enumerate() {
+        if line.len() > MAX_LINE_BYTES {
+            continue;
+        }
+        let with_newline = format!("{line}\n");
+        let Ok(ops) = state.parse_line(&with_newline, syntaxes()) else {
+            continue;
+        };
+        let mut last = 0;
+        let mut note = |stack: &ScopeStack, start: usize, end: usize| {
+            let end = end.min(line.len());
+            if start < end {
+                scopes.note(
+                    stack.as_slice(),
+                    &line[start..end],
+                    &mut named[row],
+                    &mut keyworded[row],
+                );
+            }
+        };
+        for (pos, op) in &ops {
+            note(&stack, last, *pos);
+            if stack.apply(op).is_err() {
+                break;
+            }
+            last = *pos;
+        }
+        note(&stack, last, line.len());
+    }
+
+    let seen_named: Vec<Kind> = Kind::ALL
+        .into_iter()
+        .filter(|&kind| named.iter().any(|set| set.contains(kind)))
+        .collect();
+    Some(
+        named
+            .into_iter()
+            .zip(keyworded)
+            .map(|(mut kinds, fallback)| {
+                for kind in Kind::ALL {
+                    if fallback.contains(kind) && !seen_named.contains(&kind) {
+                        kinds.insert(kind);
+                    }
+                }
+                kinds
+            })
+            .collect(),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn lines(text: &str) -> Vec<String> {
         text.lines().map(str::to_string).collect()
+    }
+
+    // ---- definitions (#123) ------------------------------------------------
+
+    /// The rows of `text` that start `kind`, by index.
+    fn rows_of(kind: Kind, name: &str, text: &str) -> Vec<usize> {
+        let lines = lines(text);
+        let kinds = definitions(Path::new(name), &lines).expect("a bundled grammar");
+        kinds
+            .iter()
+            .enumerate()
+            .filter(|(_, set)| set.contains(kind))
+            .map(|(row, _)| row)
+            .collect()
+    }
+
+    const RUST: &str = "\
+pub fn top() {}
+struct Point { x: i32 }
+enum Shape { Circle, Square }
+impl Point {
+    fn method(&self) -> i32 {
+        let double = |v: i32| v * 2;
+        double(self.x)
+    }
+}
+";
+
+    /// Functions, structs and enums by their `entity.name.*` scopes; a
+    /// method inside an impl counts; a closure binding does not.
+    #[test]
+    fn rust_definitions_by_scope() {
+        assert_eq!(rows_of(Kind::Function, "a.rs", RUST), vec![0, 4]);
+        assert_eq!(rows_of(Kind::Struct, "a.rs", RUST), vec![1]);
+        assert_eq!(rows_of(Kind::Enum, "a.rs", RUST), vec![2]);
+        assert_eq!(rows_of(Kind::Class, "a.rs", RUST), Vec::<usize>::new());
+    }
+
+    const PYTHON: &str = "\
+class Canvas:
+    def draw(self):
+        pass
+
+async def main():
+    pass
+";
+
+    #[test]
+    fn python_definitions_by_scope() {
+        assert_eq!(rows_of(Kind::Class, "a.py", PYTHON), vec![0]);
+        assert_eq!(rows_of(Kind::Function, "a.py", PYTHON), vec![1, 4]);
+        assert_eq!(rows_of(Kind::Struct, "a.py", PYTHON), Vec::<usize>::new());
+    }
+
+    const C: &str = "\
+struct point { int x; };
+int main(void) {
+    struct point p;
+    return 0;
+}
+";
+
+    /// The C grammar names struct definitions, so the `storage.type`
+    /// fallback stays off for structs and `struct point p;` is not one.
+    #[test]
+    fn c_struct_declarations_are_not_definitions() {
+        assert_eq!(rows_of(Kind::Struct, "a.c", C), vec![0]);
+        assert_eq!(rows_of(Kind::Function, "a.c", C), vec![1]);
+    }
+
+    const SWIFT: &str = "\
+class Canvas {
+    func draw() {}
+    static func make() -> Canvas { Canvas() }
+}
+struct Point { var x: Int }
+enum Shape { case circle }
+func topLevel() {}
+";
+
+    /// bat's Swift grammar names nothing, so every kind comes from the
+    /// keyword fallback — and nothing spurious comes with it.
+    #[test]
+    fn swift_definitions_by_keyword_fallback() {
+        assert_eq!(rows_of(Kind::Class, "a.swift", SWIFT), vec![0]);
+        assert_eq!(rows_of(Kind::Function, "a.swift", SWIFT), vec![1, 2, 6]);
+        assert_eq!(rows_of(Kind::Struct, "a.swift", SWIFT), vec![4]);
+        assert_eq!(rows_of(Kind::Enum, "a.swift", SWIFT), vec![5]);
+    }
+
+    /// No grammar, no answer: a log file starts nothing.
+    #[test]
+    fn a_log_file_has_no_definitions() {
+        assert!(definitions(Path::new("app.log"), &lines("fn main() {}\n")).is_none());
+    }
+
+    /// One line can start two kinds, and a `KindSet` says both.
+    #[test]
+    fn kind_set_holds_more_than_one_kind() {
+        let mut set = KindSet::EMPTY;
+        assert!(set.is_empty());
+        set.insert(Kind::Function);
+        set.insert(Kind::Enum);
+        assert!(set.contains(Kind::Function));
+        assert!(set.contains(Kind::Enum));
+        assert!(!set.contains(Kind::Class));
+    }
+
+    #[test]
+    fn kinds_display_as_their_plural() {
+        assert_eq!(Kind::Function.to_string(), "functions");
+        assert_eq!(Kind::Class.to_string(), "classes");
     }
 
     fn rust(theme: Theme, text: &str) -> (Highlighter, Vec<String>) {

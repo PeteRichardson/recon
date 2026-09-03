@@ -239,7 +239,13 @@ impl FilterList {
             Sense::Context => "ctx",
             Sense::Exclude => "exc",
         };
-        format!("{}[{}] {} {}", label, mark, sense, filter.pattern.as_str())
+        format!(
+            "{}[{}] {} {}",
+            label,
+            mark,
+            sense,
+            filter.predicate.display()
+        )
     }
 
     pub(crate) fn render(&mut self, filters: &ActiveFilters, area: Rect, buf: &mut Buffer) {

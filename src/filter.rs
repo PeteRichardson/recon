@@ -4,6 +4,7 @@
 //! any one file. Matching is by regular expression, the same as search, so
 //! `^foo` anchors to the start of a line.
 
+use crate::syntax::{Kind, KindSet};
 use ratatui::style::{Color, Modifier, Style};
 use regex::{Regex, RegexSet};
 
@@ -125,9 +126,82 @@ pub enum Combine {
     And,
 }
 
+/// What a filter tests a line against (#123).
+///
+/// A filter used to *be* a regex. It is now a regex *or* a question about
+/// what the line starts — a function, a class — answered by the grammar
+/// pass in `syntax::definitions` rather than by the line's text. `Sense`,
+/// `enabled` and the colour apply to both unchanged, which is the point:
+/// "everything except functions" and "functions with context" cost nothing.
+///
+/// `Regex` predicates keep the `RegexSet` fast path. A `Definition` occupies
+/// a slot in that set too — compiled as [`NEVER`], a pattern that matches
+/// nothing — so that the set's indices stay the filters' indices and no
+/// mapping between the two has to be kept in step.
+#[derive(Debug, Clone)]
+pub enum Predicate {
+    Regex(Regex),
+    /// The line starts a definition of this kind. Answered from the
+    /// `KindSet` the document supplies alongside the line; on a file with no
+    /// grammar every set is empty and the predicate never holds.
+    Definition(Kind),
+}
+
+/// A regex that matches nothing: a word boundary and a non-boundary at the
+/// same position. Stands in for a `Definition` predicate in the compiled set.
+const NEVER: &str = r"\b\B";
+
+impl Predicate {
+    /// What the pane shows: the regex's source, or the kind's plural noun.
+    #[must_use]
+    pub fn display(&self) -> String {
+        match self {
+            Self::Regex(regex) => regex.as_str().to_string(),
+            Self::Definition(kind) => kind.to_string(),
+        }
+    }
+
+    /// The regex, when there is one. The navigator's `Matcher` runs regexes
+    /// over files it never parses, so it has nothing to ask a definition.
+    #[must_use]
+    pub fn as_regex(&self) -> Option<&Regex> {
+        match self {
+            Self::Regex(regex) => Some(regex),
+            Self::Definition(_) => None,
+        }
+    }
+
+    /// The pattern this predicate contributes to the compiled `RegexSet`.
+    fn source(&self) -> &str {
+        match self {
+            Self::Regex(regex) => regex.as_str(),
+            Self::Definition(_) => NEVER,
+        }
+    }
+
+    /// The scan cache's name for this predicate. Distinct from `source` only
+    /// in that two definitions of different kinds must not share [`NEVER`].
+    /// The leading control character cannot appear in a typed pattern.
+    fn key(&self) -> String {
+        match self {
+            Self::Regex(regex) => regex.as_str().to_string(),
+            Self::Definition(kind) => format!("\u{1}{kind}"),
+        }
+    }
+
+    /// Whether the predicate holds for a line with these `kinds`, by direct
+    /// evaluation — the scanning path's counterpart to a `RegexSet` hit.
+    fn holds(&self, line: &str, kinds: KindSet) -> bool {
+        match self {
+            Self::Regex(regex) => regex.is_match(line),
+            Self::Definition(kind) => kinds.contains(*kind),
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct Filter {
-    pub pattern: Regex,
+    pub predicate: Predicate,
     pub sense: Sense,
     pub enabled: bool,
     pub style: Style,
@@ -388,7 +462,7 @@ impl ActiveFilters {
         let compiled = Regex::new(pattern)?;
         let style = self.next_style();
         self.filters.push(Filter {
-            pattern: compiled,
+            predicate: Predicate::Regex(compiled),
             sense: Sense::Include,
             enabled: true,
             style,
@@ -409,7 +483,7 @@ impl ActiveFilters {
     pub fn add_excluding(&mut self, pattern: &str) -> Result<(), regex::Error> {
         let pattern = Regex::new(pattern)?;
         self.filters.push(Filter {
-            pattern,
+            predicate: Predicate::Regex(pattern),
             sense: Sense::Exclude,
             enabled: true,
             style: Style::default(),
@@ -426,10 +500,35 @@ impl ActiveFilters {
     ///
     /// One search at a time, like vim's search register: a second `/` is a
     /// new question, not another filter.
+    /// Add an including filter that selects lines starting a definition of
+    /// `kind` (#123). Coloured and numbered like any other filter; nothing
+    /// user-facing creates one yet — that is #127's built-in set.
+    pub fn add_definition(&mut self, kind: Kind) {
+        let style = self.next_style();
+        self.filters.push(Filter {
+            predicate: Predicate::Definition(kind),
+            sense: Sense::Include,
+            enabled: true,
+            style,
+        });
+        self.recompile();
+        self.forget_capture();
+    }
+
+    /// Whether any filter is a definition predicate, and so needs the
+    /// document to supply each line's kinds. What gates the whole-file
+    /// grammar pass in `Document::evaluate`.
+    #[must_use]
+    pub fn needs_kinds(&self) -> bool {
+        self.filters
+            .iter()
+            .any(|filter| matches!(filter.predicate, Predicate::Definition(_)))
+    }
+
     pub fn set_search(&mut self, pattern: &str) -> Result<(), regex::Error> {
         let pattern = Regex::new(pattern)?;
         self.search = Some(Filter {
-            pattern,
+            predicate: Predicate::Regex(pattern),
             sense: Sense::Include,
             enabled: true,
             style: SEARCH_STYLE,
@@ -635,7 +734,7 @@ impl ActiveFilters {
         let compiled = Regex::new(pattern)?;
         match self.filters.get_mut(index) {
             Some(filter) => {
-                filter.pattern = compiled;
+                filter.predicate = Predicate::Regex(compiled);
                 self.recompile();
                 Ok(true)
             }
@@ -772,19 +871,28 @@ impl ActiveFilters {
     /// is what makes the set's order meaningful.
     /// One pass over the line, not one per filter. See `compiled`.
     #[must_use]
-    pub fn verdict(&self, line: &str) -> Verdict {
+    pub fn verdict(&self, line: &str, kinds: KindSet) -> Verdict {
         let Some(set) = self.compiled.as_ref().filter(|set| self.in_step(set)) else {
-            return self.verdict_by_scanning(line);
+            return self.verdict_by_scanning(line, kinds);
         };
         let matched = set.matches(line);
         let matched = |index: usize| matched.matched(index);
+        // A definition's slot in the set never matches (see `NEVER`), so it
+        // is answered from `kinds` instead; a regex's is the set's answer.
+        let hit = |index: usize| match &self.filters[index].predicate {
+            Predicate::Regex(_) => matched(index),
+            Predicate::Definition(kind) => kinds.contains(*kind),
+        };
 
         // Exclusion is applied after inclusion and overrides it, so a line an
         // including filter selected is still removed if an excluding filter
         // also matches it.
-        if self.filters.iter().enumerate().any(|(index, filter)| {
-            filter.enabled && filter.sense == Sense::Exclude && matched(index)
-        }) {
+        if self
+            .filters
+            .iter()
+            .enumerate()
+            .any(|(index, filter)| filter.enabled && filter.sense == Sense::Exclude && hit(index))
+        {
             return Verdict::Excluded;
         }
 
@@ -799,7 +907,7 @@ impl ActiveFilters {
             return Verdict::Searched;
         }
 
-        self.include_verdict(matched)
+        self.include_verdict(hit)
     }
 
     /// The original per-filter scan, kept as the fallback for a set that would
@@ -809,21 +917,24 @@ impl ActiveFilters {
     /// `in_step`. That is a bug rather than a state to support, but indexing a
     /// short `SetMatches` panics, and taking down a full-screen TUI is a much
     /// worse way to report it than being slow.
-    fn verdict_by_scanning(&self, line: &str) -> Verdict {
-        if self.filters.iter().any(|filter| {
-            filter.enabled && filter.sense == Sense::Exclude && filter.pattern.is_match(line)
-        }) {
+    fn verdict_by_scanning(&self, line: &str, kinds: KindSet) -> Verdict {
+        let holds = |filter: &Filter| filter.predicate.holds(line, kinds);
+        if self
+            .filters
+            .iter()
+            .any(|filter| filter.enabled && filter.sense == Sense::Exclude && holds(filter))
+        {
             return Verdict::Excluded;
         }
 
         if let Some(search) = &self.search
             && search.enabled
-            && search.pattern.is_match(line)
+            && holds(search)
         {
             return Verdict::Searched;
         }
 
-        self.include_verdict(|index| self.filters[index].pattern.is_match(line))
+        self.include_verdict(|index| holds(&self.filters[index]))
     }
 
     /// Whether the compiled set still describes this filter set.
@@ -838,7 +949,7 @@ impl ActiveFilters {
             .filters
             .iter()
             .chain(self.search.as_ref())
-            .map(|filter| filter.pattern.as_str());
+            .map(|filter| filter.predicate.source());
         self.compiled = RegexSet::new(patterns).ok();
     }
 
@@ -857,7 +968,11 @@ impl ActiveFilters {
         let mut selects = 0u64;
         let mut exclude = 0u64;
         for (index, filter) in self.filters.iter().enumerate() {
-            if !filter.enabled {
+            // A definition predicate is not a regex over the line's text,
+            // and a scan reads text it never parses: its bit stays out of
+            // every mask, so it neither selects nor excludes a file. The
+            // view still applies it per line.
+            if !filter.enabled || filter.predicate.as_regex().is_none() {
                 continue;
             }
             match filter.sense {
@@ -892,7 +1007,7 @@ impl ActiveFilters {
         self.filters
             .iter()
             .chain(self.search.as_ref())
-            .map(|filter| filter.pattern.as_str().to_string())
+            .map(|filter| filter.predicate.key())
             .collect()
     }
 
@@ -953,6 +1068,131 @@ mod tests {
         set
     }
 
+    // ---- predicates (#123) -------------------------------------------------
+
+    /// A definition filter answers from the line's kinds, not its text.
+    #[test]
+    fn a_definition_filter_matches_by_kind_not_by_text() {
+        let mut set = ActiveFilters::new();
+        set.add_definition(Kind::Function);
+        let functions = KindSet::of(&[Kind::Function]);
+        assert_eq!(
+            set.verdict("anything at all", functions),
+            Verdict::Included(0)
+        );
+        assert_eq!(
+            set.verdict("fn looks_like_one() {}", KindSet::EMPTY),
+            Verdict::Unmatched
+        );
+        assert_eq!(set.filters()[0].predicate.display(), "functions");
+        assert!(set.needs_kinds());
+        assert!(!set_with(&["fn"]).needs_kinds());
+    }
+
+    /// The scanning fallback and the compiled path agree on definitions.
+    #[test]
+    fn definition_verdicts_agree_between_paths() {
+        let mut set = set_with(&["foo"]);
+        set.add_definition(Kind::Struct);
+        let structs = KindSet::of(&[Kind::Struct]);
+        for (line, k) in [("foo", KindSet::EMPTY), ("bar", structs), ("foo", structs)] {
+            assert_eq!(
+                set.verdict(line, k),
+                set.verdict_by_scanning(line, k),
+                "{line:?}"
+            );
+        }
+        assert_eq!(set.verdict("bar", structs), Verdict::Included(1));
+        assert_eq!(
+            set.verdict("foo", structs),
+            Verdict::Included(0),
+            "first filter wins"
+        );
+    }
+
+    /// Senses apply to a definition filter as to any other.
+    #[test]
+    fn definition_filters_take_every_sense() {
+        let mut set = set_with(&["foo"]);
+        set.add_definition(Kind::Enum);
+        let enums = KindSet::of(&[Kind::Enum]);
+        // Exclude: an enum line is removed even though `foo` matched it.
+        set.toggle_context(1);
+        assert_eq!(set.filters()[1].sense, Sense::Context);
+        assert_eq!(set.verdict("plain", enums), Verdict::Included(1));
+        set.toggle_context(1);
+        set.remove(1);
+        set.add_excluding("never").expect("valid");
+        set.filters[1].predicate = Predicate::Definition(Kind::Enum);
+        set.recompile();
+        assert_eq!(set.verdict("foo", enums), Verdict::Excluded);
+        assert_eq!(set.verdict("foo", KindSet::EMPTY), Verdict::Included(0));
+    }
+
+    /// A definition filter is a term of the AND like any include filter.
+    #[test]
+    fn definitions_are_terms_in_and_mode() {
+        let mut set = set_with(&["pub"]);
+        set.add_definition(Kind::Function);
+        set.toggle_and();
+        let functions = KindSet::of(&[Kind::Function]);
+        assert_eq!(set.verdict("pub fn x()", functions), Verdict::Included(0));
+        assert_eq!(
+            set.verdict("pub struct", KindSet::EMPTY),
+            Verdict::Unmatched
+        );
+        assert_eq!(set.verdict("fn x()", functions), Verdict::Unmatched);
+    }
+
+    /// The navigator cannot evaluate a definition, so its bit is in no mask:
+    /// alone it yields no matcher, and beside a regex it neither selects nor
+    /// excludes.
+    #[test]
+    fn the_matcher_ignores_definition_filters() {
+        let mut set = ActiveFilters::new();
+        set.add_definition(Kind::Function);
+        assert!(set.matcher().is_none(), "nothing a scan can evaluate");
+        set.add("foo").expect("valid");
+        let m = set.matcher().expect("foo selects");
+        assert!(m.selects(m.bits("foo")));
+        assert_eq!(m.owner(m.bits("foo")), Some(Owner::Filter(1)));
+        assert!(
+            !m.selects(m.bits("fn nothing")),
+            "the definition slot never matches text"
+        );
+        set.toggle_and();
+        let m = set.matcher().expect("still selects under AND");
+        assert!(
+            m.selects(m.bits("foo")),
+            "the definition is not a term of the scan's AND"
+        );
+    }
+
+    /// Two definitions of different kinds are different cache keys, and
+    /// neither collides with a regex someone might type.
+    #[test]
+    fn definition_keys_are_distinct() {
+        let mut set = ActiveFilters::new();
+        set.add_definition(Kind::Function);
+        set.add_definition(Kind::Struct);
+        set.add("functions").expect("valid");
+        let key = set.pattern_key();
+        assert_eq!(key.len(), 3);
+        assert_ne!(key[0], key[1]);
+        assert_ne!(key[0], key[2]);
+    }
+
+    /// `c` on a definition filter turns it into a regex filter, keeping its
+    /// position, colour and sense — the same contract `set_pattern` has.
+    #[test]
+    fn set_pattern_turns_a_definition_into_a_regex() {
+        let mut set = ActiveFilters::new();
+        set.add_definition(Kind::Class);
+        assert!(set.set_pattern(0, "class ").expect("valid"));
+        assert!(set.filters()[0].predicate.as_regex().is_some());
+        assert!(!set.needs_kinds());
+    }
+
     // ---- AND mode (#39) ----------------------------------------------------
 
     /// The default is today's behaviour: any enabled include filter includes.
@@ -960,7 +1200,10 @@ mod tests {
     fn or_is_the_default() {
         let set = set_with(&["foo", "bar"]);
         assert!(!set.is_and());
-        assert_eq!(set.verdict("foo only"), Verdict::Included(0));
+        assert_eq!(
+            set.verdict("foo only", KindSet::EMPTY),
+            Verdict::Included(0)
+        );
     }
 
     /// In AND mode a line must match every enabled include filter.
@@ -968,11 +1211,17 @@ mod tests {
     fn and_requires_every_enabled_include_filter() {
         let mut set = set_with(&["foo", "bar"]);
         assert!(set.toggle_and());
-        assert_eq!(set.verdict("foo only"), Verdict::Unmatched);
-        assert_eq!(set.verdict("bar only"), Verdict::Unmatched);
-        assert_eq!(set.verdict("bar then foo"), Verdict::Included(0));
+        assert_eq!(set.verdict("foo only", KindSet::EMPTY), Verdict::Unmatched);
+        assert_eq!(set.verdict("bar only", KindSet::EMPTY), Verdict::Unmatched);
+        assert_eq!(
+            set.verdict("bar then foo", KindSet::EMPTY),
+            Verdict::Included(0)
+        );
         assert!(!set.toggle_and(), "a second press turns it back off");
-        assert_eq!(set.verdict("foo only"), Verdict::Included(0));
+        assert_eq!(
+            set.verdict("foo only", KindSet::EMPTY),
+            Verdict::Included(0)
+        );
     }
 
     /// The colour is the first *enabled* include filter's, so disabling the
@@ -982,8 +1231,11 @@ mod tests {
         let mut set = set_with(&["foo", "bar", "baz"]);
         set.toggle_and();
         set.set_enabled(0, false);
-        assert_eq!(set.verdict("bar baz"), Verdict::Included(1));
-        assert_eq!(set.verdict("foo bar baz"), Verdict::Included(1));
+        assert_eq!(set.verdict("bar baz", KindSet::EMPTY), Verdict::Included(1));
+        assert_eq!(
+            set.verdict("foo bar baz", KindSet::EMPTY),
+            Verdict::Included(1)
+        );
     }
 
     /// A disabled filter is not a term, and with no enabled include filter
@@ -993,7 +1245,7 @@ mod tests {
         let mut set = set_with(&["foo"]);
         set.toggle_and();
         set.set_enabled(0, false);
-        assert_eq!(set.verdict("foo"), Verdict::Unmatched);
+        assert_eq!(set.verdict("foo", KindSet::EMPTY), Verdict::Unmatched);
     }
 
     /// Exclusion still wins, in either mode.
@@ -1002,7 +1254,10 @@ mod tests {
         let mut set = set_with(&["foo", "bar"]);
         set.add_excluding("skip").expect("valid");
         set.toggle_and();
-        assert_eq!(set.verdict("foo bar skip"), Verdict::Excluded);
+        assert_eq!(
+            set.verdict("foo bar skip", KindSet::EMPTY),
+            Verdict::Excluded
+        );
     }
 
     /// Context filters are not terms of the AND: a line a context filter
@@ -1013,9 +1268,12 @@ mod tests {
         let mut set = set_with(&["foo", "bar", "ctx"]);
         set.toggle_context(2);
         set.toggle_and();
-        assert_eq!(set.verdict("foo bar"), Verdict::Included(0));
-        assert_eq!(set.verdict("ctx alone"), Verdict::Included(2));
-        assert_eq!(set.verdict("foo alone"), Verdict::Unmatched);
+        assert_eq!(set.verdict("foo bar", KindSet::EMPTY), Verdict::Included(0));
+        assert_eq!(
+            set.verdict("ctx alone", KindSet::EMPTY),
+            Verdict::Included(2)
+        );
+        assert_eq!(set.verdict("foo alone", KindSet::EMPTY), Verdict::Unmatched);
     }
 
     /// The live search is an independent OR term: a probe never narrows the
@@ -1025,8 +1283,11 @@ mod tests {
         let mut set = set_with(&["foo", "bar"]);
         set.set_search("probe").expect("valid");
         set.toggle_and();
-        assert_eq!(set.verdict("probe alone"), Verdict::Searched);
-        assert_eq!(set.verdict("foo bar"), Verdict::Included(0));
+        assert_eq!(
+            set.verdict("probe alone", KindSet::EMPTY),
+            Verdict::Searched
+        );
+        assert_eq!(set.verdict("foo bar", KindSet::EMPTY), Verdict::Included(0));
     }
 
     /// The scanning fallback agrees with the compiled path.
@@ -1036,7 +1297,11 @@ mod tests {
         set.add_excluding("skip").expect("valid");
         set.toggle_and();
         for line in ["foo", "bar foo", "foo bar skip", "nothing"] {
-            assert_eq!(set.verdict(line), set.verdict_by_scanning(line), "{line:?}");
+            assert_eq!(
+                set.verdict(line, KindSet::EMPTY),
+                set.verdict_by_scanning(line, KindSet::EMPTY),
+                "{line:?}"
+            );
         }
     }
 
@@ -1109,13 +1374,13 @@ mod tests {
             "delta noise",
         ] {
             let hit = |sense: Sense| {
-                set.filters()
-                    .iter()
-                    .any(|f| f.enabled && f.sense == sense && f.pattern.is_match(line))
+                set.filters().iter().any(|f| {
+                    f.enabled && f.sense == sense && f.predicate.holds(line, KindSet::EMPTY)
+                })
             };
             let searched = set
                 .search()
-                .is_some_and(|s| s.enabled && s.pattern.is_match(line));
+                .is_some_and(|s| s.enabled && s.predicate.holds(line, KindSet::EMPTY));
             let expected = (hit(Sense::Include) || searched) && !hit(Sense::Exclude);
 
             assert_eq!(
@@ -1126,7 +1391,10 @@ mod tests {
             // A selected line is always one the view shows.
             if expected {
                 assert!(
-                    matches!(set.verdict(line), Verdict::Included(_) | Verdict::Searched),
+                    matches!(
+                        set.verdict(line, KindSet::EMPTY),
+                        Verdict::Included(_) | Verdict::Searched
+                    ),
                     "{line:?} selects its file but the view would not show it"
                 );
             }
@@ -1150,7 +1418,7 @@ mod tests {
             Some(Owner::Filter(2))
         );
         assert_eq!(
-            set.verdict("beta delta"),
+            set.verdict("beta delta", KindSet::EMPTY),
             Verdict::Included(1),
             "the line is still beta's"
         );
@@ -1354,7 +1622,7 @@ mod tests {
     fn an_empty_set_leaves_every_line_unmatched() {
         let set = ActiveFilters::new();
 
-        assert_eq!(set.verdict("anything"), Verdict::Unmatched);
+        assert_eq!(set.verdict("anything", KindSet::EMPTY), Verdict::Unmatched);
         assert!(set.is_empty());
     }
 
@@ -1362,14 +1630,20 @@ mod tests {
     fn a_matching_line_is_included_with_its_filter_index() {
         let set = set_with(&["foo", "bar"]);
 
-        assert_eq!(set.verdict("a bar line"), Verdict::Included(1));
+        assert_eq!(
+            set.verdict("a bar line", KindSet::EMPTY),
+            Verdict::Included(1)
+        );
     }
 
     #[test]
     fn a_non_matching_line_is_unmatched() {
         let set = set_with(&["foo"]);
 
-        assert_eq!(set.verdict("nothing here"), Verdict::Unmatched);
+        assert_eq!(
+            set.verdict("nothing here", KindSet::EMPTY),
+            Verdict::Unmatched
+        );
     }
 
     /// Order in the set decides the colour, so the first match wins.
@@ -1377,7 +1651,10 @@ mod tests {
     fn the_first_matching_filter_wins() {
         let set = set_with(&["foo", "foo.*bar"]);
 
-        assert_eq!(set.verdict("foo and bar"), Verdict::Included(0));
+        assert_eq!(
+            set.verdict("foo and bar", KindSet::EMPTY),
+            Verdict::Included(0)
+        );
     }
 
     // ---- the third sense ------------------------------------------------
@@ -1389,7 +1666,7 @@ mod tests {
         assert!(set.toggle_context(0));
 
         assert_eq!(set.filters()[0].sense, Sense::Context);
-        assert_eq!(set.verdict("foo"), Verdict::Included(0));
+        assert_eq!(set.verdict("foo", KindSet::EMPTY), Verdict::Included(0));
         assert_eq!(
             set.style_for(Verdict::Unmatched),
             Some(DIM_STYLE),
@@ -1406,9 +1683,9 @@ mod tests {
         assert!(set.toggle_context(1));
 
         assert_eq!(set.filters()[1].sense, Sense::Include);
-        assert_eq!(set.filters()[1].pattern.as_str(), "bar");
+        assert_eq!(set.filters()[1].predicate.display(), "bar");
         assert_eq!(set.filters()[1].style, before);
-        assert_eq!(set.verdict("bar"), Verdict::Included(1));
+        assert_eq!(set.verdict("bar", KindSet::EMPTY), Verdict::Included(1));
     }
 
     /// An exclude filter is never context, and an index off the end is not a filter.
@@ -1434,21 +1711,21 @@ mod tests {
     #[test]
     fn adding_a_filter_is_visible_to_verdict() {
         let mut set = set_with(&["foo"]);
-        assert_eq!(set.verdict("bar"), Verdict::Unmatched);
+        assert_eq!(set.verdict("bar", KindSet::EMPTY), Verdict::Unmatched);
 
         set.add("bar").expect("valid pattern");
 
-        assert_eq!(set.verdict("bar"), Verdict::Included(1));
+        assert_eq!(set.verdict("bar", KindSet::EMPTY), Verdict::Included(1));
     }
 
     #[test]
     fn adding_an_excluding_filter_is_visible_to_verdict() {
         let mut set = set_with(&["foo"]);
-        assert_eq!(set.verdict("foo"), Verdict::Included(0));
+        assert_eq!(set.verdict("foo", KindSet::EMPTY), Verdict::Included(0));
 
         set.add_excluding("foo").expect("valid pattern");
 
-        assert_eq!(set.verdict("foo"), Verdict::Excluded);
+        assert_eq!(set.verdict("foo", KindSet::EMPTY), Verdict::Excluded);
     }
 
     #[test]
@@ -1460,8 +1737,8 @@ mod tests {
         // Not merely "no longer matches foo": everything renumbers, so a
         // stale set would answer `Included(1)` for a line it should call
         // `Included(0)`.
-        assert_eq!(set.verdict("foo"), Verdict::Unmatched);
-        assert_eq!(set.verdict("bar"), Verdict::Included(0));
+        assert_eq!(set.verdict("foo", KindSet::EMPTY), Verdict::Unmatched);
+        assert_eq!(set.verdict("bar", KindSet::EMPTY), Verdict::Included(0));
     }
 
     #[test]
@@ -1470,8 +1747,8 @@ mod tests {
 
         assert!(set.set_pattern(0, "bar").expect("valid pattern"));
 
-        assert_eq!(set.verdict("foo"), Verdict::Unmatched);
-        assert_eq!(set.verdict("bar"), Verdict::Included(0));
+        assert_eq!(set.verdict("foo", KindSet::EMPTY), Verdict::Unmatched);
+        assert_eq!(set.verdict("bar", KindSet::EMPTY), Verdict::Included(0));
     }
 
     #[test]
@@ -1481,7 +1758,7 @@ mod tests {
         assert!(set.set_pattern(0, "[").is_err());
 
         assert_eq!(
-            set.verdict("foo"),
+            set.verdict("foo", KindSet::EMPTY),
             Verdict::Included(0),
             "a pattern that would not compile disturbed the set it was rejected from"
         );
@@ -1492,14 +1769,14 @@ mod tests {
         let mut set = set_with(&["foo"]);
 
         set.set_search("bar").expect("valid pattern");
-        assert_eq!(set.verdict("bar"), Verdict::Searched);
+        assert_eq!(set.verdict("bar", KindSet::EMPTY), Verdict::Searched);
 
         set.set_search("baz").expect("valid pattern");
-        assert_eq!(set.verdict("bar"), Verdict::Unmatched);
-        assert_eq!(set.verdict("baz"), Verdict::Searched);
+        assert_eq!(set.verdict("bar", KindSet::EMPTY), Verdict::Unmatched);
+        assert_eq!(set.verdict("baz", KindSet::EMPTY), Verdict::Searched);
 
         assert!(set.clear_search());
-        assert_eq!(set.verdict("baz"), Verdict::Unmatched);
+        assert_eq!(set.verdict("baz", KindSet::EMPTY), Verdict::Unmatched);
     }
 
     #[test]
@@ -1510,7 +1787,7 @@ mod tests {
         assert!(set.promote_search());
 
         // It stops being the search and becomes filter 1.
-        assert_eq!(set.verdict("bar"), Verdict::Included(1));
+        assert_eq!(set.verdict("bar", KindSet::EMPTY), Verdict::Included(1));
     }
 
     /// Toggling `enabled` must *not* need a recompile — it is the frequent
@@ -1521,18 +1798,21 @@ mod tests {
         let mut set = set_with(&["foo"]);
 
         assert!(set.set_enabled(0, false));
-        assert_eq!(set.verdict("foo"), Verdict::Unmatched);
+        assert_eq!(set.verdict("foo", KindSet::EMPTY), Verdict::Unmatched);
 
         assert!(set.set_enabled(0, true));
-        assert_eq!(set.verdict("foo"), Verdict::Included(0));
+        assert_eq!(set.verdict("foo", KindSet::EMPTY), Verdict::Included(0));
     }
 
     #[test]
     fn patterns_are_regular_expressions() {
         let set = set_with(&[r"^\d+ms$"]);
 
-        assert_eq!(set.verdict("250ms"), Verdict::Included(0));
-        assert_eq!(set.verdict("took 250ms"), Verdict::Unmatched);
+        assert_eq!(set.verdict("250ms", KindSet::EMPTY), Verdict::Included(0));
+        assert_eq!(
+            set.verdict("took 250ms", KindSet::EMPTY),
+            Verdict::Unmatched
+        );
     }
 
     #[test]
@@ -1548,7 +1828,7 @@ mod tests {
         let mut set = set_with(&["foo"]);
         set.set_all_enabled(false);
 
-        assert_eq!(set.verdict("foo"), Verdict::Unmatched);
+        assert_eq!(set.verdict("foo", KindSet::EMPTY), Verdict::Unmatched);
         assert!(!set.any_enabled());
     }
 
@@ -1563,7 +1843,7 @@ mod tests {
         set.set_all_enabled(false);
         set.set_all_enabled(true);
 
-        assert_eq!(set.verdict("foo"), Verdict::Included(0));
+        assert_eq!(set.verdict("foo", KindSet::EMPTY), Verdict::Included(0));
     }
 
     /// A set whose filters are all disabled behaves like an empty one: an
@@ -1573,7 +1853,7 @@ mod tests {
         let mut set = set_with(&["foo"]);
         set.set_all_enabled(false);
 
-        assert_eq!(set.verdict("bar"), Verdict::Unmatched);
+        assert_eq!(set.verdict("bar", KindSet::EMPTY), Verdict::Unmatched);
     }
 
     #[test]
@@ -1601,7 +1881,10 @@ mod tests {
     fn an_excluding_filter_excludes_its_matches() {
         let set = set_excluding(&["heartbeat"]);
 
-        assert_eq!(set.verdict("a heartbeat line"), Verdict::Excluded);
+        assert_eq!(
+            set.verdict("a heartbeat line", KindSet::EMPTY),
+            Verdict::Excluded
+        );
     }
 
     /// Excluding filters run after including ones, so exclusion wins even on a
@@ -1611,8 +1894,14 @@ mod tests {
         let mut set = set_with(&["foo"]);
         set.add_excluding("noisy").expect("valid pattern");
 
-        assert_eq!(set.verdict("foo but noisy"), Verdict::Excluded);
-        assert_eq!(set.verdict("foo alone"), Verdict::Included(0));
+        assert_eq!(
+            set.verdict("foo but noisy", KindSet::EMPTY),
+            Verdict::Excluded
+        );
+        assert_eq!(
+            set.verdict("foo alone", KindSet::EMPTY),
+            Verdict::Included(0)
+        );
     }
 
     /// With only excluding filters, unmatched lines stay ordinary — there is
@@ -1621,7 +1910,10 @@ mod tests {
     fn excluding_filters_alone_do_not_dim() {
         let set = set_excluding(&["heartbeat"]);
 
-        assert_eq!(set.verdict("something else"), Verdict::Unmatched);
+        assert_eq!(
+            set.verdict("something else", KindSet::EMPTY),
+            Verdict::Unmatched
+        );
         assert_eq!(set.style_for(Verdict::Unmatched), None);
     }
 
@@ -1630,7 +1922,10 @@ mod tests {
         let mut set = set_excluding(&["heartbeat"]);
         set.set_all_enabled(false);
 
-        assert_eq!(set.verdict("a heartbeat line"), Verdict::Unmatched);
+        assert_eq!(
+            set.verdict("a heartbeat line", KindSet::EMPTY),
+            Verdict::Unmatched
+        );
     }
 
     #[test]
@@ -1684,7 +1979,10 @@ mod tests {
         assert!(set.remove(0));
 
         assert_eq!(set.len(), 1);
-        assert_eq!(set.verdict("bar line"), Verdict::Included(0));
+        assert_eq!(
+            set.verdict("bar line", KindSet::EMPTY),
+            Verdict::Included(0)
+        );
     }
 
     /// Indices are positional, so removing a filter renumbers the ones after
@@ -1693,11 +1991,17 @@ mod tests {
     #[test]
     fn removing_a_filter_renumbers_the_rest() {
         let mut set = set_with(&["foo", "bar"]);
-        assert_eq!(set.verdict("bar line"), Verdict::Included(1));
+        assert_eq!(
+            set.verdict("bar line", KindSet::EMPTY),
+            Verdict::Included(1)
+        );
 
         set.remove(0);
 
-        assert_eq!(set.verdict("bar line"), Verdict::Included(0));
+        assert_eq!(
+            set.verdict("bar line", KindSet::EMPTY),
+            Verdict::Included(0)
+        );
     }
 
     #[test]
@@ -1714,8 +2018,11 @@ mod tests {
 
         assert!(set.set_enabled(0, false));
 
-        assert_eq!(set.verdict("foo line"), Verdict::Unmatched);
-        assert_eq!(set.verdict("bar line"), Verdict::Included(1));
+        assert_eq!(set.verdict("foo line", KindSet::EMPTY), Verdict::Unmatched);
+        assert_eq!(
+            set.verdict("bar line", KindSet::EMPTY),
+            Verdict::Included(1)
+        );
     }
 
     #[test]
@@ -1816,7 +2123,7 @@ mod tests {
         assert!(set.remove(0));
 
         assert!(set.is_empty());
-        assert_eq!(set.verdict("foo"), Verdict::Unmatched);
+        assert_eq!(set.verdict("foo", KindSet::EMPTY), Verdict::Unmatched);
     }
 
     #[test]
@@ -1879,8 +2186,11 @@ mod tests {
         let mut set = ActiveFilters::new();
         set.set_search("timeout").expect("valid pattern");
 
-        assert_eq!(set.verdict("conn timeout"), Verdict::Searched);
-        assert_eq!(set.verdict("all fine"), Verdict::Unmatched);
+        assert_eq!(
+            set.verdict("conn timeout", KindSet::EMPTY),
+            Verdict::Searched
+        );
+        assert_eq!(set.verdict("all fine", KindSet::EMPTY), Verdict::Unmatched);
     }
 
     /// The user's attention is on the pattern they just typed, so it wins the
@@ -1890,8 +2200,14 @@ mod tests {
         let mut set = set_with(&["ERROR"]);
         set.set_search("timeout").expect("valid pattern");
 
-        assert_eq!(set.verdict("ERROR timeout on socket"), Verdict::Searched);
-        assert_eq!(set.verdict("ERROR disk full"), Verdict::Included(0));
+        assert_eq!(
+            set.verdict("ERROR timeout on socket", KindSet::EMPTY),
+            Verdict::Searched
+        );
+        assert_eq!(
+            set.verdict("ERROR disk full", KindSet::EMPTY),
+            Verdict::Included(0)
+        );
     }
 
     /// Exclusion runs first and beats everything, so search inherits the rule
@@ -1902,7 +2218,10 @@ mod tests {
         set.add_excluding("heartbeat").expect("valid pattern");
         set.set_search("timeout").expect("valid pattern");
 
-        assert_eq!(set.verdict("heartbeat timeout"), Verdict::Excluded);
+        assert_eq!(
+            set.verdict("heartbeat timeout", KindSet::EMPTY),
+            Verdict::Excluded
+        );
     }
 
     /// One search at a time, like vim's search register: a second `/` replaces
@@ -1913,8 +2232,8 @@ mod tests {
         set.set_search("foo").expect("valid pattern");
         set.set_search("bar").expect("valid pattern");
 
-        assert_eq!(set.verdict("bar line"), Verdict::Searched);
-        assert_eq!(set.verdict("foo line"), Verdict::Unmatched);
+        assert_eq!(set.verdict("bar line", KindSet::EMPTY), Verdict::Searched);
+        assert_eq!(set.verdict("foo line", KindSet::EMPTY), Verdict::Unmatched);
     }
 
     /// The whole point of the separate slot: `/` and `Esc` must never renumber
@@ -1925,10 +2244,16 @@ mod tests {
         set.set_search("gamma").expect("valid pattern");
 
         assert_eq!(set.len(), 2, "the search must not join the numbered set");
-        assert_eq!(set.verdict("beta line"), Verdict::Included(1));
+        assert_eq!(
+            set.verdict("beta line", KindSet::EMPTY),
+            Verdict::Included(1)
+        );
 
         set.clear_search();
-        assert_eq!(set.verdict("beta line"), Verdict::Included(1));
+        assert_eq!(
+            set.verdict("beta line", KindSet::EMPTY),
+            Verdict::Included(1)
+        );
     }
 
     #[test]
@@ -1937,7 +2262,7 @@ mod tests {
         set.set_search("foo").expect("valid pattern");
         set.clear_search();
 
-        assert_eq!(set.verdict("foo line"), Verdict::Unmatched);
+        assert_eq!(set.verdict("foo line", KindSet::EMPTY), Verdict::Unmatched);
         assert!(set.search().is_none());
     }
 
@@ -1948,7 +2273,7 @@ mod tests {
 
         assert!(set.set_search("[").is_err());
         assert_eq!(
-            set.verdict("foo line"),
+            set.verdict("foo line", KindSet::EMPTY),
             Verdict::Searched,
             "the old search was lost"
         );
@@ -1960,7 +2285,7 @@ mod tests {
         set.set_search("foo").expect("valid pattern");
         set.set_all_enabled(false);
 
-        assert_eq!(set.verdict("foo line"), Verdict::Unmatched);
+        assert_eq!(set.verdict("foo line", KindSet::EMPTY), Verdict::Unmatched);
     }
 
     /// The search carries a colour of its own, outside `DEFAULT_PALETTE`, so it never
@@ -1987,10 +2312,10 @@ mod tests {
 
         set.disable_all_remembering();
         assert!(!set.any_enabled(), "the search kept the set enabled");
-        assert_eq!(set.verdict("bar line"), Verdict::Unmatched);
+        assert_eq!(set.verdict("bar line", KindSet::EMPTY), Verdict::Unmatched);
 
         set.restore_remembered();
-        assert_eq!(set.verdict("bar line"), Verdict::Searched);
+        assert_eq!(set.verdict("bar line", KindSet::EMPTY), Verdict::Searched);
     }
 
     /// A search that the user had deliberately toggled off must not come back on.
@@ -2003,7 +2328,7 @@ mod tests {
         set.disable_all_remembering();
         set.restore_remembered();
 
-        assert_eq!(set.verdict("bar line"), Verdict::Unmatched);
+        assert_eq!(set.verdict("bar line", KindSet::EMPTY), Verdict::Unmatched);
     }
 
     /// A capture describes a set that no longer exists once the search changes,
@@ -2098,7 +2423,10 @@ mod tests {
             set.search().is_none(),
             "the slot should be free for the next probe"
         );
-        assert_eq!(set.verdict("beta line"), Verdict::Included(1));
+        assert_eq!(
+            set.verdict("beta line", KindSet::EMPTY),
+            Verdict::Included(1)
+        );
     }
 
     /// `next_style` reads `self.filters.len()`, so it must be called before the
@@ -2168,8 +2496,14 @@ mod tests {
         assert!(set.set_pattern(0, "gamma").expect("valid pattern"));
 
         assert_eq!(set.len(), 2, "editing must not grow the set");
-        assert_eq!(set.verdict("gamma line"), Verdict::Included(0));
-        assert_eq!(set.verdict("beta line"), Verdict::Included(1));
+        assert_eq!(
+            set.verdict("gamma line", KindSet::EMPTY),
+            Verdict::Included(0)
+        );
+        assert_eq!(
+            set.verdict("beta line", KindSet::EMPTY),
+            Verdict::Included(1)
+        );
         assert_eq!(set.filters()[0].style, colour, "the colour moved with it");
     }
 
@@ -2180,7 +2514,7 @@ mod tests {
         set.set_pattern(0, "gamma").expect("valid pattern");
 
         assert_eq!(
-            set.verdict("alpha line"),
+            set.verdict("alpha line", KindSet::EMPTY),
             Verdict::Unmatched,
             "the old pattern still matches"
         );
@@ -2200,7 +2534,10 @@ mod tests {
         assert_eq!(set.filters()[0].sense, Sense::Exclude);
 
         set.set_enabled(0, true);
-        assert_eq!(set.verdict("a keepalive line"), Verdict::Excluded);
+        assert_eq!(
+            set.verdict("a keepalive line", KindSet::EMPTY),
+            Verdict::Excluded
+        );
     }
 
     /// The same discipline `add` follows: compile first, mutate second, so a
@@ -2212,7 +2549,10 @@ mod tests {
 
         assert!(set.set_pattern(0, "[").is_err());
 
-        assert_eq!(set.verdict("alpha line"), Verdict::Included(0));
+        assert_eq!(
+            set.verdict("alpha line", KindSet::EMPTY),
+            Verdict::Included(0)
+        );
     }
 
     #[test]
@@ -2221,7 +2561,10 @@ mod tests {
 
         assert!(!set.set_pattern(5, "gamma").expect("valid pattern"));
         assert_eq!(set.len(), 1);
-        assert_eq!(set.verdict("alpha line"), Verdict::Included(0));
+        assert_eq!(
+            set.verdict("alpha line", KindSet::EMPTY),
+            Verdict::Included(0)
+        );
     }
 
     /// Unlike `add` and `remove`, an edit leaves the set's *shape* alone — same

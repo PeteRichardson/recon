@@ -192,7 +192,7 @@ impl App<'_> {
             .filters
             .search()
             .filter(|search| search.enabled)
-            .map(|search| search.pattern.as_str().to_string());
+            .map(|search| search.predicate.display());
 
         // `CursorMove::Jump` takes a `u16`, which silently truncates past
         // 65,535 lines and lands the cursor 65,536 lines from its target on a
