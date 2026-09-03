@@ -837,10 +837,18 @@ Source files are coloured by their grammar — keywords, strings, comments,
 types — using [syntect](https://crates.io/crates/syntect) with
 [bat](https://github.com/sharkdp/bat)'s grammar and theme bundles via
 [two-face](https://crates.io/crates/two-face). Around 150 languages are
-recognised, by extension first (`.rs`, `.swift`, `.toml`, `.log`), then by file
-name (`Makefile`, `Dockerfile`, `.zshrc`), then by shebang. A file no grammar
+recognised, by extension first (`.rs`, `.swift`, `.toml`), then by file name
+(`Makefile`, `Dockerfile`, `.zshrc`), then by shebang. A file no grammar
 claims, a `.txt`, a binary file and a directory listing all render exactly as
 before.
+
+`.log` files are deliberately plain. bat's bundle does have a `log` grammar,
+but it is generic — it colours bare numbers, dates, IPv4 octets, quoted
+strings, `key=value` and URLs, whatever the log's own format — and on a
+free-form log that is stray yellow numbers and green quotes rather than
+structure. It is a fixed list in `syntax::PLAIN_EXTENSIONS` for now; a
+per-extension setting is the intended replacement once there is a config shape
+for it.
 
 ### Choosing a theme
 
