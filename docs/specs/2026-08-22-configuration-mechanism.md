@@ -292,6 +292,7 @@ and so each has somewhere to land:
 | Candidate | Source | Note |
 |---|---|---|
 | ~~Filter palette~~ | #62 | **Landed.** `[filters] palette`, a whole-list replacement — the first setting that is neither a string nor a scalar, and the first to need a `deserialize_with` for a range check (`palette = []` divides by zero downstream) |
+| ~~Syntax theme~~ | #122 | **Landed.** `[syntax] theme` and `--theme`/`RECON_THEME` — the first setting with a flag *and* a file key that resolve to a non-string value. Both run `syntax::Theme`'s `FromStr`, so a typo fails at parse time from either layer, and `none` is a value rather than an absence so the CLI can turn off what the file turned on |
 | `>>` selection marker, optional | #15 | Blocked on this issue; the marker was removed outright in the meantime |
 | Saved filter sets | #8 | TOML too, so there is one parser rather than two |
 | Directory / executable colours | #15 | Style overrides |

@@ -124,5 +124,24 @@ toml = { version = "1.1.4", default-features = false, features = [
     "std",
 ] }
 
+# Syntax colouring for the file view (#122). `syntect` does the parsing and
+# theming; `two-face` supplies bat's syntax and theme bundles in place of
+# syntect's own, because syntect's default set has no Swift and no TOML and
+# bat's has both, plus Kotlin, TypeScript, Dockerfile and ~150 others.
+#
+# `default-features = false` on syntect drops `default-syntaxes` and
+# `default-themes`, which would only ship a second copy of what two-face
+# already embeds. `plist-load` is what reads a user's own `.tmTheme` file
+# (`[syntax] theme = "/path/to/Dracula.tmTheme"`); `regex-onig` is the
+# Oniguruma engine bat's grammars are written against — the pure-Rust
+# `regex-fancy` engine is slower and mis-parses some of them.
+syntect = { version = "5.3", default-features = false, features = [
+    "parsing",
+    "dump-load",
+    "plist-load",
+    "regex-onig",
+] }
+two-face = "0.5"
+
 [patch.crates-io]
 tui-textarea-2 = { path = "vendor/tui-textarea-2" }

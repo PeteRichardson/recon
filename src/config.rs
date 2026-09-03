@@ -19,9 +19,13 @@
 //! to merge rather than nothing at all. `filters.palette` (#62) is the third,
 //! and the first that is a list rather than a string — see [`FiltersConfig`]
 //! for why it replaces the built-in palette wholesale, and
-//! `non_empty_palette` for the one value it has to refuse.
+//! `non_empty_palette` for the one value it has to refuse. `[syntax] theme`
+//! (#122) is the fourth, and the first with a CLI flag *and* a file key that
+//! resolve to a non-string value: both go through `syntax::Theme`'s `FromStr`,
+//! so a bad spelling fails at the same place whichever layer it came from.
 
 use crate::editor;
+use crate::syntax;
 use clap::Parser;
 use ratatui::style::Color;
 use serde::Deserialize;
@@ -108,6 +112,42 @@ pub struct Config {
     /// a one-line change here rather than a new path through the app.
     #[arg(skip)]
     pub filter_palette: Option<Vec<Color>>,
+
+    /// Colours for the file view's syntax colouring: a bundled theme name,
+    /// a path to a `.tmTheme` file, or `none` to turn colouring off.
+    ///
+    /// Falls back to `[syntax] theme` in `config.toml`, then to `ansi`, which
+    /// uses your terminal's own palette. `--help` lists the bundled themes.
+    //
+    // Resolved rather than spelt: clap's value parser runs `syntax::Theme`'s
+    // `FromStr`, so a bad name fails here with clap's own "invalid value"
+    // report naming the flag or the variable, before the terminal is taken.
+    // `Option` for the usual reason — the compiled-in default lives in
+    // `App::new`, below the file layer, and a clap default would beat the
+    // file. The long help lists the bundled names because the error message
+    // does too, and a user should not have to fail once to see the list.
+    #[arg(
+        long,
+        env = "RECON_THEME",
+        value_name = "THEME",
+        long_help = theme_long_help(),
+    )]
+    pub theme: Option<syntax::Theme>,
+}
+
+/// The `--theme` long help: the short help's two sentences, then the bundled
+/// names — which are data, not prose, so they are read from the bundle rather
+/// than copied into a doc comment that would drift from it.
+fn theme_long_help() -> String {
+    let names = syntax::bundled_names().collect::<Vec<_>>().join(", ");
+    format!(
+        "Colours for the file view's syntax colouring: a bundled theme name, a \
+         path to a `.tmTheme` file, or `none` to turn colouring off.\n\n\
+         Falls back to `[syntax] theme` in `config.toml`, then to `{default}`, \
+         which uses your terminal's own palette.\n\n\
+         Bundled themes: {names}.",
+        default = syntax::DEFAULT_THEME,
+    )
 }
 
 /// The clap defaults, restated for the tests and callers that build a `Config`
@@ -125,6 +165,7 @@ impl Default for Config {
             file_editor: None,
             print_editor_config: None,
             filter_palette: None,
+            theme: None,
         }
     }
 }
@@ -142,6 +183,36 @@ pub struct FileConfig {
     pub editor: Option<EditorConfig>,
     /// `[filters]`. Same absent-vs-empty reasoning as `editor`.
     pub filters: Option<FiltersConfig>,
+    /// `[syntax]`. Same again.
+    pub syntax: Option<SyntaxConfig>,
+}
+
+/// The `[syntax]` table.
+#[derive(Deserialize, Debug, Default, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct SyntaxConfig {
+    /// The colours the file view paints code with — see [`Config::theme`]
+    /// for the accepted spellings. Written as a string in the file; parsed
+    /// here for the same reason the palette is, so that a typo names the
+    /// file and the line rather than surfacing at the first `.rs` opened.
+    #[serde(default, deserialize_with = "theme_spelling")]
+    pub theme: Option<syntax::Theme>,
+}
+
+/// Parse a theme spelling, with `syntax::Theme`'s own error as the message —
+/// it lists the bundled names, which is the fix for most typos.
+///
+/// `default` alongside `deserialize_with`, as for `non_empty_palette`.
+fn theme_spelling<'de, D>(deserializer: D) -> Result<Option<syntax::Theme>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::Error;
+
+    let Some(spelling) = Option::<String>::deserialize(deserializer)? else {
+        return Ok(None);
+    };
+    spelling.parse().map(Some).map_err(D::Error::custom)
 }
 
 /// The `[filters]` table.
@@ -403,7 +474,11 @@ impl Config {
     /// that sets `[filters]` but no `[editor]` skip the filter merge entirely —
     /// a bug whose symptom is "my setting parses fine and does nothing".
     fn apply(&mut self, file: &FileConfig) {
-        let FileConfig { editor, filters } = file;
+        let FileConfig {
+            editor,
+            filters,
+            syntax,
+        } = file;
 
         if let Some(EditorConfig { project, file }) = editor {
             if let Some(project) = project {
@@ -419,6 +494,23 @@ impl Config {
         {
             self.filter_palette.get_or_insert_with(|| palette.clone());
         }
+
+        if let Some(SyntaxConfig { theme }) = syntax
+            && let Some(theme) = theme
+        {
+            self.theme.get_or_insert(*theme);
+        }
+    }
+
+    /// The theme the file view colours with, once the chain has run:
+    /// whatever was set, else the compiled-in default.
+    ///
+    /// Here rather than in `App::new` so that "unset means `ansi`" is stated
+    /// beside the other rungs of the ladder, and so a test of the chain can
+    /// read the answer without building an `App`.
+    #[must_use]
+    pub fn syntax_theme(&self) -> syntax::Theme {
+        self.theme.unwrap_or_else(syntax::Theme::builtin)
     }
 
     /// Resolve both editor templates, running the rungs below the config file.
@@ -590,6 +682,8 @@ mod tests {
             "Command template `O` runs",
             "$VISUAL",
             "ready-to-paste",
+            "Bundled themes: ",
+            "Dracula",
         ] {
             assert!(
                 help.contains(expected),
@@ -797,6 +891,7 @@ mod tests {
         assert_eq!(parsed.editor, default.editor);
         assert_eq!(parsed.file_editor, default.file_editor);
         assert_eq!(parsed.print_editor_config, default.print_editor_config);
+        assert_eq!(parsed.theme, default.theme);
     }
 
     // ---- the editor settings --------------------------------------------
@@ -1042,5 +1137,117 @@ mod tests {
         let mut config = Config::default();
         config.apply(&FileConfig::default());
         assert_eq!(config.filter_palette, None);
+    }
+
+    // ---- the syntax theme ---------------------------------------------
+
+    #[test]
+    fn the_theme_flag_parses_a_bundled_name_a_path_and_none() {
+        let config = Config::try_parse_from(["recon", "--theme", "nord"]).unwrap();
+        assert_eq!(
+            config
+                .theme
+                .and_then(|t| t.name().map(str::to_string))
+                .as_deref(),
+            Some("Nord")
+        );
+
+        let config = Config::try_parse_from(["recon", "--theme", "none"]).unwrap();
+        assert_eq!(config.theme, Some(syntax::Theme::Off));
+        assert_eq!(
+            config.syntax_theme(),
+            syntax::Theme::Off,
+            "off is a value, not a hole"
+        );
+
+        let unset = Config::try_parse_from(["recon"]).unwrap();
+        assert_eq!(unset.theme, None);
+        assert_eq!(unset.syntax_theme(), syntax::Theme::builtin());
+    }
+
+    #[test]
+    fn a_bad_theme_flag_is_a_clap_error_that_lists_the_themes() {
+        let err = Config::try_parse_from(["recon", "--theme", "octarine"]).unwrap_err();
+        let message = err.to_string();
+        assert!(message.contains("--theme"), "{message}");
+        assert!(message.contains("Dracula"), "{message}");
+    }
+
+    #[test]
+    fn a_syntax_section_parses() {
+        let path = fixture("syntax-theme.toml", "[syntax]\ntheme = 'Dracula'\n");
+        let syntax = load_from(&path).unwrap().syntax.expect("[syntax] parsed");
+        assert_eq!(
+            syntax
+                .theme
+                .and_then(|t| t.name().map(str::to_string))
+                .as_deref(),
+            Some("Dracula")
+        );
+    }
+
+    #[test]
+    fn a_syntax_section_may_turn_colouring_off() {
+        let path = fixture("syntax-theme-none.toml", "[syntax]\ntheme = 'none'\n");
+        let syntax = load_from(&path).unwrap().syntax.expect("[syntax] parsed");
+        assert_eq!(syntax.theme, Some(syntax::Theme::Off));
+    }
+
+    #[test]
+    fn an_unknown_theme_is_a_parse_error_naming_the_file_and_the_themes() {
+        let path = fixture("syntax-theme-bad.toml", "[syntax]\ntheme = 'octarine'\n");
+        let err = load_from(&path).expect_err("an unknown theme must fail");
+        let message = err.to_string();
+        assert!(matches!(err, ConfigError::Parse { .. }), "{message}");
+        assert!(message.contains("syntax-theme-bad.toml"), "{message}");
+        assert!(message.contains("\"octarine\""), "{message}");
+        assert!(message.contains("Dracula"), "{message}");
+    }
+
+    #[test]
+    fn an_unknown_key_inside_syntax_is_rejected_and_named() {
+        let path = fixture("syntax-unknown-key.toml", "[syntax]\ncolours = 'many'\n");
+        let err = load_from(&path).expect_err("unknown key must fail");
+        assert!(err.to_string().contains("colours"), "{err}");
+    }
+
+    #[test]
+    fn the_file_theme_fills_the_hole_the_cli_left_and_no_more() {
+        let dracula: syntax::Theme = "Dracula".parse().unwrap();
+        let nord: syntax::Theme = "Nord".parse().unwrap();
+        let file = FileConfig {
+            syntax: Some(SyntaxConfig {
+                theme: Some(dracula),
+            }),
+            ..FileConfig::default()
+        };
+
+        let mut unset = Config::default();
+        unset.apply(&file);
+        assert_eq!(unset.theme, Some(dracula));
+        assert_eq!(unset.syntax_theme(), dracula);
+
+        let mut set_on_the_cli = Config {
+            theme: Some(nord),
+            ..Config::default()
+        };
+        set_on_the_cli.apply(&file);
+        assert_eq!(set_on_the_cli.theme, Some(nord));
+
+        // `--theme none` is a decision the file must not overturn.
+        let mut off = Config {
+            theme: Some(syntax::Theme::Off),
+            ..Config::default()
+        };
+        off.apply(&file);
+        assert_eq!(off.syntax_theme(), syntax::Theme::Off);
+    }
+
+    #[test]
+    fn a_file_without_a_syntax_section_leaves_the_default_theme() {
+        let mut config = Config::default();
+        config.apply(&FileConfig::default());
+        assert_eq!(config.theme, None);
+        assert_eq!(config.syntax_theme(), syntax::Theme::builtin());
     }
 }

@@ -37,6 +37,7 @@ motions throughout.
 - [Usage](#usage)
 - [Keybindings](#keybindings)
 - [Opening an editor](#opening-an-editor)
+- [Syntax colouring](#syntax-colouring)
 - [Known Limitations](#known-limitations)
 - [Vendored dependency](#vendored-dependency)
 - [Development](#development)
@@ -98,6 +99,13 @@ motions throughout.
 - **Mouse resize** — drag either pane divider: the vertical one to set the left
   column's width, the horizontal one under the navigator to set how tall the
   filter pane is. Double-click either to return it to auto-sizing.
+- **Code is coloured** — keywords, strings and comments in around 150
+  languages, Swift and TOML included, using your terminal's own palette by
+  default so it matches whatever theme you already run. Pick a bundled theme
+  (`Dracula`, `Nord`, `gruvbox-dark`, …) or point at any `.tmTheme` file with
+  `--theme` or `[syntax] theme`; `none` turns it off. Filter colours and search
+  hits stay on top, and a multi-megabyte file colours only what is on screen,
+  so opening one costs nothing extra.
 - **Straight into your editor** — `o` opens the selected file's enclosing
   *project* at the line under the cursor; `O` opens the file *alone*, for the
   `.zshrc` you just want open fast. The editor is a command template rather than
@@ -197,6 +205,10 @@ Options:
           Print a ready-to-paste `[editor]` stanza and exit. Takes a flavour —
           `zed`, `vscode`, `wezterm-nvim`, … — or `auto` to guess from
           `$TERM_PROGRAM`
+      --theme <THEME>
+          Colours for the file view's syntax colouring: a bundled theme name, a
+          path to a `.tmTheme` file, or `none` to turn colouring off [env:
+          RECON_THEME=]
   -h, --help
           Print help (see more with '--help')
   -V, --version
@@ -819,6 +831,70 @@ Full reasoning: `docs/specs/2026-08-22-opening-an-editor.md`.
 
 ---
 
+## Syntax colouring
+
+Source files are coloured by their grammar — keywords, strings, comments,
+types — using [syntect](https://crates.io/crates/syntect) with
+[bat](https://github.com/sharkdp/bat)'s grammar and theme bundles via
+[two-face](https://crates.io/crates/two-face). Around 150 languages are
+recognised, by extension first (`.rs`, `.swift`, `.toml`, `.log`), then by file
+name (`Makefile`, `Dockerfile`, `.zshrc`), then by shebang. A file no grammar
+claims, a `.txt`, a binary file and a directory listing all render exactly as
+before.
+
+### Choosing a theme
+
+```sh
+recon --theme Dracula src/         # a bundled theme
+recon --theme ~/themes/Nord.tmTheme # any TextMate theme file
+recon --theme none                 # off
+```
+
+The same setting lives in `config.toml`, under the CLI and `RECON_THEME`:
+
+```toml
+[syntax]
+theme = "gruvbox-dark"
+```
+
+`recon --help` lists the bundled themes; names match case-insensitively. A
+theme file is Sublime's older `.tmTheme` format — an XML plist — which is what
+bat's `assets/themes/`, the dracula/sublime and catppuccin/sublime-text repos,
+and most VS Code and TextMate themes distribute. The newer
+`.sublime-color-scheme` JSON is not read.
+
+The default is `ansi`, which names your terminal's own sixteen colours rather
+than fixed RGB values: keywords take the terminal's magenta, comments its
+green, and plain text its default foreground. That is the same choice the
+navigator's blue and green make — the result follows your terminal theme
+instead of fighting it, works on a light background as well as a dark one, and
+needs no truecolor support. `base16` is the same idea with a fixed foreground.
+Every other bundled theme paints 24-bit colour and expects a background it
+does not paint, so pick one that suits your terminal's.
+
+### What stays on top
+
+Colouring is the lowest layer. A line a filter has coloured or dimmed keeps
+the filter's colour over its whole width — the filter colour is the
+information, and colouring a dimmed line would un-dim it. A search hit is
+black-on-yellow across the whole match, whatever it lands on. The cursor line
+in the focused pane is the usual reversed bar.
+
+### Large files
+
+A grammar's state at line N depends on every line before it, so a file cannot
+be coloured from the middle — and colouring a 10 MiB log whole would stall the
+navigator for seconds on every arrow key. recon colours only the lines about
+to be drawn, continuing from where the parser stopped when you scroll and
+resyncing a short way above the target when you jump: `G` on a large file, or a
+filter showing lines thousands apart, restarts the grammar 64 lines above each
+landing point. A block comment or raw string opened further back than that is
+coloured wrong until it closes — the same trade every editor makes on a jump.
+Lines over 10,000 bytes are left plain; a minified file on one line is not
+worth seconds of regex.
+
+---
+
 ## Known Limitations
 
 - **Files are read entirely into memory — once, not twice.** `read_lines` in
@@ -852,7 +928,7 @@ Full reasoning: `docs/specs/2026-08-22-opening-an-editor.md`.
   `$XDG_CONFIG_HOME/recon/config.toml`, falling back to
   `~/.config/recon/config.toml` on every platform including macOS, under a
   `CLI > env > file > defaults` precedence chain. The settings so far are the
-  two editor templates below and `[filters] palette`; every other key in the
+  two editor templates below, `[filters] palette` and `[syntax] theme`; every other key in the
   file is reported as an unknown key. Settings land one issue at a time
   against github issue #18; see
   `docs/specs/2026-08-22-configuration-mechanism.md` for the rules and the list
@@ -866,6 +942,13 @@ Full reasoning: `docs/specs/2026-08-22-opening-an-editor.md`.
 - Only the live search highlights the matched text within a line. Numbered
   filters colour the whole line — the vendored `TextArea` holds one search
   pattern, so extending spans to every filter needs more work in the fork.
+- **Bundled themes other than `ansi` and `base16` emit 24-bit colour.** recon
+  does not detect `COLORTERM` and never approximates an RGB value with the
+  nearest of 256, so on a terminal without truecolor those themes render
+  wrong. Stay on `ansi`, `base16` or `base16-256` there.
+- **Syntax colouring resyncs on a jump** — see [Large files](#large-files).
+  Colour after `G` on a big file can be wrong inside a multi-line construct
+  until it closes; scrolling there from the top is always exact.
 
 ---
 
@@ -932,7 +1015,7 @@ entry can both be deleted.
 
 ```sh
 cargo build              # debug build
-cargo test               # recon's suite: 350 unit + 9 integration tests
+cargo test               # recon's suite: 713 unit + 13 integration tests
 cargo test --workspace   # also runs the vendored fork's tests — see above
 cargo clippy
 cargo fmt -p recon       # -p recon, not plain `cargo fmt` — see below
