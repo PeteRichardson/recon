@@ -25,7 +25,10 @@ fn main() -> Result<()> {
     // long enough to be cited in #83 as evidence the logging was abandoned. The
     // reasoning never depended on it — stderr before the alternate screen is
     // the only legible place regardless of what else is printed there.
-    let config = Config::load()?;
+    let mut config = Config::load()?;
+    // The second file, by the same rule: read and validated before the
+    // terminal is taken, so its error is legible on the normal screen.
+    config.filter_sets = recon::filtersets::load_file()?;
 
     // Before the terminal, for the same reason the config error is: this prints
     // a snippet to be copied out of the scrollback, and the alternate screen

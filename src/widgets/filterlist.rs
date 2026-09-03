@@ -239,13 +239,14 @@ impl FilterList {
             Sense::Context => "ctx",
             Sense::Exclude => "exc",
         };
-        format!(
-            "{}[{}] {} {}",
-            label,
-            mark,
-            sense,
-            filter.predicate.display()
-        )
+        // A file filter shows its name under its set's; a scratch filter
+        // shows exactly what it did before sets existed. The two-level pane
+        // (#129) replaces this prefix with a header row.
+        let text = match filter.set {
+            0 => filter.display_name(),
+            set => format!("{}/{}", filters.sets()[set].name, filter.display_name()),
+        };
+        format!("{label}[{mark}] {sense} {text}")
     }
 
     pub(crate) fn render(&mut self, filters: &ActiveFilters, area: Rect, buf: &mut Buffer) {
@@ -341,6 +342,20 @@ mod tests {
                     .to_string()
             })
             .collect()
+    }
+
+    /// A file filter's row carries its set's name and the filter's own
+    /// name; a scratch filter's row is unchanged.
+    #[test]
+    fn file_filters_are_prefixed_by_their_set() {
+        let mut loaded = crate::filter::test_support::loaded("w", 50, true, &["associated"]);
+        loaded.filters[0].name = "assoc".into();
+        let mut filters = ActiveFilters::with_sets(None, &[loaded]);
+        filters.add("typed").expect("valid");
+        let mut list = FilterList::default();
+        let rows = rendered(&mut list, &filters, 30);
+        assert!(rows[1].contains("1[x] inc typed"), "{rows:?}");
+        assert!(rows[2].contains("2[ ] inc w/assoc"), "{rows:?}");
     }
 
     #[test]
