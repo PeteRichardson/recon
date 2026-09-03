@@ -45,6 +45,11 @@ const HIDE_BADGE_STYLE: Style = Style::new()
 /// the badge exists so it is never a silent one: one key resolves it.
 const STALE_BADGE_TEXT: &str = " changed on disk · r ";
 
+/// The badge saying the include filters are combined with AND (#39). Same style
+/// as `HIDE`, and for the same reason: the mode changes what the pane shows
+/// and is easy to forget while moving fast.
+const AND_BADGE_TEXT: &str = " AND ";
+
 /// How often `poll_stamps` re-stats the listing while the feature is on.
 const POLL_INTERVAL: Duration = Duration::from_secs(2);
 
@@ -343,6 +348,9 @@ struct ScanState {
     key: Vec<String>,
     selects: u64,
     exclude: u64,
+    /// OR or AND (#39): the same cached bitset answers differently under
+    /// each, so flipping the mode is a change a scan cares about.
+    combine: filter::Combine,
     dir: std::path::PathBuf,
 }
 
@@ -928,6 +936,13 @@ impl App<'_> {
                     self.toggle_peek();
                     return;
                 }
+                // Global, like `!`: the mode belongs to the set, not to a
+                // pane, and the badge on the status row is where it shows.
+                KeyCode::Char('&') if key.modifiers.is_empty() => {
+                    self.filters.toggle_and();
+                    self.refresh_view();
+                    return;
+                }
                 KeyCode::Char('!') if key.modifiers.is_empty() => {
                     // Three states, because "nothing is enabled" and "nothing
                     // was captured" are different situations. Branching on the
@@ -1300,11 +1315,12 @@ impl App<'_> {
         let matcher = self.filters.matcher();
         let dir = self.nav.dir().to_path_buf();
         let state = matcher.as_ref().map(|m| {
-            let (selects, exclude) = m.masks();
+            let (selects, exclude, combine) = m.masks();
             ScanState {
                 key: self.filters.pattern_key(),
                 selects,
                 exclude,
+                combine,
                 dir: dir.clone(),
             }
         });
@@ -1950,6 +1966,7 @@ impl Widget for &mut App<'_> {
         // early return, and a conditional can go stale.
         let badges: Vec<&str> = [
             (self.document.mode() == Mode::FilteredOnly).then_some(HIDE_BADGE_TEXT),
+            self.filters.is_and().then_some(AND_BADGE_TEXT),
             self.view_stale.then_some(STALE_BADGE_TEXT),
         ]
         .into_iter()
@@ -4807,6 +4824,81 @@ mod tests {
             "no funnel shown for an excluding filter while dimmed: {}",
             status_line(&mut app)
         );
+    }
+
+    // ---- AND mode (#39) -----------------------------------------------------
+
+    /// `&` flips the set to AND, the view re-evaluates under the new rule,
+    /// and the status row says so — the mode is easy to forget while moving
+    /// fast, which is the same reason `HIDE` has a badge.
+    #[test]
+    fn ampersand_ands_the_filters_and_shows_a_badge() {
+        let mut app = app_over_file("and_mode", "foo\nbar\nfoo bar\n");
+        key(&mut app, KeyCode::Char('f'));
+        key(&mut app, KeyCode::Char('i'));
+        typed(&mut app, "foo");
+        key(&mut app, KeyCode::Enter);
+        key(&mut app, KeyCode::Char('i'));
+        typed(&mut app, "bar");
+        key(&mut app, KeyCode::Enter);
+        assert!(
+            !status_line(&mut app).contains(AND_BADGE_TEXT.trim()),
+            "sanity: no badge before &"
+        );
+        let included = |app: &App| {
+            app.document
+                .verdicts()
+                .iter()
+                .filter(|v| matches!(v, filter::Verdict::Included(_)))
+                .count()
+        };
+        assert_eq!(included(&app), 3, "sanity: OR includes every line");
+
+        key(&mut app, KeyCode::Char('&'));
+
+        assert!(app.filters.is_and());
+        assert_eq!(included(&app), 1, "only `foo bar` matches both");
+        assert!(
+            status_line(&mut app).contains(AND_BADGE_TEXT.trim()),
+            "AND mode on with nothing on the row saying so: {}",
+            status_line(&mut app)
+        );
+
+        key(&mut app, KeyCode::Char('&'));
+
+        assert!(!app.filters.is_and());
+        assert_eq!(included(&app), 3);
+        assert!(!status_line(&mut app).contains(AND_BADGE_TEXT.trim()));
+    }
+
+    /// The badge is painted like `HIDE`, so a reader of one recognises the other.
+    #[test]
+    fn the_and_badge_wears_the_badge_style() {
+        let mut app = app_over_file("and_badge_style", "alpha\n");
+        key(&mut app, KeyCode::Char('&'));
+        let width = 60;
+        let area = Rect::new(0, 0, width, 6);
+        let mut buf = Buffer::empty(area);
+        app.render(area, &mut buf);
+        let y = area.height - 1;
+        let row: String = (0..width).map(|x| buf[(x, y)].symbol()).collect();
+        let start = u16::try_from(row.find(AND_BADGE_TEXT).expect("badge on the row")).unwrap();
+        for x in start..start + u16::try_from(AND_BADGE_TEXT.chars().count()).unwrap() {
+            let style = buf[(x, y)].style();
+            assert_eq!(style.fg, HIDE_BADGE_STYLE.fg, "column {x} foreground");
+            assert_eq!(style.bg, HIDE_BADGE_STYLE.bg, "column {x} background");
+        }
+    }
+
+    /// An open prompt takes every key, so `&` inside a pattern is typed, not
+    /// acted on — `foo&bar` is a legitimate thing to search for.
+    #[test]
+    fn ampersand_in_a_prompt_is_typed() {
+        let mut app = app_over_file("and_in_prompt", "alpha\n");
+        key(&mut app, KeyCode::Char('/'));
+        typed(&mut app, "a&b");
+        assert!(!app.filters.is_and());
+        assert_eq!(app.search.as_ref().map(|p| p.pattern.as_str()), Some("a&b"));
     }
 
     /// Issue #36's remaining half. `▼` answers "are lines missing right now?",

@@ -308,6 +308,7 @@ Global (`src/lib.rs`), handled before the focused pane sees the key:
 | `space` | **Peek at the plain file** — drop every filter and flip the hide mode, so the code reads normally. Press again to put the filtered view back exactly as it was. See [Peeking at the plain file](#peeking-at-the-plain-file) |
 | `Ctrl-H` / `H` | Toggle between dimming unmatched lines and hiding them |
 | `!` | Disable every filter, remembering which were on; restores exactly that (or enables all, if none were on to remember) |
+| `&` | Combine the enabled include filters with **AND** instead of OR — a line must match every one of them. Press again for OR. See [Combining filters with AND](#combining-filters-with-and) |
 | `b` | Hide the left column — both the navigator and the filter pane — and focus the file view; press again to restore the split (focus stays in the file view; `e` returns it) |
 | `z` | Maximise the focused pane, or restore the split — works in the navigator too, for long filenames |
 | `o` | Open the selected file's enclosing **project** in your editor, at the line the cursor is on — see [Opening an editor](#opening-an-editor) |
@@ -409,6 +410,38 @@ more matched lines otherwise read as twenty consecutive lines unless you stop
 to compare the numbers. Toggling back returns you to the exact line
 you were on, which is the point: the hidden view is for finding a line, not
 for living in.
+
+#### Combining filters with AND
+
+Including filters are combined with **OR**: a line is coloured if *any* enabled
+one matches it. That answers "show me errors or warnings" and cannot answer
+"show me lines with `foo` *and* `bar`". The regex workaround does not scale —
+Rust's `regex` crate has no lookaround, so the only spelling is every ordering
+of the terms (`foo.*bar|bar.*foo`), which is six alternations at three terms
+and 24 at four. And the natural thing to type, `foo.*bar.*baz`, silently misses
+`baz bar foo`.
+
+`&` flips the whole set to **AND**: a line is included only when *every*
+enabled including filter matches it. Press `&` again to go back. The status row
+carries an **AND** badge while it is on, painted like **HIDE** and for the same
+reason — the mode survives file loads and is easy to forget.
+
+What the mode does and does not touch:
+
+- Every matching line matched every filter, so no single filter owns it: lines
+  take the colour of the **first enabled** including filter. Disable that one
+  and the next takes over — and stops being a term.
+- Excluding filters (`x`) are unchanged. They remove lines in both modes.
+- Context filters (`m`) are not terms. A line a context filter matches is still
+  shown; that sense promises "also show these" and keeps its promise.
+- The live search (`/`) is not a term either. A probe never narrows the set it
+  is probing; `p` promotes it into one.
+- The navigator follows the same rule: a file is marked when one of its lines
+  matches every enabled including filter, in that first filter's colour. The
+  cached scan re-answers the folder with no I/O, as any toggle does.
+
+`&` is global and works from any pane. Groups — AND *within* a group, OR
+*between* them — are the general form and are tracked separately (#40).
 
 The hide toggle survives loading another file, exactly as the filter set does
 — it describes how you are reading, not which file you are reading. That is
