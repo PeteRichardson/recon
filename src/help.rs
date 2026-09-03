@@ -133,6 +133,10 @@ pub const KEYMAP: &[Section] = &[
                 action: "Disable every filter, or put them back",
             },
             Binding {
+                keys: &["&"],
+                action: "AND the include filters instead of OR, or back",
+            },
+            Binding {
                 keys: &["b"],
                 action: "Hide the left column, and focus the file view",
             },

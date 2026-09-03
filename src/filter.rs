@@ -102,6 +102,29 @@ pub enum Verdict {
     Excluded,
 }
 
+/// How the enabled include filters combine to include a line (#39).
+///
+/// Global, not per filter: a flag on the set needs no per-filter state, no
+/// nested pane, and leaves `Enter`, `d` and `!` untouched. Filter groups
+/// (#40) are the general form and subsume this if it proves too blunt.
+///
+/// Only `Sense::Include` filters are terms. `Exclude` is AND-NOT in both
+/// modes, as it always was. `Context` stays OR-ed: its promise is "also show
+/// these lines", and a context filter that *narrowed* the view would break
+/// the one workflow it exists for. The live search is likewise an
+/// independent OR term, so a probe never silently narrows an established
+/// set — promoting it with `p` is how it opts in.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Combine {
+    /// A line is included when *any* enabled include filter matches it.
+    #[default]
+    Or,
+    /// A line is included only when *every* enabled include filter matches
+    /// it. No single filter then owns the line, so the colour is the first
+    /// enabled include filter's — one colour for one kind of line.
+    And,
+}
+
 #[derive(Debug)]
 pub struct Filter {
     pub pattern: Regex,
@@ -169,6 +192,9 @@ pub struct Matcher {
     exclude: u64,
     /// The search's bit alone, or zero — so `owner` can rank it first.
     search: u64,
+    /// How the include bits combine. In `And` mode a line selects only when
+    /// every include bit in `selects` is set, or the search bit is.
+    combine: Combine,
 }
 
 impl Matcher {
@@ -181,15 +207,36 @@ impl Matcher {
             .fold(0, |bits, index| bits | (1 << index))
     }
 
-    /// Whether a line with these hits selects its file. A line selects when
-    /// an enabled `Include` filter or the search hits it, and no enabled
-    /// `Exclude` does.
-    #[must_use]
-    pub fn selects(&self, bits: u64) -> bool {
-        bits & self.selects != 0 && bits & self.exclude == 0
+    /// The include filters' bits alone: `selects` without the search.
+    fn includes(&self) -> u64 {
+        self.selects & !self.search
     }
 
-    /// Which filter selected a line with these hits, if any.
+    /// Whether a line with these hits selects its file, and no enabled
+    /// `Exclude` filter hits it.
+    ///
+    /// `Or`: an enabled `Include` filter or the search hits it. `And`: every
+    /// enabled `Include` filter hits it — or the search does, which is an OR
+    /// term in both modes. With no include filter enabled, `And` selects
+    /// nothing but search hits, the same as `Or`.
+    #[must_use]
+    pub fn selects(&self, bits: u64) -> bool {
+        if bits & self.exclude != 0 {
+            return false;
+        }
+        if bits & self.search != 0 {
+            return true;
+        }
+        let includes = self.includes();
+        match self.combine {
+            Combine::Or => bits & includes != 0,
+            Combine::And => includes != 0 && bits & includes == includes,
+        }
+    }
+
+    /// Which filter selected a line with these hits, if any. In `And` mode
+    /// every include filter hit, so this is the first enabled one — the same
+    /// colour `verdict` gives the line.
     #[must_use]
     pub fn owner(&self, bits: u64) -> Option<Owner> {
         if !self.selects(bits) {
@@ -199,15 +246,16 @@ impl Matcher {
             return Some(Owner::Search);
         }
         Some(Owner::Filter(
-            (bits & self.selects).trailing_zeros() as usize
+            (bits & self.includes()).trailing_zeros() as usize
         ))
     }
 
-    /// `(selects, exclude)`, for the caller that wants to know whether a
-    /// toggle changed anything a scan cares about.
+    /// `(selects, exclude, combine)`, for the caller that wants to know
+    /// whether a toggle changed anything a scan cares about. The mode is part
+    /// of it: the same bitset answers differently under each.
     #[must_use]
-    pub fn masks(&self) -> (u64, u64) {
-        (self.selects, self.exclude)
+    pub fn masks(&self) -> (u64, u64, Combine) {
+        (self.selects, self.exclude, self.combine)
     }
 }
 
@@ -256,6 +304,8 @@ pub struct ActiveFilters {
     /// Where filter colours come from. Whole-list replacement, never a merge —
     /// see [`crate::config::FiltersConfig`] for why.
     palette: Palette,
+    /// How the enabled include filters combine. `Or` by default; `&` flips it.
+    combine: Combine,
     filters: Vec<Filter>,
     /// The live search: at most one, replaced by each `/`, and never an
     /// element of `filters`.
@@ -462,6 +512,65 @@ impl ActiveFilters {
     }
 
     /// Whether any enabled filter removes lines.
+    /// Flip between OR and AND (#39), reporting whether AND is now on.
+    ///
+    /// Only a flag read at verdict time, like `enabled`: no recompile, and
+    /// nothing about the pattern list changes. Callers re-evaluate, since
+    /// every cached verdict was decided under the other rule.
+    pub fn toggle_and(&mut self) -> bool {
+        self.combine = match self.combine {
+            Combine::Or => Combine::And,
+            Combine::And => Combine::Or,
+        };
+        self.is_and()
+    }
+
+    /// Whether the enabled include filters are combined with AND.
+    #[must_use]
+    pub fn is_and(&self) -> bool {
+        self.combine == Combine::And
+    }
+
+    /// The include verdict once exclusion and the search have had their say:
+    /// which include or context filter, if any, claims a line whose hits
+    /// `hit` reports. Shared by the compiled and scanning paths so the two
+    /// cannot disagree about the mode.
+    ///
+    /// `Or`: the first enabled non-excluding filter that hit. `And`: every
+    /// enabled `Include` filter must have hit, and the first of them takes
+    /// the colour; failing that, a context filter that hit still shows the
+    /// line — context is OR-ed in both modes, see [`Combine`].
+    fn include_verdict(&self, hit: impl Fn(usize) -> bool) -> Verdict {
+        let live = |sense: Sense| {
+            self.filters
+                .iter()
+                .enumerate()
+                .filter(move |(_, filter)| filter.enabled && filter.sense == sense)
+        };
+        match self.combine {
+            Combine::Or => self
+                .filters
+                .iter()
+                .enumerate()
+                .find(|&(index, filter)| {
+                    filter.enabled && filter.sense != Sense::Exclude && hit(index)
+                })
+                .map_or(Verdict::Unmatched, |(index, _)| Verdict::Included(index)),
+            Combine::And => {
+                let mut includes = live(Sense::Include).map(|(index, _)| index).peekable();
+                let first = includes.peek().copied();
+                if let Some(first) = first
+                    && includes.all(&hit)
+                {
+                    return Verdict::Included(first);
+                }
+                live(Sense::Context)
+                    .find(|&(index, _)| hit(index))
+                    .map_or(Verdict::Unmatched, |(index, _)| Verdict::Included(index))
+            }
+        }
+    }
+
     #[must_use]
     pub fn any_excluding(&self) -> bool {
         self.filters
@@ -690,13 +799,7 @@ impl ActiveFilters {
             return Verdict::Searched;
         }
 
-        self.filters
-            .iter()
-            .enumerate()
-            .find(|&(index, filter)| {
-                filter.enabled && filter.sense != Sense::Exclude && matched(index)
-            })
-            .map_or(Verdict::Unmatched, |(index, _)| Verdict::Included(index))
+        self.include_verdict(matched)
     }
 
     /// The original per-filter scan, kept as the fallback for a set that would
@@ -720,13 +823,7 @@ impl ActiveFilters {
             return Verdict::Searched;
         }
 
-        self.filters
-            .iter()
-            .enumerate()
-            .find(|(_, filter)| {
-                filter.enabled && filter.sense != Sense::Exclude && filter.pattern.is_match(line)
-            })
-            .map_or(Verdict::Unmatched, |(index, _)| Verdict::Included(index))
+        self.include_verdict(|index| self.filters[index].pattern.is_match(line))
     }
 
     /// Whether the compiled set still describes this filter set.
@@ -782,6 +879,7 @@ impl ActiveFilters {
             selects,
             exclude,
             search,
+            combine: self.combine,
         })
     }
 
@@ -853,6 +951,131 @@ mod tests {
             set.add(pattern).expect("valid pattern");
         }
         set
+    }
+
+    // ---- AND mode (#39) ----------------------------------------------------
+
+    /// The default is today's behaviour: any enabled include filter includes.
+    #[test]
+    fn or_is_the_default() {
+        let set = set_with(&["foo", "bar"]);
+        assert!(!set.is_and());
+        assert_eq!(set.verdict("foo only"), Verdict::Included(0));
+    }
+
+    /// In AND mode a line must match every enabled include filter.
+    #[test]
+    fn and_requires_every_enabled_include_filter() {
+        let mut set = set_with(&["foo", "bar"]);
+        assert!(set.toggle_and());
+        assert_eq!(set.verdict("foo only"), Verdict::Unmatched);
+        assert_eq!(set.verdict("bar only"), Verdict::Unmatched);
+        assert_eq!(set.verdict("bar then foo"), Verdict::Included(0));
+        assert!(!set.toggle_and(), "a second press turns it back off");
+        assert_eq!(set.verdict("foo only"), Verdict::Included(0));
+    }
+
+    /// The colour is the first *enabled* include filter's, so disabling the
+    /// first filter hands the colour to the next — and drops it as a term.
+    #[test]
+    fn and_colours_by_the_first_enabled_include_filter() {
+        let mut set = set_with(&["foo", "bar", "baz"]);
+        set.toggle_and();
+        set.set_enabled(0, false);
+        assert_eq!(set.verdict("bar baz"), Verdict::Included(1));
+        assert_eq!(set.verdict("foo bar baz"), Verdict::Included(1));
+    }
+
+    /// A disabled filter is not a term, and with no enabled include filter
+    /// at all nothing is included — the same as OR mode.
+    #[test]
+    fn and_with_nothing_enabled_includes_nothing() {
+        let mut set = set_with(&["foo"]);
+        set.toggle_and();
+        set.set_enabled(0, false);
+        assert_eq!(set.verdict("foo"), Verdict::Unmatched);
+    }
+
+    /// Exclusion still wins, in either mode.
+    #[test]
+    fn and_still_excludes() {
+        let mut set = set_with(&["foo", "bar"]);
+        set.add_excluding("skip").expect("valid");
+        set.toggle_and();
+        assert_eq!(set.verdict("foo bar skip"), Verdict::Excluded);
+    }
+
+    /// Context filters are not terms of the AND: a line a context filter
+    /// matches is still shown, as the sense promises, and a line matching
+    /// every include filter is not also required to match the context one.
+    #[test]
+    fn context_filters_stay_or_ed_in_and_mode() {
+        let mut set = set_with(&["foo", "bar", "ctx"]);
+        set.toggle_context(2);
+        set.toggle_and();
+        assert_eq!(set.verdict("foo bar"), Verdict::Included(0));
+        assert_eq!(set.verdict("ctx alone"), Verdict::Included(2));
+        assert_eq!(set.verdict("foo alone"), Verdict::Unmatched);
+    }
+
+    /// The live search is an independent OR term: a probe never narrows the
+    /// set it is probing.
+    #[test]
+    fn the_search_is_not_a_term_of_the_and() {
+        let mut set = set_with(&["foo", "bar"]);
+        set.set_search("probe").expect("valid");
+        set.toggle_and();
+        assert_eq!(set.verdict("probe alone"), Verdict::Searched);
+        assert_eq!(set.verdict("foo bar"), Verdict::Included(0));
+    }
+
+    /// The scanning fallback agrees with the compiled path.
+    #[test]
+    fn and_agrees_between_compiled_and_scanning_paths() {
+        let mut set = set_with(&["foo", "bar"]);
+        set.add_excluding("skip").expect("valid");
+        set.toggle_and();
+        for line in ["foo", "bar foo", "foo bar skip", "nothing"] {
+            assert_eq!(set.verdict(line), set.verdict_by_scanning(line), "{line:?}");
+        }
+    }
+
+    /// The navigator's rule follows: a file matches when one line matches
+    /// every enabled include filter, and its owner is the first of them.
+    #[test]
+    fn the_matcher_ands_too() {
+        let mut set = set_with(&["foo", "bar"]);
+        set.toggle_and();
+        let m = set.matcher().expect("something selects");
+        assert!(!m.selects(m.bits("foo only")));
+        assert!(m.selects(m.bits("foo bar")));
+        assert_eq!(m.owner(m.bits("foo bar")), Some(Owner::Filter(0)));
+        set.set_enabled(0, false);
+        let m = set.matcher().expect("bar still selects");
+        assert!(m.selects(m.bits("bar only")));
+        assert_eq!(m.owner(m.bits("bar only")), Some(Owner::Filter(1)));
+    }
+
+    /// The search selects a file on its own in AND mode, as it does per line.
+    #[test]
+    fn the_matcher_keeps_the_search_as_an_or_term() {
+        let mut set = set_with(&["foo", "bar"]);
+        set.set_search("probe").expect("valid");
+        set.toggle_and();
+        let m = set.matcher().expect("selects");
+        assert!(m.selects(m.bits("probe")));
+        assert_eq!(m.owner(m.bits("probe")), Some(Owner::Search));
+    }
+
+    /// Flipping the mode changes what a cached bitset means, so the masks a
+    /// scan is keyed on must differ between the two modes.
+    #[test]
+    fn toggling_and_changes_the_matcher_masks() {
+        let mut set = set_with(&["foo", "bar"]);
+        let before = set.matcher().expect("selects").masks();
+        set.toggle_and();
+        let after = set.matcher().expect("selects").masks();
+        assert_ne!(before, after);
     }
 
     // ---- the matcher snapshot --------------------------------------------
