@@ -1,3 +1,4 @@
+use crate::syntax::{Highlighter, Span, Theme};
 use crate::widgets::filenav::Entry;
 /// `FileView` Widget
 ///
@@ -7,6 +8,7 @@ use ratatui::prelude::{Buffer, Color, Modifier, Rect, Style, Widget};
 use std::fs::File;
 use std::io::{BufRead, BufReader, Cursor, Read};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use tui_textarea::{CursorMove, Input, Key, Scrolling, TextArea};
 use unicode_width::UnicodeWidthStr;
 
@@ -192,24 +194,31 @@ const BINARY_SNIFF_BYTES: usize = 8 << 10;
 /// that could otherwise read as a bug rather than as an answer.
 const EMPTY_DIRECTORY_MESSAGE: &str = "<empty directory>";
 
-/// What `read_preview` found: the lines it read, whether more remain, and how
-/// many lines the whole file probably has.
-struct Preview {
+/// What `read_lines` or `read_preview` found: the lines it read, whether more
+/// remain, and how many lines the whole file probably has.
+struct Contents {
     lines: Vec<String>,
     truncated: bool,
     /// `None` when the file was read whole (the count is not a guess then, it
     /// is `lines.len()`) or when there was nothing to estimate from.
     estimated_lines: Option<usize>,
+    /// Whether `lines` are the file's own text, as opposed to a directory
+    /// listing or a message standing in for a file that could not be shown.
+    /// Only text is syntax-coloured (#122): `<binary file>` beside a `.rs`
+    /// path is not Rust, and a listing is not whatever its directory is
+    /// named after.
+    text: bool,
 }
 
-impl Preview {
-    /// A preview that is really an error or a placeholder. Not truncated —
+impl Contents {
+    /// Contents that are really an error or a placeholder. Not truncated —
     /// there is nothing better to re-read later — and nothing to estimate.
     fn message(text: String) -> Self {
         Self {
             lines: vec![text],
             truncated: false,
             estimated_lines: None,
+            text: false,
         }
     }
 }
@@ -224,7 +233,27 @@ pub struct FileView<'a> {
     /// something that does not exist (#79). Rendered at the one place that
     /// should render it: the pane title.
     filename: PathBuf,
+    /// The lines as read — the whole file, or as much of it as `preview`
+    /// took — shared with the `Document` that filters them (#122).
+    ///
+    /// `textarea` used to be the only copy, which was fine while it held the
+    /// whole file and stopped being true when it became a window (#7):
+    /// syntax colouring parses from the top of the file down, so it needs
+    /// the lines the window was cut from, not the window. An `Arc` so that
+    /// `App::sync_document` shares this rather than cloning it.
+    source: Arc<Vec<String>>,
+    /// Whether `source` is file text rather than a listing or a message —
+    /// see `Contents::text`.
+    text: bool,
     textarea: TextArea<'a>,
+    /// The colours syntax colouring paints with. `Off` by default, so a
+    /// `FileView` built without one renders exactly as it did before #122;
+    /// `App::new` sets it from the config.
+    theme: Theme,
+    /// The colouring of `source`, filled in as rows are rendered. `None`
+    /// when the theme is off, when no grammar claims the file, or when
+    /// `source` is not text.
+    highlighter: Option<Highlighter>,
     /// Showing a bounded preview rather than the whole file.
     truncated: bool,
     /// Roughly how many lines the whole file holds, while only a preview of it
@@ -300,15 +329,59 @@ impl FileView<'_> {
         &self.filename
     }
 
-    /// The buffer's lines, for `App::sync_document`.
+    /// The file's lines as read, for `App::sync_document`, which shares them
+    /// with the `Document` rather than copying them.
     ///
-    /// An accessor rather than a `pub textarea`, because `window_start` must
-    /// match what the textarea currently holds — `cursor_visible_row` is the
-    /// only correct way to read a vertical position, and a caller mutating the
-    /// textarea directly breaks it silently, off by `window_start`, which
-    /// looks entirely plausible (#81).
-    pub(crate) fn lines(&self) -> &[String] {
-        self.textarea.lines()
+    /// Not the textarea's lines: those are a *window* of the visible set once
+    /// `show_window` has run. And an accessor rather than a `pub textarea`,
+    /// because `window_start` must match what the textarea currently holds —
+    /// `cursor_visible_row` is the only correct way to read a vertical
+    /// position, and a caller mutating the textarea directly breaks it
+    /// silently, off by `window_start`, which looks entirely plausible (#81).
+    pub(crate) fn source(&self) -> &Arc<Vec<String>> {
+        &self.source
+    }
+
+    /// Choose the colours syntax colouring paints with, or `Theme::Off`.
+    ///
+    /// Applies to the file already on screen as well as to later ones, so
+    /// `App::new` can set it after the first `load`.
+    pub fn set_theme(&mut self, theme: Theme) {
+        self.theme = theme;
+        self.rebuild_highlighter();
+    }
+
+    /// The name of the grammar colouring the file, if one is.
+    #[cfg(test)]
+    pub(crate) fn syntax_name(&self) -> Option<&str> {
+        self.highlighter.as_ref().map(Highlighter::syntax_name)
+    }
+
+    /// Install freshly read lines: as `source`, as the textarea's whole
+    /// buffer, and as the input to a new highlighter.
+    ///
+    /// Shared by `load` and `preview_with_caps`, which differ only in what
+    /// they say about the rest of the file. A fresh buffer is never a window
+    /// onto anything, so `window_start` goes back to zero: this buffer is the
+    /// file's own lines, and leaving a previous file's offset here would
+    /// misreport the cursor's line until the next `apply_view` — see
+    /// `cursor_visible_row`.
+    fn adopt(&mut self, lines: Vec<String>, text: bool) {
+        self.source = Arc::new(lines);
+        self.text = text;
+        self.textarea = TextArea::new(self.source.as_ref().clone());
+        self.window_start = 0;
+        self.rebuild_highlighter();
+    }
+
+    /// Start colouring `source` afresh, or stop, according to the theme and
+    /// the file. Costs a grammar lookup: nothing is parsed until a render
+    /// asks for a row.
+    fn rebuild_highlighter(&mut self) {
+        self.highlighter = self
+            .text
+            .then(|| Highlighter::for_file(self.theme, &self.filename, &self.source))
+            .flatten();
     }
 
     /// Give or take focus. The only writer of `active` (#81).
@@ -334,12 +407,8 @@ impl FileView<'_> {
     /// Rebuilding the `TextArea` also resets the cursor and scroll position.
     pub fn load(&mut self, path: &Path) {
         self.filename = path.to_path_buf();
-        self.textarea = TextArea::new(read_lines(path));
-        // This buffer is the file's own lines, not a window onto a visible set,
-        // so row 0 of it is row 0 of the document. Leaving a previous file's
-        // offset here would misreport the cursor's line until the next
-        // `apply_view` — see `cursor_visible_row`.
-        self.window_start = 0;
+        let contents = read_lines(path);
+        self.adopt(contents.lines, contents.text);
         self.showing_directory = path.is_dir();
         self.truncated = false;
         // The whole file is here, so its length is a fact rather than a guess.
@@ -368,9 +437,7 @@ impl FileView<'_> {
         self.filename = path.to_path_buf();
         let preview = read_preview_with_caps(path, max_lines, max_bytes);
         self.showing_directory = path.is_dir();
-        self.textarea = TextArea::new(preview.lines);
-        // See `load`: a fresh buffer is never a window onto anything.
-        self.window_start = 0;
+        self.adopt(preview.lines, preview.text);
         self.truncated = preview.truncated;
         self.estimated_lines = preview.estimated_lines;
         // Size the gutter for the whole file, not for the slice of it on
@@ -782,18 +849,20 @@ fn read_lossy_line<R: BufRead>(
     ))
 }
 
-/// Read `path` into lines, or a single-line message describing why it could not
+/// Read `path` whole, or a single-line message describing why it could not
 /// be read.
 ///
 /// `File::open` succeeds on a directory on Unix and only fails when read, so
 /// that case is recognised up front; anything else the OS refuses is reported
 /// verbatim. A file whose head holds a NUL is reported as binary; one that
 /// merely holds undecodable bytes is read anyway, a U+FFFD per bad sequence.
-fn read_lines(path: &Path) -> Vec<String> {
+///
+/// Never `truncated`, and never estimating: the whole file is here.
+fn read_lines(path: &Path) -> Contents {
     // See `read_preview`: a directory opens fine and then fails to read, so
     // it is recognised up front rather than surfacing an OS error string.
     if path.is_dir() {
-        return directory_listing(path, usize::MAX).lines;
+        return directory_listing(path, usize::MAX);
     }
     // Logged as well as shown (#83). The pane gets `<{err}>` in place of the
     // file, which tells the user *that* it failed; the log is where the
@@ -802,7 +871,7 @@ fn read_lines(path: &Path) -> Vec<String> {
         Ok(file) => file,
         Err(err) => {
             log::warn!("cannot open {}: {err}", path.display());
-            return vec![format!("<{err}>")];
+            return Contents::message(format!("<{err}>"));
         }
     };
 
@@ -811,11 +880,11 @@ fn read_lines(path: &Path) -> Vec<String> {
         Ok(sniffed) => sniffed,
         Err(err) => {
             log::warn!("cannot read the start of {}: {err}", path.display());
-            return vec![format!("<{err}>")];
+            return Contents::message(format!("<{err}>"));
         }
     };
     if binary {
-        return vec![BINARY_MESSAGE.to_string()];
+        return Contents::message(BINARY_MESSAGE.to_string());
     }
 
     // The sniffed bytes are content, so they go back in front of the rest.
@@ -835,11 +904,16 @@ fn read_lines(path: &Path) -> Vec<String> {
                     path.display(),
                     lines.len() + 1,
                 );
-                return vec![format!("<{err}>")];
+                return Contents::message(format!("<{err}>"));
             }
         }
     }
-    lines
+    Contents {
+        lines,
+        truncated: false,
+        estimated_lines: None,
+        text: true,
+    }
 }
 
 /// Read at most a screenful of `path`, reporting whether anything was left.
@@ -860,7 +934,7 @@ fn read_lines(path: &Path) -> Vec<String> {
 /// alone cost more than the entire rest of the suite. With the caps injectable
 /// a handful of bytes is enough, and a test states the cap it is testing
 /// instead of deriving it from a constant it does not control.
-fn read_preview_with_caps(path: &Path, max_lines: usize, max_bytes: u64) -> Preview {
+fn read_preview_with_caps(path: &Path, max_lines: usize, max_bytes: u64) -> Contents {
     // Checked before opening, not after failing to read. `File::open` on a
     // directory *succeeds* on macOS and the read then fails `EISDIR`, so
     // falling through to the error path below would display
@@ -871,7 +945,7 @@ fn read_preview_with_caps(path: &Path, max_lines: usize, max_bytes: u64) -> Prev
     }
     let file = match File::open(path) {
         Ok(file) => file,
-        Err(err) => return Preview::message(format!("<{err}>")),
+        Err(err) => return Contents::message(format!("<{err}>")),
     };
     // Read before the bytes are consumed; a file that cannot be stat'd simply
     // gets no estimate rather than failing the preview.
@@ -880,10 +954,10 @@ fn read_preview_with_caps(path: &Path, max_lines: usize, max_bytes: u64) -> Prev
     let mut reader = BufReader::new(file.take(max_bytes));
     let (binary, head) = match sniff_binary(&mut reader) {
         Ok(sniffed) => sniffed,
-        Err(err) => return Preview::message(format!("<{err}>")),
+        Err(err) => return Contents::message(format!("<{err}>")),
     };
     if binary {
-        return Preview::message(BINARY_MESSAGE.to_string());
+        return Contents::message(BINARY_MESSAGE.to_string());
     }
 
     // The sniffed bytes are content, so they go back in front of the rest.
@@ -895,7 +969,7 @@ fn read_preview_with_caps(path: &Path, max_lines: usize, max_bytes: u64) -> Prev
         match read_lossy_line(&mut reader, &mut buf) {
             Ok(Some(line)) => lines.push(line),
             Ok(None) => break,
-            Err(err) => return Preview::message(format!("<{err}>")),
+            Err(err) => return Contents::message(format!("<{err}>")),
         }
     }
 
@@ -909,10 +983,11 @@ fn read_preview_with_caps(path: &Path, max_lines: usize, max_bytes: u64) -> Prev
     } else {
         None
     };
-    Preview {
+    Contents {
         lines,
         truncated,
         estimated_lines,
+        text: true,
     }
 }
 
@@ -993,14 +1068,14 @@ fn listing_row(entry: &Entry, name_width: usize) -> String {
         .to_string()
 }
 
-fn directory_listing(path: &Path, max_lines: usize) -> Preview {
+fn directory_listing(path: &Path, max_lines: usize) -> Contents {
     let entries = match crate::widgets::filenav::sorted_entries(path) {
         Ok(entries) => entries,
         // Same shape as an unreadable file: say why, verbatim from the OS.
-        Err(err) => return Preview::message(format!("<{err}>")),
+        Err(err) => return Contents::message(format!("<{err}>")),
     };
     if entries.is_empty() {
-        return Preview::message(EMPTY_DIRECTORY_MESSAGE.to_string());
+        return Contents::message(EMPTY_DIRECTORY_MESSAGE.to_string());
     }
     let total = entries.len();
     let shown = &entries[..entries.len().min(max_lines)];
@@ -1017,12 +1092,13 @@ fn directory_listing(path: &Path, max_lines: usize) -> Preview {
         .map(|entry| listing_row(entry, name_width))
         .collect();
     let truncated = total > lines.len();
-    Preview {
+    Contents {
         lines,
         truncated,
         // Unlike a file, the real count is known exactly rather than scaled
         // from a sample — there is no guessing to do.
         estimated_lines: truncated.then_some(total),
+        text: false,
     }
 }
 
@@ -1072,6 +1148,128 @@ impl<'a> FileView<'a> {
     }
 }
 
+/// Priority of syntax spans among the textarea's custom highlights.
+///
+/// The fork's priority only orders highlights that start at the *same* byte,
+/// so this is not what keeps search matches on top — `apply_syntax` cuts
+/// the matches out of the spans for that. Lowest anyway, so that anything
+/// else ever pushed at the same offset wins.
+const SYNTAX_PRIORITY: u8 = 1;
+
+/// Most source lines one frame may parse for colour.
+///
+/// About 50 ms in release. A window of filter hits thousands of lines apart
+/// on a large file can otherwise ask for a resync per row — see
+/// `Highlighter::ensure` — and this is what bounds that to one brief stall,
+/// with the rows past the budget coloured on the next frame instead of
+/// never rendered at all.
+const SYNTAX_BUDGET: usize = 4096;
+
+impl FileView<'_> {
+    /// Paint this frame's syntax colours onto the buffer.
+    ///
+    /// Re-done every render rather than kept in sync: `set_lines` clears the
+    /// textarea's custom highlights on every window rebuild, and which rows
+    /// want colour depends on the cursor, the filters and the search, all of
+    /// which change between frames. A few thousand pushes a frame, and
+    /// nothing to keep in step — the same shape `showing_directory` uses.
+    ///
+    /// Three kinds of row are left alone, so what was on screen before #122
+    /// is on screen unchanged:
+    ///
+    /// * **The cursor line while this pane is active.** It is drawn reversed,
+    ///   and a custom highlight *replaces* the line's style within its range
+    ///   rather than layering on it, so coloured words would punch holes in
+    ///   the bar.
+    /// * **A line a filter has styled** — coloured as a match or dimmed as a
+    ///   miss. The filter colour is the information; syntax colour would
+    ///   overwrite it, and un-dim a line that was dimmed on purpose.
+    /// * **Search matches.** The fork's priority only orders highlights that
+    ///   start at the same byte, so a syntax span *beginning inside* a match
+    ///   would replace the black-on-yellow. The match ranges are cut out of
+    ///   the spans before they are pushed, and the search style is painted
+    ///   onto a plain background as before.
+    fn apply_syntax(&mut self) {
+        self.textarea.clear_custom_highlight();
+        let Some(highlighter) = self.highlighter.as_mut() else {
+            return;
+        };
+        let rows = self.textarea.lines().len();
+        let cursor_row = self.active.then(|| self.textarea.cursor().0);
+        // Buffer row → source line: the gutter override when there is one
+        // (always, in production — see `App::apply_view`), otherwise the
+        // window's offset, which is what a freshly loaded, unwindowed buffer
+        // has.
+        let numbers = self.textarea.line_numbers();
+        let styles = self.textarea.line_styles();
+        let pattern = self.textarea.search_pattern();
+        let mut budget = SYNTAX_BUDGET;
+        let mut pushes: Vec<(usize, Span)> = Vec::new();
+        for (row, line) in self.textarea.lines().iter().enumerate() {
+            if Some(row) == cursor_row || styles.get(row).copied().flatten().is_some() {
+                continue;
+            }
+            let source = numbers.get(row).copied().unwrap_or(self.window_start + row);
+            if !highlighter.ensure(&self.source, source, &mut budget) {
+                continue;
+            }
+            let matches: Vec<(usize, usize)> = pattern
+                .map(|pattern| {
+                    pattern
+                        .find_iter(line)
+                        .map(|found| (found.start(), found.end()))
+                        .filter(|(start, end)| start < end)
+                        .collect()
+                })
+                .unwrap_or_default();
+            for &span in highlighter.spans(source) {
+                pushes.extend(around(span, &matches).map(|piece| (row, piece)));
+            }
+        }
+        debug_assert!(pushes.iter().all(|(row, _)| *row < rows));
+        for (row, span) in pushes {
+            self.textarea.custom_highlight(
+                ((row, span.start), (row, span.end)),
+                span.style,
+                SYNTAX_PRIORITY,
+            );
+        }
+    }
+}
+
+/// `span` with `holes` cut out of it: the pieces that lie outside every hole.
+///
+/// `holes` are ascending and disjoint, which is what `Regex::find_iter`
+/// yields. A span entirely inside a hole yields nothing.
+fn around(span: Span, holes: &[(usize, usize)]) -> impl Iterator<Item = Span> + '_ {
+    let mut start = span.start;
+    let mut pieces = Vec::new();
+    for &(hole_start, hole_end) in holes {
+        if hole_end <= start {
+            continue;
+        }
+        if hole_start >= span.end {
+            break;
+        }
+        if hole_start > start {
+            pieces.push(Span {
+                start,
+                end: hole_start,
+                style: span.style,
+            });
+        }
+        start = start.max(hole_end);
+    }
+    if start < span.end {
+        pieces.push(Span {
+            start,
+            end: span.end,
+            style: span.style,
+        });
+    }
+    pieces.into_iter()
+}
+
 impl Widget for &mut FileView<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         // Recorded for the *next* `apply_view`, which runs outside render and
@@ -1106,6 +1304,7 @@ impl Widget for &mut FileView<'_> {
         self.textarea.set_cursor_line_style(style);
         self.textarea
             .set_search_style(Style::default().fg(Color::Black).bg(Color::Yellow));
+        self.apply_syntax();
         // The one place the path is rendered, and the one place a lossy
         // conversion is both correct and harmless — see the `filename` field.
         self.textarea.set_block(crate::widgets::pane_block(
@@ -2547,5 +2746,265 @@ mod tests {
             "the previous file's reservation outlived it"
         );
         assert_eq!(gutter_digits(&mut view), 1);
+    }
+
+    // ---- syntax colouring (#122) --------------------------------------
+
+    fn coloured_view(name: &str, body: &str) -> FileView<'static> {
+        let mut view = view_of(name, body);
+        view.set_theme(Theme::builtin());
+        view
+    }
+
+    fn buffer(view: &mut FileView<'_>) -> Buffer {
+        let area = Rect::new(0, 0, 40, 8);
+        let mut buf = Buffer::empty(area);
+        view.render(area, &mut buf);
+        buf
+    }
+
+    /// The style of the first cell of `needle` on row `y`.
+    ///
+    /// Found cell by cell rather than with `str::find` on the joined row: the
+    /// border is a multi-byte glyph, so a byte index into the row is not a
+    /// column.
+    fn style_at(buf: &Buffer, y: u16, needle: &str) -> Style {
+        let symbols: Vec<&str> = (0..buf.area.width).map(|x| buf[(x, y)].symbol()).collect();
+        let x = (0..symbols.len())
+            .find(|&x| symbols[x..].concat().starts_with(needle))
+            .unwrap_or_else(|| panic!("no {needle:?} on row {y}: {:?}", symbols.concat()));
+        buf[(x as u16, y)].style()
+    }
+
+    fn fg_at(buf: &Buffer, y: u16, needle: &str) -> Color {
+        style_at(buf, y, needle)
+            .fg
+            .expect("a cell always has a foreground")
+    }
+
+    // Bodies below put the line under test *second*: the textarea draws its
+    // cursor cell at column 0 of the cursor row whether or not the pane is
+    // active, and that cell's style is the cursor's, not the text's.
+
+    #[test]
+    fn syntax_colours_reach_the_rendered_view() {
+        let mut view = coloured_view("syntax_rust.rs", "let x = 1;\nfn main() {} // hi");
+        assert_eq!(view.syntax_name(), Some("Rust"));
+        let buf = buffer(&mut view);
+        let y = row_of(&buf, "fn main");
+        assert_eq!(
+            fg_at(&buf, y, "fn"),
+            Color::Magenta,
+            "ansi: keywords are slot 5"
+        );
+        assert_eq!(
+            fg_at(&buf, y, "// hi"),
+            Color::Green,
+            "ansi: comments are slot 2"
+        );
+        assert_eq!(
+            fg_at(&buf, y, "()"),
+            Color::Reset,
+            "punctuation takes the terminal's default"
+        );
+    }
+
+    #[test]
+    fn without_a_theme_nothing_is_coloured() {
+        let mut view = view_of("syntax_off.rs", "let x = 1;\nfn main() {} // hi");
+        assert_eq!(view.syntax_name(), None);
+        let buf = buffer(&mut view);
+        let y = row_of(&buf, "fn main");
+        assert_eq!(fg_at(&buf, y, "fn"), Color::Reset);
+        assert_eq!(fg_at(&buf, y, "// hi"), Color::Reset);
+    }
+
+    #[test]
+    fn a_theme_set_after_loading_recolours_the_file_already_shown() {
+        let mut view = view_of("syntax_late.rs", "let x = 1;\nfn main() {}");
+        let buf = buffer(&mut view);
+        assert_eq!(fg_at(&buf, row_of(&buf, "fn"), "fn"), Color::Reset);
+
+        view.set_theme(Theme::builtin());
+        let buf = buffer(&mut view);
+        assert_eq!(fg_at(&buf, row_of(&buf, "fn"), "fn"), Color::Magenta);
+
+        view.set_theme(Theme::Off);
+        let buf = buffer(&mut view);
+        assert_eq!(fg_at(&buf, row_of(&buf, "fn"), "fn"), Color::Reset);
+    }
+
+    #[test]
+    fn a_file_no_grammar_claims_is_not_coloured() {
+        let mut view = coloured_view("syntax_notes.txt", "let x = 1;\nfn main() {}");
+        assert_eq!(view.syntax_name(), None);
+        let buf = buffer(&mut view);
+        assert_eq!(fg_at(&buf, row_of(&buf, "fn"), "fn"), Color::Reset);
+    }
+
+    #[test]
+    fn a_line_a_filter_styled_keeps_the_filter_s_colour() {
+        let mut view = coloured_view("syntax_filtered.rs", "let x = 1;\nfn a() {}\nfn b() {}");
+        view.set_line_styles(vec![None, Some(Style::default().fg(Color::Yellow)), None]);
+        let buf = buffer(&mut view);
+        let a = row_of(&buf, "fn a");
+        let b = row_of(&buf, "fn b");
+        assert_eq!(
+            fg_at(&buf, a, "fn"),
+            Color::Yellow,
+            "the filter's colour, whole line"
+        );
+        assert_eq!(fg_at(&buf, a, "()"), Color::Yellow);
+        assert_eq!(
+            fg_at(&buf, b, "fn"),
+            Color::Magenta,
+            "an unfiltered line is coloured"
+        );
+    }
+
+    #[test]
+    fn the_active_cursor_line_is_the_focus_bar_not_coloured_words() {
+        let mut view = coloured_view("syntax_cursor.rs", "fn a() {}\nfn b() {}");
+        view.set_active(true);
+        let buf = buffer(&mut view);
+        let a = row_of(&buf, "fn a");
+        let b = row_of(&buf, "fn b");
+        let bar = style_at(&buf, a, "n a");
+        assert_eq!(bar.fg, Some(Color::Green));
+        assert!(bar.add_modifier.contains(Modifier::REVERSED));
+        assert_eq!(style_at(&buf, a, "()"), bar, "one unbroken bar");
+        assert_eq!(fg_at(&buf, b, "fn"), Color::Magenta);
+
+        // Inactive, the cursor line is an ordinary line again.
+        view.set_active(false);
+        let buf = buffer(&mut view);
+        assert_eq!(fg_at(&buf, a, "n a"), Color::Magenta);
+    }
+
+    #[test]
+    fn a_search_match_stays_black_on_yellow_over_syntax_colour() {
+        let mut view = coloured_view("syntax_search.rs", "let x = 1;\nfn main() {} // hi");
+        // `n m` straddles the end of the keyword and the start of the name, so
+        // a syntax span begins inside the match — the case the fork's
+        // priority does not cover.
+        view.set_highlight(Some("n m")).unwrap();
+        let buf = buffer(&mut view);
+        let y = row_of(&buf, "fn main");
+        assert_eq!(
+            fg_at(&buf, y, "f"),
+            Color::Magenta,
+            "the keyword up to the match"
+        );
+        for needle in ["n m", " m", "m"] {
+            let hit = style_at(&buf, y, needle);
+            assert_eq!(hit.bg, Some(Color::Yellow), "{needle:?} is a search hit");
+            assert_eq!(hit.fg, Some(Color::Black), "{needle:?} is a search hit");
+        }
+        assert_ne!(
+            style_at(&buf, y, "ain").bg,
+            Some(Color::Yellow),
+            "the match ends"
+        );
+        assert_eq!(
+            fg_at(&buf, y, "// hi"),
+            Color::Green,
+            "colour resumes past it"
+        );
+    }
+
+    #[test]
+    fn a_windowed_buffer_is_coloured_by_source_line_not_buffer_row() {
+        let body = "plain\nplain\nplain\nfn a() {}";
+        let mut view = coloured_view("syntax_window.rs", body);
+
+        // The gutter override says which source line each row is.
+        view.show_window(vec!["fn a() {}".to_string()], 3, 0);
+        view.set_line_numbers(vec![3]);
+        let buf = buffer(&mut view);
+        assert_eq!(fg_at(&buf, row_of(&buf, "fn a"), "n a"), Color::Magenta);
+
+        // Without one, the window's offset does.
+        view.show_window(vec!["fn a() {}".to_string()], 3, 0);
+        view.set_line_numbers(Vec::new());
+        let buf = buffer(&mut view);
+        assert_eq!(fg_at(&buf, row_of(&buf, "fn a"), "n a"), Color::Magenta);
+
+        // A row claiming to be source line 0 gets line 0's (absent) colour,
+        // whatever text it holds — proof the lookup is by source line.
+        view.show_window(vec!["fn a() {}".to_string()], 0, 0);
+        view.set_line_numbers(vec![0]);
+        let buf = buffer(&mut view);
+        assert_eq!(fg_at(&buf, row_of(&buf, "fn a"), "n a"), Color::Reset);
+    }
+
+    #[test]
+    fn a_binary_file_with_a_source_extension_is_not_coloured() {
+        let path = byte_fixture("syntax_binary.rs", b"\0\0\0");
+        let mut view = FileView::new(path.display().to_string());
+        view.set_theme(Theme::builtin());
+        assert_eq!(view.syntax_name(), None);
+        let buf = buffer(&mut view);
+        let y = row_of(&buf, "binary");
+        assert_eq!(fg_at(&buf, y, "binary"), Color::Reset);
+    }
+
+    #[test]
+    fn a_directory_named_like_a_source_file_is_not_coloured() {
+        let dir = dir_fixture("syntax_listing.rs", &["main.rs"], &[]);
+        let mut view = FileView::new(dir.display().to_string());
+        view.set_theme(Theme::builtin());
+        assert_eq!(view.syntax_name(), None);
+    }
+
+    #[test]
+    fn a_preview_is_coloured_and_so_is_the_load_that_replaces_it() {
+        let path = fixture(
+            "syntax_preview.rs",
+            "fn a() {}\nfn b() {}\nfn c() {}\nfn d() {}",
+        );
+        let mut view = FileView::default();
+        view.set_theme(Theme::builtin());
+        view.preview_with_caps(&path, 2, MAX_PREVIEW_BYTES);
+        assert!(view.is_truncated());
+        let buf = buffer(&mut view);
+        assert_eq!(fg_at(&buf, row_of(&buf, "fn b"), "fn"), Color::Magenta);
+
+        view.load(&path);
+        assert!(!view.is_truncated());
+        let buf = buffer(&mut view);
+        assert_eq!(fg_at(&buf, row_of(&buf, "fn d"), "fn"), Color::Magenta);
+    }
+
+    #[test]
+    fn around_cuts_the_holes_out_of_a_span() {
+        let span = |start, end| Span {
+            start,
+            end,
+            style: Style::default().fg(Color::Red),
+        };
+        let pieces = |holes: &[(usize, usize)]| around(span(2, 10), holes).collect::<Vec<_>>();
+
+        assert_eq!(pieces(&[]), [span(2, 10)]);
+        assert_eq!(
+            pieces(&[(4, 6)]),
+            [span(2, 4), span(6, 10)],
+            "a hole in the middle"
+        );
+        assert_eq!(pieces(&[(0, 4)]), [span(4, 10)], "a hole over the start");
+        assert_eq!(pieces(&[(8, 12)]), [span(2, 8)], "a hole over the end");
+        assert_eq!(
+            pieces(&[(0, 2), (10, 12)]),
+            [span(2, 10)],
+            "holes that only touch"
+        );
+        assert!(pieces(&[(2, 10)]).is_empty(), "a hole that is the span");
+        assert!(
+            pieces(&[(0, 12)]).is_empty(),
+            "a hole that swallows the span"
+        );
+        assert_eq!(
+            pieces(&[(3, 4), (5, 6), (7, 8)]),
+            [span(2, 3), span(4, 5), span(6, 7), span(8, 10)]
+        );
     }
 }

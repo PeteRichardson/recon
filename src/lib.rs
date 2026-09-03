@@ -134,6 +134,7 @@ pub mod help;
 mod layout;
 mod path;
 pub mod scan;
+pub mod syntax;
 mod viewport;
 mod widgets;
 pub use config::Config;
@@ -387,6 +388,10 @@ impl App<'_> {
             // to a typo. Reporting the argument is what recon already does.
             _ => view.load(argument),
         }
+        // After the load, not before: `set_theme` recolours what is already
+        // shown, so the order does not matter for correctness — but setting
+        // it here keeps the two-way `match` above about *what* to open.
+        view.set_theme(config.syntax_theme());
 
         // Created here rather than lazily on the first `o`: the sender has to
         // outlive every launcher clone, and a channel built on demand would
@@ -1525,7 +1530,7 @@ impl App<'_> {
     /// filters see only the truncated slice until the view is focused and
     /// loads the file in full.
     fn sync_document(&mut self) {
-        let lines = self.view.lines().to_vec();
+        let lines = self.view.source().clone();
         // The hide toggle describes how the user is reading, not which file
         // they are reading, so it outlives the document exactly as the filter
         // set does — and for the same reason. The filters survived a load

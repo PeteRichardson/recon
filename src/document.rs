@@ -2,6 +2,7 @@
 
 use crate::filter::{ActiveFilters, Verdict};
 use ratatui::style::Style;
+use std::sync::Arc;
 
 /// Which lines the file view shows.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -27,7 +28,10 @@ pub enum Mode {
 /// getter (#77).
 #[derive(Debug, Default)]
 pub struct Document {
-    lines: Vec<String>,
+    /// Shared with the `FileView` that read them (#122): the view keeps the
+    /// file's lines to colour them lazily, and sharing is what stops that
+    /// being a third copy of every large file.
+    lines: Arc<Vec<String>>,
     verdicts: Vec<Verdict>,
     /// Whether anything was marking lines at the last `evaluate` — a numbered
     /// including filter, or the live search.
@@ -44,7 +48,8 @@ pub struct Document {
 
 impl Document {
     #[must_use]
-    pub fn new(lines: Vec<String>) -> Self {
+    pub fn new(lines: impl Into<Arc<Vec<String>>>) -> Self {
+        let lines = lines.into();
         let verdicts = vec![Verdict::Unmatched; lines.len()];
         Self {
             lines,
@@ -275,7 +280,12 @@ mod tests {
     use ratatui::style::Modifier;
 
     fn doc(lines: &[&str]) -> Document {
-        Document::new(lines.iter().map(std::string::ToString::to_string).collect())
+        Document::new(
+            lines
+                .iter()
+                .map(std::string::ToString::to_string)
+                .collect::<Vec<_>>(),
+        )
     }
 
     fn set_with(patterns: &[&str]) -> ActiveFilters {
