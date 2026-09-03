@@ -349,6 +349,81 @@ file, so it survives loading another file — `!` is the single keystroke back t
 an unfiltered view without discarding the set. Nothing is hidden: filters only
 change how lines are presented.
 
+#### Saved filter sets
+
+The filters that find a bug are three or four regexes, and typing them every
+session is the part recon could not help with. `~/.config/recon/filters.toml`
+holds **sets**: named groups of filters, defined once and loaded at startup.
+
+```toml
+# ~/.config/recon/filters.toml
+
+[sets.WiFi_debug]
+priority = 10                            # lower is nearer the top; default 50
+autoload = true                          # start with this set enabled
+
+[sets.WiFi_debug.profiles]
+default = ["assoc", "deauth"]            # applied whenever the set is enabled
+WiFi_bug_32 = ["deauth", "beacon-loss", "retry"]
+
+[[sets.WiFi_debug.filters]]
+name    = "assoc"
+pattern = 'wlan\d+: associated'
+
+[[sets.WiFi_debug.filters]]
+name    = "deauth"
+pattern = 'deauthenticat(ed|ing)'
+colour  = "red"                          # instead of the next palette colour
+
+[[sets.WiFi_debug.filters]]
+name    = "beacon-loss"
+pattern = 'beacon loss'
+sense   = "context"                      # include (default) | context | exclude
+
+[[sets.WiFi_debug.filters]]
+name    = "retry"
+pattern = 'retry|backoff'
+sense   = "exclude"
+```
+
+Single-quoted TOML strings do no escape processing, so a regex goes in
+verbatim — no doubled backslashes.
+
+**A set is enabled or disabled as a unit, and enabling it does not decide
+which of its filters are on.** The set's flag means "these filters count";
+each filter's own flag means "this one is on". A filter takes effect only when
+both are. The filters you type with `i` and `x` live in an unnamed *scratch
+set* that is always present and always first — with no `filters.toml` at all,
+recon is exactly this model with one set.
+
+- **`autoload`** — the set starts enabled. Without it a set is known and
+  listed, but off until you enable it.
+- **Profiles** — named permutations of a set's filters. Applying one enables
+  exactly those and disables the set's others. `default` is applied whenever
+  the set is enabled; without a `default`, enabling a set keeps whatever
+  flags its filters had, so a re-enabled set shows the toggles you left.
+- **`priority`** — where the set sits in the pane, lower first, ties by name.
+  The pane is short, so the top rows are a setting rather than an accident of
+  naming.
+- **`name`** — what the pane calls a filter, and what profiles refer to. It
+  defaults to the pattern itself.
+- **`colour`** — a colour for this filter instead of the next palette entry,
+  in the same spellings as the palette: a name, `#RRGGBB`, or a 256-colour
+  index as a string. A palette position is a poor way to say "errors are
+  red".
+
+The file is validated before the terminal is taken, with the same
+refuse-to-start policy as `config.toml`: a pattern that does not compile, a
+colour that does not parse, two filters answering to one name, a profile
+naming a filter the set lacks, a set with no filters, or a key the schema does
+not know each stop recon with a message naming the file, the set and the
+filter. A missing file is not an error. recon never writes this file.
+
+In this release the pane lists every known filter flat, with a file filter
+shown as `set/name`; the two-level pane with per-set toggling, the profile
+picker, solo and reset follow (#129–#132). `!` and `space` act on filter flags
+across every set and never on a set's own flag.
+
 #### The filter palette
 
 Successive filters take successive colours, wrapping once the list runs out.
@@ -938,6 +1013,10 @@ worth seconds of regex.
 
 ## Known Limitations
 
+- **The navigator's file matching covers at most 64 patterns**, counted across
+  every loaded set whether or not it is enabled, plus the live search. Above
+  that the navigator's marking switches off — never wrong, just absent — while
+  the view keeps filtering. A `filters.toml` with many sets can reach this.
 - **Files are read entirely into memory — once, not twice.** `read_lines` in
   `src/widgets/fileview.rs` collects the whole file into a `Vec<String>`, and
   `Document` holds it. A multi-gigabyte log is fully resident, and there is

@@ -135,6 +135,7 @@ pub mod config;
 pub mod document;
 pub mod editor;
 pub mod filter;
+pub mod filtersets;
 pub mod help;
 mod layout;
 mod path;
@@ -420,10 +421,7 @@ impl App<'_> {
             dragging: None,
             last_divider_click: None,
             search: None,
-            filters: match &config.filter_palette {
-                Some(palette) => ActiveFilters::with_palette(palette.clone()),
-                None => ActiveFilters::new(),
-            },
+            filters: ActiveFilters::with_sets(config.filter_palette.clone(), &config.filter_sets),
             document: Document::default(),
             last_visible: None,
             last_window: None,
@@ -4830,6 +4828,39 @@ mod tests {
             "no funnel shown for an excluding filter while dimmed: {}",
             status_line(&mut app)
         );
+    }
+
+    // ---- saved filter sets (#128) -------------------------------------------
+
+    /// An `autoload` set's `default` profile is what the app starts with,
+    /// and the navigator has something to scan for from the first frame.
+    #[test]
+    fn an_autoload_set_is_live_at_startup() {
+        let mut set = filter::test_support::loaded("a", 50, true, &["alpha", "beta"]);
+        set.profiles.insert("default".into(), vec!["beta".into()]);
+        let app = App::new(&Config {
+            filter_sets: vec![set],
+            ..Config::default()
+        });
+        assert!(app.filters.sets()[1].enabled);
+        let flags: Vec<bool> = app.filters.filters_in(1).map(|(_, f)| f.enabled).collect();
+        assert_eq!(flags, vec![false, true]);
+        assert!(
+            app.filters.matcher().is_some(),
+            "beta selects, so the navigator scans"
+        );
+    }
+
+    /// A set without `autoload` is known — listed, and coloured — but off.
+    #[test]
+    fn a_set_without_autoload_is_known_but_off() {
+        let app = App::new(&Config {
+            filter_sets: vec![filter::test_support::loaded("a", 50, false, &["alpha"])],
+            ..Config::default()
+        });
+        assert!(!app.filters.sets()[1].enabled);
+        assert_eq!(app.filters.filters().len(), 1);
+        assert!(app.filters.matcher().is_none());
     }
 
     // ---- AND mode (#39) -----------------------------------------------------

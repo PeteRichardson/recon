@@ -113,6 +113,13 @@ pub struct Config {
     #[arg(skip)]
     pub filter_palette: Option<Vec<Color>>,
 
+    /// Sets read from `filters.toml`, in pane order (#128). Filled by `main`
+    /// after `load`, so that a file error refuses to start the way a
+    /// `config.toml` error does. `#[arg(skip)]` because no flag names the
+    /// file — #46 would.
+    #[arg(skip)]
+    pub filter_sets: Vec<crate::filter::LoadedSet>,
+
     /// Colours for the file view's syntax colouring: a bundled theme name,
     /// a path to a `.tmTheme` file, or `none` to turn colouring off.
     ///
@@ -165,6 +172,7 @@ impl Default for Config {
             file_editor: None,
             print_editor_config: None,
             filter_palette: None,
+            filter_sets: Vec::new(),
             theme: None,
         }
     }
@@ -274,7 +282,6 @@ where
     D: serde::Deserializer<'de>,
 {
     use serde::de::Error;
-    use std::str::FromStr;
 
     let Some(spellings) = Option::<Vec<String>>::deserialize(deserializer)? else {
         return Ok(None);
@@ -289,17 +296,24 @@ where
 
     spellings
         .iter()
-        .map(|spelling| {
-            Color::from_str(spelling).map_err(|_| {
-                D::Error::custom(format!(
-                    "{spelling:?} is not a colour. Use a name ({COLOUR_NAMES}), \
-                     a hex triple (#RRGGBB), or a 256-colour index as a string \
-                     (\"0-255\", e.g. \"220\")"
-                ))
-            })
-        })
+        .map(|spelling| parse_colour(spelling).map_err(D::Error::custom))
         .collect::<Result<Vec<_>, _>>()
         .map(Some)
+}
+
+/// Parse one colour spelling, with a message that says what a good value
+/// looks like. Shared with `filtersets`, so a `colour` on a filter and an
+/// entry in `[filters] palette` accept the same forms and fail the same way.
+pub(crate) fn parse_colour(spelling: &str) -> Result<Color, String> {
+    use std::str::FromStr;
+
+    Color::from_str(spelling).map_err(|_| {
+        format!(
+            "{spelling:?} is not a colour. Use a name ({COLOUR_NAMES}), \
+             a hex triple (#RRGGBB), or a 256-colour index as a string \
+             (\"0-255\", e.g. \"220\")"
+        )
+    })
 }
 
 /// The `[editor]` table.
@@ -370,6 +384,16 @@ impl std::error::Error for ConfigError {}
 /// precedence" for the rule and for what to do when a test genuinely must set a
 /// real variable.
 fn config_path_from(xdg_config_home: Option<&str>, home: Option<&str>) -> Option<PathBuf> {
+    Some(config_home_from(xdg_config_home, home)?.join(CONFIG_FILE))
+}
+
+/// The directory recon's files live in — `config.toml` and, beside it,
+/// `filters.toml` — or `None` when neither variable names a home. The one
+/// resolver, so the two files cannot end up in different places.
+pub(crate) fn config_home_from(
+    xdg_config_home: Option<&str>,
+    home: Option<&str>,
+) -> Option<PathBuf> {
     let config_home = xdg_config_home
         .filter(|dir| !dir.is_empty())
         .map(Path::new)
@@ -384,7 +408,7 @@ fn config_path_from(xdg_config_home: Option<&str>, home: Option<&str>) -> Option
                 .map(|dir| Path::new(dir).join(".config"))
         })?;
 
-    Some(config_home.join(CONFIG_DIR).join(CONFIG_FILE))
+    Some(config_home.join(CONFIG_DIR))
 }
 
 /// Where recon looks for `config.toml`, or `None` when the environment names
