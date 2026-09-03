@@ -1,7 +1,9 @@
 //! The loaded file and what the filters made of it.
 
 use crate::filter::{ActiveFilters, Verdict};
+use crate::syntax::{self, KindSet};
 use ratatui::style::Style;
+use std::path::Path;
 use std::sync::Arc;
 
 /// Which lines the file view shows.
@@ -44,6 +46,14 @@ pub struct Document {
     anything_including: bool,
     mode: Mode,
     visible: Vec<usize>,
+    /// Where `lines` came from, for the grammar lookup a definition filter
+    /// needs (#123). `None` for a document with no file behind it.
+    path: Option<std::path::PathBuf>,
+    /// The definition kinds each line starts, computed by the first
+    /// `evaluate` that has a definition filter to answer and kept for the
+    /// document's life. `None` until then, and `Some(empty)` for a file no
+    /// grammar claims — that answer is worth caching too.
+    kinds: Option<Vec<KindSet>>,
 }
 
 impl Document {
@@ -57,6 +67,18 @@ impl Document {
             anything_including: false,
             mode: Mode::default(),
             visible: Vec::new(),
+            path: None,
+            kinds: None,
+        }
+    }
+
+    /// A document over `lines` read from `path`, so that a definition filter
+    /// can ask which grammar to parse them with.
+    #[must_use]
+    pub fn for_file(path: &Path, lines: impl Into<Arc<Vec<String>>>) -> Self {
+        Self {
+            path: Some(path.to_path_buf()),
+            ..Self::new(lines)
         }
     }
 
@@ -72,10 +94,24 @@ impl Document {
 
     /// Recompute every line's verdict. Call when the lines or the filters change.
     pub fn evaluate(&mut self, filters: &ActiveFilters) {
+        // The whole-file grammar pass, once, and only when a filter will
+        // read its answer. A set of regex filters never pays for it.
+        if filters.needs_kinds() && self.kinds.is_none() {
+            self.kinds = Some(
+                self.path
+                    .as_deref()
+                    .and_then(|path| syntax::definitions(path, &self.lines))
+                    .unwrap_or_default(),
+            );
+        }
+        let kinds = self.kinds.as_deref().unwrap_or(&[]);
         self.verdicts = self
             .lines
             .iter()
-            .map(|line| filters.verdict(line))
+            .enumerate()
+            .map(|(row, line)| {
+                filters.verdict(line, kinds.get(row).copied().unwrap_or(KindSet::EMPTY))
+            })
             .collect();
         self.anything_including = filters.any_including();
         self.recompute_visible();
@@ -277,6 +313,59 @@ impl Document {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ---- definition filters (#123) -----------------------------------------
+
+    /// A document that knows its file answers a definition filter from the
+    /// grammar; lines that start no definition are unmatched whatever they
+    /// say, and the pass runs only once.
+    #[test]
+    fn evaluating_a_definition_filter_reads_the_grammar() {
+        let mut filters = ActiveFilters::new();
+        filters.add_definition(crate::syntax::Kind::Function);
+        let lines = vec![
+            "// fn not_a_definition".to_string(),
+            "fn real() {}".to_string(),
+            "struct S;".to_string(),
+        ];
+        let mut document = Document::for_file(Path::new("t.rs"), lines);
+        document.evaluate(&filters);
+        assert_eq!(
+            document.verdicts(),
+            [Verdict::Unmatched, Verdict::Included(0), Verdict::Unmatched]
+        );
+        assert!(document.kinds.is_some(), "the pass ran and was kept");
+    }
+
+    /// No file behind the lines, or a file no grammar claims: a definition
+    /// filter matches nothing, and a regex filter is unaffected either way.
+    #[test]
+    fn without_a_grammar_a_definition_filter_matches_nothing() {
+        let mut filters = ActiveFilters::new();
+        filters.add_definition(crate::syntax::Kind::Function);
+        filters.add("real").expect("valid");
+        let lines = vec!["fn real() {}".to_string()];
+        for mut document in [
+            Document::new(lines.clone()),
+            Document::for_file(Path::new("app.log"), lines.clone()),
+        ] {
+            document.evaluate(&filters);
+            assert_eq!(document.verdicts(), [Verdict::Included(1)]);
+        }
+    }
+
+    /// Regex-only sets never pay for the grammar pass.
+    #[test]
+    fn a_regex_only_set_does_not_run_the_grammar_pass() {
+        let filters = {
+            let mut set = ActiveFilters::new();
+            set.add("fn").expect("valid");
+            set
+        };
+        let mut document = Document::for_file(Path::new("t.rs"), vec!["fn x() {}".to_string()]);
+        document.evaluate(&filters);
+        assert!(document.kinds.is_none());
+    }
     use ratatui::style::Modifier;
 
     fn doc(lines: &[&str]) -> Document {

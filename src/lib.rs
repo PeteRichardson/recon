@@ -1560,7 +1560,7 @@ impl App<'_> {
         // the navigator's selection, and every move fired a `Preview` through
         // here and undid the `Ctrl-H` that made the skim possible.
         let mode = self.document.mode();
-        self.document = Document::new(lines);
+        self.document = Document::for_file(self.view.filename(), lines);
         self.set_mode(mode);
         // The buffer the view is showing belongs to the *previous* document,
         // so the record of what it was built from is meaningless now.
@@ -1674,7 +1674,7 @@ impl App<'_> {
                 // function has to make.
                 if let Some(filter) = self.filters.filters().get(index) {
                     self.search = Some(SearchPrompt {
-                        pattern: filter.pattern.as_str().to_string(),
+                        pattern: filter.predicate.display(),
                         kind: PromptKind::Edit {
                             index,
                             sense: filter.sense,
@@ -1687,7 +1687,7 @@ impl App<'_> {
             FilterCommand::EditSearch => {
                 if let Some(search) = self.filters.search() {
                     self.search = Some(SearchPrompt {
-                        pattern: search.pattern.as_str().to_string(),
+                        pattern: search.predicate.display(),
                         kind: PromptKind::EditSearch,
                         ..SearchPrompt::default()
                     });
@@ -3674,8 +3674,14 @@ mod tests {
 
         let bottom = status_line(&mut app);
 
+        // The row's filter state is always "<count> filter(s)", so look for
+        // the word, not the substring: the row also names the directory,
+        // and a worktree such as `.worktrees/Fix-I123-predicate-filters`
+        // used to fail this test on its path alone.
         assert!(
-            !bottom.contains("filters"),
+            !bottom
+                .split_whitespace()
+                .any(|word| word == "filter" || word == "filters"),
             "reported filter state when no filters exist: {bottom}"
         );
         assert!(
@@ -6064,13 +6070,13 @@ mod tests {
         key(&mut app, KeyCode::Enter);
 
         assert_eq!(app.filters.len(), 2, "the edit added a filter");
-        assert_eq!(app.filters.filters()[0].pattern.as_str(), "alphaX");
+        assert_eq!(app.filters.filters()[0].predicate.display(), "alphaX");
         assert_eq!(
             app.filters.filters()[0].style,
             colour,
             "the filter lost its colour, so it moved"
         );
-        assert_eq!(app.filters.filters()[1].pattern.as_str(), "beta");
+        assert_eq!(app.filters.filters()[1].predicate.display(), "beta");
         assert!(app.search.is_none(), "the prompt should have closed");
     }
 
@@ -6115,7 +6121,7 @@ mod tests {
         let prompt = app.search.as_ref().expect("the prompt should stay open");
         assert_eq!(prompt.line(), INVALID_PATTERN);
         assert_eq!(
-            app.filters.filters()[0].pattern.as_str(),
+            app.filters.filters()[0].predicate.display(),
             "alpha",
             "a rejected pattern overwrote the filter"
         );
@@ -6131,7 +6137,7 @@ mod tests {
         key(&mut app, KeyCode::Esc);
 
         assert!(app.search.is_none());
-        assert_eq!(app.filters.filters()[0].pattern.as_str(), "alpha");
+        assert_eq!(app.filters.filters()[0].predicate.display(), "alpha");
     }
 
     /// Backspacing past the start cancels the prompt, as in vim — and a
@@ -6151,7 +6157,7 @@ mod tests {
 
         assert!(app.search.is_none(), "the prompt should have cancelled");
         assert_eq!(
-            app.filters.filters()[0].pattern.as_str(),
+            app.filters.filters()[0].predicate.display(),
             "alpha",
             "backspacing out of the prompt emptied the filter"
         );
@@ -6190,7 +6196,7 @@ mod tests {
         key(&mut app, KeyCode::Enter);
 
         assert_eq!(app.filters.filters()[0].sense, filter::Sense::Exclude);
-        assert_eq!(app.filters.filters()[0].pattern.as_str(), "alphaX");
+        assert_eq!(app.filters.filters()[0].predicate.display(), "alphaX");
     }
 
     /// A filter the user had switched off must not come back on just because
@@ -7125,8 +7131,8 @@ mod tests {
             app.filters
                 .search()
                 .expect("the search should still be set")
-                .pattern
-                .as_str(),
+                .predicate
+                .display(),
             "beta2"
         );
         assert_eq!(
@@ -7154,7 +7160,10 @@ mod tests {
         key(&mut app, KeyCode::Enter);
 
         assert_eq!(app.filters.len(), 1);
-        assert_eq!(app.filters.verdict("alpha line"), Verdict::Included(0));
+        assert_eq!(
+            app.filters.verdict("alpha line", syntax::KindSet::EMPTY),
+            Verdict::Included(0)
+        );
     }
 
     /// `filter_pane_height` must count the search row too. Reverting it to
