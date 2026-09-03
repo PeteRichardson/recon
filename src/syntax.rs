@@ -66,6 +66,18 @@ const RESYNC_GAP: usize = 256;
 /// thousand lines rather than tens of thousands.
 const RESYNC_LOOKBACK: usize = 64;
 
+/// Extensions left plain even though the bundle has a grammar for them
+/// (#125).
+///
+/// bat's `log` grammar is generic by design: it colours whatever most logs
+/// contain — bare numbers, dates, IPv4 octets, quoted strings, `key=value`,
+/// URLs, lines that mention `error` or `warn` — rather than any one format.
+/// On a free-form log the visible result is stray yellow numbers and green
+/// quotes, which is noise on exactly the files recon is for. Hard-coded until
+/// there is a per-extension setting to hang it on; compared case-insensitively,
+/// so `.LOG` is a log too.
+const PLAIN_EXTENSIONS: [&str; 1] = ["log"];
+
 /// A line longer than this is left uncoloured.
 ///
 /// Grammar regexes are written for source lines, and a minified megabyte on
@@ -296,22 +308,27 @@ fn style(style: SynStyle) -> Style {
 
 /// The grammar for `path`, or `None` when the file should stay uncoloured.
 ///
-/// The whole file name is tried before the extension, which is what catches
+/// [`PLAIN_EXTENSIONS`] are refused before any lookup. Otherwise the whole
+/// file name is tried before the extension, which is what catches
 /// `Makefile`, `Dockerfile` and `.zshrc`; the first line is the fallback for
 /// an extensionless script with a shebang. Plain text is a grammar the set
 /// does define — `.txt` maps to it — and is reported as `None`, since running
 /// a parser that colours nothing is pure cost.
 fn detect(path: &Path, first_line: Option<&str>) -> Option<&'static SyntaxReference> {
+    let extension = path.extension().and_then(|ext| ext.to_str());
+    if extension.is_some_and(|ext| {
+        PLAIN_EXTENSIONS
+            .iter()
+            .any(|plain| plain.eq_ignore_ascii_case(ext))
+    }) {
+        return None;
+    }
     let set = syntaxes();
     let by_name = path
         .file_name()
         .and_then(|name| name.to_str())
         .and_then(|name| set.find_syntax_by_extension(name));
-    let by_extension = || {
-        path.extension()
-            .and_then(|ext| ext.to_str())
-            .and_then(|ext| set.find_syntax_by_extension(ext))
-    };
+    let by_extension = || extension.and_then(|ext| set.find_syntax_by_extension(ext));
     let by_first_line = || first_line.and_then(|line| set.find_syntax_by_first_line(line));
     let syntax = by_name.or_else(by_extension).or_else(by_first_line)?;
     (!std::ptr::eq(syntax, set.find_syntax_plain_text())).then_some(syntax)
@@ -626,6 +643,24 @@ mod tests {
         assert!(name(".zshrc", "export X=1").is_some());
         assert!(name("run", "#!/bin/sh").is_some(), "found by shebang");
         assert_eq!(name("run", "no shebang here"), None);
+    }
+
+    /// The bundle *has* a `log` grammar — this pins that it is refused, and
+    /// refused before the shebang fallback could claim the file either.
+    #[test]
+    fn a_log_file_is_left_plain_although_the_bundle_has_a_grammar_for_it() {
+        assert!(
+            syntaxes().find_syntax_by_extension("log").is_some(),
+            "if bat dropped its log grammar, PLAIN_EXTENSIONS can drop \"log\""
+        );
+        let theme = Theme::builtin();
+        for path in ["deploy.log", "/var/log/system.LOG", "app.log"] {
+            let lines = lines("#!/bin/sh\n2024-03-22 07:10:38 error=1");
+            assert!(
+                Highlighter::for_file(theme, Path::new(path), &lines).is_none(),
+                "{path} should be plain"
+            );
+        }
     }
 
     #[test]
