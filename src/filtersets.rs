@@ -244,6 +244,100 @@ pub fn parse(text: &str, path: &Path) -> Result<Vec<LoadedSet>, Error> {
     Ok(sets)
 }
 
+/// What `S` writes: the scratch set, under a name (#131).
+///
+/// Patterns and senses only. No `name` key — the pattern is the name, which
+/// is what the `default` profile refers to — and no `priority`, `autoload`
+/// or `colour`: each is a one-line hand edit to a file `S` has just shown
+/// the shape of, and a default the user did not ask for is a thing to
+/// delete later.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SetToSave<'a> {
+    pub name: &'a str,
+    /// Each filter's pattern and sense, in pane order.
+    pub filters: Vec<(String, Sense)>,
+    /// The patterns of the filters enabled right now, which become the
+    /// set's `default` profile so it opens the way it was saved.
+    pub default: Vec<String>,
+}
+
+/// Append `set` to the file's `text`, touching nothing else.
+///
+/// `toml_edit` rather than `toml`'s serializer, which stays off in
+/// `Cargo.toml`: a hand-edited file's comments, key order and whitespace all
+/// survive, and the new tables go at the end. A pattern goes in as a
+/// single-quoted literal string wherever TOML allows one — no `\\` tax on
+/// the way out, matching the way in — and as a basic string only when it
+/// holds a `'` or a newline, which a literal cannot.
+pub fn append_set(text: &str, set: &SetToSave<'_>) -> Result<String, String> {
+    use toml_edit::{Array, ArrayOfTables, DocumentMut, Item, Table, value};
+
+    let mut doc: DocumentMut = text
+        .parse()
+        .map_err(|err: toml_edit::TomlError| err.to_string())?;
+    let sets = doc
+        .as_table_mut()
+        .entry("sets")
+        .or_insert_with(|| {
+            let mut table = Table::new();
+            // `[sets]` on its own says nothing; only `[sets.<name>]` should
+            // appear, which is what implicit means.
+            table.set_implicit(true);
+            Item::Table(table)
+        })
+        .as_table_mut()
+        .ok_or_else(|| "`sets` is not a table".to_string())?;
+    sets.set_implicit(true);
+
+    let mut table = Table::new();
+    if !set.default.is_empty() {
+        let mut profiles = Table::new();
+        let mut members = Array::new();
+        for member in &set.default {
+            members.push(member.as_str());
+        }
+        profiles.insert("default", value(members));
+        table.insert("profiles", Item::Table(profiles));
+    }
+    let mut filters = ArrayOfTables::new();
+    for (pattern, sense) in &set.filters {
+        let mut filter = Table::new();
+        filter.insert("pattern", literal_string(pattern)?);
+        let sense = match sense {
+            Sense::Include => None,
+            Sense::Context => Some("context"),
+            Sense::Exclude => Some("exclude"),
+        };
+        if let Some(sense) = sense {
+            filter.insert("sense", value(sense));
+        }
+        filters.push(filter);
+    }
+    table.insert("filters", Item::ArrayOfTables(filters));
+    sets.insert(set.name, Item::Table(table));
+    Ok(doc.to_string())
+}
+
+/// `pattern` as a TOML string value, single-quoted when it can be.
+///
+/// `toml_edit` exposes no way to choose a value's quoting, so the literal
+/// form is made by parsing one and moving the value across; its
+/// representation travels with it.
+fn literal_string(pattern: &str) -> Result<toml_edit::Item, String> {
+    use toml_edit::{DocumentMut, value};
+
+    if pattern.contains('\'') || pattern.contains('\n') || pattern.contains('\r') {
+        return Ok(value(pattern));
+    }
+    let mut one: DocumentMut = format!("pattern = '{pattern}'\n")
+        .parse()
+        .map_err(|err: toml_edit::TomlError| err.to_string())?;
+    Ok(one
+        .as_table_mut()
+        .remove("pattern")
+        .expect("the snippet defines `pattern`"))
+}
+
 /// Where `filters.toml` lives: beside `config.toml`, by the same rules.
 /// Takes the environment as arguments for the reason `config_path_from`
 /// gives — tests must not set real variables.
@@ -450,6 +544,85 @@ sense = "context"
     #[test]
     fn an_empty_set_name_is_rejected() {
         assert!(rejected("[sets.\"\"]\n[[sets.\"\".filters]]\npattern = 'x'\n").contains("empty"));
+    }
+
+    // ---- saving (#131) -----------------------------------------------------
+
+    #[test]
+    fn append_set_preserves_comments_and_other_sets() {
+        let before = "# my sets\n[sets.a]\n# keep me\n[[sets.a.filters]]\npattern = 'x'\n";
+        let after = append_set(
+            before,
+            &SetToSave {
+                name: "bug 57",
+                filters: vec![
+                    (r"\bERROR\b".into(), Sense::Include),
+                    ("DEBUG".into(), Sense::Exclude),
+                    ("ctx".into(), Sense::Context),
+                ],
+                default: vec![r"\bERROR\b".into()],
+            },
+        )
+        .expect("edits");
+        assert!(
+            after.starts_with(before),
+            "existing text is untouched:\n{after}"
+        );
+        assert!(after.contains("[sets.\"bug 57\"]"), "{after}");
+        assert!(
+            after.contains(r"pattern = '\bERROR\b'"),
+            "single-quoted literal:\n{after}"
+        );
+        assert!(after.contains("sense = \"exclude\""), "{after}");
+        assert!(after.contains("sense = \"context\""), "{after}");
+        assert!(
+            after.contains(r"default = ['\bERROR\b']"),
+            "the profile member is a literal string too:\n{after}"
+        );
+        assert!(!after.contains("autoload"), "{after}");
+        assert!(
+            !after.contains("\n[sets]\n"),
+            "no bare [sets] header:\n{after}"
+        );
+        let sets = parse(&after, Path::new("t")).expect("round-trips");
+        assert_eq!(sets.len(), 2);
+        assert_eq!(sets[1].name, "bug 57");
+        assert_eq!(sets[1].filters[0].predicate.display(), r"\bERROR\b");
+        assert_eq!(sets[1].profiles["default"], vec![r"\bERROR\b".to_string()]);
+    }
+
+    #[test]
+    fn append_set_starts_an_empty_file() {
+        let after = append_set(
+            "",
+            &SetToSave {
+                name: "n",
+                filters: vec![("x".into(), Sense::Include)],
+                default: vec![],
+            },
+        )
+        .expect("edits");
+        assert!(after.contains("[sets.n]"), "{after}");
+        assert!(!after.contains("profiles"), "no empty default: {after}");
+        assert!(parse(&after, Path::new("t")).is_ok());
+    }
+
+    /// A pattern a literal string cannot hold falls back to a basic string,
+    /// escaped, and still round-trips.
+    #[test]
+    fn a_pattern_with_a_quote_falls_back_to_a_basic_string() {
+        let after = append_set(
+            "",
+            &SetToSave {
+                name: "q",
+                filters: vec![("it's".into(), Sense::Include)],
+                default: vec![],
+            },
+        )
+        .expect("edits");
+        assert!(after.contains("pattern = \"it's\""), "{after}");
+        let sets = parse(&after, Path::new("t")).expect("round-trips");
+        assert_eq!(sets[0].filters[0].predicate.display(), "it's");
     }
 
     #[test]

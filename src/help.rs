@@ -285,7 +285,7 @@ pub const KEYMAP: &[Section] = &[
             },
             Binding {
                 keys: &["a"],
-                action: "Apply a profile to the selected set (opens a picker)",
+                action: "Pick a profile for the selected set",
             },
             Binding {
                 keys: &["s"],
@@ -294,6 +294,10 @@ pub const KEYMAP: &[Section] = &[
             Binding {
                 keys: &["R"],
                 action: "Reset every set to its startup state",
+            },
+            Binding {
+                keys: &["S"],
+                action: "Save the scratch filters as a named set",
             },
         ],
     },
