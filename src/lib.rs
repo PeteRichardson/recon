@@ -5108,7 +5108,11 @@ mod tests {
             .expect("typed filter");
         assert_eq!(error.style, Style::default().fg(filter::DEFAULT_PALETTE[0]));
         let rows = widgets::filterlist::rows(&app.filters);
-        assert_eq!(rows.len(), 6, "ERROR, header, four kinds");
+        assert_eq!(
+            rows.len(),
+            2 + syntax::Kind::ALL.len(),
+            "ERROR, header, one row per kind"
+        );
     }
 
     // ---- saving the scratch set (#131) ---------------------------------------

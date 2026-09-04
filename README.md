@@ -481,9 +481,13 @@ hand edit to a file `S` has just shown you the shape of.
 
 #### Definition filters
 
-One set is built in: `definitions`, with four filters — `functions`, `classes`,
-`structs`, `enums` — that select the lines *starting* a definition of that
-kind. They are not regexes over the text: the same syntect grammar pass that
+One set is built in: `definitions`, with eleven filters — `functions`,
+`classes`, `structs`, `enums`, `types`, `traits`, `modules`, `impls`,
+`constants`, `macros` and `sections` — that select the lines *starting* a
+definition of that kind. `traits` covers traits, interfaces and protocols;
+`modules` covers modules, namespaces and packages; `impls` covers Rust `impl`
+blocks and Swift extensions; `sections` is the headings of a Markdown or
+AsciiDoc file, an outline from the same mechanism for free. They are not regexes over the text: the same syntect grammar pass that
 colours the file says which lines begin a function, so `fn` in a comment or a
 string does not count, a closure binding does not count, and a Swift `func`
 counts even though bat's Swift grammar names nothing the way the others do.
@@ -1108,7 +1112,7 @@ needs every line's answer at once — see *Definition filters*.
 
 - **The navigator's file matching covers at most 64 patterns**, counted across
   every loaded set whether or not it is enabled, plus the live search — and the
-  built-in `definitions` set's four are among them, so sixty are yours. Above
+  built-in `definitions` set's eleven are among them, so fifty-three are yours. Above
   that the navigator's marking switches off — never wrong, just absent — while
   the view keeps filtering. A `filters.toml` with many sets can reach this.
 - **Files are read entirely into memory — once, not twice.** `read_lines` in
