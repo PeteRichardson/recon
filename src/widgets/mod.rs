@@ -118,6 +118,10 @@ pub(crate) enum FilterCommand {
     /// `a` on a set's header row: open the profile picker for it (#130).
     /// `App` owns the picker, and reports a set with no profiles instead.
     PickProfile(usize),
+    /// `s` on a set's header row: solo it, or un-solo it (#132).
+    Solo(usize),
+    /// `R` anywhere in the pane: every set back to its startup state (#132).
+    Reset,
 }
 
 // There is deliberately no `Widget` impl covering all three panes.

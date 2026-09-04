@@ -1686,6 +1686,12 @@ impl App<'_> {
             FilterCommand::ToggleSet(set) => {
                 self.filters.toggle_set(set);
             }
+            FilterCommand::Solo(set) => {
+                self.filters.solo(set);
+            }
+            FilterCommand::Reset => {
+                self.filters.reset();
+            }
             // Opens the picker, or says why not; the set is untouched until
             // a profile is chosen, so nothing to re-evaluate here.
             FilterCommand::PickProfile(set) => {
@@ -4909,6 +4915,79 @@ mod tests {
         assert!(!app.filters.sets()[1].enabled);
         assert_eq!(app.filters.filters().len(), 1);
         assert!(app.filters.matcher().is_none());
+    }
+
+    // ---- solo and reset (#132) -----------------------------------------------
+
+    fn app_with_three_sets(fixture: &str) -> App<'static> {
+        let mut a = filter::test_support::loaded("a", 10, true, &["alpha"]);
+        a.profiles.insert("default".into(), vec!["alpha".into()]);
+        let mut b = filter::test_support::loaded("b", 20, true, &["beta"]);
+        b.profiles.insert("default".into(), vec!["beta".into()]);
+        let c = filter::test_support::loaded("c", 30, false, &["gamma"]);
+        let mut app = app_over_file(fixture, "alpha\nbeta\ngamma\nscratch\n");
+        app.filters = ActiveFilters::with_sets(None, &[a, b, c]);
+        app.add_filter("scratch").expect("valid");
+        app
+    }
+
+    fn included(app: &App) -> usize {
+        app.document
+            .verdicts()
+            .iter()
+            .filter(|v| matches!(v, filter::Verdict::Included(_)))
+            .count()
+    }
+
+    /// `s` on b leaves only b's rows; the view matches b alone; `s` again
+    /// puts every set and the scratch filter back.
+    #[test]
+    fn s_solos_a_set_and_s_again_restores() {
+        let mut app = app_with_three_sets("solo_round_trip");
+        key(&mut app, KeyCode::Char('f'));
+        assert_eq!(included(&app), 3, "sanity: alpha, beta, scratch");
+        // Rows: scratch, Header(a), alpha, Header(b), beta, Header(c).
+        app.filters_pane.state.select(Some(3));
+        key(&mut app, KeyCode::Char('s'));
+        assert_eq!(app.filters.soloed(), Some(2));
+        assert_eq!(widgets::filterlist::rows(&app.filters).len(), 2);
+        assert_eq!(included(&app), 1, "only beta");
+        // The soloed header is now row 0.
+        app.filters_pane.state.select(Some(0));
+        key(&mut app, KeyCode::Char('s'));
+        assert_eq!(app.filters.soloed(), None);
+        assert_eq!(included(&app), 3);
+    }
+
+    #[test]
+    fn s_on_a_disabled_set_enables_it_with_default_and_solos() {
+        let mut app = app_with_three_sets("solo_disabled");
+        key(&mut app, KeyCode::Char('f'));
+        app.filters_pane.state.select(Some(5)); // Header(c)
+        key(&mut app, KeyCode::Char('s'));
+        assert_eq!(app.filters.soloed(), Some(3));
+        assert!(app.filters.sets()[3].enabled);
+        assert_eq!(included(&app), 0, "c has no default, so gamma stays off");
+    }
+
+    #[test]
+    fn big_r_resets_every_set_and_keeps_the_scratch_filter() {
+        let mut app = app_with_three_sets("reset_all");
+        key(&mut app, KeyCode::Char('f'));
+        app.filters_pane.state.select(Some(3));
+        key(&mut app, KeyCode::Char('s')); // solo b
+        app.filters.set_enabled(1, false); // beta off, contrary to default
+        key(&mut app, KeyCode::Char('R'));
+        assert_eq!(app.filters.soloed(), None);
+        let set_flags: Vec<bool> = app.filters.sets().iter().map(|s| s.enabled).collect();
+        assert_eq!(set_flags, vec![true, true, true, false]);
+        assert!(
+            app.filters.filters()[1].enabled,
+            "beta follows default again"
+        );
+        assert_eq!(app.filters.filters_in(0).count(), 1, "scratch filter kept");
+        assert_eq!(included(&app), 3);
+        assert_eq!(widgets::filterlist::rows(&app.filters).len(), 6);
     }
 
     // ---- the profile picker (#130) -------------------------------------------

@@ -451,7 +451,20 @@ while it is open, as a prompt does. A profile is an action, not a live
 binding: after applying one you can toggle rows freely and nothing fights you.
 `a` on a set with no profiles says so on the status row.
 
-Solo and reset follow (#132).
+**Solo**, from audio mixers: `s` on a set's header enables that set alone and
+suspends every other set — the scratch set included — remembering what was on.
+The pane shows only the soloed set, marked `solo`; `s` on it again puts
+everything back. `s` on a different set while soloed moves the solo there and
+keeps the original memory, so un-soloing later returns to the world before the
+first `s`. A dozen sets loaded at startup, one `s`, one profile, and you are
+working in one set's world. Solo and `!` are independent: `!` acts on filter
+flags, solo on set flags, and each restores its own.
+
+**Reset**: `R` returns every set to its startup state — enabled if and only if
+it has `autoload`, each file filter from its set's `default` profile or off,
+no solo, no `!` memory. Filters you typed are kept, flags and all. It touches
+only flags and is one key to redo, so it asks no confirmation. `R` is
+uppercase because `r` is the global refresh-from-disk.
 
 #### The filter palette
 
@@ -715,6 +728,8 @@ screen whenever the navigator is:
 | `c` | Change the selected filter's pattern — reopens the prompt over it |
 | `m` | Toggle the selected filter between *include* and *context* — see below |
 | `a` | On a set's header row, open the profile picker; `Enter` applies the chosen profile to that set |
+| `s` | On a set's header row, solo that set — every other set, the scratch set included, is suspended and the pane shows only this one; `s` again restores |
+| `R` | Reset every set to its startup state; filters you typed are kept |
 
 `c` edits in place: the filter keeps its slot, and so keeps its colour, its
 sense and whether it is enabled. That matters because a slot is a precedence —

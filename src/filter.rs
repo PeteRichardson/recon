@@ -271,6 +271,18 @@ impl FilterSet {
     }
 }
 
+/// A solo in force: which set, and what every set's flag was before it.
+///
+/// From audio mixers. The snapshot is aligned to `ActiveFilters::sets` by
+/// index and is taken once, on the first `s`; moving the solo to another set
+/// keeps it, so un-soloing returns to the world before the *first* `s` and
+/// not to an intermediate one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Solo {
+    set: usize,
+    snapshot: Vec<bool>,
+}
+
 /// One filter as read from `filters.toml`, before it has a colour or a
 /// position. The loader's output and the model's input; the model owns the
 /// type because the model decides what a set *is*.
@@ -465,6 +477,9 @@ pub struct ActiveFilters {
     /// Every set, scratch first (index 0), then in pane order. Filters point
     /// into this by index; see `FilterSet`.
     sets: Vec<FilterSet>,
+    /// The set being soloed, and every set's flag from before the first `s`,
+    /// so a second `s` puts the world back (#132).
+    solo: Option<Solo>,
     /// Where filter colours come from. Whole-list replacement, never a merge —
     /// see [`crate::config::FiltersConfig`] for why.
     palette: Palette,
@@ -511,6 +526,7 @@ impl Default for ActiveFilters {
     fn default() -> Self {
         Self {
             sets: vec![FilterSet::scratch()],
+            solo: None,
             palette: Palette::default(),
             combine: Combine::default(),
             filters: Vec::new(),
@@ -741,6 +757,75 @@ impl ActiveFilters {
             filter.enabled = members.contains(&filter.display_name());
         }
         true
+    }
+
+    /// Solo `set` (#132): snapshot every set's flag — the scratch set's
+    /// included — and enable only `set`. On the soloed set, restore the
+    /// snapshot instead. On another set while soloed, move the solo there
+    /// and keep the original snapshot. Returns whether a solo is now on.
+    ///
+    /// Filter flags are untouched throughout: the soloed set shows exactly
+    /// the toggles it had. A set that was off comes on the way `Enter`
+    /// brings it on, `default` profile and all. Toggling a set by hand while
+    /// soloed is drift, as toggling a filter during `!` is; un-solo restores
+    /// the snapshot regardless.
+    pub fn solo(&mut self, set: usize) -> bool {
+        if set == 0 || set >= self.sets.len() {
+            return self.solo.is_some();
+        }
+        if let Some(current) = self.solo.take() {
+            if current.set == set {
+                for (meta, was) in self.sets.iter_mut().zip(current.snapshot) {
+                    meta.enabled = was;
+                }
+                return false;
+            }
+            self.solo = Some(Solo {
+                set,
+                snapshot: current.snapshot,
+            });
+        } else {
+            self.solo = Some(Solo {
+                set,
+                snapshot: self.sets.iter().map(|meta| meta.enabled).collect(),
+            });
+        }
+        let was_enabled = self.sets[set].enabled;
+        for (index, meta) in self.sets.iter_mut().enumerate() {
+            meta.enabled = index == set;
+        }
+        if !was_enabled && self.sets[set].profiles.contains_key("default") {
+            self.apply_profile(set, "default");
+        }
+        true
+    }
+
+    /// The soloed set, if any.
+    #[must_use]
+    pub fn soloed(&self) -> Option<usize> {
+        self.solo.as_ref().map(|solo| solo.set)
+    }
+
+    /// Every set back to its startup state (#132): enabled iff `autoload`,
+    /// each file filter from its set's `default` profile if there is one and
+    /// off otherwise, no solo, no pending `!` capture.
+    ///
+    /// Scratch filters are not deleted and their flags are left alone: a
+    /// reset must never destroy something the user typed. Flags only, and
+    /// one key to redo from any state, so it asks no confirmation.
+    pub fn reset(&mut self) {
+        self.solo = None;
+        self.forget_capture();
+        self.sets[0].enabled = true;
+        for set in 1..self.sets.len() {
+            for filter in self.filters.iter_mut().filter(|f| f.set == set) {
+                filter.enabled = false;
+            }
+            self.sets[set].enabled = false;
+            if self.sets[set].autoload {
+                self.set_enabled_set(set, true);
+            }
+        }
     }
 
     /// Where the scratch set's filters end: the first filter not in set 0.
@@ -1567,6 +1652,116 @@ mod tests {
         assert_eq!(set.toggle_set(0), None);
         assert_eq!(set.toggle_set(7), None);
         assert!(set.sets()[0].enabled);
+    }
+
+    // ---- solo and reset (#132) ---------------------------------------------
+
+    fn three_sets() -> ActiveFilters {
+        let mut set = ActiveFilters::with_sets(
+            None,
+            &[
+                loaded("a", 10, true, &["x"]),
+                loaded("b", 20, true, &["y"]),
+                loaded("c", 30, false, &["z"]),
+            ],
+        );
+        set.add("scratch").expect("valid");
+        set
+    }
+
+    fn set_flags(set: &ActiveFilters) -> Vec<bool> {
+        set.sets().iter().map(|meta| meta.enabled).collect()
+    }
+
+    #[test]
+    fn solo_enables_one_set_and_suspends_the_rest_including_scratch() {
+        let mut set = three_sets();
+        assert!(set.solo(2));
+        assert_eq!(set_flags(&set), vec![false, false, true, false]);
+        assert_eq!(set.soloed(), Some(2));
+        assert!(
+            set.filters().iter().all(|f| f.enabled || f.set != 0),
+            "scratch filter flags are untouched"
+        );
+        assert_eq!(
+            set.verdict("scratch", KindSet::EMPTY),
+            Verdict::Unmatched,
+            "the scratch set is suspended, not just hidden"
+        );
+    }
+
+    #[test]
+    fn solo_again_restores_the_snapshot() {
+        let mut set = three_sets();
+        set.solo(2);
+        assert!(!set.solo(2));
+        assert_eq!(set_flags(&set), vec![true, true, true, false]);
+        assert_eq!(set.soloed(), None);
+    }
+
+    #[test]
+    fn moving_the_solo_keeps_the_first_snapshot() {
+        let mut set = three_sets();
+        set.solo(2);
+        assert!(set.solo(3));
+        assert_eq!(set_flags(&set), vec![false, false, false, true]);
+        assert!(!set.solo(3));
+        assert_eq!(set_flags(&set), vec![true, true, true, false]);
+    }
+
+    #[test]
+    fn soloing_a_disabled_set_applies_its_default() {
+        let mut c = loaded("c", 30, false, &["z", "w"]);
+        c.profiles.insert("default".into(), vec!["w".into()]);
+        let mut set = ActiveFilters::with_sets(None, &[c]);
+        set.solo(1);
+        assert_eq!(flags(&set, 1), vec![false, true]);
+    }
+
+    #[test]
+    fn solo_refuses_the_scratch_set_and_bad_indices() {
+        let mut set = three_sets();
+        assert!(!set.solo(0));
+        assert!(!set.solo(9));
+        assert_eq!(set_flags(&set), vec![true, true, true, false]);
+        set.solo(1);
+        assert!(set.solo(0), "still soloed after a refused press");
+    }
+
+    /// `!` and solo are independent: `!` inside a solo acts on filter flags,
+    /// and restores them, while the set flags stay soloed.
+    #[test]
+    fn bang_inside_a_solo_acts_on_filter_flags_only() {
+        let mut set = three_sets();
+        set.set_enabled(1, true); // x
+        set.solo(1);
+        set.disable_all_remembering();
+        assert_eq!(flags(&set, 1), vec![false]);
+        assert_eq!(set.soloed(), Some(1));
+        set.restore_remembered();
+        assert_eq!(flags(&set, 1), vec![true]);
+        assert_eq!(set_flags(&set), vec![false, true, false, false]);
+    }
+
+    #[test]
+    fn reset_returns_every_set_to_startup_and_leaves_scratch_alone() {
+        let mut a = loaded("a", 10, true, &["x", "y"]);
+        a.profiles.insert("default".into(), vec!["x".into()]);
+        let mut set = ActiveFilters::with_sets(None, &[a, loaded("b", 20, false, &["z"])]);
+        set.add("scratch").expect("valid");
+        set.set_enabled(0, false); // scratch off, by hand
+        set.solo(2);
+        set.set_enabled(3, true); // z
+        set.set_enabled(1, false); // x, contrary to default
+        set.disable_all_remembering();
+        set.reset();
+        assert_eq!(set_flags(&set), vec![true, true, false]);
+        assert_eq!(flags(&set, 1), vec![true, false]);
+        assert_eq!(flags(&set, 2), vec![false]);
+        assert!(!set.filters()[0].enabled, "scratch flag untouched");
+        assert_eq!(set.filters_in(0).count(), 1, "scratch filter not deleted");
+        assert_eq!(set.soloed(), None);
+        assert!(!set.has_remembered());
     }
 
     // ---- predicates (#123) -------------------------------------------------
