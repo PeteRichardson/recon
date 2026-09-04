@@ -1583,7 +1583,7 @@ impl App<'_> {
         // `add_excluding_filter`, and the pane's own toggle/delete — funnels
         // through this method, so putting the call here rather than at each
         // call site means a future fourth path cannot forget it.
-        let rows = self.filters.row_count();
+        let rows = widgets::filterlist::rows(&self.filters).len();
         self.filters_pane.clamp_selection(rows);
 
         // The cursor is a source line index for the duration of the rebuild:
@@ -1639,9 +1639,8 @@ impl App<'_> {
             }
         }
 
-        let rows = self.filters.row_count();
-        let has_search = self.filters.search().is_some();
-        let Some(command) = self.filters_pane.handle_key(key, rows, has_search) else {
+        let rows = widgets::filterlist::rows(&self.filters);
+        let Some(command) = self.filters_pane.handle_key(key, &rows) else {
             return;
         };
         match command {
@@ -1660,6 +1659,17 @@ impl App<'_> {
             }
             FilterCommand::DeleteSearch => {
                 self.filters.clear_search();
+            }
+            FilterCommand::ToggleSet(set) => {
+                self.filters.toggle_set(set);
+            }
+            // Nothing to re-evaluate: the model did not change.
+            FilterCommand::SetIsReadOnly => {
+                self.report(
+                    "sets are defined in filters.toml; edit the file to change one",
+                    false,
+                );
+                return;
             }
             // The two commands that change nothing yet — they open a prompt,
             // and the set is only touched if it commits. Both return early
@@ -4863,6 +4873,68 @@ mod tests {
         assert!(app.filters.matcher().is_none());
     }
 
+    // ---- the two-level pane (#129) -------------------------------------------
+
+    fn app_with_two_sets(fixture: &str) -> App<'static> {
+        let mut a = filter::test_support::loaded("a", 10, true, &["alpha"]);
+        a.profiles.insert("default".into(), vec!["alpha".into()]);
+        let b = filter::test_support::loaded("b", 20, false, &["beta"]);
+        let mut app = app_over_file(fixture, "alpha\nbeta\nneither\n");
+        app.filters = ActiveFilters::with_sets(None, &[a, b]);
+        app.refresh_view();
+        app
+    }
+
+    /// `Enter` on a disabled set's header enables it, applies `default`, and
+    /// the view and navigator follow; `Enter` again collapses it and its
+    /// filters stop matching.
+    #[test]
+    fn enter_on_a_header_toggles_the_set_and_the_view_follows() {
+        let mut app = app_with_two_sets("pane_toggle_set");
+        key(&mut app, KeyCode::Char('f'));
+        let included = |app: &App| {
+            app.document
+                .verdicts()
+                .iter()
+                .filter(|v| matches!(v, filter::Verdict::Included(_)))
+                .count()
+        };
+        assert_eq!(included(&app), 1, "sanity: a's alpha is live");
+        // Rows: Header(a), Filter(alpha), Header(b) — select b's header.
+        app.filters_pane.state.select(Some(2));
+        key(&mut app, KeyCode::Enter);
+        assert!(app.filters.sets()[2].enabled);
+        assert_eq!(included(&app), 1, "b has no default, so beta stays off");
+        app.filters.set_enabled(1, true);
+        app.refresh_view();
+        assert_eq!(included(&app), 2);
+        // Collapse a: select its header at row 0.
+        app.filters_pane.state.select(Some(0));
+        key(&mut app, KeyCode::Enter);
+        assert!(!app.filters.sets()[1].enabled);
+        assert_eq!(included(&app), 1, "alpha stopped matching");
+        assert!(
+            app.filters.filters()[0].enabled,
+            "alpha's own flag survives"
+        );
+    }
+
+    #[test]
+    fn d_on_a_header_reports_and_changes_nothing() {
+        let mut app = app_with_two_sets("pane_header_read_only");
+        key(&mut app, KeyCode::Char('f'));
+        app.filters_pane.state.select(Some(0));
+        key(&mut app, KeyCode::Char('d'));
+        assert_eq!(app.filters.sets().len(), 3);
+        assert_eq!(app.filters.filters().len(), 2);
+        assert!(
+            app.status_message
+                .as_ref()
+                .is_some_and(|m| m.text.contains("filters.toml")),
+            "no message"
+        );
+    }
+
     // ---- AND mode (#39) -----------------------------------------------------
 
     /// `&` flips the set to AND, the view re-evaluates under the new rule,
@@ -5914,7 +5986,10 @@ mod tests {
     fn an_empty_filter_pane_still_opens_at_its_starting_height() {
         let app = app_over_file("empty_filter_height", "alpha\n");
 
-        assert_eq!(app.filters.row_count(), 0, "the fixture defined a filter");
+        assert!(
+            widgets::filterlist::rows(&app.filters).is_empty(),
+            "the fixture defined a filter"
+        );
         // 40 rows is comfortably clear of both caps (half is 20, the
         // navigator's floor leaves 37), so the floor is unambiguously what
         // this measures.
@@ -7210,7 +7285,9 @@ mod tests {
         app.filters.set_search("beta").expect("valid pattern");
 
         let height = app.filter_pane_height();
-        let expected = app.filters_pane.preferred_height(app.filters.row_count());
+        let expected = app
+            .filters_pane
+            .preferred_height(widgets::filterlist::rows(&app.filters).len());
 
         assert_eq!(
             height, expected,

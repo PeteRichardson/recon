@@ -2,9 +2,15 @@
 //!
 //! It renders from a borrowed `ActiveFilters` rather than owning one: `App` owns
 //! the set, and a copy here could go stale the moment a filter changed.
+//!
+//! Since #129 the pane has two levels. [`rows`] is the one description of
+//! what is on screen — the live search's row, the scratch set's filters with
+//! no header of their own, then each named set as a header row with its
+//! filters beneath it while it is enabled. Labels, styles, keys and height all
+//! derive from that list, so they cannot disagree about what a row is.
 
 use super::FilterCommand;
-use crate::filter::{ActiveFilters, DIM_STYLE, Filter, Sense};
+use crate::filter::{ActiveFilters, DIM_STYLE, SEARCH_STYLE, Sense};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::prelude::{Buffer, Color, Modifier, Rect, Style, Widget};
 use ratatui::widgets::{List, ListItem, ListState, StatefulWidget};
@@ -38,21 +44,43 @@ const BORDERS: u16 = 2;
 /// sentence of advice is worse than none.
 const EMPTY_HINTS: [&str; 3] = ["press f i to add", "press f i", "f i"];
 
-/// Map a pane row to the numbered filter it addresses, or `None` when the
-/// row is the live search's own row (row 0, and only when `has_search`).
+/// Columns a named set's filters are indented under their header.
+const INDENT: &str = "  ";
+
+/// One row of the pane.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Row {
+    /// The live search, marked `/` rather than numbered: it occupies no
+    /// position in the known list, so `/` and `Esc` never renumber filters.
+    Search,
+    /// A named set's header, by set index. Never 0: the scratch set draws no
+    /// header, which is what keeps a user with no `filters.toml` looking at
+    /// exactly the pane they had before sets existed.
+    Header(usize),
+    /// A filter, by known-list index.
+    Filter(usize),
+}
+
+/// The pane, top to bottom: the search row if there is one; the scratch
+/// set's filters; then, for each named set in pane order, a header and —
+/// only while the set is enabled — its filters.
 ///
-/// A free function taking `has_search` rather than a method on `ActiveFilters`,
-/// because `FilterList::handle_key` has no `ActiveFilters` in scope — only the
-/// bool it was told — while `resolve_row` does have one and calls this too.
-/// Before this was pulled out, `handle_key` and `resolve_row` each carried
-/// their own copy of this `(has_search, row)` match, which is exactly how
-/// they could disagree about which filter a row addresses.
-fn filter_index_for_row(has_search: bool, row: usize) -> Option<usize> {
-    match (has_search, row) {
-        (true, 0) => None,
-        (true, row) => Some(row - 1),
-        (false, row) => Some(row),
+/// A disabled set is one `[ ]` row and an enabled set whose filters are all
+/// off is a `[x]` row over a column of `[ ]` rows. They mean different
+/// things and the pane says so.
+pub(crate) fn rows(filters: &ActiveFilters) -> Vec<Row> {
+    let mut out = Vec::new();
+    if filters.search().is_some() {
+        out.push(Row::Search);
     }
+    out.extend(filters.filters_in(0).map(|(index, _)| Row::Filter(index)));
+    for (set, meta) in filters.sets().iter().enumerate().skip(1) {
+        out.push(Row::Header(set));
+        if meta.enabled {
+            out.extend(filters.filters_in(set).map(|(index, _)| Row::Filter(index)));
+        }
+    }
+    out
 }
 
 #[derive(Debug, Default)]
@@ -82,7 +110,7 @@ impl FilterList {
         self.state.select(Some(previous));
     }
 
-    /// Pull the selection back into range after the set has shrunk, and drop
+    /// Pull the selection back into range after the list has shrunk, and drop
     /// it entirely when nothing is left.
     pub(crate) fn clamp_selection(&mut self, len: usize) {
         if len == 0 {
@@ -98,43 +126,34 @@ impl FilterList {
     /// Selection movement is handled here because it is the pane's own
     /// state; mutations are only reported, never applied, because the
     /// `ActiveFilters` they act on belongs to `App` — this pane only borrows one
-    /// to render it.
+    /// to render it. `rows` is what the pane is showing, from [`rows`], so
+    /// the key and the label agree on which filter or set a row addresses.
     ///
     /// Guarded against CONTROL and ALT the same way every global binding in
     /// `App::handle_event` is: without this, `Ctrl-D` — half-page-down in the
     /// file view, and exactly the muscle memory a vim user arrives with —
     /// silently deleted the selected filter instead, since the routing that
-    /// reaches this pane discarded modifiers entirely. Takes the whole
-    /// `KeyEvent`, not just its `KeyCode`, so the guard is possible at all;
-    /// 2c-ii's `x` and digit bindings are also modifier-sensitive, so this
-    /// signature is owed either way.
-    pub(crate) fn handle_key(
-        &mut self,
-        key: KeyEvent,
-        rows: usize,
-        has_search: bool,
-    ) -> Option<FilterCommand> {
+    /// reaches this pane discarded modifiers entirely.
+    pub(crate) fn handle_key(&mut self, key: KeyEvent, rows: &[Row]) -> Option<FilterCommand> {
         if key
             .modifiers
             .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
         {
             return None;
         }
-        // Row 0 is the live search when one exists, so every row below it
-        // addresses a filter one lower. `target` is a thin wrapper over
-        // `filter_index_for_row`, the same translation `resolve_row` uses,
-        // so `space` and `d` below share one mapping with each other and
-        // with the pane's own labels rather than each keeping a copy.
-        let target = |row: usize| filter_index_for_row(has_search, row);
         match key.code {
             KeyCode::Char('j') | KeyCode::Down => {
-                self.select_next(rows);
-                None
+                self.select_next(rows.len());
+                return None;
             }
             KeyCode::Char('k') | KeyCode::Up => {
-                self.select_previous(rows);
-                None
+                self.select_previous(rows.len());
+                return None;
             }
+            _ => {}
+        }
+        let row = rows.get(self.selected()?).copied()?;
+        match (key.code, row) {
             // `Enter`, not `space`: #48 made `space` the global peek, because
             // a key that toggles a filter in this pane and flips hide mode
             // everywhere else is the pane-dependent meaning that change exists
@@ -146,28 +165,26 @@ impl FilterList {
             // filter off. `App` swallows exactly one `Enter` immediately after
             // a commit; see `swallow_next_enter` in `lib.rs`. The guard lives
             // there rather than here because only `App` knows a prompt closed.
-            KeyCode::Enter => Some(match target(self.selected()?) {
-                Some(index) => FilterCommand::Toggle(index),
-                None => FilterCommand::ToggleSearch,
-            }),
-            KeyCode::Char('d') => Some(match target(self.selected()?) {
-                Some(index) => FilterCommand::Delete(index),
-                None => FilterCommand::DeleteSearch,
-            }),
+            (KeyCode::Enter, Row::Filter(index)) => Some(FilterCommand::Toggle(index)),
+            (KeyCode::Enter, Row::Search) => Some(FilterCommand::ToggleSearch),
+            (KeyCode::Enter, Row::Header(set)) => Some(FilterCommand::ToggleSet(set)),
+            (KeyCode::Char('d'), Row::Filter(index)) => Some(FilterCommand::Delete(index)),
+            (KeyCode::Char('d'), Row::Search) => Some(FilterCommand::DeleteSearch),
             // `c` for change, as in vim.
-            KeyCode::Char('c') => Some(match target(self.selected()?) {
-                Some(index) => FilterCommand::Edit(index),
-                None => FilterCommand::EditSearch,
-            }),
+            (KeyCode::Char('c'), Row::Filter(index)) => Some(FilterCommand::Edit(index)),
+            (KeyCode::Char('c'), Row::Search) => Some(FilterCommand::EditSearch),
             // `m` as in *metadata*: the filter keeps showing its lines but
-            // stops choosing files in the navigator (#119). `target` is `None`
-            // on the search row, and the search has no context form.
-            KeyCode::Char('m') => target(self.selected()?).map(FilterCommand::ToggleContext),
+            // stops choosing files in the navigator (#119). The search has no
+            // context form.
+            (KeyCode::Char('m'), Row::Filter(index)) => Some(FilterCommand::ToggleContext(index)),
+            // A set is defined by the file, and the pane says so rather than
+            // doing nothing (#120's "no silent keys").
+            (KeyCode::Char('d' | 'c' | 'm'), Row::Header(_)) => Some(FilterCommand::SetIsReadOnly),
             _ => None,
         }
     }
 
-    /// Rows this pane wants: one per filter plus its borders, and never fewer
+    /// Rows this pane wants: one per row plus its borders, and never fewer
     /// than the single row a hint needs.
     ///
     /// An empty set used to ask for nothing, which collapsed the pane out of
@@ -194,62 +211,101 @@ impl FilterList {
     /// the column, and `render` simply omits it when the column is too narrow
     /// to hold it.
     pub(crate) fn preferred_width(&self, filters: &ActiveFilters) -> u16 {
-        let longest = (0..filters.row_count())
-            .map(|row| UnicodeWidthStr::width(Self::row_text(filters, row).as_str()))
+        let longest = Self::texts(filters)
+            .iter()
+            .map(|(_, text)| UnicodeWidthStr::width(text.as_str()))
             .max()
             .unwrap_or(0);
         u16::try_from(longest + BORDERS as usize).unwrap_or(u16::MAX)
     }
 
-    /// A pane row's label and the filter behind it, search row included.
+    /// Every row with its text, in pane order.
     ///
-    /// Row 0 is the live search when one exists, marked `/` rather than a
-    /// number — it has no number, because it does not occupy a position in
-    /// `filters`. Its precedence here matches its precedence in `verdict`.
+    /// Filter rows are numbered by a running count over the rows shown, top
+    /// to bottom and continuously across sets. Numbers are labels, not
+    /// addresses — nothing binds a digit to a filter — so enabling a set
+    /// renumbers the rows below it the same way deleting a filter does.
+    fn texts(filters: &ActiveFilters) -> Vec<(Row, String)> {
+        let mut number = 0;
+        rows(filters)
+            .into_iter()
+            .map(|row| {
+                if matches!(row, Row::Filter(_)) {
+                    number += 1;
+                }
+                (row, Self::row_text(filters, row, number))
+            })
+            .collect()
+    }
+
+    /// One row's text: its number or `/`, whether it is on, which way it
+    /// filters, and its name — or, for a header, the set's flag and name.
     ///
-    /// `row_text` and `render`'s per-row styling both call this rather than
-    /// keeping their own copy of the label/filter lookup. It is built on
-    /// `filter_index_for_row`, the single source of truth for the
-    /// `(has_search, row) -> filter` mapping itself — `handle_key` needs
-    /// that same mapping without a `ActiveFilters` in scope, so it calls that
-    /// free function directly rather than this one.
-    fn resolve_row(filters: &ActiveFilters, row: usize) -> Option<(String, &Filter)> {
-        let has_search = filters.search().is_some();
-        match filter_index_for_row(has_search, row) {
-            None => filters.search().map(|search| ("/".to_string(), search)),
-            Some(index) => filters
-                .filters()
-                .get(index)
-                .map(|filter| ((index + 1).to_string(), filter)),
+    /// The sense is spelled out because excluding filters carry no colour —
+    /// nothing else on the row would distinguish them. A header carries `*`
+    /// when the set has profiles, so the picker key (#130) is discoverable.
+    fn row_text(filters: &ActiveFilters, row: Row, number: usize) -> String {
+        match row {
+            Row::Search => {
+                let search = filters
+                    .search()
+                    .expect("Row::Search only when a search exists");
+                format!(
+                    "/[{}] inc {}",
+                    mark(search.enabled),
+                    search.predicate.display()
+                )
+            }
+            Row::Header(set) => {
+                let meta = &filters.sets()[set];
+                let star = if meta.profiles.is_empty() { "" } else { " *" };
+                format!("[{}] {}{star}", mark(meta.enabled), meta.name)
+            }
+            Row::Filter(index) => {
+                let filter = &filters.filters()[index];
+                let indent = if filter.set == 0 { "" } else { INDENT };
+                format!(
+                    "{indent}{number}[{}] {} {}",
+                    mark(filter.enabled),
+                    sense_word(filter.sense),
+                    filter.display_name()
+                )
+            }
         }
     }
 
-    /// One row of the pane: its number, whether it is on, which way it
-    /// filters, and its pattern.
+    /// How one row is painted.
     ///
-    /// The sense is spelled out because excluding filters carry no colour —
-    /// nothing else on the row would distinguish them.
-    fn row_text(filters: &ActiveFilters, row: usize) -> String {
-        let Some((label, filter)) = Self::resolve_row(filters, row) else {
-            return String::new();
-        };
-        let mark = if filter.enabled { 'x' } else { ' ' };
-        let sense = match filter.sense {
-            Sense::Include => "inc",
-            Sense::Context => "ctx",
-            Sense::Exclude => "exc",
-        };
-        // A file filter shows its name under its set's; a scratch filter
-        // shows exactly what it did before sets existed. The two-level pane
-        // (#129) replaces this prefix with a header row.
-        let text = match filter.set {
-            0 => filter.display_name(),
-            set => format!("{}/{}", filters.sets()[set].name, filter.display_name()),
-        };
-        format!("{label}[{mark}] {sense} {text}")
+    /// An including filter wears its own colour, so the pane and the file
+    /// view agree at a glance; the search is always `Sense::Include` and
+    /// takes `SEARCH_STYLE` the same way. Disabled rows and disabled
+    /// headers take `DIM_STYLE` — the file view's precedent for dimming:
+    /// `Modifier::DIM` alone is silently ignored by many terminals, so an
+    /// explicit grey foreground is what actually shows the difference, and
+    /// the `[ ]` marker still carries the signal if colour fails.
+    fn row_style(filters: &ActiveFilters, row: Row) -> Style {
+        match row {
+            Row::Search => match filters.search() {
+                Some(search) if search.enabled => SEARCH_STYLE,
+                _ => DIM_STYLE,
+            },
+            Row::Header(set) if filters.sets()[set].enabled => Style::default(),
+            Row::Header(_) => DIM_STYLE,
+            Row::Filter(index) => {
+                let filter = &filters.filters()[index];
+                if !filter.enabled {
+                    return DIM_STYLE;
+                }
+                match filter.sense {
+                    Sense::Include | Sense::Context => filter.style,
+                    Sense::Exclude => Style::default().fg(Color::DarkGray),
+                }
+            }
+        }
     }
 
     pub(crate) fn render(&mut self, filters: &ActiveFilters, area: Rect, buf: &mut Buffer) {
+        let texts = Self::texts(filters);
         // An empty set draws the hint instead of no rows at all. `DIM_STYLE`
         // is the same grey the file view and the disabled-filter rows use, so
         // the hint reads as chrome rather than as a filter someone defined.
@@ -258,7 +314,7 @@ impl FilterList {
         // it: `preferred_width` deliberately lets the navigator win the width
         // (see its doc comment), so a narrow column is an expected state, not
         // a broken one, and half a sentence of advice is worse than none.
-        if filters.row_count() == 0 {
+        if texts.is_empty() {
             let interior = area.width.saturating_sub(BORDERS) as usize;
             let rows: Vec<ListItem> = EMPTY_HINTS
                 .iter()
@@ -270,36 +326,9 @@ impl FilterList {
             return;
         }
 
-        let items: Vec<ListItem> = (0..filters.row_count())
-            .map(|row| {
-                // `row_count` bounds this loop, so `resolve_row` always
-                // resolves here in practice; falling back to the default
-                // style on `None` rather than panicking keeps that a
-                // property of the loop bound, not a promise `resolve_row`
-                // also has to keep.
-                let style = Self::resolve_row(filters, row)
-                    .map(|(_, filter)| {
-                        if filter.enabled {
-                            match filter.sense {
-                                // An including filter wears its own colour, so the pane
-                                // and the file view agree at a glance. The search is
-                                // always `Sense::Include`, so it takes this branch too,
-                                // showing `SEARCH_STYLE` the same way.
-                                Sense::Include | Sense::Context => filter.style,
-                                Sense::Exclude => Style::default().fg(Color::DarkGray),
-                            }
-                        } else {
-                            // Matches the file view's precedent for dimming
-                            // (`src/filter.rs`'s `DIM_STYLE`): `Modifier::DIM` alone is
-                            // silently ignored by many terminals, so an explicit grey
-                            // foreground is what actually shows the difference. The
-                            // `[ ]` marker still carries the signal if colour fails.
-                            DIM_STYLE
-                        }
-                    })
-                    .unwrap_or_default();
-                ListItem::new(Self::row_text(filters, row)).style(style)
-            })
+        let items: Vec<ListItem> = texts
+            .into_iter()
+            .map(|(row, text)| ListItem::new(text).style(Self::row_style(filters, row)))
             .collect();
 
         let mut highlight = Style::new().add_modifier(Modifier::REVERSED);
@@ -311,6 +340,18 @@ impl FilterList {
             .block(crate::widgets::pane_block("Filters", self.active))
             .highlight_style(highlight);
         StatefulWidget::render(&list, area, buf, &mut self.state);
+    }
+}
+
+fn mark(enabled: bool) -> char {
+    if enabled { 'x' } else { ' ' }
+}
+
+fn sense_word(sense: Sense) -> &'static str {
+    match sense {
+        Sense::Include => "inc",
+        Sense::Context => "ctx",
+        Sense::Exclude => "exc",
     }
 }
 
@@ -329,6 +370,14 @@ mod tests {
         set
     }
 
+    /// The text of pane row `row`, as `render` would draw it.
+    fn text_at(filters: &ActiveFilters, row: usize) -> String {
+        FilterList::texts(filters)
+            .into_iter()
+            .nth(row)
+            .map_or_else(|| panic!("no row {row}"), |(_, text)| text)
+    }
+
     fn rendered(list: &mut FilterList, filters: &ActiveFilters, width: u16) -> Vec<String> {
         let area = Rect::new(0, 0, width, 8);
         let mut buf = Buffer::empty(area);
@@ -344,10 +393,11 @@ mod tests {
             .collect()
     }
 
-    /// A file filter's row carries its set's name and the filter's own
-    /// name; a scratch filter's row is unchanged.
+    /// A file filter's row sits under its set's header and shows the
+    /// filter's own name; a scratch filter's row is unchanged from before
+    /// sets existed.
     #[test]
-    fn file_filters_are_prefixed_by_their_set() {
+    fn file_filters_sit_under_their_set_by_name() {
         let mut loaded = crate::filter::test_support::loaded("w", 50, true, &["associated"]);
         loaded.filters[0].name = "assoc".into();
         let mut filters = ActiveFilters::with_sets(None, &[loaded]);
@@ -355,7 +405,8 @@ mod tests {
         let mut list = FilterList::default();
         let rows = rendered(&mut list, &filters, 30);
         assert!(rows[1].contains("1[x] inc typed"), "{rows:?}");
-        assert!(rows[2].contains("2[ ] inc w/assoc"), "{rows:?}");
+        assert!(rows[2].contains("[x] w"), "{rows:?}");
+        assert!(rows[3].contains("  2[ ] inc assoc"), "{rows:?}");
     }
 
     #[test]
@@ -440,7 +491,7 @@ mod tests {
         let filters = set_of(&["日本語"], &[]);
         let list = FilterList::default();
 
-        let row = FilterList::row_text(&filters, 0);
+        let row = text_at(&filters, 0);
         assert!(
             usize::from(list.preferred_width(&filters))
                 >= UnicodeWidthStr::width(row.as_str()) + BORDERS as usize,
@@ -551,7 +602,7 @@ mod tests {
         let list = FilterList::default();
 
         let width = list.preferred_width(&filters) as usize;
-        let last_row_text = FilterList::row_text(&filters, filters.row_count() - 1);
+        let (_, last_row_text) = FilterList::texts(&filters).pop().expect("rows");
 
         assert!(
             width >= last_row_text.chars().count() + BORDERS as usize,
@@ -745,8 +796,8 @@ mod tests {
         set.add("ERROR").expect("valid pattern");
         set.set_search("timeout").expect("valid pattern");
 
-        assert_eq!(FilterList::row_text(&set, 0), "/[x] inc timeout");
-        assert_eq!(FilterList::row_text(&set, 1), "1[x] inc ERROR");
+        assert_eq!(text_at(&set, 0), "/[x] inc timeout");
+        assert_eq!(text_at(&set, 1), "1[x] inc ERROR");
     }
 
     #[test]
@@ -754,7 +805,7 @@ mod tests {
         let mut set = ActiveFilters::new();
         set.add("ERROR").expect("valid pattern");
 
-        assert_eq!(FilterList::row_text(&set, 0), "1[x] inc ERROR");
+        assert_eq!(text_at(&set, 0), "1[x] inc ERROR");
     }
 
     /// The offset is the whole risk in this task: `Enter` on row 1 must toggle
@@ -767,7 +818,7 @@ mod tests {
         let mut list = FilterList::default();
         list.state.select(Some(1));
 
-        let command = list.handle_key(KeyEvent::from(KeyCode::Enter), set.row_count(), true);
+        let command = list.handle_key(KeyEvent::from(KeyCode::Enter), &rows(&set));
 
         assert_eq!(command, Some(FilterCommand::Toggle(0)));
     }
@@ -779,7 +830,7 @@ mod tests {
         let mut list = FilterList::default();
         list.state.select(Some(0));
 
-        let command = list.handle_key(KeyEvent::from(KeyCode::Enter), set.row_count(), true);
+        let command = list.handle_key(KeyEvent::from(KeyCode::Enter), &rows(&set));
 
         assert_eq!(command, Some(FilterCommand::ToggleSearch));
     }
@@ -795,7 +846,7 @@ mod tests {
         let mut list = FilterList::default();
         list.state.select(Some(0));
 
-        let command = list.handle_key(KeyEvent::from(KeyCode::Char(' ')), set.row_count(), false);
+        let command = list.handle_key(KeyEvent::from(KeyCode::Char(' ')), &rows(&set));
 
         assert_eq!(command, None, "`space` is still claimed by the filter pane");
     }
@@ -809,31 +860,26 @@ mod tests {
     /// row over a set with both numbered filters and a search, so both the
     /// search row and the off-by-one shift below it are covered.
     #[test]
-    fn handle_key_and_resolve_row_agree_on_which_filter_a_row_addresses() {
+    fn handle_key_and_the_labels_agree_on_which_filter_a_row_addresses() {
         let mut set = ActiveFilters::new();
         set.add("alpha").expect("valid pattern");
         set.add("beta").expect("valid pattern");
         set.set_search("gamma").expect("valid pattern");
         let mut list = FilterList::default();
+        let rows = rows(&set);
 
-        for row in 0..set.row_count() {
+        for (row, (_, text)) in FilterList::texts(&set).into_iter().enumerate() {
             list.state.select(Some(row));
             let command = list
-                .handle_key(KeyEvent::from(KeyCode::Enter), set.row_count(), true)
+                .handle_key(KeyEvent::from(KeyCode::Enter), &rows)
                 .unwrap_or_else(|| panic!("row {row}: no command"));
-            let (label, _) =
-                FilterList::resolve_row(&set, row).unwrap_or_else(|| panic!("row {row}: no row"));
-
             match command {
-                FilterCommand::ToggleSearch => assert_eq!(
-                    label, "/",
-                    "row {row}: handle_key says the search, resolve_row says {label}"
-                ),
-                FilterCommand::Toggle(index) => assert_eq!(
-                    label,
-                    (index + 1).to_string(),
-                    "row {row}: handle_key resolved filter {index}, resolve_row's label \
-                     for this row is {label}"
+                FilterCommand::ToggleSearch => {
+                    assert!(text.starts_with('/'), "row {row}: {text:?}");
+                }
+                FilterCommand::Toggle(index) => assert!(
+                    text.starts_with(&(index + 1).to_string()),
+                    "row {row}: handle_key resolved filter {index}, the label is {text:?}"
                 ),
                 other => panic!("row {row}: unexpected command {other:?}"),
             }
@@ -845,7 +891,7 @@ mod tests {
         let mut list = FilterList::default();
         list.state.select(Some(0));
 
-        let command = list.handle_key(KeyEvent::from(KeyCode::Char('d')), 1, true);
+        let command = list.handle_key(KeyEvent::from(KeyCode::Char('d')), &[Row::Search]);
 
         assert_eq!(command, Some(FilterCommand::DeleteSearch));
     }
@@ -858,7 +904,10 @@ mod tests {
         let mut list = FilterList::default();
         list.state.select(Some(1));
 
-        let command = list.handle_key(KeyEvent::from(KeyCode::Char('c')), 2, true);
+        let command = list.handle_key(
+            KeyEvent::from(KeyCode::Char('c')),
+            &[Row::Search, Row::Filter(0)],
+        );
 
         assert_eq!(command, Some(FilterCommand::Edit(0)));
     }
@@ -868,7 +917,7 @@ mod tests {
         let mut list = FilterList::default();
         list.state.select(Some(0));
 
-        let command = list.handle_key(KeyEvent::from(KeyCode::Char('c')), 1, true);
+        let command = list.handle_key(KeyEvent::from(KeyCode::Char('c')), &[Row::Search]);
 
         assert_eq!(command, Some(FilterCommand::EditSearch));
     }
@@ -879,7 +928,10 @@ mod tests {
         list.select_next(2);
         list.select_next(2);
 
-        let command = list.handle_key(KeyEvent::from(KeyCode::Char('m')), 2, false);
+        let command = list.handle_key(
+            KeyEvent::from(KeyCode::Char('m')),
+            &[Row::Filter(0), Row::Filter(1)],
+        );
 
         assert_eq!(command, Some(FilterCommand::ToggleContext(1)));
     }
@@ -891,7 +943,7 @@ mod tests {
         list.select_next(1);
 
         assert_eq!(
-            list.handle_key(KeyEvent::from(KeyCode::Char('m')), 1, true),
+            list.handle_key(KeyEvent::from(KeyCode::Char('m')), &[Row::Search]),
             None
         );
     }
@@ -901,6 +953,138 @@ mod tests {
         let mut filters = set_of(&["foo"], &[]);
         filters.toggle_context(0);
 
-        assert_eq!(FilterList::row_text(&filters, 0), "1[x] ctx foo");
+        assert_eq!(text_at(&filters, 0), "1[x] ctx foo");
+    }
+
+    // ---- two levels (#129) --------------------------------------------------
+
+    fn two_sets(a_enabled: bool, b_enabled: bool) -> ActiveFilters {
+        let a = crate::filter::test_support::loaded("a", 10, a_enabled, &["x", "y"]);
+        let b = crate::filter::test_support::loaded("b", 20, b_enabled, &["z"]);
+        let mut filters = ActiveFilters::with_sets(None, &[a, b]);
+        filters.add("scratch").expect("valid");
+        filters
+    }
+
+    /// Search, scratch (no header), then each set: header, and rows only
+    /// while enabled.
+    #[test]
+    fn rows_follow_the_spec_order() {
+        let mut filters = two_sets(true, false);
+        filters.set_search("s").expect("valid");
+        assert_eq!(
+            rows(&filters),
+            vec![
+                Row::Search,
+                Row::Filter(0),
+                Row::Header(1),
+                Row::Filter(1),
+                Row::Filter(2),
+                Row::Header(2),
+            ]
+        );
+    }
+
+    #[test]
+    fn with_no_sets_rows_are_exactly_todays() {
+        let filters = set_of(&["a", "b"], &[]);
+        assert_eq!(rows(&filters), vec![Row::Filter(0), Row::Filter(1)]);
+    }
+
+    #[test]
+    fn an_enabled_set_shows_a_header_and_indented_rows() {
+        let filters = two_sets(true, false);
+        let mut list = FilterList::default();
+        let rows = rendered(&mut list, &filters, 30);
+        assert!(rows[1].contains("1[x] inc scratch"), "{rows:?}");
+        assert!(rows[2].contains("[x] a"), "{rows:?}");
+        assert!(rows[3].contains("  2[ ] inc x"), "{rows:?}");
+        assert!(rows[4].contains("  3[ ] inc y"), "{rows:?}");
+        assert!(rows[5].contains("[ ] b"), "{rows:?}");
+        assert!(
+            !rows.iter().any(|row| row.contains("inc z")),
+            "a disabled set shows no filters: {rows:?}"
+        );
+    }
+
+    #[test]
+    fn numbers_run_over_what_is_shown() {
+        let mut filters = two_sets(false, true);
+        let mut list = FilterList::default();
+        let rows_before = rendered(&mut list, &filters, 30);
+        assert!(rows_before[4].contains("2[ ] inc z"), "{rows_before:?}");
+        filters.set_enabled_set(1, true);
+        let rows_after = rendered(&mut list, &filters, 30);
+        assert!(
+            rows_after[6].contains("4[ ] inc z"),
+            "enabling a set above renumbers below: {rows_after:?}"
+        );
+    }
+
+    #[test]
+    fn a_header_carries_a_star_when_the_set_has_profiles() {
+        let mut a = crate::filter::test_support::loaded("a", 10, true, &["x"]);
+        a.profiles.insert("default".into(), vec!["x".into()]);
+        let filters = ActiveFilters::with_sets(None, &[a]);
+        let mut list = FilterList::default();
+        let rows = rendered(&mut list, &filters, 30);
+        assert!(rows[1].contains("[x] a *"), "{rows:?}");
+    }
+
+    #[test]
+    fn a_disabled_header_is_dimmed_and_an_enabled_one_is_not() {
+        let filters = two_sets(true, false);
+        let mut list = FilterList::default();
+        let area = Rect::new(0, 0, 30, 8);
+        let mut buf = Buffer::empty(area);
+        list.render(&filters, area, &mut buf);
+        assert_eq!(buf[(1, 5)].style().fg, DIM_STYLE.fg, "[ ] b is dimmed");
+        assert_ne!(buf[(1, 2)].style().fg, DIM_STYLE.fg, "[x] a is not");
+    }
+
+    #[test]
+    fn preferred_width_counts_header_rows() {
+        let a = crate::filter::test_support::loaded("a-very-long-set-name", 10, false, &["x"]);
+        let filters = ActiveFilters::with_sets(None, &[a]);
+        let list = FilterList::default();
+        assert!(list.preferred_width(&filters) as usize >= "[ ] a-very-long-set-name".len() + 2);
+    }
+
+    #[test]
+    fn enter_on_a_header_toggles_the_set() {
+        let filters = two_sets(true, false);
+        let rows = rows(&filters);
+        let mut list = FilterList::default();
+        list.state.select(Some(1)); // Header(1)
+        assert_eq!(
+            list.handle_key(KeyEvent::from(KeyCode::Enter), &rows),
+            Some(FilterCommand::ToggleSet(1))
+        );
+    }
+
+    #[test]
+    fn d_c_m_on_a_header_report_read_only() {
+        let filters = two_sets(true, false);
+        let rows = rows(&filters);
+        let mut list = FilterList::default();
+        list.state.select(Some(1));
+        for c in ['d', 'c', 'm'] {
+            assert_eq!(
+                list.handle_key(KeyEvent::from(KeyCode::Char(c)), &rows),
+                Some(FilterCommand::SetIsReadOnly),
+                "{c}"
+            );
+        }
+    }
+
+    /// Collapsing a set shortens the list; the selection follows.
+    #[test]
+    fn selection_clamps_to_the_rows_shown() {
+        let mut filters = two_sets(true, true);
+        let mut list = FilterList::default();
+        list.state.select(Some(rows(&filters).len() - 1));
+        filters.set_enabled_set(2, false);
+        list.clamp_selection(rows(&filters).len());
+        assert_eq!(list.selected(), Some(rows(&filters).len() - 1));
     }
 }
