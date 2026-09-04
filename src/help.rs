@@ -287,6 +287,14 @@ pub const KEYMAP: &[Section] = &[
                 keys: &["a"],
                 action: "Apply a profile to the selected set (opens a picker)",
             },
+            Binding {
+                keys: &["s"],
+                action: "Solo the selected set — or un-solo it",
+            },
+            Binding {
+                keys: &["R"],
+                action: "Reset every set to its startup state",
+            },
         ],
     },
     Section {
@@ -741,7 +749,11 @@ mod tests {
     /// difference is still visible as empty bordered box.
     #[test]
     fn the_overlay_is_a_centred_panel() {
-        let area = inner(170, 64);
+        // Tall enough for one column with room to spare, however many rows
+        // the keymap grows to: the property under test is that the panel
+        // shrinks to its content, which needs content smaller than the screen.
+        let height = u16::try_from(rows().len() + 10).expect("a keymap of sane size");
+        let area = inner(170, height);
         let mut buf = Buffer::empty(area);
 
         render(area, &mut buf);

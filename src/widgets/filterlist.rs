@@ -73,6 +73,14 @@ pub(crate) fn rows(filters: &ActiveFilters) -> Vec<Row> {
     if filters.search().is_some() {
         out.push(Row::Search);
     }
+    // While soloed the pane is the soloed set alone: the scratch rows and
+    // every other header are absent until `s` restores them. That is what
+    // "isolated" means (#132).
+    if let Some(set) = filters.soloed() {
+        out.push(Row::Header(set));
+        out.extend(filters.filters_in(set).map(|(index, _)| Row::Filter(index)));
+        return out;
+    }
     out.extend(filters.filters_in(0).map(|(index, _)| Row::Filter(index)));
     for (set, meta) in filters.sets().iter().enumerate().skip(1) {
         out.push(Row::Header(set));
@@ -183,6 +191,11 @@ impl FilterList {
             // `a` as in *apply*: a profile is a set verb, so on a filter row
             // it is nothing.
             (KeyCode::Char('a'), Row::Header(set)) => Some(FilterCommand::PickProfile(set)),
+            // `s` as in *solo*, a set verb too. `R` is uppercase because `r`
+            // is the global refresh-from-disk; it acts on every set, so the
+            // row does not matter.
+            (KeyCode::Char('s'), Row::Header(set)) => Some(FilterCommand::Solo(set)),
+            (KeyCode::Char('R'), _) => Some(FilterCommand::Reset),
             _ => None,
         }
     }
@@ -262,7 +275,12 @@ impl FilterList {
             Row::Header(set) => {
                 let meta = &filters.sets()[set];
                 let star = if meta.profiles.is_empty() { "" } else { " *" };
-                format!("[{}] {}{star}", mark(meta.enabled), meta.name)
+                let solo = if filters.soloed() == Some(set) {
+                    " solo"
+                } else {
+                    ""
+                };
+                format!("[{}] {}{star}{solo}", mark(meta.enabled), meta.name)
             }
             Row::Filter(index) => {
                 let filter = &filters.filters()[index];
@@ -1094,6 +1112,49 @@ mod tests {
         assert_eq!(
             list.handle_key(KeyEvent::from(KeyCode::Char('a')), &rows),
             None
+        );
+    }
+
+    #[test]
+    fn while_soloed_rows_are_the_search_and_the_soloed_set_only() {
+        let mut filters = two_sets(true, true);
+        filters.set_search("s").expect("valid");
+        filters.solo(2);
+        assert_eq!(
+            rows(&filters),
+            vec![Row::Search, Row::Header(2), Row::Filter(3)]
+        );
+        filters.solo(2);
+        assert_eq!(rows(&filters).len(), 7, "un-solo brings every row back");
+    }
+
+    #[test]
+    fn the_soloed_header_says_so() {
+        let mut filters = two_sets(true, true);
+        filters.solo(2);
+        let mut list = FilterList::default();
+        let rows = rendered(&mut list, &filters, 30);
+        assert!(rows[1].contains("[x] b solo"), "{rows:?}");
+    }
+
+    #[test]
+    fn s_on_a_header_and_big_r_anywhere() {
+        let filters = two_sets(true, false);
+        let rows = rows(&filters);
+        let mut list = FilterList::default();
+        list.state.select(Some(1)); // Header(1)
+        assert_eq!(
+            list.handle_key(KeyEvent::from(KeyCode::Char('s')), &rows),
+            Some(FilterCommand::Solo(1))
+        );
+        list.state.select(Some(0)); // the scratch filter
+        assert_eq!(
+            list.handle_key(KeyEvent::from(KeyCode::Char('s')), &rows),
+            None
+        );
+        assert_eq!(
+            list.handle_key(KeyEvent::from(KeyCode::Char('R')), &rows),
+            Some(FilterCommand::Reset)
         );
     }
 
