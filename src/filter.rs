@@ -1982,30 +1982,33 @@ mod tests {
         assert_eq!(set.sets()[new].profiles["default"], vec!["a".to_string()]);
         assert_eq!(flags(&set, new), vec![true, false]);
         // Known list stays contiguous by set: m's q, then a, b, then z's r.
+        // The built-in set's rows sit between m's and new's; count them
+        // rather than name them, since the kinds may grow.
         let order: Vec<(usize, String)> = set
             .filters()
             .iter()
+            .filter(|f| set.sets()[f.set].origin != Origin::BuiltIn)
             .map(|f| (f.set, f.display_name()))
             .collect();
+        assert_eq!(set.filters_in(2).count(), Kind::ALL.len());
         assert_eq!(
             order,
             vec![
                 (1, "q".into()),
-                (2, "functions".into()),
-                (2, "classes".into()),
-                (2, "structs".into()),
-                (2, "enums".into()),
                 (3, "a".into()),
                 (3, "b".into()),
                 (4, "r".into())
             ]
         );
         assert_eq!(
-            set.filters()[5].style,
+            set.filters()[1 + Kind::ALL.len()].style,
             a_style,
             "colour travels with the filter"
         );
-        assert_eq!(set.verdict("a", KindSet::EMPTY), Verdict::Included(5));
+        assert_eq!(
+            set.verdict("a", KindSet::EMPTY),
+            Verdict::Included(1 + Kind::ALL.len())
+        );
         assert!(
             !set.adopt_scratch_as("new", PathBuf::from("t")),
             "name taken"
@@ -2056,7 +2059,9 @@ mod tests {
             .filters_in(index)
             .map(|(_, f)| f.display_name())
             .collect();
-        assert_eq!(kinds, ["functions", "classes", "structs", "enums"]);
+        let expected: Vec<&str> = Kind::ALL.iter().map(|kind| kind.plural()).collect();
+        assert_eq!(kinds, expected);
+        assert_eq!(kinds[..4], ["functions", "classes", "structs", "enums"]);
         assert!(set.filters_in(index).all(|(_, f)| !f.enabled));
         assert!(
             set.filters_in(index)
@@ -2110,7 +2115,7 @@ mod tests {
         let index = builtin_index(&set);
         assert_eq!(index, 1, "priority 10 sorts before alpha");
         assert!(set.sets()[index].enabled, "autoload");
-        assert_eq!(set.filters_in(index).count(), 4);
+        assert_eq!(set.filters_in(index).count(), Kind::ALL.len());
         assert_eq!(set.sets().len(), 3, "no second definitions set");
     }
 
@@ -2249,7 +2254,11 @@ mod tests {
         set.add_definition(Kind::Struct);
         set.add("functions").expect("valid");
         let key = set.pattern_key();
-        assert_eq!(key.len(), 7, "three typed, four built-in");
+        assert_eq!(
+            key.len(),
+            3 + Kind::ALL.len(),
+            "three typed, then every built-in"
+        );
         assert_ne!(key[0], key[1]);
         assert_ne!(key[0], key[2]);
     }
@@ -2544,13 +2553,14 @@ mod tests {
     #[test]
     fn no_matcher_past_sixty_four_patterns() {
         let mut set = ActiveFilters::new();
-        // Sixty: the built-in definitions set holds four of the 64 slots.
-        for i in 0..60 {
+        // The built-in definitions set holds one of the 64 slots per kind.
+        let room = 64 - Kind::ALL.len();
+        for i in 0..room {
             set.add(&format!("p{i}")).expect("valid pattern");
         }
         assert!(set.matcher().is_some());
 
-        set.add("p60").expect("valid pattern");
+        set.add(&format!("p{room}")).expect("valid pattern");
         assert!(set.matcher().is_none());
     }
 
@@ -2558,35 +2568,18 @@ mod tests {
     fn the_pattern_key_lists_every_pattern_with_the_search_last() {
         let mut set = set_with(&["alpha", "beta"]);
         set.set_search("gamma").expect("valid pattern");
+        let mut expected = vec!["alpha".to_string(), "beta".to_string()];
+        expected.extend(Kind::ALL.iter().map(|kind| format!("\u{1}{kind}")));
+        expected.push("gamma".to_string());
 
         assert_eq!(
             set.pattern_key(),
-            vec![
-                "alpha",
-                "beta",
-                "\u{1}functions",
-                "\u{1}classes",
-                "\u{1}structs",
-                "\u{1}enums",
-                "gamma"
-            ],
+            expected,
             "typed, then the built-in set, then the search"
         );
 
         set.toggle_context(0);
-        assert_eq!(
-            set.pattern_key(),
-            vec![
-                "alpha",
-                "beta",
-                "\u{1}functions",
-                "\u{1}classes",
-                "\u{1}structs",
-                "\u{1}enums",
-                "gamma"
-            ],
-            "sense is not part of the key"
-        );
+        assert_eq!(set.pattern_key(), expected, "sense is not part of the key");
     }
 
     // ---- the default palette -------------------------------------------
@@ -2789,7 +2782,7 @@ mod tests {
 
         assert!(!set.toggle_context(1));
         assert_eq!(set.filters()[1].sense, Sense::Exclude);
-        assert!(!set.toggle_context(7));
+        assert!(!set.toggle_context(99));
     }
 
     // ---- the compiled set stays in step --------------------------------
@@ -3137,7 +3130,7 @@ mod tests {
     fn toggling_a_missing_index_reports_none_and_changes_nothing() {
         let mut set = set_with(&["foo"]);
 
-        assert_eq!(set.toggle_enabled(5), None);
+        assert_eq!(set.toggle_enabled(99), None);
         assert!(set.filters()[0].enabled, "nothing should have changed");
     }
 

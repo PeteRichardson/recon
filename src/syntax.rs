@@ -494,20 +494,64 @@ pub enum Kind {
     Class,
     Struct,
     Enum,
+    /// Type aliases, typedefs, Go `type` declarations, TypeScript types.
+    Type,
+    /// Traits, interfaces and protocols: one concept to a reader, three
+    /// names across languages (#141).
+    Trait,
+    /// Modules, namespaces and packages.
+    Module,
+    /// Rust `impl` blocks and Swift extensions.
+    Impl,
+    Constant,
+    Macro,
+    /// Headings in Markdown and `AsciiDoc`: a document outline, from the
+    /// same mechanism for free.
+    Section,
 }
 
 impl Kind {
-    pub const ALL: [Self; 4] = [Self::Function, Self::Class, Self::Struct, Self::Enum];
+    pub const ALL: [Self; 11] = [
+        Self::Function,
+        Self::Class,
+        Self::Struct,
+        Self::Enum,
+        Self::Type,
+        Self::Trait,
+        Self::Module,
+        Self::Impl,
+        Self::Constant,
+        Self::Macro,
+        Self::Section,
+    ];
 
-    /// The `TextMate` scope a well-behaved grammar gives the *name* of a
+    /// The `TextMate` scopes a well-behaved grammar gives the *name* of a
     /// definition of this kind. Rust, C, Go, Python and JavaScript all
     /// follow the convention; see `keywords` for the ones that do not.
-    fn scope(self) -> &'static str {
+    /// Several scopes where languages spell one concept differently:
+    /// `entity.name.trait` in Rust, `.interface` in C#, `.protocol` in
+    /// Elixir. Measured across the bundle in #141.
+    fn scopes(self) -> &'static [&'static str] {
         match self {
-            Self::Function => "entity.name.function",
-            Self::Class => "entity.name.class",
-            Self::Struct => "entity.name.struct",
-            Self::Enum => "entity.name.enum",
+            Self::Function => &["entity.name.function"],
+            Self::Class => &["entity.name.class"],
+            Self::Struct => &["entity.name.struct"],
+            Self::Enum => &["entity.name.enum"],
+            Self::Type => &["entity.name.type"],
+            Self::Trait => &[
+                "entity.name.trait",
+                "entity.name.interface",
+                "entity.name.protocol",
+            ],
+            Self::Module => &[
+                "entity.name.module",
+                "entity.name.namespace",
+                "entity.name.package",
+            ],
+            Self::Impl => &["entity.name.impl"],
+            Self::Constant => &["entity.name.constant"],
+            Self::Macro => &["entity.name.macro"],
+            Self::Section => &["entity.name.section"],
         }
     }
 
@@ -523,6 +567,15 @@ impl Kind {
             Self::Class => &["class"],
             Self::Struct => &["struct"],
             Self::Enum => &["enum"],
+            Self::Type => &["type", "typealias", "typedef"],
+            Self::Trait => &["trait", "interface", "protocol"],
+            Self::Module => &["mod", "namespace", "package"],
+            Self::Impl => &["impl", "extension"],
+            // `const` only: C's `static` is storage too and is not a
+            // definition keyword.
+            Self::Constant => &["const"],
+            Self::Macro => &["macro_rules"],
+            Self::Section => &[],
         }
     }
 
@@ -534,6 +587,13 @@ impl Kind {
             Self::Class => "classes",
             Self::Struct => "structs",
             Self::Enum => "enums",
+            Self::Type => "types",
+            Self::Trait => "traits",
+            Self::Module => "modules",
+            Self::Impl => "impls",
+            Self::Constant => "constants",
+            Self::Macro => "macros",
+            Self::Section => "sections",
         }
     }
 }
@@ -549,18 +609,19 @@ impl fmt::Display for Kind {
 /// both a trait and a function, and that is the right answer for "lines
 /// that start a definition".
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct KindSet(u8);
+pub struct KindSet(u16);
 
 impl KindSet {
     pub const EMPTY: Self = Self(0);
 
-    fn bit(kind: Kind) -> u8 {
-        match kind {
-            Kind::Function => 1,
-            Kind::Class => 2,
-            Kind::Struct => 4,
-            Kind::Enum => 8,
-        }
+    /// One bit per kind, in `Kind::ALL` order. `u16` holds sixteen kinds;
+    /// there are eleven.
+    fn bit(kind: Kind) -> u16 {
+        let position = Kind::ALL
+            .iter()
+            .position(|&k| k == kind)
+            .expect("every kind is in ALL");
+        1 << position
     }
 
     /// A set holding exactly `kinds`.
@@ -591,7 +652,9 @@ impl KindSet {
 /// once per token. `Scope::new` consults the global scope repository, which
 /// takes a lock.
 struct KindScopes {
-    named: [(Kind, Scope); 4],
+    /// One entry per `(kind, scope)` pair; a kind with several spellings
+    /// appears several times.
+    named: Vec<(Kind, Scope)>,
     storage_type: Scope,
     meta_block: Scope,
 }
@@ -600,7 +663,10 @@ impl KindScopes {
     fn new() -> Self {
         let scope = |text: &str| Scope::new(text).expect("a literal scope parses");
         Self {
-            named: Kind::ALL.map(|kind| (kind, scope(kind.scope()))),
+            named: Kind::ALL
+                .iter()
+                .flat_map(|&kind| kind.scopes().iter().map(move |text| (kind, scope(text))))
+                .collect(),
             storage_type: scope("storage.type"),
             meta_block: scope("meta.block"),
         }
@@ -818,6 +884,111 @@ func topLevel() {}
         assert_eq!(rows_of(Kind::Function, "a.swift", SWIFT), vec![1, 2, 6]);
         assert_eq!(rows_of(Kind::Struct, "a.swift", SWIFT), vec![4]);
         assert_eq!(rows_of(Kind::Enum, "a.swift", SWIFT), vec![5]);
+    }
+
+    // ---- the seven kinds #141 added -------------------------------------
+
+    const RUST_MORE: &str = "\
+type Alias = u32;
+trait Area { fn area(&self) -> f64; }
+impl Area for Point {
+    fn area(&self) -> f64 { 0.0 }
+}
+mod inner {}
+const LIMIT: u32 = 10;
+macro_rules! say { () => {} }
+";
+
+    #[test]
+    fn rust_types_traits_impls_modules_constants_and_macros() {
+        assert_eq!(rows_of(Kind::Type, "b.rs", RUST_MORE), vec![0]);
+        assert_eq!(rows_of(Kind::Trait, "b.rs", RUST_MORE), vec![1]);
+        assert_eq!(rows_of(Kind::Impl, "b.rs", RUST_MORE), vec![2]);
+        assert_eq!(rows_of(Kind::Module, "b.rs", RUST_MORE), vec![5]);
+        assert_eq!(rows_of(Kind::Constant, "b.rs", RUST_MORE), vec![6]);
+        assert_eq!(rows_of(Kind::Macro, "b.rs", RUST_MORE), vec![7]);
+        // The one-line trait starts a function too; the impl's method is a
+        // function and not an impl.
+        assert_eq!(rows_of(Kind::Function, "b.rs", RUST_MORE), vec![1, 3]);
+    }
+
+    const GO: &str = "\
+package main
+type Point struct { X int }
+type Shape interface { Area() float64 }
+const Limit = 10
+func main() {}
+";
+
+    /// Go names functions and types; structs and interfaces arrive under
+    /// `type`, and the keyword fallback adds the struct and trait rows.
+    /// `package` is not `storage.type` in the Go grammar, and a file's one
+    /// package clause is not the kind of definition the row is for.
+    #[test]
+    fn go_types_cover_struct_and_interface_declarations() {
+        assert_eq!(rows_of(Kind::Type, "a.go", GO), vec![1, 2]);
+        assert_eq!(rows_of(Kind::Struct, "a.go", GO), vec![1]);
+        assert_eq!(rows_of(Kind::Trait, "a.go", GO), vec![2]);
+        assert!(rows_of(Kind::Module, "a.go", GO).is_empty());
+        assert_eq!(rows_of(Kind::Constant, "a.go", GO), vec![3]);
+        // The interface's method requirement is a function declaration too,
+        // as a one-line Rust trait's is.
+        assert_eq!(rows_of(Kind::Function, "a.go", GO), vec![2, 4]);
+    }
+
+    const SWIFT_MORE: &str = "\
+protocol Drawable { func draw() }
+extension Canvas { func clear() {} }
+typealias Handler = (Int) -> Void
+struct Point {}
+";
+
+    /// Swift names nothing, so each of these rides the keyword fallback.
+    #[test]
+    fn swift_protocols_extensions_and_typealiases_by_keyword() {
+        assert_eq!(rows_of(Kind::Trait, "b.swift", SWIFT_MORE), vec![0]);
+        assert_eq!(rows_of(Kind::Impl, "b.swift", SWIFT_MORE), vec![1]);
+        assert_eq!(rows_of(Kind::Type, "b.swift", SWIFT_MORE), vec![2]);
+        assert_eq!(rows_of(Kind::Struct, "b.swift", SWIFT_MORE), vec![3]);
+    }
+
+    const MARKDOWN: &str = "\
+# Title
+prose
+## Second
+- a list
+
+### Third
+";
+
+    /// Headings are sections: a document outline for free. The blank line
+    /// before the third heading matters: the grammar reads a heading right
+    /// under a list item as the item's continuation, as `CommonMark`'s lazy
+    /// continuation does.
+    #[test]
+    fn markdown_headings_are_sections() {
+        assert_eq!(rows_of(Kind::Section, "README.md", MARKDOWN), vec![0, 2, 5]);
+        assert!(rows_of(Kind::Function, "README.md", MARKDOWN).is_empty());
+    }
+
+    const C_MORE: &str = "\
+typedef struct point point_t;
+#define LIMIT 10
+int main(void) { return 0; }
+";
+
+    #[test]
+    fn c_typedefs_and_defines() {
+        assert_eq!(rows_of(Kind::Type, "b.c", C_MORE), vec![0]);
+        assert_eq!(rows_of(Kind::Constant, "b.c", C_MORE), vec![1]);
+    }
+
+    /// Eleven kinds fit the set, and the highest bit round-trips.
+    #[test]
+    fn kind_set_holds_every_kind() {
+        let all = KindSet::of(&Kind::ALL);
+        assert!(Kind::ALL.iter().all(|&kind| all.contains(kind)));
+        assert!(!KindSet::of(&[Kind::Section]).contains(Kind::Function));
     }
 
     /// No grammar, no answer: a log file starts nothing.
