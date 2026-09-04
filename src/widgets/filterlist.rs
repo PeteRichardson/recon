@@ -180,6 +180,9 @@ impl FilterList {
             // A set is defined by the file, and the pane says so rather than
             // doing nothing (#120's "no silent keys").
             (KeyCode::Char('d' | 'c' | 'm'), Row::Header(_)) => Some(FilterCommand::SetIsReadOnly),
+            // `a` as in *apply*: a profile is a set verb, so on a filter row
+            // it is nothing.
+            (KeyCode::Char('a'), Row::Header(set)) => Some(FilterCommand::PickProfile(set)),
             _ => None,
         }
     }
@@ -1075,6 +1078,23 @@ mod tests {
                 "{c}"
             );
         }
+    }
+
+    #[test]
+    fn a_on_a_header_opens_the_picker_and_on_a_filter_does_nothing() {
+        let filters = two_sets(true, false);
+        let rows = rows(&filters);
+        let mut list = FilterList::default();
+        list.state.select(Some(1)); // Header(1)
+        assert_eq!(
+            list.handle_key(KeyEvent::from(KeyCode::Char('a')), &rows),
+            Some(FilterCommand::PickProfile(1))
+        );
+        list.state.select(Some(0)); // the scratch filter
+        assert_eq!(
+            list.handle_key(KeyEvent::from(KeyCode::Char('a')), &rows),
+            None
+        );
     }
 
     /// Collapsing a set shortens the list; the selection follows.

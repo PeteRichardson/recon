@@ -283,6 +283,10 @@ pub const KEYMAP: &[Section] = &[
                 keys: &["m"],
                 action: "Toggle the selected filter between include and context",
             },
+            Binding {
+                keys: &["a"],
+                action: "Apply a profile to the selected set (opens a picker)",
+            },
         ],
     },
     Section {
