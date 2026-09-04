@@ -108,6 +108,12 @@ pub(crate) enum FilterCommand {
     ToggleSearch,
     DeleteSearch,
     EditSearch,
+    /// Enable or disable a named set as a unit (#129). Never set 0.
+    ToggleSet(usize),
+    /// `d`, `c` or `m` on a set's header row: sets are defined in
+    /// `filters.toml`, and `App` says so on the status row rather than
+    /// letting the key do nothing.
+    SetIsReadOnly,
 }
 
 // There is deliberately no `Widget` impl covering all three panes.

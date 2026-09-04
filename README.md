@@ -177,7 +177,7 @@ The file opens in the centre pane with its directory listed on the left. Then:
 | `i` `WARN` `Enter` | Add a second filter, in its own colour — `f` already moved focus, so `i` alone is enough |
 | `x` `healthcheck` `Enter` | Drop `healthcheck` lines from view entirely |
 | `Ctrl-H` | Hide the dimmed lines — only `ERROR` and `WARN` remain |
-| `Enter` | Toggle the selected filter off and on |
+| `Enter` | Toggle the selected filter off and on — or, on a set's header row, the whole set |
 | `!` | Disable all filters — the whole file returns |
 | `q` | Quit |
 
@@ -419,10 +419,31 @@ naming a filter the set lacks, a set with no filters, or a key the schema does
 not know each stop recon with a message naming the file, the set and the
 filter. A missing file is not an error. recon never writes this file.
 
-In this release the pane lists every known filter flat, with a file filter
-shown as `set/name`; the two-level pane with per-set toggling, the profile
-picker, solo and reset follow (#129–#132). `!` and `space` act on filter flags
-across every set and never on a set's own flag.
+The filter pane has two levels. The scratch set's filters come first with no
+header; each named set is a header row with its filters indented beneath it
+while the set is enabled, and a bare `[ ]` row while it is not:
+
+```
+Filters
+ /[x] inc ETIMEDOUT              ← live search, as today
+ 1[x] inc ERROR                  ← scratch, no header
+ 2[ ] exc DEBUG
+[x] WiFi_debug *                 ← a set with profiles
+   3[x] inc assoc
+   4[x] inc deauth
+   5[ ] ctx beacon-loss
+   6[ ] exc retry
+[ ] bug-57                       ← disabled: header only
+```
+
+`Enter` on a header enables or disables the set; on a filter row it toggles
+the filter, as before. Numbers run top to bottom over what is shown — they are
+labels, not addresses — so enabling a set renumbers the rows below it, the
+same way deleting a filter does. `d`, `c` and `m` on a header do nothing to the
+set and say so on the status row: sets are edited in `filters.toml`. `!` and
+`space` act on filter flags across every set and never on a set's own flag.
+
+The profile picker, solo and reset follow (#130, #132).
 
 #### The filter palette
 

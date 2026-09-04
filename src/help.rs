@@ -269,7 +269,7 @@ pub const KEYMAP: &[Section] = &[
             },
             Binding {
                 keys: &["Enter"],
-                action: "Enable or disable the selected filter",
+                action: "Enable or disable the selected filter, or set",
             },
             Binding {
                 keys: &["c"],
