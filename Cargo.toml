@@ -123,6 +123,13 @@ toml = { version = "1.1.4", default-features = false, features = [
     "serde",
     "std",
 ] }
+# The one write path (#131): `S` appends a set to `filters.toml`. `toml_edit`
+# rather than `toml`'s `display` feature — which stays off — because it
+# preserves the comments, key order and whitespace of a hand-edited file,
+# and the serializer would silently destroy every comment in a format chosen
+# for supporting them. `config.toml` is never written; see the configuration
+# spec's "If a write path ever lands".
+toml_edit = "0.25.13"
 
 # Syntax colouring for the file view (#122). `syntect` does the parsing and
 # theming; `two-face` supplies bat's syntax and theme bundles in place of

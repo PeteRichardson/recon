@@ -65,6 +65,10 @@ enum PromptKind {
     Search,
     Filter,
     Exclude,
+    /// `S`: the scratch set's new name. Commits through `save_scratch_as`,
+    /// and its error is that function's message rather than
+    /// `INVALID_PATTERN` — a name is not a pattern.
+    SaveSet,
     /// Replace the pattern of the numbered filter at `index`.
     ///
     /// `sense` is carried purely so the prompt can draw the right sigil — the
@@ -118,6 +122,7 @@ impl SearchPrompt {
                 sense: filter::Sense::Exclude,
                 ..
             } => "exclude: ",
+            PromptKind::SaveSet => "save as: ",
         }
     }
 
@@ -280,6 +285,10 @@ pub struct App<'a> {
     /// The profile picker, while one is open (#130). Takes every key, as a
     /// prompt does.
     picker: Option<widgets::picker::ProfilePicker>,
+    /// Where `S` writes (#131): `filters.toml` beside `config.toml`, or
+    /// `None` when the environment names no home. A field rather than a
+    /// call at save time so tests can point it at a fixture.
+    save_path: Option<std::path::PathBuf>,
     /// Runs the navigator's file scans (#119). A `Box<dyn Scan>` for the same
     /// reason `launcher` is: tests swap in a recording double.
     scanner: Box<dyn scan::Scan>,
@@ -437,6 +446,7 @@ impl App<'_> {
             swallow_next_enter: false,
             help: false,
             picker: None,
+            save_path: filtersets::path(),
             scanner: Box::new(scan::Scanner::new(scan_tx)),
             scan_results: Some(scan_rx),
             scan_cache: ScanCache::default(),
@@ -462,8 +472,25 @@ impl App<'_> {
                 };
                 let (pattern, kind) = (prompt.pattern.clone(), prompt.kind);
 
+                // `SaveSet` is not a pattern: its failures are messages,
+                // shown in the prompt in place of `INVALID_PATTERN`.
+                if kind == PromptKind::SaveSet {
+                    match self.save_scratch_as(&pattern) {
+                        Ok(()) => {
+                            self.search = None;
+                            self.swallow_next_enter = true;
+                        }
+                        Err(message) => {
+                            if let Some(prompt) = self.search.as_mut() {
+                                prompt.error = Some(message);
+                            }
+                        }
+                    }
+                    return;
+                }
                 let outcome = match kind {
                     PromptKind::Search => self.run_search(&pattern),
+                    PromptKind::SaveSet => unreachable!("handled above"),
                     PromptKind::Filter => self.add_filter(&pattern),
                     PromptKind::Exclude => self.add_excluding_filter(&pattern),
                     PromptKind::Edit { index, .. } => self.replace_filter(index, &pattern),
@@ -1286,6 +1313,60 @@ impl App<'_> {
         }
     }
 
+    /// `S`: write the scratch set to `filters.toml` as `name`, then adopt it
+    /// in memory so the pane shows what a restart would show — without
+    /// discarding any other set's current state (#131).
+    ///
+    /// The written text is re-parsed before anything is written or changed,
+    /// so a file recon could not load back is never produced. Errors are
+    /// messages for the prompt's error line; the scratch set is untouched
+    /// on every one of them.
+    fn save_scratch_as(&mut self, name: &str) -> Result<(), String> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err("a set needs a name".into());
+        }
+        if self.filters.sets().iter().any(|set| set.name == name) {
+            return Err(format!(
+                "a set named {name:?} already exists; edit filters.toml to change it"
+            ));
+        }
+        let Some(path) = self.save_path.clone() else {
+            return Err("no config home ($XDG_CONFIG_HOME, $HOME unset); nowhere to save".into());
+        };
+        let to_save = filtersets::SetToSave {
+            name,
+            filters: self
+                .filters
+                .filters_in(0)
+                .map(|(_, filter)| (filter.predicate.display(), filter.sense))
+                .collect(),
+            default: self
+                .filters
+                .filters_in(0)
+                .filter(|(_, filter)| filter.enabled)
+                .map(|(_, filter)| filter.display_name())
+                .collect(),
+        };
+        let before = match std::fs::read_to_string(&path) {
+            Ok(text) => text,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(err) => return Err(format!("could not read {}: {err}", path.display())),
+        };
+        let after = filtersets::append_set(&before, &to_save)?;
+        filtersets::parse(&after, &path).map_err(|err| err.to_string())?;
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)
+                .map_err(|err| format!("could not create {}: {err}", dir.display()))?;
+        }
+        std::fs::write(&path, after)
+            .map_err(|err| format!("could not write {}: {err}", path.display()))?;
+        self.filters.adopt_scratch_as(name, path);
+        self.refresh_view();
+        self.report(&format!("saved set {name:?}"), false);
+        Ok(())
+    }
+
     /// Put a one-off message on the status row, replacing any previous one.
     fn report(&mut self, text: &str, error: bool) {
         self.status_message = Some(StatusMessage {
@@ -1651,6 +1732,16 @@ impl App<'_> {
             let kind = match key.code {
                 KeyCode::Char('i') => Some(PromptKind::Filter),
                 KeyCode::Char('x') => Some(PromptKind::Exclude),
+                // `S` saves the scratch set (#131). Refused before the prompt
+                // opens when there is nothing to save: a prompt for a name
+                // that can go nowhere is worse than a message.
+                KeyCode::Char('S') => {
+                    if self.filters.filters_in(0).next().is_none() {
+                        self.report("nothing to save: the scratch set is empty", false);
+                        return;
+                    }
+                    Some(PromptKind::SaveSet)
+                }
                 _ => None,
             };
             if let Some(kind) = kind {
@@ -4915,6 +5006,116 @@ mod tests {
         assert!(!app.filters.sets()[1].enabled);
         assert_eq!(app.filters.filters().len(), 1);
         assert!(app.filters.matcher().is_none());
+    }
+
+    // ---- saving the scratch set (#131) ---------------------------------------
+
+    /// A `filters.toml` path under `target/` that does not exist yet.
+    fn save_fixture(name: &str) -> std::path::PathBuf {
+        claim_fixture_dir(name);
+        let dir = std::path::Path::new("target/test-appdirs").join(name);
+        fs::remove_dir_all(&dir).ok();
+        dir.join("recon").join("filters.toml")
+    }
+
+    #[test]
+    fn big_s_saves_the_scratch_set_and_adopts_it() {
+        let path = save_fixture("save_scratch");
+        let mut app = app_over_file("save_scratch_file", "ERROR\nDEBUG\n");
+        app.save_path = Some(path.clone());
+        app.add_filter("ERROR").unwrap();
+        app.add_excluding_filter("DEBUG").unwrap();
+        app.filters.set_enabled(1, false);
+        key(&mut app, KeyCode::Char('f'));
+        key(&mut app, KeyCode::Char('S'));
+        assert!(app.search.is_some(), "the prompt is open");
+        assert_eq!(
+            app.search.as_ref().map(SearchPrompt::sigil),
+            Some("save as: ")
+        );
+        typed(&mut app, "bug 57");
+        key(&mut app, KeyCode::Enter);
+        assert!(app.search.is_none(), "committed");
+
+        let text = fs::read_to_string(&path).expect("written");
+        assert!(text.contains("[sets.\"bug 57\"]"), "{text}");
+        assert!(text.contains("pattern = 'ERROR'"), "{text}");
+        assert!(text.contains("default = [\"ERROR\"]"), "{text}");
+        assert_eq!(app.filters.filters_in(0).count(), 0, "scratch is empty");
+        assert_eq!(app.filters.sets()[1].name, "bug 57");
+        assert!(app.filters.sets()[1].enabled);
+        let flags: Vec<bool> = app.filters.filters_in(1).map(|(_, f)| f.enabled).collect();
+        assert_eq!(flags, vec![true, false], "the same flags");
+        assert!(
+            app.status_message
+                .as_ref()
+                .is_some_and(|m| m.text.contains("saved set")),
+            "no confirmation"
+        );
+        // Rows: Header(bug 57), ERROR, DEBUG.
+        assert_eq!(widgets::filterlist::rows(&app.filters).len(), 3);
+    }
+
+    #[test]
+    fn big_s_with_an_empty_scratch_set_reports_and_opens_nothing() {
+        let mut app = app_over_file("save_empty", "alpha\n");
+        key(&mut app, KeyCode::Char('f'));
+        key(&mut app, KeyCode::Char('S'));
+        assert!(app.search.is_none());
+        assert!(
+            app.status_message
+                .as_ref()
+                .is_some_and(|m| m.text.contains("nothing to save")),
+        );
+    }
+
+    #[test]
+    fn big_s_refuses_an_existing_name_and_keeps_the_prompt_open() {
+        let path = save_fixture("save_taken");
+        let mut app = app_over_file("save_taken_file", "alpha\n");
+        app.save_path = Some(path.clone());
+        app.filters = ActiveFilters::with_sets(
+            None,
+            &[filter::test_support::loaded("taken", 50, false, &["x"])],
+        );
+        app.add_filter("alpha").unwrap();
+        key(&mut app, KeyCode::Char('f'));
+        key(&mut app, KeyCode::Char('S'));
+        typed(&mut app, "taken");
+        key(&mut app, KeyCode::Enter);
+        assert!(app.search.is_some(), "the prompt stays open");
+        assert!(
+            app.search
+                .as_ref()
+                .and_then(|p| p.error.as_deref())
+                .is_some_and(|e| e.contains("already exists")),
+        );
+        assert!(!path.exists(), "nothing written");
+        assert_eq!(app.filters.filters_in(0).count(), 1, "scratch intact");
+    }
+
+    /// The file keeps its comments and other sets; the new set is appended.
+    #[test]
+    fn big_s_appends_to_an_existing_file_without_disturbing_it() {
+        let path = save_fixture("save_append");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let before = "# mine\n[sets.a]\n[[sets.a.filters]]\npattern = 'x' # keep\n";
+        fs::write(&path, before).unwrap();
+        let mut app = app_over_file("save_append_file", "alpha\n");
+        app.save_path = Some(path.clone());
+        app.filters = ActiveFilters::with_sets(None, &filtersets::parse(before, &path).unwrap());
+        app.add_filter("alpha").unwrap();
+        key(&mut app, KeyCode::Char('f'));
+        key(&mut app, KeyCode::Char('S'));
+        typed(&mut app, "b");
+        key(&mut app, KeyCode::Enter);
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(text.starts_with(before), "{text}");
+        assert!(text.contains("[sets.b]"), "{text}");
+        assert!(
+            !app.filters.sets()[1].enabled,
+            "a's state is untouched by the save"
+        );
     }
 
     // ---- solo and reset (#132) -----------------------------------------------

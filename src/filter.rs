@@ -828,6 +828,78 @@ impl ActiveFilters {
         }
     }
 
+    /// Turn the scratch set into a named, enabled set (#131), in memory.
+    ///
+    /// The new set takes the default priority and a `default` profile of
+    /// the scratch filters that are on right now, so it opens the way it
+    /// is. Its filters keep their colours — colour is a property of the
+    /// filter — and their flags. Other sets keep whatever state they are
+    /// in: this is not a reload. Returns `false`, changing nothing, when
+    /// the scratch set is empty or a set of that name already exists.
+    pub fn adopt_scratch_as(&mut self, name: &str, path: PathBuf) -> bool {
+        let count = self.scratch_end();
+        if count == 0 || self.sets.iter().any(|meta| meta.name == name) {
+            return false;
+        }
+        let priority = crate::filtersets::DEFAULT_PRIORITY;
+        let default: Vec<String> = self.filters[..count]
+            .iter()
+            .filter(|filter| filter.enabled)
+            .map(Filter::display_name)
+            .collect();
+        let mut profiles = BTreeMap::new();
+        if !default.is_empty() {
+            profiles.insert("default".to_string(), default);
+        }
+        // Its place among the named sets: after every set that sorts before
+        // it by (priority, name), which is the loader's order.
+        let at = self
+            .sets
+            .iter()
+            .enumerate()
+            .skip(1)
+            .find(|(_, meta)| (meta.priority, meta.name.as_str()) > (priority, name))
+            .map_or(self.sets.len(), |(index, _)| index);
+        self.sets.insert(
+            at,
+            FilterSet {
+                name: name.to_string(),
+                origin: Origin::File(path),
+                priority,
+                autoload: false,
+                enabled: true,
+                profiles,
+            },
+        );
+        if let Some(solo) = self.solo.as_mut() {
+            solo.snapshot.insert(at, false);
+            if solo.set >= at {
+                solo.set += 1;
+            }
+        }
+        // Renumber: every filter in a set at or past the insertion point
+        // moves up one; the scratch filters take the new index and move to
+        // the end of the sets before it, keeping the known list contiguous.
+        for filter in &mut self.filters {
+            if filter.set >= at {
+                filter.set += 1;
+            }
+        }
+        let mut adopted: Vec<Filter> = self.filters.drain(..count).collect();
+        for filter in &mut adopted {
+            filter.set = at;
+        }
+        let splice_at = self
+            .filters
+            .iter()
+            .position(|filter| filter.set > at)
+            .unwrap_or(self.filters.len());
+        self.filters.splice(splice_at..splice_at, adopted);
+        self.recompile();
+        self.forget_capture();
+        true
+    }
+
     /// Where the scratch set's filters end: the first filter not in set 0.
     fn scratch_end(&self) -> usize {
         self.filters
@@ -1762,6 +1834,82 @@ mod tests {
         assert_eq!(set.filters_in(0).count(), 1, "scratch filter not deleted");
         assert_eq!(set.soloed(), None);
         assert!(!set.has_remembered());
+    }
+
+    // ---- adopting the scratch set (#131) -----------------------------------
+
+    #[test]
+    fn adopt_moves_scratch_into_a_new_enabled_set_with_default_from_the_flags() {
+        let mut set = ActiveFilters::with_sets(
+            None,
+            &[
+                loaded("m", 10, true, &["q"]),
+                loaded("z", 90, false, &["r"]),
+            ],
+        );
+        set.add("a").expect("valid");
+        set.add("b").expect("valid");
+        set.set_enabled(1, false); // b off
+        let a_style = set.filters()[0].style;
+        assert!(set.adopt_scratch_as("new", PathBuf::from("t")));
+        assert_eq!(set.filters_in(0).count(), 0);
+        let names: Vec<&str> = set.sets().iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(
+            names,
+            ["", "m", "new", "z"],
+            "priority 50 sorts between 10 and 90"
+        );
+        let new = 2;
+        assert!(set.sets()[new].enabled);
+        assert_eq!(set.sets()[new].priority, 50);
+        assert_eq!(set.sets()[new].profiles["default"], vec!["a".to_string()]);
+        assert_eq!(flags(&set, new), vec![true, false]);
+        // Known list stays contiguous by set: m's q, then a, b, then z's r.
+        let order: Vec<(usize, String)> = set
+            .filters()
+            .iter()
+            .map(|f| (f.set, f.display_name()))
+            .collect();
+        assert_eq!(
+            order,
+            vec![
+                (1, "q".into()),
+                (2, "a".into()),
+                (2, "b".into()),
+                (3, "r".into())
+            ]
+        );
+        assert_eq!(
+            set.filters()[1].style,
+            a_style,
+            "colour travels with the filter"
+        );
+        assert_eq!(set.verdict("a", KindSet::EMPTY), Verdict::Included(1));
+        assert!(
+            !set.adopt_scratch_as("new", PathBuf::from("t")),
+            "name taken"
+        );
+        assert!(
+            !set.adopt_scratch_as("other", PathBuf::from("t")),
+            "scratch is empty now"
+        );
+    }
+
+    /// A live solo's snapshot stays aligned with the set list.
+    #[test]
+    fn adopt_keeps_a_live_solo_aligned() {
+        let mut set = ActiveFilters::with_sets(None, &[loaded("z", 90, true, &["r"])]);
+        set.add("a").expect("valid");
+        set.solo(1);
+        assert!(set.adopt_scratch_as("new", PathBuf::from("t")));
+        assert_eq!(set.soloed(), Some(2), "z moved from 1 to 2");
+        set.solo(2);
+        let flags: Vec<bool> = set.sets().iter().map(|s| s.enabled).collect();
+        assert_eq!(
+            flags,
+            vec![true, false, true],
+            "the snapshot restored z as it was and new as off"
+        );
     }
 
     // ---- predicates (#123) -------------------------------------------------

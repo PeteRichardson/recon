@@ -132,6 +132,9 @@ the user's file**, on a format chosen precisely because it supports comments.
 So: any future write path must use `toml_edit`, never `toml`. Re-enabling the
 `display` feature is the wrong fix and is the thing to catch in review.
 
+**One landed** (#131, 2026-09-03): `S` appends a set to `filters.toml`, through
+`toml_edit`, and `display` stayed off. `config.toml` is still never written.
+
 ## Location: `~/.config`, on every platform
 
 ```text

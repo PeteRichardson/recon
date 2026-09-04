@@ -417,7 +417,8 @@ refuse-to-start policy as `config.toml`: a pattern that does not compile, a
 colour that does not parse, two filters answering to one name, a profile
 naming a filter the set lacks, a set with no filters, or a key the schema does
 not know each stop recon with a message naming the file, the set and the
-filter. A missing file is not an error. recon never writes this file.
+filter. A missing file is not an error. recon writes this file in exactly one
+case, `S`, and only ever appends to it — see below.
 
 The filter pane has two levels. The scratch set's filters come first with no
 header; each named set is a header row with its filters indented beneath it
@@ -465,6 +466,18 @@ it has `autoload`, each file filter from its set's `default` profile or off,
 no solo, no `!` memory. Filters you typed are kept, flags and all. It touches
 only flags and is one key to redo, so it asks no confirmation. `R` is
 uppercase because `r` is the global refresh-from-disk.
+
+**Saving**: `S` in the filter pane saves the scratch filters as a named set.
+A prompt asks for the name; `Enter` appends a `[sets.<name>]` table to
+`filters.toml` with one entry per scratch filter — its pattern, single-quoted,
+and its sense when not include — and a `default` profile of the filters that
+are on right now, so the set opens the way it was saved. Comments and every
+existing table survive untouched; the file is created if it does not exist.
+Then the scratch set becomes that set in place, enabled, with the same flags,
+and the other sets keep whatever state they are in. A name already in use, an
+empty name, or an empty scratch set is refused with a message and nothing is
+written. Priority, `autoload` and colours are not written: each is a one-line
+hand edit to a file `S` has just shown you the shape of.
 
 #### The filter palette
 
@@ -730,6 +743,7 @@ screen whenever the navigator is:
 | `a` | On a set's header row, open the profile picker; `Enter` applies the chosen profile to that set |
 | `s` | On a set's header row, solo that set — every other set, the scratch set included, is suspended and the pane shows only this one; `s` again restores |
 | `R` | Reset every set to its startup state; filters you typed are kept |
+| `S` | Save the scratch filters as a named set in `filters.toml` — the one thing recon ever writes |
 
 `c` edits in place: the filter keeps its slot, and so keeps its colour, its
 sense and whether it is enabled. That matters because a slot is a precedence —
