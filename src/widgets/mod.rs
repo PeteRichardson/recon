@@ -1,6 +1,7 @@
 pub(crate) mod filenav;
 pub(crate) mod fileview;
 pub(crate) mod filterlist;
+pub(crate) mod picker;
 
 use ratatui::prelude::{Color, Style};
 use ratatui::widgets::{Block, BorderType};
@@ -114,6 +115,9 @@ pub(crate) enum FilterCommand {
     /// `filters.toml`, and `App` says so on the status row rather than
     /// letting the key do nothing.
     SetIsReadOnly,
+    /// `a` on a set's header row: open the profile picker for it (#130).
+    /// `App` owns the picker, and reports a set with no profiles instead.
+    PickProfile(usize),
 }
 
 // There is deliberately no `Widget` impl covering all three panes.

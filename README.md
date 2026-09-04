@@ -443,7 +443,15 @@ same way deleting a filter does. `d`, `c` and `m` on a header do nothing to the
 set and say so on the status row: sets are edited in `filters.toml`. `!` and
 `space` act on filter flags across every set and never on a set's own flag.
 
-The profile picker, solo and reset follow (#130, #132).
+A header carries `*` when its set has profiles. `a` on that row opens a small
+picker over the panes listing the set's profile names; `j`/`k` move, `Enter`
+applies the chosen profile — exactly its members on, the set's other filters
+off — and `Esc` closes without touching a flag. The picker takes every key
+while it is open, as a prompt does. A profile is an action, not a live
+binding: after applying one you can toggle rows freely and nothing fights you.
+`a` on a set with no profiles says so on the status row.
+
+Solo and reset follow (#132).
 
 #### The filter palette
 
@@ -706,6 +714,7 @@ screen whenever the navigator is:
 | `d` | Delete the selected filter |
 | `c` | Change the selected filter's pattern — reopens the prompt over it |
 | `m` | Toggle the selected filter between *include* and *context* — see below |
+| `a` | On a set's header row, open the profile picker; `Enter` applies the chosen profile to that set |
 
 `c` edits in place: the filter keeps its slot, and so keeps its colour, its
 sense and whether it is enabled. That matters because a slot is a precedence —

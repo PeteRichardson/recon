@@ -277,6 +277,9 @@ pub struct App<'a> {
     /// next key. Joining that cycle would mean tabbing past help forever after
     /// using it once.
     help: bool,
+    /// The profile picker, while one is open (#130). Takes every key, as a
+    /// prompt does.
+    picker: Option<widgets::picker::ProfilePicker>,
     /// Runs the navigator's file scans (#119). A `Box<dyn Scan>` for the same
     /// reason `launcher` is: tests swap in a recording double.
     scanner: Box<dyn scan::Scan>,
@@ -433,6 +436,7 @@ impl App<'_> {
             peek: None,
             swallow_next_enter: false,
             help: false,
+            picker: None,
             scanner: Box::new(scan::Scanner::new(scan_tx)),
             scan_results: Some(scan_rx),
             scan_cache: ScanCache::default(),
@@ -796,6 +800,25 @@ impl App<'_> {
         if self.help {
             if matches!(event, event::Event::Key(_)) {
                 self.help = false;
+            }
+            return;
+        }
+
+        // The picker takes every key while open, like the search prompt:
+        // `q` inside it means nothing, and `Enter` applies rather than
+        // toggling whatever the pane has selected underneath.
+        if let Some(picker) = self.picker.as_mut() {
+            if let event::Event::Key(key) = event {
+                match picker.handle_key(key) {
+                    widgets::picker::PickerOutcome::Open => {}
+                    widgets::picker::PickerOutcome::Closed => self.picker = None,
+                    widgets::picker::PickerOutcome::Chosen(name) => {
+                        let set = picker.set;
+                        self.picker = None;
+                        self.filters.apply_profile(set, &name);
+                        self.refresh_view();
+                    }
+                }
             }
             return;
         }
@@ -1663,6 +1686,18 @@ impl App<'_> {
             FilterCommand::ToggleSet(set) => {
                 self.filters.toggle_set(set);
             }
+            // Opens the picker, or says why not; the set is untouched until
+            // a profile is chosen, so nothing to re-evaluate here.
+            FilterCommand::PickProfile(set) => {
+                let names: Vec<String> =
+                    self.filters.sets()[set].profiles.keys().cloned().collect();
+                if names.is_empty() {
+                    self.report("no profiles in this set", false);
+                } else {
+                    self.picker = Some(widgets::picker::ProfilePicker::new(set, names));
+                }
+                return;
+            }
             // Nothing to re-evaluate: the model did not change.
             FilterCommand::SetIsReadOnly => {
                 self.report(
@@ -2062,6 +2097,9 @@ impl Widget for &mut App<'_> {
         // directory, and both are still true while the keymap is up; hiding
         // them would mean the one screen that explains `Ctrl-H` is also the one
         // screen that stops showing whether it is on.
+        if let Some(picker) = &self.picker {
+            picker.render(area, buf);
+        }
         if self.help {
             help::render(area, buf);
         }
@@ -4871,6 +4909,105 @@ mod tests {
         assert!(!app.filters.sets()[1].enabled);
         assert_eq!(app.filters.filters().len(), 1);
         assert!(app.filters.matcher().is_none());
+    }
+
+    // ---- the profile picker (#130) -------------------------------------------
+
+    fn app_with_profiles(fixture: &str) -> App<'static> {
+        let mut a = filter::test_support::loaded("a", 10, true, &["alpha", "beta"]);
+        a.profiles.insert("default".into(), vec!["alpha".into()]);
+        a.profiles.insert("only-beta".into(), vec!["beta".into()]);
+        let b = filter::test_support::loaded("b", 20, true, &["neither"]);
+        let mut app = app_over_file(fixture, "alpha\nbeta\nneither\n");
+        app.filters = ActiveFilters::with_sets(None, &[a, b]);
+        app.refresh_view();
+        app
+    }
+
+    fn flags_of(app: &App, set: usize) -> Vec<bool> {
+        app.filters
+            .filters_in(set)
+            .map(|(_, f)| f.enabled)
+            .collect()
+    }
+
+    /// `a` on a set with profiles opens the picker; it takes every key; `Enter`
+    /// applies the chosen profile to that set alone and closes it.
+    #[test]
+    fn a_opens_the_picker_and_enter_applies_the_profile() {
+        let mut app = app_with_profiles("picker_apply");
+        key(&mut app, KeyCode::Char('f'));
+        app.filters_pane.state.select(Some(0)); // Header(a)
+        assert_eq!(
+            flags_of(&app, 1),
+            vec![true, false],
+            "sanity: default applied at load"
+        );
+
+        key(&mut app, KeyCode::Char('a'));
+        assert!(app.picker.is_some());
+        key(&mut app, KeyCode::Char('q'));
+        assert!(app.picker.is_some(), "the picker takes every key");
+        assert_eq!(app.state, AppState::Running, "q did not quit");
+
+        key(&mut app, KeyCode::Char('j')); // default -> only-beta (BTreeMap order)
+        key(&mut app, KeyCode::Enter);
+        assert!(app.picker.is_none());
+        assert_eq!(flags_of(&app, 1), vec![false, true]);
+        assert_eq!(flags_of(&app, 2), vec![false], "the other set is untouched");
+        let included = app
+            .document
+            .verdicts()
+            .iter()
+            .filter(|v| matches!(v, filter::Verdict::Included(_)))
+            .count();
+        assert_eq!(included, 1, "the view re-evaluated under the profile");
+    }
+
+    #[test]
+    fn esc_closes_the_picker_without_changing_a_flag() {
+        let mut app = app_with_profiles("picker_esc");
+        key(&mut app, KeyCode::Char('f'));
+        app.filters_pane.state.select(Some(0));
+        key(&mut app, KeyCode::Char('a'));
+        key(&mut app, KeyCode::Char('j'));
+        key(&mut app, KeyCode::Esc);
+        assert!(app.picker.is_none());
+        assert_eq!(flags_of(&app, 1), vec![true, false]);
+    }
+
+    #[test]
+    fn a_on_a_set_without_profiles_reports_and_opens_nothing() {
+        let mut app = app_with_profiles("picker_none");
+        key(&mut app, KeyCode::Char('f'));
+        // Rows: Header(a), alpha, beta, Header(b), neither — b's header is row 3.
+        app.filters_pane.state.select(Some(3));
+        key(&mut app, KeyCode::Char('a'));
+        assert!(app.picker.is_none());
+        assert!(
+            app.status_message
+                .as_ref()
+                .is_some_and(|m| m.text.contains("no profiles")),
+            "no message"
+        );
+    }
+
+    /// The picker is drawn over the panes.
+    #[test]
+    fn the_open_picker_is_visible() {
+        let mut app = app_with_profiles("picker_draw");
+        key(&mut app, KeyCode::Char('f'));
+        app.filters_pane.state.select(Some(0));
+        key(&mut app, KeyCode::Char('a'));
+        let area = Rect::new(0, 0, 80, 20);
+        let mut buf = Buffer::empty(area);
+        app.render(area, &mut buf);
+        let screen: String = (0..20)
+            .map(|y| (0..80).map(|x| buf[(x, y)].symbol()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(screen.contains("Profiles"), "{screen}");
+        assert!(screen.contains("only-beta"), "{screen}");
     }
 
     // ---- the two-level pane (#129) -------------------------------------------
