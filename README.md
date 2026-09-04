@@ -702,7 +702,7 @@ screen whenever the navigator is:
 | `x` | Add an exclude filter — its matches leave the view entirely |
 | `k` / `Up` | Select the previous filter |
 | `j` / `Down` | Select the next filter |
-| `Enter` | Enable or disable the selected filter |
+| `Enter` | Enable or disable the selected filter — or, on a header row, the selected set |
 | `d` | Delete the selected filter |
 | `c` | Change the selected filter's pattern — reopens the prompt over it |
 | `m` | Toggle the selected filter between *include* and *context* — see below |
