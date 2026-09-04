@@ -479,6 +479,38 @@ empty name, or an empty scratch set is refused with a message and nothing is
 written. Priority, `autoload` and colours are not written: each is a one-line
 hand edit to a file `S` has just shown you the shape of.
 
+#### Definition filters
+
+One set is built in: `definitions`, with four filters — `functions`, `classes`,
+`structs`, `enums` — that select the lines *starting* a definition of that
+kind. They are not regexes over the text: the same syntect grammar pass that
+colours the file says which lines begin a function, so `fn` in a comment or a
+string does not count, a closure binding does not count, and a Swift `func`
+counts even though bat's Swift grammar names nothing the way the others do.
+Rust, Python, C, Go, JavaScript and Swift are covered; a kind a language has no
+notion of simply matches nothing there.
+
+The set starts collapsed as a single `[ ] definitions` row. `Enter` expands it;
+`Enter` on `functions` narrows a source file to its function lines, coloured,
+with their real line numbers, and every sense works — `m` for "functions with
+context", or an excluding definition for "everything except functions". Its
+rows carry no number and no palette colour, so your own filters keep theirs;
+`d` and `c` refuse them, since they are recon's. Solo, reset, `!` and the peek
+treat the set as any other. Position it or start it expanded from
+`filters.toml`, with a table that may carry only these two keys:
+
+```toml
+[sets.definitions]
+priority = 80
+autoload = true
+```
+
+On a log file the rows exist and are inert. The navigator's file matching does
+not evaluate definition filters — it reads text it never parses — so they
+affect only the viewed file. Turning one on costs one whole-file grammar pass,
+about ten microseconds a line, paid once per file; a file with no grammar
+never pays it.
+
 #### The filter palette
 
 Successive filters take successive colours, wrapping once the list runs out.
@@ -1066,14 +1098,17 @@ filter showing lines thousands apart, restarts the grammar 64 lines above each
 landing point. A block comment or raw string opened further back than that is
 coloured wrong until it closes — the same trade every editor makes on a jump.
 Lines over 10,000 bytes are left plain; a minified file on one line is not
-worth seconds of regex.
+worth seconds of regex. The one whole-file parse is the definition filters':
+enabling one runs the grammar over every line, once per file, because a filter
+needs every line's answer at once — see *Definition filters*.
 
 ---
 
 ## Known Limitations
 
 - **The navigator's file matching covers at most 64 patterns**, counted across
-  every loaded set whether or not it is enabled, plus the live search. Above
+  every loaded set whether or not it is enabled, plus the live search — and the
+  built-in `definitions` set's four are among them, so sixty are yours. Above
   that the navigator's marking switches off — never wrong, just absent — while
   the view keeps filtering. A `filters.toml` with many sets can reach this.
 - **Files are read entirely into memory — once, not twice.** `read_lines` in

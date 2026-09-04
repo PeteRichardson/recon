@@ -26,7 +26,7 @@ use std::path::PathBuf;
 /// pins. Change one and that test is what tells you whether the replacement
 /// still reads as its own colour. The same greyscale-ramp reasoning applies
 /// here as to [`DIM_GREY`].
-const DEFAULT_PALETTE: [Color; 6] = [
+pub const DEFAULT_PALETTE: [Color; 6] = [
     Color::Indexed(220), // gold        #ffd700
     Color::Indexed(51),  // cyan        #00ffff
     Color::Indexed(46),  // pure green  #00ff00
@@ -236,6 +236,22 @@ pub enum Origin {
     /// The unnamed set typed filters land in. Always index 0, never in a file.
     Scratch,
     File(PathBuf),
+    /// A set recon ships (#127): always present, its filters never in the
+    /// file. A `[sets.<name>]` table may set its `priority` and `autoload`
+    /// and nothing else. Its filters take no number and no palette colour.
+    BuiltIn,
+}
+
+/// The name of the one built-in set: definition filters — functions,
+/// classes, structs, enums — answered by the grammar pass in
+/// `syntax::definitions` (#127).
+pub const DEFINITIONS_SET: &str = "definitions";
+
+/// Whether `name` is a set recon ships, which the file may position and
+/// switch but not fill.
+#[must_use]
+pub fn is_builtin_name(name: &str) -> bool {
+    name == DEFINITIONS_SET
 }
 
 /// A named group of filters, toggled as a unit (#128).
@@ -304,6 +320,10 @@ pub struct LoadedSet {
     pub autoload: bool,
     pub profiles: BTreeMap<String, Vec<String>>,
     pub filters: Vec<LoadedFilter>,
+    /// A `[sets.<name>]` table naming a built-in set: `priority` and
+    /// `autoload` are the file's, the filters are recon's, and `filters`
+    /// above is empty.
+    pub builtin: bool,
 }
 
 /// Every enabled flag in an [`ActiveFilters`], captured so it can be restored.
@@ -524,17 +544,7 @@ pub struct ActiveFilters {
 /// start, so that every filter has a set to belong to.
 impl Default for ActiveFilters {
     fn default() -> Self {
-        Self {
-            sets: vec![FilterSet::scratch()],
-            solo: None,
-            palette: Palette::default(),
-            combine: Combine::default(),
-            filters: Vec::new(),
-            search: None,
-            remembered: None,
-            remembered_search: None,
-            compiled: None,
-        }
+        Self::with_sets(None, &[])
     }
 }
 
@@ -546,9 +556,23 @@ impl ActiveFilters {
 
     #[must_use]
     pub fn with_palette(palette: Vec<Color>) -> Self {
+        Self::with_sets(Some(palette), &[])
+    }
+
+    /// The scratch set and nothing else — the state `with_sets` builds on.
+    /// Private: every public constructor goes through `with_sets`, so the
+    /// built-in set is present in every `ActiveFilters` there is.
+    fn bare(palette: Option<Vec<Color>>) -> Self {
         Self {
-            palette: Palette::new(palette),
-            ..Self::default()
+            sets: vec![FilterSet::scratch()],
+            solo: None,
+            palette: palette.map_or_else(Palette::default, Palette::new),
+            combine: Combine::default(),
+            filters: Vec::new(),
+            search: None,
+            remembered: None,
+            remembered_search: None,
+            compiled: None,
         }
     }
 
@@ -557,7 +581,7 @@ impl ActiveFilters {
     /// sizes itself against.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.filters.is_empty()
+        self.user_authored_count() == 0
     }
 
     /// How many *numbered* filters there are. The live search is not one of
@@ -565,7 +589,9 @@ impl ActiveFilters {
     /// itself against.
     #[must_use]
     pub fn len(&self) -> usize {
-        self.filters.len()
+        // User-authored: a built-in row is not something the user built. The
+        // known list itself, built-ins included, is `filters()`.
+        self.user_authored_count()
     }
 
     #[must_use]
@@ -575,7 +601,26 @@ impl ActiveFilters {
 
     /// The colour the next filter added will take.
     fn next_style(&self) -> Style {
-        Style::default().fg(self.palette.colour(self.filters.len()))
+        Style::default().fg(self.palette.colour(self.user_authored_count()))
+    }
+
+    /// How many filters the user wrote — scratch and file — which is what
+    /// the palette and the pane's numbering run over. A built-in filter is
+    /// neither numbered nor coloured, so it does not move the next colour.
+    fn user_authored_count(&self) -> usize {
+        self.filters
+            .iter()
+            .filter(|filter| self.sets[filter.set].origin != Origin::BuiltIn)
+            .count()
+    }
+
+    /// Whether the filter at `index` is one the user wrote rather than one
+    /// recon ships. The pane numbers and colours only these.
+    #[must_use]
+    pub fn is_user_authored(&self, index: usize) -> bool {
+        self.filters
+            .get(index)
+            .is_some_and(|filter| self.sets[filter.set].origin != Origin::BuiltIn)
     }
 
     /// Add an including filter, colouring it distinctly from its
@@ -637,9 +682,12 @@ impl ActiveFilters {
     /// grammar pass in `Document::evaluate`.
     #[must_use]
     pub fn needs_kinds(&self) -> bool {
-        self.filters
-            .iter()
-            .any(|filter| matches!(filter.predicate, Predicate::Definition(_)))
+        // Effective, not merely present: the built-in set means a definition
+        // filter always exists, and a whole-file grammar pass for a row
+        // nobody has turned on would be paid by every source file opened.
+        self.filters.iter().enumerate().any(|(index, filter)| {
+            matches!(filter.predicate, Predicate::Definition(_)) && self.effective(index)
+        })
     }
 
     /// Build the startup set (#128): the scratch set, then `sets` in the
@@ -653,12 +701,56 @@ impl ActiveFilters {
     /// what matches, never a colour.
     #[must_use]
     pub fn with_sets(palette: Option<Vec<Color>>, sets: &[LoadedSet]) -> Self {
-        let mut this = match palette {
-            Some(palette) => Self::with_palette(palette),
-            None => Self::new(),
+        let mut this = Self::bare(palette);
+        // The built-in set is always present. The file may position and
+        // switch it — the loader passes such a table through as a
+        // `builtin` set with no filters — and otherwise it takes its
+        // defaults: collapsed, at the default priority, sorted among the
+        // file sets on the same terms.
+        let mut ordered: Vec<&LoadedSet> = sets.iter().collect();
+        let default_builtin = LoadedSet {
+            name: DEFINITIONS_SET.to_string(),
+            path: PathBuf::new(),
+            priority: crate::filtersets::DEFAULT_PRIORITY,
+            autoload: false,
+            profiles: BTreeMap::new(),
+            filters: Vec::new(),
+            builtin: true,
         };
-        for loaded in sets {
+        if !ordered.iter().any(|set| set.builtin) {
+            ordered.push(&default_builtin);
+        }
+        ordered.sort_by(|a, b| {
+            a.priority
+                .cmp(&b.priority)
+                .then_with(|| a.name.cmp(&b.name))
+        });
+
+        for loaded in ordered {
             let index = this.sets.len();
+            if loaded.builtin {
+                this.sets.push(FilterSet {
+                    name: loaded.name.clone(),
+                    origin: Origin::BuiltIn,
+                    priority: loaded.priority,
+                    autoload: loaded.autoload,
+                    enabled: false,
+                    profiles: BTreeMap::new(),
+                });
+                // No palette colour: a built-in filter wears the terminal's
+                // default, so the pane's colours stay the user's own.
+                for kind in Kind::ALL {
+                    this.filters.push(Filter {
+                        predicate: Predicate::Definition(kind),
+                        sense: Sense::Include,
+                        enabled: false,
+                        style: Style::default(),
+                        name: Some(kind.plural().to_string()),
+                        set: index,
+                    });
+                }
+                continue;
+            }
             this.sets.push(FilterSet {
                 name: loaded.name.clone(),
                 origin: Origin::File(loaded.path.clone()),
@@ -974,7 +1066,9 @@ impl ActiveFilters {
     /// number; nothing else does.
     #[must_use]
     pub fn row_count(&self) -> usize {
-        self.filters.len() + usize::from(self.search.is_some())
+        // User-authored only: the status row's "N filters" is about what
+        // the user built, and a built-in row nobody turned on is not that.
+        self.user_authored_count() + usize::from(self.search.is_some())
     }
 
     /// Move the live search into the numbered set and free the slot.
@@ -1093,7 +1187,9 @@ impl ActiveFilters {
     /// cached `Verdict::Included` is invalid afterwards — callers must
     /// re-evaluate rather than patch.
     pub fn remove(&mut self, index: usize) -> bool {
-        if index >= self.filters.len() {
+        // A built-in filter is recon's, not the user's: it can be switched
+        // off, and its set collapsed, but not deleted (#127).
+        if index >= self.filters.len() || !self.is_user_authored(index) {
             return false;
         }
         self.filters.remove(index);
@@ -1132,6 +1228,9 @@ impl ActiveFilters {
     /// only thing that recomputes them, so a full pass is what a caller owes.
     pub fn set_pattern(&mut self, index: usize, pattern: &str) -> Result<bool, regex::Error> {
         let compiled = Regex::new(pattern)?;
+        if !self.is_user_authored(index) {
+            return Ok(false);
+        }
         match self.filters.get_mut(index) {
             Some(filter) => {
                 filter.predicate = Predicate::Regex(compiled);
@@ -1483,13 +1582,27 @@ pub(crate) mod test_support {
                     colour: None,
                 })
                 .collect(),
+            builtin: false,
+        }
+    }
+
+    /// A `[sets.definitions]` override, as the loader would pass it through.
+    pub(crate) fn builtin_override(priority: i32, autoload: bool) -> LoadedSet {
+        LoadedSet {
+            name: super::DEFINITIONS_SET.to_string(),
+            path: PathBuf::from("test/filters.toml"),
+            priority,
+            autoload,
+            profiles: BTreeMap::new(),
+            filters: Vec::new(),
+            builtin: true,
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::test_support::loaded;
+    use super::test_support::{builtin_override, loaded};
     use super::*;
 
     fn set_with(patterns: &[&str]) -> ActiveFilters {
@@ -1518,9 +1631,13 @@ mod tests {
     /// A fresh `ActiveFilters` already has one set: the scratch set, so that
     /// every filter lives in a set and nothing needs a "loose filter" case.
     #[test]
-    fn a_new_set_has_only_the_scratch_set() {
+    fn a_new_set_has_the_scratch_set_and_the_built_in_one() {
         let set = ActiveFilters::new();
-        assert_eq!(set.sets().len(), 1);
+        assert_eq!(
+            set.sets().len(),
+            2,
+            "scratch, and the built-in definitions set"
+        );
         assert_eq!(set.sets()[0].origin, Origin::Scratch);
         assert!(set.sets()[0].enabled);
         assert_eq!(set.sets()[0].name, "");
@@ -1529,7 +1646,7 @@ mod tests {
     #[test]
     fn typed_filters_belong_to_the_scratch_set_and_are_named_by_their_pattern() {
         let set = set_with(&["foo", "bar"]);
-        assert!(set.filters().iter().all(|filter| filter.set == 0));
+        assert_eq!(set.filters_in(0).count(), 2);
         assert_eq!(set.filters()[0].display_name(), "foo");
     }
 
@@ -1538,14 +1655,14 @@ mod tests {
     #[test]
     fn loaded_sets_follow_scratch_in_the_known_list() {
         let set = ActiveFilters::with_sets(None, &[loaded("a", 50, false, &["x", "y"])]);
-        assert_eq!(set.sets().len(), 2);
+        assert_eq!(set.sets().len(), 3, "scratch, a, definitions");
         assert_eq!(set.sets()[1].name, "a");
         assert_eq!(
             set.sets()[1].origin,
             Origin::File(PathBuf::from("test/filters.toml"))
         );
-        assert_eq!(set.filters().len(), 2);
-        assert!(set.filters().iter().all(|f| f.set == 1 && !f.enabled));
+        assert_eq!(set.len(), 2);
+        assert!(set.filters_in(1).all(|(_, f)| !f.enabled));
         assert_eq!(set.filters()[0].display_name(), "x");
     }
 
@@ -1749,7 +1866,7 @@ mod tests {
     fn solo_enables_one_set_and_suspends_the_rest_including_scratch() {
         let mut set = three_sets();
         assert!(set.solo(2));
-        assert_eq!(set_flags(&set), vec![false, false, true, false]);
+        assert_eq!(set_flags(&set), vec![false, false, true, false, false]);
         assert_eq!(set.soloed(), Some(2));
         assert!(
             set.filters().iter().all(|f| f.enabled || f.set != 0),
@@ -1767,7 +1884,7 @@ mod tests {
         let mut set = three_sets();
         set.solo(2);
         assert!(!set.solo(2));
-        assert_eq!(set_flags(&set), vec![true, true, true, false]);
+        assert_eq!(set_flags(&set), vec![true, true, true, false, false]);
         assert_eq!(set.soloed(), None);
     }
 
@@ -1776,9 +1893,9 @@ mod tests {
         let mut set = three_sets();
         set.solo(2);
         assert!(set.solo(3));
-        assert_eq!(set_flags(&set), vec![false, false, false, true]);
+        assert_eq!(set_flags(&set), vec![false, false, false, true, false]);
         assert!(!set.solo(3));
-        assert_eq!(set_flags(&set), vec![true, true, true, false]);
+        assert_eq!(set_flags(&set), vec![true, true, true, false, false]);
     }
 
     #[test]
@@ -1795,7 +1912,7 @@ mod tests {
         let mut set = three_sets();
         assert!(!set.solo(0));
         assert!(!set.solo(9));
-        assert_eq!(set_flags(&set), vec![true, true, true, false]);
+        assert_eq!(set_flags(&set), vec![true, true, true, false, false]);
         set.solo(1);
         assert!(set.solo(0), "still soloed after a refused press");
     }
@@ -1812,7 +1929,7 @@ mod tests {
         assert_eq!(set.soloed(), Some(1));
         set.restore_remembered();
         assert_eq!(flags(&set, 1), vec![true]);
-        assert_eq!(set_flags(&set), vec![false, true, false, false]);
+        assert_eq!(set_flags(&set), vec![false, true, false, false, false]);
     }
 
     #[test]
@@ -1827,7 +1944,7 @@ mod tests {
         set.set_enabled(1, false); // x, contrary to default
         set.disable_all_remembering();
         set.reset();
-        assert_eq!(set_flags(&set), vec![true, true, false]);
+        assert_eq!(set_flags(&set), vec![true, true, false, false]);
         assert_eq!(flags(&set, 1), vec![true, false]);
         assert_eq!(flags(&set, 2), vec![false]);
         assert!(!set.filters()[0].enabled, "scratch flag untouched");
@@ -1856,10 +1973,10 @@ mod tests {
         let names: Vec<&str> = set.sets().iter().map(|s| s.name.as_str()).collect();
         assert_eq!(
             names,
-            ["", "m", "new", "z"],
+            ["", "m", "definitions", "new", "z"],
             "priority 50 sorts between 10 and 90"
         );
-        let new = 2;
+        let new = 3;
         assert!(set.sets()[new].enabled);
         assert_eq!(set.sets()[new].priority, 50);
         assert_eq!(set.sets()[new].profiles["default"], vec!["a".to_string()]);
@@ -1874,17 +1991,21 @@ mod tests {
             order,
             vec![
                 (1, "q".into()),
-                (2, "a".into()),
-                (2, "b".into()),
-                (3, "r".into())
+                (2, "functions".into()),
+                (2, "classes".into()),
+                (2, "structs".into()),
+                (2, "enums".into()),
+                (3, "a".into()),
+                (3, "b".into()),
+                (4, "r".into())
             ]
         );
         assert_eq!(
-            set.filters()[1].style,
+            set.filters()[5].style,
             a_style,
             "colour travels with the filter"
         );
-        assert_eq!(set.verdict("a", KindSet::EMPTY), Verdict::Included(1));
+        assert_eq!(set.verdict("a", KindSet::EMPTY), Verdict::Included(5));
         assert!(
             !set.adopt_scratch_as("new", PathBuf::from("t")),
             "name taken"
@@ -1900,16 +2021,123 @@ mod tests {
     fn adopt_keeps_a_live_solo_aligned() {
         let mut set = ActiveFilters::with_sets(None, &[loaded("z", 90, true, &["r"])]);
         set.add("a").expect("valid");
-        set.solo(1);
+        set.solo(2); // z: the sets are "", definitions, z
         assert!(set.adopt_scratch_as("new", PathBuf::from("t")));
-        assert_eq!(set.soloed(), Some(2), "z moved from 1 to 2");
-        set.solo(2);
+        assert_eq!(set.soloed(), Some(3), "z moved from 2 to 3");
+        set.solo(3);
         let flags: Vec<bool> = set.sets().iter().map(|s| s.enabled).collect();
         assert_eq!(
             flags,
-            vec![true, false, true],
+            vec![true, false, false, true],
             "the snapshot restored z as it was and new as off"
         );
+    }
+
+    // ---- the built-in definitions set (#127) -------------------------------
+
+    fn builtin_index(set: &ActiveFilters) -> usize {
+        set.sets()
+            .iter()
+            .position(|meta| meta.origin == Origin::BuiltIn)
+            .expect("the built-in set is always present")
+    }
+
+    #[test]
+    fn the_definitions_set_is_always_present_and_collapsed_by_default() {
+        let set = ActiveFilters::new();
+        assert_eq!(set.sets().len(), 2, "scratch and definitions");
+        let index = builtin_index(&set);
+        let meta = &set.sets()[index];
+        assert_eq!(meta.name, DEFINITIONS_SET);
+        assert!(!meta.enabled);
+        assert!(!meta.autoload);
+        assert_eq!(meta.priority, crate::filtersets::DEFAULT_PRIORITY);
+        let kinds: Vec<String> = set
+            .filters_in(index)
+            .map(|(_, f)| f.display_name())
+            .collect();
+        assert_eq!(kinds, ["functions", "classes", "structs", "enums"]);
+        assert!(set.filters_in(index).all(|(_, f)| !f.enabled));
+        assert!(
+            set.filters_in(index)
+                .all(|(_, f)| matches!(f.predicate, Predicate::Definition(_)))
+        );
+    }
+
+    /// Built-in filters take no palette colour and do not move the next one.
+    #[test]
+    fn builtin_filters_do_not_consume_the_palette() {
+        let mut set = ActiveFilters::new();
+        set.add("typed").expect("valid");
+        assert_eq!(
+            set.filters()[0].style,
+            Style::default().fg(DEFAULT_PALETTE[0])
+        );
+        let index = builtin_index(&set);
+        assert!(
+            set.filters_in(index)
+                .all(|(_, f)| f.style == Style::default())
+        );
+        assert!(set.is_user_authored(0));
+        assert!(!set.is_user_authored(1));
+    }
+
+    /// The built-in set sorts among file sets by priority and name.
+    #[test]
+    fn the_definitions_set_sorts_among_file_sets() {
+        let set = ActiveFilters::with_sets(
+            None,
+            &[
+                loaded("alpha", 50, false, &["a"]),
+                loaded("zeta", 50, false, &["z"]),
+            ],
+        );
+        let names: Vec<&str> = set.sets().iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, ["", "alpha", "definitions", "zeta"]);
+    }
+
+    /// A `[sets.definitions]` table positions and switches it, and nothing
+    /// else: its filters are still recon's four.
+    #[test]
+    fn a_file_override_positions_and_switches_the_definitions_set() {
+        let set = ActiveFilters::with_sets(
+            None,
+            &[
+                loaded("alpha", 50, false, &["a"]),
+                builtin_override(10, true),
+            ],
+        );
+        let index = builtin_index(&set);
+        assert_eq!(index, 1, "priority 10 sorts before alpha");
+        assert!(set.sets()[index].enabled, "autoload");
+        assert_eq!(set.filters_in(index).count(), 4);
+        assert_eq!(set.sets().len(), 3, "no second definitions set");
+    }
+
+    /// The grammar pass is paid only once a definition filter takes effect.
+    #[test]
+    fn needs_kinds_is_false_until_a_definition_filter_is_effective() {
+        let mut set = ActiveFilters::new();
+        assert!(!set.needs_kinds(), "present is not effective");
+        let index = builtin_index(&set);
+        set.set_enabled(0, true); // functions, but the set is collapsed
+        assert!(!set.needs_kinds());
+        set.set_enabled_set(index, true);
+        assert!(set.needs_kinds());
+    }
+
+    /// Solo, reset and `!` treat it as any set.
+    #[test]
+    fn the_definitions_set_is_an_ordinary_set_to_solo_and_reset() {
+        let mut set = ActiveFilters::new();
+        set.add("typed").expect("valid");
+        let index = builtin_index(&set);
+        assert!(set.solo(index));
+        assert!(set.sets()[index].enabled);
+        assert!(!set.sets()[0].enabled);
+        set.reset();
+        assert!(!set.sets()[index].enabled, "autoload is off");
+        assert!(set.sets()[0].enabled);
     }
 
     // ---- predicates (#123) -------------------------------------------------
@@ -2021,7 +2249,7 @@ mod tests {
         set.add_definition(Kind::Struct);
         set.add("functions").expect("valid");
         let key = set.pattern_key();
-        assert_eq!(key.len(), 3);
+        assert_eq!(key.len(), 7, "three typed, four built-in");
         assert_ne!(key[0], key[1]);
         assert_ne!(key[0], key[2]);
     }
@@ -2316,12 +2544,13 @@ mod tests {
     #[test]
     fn no_matcher_past_sixty_four_patterns() {
         let mut set = ActiveFilters::new();
-        for i in 0..64 {
+        // Sixty: the built-in definitions set holds four of the 64 slots.
+        for i in 0..60 {
             set.add(&format!("p{i}")).expect("valid pattern");
         }
         assert!(set.matcher().is_some());
 
-        set.add("p64").expect("valid pattern");
+        set.add("p60").expect("valid pattern");
         assert!(set.matcher().is_none());
     }
 
@@ -2330,12 +2559,32 @@ mod tests {
         let mut set = set_with(&["alpha", "beta"]);
         set.set_search("gamma").expect("valid pattern");
 
-        assert_eq!(set.pattern_key(), vec!["alpha", "beta", "gamma"]);
+        assert_eq!(
+            set.pattern_key(),
+            vec![
+                "alpha",
+                "beta",
+                "\u{1}functions",
+                "\u{1}classes",
+                "\u{1}structs",
+                "\u{1}enums",
+                "gamma"
+            ],
+            "typed, then the built-in set, then the search"
+        );
 
         set.toggle_context(0);
         assert_eq!(
             set.pattern_key(),
-            vec!["alpha", "beta", "gamma"],
+            vec![
+                "alpha",
+                "beta",
+                "\u{1}functions",
+                "\u{1}classes",
+                "\u{1}structs",
+                "\u{1}enums",
+                "gamma"
+            ],
             "sense is not part of the key"
         );
     }

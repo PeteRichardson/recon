@@ -1795,6 +1795,13 @@ impl App<'_> {
                 }
                 return;
             }
+            FilterCommand::BuiltInIsReadOnly => {
+                self.report(
+                    "built-in filters can be switched off or collapsed, not deleted or edited",
+                    false,
+                );
+                return;
+            }
             // Nothing to re-evaluate: the model did not change.
             FilterCommand::SetIsReadOnly => {
                 self.report(
@@ -3065,7 +3072,14 @@ mod tests {
             key(&mut app, KeyCode::Enter);
         }
 
-        let styles: Vec<_> = app.filters.filters().iter().map(|f| f.style.fg).collect();
+        let styles: Vec<_> = app
+            .filters
+            .filters()
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| app.filters.is_user_authored(*i))
+            .map(|(_, f)| f.style.fg)
+            .collect();
         assert_eq!(
             styles,
             vec![Some(Color::Rgb(1, 2, 3)), Some(Color::Rgb(4, 5, 6))],
@@ -5004,8 +5018,97 @@ mod tests {
             ..Config::default()
         });
         assert!(!app.filters.sets()[1].enabled);
-        assert_eq!(app.filters.filters().len(), 1);
+        assert_eq!(app.filters.len(), 1);
         assert!(app.filters.matcher().is_none());
+    }
+
+    // ---- the built-in definitions set (#127) ---------------------------------
+
+    /// Like `app_over_file`, but the fixture file is named `file` so that a
+    /// grammar can be found for it.
+    fn app_over_named_file(dir: &str, file: &str, body: &str) -> App<'static> {
+        claim_fixture_dir(dir);
+        let dir = std::path::Path::new("target/test-appdirs").join(dir);
+        fs::remove_dir_all(&dir).ok();
+        fs::create_dir_all(&dir).expect("create fixture dir");
+        let path = dir.join(file);
+        fs::write(&path, body).expect("write fixture");
+        App::new(&Config {
+            path: path.display().to_string(),
+            ..Config::default()
+        })
+    }
+
+    fn definitions_index(app: &App) -> usize {
+        app.filters
+            .sets()
+            .iter()
+            .position(|s| s.origin == filter::Origin::BuiltIn)
+            .expect("present")
+    }
+
+    /// On a Rust file: expand the set, turn on `functions`, and only the
+    /// lines that start a function are included — with real line numbers,
+    /// and without a grammar pass until the row is on.
+    #[test]
+    fn functions_narrows_a_rust_file_to_its_fn_lines() {
+        let mut app = app_over_named_file(
+            "defs_rust",
+            "main.rs",
+            "// fn in a comment\nfn one() {}\nstruct S;\nfn two() {}\n",
+        );
+        assert!(!app.filters.needs_kinds(), "nothing effective yet");
+        let set = definitions_index(&app);
+        key(&mut app, KeyCode::Char('f'));
+        // Rows: the `f i` hint, then Header(definitions), with an empty scratch set.
+        app.filters_pane.state.select(Some(1));
+        key(&mut app, KeyCode::Enter);
+        assert!(app.filters.sets()[set].enabled);
+        assert_eq!(included(&app), 0, "expanded, but every row is off");
+        app.filters_pane.state.select(Some(2)); // functions
+        key(&mut app, KeyCode::Enter);
+        let verdicts = app.document.verdicts().to_vec();
+        assert_eq!(
+            verdicts,
+            [
+                filter::Verdict::Unmatched,
+                filter::Verdict::Included(0),
+                filter::Verdict::Unmatched,
+                filter::Verdict::Included(0),
+            ]
+        );
+        key(&mut app, KeyCode::Enter);
+        assert_eq!(included(&app), 0, "off again: the full file");
+    }
+
+    /// On a log file the rows exist and are inert.
+    #[test]
+    fn definition_rows_are_inert_on_a_log_file() {
+        let mut app = app_over_named_file("defs_log", "app.log", "fn looks_like_one() {}\n");
+        let set = definitions_index(&app);
+        app.filters.set_enabled_set(set, true);
+        app.filters.set_enabled(0, true); // functions
+        app.refresh_view();
+        assert_eq!(included(&app), 0);
+    }
+
+    /// User filters keep their numbers and colours regardless of the set.
+    #[test]
+    fn user_filters_keep_numbers_and_colours_beside_the_definitions_set() {
+        let mut app = app_over_named_file("defs_numbers", "main.rs", "fn one() {}\nERROR\n");
+        app.add_filter("ERROR").unwrap();
+        let set = definitions_index(&app);
+        app.filters.set_enabled_set(set, true);
+        app.refresh_view();
+        let error = app
+            .filters
+            .filters()
+            .iter()
+            .find(|f| f.display_name() == "ERROR")
+            .expect("typed filter");
+        assert_eq!(error.style, Style::default().fg(filter::DEFAULT_PALETTE[0]));
+        let rows = widgets::filterlist::rows(&app.filters);
+        assert_eq!(rows.len(), 6, "ERROR, header, four kinds");
     }
 
     // ---- saving the scratch set (#131) ---------------------------------------
@@ -5052,8 +5155,8 @@ mod tests {
                 .is_some_and(|m| m.text.contains("saved set")),
             "no confirmation"
         );
-        // Rows: Header(bug 57), ERROR, DEBUG.
-        assert_eq!(widgets::filterlist::rows(&app.filters).len(), 3);
+        // Rows: Header(bug 57), ERROR, DEBUG, Header(definitions).
+        assert_eq!(widgets::filterlist::rows(&app.filters).len(), 4);
     }
 
     #[test]
@@ -5181,14 +5284,14 @@ mod tests {
         key(&mut app, KeyCode::Char('R'));
         assert_eq!(app.filters.soloed(), None);
         let set_flags: Vec<bool> = app.filters.sets().iter().map(|s| s.enabled).collect();
-        assert_eq!(set_flags, vec![true, true, true, false]);
+        assert_eq!(set_flags, vec![true, true, true, false, false]);
         assert!(
             app.filters.filters()[1].enabled,
             "beta follows default again"
         );
         assert_eq!(app.filters.filters_in(0).count(), 1, "scratch filter kept");
         assert_eq!(included(&app), 3);
-        assert_eq!(widgets::filterlist::rows(&app.filters).len(), 6);
+        assert_eq!(widgets::filterlist::rows(&app.filters).len(), 7);
     }
 
     // ---- the profile picker (#130) -------------------------------------------
@@ -5342,8 +5445,8 @@ mod tests {
         key(&mut app, KeyCode::Char('f'));
         app.filters_pane.state.select(Some(0));
         key(&mut app, KeyCode::Char('d'));
-        assert_eq!(app.filters.sets().len(), 3);
-        assert_eq!(app.filters.filters().len(), 2);
+        assert_eq!(app.filters.sets().len(), 4);
+        assert_eq!(app.filters.len(), 2);
         assert!(
             app.status_message
                 .as_ref()
@@ -6403,10 +6506,7 @@ mod tests {
     fn an_empty_filter_pane_still_opens_at_its_starting_height() {
         let app = app_over_file("empty_filter_height", "alpha\n");
 
-        assert!(
-            widgets::filterlist::rows(&app.filters).is_empty(),
-            "the fixture defined a filter"
-        );
+        assert_eq!(app.filters.row_count(), 0, "the fixture defined a filter");
         // 40 rows is comfortably clear of both caps (half is 20, the
         // navigator's floor leaves 37), so the floor is unambiguously what
         // this measures.
@@ -6458,10 +6558,11 @@ mod tests {
             key(&mut app, KeyCode::Enter);
         }
 
-        // 12 filters want 14 rows, and a 40-row column can spare them.
+        // 12 filters and the built-in set's header want 15 rows, and a
+        // 40-row column can spare them.
         assert_eq!(
             app.filter_pane_split_height(40),
-            12 + 2,
+            12 + 1 + 2,
             "the starting height capped a set that asked for more"
         );
     }
@@ -7740,9 +7841,9 @@ mod tests {
         key(&mut app, KeyCode::Esc);
 
         assert!(app.filters.search().is_none(), "setup: search not cleared");
-        assert_eq!(
-            app.filters_pane.selected(),
-            Some(0),
+        let rows = widgets::filterlist::rows(&app.filters).len();
+        assert!(
+            app.filters_pane.selected().is_some_and(|row| row < rows),
             "selection was left pointing past the end after the search row disappeared"
         );
     }
@@ -8651,7 +8752,6 @@ mod tests {
     fn the_guard_swallows_only_a_single_enter() {
         let mut app = app_hiding("enter_one_guard");
         focus_filter_pane(&mut app);
-        key(&mut app, KeyCode::Char('j'));
         key(&mut app, KeyCode::Char('c'));
         key(&mut app, KeyCode::Enter);
         let flags = enabled_flags(&app);
@@ -8791,7 +8891,6 @@ mod tests {
     fn reading_the_keymap_spends_the_post_commit_enter_guard() {
         let mut app = app_hiding("help_enter_guard");
         focus_filter_pane(&mut app);
-        key(&mut app, KeyCode::Char('j'));
         key(&mut app, KeyCode::Char('c'));
         key(&mut app, KeyCode::Enter);
         let flags = enabled_flags(&app);

@@ -178,6 +178,30 @@ pub fn parse(text: &str, path: &Path) -> Result<Vec<LoadedSet>, Error> {
                 format!("mode {mode:?} is not supported; only {ONLY_MODE:?} is"),
             ));
         }
+        // A table naming a built-in set (#127) positions and switches it,
+        // and may carry nothing else: its filters are recon's.
+        if crate::filter::is_builtin_name(&name) {
+            if !schema.filters.is_empty() || !schema.profiles.is_empty() {
+                return Err(invalid(
+                    &name,
+                    None,
+                    format!(
+                        "{name:?} is a built-in set; its table may set `priority` and \
+                         `autoload` only"
+                    ),
+                ));
+            }
+            sets.push(LoadedSet {
+                name,
+                path: path.to_path_buf(),
+                priority: schema.priority.unwrap_or(DEFAULT_PRIORITY),
+                autoload: schema.autoload.unwrap_or(false),
+                profiles: BTreeMap::new(),
+                filters: Vec::new(),
+                builtin: true,
+            });
+            continue;
+        }
         if schema.filters.is_empty() {
             return Err(invalid(
                 &name,
@@ -234,6 +258,7 @@ pub fn parse(text: &str, path: &Path) -> Result<Vec<LoadedSet>, Error> {
             autoload: schema.autoload.unwrap_or(false),
             profiles: schema.profiles,
             filters,
+            builtin: false,
         });
     }
     sets.sort_by(|a, b| {
@@ -507,6 +532,26 @@ sense = "context"
         );
         assert!(message.contains("profile \"default\""), "{message}");
         assert!(message.contains("\"nope\""), "{message}");
+    }
+
+    /// `[sets.definitions]` positions and switches the built-in set (#127).
+    #[test]
+    fn a_builtin_set_table_carries_priority_and_autoload_only() {
+        let sets = parsed("[sets.definitions]\npriority = 80\nautoload = true\n");
+        assert_eq!(sets.len(), 1);
+        assert!(sets[0].builtin);
+        assert_eq!((sets[0].priority, sets[0].autoload), (80, true));
+        assert!(sets[0].filters.is_empty());
+        assert!(
+            rejected("[sets.definitions]\n[[sets.definitions.filters]]\npattern = 'x'\n")
+                .contains("built-in")
+        );
+        assert!(
+            rejected("[sets.definitions]\n[sets.definitions.profiles]\ndefault = []\n")
+                .contains("built-in")
+        );
+        // An empty table is fine: it names the set and changes nothing.
+        assert!(parsed("[sets.definitions]\n")[0].builtin);
     }
 
     #[test]

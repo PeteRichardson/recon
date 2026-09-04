@@ -200,7 +200,8 @@ impl App<'_> {
     /// contain one. The pane is a field now, so there is no absent case left
     /// to describe (#73).
     pub(crate) fn filter_pane_height(&self) -> u16 {
-        self.filters_pane.preferred_height(self.filters.row_count())
+        self.filters_pane
+            .preferred_height(crate::widgets::filterlist::rows(&self.filters).len())
     }
 
     /// How much of `left_height` (the left column's total rows) the filter

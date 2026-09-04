@@ -122,6 +122,9 @@ pub(crate) enum FilterCommand {
     Solo(usize),
     /// `R` anywhere in the pane: every set back to its startup state (#132).
     Reset,
+    /// `d` or `c` on a built-in filter's row (#127): recon's filters can be
+    /// switched and collapsed, not deleted or rewritten.
+    BuiltInIsReadOnly,
 }
 
 // There is deliberately no `Widget` impl covering all three panes.

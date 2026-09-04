@@ -544,11 +544,11 @@ mod tests {
         let m = set.matcher().expect("selects");
 
         assert_eq!(
-            record(&[0b010, 0b001], false).owner(&m),
+            record(&[m.bits("beta"), m.bits("alpha")], false).owner(&m),
             Some(Owner::Filter(0))
         );
         assert_eq!(
-            record(&[0b010, 0b100], false).owner(&m),
+            record(&[m.bits("beta"), m.bits("gamma")], false).owner(&m),
             Some(Owner::Search)
         );
         assert_eq!(record(&[0], true).owner(&m), None);
