@@ -12,7 +12,7 @@
 use super::FilterCommand;
 use crate::filter::{ActiveFilters, DIM_STYLE, SEARCH_STYLE, Sense};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use ratatui::prelude::{Buffer, Color, Modifier, Rect, Style, Widget};
+use ratatui::prelude::{Buffer, Color, Modifier, Rect, Style};
 use ratatui::widgets::{List, ListItem, ListState, StatefulWidget};
 use unicode_width::UnicodeWidthStr;
 
@@ -50,6 +50,12 @@ const INDENT: &str = "  ";
 /// One row of the pane.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Row {
+    /// The `press f i to add` hint, shown while the user has typed no filter
+    /// and no search. A row rather than a substitute for the whole list
+    /// (#127): the pane is never empty now that a built-in set is always
+    /// present, and the hint has to sit above that set's header. Inert to
+    /// every key.
+    Hint,
     /// The live search, marked `/` rather than numbered: it occupies no
     /// position in the known list, so `/` and `Esc` never renumber filters.
     Search,
@@ -59,6 +65,9 @@ pub(crate) enum Row {
     Header(usize),
     /// A filter, by known-list index.
     Filter(usize),
+    /// A built-in set's filter, by known-list index (#127). Toggled like
+    /// any filter; unnumbered, uncoloured, and refused by `d` and `c`.
+    BuiltIn(usize),
 }
 
 /// The pane, top to bottom: the search row if there is one; the scratch
@@ -70,22 +79,32 @@ pub(crate) enum Row {
 /// things and the pane says so.
 pub(crate) fn rows(filters: &ActiveFilters) -> Vec<Row> {
     let mut out = Vec::new();
+    if filters.row_count() == 0 && filters.soloed().is_none() {
+        out.push(Row::Hint);
+    }
     if filters.search().is_some() {
         out.push(Row::Search);
     }
     // While soloed the pane is the soloed set alone: the scratch rows and
     // every other header are absent until `s` restores them. That is what
     // "isolated" means (#132).
+    let filter_row = |index: usize| {
+        if filters.is_user_authored(index) {
+            Row::Filter(index)
+        } else {
+            Row::BuiltIn(index)
+        }
+    };
     if let Some(set) = filters.soloed() {
         out.push(Row::Header(set));
-        out.extend(filters.filters_in(set).map(|(index, _)| Row::Filter(index)));
+        out.extend(filters.filters_in(set).map(|(index, _)| filter_row(index)));
         return out;
     }
     out.extend(filters.filters_in(0).map(|(index, _)| Row::Filter(index)));
     for (set, meta) in filters.sets().iter().enumerate().skip(1) {
         out.push(Row::Header(set));
         if meta.enabled {
-            out.extend(filters.filters_in(set).map(|(index, _)| Row::Filter(index)));
+            out.extend(filters.filters_in(set).map(|(index, _)| filter_row(index)));
         }
     }
     out
@@ -173,7 +192,9 @@ impl FilterList {
             // filter off. `App` swallows exactly one `Enter` immediately after
             // a commit; see `swallow_next_enter` in `lib.rs`. The guard lives
             // there rather than here because only `App` knows a prompt closed.
-            (KeyCode::Enter, Row::Filter(index)) => Some(FilterCommand::Toggle(index)),
+            (KeyCode::Enter, Row::Filter(index) | Row::BuiltIn(index)) => {
+                Some(FilterCommand::Toggle(index))
+            }
             (KeyCode::Enter, Row::Search) => Some(FilterCommand::ToggleSearch),
             (KeyCode::Enter, Row::Header(set)) => Some(FilterCommand::ToggleSet(set)),
             (KeyCode::Char('d'), Row::Filter(index)) => Some(FilterCommand::Delete(index)),
@@ -184,7 +205,12 @@ impl FilterList {
             // `m` as in *metadata*: the filter keeps showing its lines but
             // stops choosing files in the navigator (#119). The search has no
             // context form.
-            (KeyCode::Char('m'), Row::Filter(index)) => Some(FilterCommand::ToggleContext(index)),
+            (KeyCode::Char('m'), Row::Filter(index) | Row::BuiltIn(index)) => {
+                Some(FilterCommand::ToggleContext(index))
+            }
+            // A built-in filter is recon's: switch it, but do not delete or
+            // rewrite it (#127).
+            (KeyCode::Char('d' | 'c'), Row::BuiltIn(_)) => Some(FilterCommand::BuiltInIsReadOnly),
             // A set is defined by the file, and the pane says so rather than
             // doing nothing (#120's "no silent keys").
             (KeyCode::Char('d' | 'c' | 'm'), Row::Header(_)) => Some(FilterCommand::SetIsReadOnly),
@@ -229,6 +255,7 @@ impl FilterList {
     pub(crate) fn preferred_width(&self, filters: &ActiveFilters) -> u16 {
         let longest = Self::texts(filters)
             .iter()
+            .filter(|(row, _)| *row != Row::Hint)
             .map(|(_, text)| UnicodeWidthStr::width(text.as_str()))
             .max()
             .unwrap_or(0);
@@ -246,10 +273,16 @@ impl FilterList {
         rows(filters)
             .into_iter()
             .map(|row| {
-                if matches!(row, Row::Filter(_)) {
-                    number += 1;
-                }
-                (row, Self::row_text(filters, row, number))
+                // Built-in filters (#127) take no number: numbering, like the
+                // palette, runs over what the user wrote.
+                let label = match row {
+                    Row::Filter(_) => {
+                        number += 1;
+                        number.to_string()
+                    }
+                    _ => " ".to_string(),
+                };
+                (row, Self::row_text(filters, row, &label))
             })
             .collect()
     }
@@ -260,8 +293,10 @@ impl FilterList {
     /// The sense is spelled out because excluding filters carry no colour —
     /// nothing else on the row would distinguish them. A header carries `*`
     /// when the set has profiles, so the picker key (#130) is discoverable.
-    fn row_text(filters: &ActiveFilters, row: Row, number: usize) -> String {
+    fn row_text(filters: &ActiveFilters, row: Row, number: &str) -> String {
         match row {
+            // The longest form; `render` swaps in the one that fits.
+            Row::Hint => EMPTY_HINTS[0].to_string(),
             Row::Search => {
                 let search = filters
                     .search()
@@ -282,7 +317,7 @@ impl FilterList {
                 };
                 format!("[{}] {}{star}{solo}", mark(meta.enabled), meta.name)
             }
-            Row::Filter(index) => {
+            Row::Filter(index) | Row::BuiltIn(index) => {
                 let filter = &filters.filters()[index];
                 let indent = if filter.set == 0 { "" } else { INDENT };
                 format!(
@@ -306,13 +341,14 @@ impl FilterList {
     /// the `[ ]` marker still carries the signal if colour fails.
     fn row_style(filters: &ActiveFilters, row: Row) -> Style {
         match row {
+            Row::Hint => DIM_STYLE,
             Row::Search => match filters.search() {
                 Some(search) if search.enabled => SEARCH_STYLE,
                 _ => DIM_STYLE,
             },
             Row::Header(set) if filters.sets()[set].enabled => Style::default(),
             Row::Header(_) => DIM_STYLE,
-            Row::Filter(index) => {
+            Row::Filter(index) | Row::BuiltIn(index) => {
                 let filter = &filters.filters()[index];
                 if !filter.enabled {
                     return DIM_STYLE;
@@ -326,30 +362,27 @@ impl FilterList {
     }
 
     pub(crate) fn render(&mut self, filters: &ActiveFilters, area: Rect, buf: &mut Buffer) {
-        let texts = Self::texts(filters);
-        // An empty set draws the hint instead of no rows at all. `DIM_STYLE`
-        // is the same grey the file view and the disabled-filter rows use, so
-        // the hint reads as chrome rather than as a filter someone defined.
-        //
-        // Omitted rather than clipped when the column is too narrow to hold
-        // it: `preferred_width` deliberately lets the navigator win the width
-        // (see its doc comment), so a narrow column is an expected state, not
-        // a broken one, and half a sentence of advice is worse than none.
-        if texts.is_empty() {
-            let interior = area.width.saturating_sub(BORDERS) as usize;
-            let rows: Vec<ListItem> = EMPTY_HINTS
-                .iter()
-                .find(|hint| hint.chars().count() <= interior)
-                .map(|hint| vec![ListItem::new(*hint).style(DIM_STYLE)])
-                .unwrap_or_default();
-            let hint = List::new(rows).block(crate::widgets::pane_block("Filters", self.active));
-            Widget::render(&hint, area, buf);
-            return;
-        }
-
-        let items: Vec<ListItem> = texts
+        // The hint takes the longest of its forms that fits the column, and
+        // is blanked rather than clipped when none does: `preferred_width`
+        // deliberately lets the navigator win the width (see its doc
+        // comment), so a narrow column is an expected state, not a broken
+        // one, and half a sentence of advice is worse than none. `DIM_STYLE`
+        // is the same grey the disabled rows use, so it reads as chrome.
+        let interior = area.width.saturating_sub(BORDERS) as usize;
+        let hint = EMPTY_HINTS
+            .iter()
+            .find(|hint| hint.chars().count() <= interior)
+            .map_or("", |hint| *hint);
+        let items: Vec<ListItem> = Self::texts(filters)
             .into_iter()
-            .map(|(row, text)| ListItem::new(text).style(Self::row_style(filters, row)))
+            .map(|(row, text)| {
+                let text = if row == Row::Hint {
+                    hint.to_string()
+                } else {
+                    text
+                };
+                ListItem::new(text).style(Self::row_style(filters, row))
+            })
             .collect();
 
         let mut highlight = Style::new().add_modifier(Modifier::REVERSED);
@@ -426,8 +459,9 @@ mod tests {
         let mut list = FilterList::default();
         let rows = rendered(&mut list, &filters, 30);
         assert!(rows[1].contains("1[x] inc typed"), "{rows:?}");
-        assert!(rows[2].contains("[x] w"), "{rows:?}");
-        assert!(rows[3].contains("  2[ ] inc assoc"), "{rows:?}");
+        assert!(rows[2].contains("[ ] definitions"), "{rows:?}");
+        assert!(rows[3].contains("[x] w"), "{rows:?}");
+        assert!(rows[4].contains("  2[ ] inc assoc"), "{rows:?}");
     }
 
     #[test]
@@ -715,9 +749,12 @@ mod tests {
 
         let width = list.preferred_width(&ActiveFilters::new()) as usize;
 
-        assert!(
-            width < EMPTY_HINTS[EMPTY_HINTS.len() - 1].chars().count(),
-            "an empty pane is asking for {width} columns to fit its hint"
+        // The one row with content is the built-in set's header; the hint,
+        // though longer, adds nothing to the width.
+        assert_eq!(
+            width,
+            "[ ] definitions".len() + BORDERS as usize,
+            "the pane is asking for {width} columns, so the hint widened it"
         );
     }
 
@@ -902,6 +939,9 @@ mod tests {
                     text.starts_with(&(index + 1).to_string()),
                     "row {row}: handle_key resolved filter {index}, the label is {text:?}"
                 ),
+                FilterCommand::ToggleSet(_) => {
+                    assert!(text.starts_with('['), "row {row}: {text:?}");
+                }
                 other => panic!("row {row}: unexpected command {other:?}"),
             }
         }
@@ -1002,14 +1042,19 @@ mod tests {
                 Row::Filter(1),
                 Row::Filter(2),
                 Row::Header(2),
+                Row::Header(3),
             ]
         );
     }
 
     #[test]
-    fn with_no_sets_rows_are_exactly_todays() {
+    fn with_no_file_sets_the_rows_are_todays_plus_the_built_in_header() {
         let filters = set_of(&["a", "b"], &[]);
-        assert_eq!(rows(&filters), vec![Row::Filter(0), Row::Filter(1)]);
+        assert_eq!(
+            rows(&filters),
+            vec![Row::Filter(0), Row::Filter(1), Row::Header(1)],
+            "the built-in set's header is the one addition"
+        );
     }
 
     #[test]
@@ -1098,6 +1143,35 @@ mod tests {
         }
     }
 
+    /// Built-in rows are unnumbered and user filters keep their numbers
+    /// whether or not the definitions set is expanded (#127).
+    #[test]
+    fn builtin_rows_take_no_number_and_user_filters_keep_theirs() {
+        let mut filters = ActiveFilters::with_sets(None, &[]);
+        filters.add("typed").expect("valid");
+        let index = filters
+            .sets()
+            .iter()
+            .position(|s| s.origin == crate::filter::Origin::BuiltIn)
+            .expect("present");
+        let mut list = FilterList::default();
+        let collapsed = rendered(&mut list, &filters, 34);
+        assert!(collapsed[1].contains("1[x] inc typed"), "{collapsed:?}");
+        assert!(collapsed[2].contains("[ ] definitions"), "{collapsed:?}");
+        filters.set_enabled_set(index, true);
+        let expanded = rendered(&mut list, &filters, 34);
+        assert!(expanded[1].contains("1[x] inc typed"), "{expanded:?}");
+        assert!(
+            expanded[3].contains("   [ ] inc functions"),
+            "no number: {expanded:?}"
+        );
+        assert!(expanded[6].contains("   [ ] inc enums"), "{expanded:?}");
+        assert!(
+            !expanded.iter().any(|r| r.contains("2[")),
+            "nothing numbered 2: {expanded:?}"
+        );
+    }
+
     #[test]
     fn a_on_a_header_opens_the_picker_and_on_a_filter_does_nothing() {
         let filters = two_sets(true, false);
@@ -1125,7 +1199,7 @@ mod tests {
             vec![Row::Search, Row::Header(2), Row::Filter(3)]
         );
         filters.solo(2);
-        assert_eq!(rows(&filters).len(), 7, "un-solo brings every row back");
+        assert_eq!(rows(&filters).len(), 8, "un-solo brings every row back");
     }
 
     #[test]
