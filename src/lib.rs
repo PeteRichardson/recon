@@ -331,6 +331,19 @@ struct Crossing {
     name: String,
 }
 
+impl Crossing {
+    /// The direction word shared by the status report (`cross_file`) and the
+    /// notice painted over the view (`render_crossing`), so the two only say
+    /// "previous file" and "next file" in one place.
+    fn label(&self) -> &'static str {
+        if self.backwards {
+            "previous file"
+        } else {
+            "next file"
+        }
+    }
+}
+
 /// A one-off message shown on the status row.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct StatusMessage {
@@ -734,6 +747,16 @@ impl App<'_> {
     /// keypress is dispatched, too late for a cross-file step made now. So
     /// the scan is refreshed here, and the answers come straight back from
     /// the scan cache for every file that has not changed on disk.
+    ///
+    /// This call only gets past `refresh_scan`'s "state unchanged" guard
+    /// because of one invariant: `refresh_scan` records `None` as the last
+    /// scan state whenever `self.filters.matcher()` is `None`, which is
+    /// exactly what the peek forces by disabling every filter. Calling
+    /// `toggle_peek` just above turns `matcher()` from `None` back into
+    /// `Some(_)`, so the state computed here differs from the one recorded
+    /// while peeked and the guard lets the scan through. Without that
+    /// difference `refresh_scan(false)` would be a no-op and the navigator's
+    /// answers would still read `Match::Unknown` for this step.
     fn restore_peek_before_moving(&mut self) {
         if self.peek.is_none() {
             return;
@@ -827,7 +850,10 @@ impl App<'_> {
         // The status message lasts until the next *keypress*, and deliberately
         // not until the next event: mouse capture is on, so a mouse moving
         // across the terminal would wipe "zed: No such file or directory" off
-        // the row before it could be read.
+        // the row before it could be read. `crossing` follows the same rule
+        // for the same reason: its notice and the accent on the title are
+        // read at a glance, and a mouse move must not wipe either before that
+        // glance happens.
         if matches!(event, event::Event::Key(_)) {
             self.status_message = None;
             self.crossing = None;
@@ -1313,7 +1339,14 @@ impl App<'_> {
             return;
         }
         if !self.cross_file(backwards) {
-            self.step_to_interesting(backwards);
+            // `step_to_interesting` wraps in silence when there is nothing to
+            // wrap to — right for `j`/`k`-style motions, wrong for a key whose
+            // whole job is finding a hit. Report the dead end instead.
+            if self.next_interesting(backwards).is_none() {
+                self.report("no interesting line", false);
+            } else {
+                self.step_to_interesting(backwards);
+            }
         }
     }
 
@@ -1340,13 +1373,9 @@ impl App<'_> {
             self.land_on(target);
         }
         let name = self.nav.selected_name().unwrap_or_default();
-        let direction = if backwards {
-            "previous file"
-        } else {
-            "next file"
-        };
-        self.report(&format!("{direction} · {name}"), false);
-        self.crossing = Some(Crossing { backwards, name });
+        let crossing = Crossing { backwards, name };
+        self.report(&format!("{} · {}", crossing.label(), crossing.name), false);
+        self.crossing = Some(crossing);
         true
     }
 
@@ -2184,11 +2213,7 @@ impl App<'_> {
         let text = format!(
             "{} {} · {}",
             if crossing.backwards { "▲" } else { "▼" },
-            if crossing.backwards {
-                "previous file"
-            } else {
-                "next file"
-            },
+            crossing.label(),
             crossing.name
         );
         let width = u16::try_from(UnicodeWidthStr::width(text.as_str()) + 4)
@@ -7559,6 +7584,30 @@ mod tests {
         assert!(app.crossing.is_none());
     }
 
+    /// With no interesting line anywhere in the file — and no other file to
+    /// cross to — `step_to_interesting`'s wrap would be a silent no-op. Report
+    /// the dead end instead of leaving the cursor sitting there unexplained.
+    #[test]
+    fn n_with_nothing_to_step_through_says_so() {
+        let mut app = app_over_file("n_dead_end", "plain\nplain\n");
+        focus_file_view(&mut app);
+        app.filters.set_search("hit").expect("valid pattern");
+        app.refresh_view();
+        let before = cursor_source(&app);
+
+        key(&mut app, KeyCode::Char('n'));
+
+        assert_eq!(
+            cursor_source(&app),
+            before,
+            "cursor moved with nothing to step through"
+        );
+        assert_eq!(
+            app.status_message.as_ref().map(|m| m.text.as_str()),
+            Some("no interesting line")
+        );
+    }
+
     /// A filename search in the navigator does not redirect the content loop.
     #[test]
     fn n_crossing_ignores_the_navigator_filename_search() {
@@ -7569,6 +7618,22 @@ mod tests {
         key(&mut app, KeyCode::Char('n'));
 
         key(&mut app, KeyCode::Char('n'));
+
+        assert_eq!(
+            shown(&app),
+            "c.log",
+            "followed the filename search to b.log"
+        );
+    }
+
+    /// `.`/`,` ignore the navigator's filename search too, same as `n`/`N`.
+    #[test]
+    fn dot_ignores_the_navigator_filename_search() {
+        let (mut app, _tx) = app_over_matching_logs("dot_ignores_search");
+        app.nav.search("b", false).expect("valid pattern");
+        open_file(&mut app, 0);
+
+        key(&mut app, KeyCode::Char('.'));
 
         assert_eq!(
             shown(&app),
@@ -7653,6 +7718,53 @@ mod tests {
             "did not cross after restoring the peek"
         );
         assert_eq!(cursor_source(&app), 0);
+    }
+
+    /// `cross_file` promotes a truncated preview between `perform` and the
+    /// landing step; without it, a jump onto a large file whose only hit sits
+    /// past `PREVIEW_LINES` would land on the bounded preview and miss it.
+    #[test]
+    fn comma_lands_on_the_last_hit_of_a_file_that_was_only_previewed() {
+        claim_fixture_dir("comma_lands_on_truncated");
+        let dir = std::path::Path::new("target/test-appdirs").join("comma_lands_on_truncated");
+        fs::remove_dir_all(&dir).ok();
+        fs::create_dir_all(&dir).expect("create fixture dir");
+        fs::write(dir.join("a.log"), "hit a\n").expect("write fixture");
+        // Past PREVIEW_LINES, so the first preview of this file is truncated;
+        // the hit sits beyond the preview boundary, reachable only once
+        // `cross_file` promotes it.
+        let hit_at = crate::widgets::fileview::PREVIEW_LINES + 50;
+        let body: String = (0..crate::widgets::fileview::PREVIEW_LINES + 100)
+            .map(|i| {
+                if i == hit_at {
+                    "HIT\n".to_string()
+                } else {
+                    format!("line {i}\n")
+                }
+            })
+            .collect();
+        fs::write(dir.join("big.log"), &body).expect("write fixture");
+
+        let mut app = App::new(&Config {
+            path: dir.join("placeholder").display().to_string(),
+            ..Config::default()
+        });
+        let (_scanner, tx) = record_scans(&mut app);
+        app.add_filter("HIT|hit a").expect("valid pattern");
+        app.refresh_scan(false);
+        mark(&mut app, &tx, 0, true);
+        mark(&mut app, &tx, 1, true);
+        open_file(&mut app, 0);
+        focus_file_view(&mut app);
+
+        key(&mut app, KeyCode::Char(','));
+
+        assert_eq!(shown(&app), "big.log");
+        assert_eq!(
+            cursor_source(&app),
+            hit_at,
+            "did not reach the hit past the truncated preview"
+        );
     }
 
     /// In-file motions leave the peek alone: that is what peeking is for.
