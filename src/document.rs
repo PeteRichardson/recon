@@ -134,7 +134,12 @@ impl Document {
                 // unmatched lines only.
                 (_, Verdict::Excluded) => false,
                 (Mode::Dimmed, _) => true,
-                (Mode::FilteredOnly, Verdict::Included(_) | Verdict::Searched) => true,
+                // A context line stays in hide mode: that is what the sense
+                // is for. Only `n` treats it differently from an include.
+                (
+                    Mode::FilteredOnly,
+                    Verdict::Included(_) | Verdict::Context(_) | Verdict::Searched,
+                ) => true,
                 // Issue #36: with nothing including, there is nothing to hide
                 // *against*, so hiding shows the file rather than blanking the
                 // pane. Dimming has always had this guard in `style_for`;

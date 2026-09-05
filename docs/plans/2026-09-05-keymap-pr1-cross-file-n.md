@@ -16,6 +16,7 @@
 - Every new key also needs a row in the README's *Keybindings* section (hand-maintained; the test does not check it).
 - `cargo fmt --all` and `cargo clippy --all-targets -- -D warnings` must pass; CI runs both.
 - Cross-file stepping uses `Match::Yes` only. It never consults the navigator's filename search. `Match::Unknown` and `Match::No` are skipped.
+- An interesting line is `Verdict::Included | Verdict::Searched`. A line only a context filter matched has its own verdict, `Verdict::Context`, and is not a stop for `n` (added after the branch's review, matching the navigator's scan mask).
 - Nothing goes silent: every path that does not move reports on the status row.
 - Fixture directory names passed to `app_over`/`claim_fixture_dir` must be unique across the test module and must not contain `filters` (see memory note on status-line path fragility) or differ only by case from another (APFS is case-insensitive).
 - Run tests with `cargo test --lib <name>`; the whole suite with `cargo test`.

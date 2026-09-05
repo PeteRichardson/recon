@@ -7626,6 +7626,45 @@ mod tests {
         );
     }
 
+    /// A context filter's lines are shown *around* the hits, not as hits:
+    /// `n` skips them, hide mode keeps them, and they keep their colour.
+    /// The navigator already treats context this way when it marks files
+    /// (`Sense::Context` is left out of the scan's selecting mask), so the
+    /// view's `n` now agrees with it.
+    #[test]
+    fn n_skips_lines_that_only_a_context_filter_matches() {
+        let mut app = app_over_file(
+            "ctx_not_interesting",
+            "ctx before\nERROR one\nctx after\nplain\nERROR two\n",
+        );
+        key(&mut app, KeyCode::Char('t'));
+        app.filters.add("ctx").expect("valid pattern");
+        app.filters.toggle_context(0);
+        app.filters.add("ERROR").expect("valid pattern");
+        app.refresh_view();
+        assert_eq!(
+            app.filters.filters()[0].sense,
+            filter::Sense::Context,
+            "sanity"
+        );
+
+        key(&mut app, KeyCode::Char('n'));
+        assert_eq!(cursor_source(&app), 1, "stopped on a context line");
+        key(&mut app, KeyCode::Char('n'));
+        assert_eq!(cursor_source(&app), 4, "stopped on a context line");
+
+        // Hide mode still shows the context lines, in the filter's colour.
+        key(&mut app, KeyCode::Char('H'));
+        let visible: Vec<usize> = (0..4)
+            .filter_map(|row| app.document.source_at(row))
+            .collect();
+        assert_eq!(visible, [0, 1, 2, 4], "hide mode dropped a context line");
+        assert!(
+            app.filters.style_for(app.document.verdicts()[0]).is_some(),
+            "a context line lost its colour"
+        );
+    }
+
     /// `.`/`,` ignore the navigator's filename search too, same as `n`/`N`.
     #[test]
     fn dot_ignores_the_navigator_filename_search() {

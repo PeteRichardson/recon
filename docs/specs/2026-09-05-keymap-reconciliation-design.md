@@ -86,6 +86,12 @@ next interesting file, loads it, and puts the cursor on that file's first intere
 `N` mirrors: previous interesting line, else the previous interesting file's last interesting
 line.
 
+- **Interesting line** means one selected by an enabled include filter or the live search.
+  A line that only a context filter matched is not interesting: it is shown and coloured
+  so it can be read around a hit, but `n`/`N` step over it. This is the rule the
+  navigator's scan already uses, which leaves context filters out of its selecting mask,
+  so it is the one definition of interesting in both panes. In the verdicts it is
+  `Included | Searched`, never `Context`.
 - **Interesting file** means `Match::Yes` in the navigator's #119 marking: at least one line
   selected by an enabled include filter or the live search and not excluded. The navigator's
   filename search is *not* consulted here, even when one is active. The loop is about

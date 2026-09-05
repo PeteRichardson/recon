@@ -94,6 +94,15 @@ pub enum Sense {
 pub enum Verdict {
     /// Matched an including filter; carries its index, for colouring.
     Included(usize),
+    /// Matched a context filter and no including one; carries its index,
+    /// for colouring.
+    ///
+    /// Shown and coloured exactly like `Included`, but not *interesting*: a
+    /// context line is there to be read around a hit, not to be a hit. `n`
+    /// steps over it, and the navigator's scan already leaves context
+    /// filters out of the mask that marks a file as matching — this variant
+    /// is what lets the view agree with it.
+    Context(usize),
     /// Matched the live search rather than a numbered filter.
     ///
     /// Carries no index: the search lives in its own slot, precisely so that
@@ -1139,15 +1148,21 @@ impl ActiveFilters {
                 .enumerate()
                 .filter(move |&(index, filter)| self.effective(index) && filter.sense == sense)
         };
+        // Include outranks context in both modes, whatever their order in
+        // the set: a line an include filter selected is a hit, and must say
+        // so — `n` stops on `Included`, not on `Context` — and its colour is
+        // then the same one the navigator gives the file, whose owner is the
+        // lowest *selecting* filter and never a context one.
         match self.combine {
-            Combine::Or => self
-                .filters
-                .iter()
-                .enumerate()
-                .find(|&(index, filter)| {
-                    self.effective(index) && filter.sense != Sense::Exclude && hit(index)
+            Combine::Or => live(Sense::Include)
+                .find(|&(index, _)| hit(index))
+                .map(|(index, _)| Verdict::Included(index))
+                .or_else(|| {
+                    live(Sense::Context)
+                        .find(|&(index, _)| hit(index))
+                        .map(|(index, _)| Verdict::Context(index))
                 })
-                .map_or(Verdict::Unmatched, |(index, _)| Verdict::Included(index)),
+                .unwrap_or(Verdict::Unmatched),
             Combine::And => {
                 let mut includes = live(Sense::Include).map(|(index, _)| index).peekable();
                 let first = includes.peek().copied();
@@ -1158,7 +1173,7 @@ impl ActiveFilters {
                 }
                 live(Sense::Context)
                     .find(|&(index, _)| hit(index))
-                    .map_or(Verdict::Unmatched, |(index, _)| Verdict::Included(index))
+                    .map_or(Verdict::Unmatched, |(index, _)| Verdict::Context(index))
             }
         }
     }
@@ -1543,7 +1558,9 @@ impl ActiveFilters {
     #[must_use]
     pub fn style_for(&self, verdict: Verdict) -> Option<Style> {
         match verdict {
-            Verdict::Included(index) => self.filters.get(index).map(|f| f.style),
+            Verdict::Included(index) | Verdict::Context(index) => {
+                self.filters.get(index).map(|f| f.style)
+            }
             Verdict::Searched => Some(SEARCH_STYLE),
             Verdict::Unmatched if self.any_numbered_including() => Some(DIM_STYLE),
             Verdict::Unmatched | Verdict::Excluded => None,
@@ -2196,7 +2213,8 @@ mod tests {
         // Exclude: an enum line is removed even though `foo` matched it.
         set.toggle_context(1);
         assert_eq!(set.filters()[1].sense, Sense::Context);
-        assert_eq!(set.verdict("plain", enums), Verdict::Included(1));
+        assert_eq!(set.verdict("plain", enums), Verdict::Context(1));
+        assert_eq!(set.verdict_by_scanning("plain", enums), Verdict::Context(1));
         set.toggle_context(1);
         set.remove(1);
         set.add_excluding("never").expect("valid");
@@ -2352,7 +2370,7 @@ mod tests {
         assert_eq!(set.verdict("foo bar", KindSet::EMPTY), Verdict::Included(0));
         assert_eq!(
             set.verdict("ctx alone", KindSet::EMPTY),
-            Verdict::Included(2)
+            Verdict::Context(2)
         );
         assert_eq!(set.verdict("foo alone", KindSet::EMPTY), Verdict::Unmatched);
     }
@@ -2500,8 +2518,9 @@ mod tests {
         );
         assert_eq!(
             set.verdict("beta delta", KindSet::EMPTY),
-            Verdict::Included(1),
-            "the line is still beta's"
+            Verdict::Included(2),
+            "the include filter outranks the context one, so the view's colour \
+             is the navigator's"
         );
         assert_eq!(
             matcher.owner(matcher.bits("alpha delta")),
@@ -2745,14 +2764,20 @@ mod tests {
 
     // ---- the third sense ------------------------------------------------
 
-    /// A context filter shows its lines exactly as an include filter does.
+    /// A context filter shows its lines exactly as an include filter does —
+    /// under its own verdict, so `n` can tell the two apart.
     #[test]
     fn a_context_filter_includes_its_lines() {
         let mut set = set_with(&["foo"]);
         assert!(set.toggle_context(0));
 
         assert_eq!(set.filters()[0].sense, Sense::Context);
-        assert_eq!(set.verdict("foo", KindSet::EMPTY), Verdict::Included(0));
+        assert_eq!(set.verdict("foo", KindSet::EMPTY), Verdict::Context(0));
+        assert_eq!(
+            set.style_for(Verdict::Context(0)),
+            set.style_for(Verdict::Included(0)),
+            "context keeps the filter's colour"
+        );
         assert_eq!(
             set.style_for(Verdict::Unmatched),
             Some(DIM_STYLE),
