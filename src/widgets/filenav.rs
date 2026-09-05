@@ -375,6 +375,25 @@ impl FileNav<'_> {
         self.step_to(opposite, |entry| matches!(entry.matched, Match::Yes(_)))
     }
 
+    /// The next (or previous) entry the filters selected, wrapping, whatever
+    /// the filename search says. This is the step the file view's `n` takes
+    /// when it has run out of interesting lines in the current file, and the
+    /// step `.`/`,` take unconditionally: the loop those keys drive is about
+    /// content, so a filename hit with no interesting lines is not a stop.
+    #[allow(dead_code)]
+    // Called from App in the next task.
+    pub(crate) fn step_to_match(&mut self, reverse: bool) -> Option<Action> {
+        self.step_to(reverse, |entry| matches!(entry.matched, Match::Yes(_)))
+    }
+
+    /// The selected entry's file name, for reporting.
+    #[allow(dead_code)]
+    // Called from App in the next task.
+    pub(crate) fn selected_name(&self) -> Option<String> {
+        let path = self.selected_path()?;
+        Some(path.file_name()?.to_string_lossy().into_owned())
+    }
+
     fn step_search(&mut self, reverse: bool) -> Option<Action> {
         let matcher = self.matcher.clone()?;
         self.step_to(reverse, |entry| matcher.is_match(&entry.matchable()))
@@ -1777,6 +1796,52 @@ mod tests {
 
         nav.handle_events(Event::Key(KeyEvent::from(KeyCode::Char('N'))));
         assert_eq!(nav.selected_entry(), Some(c), "N reverses");
+    }
+
+    /// The cross-file step the file view's `n` uses: filter matches only,
+    /// even when a filename search is active and would pick differently.
+    #[test]
+    fn step_to_match_ignores_the_filename_search() {
+        let mut nav = nav_over("step_match", &["a.log", "b.log", "c.log"]);
+        let (a, b, c) = (nav.files()[0].0, nav.files()[1].0, nav.files()[2].0);
+        nav.set_answer(a, Match::Yes(Style::default()));
+        nav.set_answer(b, Match::Yes(Style::default()));
+        nav.set_answer(c, Match::No);
+        nav.restyle();
+        nav.search("c", false).expect("valid pattern");
+        nav.select_entry(a);
+
+        let action = nav.step_to_match(false);
+
+        assert_eq!(
+            nav.selected_entry(),
+            Some(b),
+            "went to the filter match, not the search hit"
+        );
+        assert!(matches!(action, Some(Action::Preview(_))));
+        assert_eq!(nav.selected_name().as_deref(), Some("b.log"));
+
+        nav.step_to_match(false);
+        assert_eq!(
+            nav.selected_entry(),
+            Some(a),
+            "wraps past the unmatched c.log"
+        );
+
+        nav.step_to_match(true);
+        assert_eq!(nav.selected_entry(), Some(b), "reverse");
+    }
+
+    #[test]
+    fn step_to_match_is_none_when_nothing_matches() {
+        let mut nav = nav_over("step_match_none", &["a.log", "b.log"]);
+        let a = nav.files()[0].0;
+        nav.set_answer(a, Match::No);
+        nav.restyle();
+        nav.select_entry(a);
+
+        assert!(nav.step_to_match(false).is_none());
+        assert_eq!(nav.selected_entry(), Some(a), "selection untouched");
     }
 
     /// A filename search, once started, owns `n`/`N` — exactly as before.
