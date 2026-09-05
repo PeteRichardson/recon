@@ -307,6 +307,7 @@ Global (`src/lib.rs`), handled before the focused pane sees the key:
 | `f` | Focus the filter pane — filters are then added with `i` and `x` from inside it |
 | `space` | **Peek at the plain file** — drop every filter and flip the hide mode, so the code reads normally. Press again to put the filtered view back exactly as it was. See [Peeking at the plain file](#peeking-at-the-plain-file) |
 | `.` / `,` | Skip to the next / previous file the filters match, landing on its first / last interesting line. Works from every pane; focus stays put. The keycaps say `>` and `<` |
+| `[` / `]` | Page the file view up / down, whichever pane has focus — so a peeked file can be skimmed from the navigator |
 | `Ctrl-H` / `H` | Toggle between dimming unmatched lines and hiding them |
 | `!` | Disable every filter, remembering which were on; restores exactly that (or enables all, if none were on to remember) |
 | `&` | Combine the enabled include filters with **AND** instead of OR — a line must match every one of them. Press again for OR. See [Combining filters with AND](#combining-filters-with-and) |
@@ -671,8 +672,8 @@ File view pane (`src/widgets/fileview.rs`):
 | `n` / `N` | Move to the next / previous *interesting* line. Past the last one in this file, move to the first interesting line of the next file the filters match (the last, for `N`), skipping files that don't. Also works from the filter pane |
 | `Ctrl-e` / `Ctrl-y` | Scroll one line down / up |
 | `Ctrl-d` / `Ctrl-u` | Scroll half a page down / up |
-| `[` / `Ctrl-b` / `PageUp` | Scroll a page up |
-| `]` / `Ctrl-f` / `PageDown` | Scroll a page down |
+| `Ctrl-b` / `PageUp` | Scroll a page up |
+| `Ctrl-f` / `PageDown` | Scroll a page down |
 
 `b` and `e` are global window commands rather than vim word motions: the
 trade was deliberate, since returning to the navigator from a maximised file

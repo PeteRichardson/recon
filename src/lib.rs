@@ -1036,6 +1036,16 @@ impl App<'_> {
                     self.refresh_view();
                     return;
                 }
+                // Global: the file view is what gets read during the review
+                // loop, and paging it should not require focusing it. The
+                // view's own `[`/`]` arms stay; this reaches them from the
+                // other two panes (#120 §3).
+                KeyCode::Char('[' | ']')
+                    if key.modifiers.is_empty() && self.focus != Focus::View =>
+                {
+                    self.forward_to_view(event);
+                    return;
+                }
                 // Global, unlike `n`: skipping a file is the outer loop of
                 // the review workflow, and it should not matter which pane
                 // the inner loop left focus in. The keycaps carry the
@@ -1190,8 +1200,8 @@ impl App<'_> {
         let action = match self.focus {
             Focus::Nav => self.nav.handle_events(event),
             Focus::View => {
-                self.view.handle_events(event.into());
-                None
+                self.forward_to_view(event);
+                return;
             }
             // Unreachable: filter-pane keys returned above, through
             // `handle_filter_key`. Applying them means mutating the
@@ -1265,6 +1275,20 @@ impl App<'_> {
             self.sync_document();
             self.refresh_view();
         }
+    }
+
+    /// Hand one event to the file view, whichever pane has focus, with the
+    /// same after-care the focused dispatch gives it: a truncated preview
+    /// that promoted itself on this keypress is resynced without re-reading
+    /// the file, and the window is checked after a page at its edge.
+    fn forward_to_view(&mut self, event: event::Event) {
+        let was_truncated = self.file_view_truncated();
+        self.view.handle_events(event.into());
+        if was_truncated && !self.file_view_truncated() {
+            self.sync_document();
+            self.refresh_view();
+        }
+        self.ensure_window();
     }
 
     /// `n`/`N` in the file view: the next interesting line in this file, else
@@ -7756,6 +7780,33 @@ mod tests {
             .find(|cell| cell.symbol() == "c")
             .expect("title");
         assert_ne!(title_cell.fg, Color::Yellow, "accent survived a keypress");
+    }
+
+    /// `[`/`]` are global so a peeked file can be paged without leaving the
+    /// pane the loop is being driven from (#120 §3).
+    #[test]
+    fn brackets_page_the_file_view_from_the_navigator_and_filter_pane() {
+        let body = numbered_lines(400);
+        let mut app = app_over_file("brackets_global", &body);
+        let mut buf = Buffer::empty(AREA);
+        (&mut app).render(AREA, &mut buf);
+        key(&mut app, KeyCode::Char('e'));
+        assert_eq!(cursor_source(&app), 0, "sanity");
+
+        key(&mut app, KeyCode::Char(']'));
+        (&mut app).render(AREA, &mut buf);
+        let after_page = cursor_source(&app);
+        assert!(after_page > 0, "] from the navigator did not page the view");
+        assert_eq!(app.focus, Focus::Nav, "focus moved");
+
+        key(&mut app, KeyCode::Char('f'));
+        key(&mut app, KeyCode::Char('['));
+        (&mut app).render(AREA, &mut buf);
+        assert!(
+            cursor_source(&app) < after_page,
+            "[ from the filter pane did not page up"
+        );
+        assert_eq!(app.focus, Focus::Filters);
     }
 
     #[test]
