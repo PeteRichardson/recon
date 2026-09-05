@@ -808,11 +808,17 @@ and leaves the prompt open over the intact filter, exactly as `i` does.
 
 Every numbered filter has a sense, shown in its row as `inc`, `ctx` or `exc`:
 
-| Sense | In the view | Marks the file in the navigator? |
-| --- | --- | --- |
-| `inc` — include | shows the line, in the filter's colour | **yes** |
-| `ctx` — context | shows the line, in the filter's colour | no |
-| `exc` — exclude | removes the line | no |
+| Sense | In the view | A stop for `n`? | Marks the file in the navigator? |
+| --- | --- | --- | --- |
+| `inc` — include | shows the line, in the filter's colour | **yes** | **yes** |
+| `ctx` — context | shows the line, in the filter's colour | no | no |
+| `exc` — exclude | removes the line | no | no |
+
+A context line is there to be read *around* a hit, not to be one: `n`/`N` step over it,
+`j`/`k` still walk it, and hide mode keeps it. That is the same rule the navigator uses to
+mark files, so the two panes agree on what "interesting" means. Where an include filter and
+a context filter both match a line, the include filter's colour wins, which is again the
+navigator's colour for the file.
 
 With at least one include filter (or a live search) enabled, the navigator marks
 each file: a name drawn in a filter's colour has at least one line that filter
