@@ -265,6 +265,8 @@ pub struct App<'a> {
     /// it, and the one thing this feature promises is that the second press
     /// puts back exactly what the first took away.
     peek: Option<PeekState>,
+    /// The cross-file step `n`, `N`, `.` or `,` just made, if any (#120).
+    crossing: Option<Crossing>,
     /// Set when a prompt commits, so the `Enter` that committed it cannot also
     /// toggle the filter under the cursor (#48).
     ///
@@ -318,6 +320,15 @@ pub struct App<'a> {
 struct PeekState {
     mode: Mode,
     flags: filter::EnabledFlags,
+}
+
+/// A cross-file step that just happened, for the notice over the file view
+/// and the accent on its title. Lives exactly as long as a `StatusMessage`:
+/// until the next keypress.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Crossing {
+    backwards: bool,
+    name: String,
 }
 
 /// A one-off message shown on the status row.
@@ -443,6 +454,7 @@ impl App<'_> {
             status_message: None,
             editor_outcomes: Some(outcomes_rx),
             peek: None,
+            crossing: None,
             swallow_next_enter: false,
             help: false,
             picker: None,
@@ -802,6 +814,7 @@ impl App<'_> {
         // the row before it could be read.
         if matches!(event, event::Event::Key(_)) {
             self.status_message = None;
+            self.crossing = None;
         }
 
         // An open prompt takes precedence over every other binding.
@@ -1007,9 +1020,12 @@ impl App<'_> {
                     self.refresh_view();
                     return;
                 }
-                // Scoped to the file view rather than global: `n` in the
-                // navigator is the navigator's key, and hoisting the binding
-                // up here to reach the verdicts must not change that.
+                // Scoped away from the navigator rather than global: `n` in
+                // the navigator is the navigator's key (next filename-search
+                // hit, else next matching file) and stays that way. The
+                // filter pane forwards it to the view — the pane has no
+                // "next" of its own, and the user wants to see the effect of
+                // the filter they just touched (#120 §2).
                 //
                 // Not guarded with `.is_empty()`, unlike `/` above: crossterm
                 // attaches SHIFT to every uppercase character a real terminal
@@ -1020,14 +1036,9 @@ impl App<'_> {
                     if !key
                         .modifiers
                         .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
-                        && self.focus == Focus::View =>
+                        && self.focus != Focus::Nav =>
                 {
-                    // `n`/`N` bypass the widget's own `handle_events`, which is
-                    // where a truncated preview normally promotes itself on
-                    // first interaction — see `promote_truncated_preview`,
-                    // which `apply_search` also calls for the same reason.
-                    self.promote_truncated_preview();
-                    self.step_to_interesting(c == 'N');
+                    self.step_interesting(c == 'N');
                     return;
                 }
                 KeyCode::Char('H')
@@ -1230,6 +1241,61 @@ impl App<'_> {
             self.sync_document();
             self.refresh_view();
         }
+    }
+
+    /// `n`/`N` in the file view: the next interesting line in this file, else
+    /// the first interesting line of the next file the filters selected, else
+    /// (when this is the only such file) wrap within it as `n` always has.
+    ///
+    /// The in-file step comes first so the loop the key drives — every hit in
+    /// every file — never skips a hit. The cross-file step is what makes it a
+    /// single loop rather than one per file (#120 §1).
+    fn step_interesting(&mut self, backwards: bool) {
+        // `n`/`N` bypass the widget's own `handle_events`, which is where a
+        // truncated preview normally promotes itself on first interaction —
+        // see `promote_truncated_preview`, which `apply_search` also calls
+        // for the same reason.
+        self.promote_truncated_preview();
+        if let Some(target) = self.next_interesting_strict(backwards) {
+            self.land_on(target);
+            return;
+        }
+        if !self.cross_file(backwards) {
+            self.step_to_interesting(backwards);
+        }
+    }
+
+    /// Select, load and land in the next (previous) file the filters
+    /// selected. `false` when there is no *other* such file — the navigator
+    /// wraps, so "the only match is the one we are in" comes back as an
+    /// unchanged selection rather than `None`.
+    ///
+    /// Reports the crossing three ways, all gone by the next keypress: the
+    /// status row, the notice `render` paints over the file view, and the
+    /// accent on the view's title. Log files look alike, and a step that
+    /// silently changed which one is on screen would be worse than no step.
+    fn cross_file(&mut self, backwards: bool) -> bool {
+        let before = self.nav.selected_entry();
+        let Some(action) = self.nav.step_to_match(backwards) else {
+            return false;
+        };
+        if self.nav.selected_entry() == before {
+            return false;
+        }
+        self.perform(action);
+        self.promote_truncated_preview();
+        if let Some(target) = self.first_interesting(backwards) {
+            self.land_on(target);
+        }
+        let name = self.nav.selected_name().unwrap_or_default();
+        let direction = if backwards {
+            "previous file"
+        } else {
+            "next file"
+        };
+        self.report(&format!("{direction} · {name}"), false);
+        self.crossing = Some(Crossing { backwards, name });
+        true
     }
 
     /// Hand the selected file to an editor.
@@ -2366,6 +2432,82 @@ mod tests {
             path: dir.join("placeholder").display().to_string(),
             ..Config::default()
         })
+    }
+
+    /// `app_over`, with real contents. The app starts on a placeholder path
+    /// that does not exist, so nothing is loaded until `open_file`.
+    fn app_over_files(name: &str, files: &[(&str, &str)]) -> App<'static> {
+        claim_fixture_dir(name);
+        let dir = std::path::Path::new("target/test-appdirs").join(name);
+        fs::remove_dir_all(&dir).ok();
+        fs::create_dir_all(&dir).expect("create fixture dir");
+        for (file, body) in files {
+            fs::write(dir.join(file), body).expect("write fixture");
+        }
+        App::new(&Config {
+            path: dir.join("placeholder").display().to_string(),
+            ..Config::default()
+        })
+    }
+
+    /// Select the `row`th file in the navigator and load it into the view,
+    /// the way `Enter` in the navigator would.
+    fn open_file(app: &mut App, row: usize) {
+        let (index, path) = app.nav.files()[row].clone();
+        app.nav.select_entry(index);
+        app.perform(Action::Load(path));
+    }
+
+    /// Mark the `row`th file as matching (`yes`) or not, through the scan
+    /// result channel — the path the real scanner uses.
+    ///
+    /// `scanned_to` advances past whatever is already held for the file:
+    /// `drain_scan_results` (#119) keeps a finished record's answer unless a
+    /// later message reads further, by design (`a_result_is_kept_only_if_it_read_further`).
+    /// A fixture that re-marks the same row — this is the only one that does,
+    /// to flip a file from matching to not — has to advance too, or the
+    /// second answer is silently dropped as a stale duplicate.
+    fn mark(app: &mut App, tx: &Sender<scan::Scanned>, row: usize, yes: bool) {
+        let seen = if yes { vec![0b1] } else { vec![0] };
+        let mut result = scanned(app, row, seen, true);
+        result.progress.scanned_to = app
+            .scan_cache
+            .records
+            .get(&result.path)
+            .map_or(1, |held| held.progress.scanned_to + 1);
+        tx.send(result).expect("send");
+        app.drain_scan_results();
+    }
+
+    /// The file the view is showing, by name.
+    fn shown(app: &App) -> String {
+        app.view
+            .filename()
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default()
+    }
+
+    /// Two matching logs, one unmatched between them, scan answers in place.
+    /// Returns the app with `a.log` loaded and the view focused.
+    fn app_over_matching_logs(name: &str) -> (App<'static>, Sender<scan::Scanned>) {
+        let mut app = app_over_files(
+            name,
+            &[
+                ("a.log", "plain\nhit a1\nhit a2\n"),
+                ("b.log", "plain\nplain\n"),
+                ("c.log", "hit c1\nplain\nhit c2\n"),
+            ],
+        );
+        let (_scanner, tx) = record_scans(&mut app);
+        app.add_filter("hit").expect("valid pattern");
+        app.refresh_scan(false);
+        mark(&mut app, &tx, 0, true);
+        mark(&mut app, &tx, 1, false);
+        mark(&mut app, &tx, 2, true);
+        open_file(&mut app, 0);
+        key(&mut app, KeyCode::Char('t'));
+        (app, tx)
     }
 
     fn draw(app: &mut App) {
@@ -7246,6 +7388,128 @@ mod tests {
         key(&mut app, KeyCode::Char('n'));
 
         assert_eq!(cursor_source(&app), before, "n leaked out of the file view");
+    }
+
+    /// The loop-collapsing change (#120 §1): `n` past the last hit in a file
+    /// goes to the first hit of the next file the filters selected, skipping
+    /// files the scan said no to.
+    #[test]
+    fn n_at_the_last_hit_crosses_to_the_next_matching_file() {
+        let (mut app, _tx) = app_over_matching_logs("cross_next");
+        key(&mut app, KeyCode::Char('n'));
+        key(&mut app, KeyCode::Char('n'));
+        assert_eq!(cursor_source(&app), 2, "sanity: on the last hit of a.log");
+
+        key(&mut app, KeyCode::Char('n'));
+
+        assert_eq!(
+            shown(&app),
+            "c.log",
+            "did not cross, or stopped on the unmatched b.log"
+        );
+        assert_eq!(cursor_source(&app), 0, "did not land on the first hit");
+        assert_eq!(
+            app.nav.selected_name().as_deref(),
+            Some("c.log"),
+            "the navigator's selection did not follow"
+        );
+        assert_eq!(
+            app.status_message.as_ref().map(|m| m.text.as_str()),
+            Some("next file · c.log")
+        );
+        assert!(app.crossing.is_some());
+    }
+
+    #[test]
+    fn capital_n_at_the_first_hit_crosses_to_the_previous_files_last_hit() {
+        let (mut app, _tx) = app_over_matching_logs("cross_prev");
+        open_file(&mut app, 2);
+        assert_eq!(cursor_source(&app), 0, "sanity: on c.log's first hit");
+
+        key(&mut app, KeyCode::Char('N'));
+
+        assert_eq!(shown(&app), "a.log");
+        assert_eq!(cursor_source(&app), 2, "did not land on the last hit");
+        assert_eq!(
+            app.status_message.as_ref().map(|m| m.text.as_str()),
+            Some("previous file · a.log")
+        );
+    }
+
+    /// With no other matching file, `n` wraps within the file as it always
+    /// has, and nothing claims a crossing happened.
+    #[test]
+    fn n_wraps_within_the_file_when_no_other_file_matches() {
+        let (mut app, tx) = app_over_matching_logs("cross_alone");
+        mark(&mut app, &tx, 2, false);
+        key(&mut app, KeyCode::Char('n'));
+        key(&mut app, KeyCode::Char('n'));
+        assert_eq!(cursor_source(&app), 2);
+
+        key(&mut app, KeyCode::Char('n'));
+
+        assert_eq!(shown(&app), "a.log");
+        assert_eq!(cursor_source(&app), 1, "did not wrap to the first hit");
+        assert!(app.crossing.is_none());
+    }
+
+    /// A filename search in the navigator does not redirect the content loop.
+    #[test]
+    fn n_crossing_ignores_the_navigator_filename_search() {
+        let (mut app, _tx) = app_over_matching_logs("cross_ignores_search");
+        app.nav.search("b", false).expect("valid pattern");
+        open_file(&mut app, 0);
+        key(&mut app, KeyCode::Char('n'));
+        key(&mut app, KeyCode::Char('n'));
+
+        key(&mut app, KeyCode::Char('n'));
+
+        assert_eq!(
+            shown(&app),
+            "c.log",
+            "followed the filename search to b.log"
+        );
+    }
+
+    /// The in-file step still comes first: `n` with hits remaining in this
+    /// file must not cross.
+    #[test]
+    fn n_prefers_the_next_hit_in_this_file() {
+        let (mut app, _tx) = app_over_matching_logs("cross_prefers_local");
+
+        key(&mut app, KeyCode::Char('n'));
+
+        assert_eq!(shown(&app), "a.log");
+        assert_eq!(cursor_source(&app), 1);
+        assert!(app.crossing.is_none());
+    }
+
+    /// #120 §2 decision (b): the filter pane forwards `n` to the view.
+    #[test]
+    fn n_from_the_filter_pane_acts_on_the_file_view() {
+        let (mut app, _tx) = app_over_matching_logs("cross_via_filter_pane");
+        key(&mut app, KeyCode::Char('f'));
+
+        key(&mut app, KeyCode::Char('n'));
+
+        assert_eq!(cursor_source(&app), 1, "n was swallowed by the filter pane");
+        assert_eq!(app.focus, Focus::Filters, "focus moved");
+    }
+
+    /// The notice and the status line are cleared by the next keypress, like
+    /// every other status message.
+    #[test]
+    fn a_crossing_is_forgotten_on_the_next_key() {
+        let (mut app, _tx) = app_over_matching_logs("cross_forgotten");
+        key(&mut app, KeyCode::Char('n'));
+        key(&mut app, KeyCode::Char('n'));
+        key(&mut app, KeyCode::Char('n'));
+        assert!(app.crossing.is_some(), "sanity");
+
+        key(&mut app, KeyCode::Char('j'));
+
+        assert!(app.crossing.is_none());
+        assert!(app.status_message.is_none());
     }
 
     #[test]

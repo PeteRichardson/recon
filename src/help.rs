@@ -203,7 +203,7 @@ pub const KEYMAP: &[Section] = &[
             },
             Binding {
                 keys: &["n", "N"],
-                action: "Next / previous interesting line",
+                action: "Next / previous interesting line — crosses files",
             },
             Binding {
                 keys: &["#"],
