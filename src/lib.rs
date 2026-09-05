@@ -7121,6 +7121,54 @@ mod tests {
         assert_eq!(cursor_source(&app), 0, "did not wrap around to the hit");
     }
 
+    /// The strict step is what lets `n` know it has run out of hits in this
+    /// file: unlike `next_interesting` it refuses to wrap.
+    #[test]
+    fn next_interesting_strict_does_not_wrap() {
+        let mut app = app_over_file("strict_no_wrap", "hit\nplain\nhit\nplain\n");
+        key(&mut app, KeyCode::Char('t'));
+        app.filters.set_search("hit").expect("valid pattern");
+        app.refresh_view();
+
+        assert_eq!(
+            app.next_interesting_strict(false),
+            Some(2),
+            "forward from 0"
+        );
+        assert_eq!(app.next_interesting_strict(true), None, "nothing before 0");
+
+        app.land_on(2);
+        assert_eq!(cursor_source(&app), 2, "land_on moved the cursor");
+        assert_eq!(app.next_interesting_strict(false), None, "nothing after 2");
+        assert_eq!(
+            app.next_interesting_strict(true),
+            Some(0),
+            "backward from 2"
+        );
+    }
+
+    #[test]
+    fn first_interesting_finds_either_end() {
+        let mut app = app_over_file("first_either_end", "plain\nhit\nplain\nhit\nplain\n");
+        key(&mut app, KeyCode::Char('t'));
+        app.filters.set_search("hit").expect("valid pattern");
+        app.refresh_view();
+
+        assert_eq!(app.first_interesting(false), Some(1));
+        assert_eq!(app.first_interesting(true), Some(3));
+    }
+
+    #[test]
+    fn first_interesting_is_none_without_hits() {
+        let mut app = app_over_file("first_none", "plain\nplain\n");
+        key(&mut app, KeyCode::Char('t'));
+        app.filters.set_search("hit").expect("valid pattern");
+        app.refresh_view();
+
+        assert_eq!(app.first_interesting(false), None);
+        assert_eq!(app.next_interesting_strict(false), None);
+    }
+
     /// Three hits, cursor on the middle one: forward and backward from there
     /// land on different lines (4 and 0 respectively), so this actually
     /// exercises direction. The previous version started at row 0 with only
