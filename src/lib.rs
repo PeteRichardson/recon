@@ -934,6 +934,10 @@ impl App<'_> {
                     self.focus_next();
                     return;
                 }
+                KeyCode::BackTab => {
+                    self.focus_prev();
+                    return;
+                }
                 // `?` and not `F1`: it is the conventional help key in every
                 // pager and file manager this app borrows from, and it is free
                 // — it used to run a backward search, which `n`/`N` cover from
@@ -2131,6 +2135,15 @@ impl App<'_> {
         // on a pane that is not on screen. This lives inside `focus_next`
         // itself, rather than beside its call site, so a future caller of
         // `focus_next` cannot forget it.
+        if self.zoom.is_some() {
+            self.zoom = Some(self.focus);
+        }
+    }
+
+    /// `Shift-Tab`. Same zoom rule as `focus_next`, kept inside the method
+    /// for the same reason.
+    fn focus_prev(&mut self) {
+        self.focus = self.focus.prev();
         if self.zoom.is_some() {
             self.zoom = Some(self.focus);
         }
@@ -6474,6 +6487,46 @@ mod tests {
             app.focus,
             Focus::Nav,
             "focus did not return to the navigator"
+        );
+    }
+
+    /// `Tab` finally has its opposite (#120 §1). crossterm reports Shift-Tab
+    /// as `KeyCode::BackTab`.
+    #[test]
+    fn shift_tab_reverses_tab() {
+        let mut app = app_over_file("backtab_cycle", "alpha\n");
+        draw(&mut app);
+        assert_eq!(app.focus, Focus::Nav, "sanity: starts on the navigator");
+
+        key(&mut app, KeyCode::BackTab);
+        assert_eq!(app.focus, Focus::Filters, "did not wrap to the filter pane");
+        key(&mut app, KeyCode::BackTab);
+        assert_eq!(app.focus, Focus::View);
+        key(&mut app, KeyCode::BackTab);
+        assert_eq!(app.focus, Focus::Nav);
+
+        key(&mut app, KeyCode::Tab);
+        key(&mut app, KeyCode::BackTab);
+        assert_eq!(app.focus, Focus::Nav, "Tab then Shift-Tab is not a no-op");
+    }
+
+    /// The zoomed pane is always the focused pane; `focus_prev` keeps that
+    /// invariant the way `focus_next` does.
+    #[test]
+    fn shift_tab_moves_the_zoom_with_the_focus() {
+        let mut app = app_over_file("backtab_zoom", "alpha\n");
+        draw(&mut app);
+        key(&mut app, KeyCode::Char('t'));
+        key(&mut app, KeyCode::Char('z'));
+        assert_eq!(app.zoom, Some(Focus::View), "sanity: view zoomed");
+
+        key(&mut app, KeyCode::BackTab);
+
+        assert_eq!(app.focus, Focus::Nav);
+        assert_eq!(
+            app.zoom,
+            Some(Focus::Nav),
+            "zoom stayed on an unfocused pane"
         );
     }
 

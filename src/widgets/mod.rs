@@ -75,6 +75,16 @@ impl Focus {
             Self::Filters => Self::Nav,
         }
     }
+
+    /// The other way round. Written out like `next`, and for the same
+    /// reason.
+    pub(crate) fn prev(self) -> Self {
+        match self {
+            Self::Nav => Self::Filters,
+            Self::View => Self::Nav,
+            Self::Filters => Self::View,
+        }
+    }
 }
 
 /// What a keypress in the filter pane asks `App` to do.
