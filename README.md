@@ -680,10 +680,22 @@ trade was deliberate, since returning to the navigator from a maximised file
 view is exactly when you need `e`. `w` still moves forward by word.
 
 `n` and `N` are handled globally, the same as `Ctrl-H`, so — like that key —
-they reach this table only once the file view has focus; the navigator has its
-own `n`/`N`, described below. An *interesting* line here is one an enabled
-including filter or the live search matches; stepping wraps at the ends of the
-file and treats a line with several hits as a single stop, not one per hit.
+they reach this table from the filter pane as well as the file view; the
+navigator keeps its own `n`/`N`, described below. An *interesting* line here is
+one an enabled including filter or the live search matches; stepping treats a
+line with several hits as a single stop, not one per hit, and wraps at the
+ends of the file only as the fallback taken when no other file the filters
+match exists.
+
+`n` crosses file boundaries because recon's central workflow is a loop over
+every interesting line in every interesting file, and running it as two loops
+cost two focus keys per file (`e n t`). With the crossing, the whole loop is
+`u`, then `n n n …`, with `space` to peek — focus never leaves the file view.
+This is vim's quickfix model (`:cnext`) and the shape of `grep -n` output. `j`/`k`
+stay bounded to the file, so "walk this file's hits" and "walk every hit
+everywhere" are both available. The crossing uses the filters' answer for each
+file and ignores the navigator's filename search: a filename hit with no
+interesting lines has nowhere to land.
 
 Navigator pane (`src/widgets/filenav.rs`):
 
@@ -828,16 +840,6 @@ doubled press finishes the pattern and does nothing else, rather than quietly
 switching a filter off. Any other key in between and the next `Enter` toggles as
 normal, so the guard costs at most one extra press when you really did mean two.
 
-`n` crosses file boundaries because recon's central workflow is a loop over
-every interesting line in every interesting file, and running it as two loops
-cost two focus keys per file (`e n t`). With the crossing, the whole loop is
-`u`, then `n n n …`, with `space` to peek — focus never leaves the file view.
-This is vim's quickfix model (`:cnext`) and the shape of `grep -n` output. `j`/`k`
-stay bounded to the file, so "walk this file's hits" and "walk every hit
-everywhere" are both available. The crossing uses the filters' answer for each
-file and ignores the navigator's filename search: a filename hit with no
-interesting lines has nowhere to land.
-
 `space` stays the peek rather than becoming the filter pane's toggle: peek is
 the key interleaved most often with `n`, `j` and `k`, and the thumb is the only
 key that alternates hands against a right-hand vim vocabulary without leaving
@@ -904,6 +906,9 @@ surroundings on screen but hard to read.
 so the file reads as an ordinary file. Press it again and the filtered view
 comes back **exactly** as it was — same filters, same colours, same hide mode,
 same line under the cursor.
+
+`n`, `N`, `.` and `,` also end the peek before they move, because a jump that
+leaves the peeked file has nothing to come back to.
 
 It replaces a four-key round trip you would otherwise repeat at every match:
 leave hide mode, clear the filters, read, restore the filters, restore hide
