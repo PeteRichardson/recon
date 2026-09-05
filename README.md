@@ -828,6 +828,22 @@ doubled press finishes the pattern and does nothing else, rather than quietly
 switching a filter off. Any other key in between and the next `Enter` toggles as
 normal, so the guard costs at most one extra press when you really did mean two.
 
+`n` crosses file boundaries because recon's central workflow is a loop over
+every interesting line in every interesting file, and running it as two loops
+cost two focus keys per file (`e n t`). With the crossing, the whole loop is
+`u`, then `n n n …`, with `space` to peek — focus never leaves the file view.
+This is vim's quickfix model (`:cnext`) and the shape of `grep -n` output. `j`/`k`
+stay bounded to the file, so "walk this file's hits" and "walk every hit
+everywhere" are both available. The crossing uses the filters' answer for each
+file and ignores the navigator's filename search: a filename hit with no
+interesting lines has nowhere to land.
+
+`space` stays the peek rather than becoming the filter pane's toggle: peek is
+the key interleaved most often with `n`, `j` and `k`, and the thumb is the only
+key that alternates hands against a right-hand vim vocabulary without leaving
+the home position. Toggling a filter is a setup action, and `Enter` already
+does it.
+
 `i` and `x` work only while this pane has focus, which is what `f` is for —
 `f i` and `f x` reach them from anywhere, and `f` is a no-op when the pane
 already has focus, so the pair is always correct. They are deliberately not
