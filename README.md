@@ -306,6 +306,7 @@ Global (`src/lib.rs`), handled before the focused pane sees the key:
 | `t` | Focus the file view |
 | `f` | Focus the filter pane — filters are then added with `i` and `x` from inside it |
 | `space` | **Peek at the plain file** — drop every filter and flip the hide mode, so the code reads normally. Press again to put the filtered view back exactly as it was. See [Peeking at the plain file](#peeking-at-the-plain-file) |
+| `.` / `,` | Skip to the next / previous file the filters match, landing on its first / last interesting line. Works from every pane; focus stays put. The keycaps say `>` and `<` |
 | `Ctrl-H` / `H` | Toggle between dimming unmatched lines and hiding them |
 | `!` | Disable every filter, remembering which were on; restores exactly that (or enables all, if none were on to remember) |
 | `&` | Combine the enabled include filters with **AND** instead of OR — a line must match every one of them. Press again for OR. See [Combining filters with AND](#combining-filters-with-and) |

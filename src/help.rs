@@ -125,6 +125,10 @@ pub const KEYMAP: &[Section] = &[
                 action: "Peek at the plain file; press again to restore",
             },
             Binding {
+                keys: &[".", ","],
+                action: "Next / previous file the filters match",
+            },
+            Binding {
                 keys: &["Ctrl-h", "H"],
                 action: "Dim unmatched lines, or hide them",
             },

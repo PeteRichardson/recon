@@ -1020,6 +1020,14 @@ impl App<'_> {
                     self.refresh_view();
                     return;
                 }
+                // Global, unlike `n`: skipping a file is the outer loop of
+                // the review workflow, and it should not matter which pane
+                // the inner loop left focus in. The keycaps carry the
+                // mnemonic — `<` and `>` (#120 §2).
+                KeyCode::Char(c @ ('.' | ',')) if key.modifiers.is_empty() => {
+                    self.skip_file(c == ',');
+                    return;
+                }
                 // Scoped away from the navigator rather than global: `n` in
                 // the navigator is the navigator's key (next filename-search
                 // hit, else next matching file) and stays that way. The
@@ -1302,6 +1310,23 @@ impl App<'_> {
         self.report(&format!("{direction} · {name}"), false);
         self.crossing = Some(Crossing { backwards, name });
         true
+    }
+
+    /// `.`/`,`: the cross-file half of `n`/`N`, without first exhausting the
+    /// current file. Global, so the loop can skip a file from any pane.
+    fn skip_file(&mut self, backwards: bool) {
+        if self.peek.is_some() {
+            self.toggle_peek();
+            // Restoring the peek put the filters back, but the navigator's
+            // per-file match flags are still the `Unknown` the peek left
+            // them in — `handle_event`'s scan guard would repair that after
+            // this keypress returns, too late for the cross below. Force it
+            // now; the cache from before the peek makes it free.
+            self.refresh_scan(true);
+        }
+        if !self.cross_file(backwards) {
+            self.report("no other file matches", false);
+        }
     }
 
     /// Hand the selected file to an editor.
@@ -7542,6 +7567,65 @@ mod tests {
         key(&mut app, KeyCode::Char('j'));
 
         assert!(app.peek.is_some());
+    }
+
+    /// `.`/`,` are global: the same step from all three panes, with focus
+    /// left where it was.
+    #[test]
+    fn dot_and_comma_step_files_from_every_pane() {
+        let (mut app, _tx) = app_over_matching_logs("skip_every_pane");
+
+        key(&mut app, KeyCode::Char('.'));
+        assert_eq!(shown(&app), "c.log", "from the view");
+        assert_eq!(cursor_source(&app), 0);
+
+        key(&mut app, KeyCode::Char('e'));
+        key(&mut app, KeyCode::Char('.'));
+        assert_eq!(shown(&app), "a.log", "from the navigator (wrapped)");
+        assert_eq!(app.focus, Focus::Nav);
+
+        key(&mut app, KeyCode::Char('f'));
+        key(&mut app, KeyCode::Char(','));
+        assert_eq!(shown(&app), "c.log", "from the filter pane, backwards");
+        assert_eq!(cursor_source(&app), 2, "`,` lands on the last hit");
+        assert_eq!(app.focus, Focus::Filters);
+    }
+
+    /// `.` does not wait for the current file to be exhausted.
+    #[test]
+    fn dot_skips_the_rest_of_the_current_file() {
+        let (mut app, _tx) = app_over_matching_logs("skip_rest");
+        assert_eq!(cursor_source(&app), 0, "sanity: hits remain below");
+
+        key(&mut app, KeyCode::Char('.'));
+
+        assert_eq!(shown(&app), "c.log");
+        assert!(app.crossing.is_some());
+    }
+
+    #[test]
+    fn dot_with_no_other_matching_file_says_so() {
+        let (mut app, tx) = app_over_matching_logs("skip_alone");
+        mark(&mut app, &tx, 2, false);
+
+        key(&mut app, KeyCode::Char('.'));
+
+        assert_eq!(shown(&app), "a.log");
+        assert_eq!(
+            app.status_message.as_ref().map(|m| m.text.as_str()),
+            Some("no other file matches")
+        );
+    }
+
+    #[test]
+    fn dot_while_peeked_restores_the_peek_first() {
+        let (mut app, _tx) = app_over_matching_logs("skip_peeked");
+        key(&mut app, KeyCode::Char(' '));
+
+        key(&mut app, KeyCode::Char('.'));
+
+        assert!(app.peek.is_none());
+        assert_eq!(shown(&app), "c.log");
     }
 
     #[test]
