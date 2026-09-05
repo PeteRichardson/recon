@@ -215,15 +215,18 @@ at `::`, `.`, `(`). Then steps as `/` does. `* p` promotes it to a numbered filt
 backward twin: `#` is the gutter and `N` covers the direction. On whitespace or punctuation
 the status row says there is no word under the cursor.
 
-### 14. `1`–`9` toggle a filter by position (new)
+### 14. `1`–`9` toggle a filter by its number (new)
 
-Global. `3` toggles the third toggleable row of the filter pane in display order: search
-row and set headers excluded, user-authored and built-in filters included. The pane prints
-the digit in its gutter beside each of the first nine such rows, so the mapping is visible;
-rows beyond nine have no key. The numbering shifts when a set is soloed, reset or reordered,
-which is exactly why the gutter shows it rather than the user counting. Implementation is
-`Filters::toggle_enabled(index)`, which exists, behind a global arm; the row-to-index walk
-is the one `FilterList::rows` already does.
+Global. The filter pane already numbers every user-authored filter in its gutter, in pane
+order, and `p` promotes the live search "into the numbered filter set"; the digit keys follow
+that numbering rather than inventing a second one. `3` toggles the filter the pane labels
+`3`. Built-in filters are unnumbered and have no key, as do set headers and the search row
+(`Enter` and `f Enter` still toggle those). Filters past nine have no key. The numbering
+shifts when a set is soloed, reset or reordered, which is why the gutter shows it rather
+than the user counting. A digit with no filter behind it says so on the status row.
+Implementation is `Filters::toggle_enabled(index)`, which exists, behind a global arm; the
+number-to-index walk is the one `FilterList::texts` already does to draw the labels, and is
+shared with it so the two cannot disagree.
 
 ### 15. Documentation follows the model (§9)
 
