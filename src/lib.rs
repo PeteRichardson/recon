@@ -1251,6 +1251,12 @@ impl App<'_> {
     /// every file — never skips a hit. The cross-file step is what makes it a
     /// single loop rather than one per file (#120 §1).
     fn step_interesting(&mut self, backwards: bool) {
+        // A jump that leaves the peeked context has nothing to come back to,
+        // and with every filter disabled by the peek the step would find no
+        // interesting line and cross files at once. Restore first (#120 §4).
+        if self.peek.is_some() {
+            self.toggle_peek();
+        }
         // `n`/`N` bypass the widget's own `handle_events`, which is where a
         // truncated preview normally promotes itself on first interaction —
         // see `promote_truncated_preview`, which `apply_search` also calls
@@ -7510,6 +7516,32 @@ mod tests {
 
         assert!(app.crossing.is_none());
         assert!(app.status_message.is_none());
+    }
+
+    /// #120 §4: with every filter disabled by the peek, a step would find no
+    /// interesting line and cross files at once. Put the filters back first.
+    #[test]
+    fn n_while_peeked_restores_the_peek_before_moving() {
+        let (mut app, _tx) = app_over_matching_logs("peek_then_n");
+        key(&mut app, KeyCode::Char(' '));
+        assert!(app.peek.is_some(), "sanity: peeking");
+
+        key(&mut app, KeyCode::Char('n'));
+
+        assert!(app.peek.is_none(), "still peeking");
+        assert_eq!(shown(&app), "a.log", "crossed files instead of stepping");
+        assert_eq!(cursor_source(&app), 1);
+    }
+
+    /// In-file motions leave the peek alone: that is what peeking is for.
+    #[test]
+    fn j_while_peeked_keeps_the_peek() {
+        let (mut app, _tx) = app_over_matching_logs("peek_then_j");
+        key(&mut app, KeyCode::Char(' '));
+
+        key(&mut app, KeyCode::Char('j'));
+
+        assert!(app.peek.is_some());
     }
 
     #[test]
