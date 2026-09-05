@@ -129,6 +129,10 @@ pub const KEYMAP: &[Section] = &[
                 action: "Next / previous file the filters match",
             },
             Binding {
+                keys: &["[", "]"],
+                action: "Page the file view up / down, from any pane",
+            },
+            Binding {
                 keys: &["Ctrl-h", "H"],
                 action: "Dim unmatched lines, or hide them",
             },
@@ -222,11 +226,11 @@ pub const KEYMAP: &[Section] = &[
                 action: "Scroll half a page down / up",
             },
             Binding {
-                keys: &["[", "Ctrl-b", "PageUp"],
+                keys: &["Ctrl-b", "PageUp"],
                 action: "Scroll a page up",
             },
             Binding {
-                keys: &["]", "Ctrl-f", "PageDown"],
+                keys: &["Ctrl-f", "PageDown"],
                 action: "Scroll a page down",
             },
         ],
