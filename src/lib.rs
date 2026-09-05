@@ -1101,6 +1101,16 @@ impl App<'_> {
                     self.step_interesting(c == 'N');
                     return;
                 }
+                // The primary hide key (#120 §10). `H` needs Shift, and many
+                // terminals deliver `Ctrl-H` as Backspace; both stay as
+                // aliases, but the key pressed most often in the review loop
+                // should not be the one that breaks the flow. `u` as in
+                // "toggle unmatched lines", which is what the mode does; vim's
+                // `u` is undo and recon has no undo, so no habit collides.
+                KeyCode::Char('u') if key.modifiers.is_empty() => {
+                    self.toggle_hiding();
+                    return;
+                }
                 KeyCode::Char('H')
                     if !key
                         .modifiers
@@ -10037,6 +10047,29 @@ mod tests {
 
         key(&mut app, KeyCode::Char(' '));
         assert!(!nav_rows(&mut app).iter().any(|r| r.contains("a.log")));
+    }
+
+    /// #120 §10: hide mode is toggled often and lived behind Shift. `u`
+    /// ("unmatched") is the primary key now; `H` and `Ctrl-H` stay as aliases.
+    #[test]
+    fn u_toggles_hiding_like_ctrl_h() {
+        let mut app = app_over_file("u_hides", "alpha\nbeta\n");
+        key(&mut app, KeyCode::Char('t'));
+        app.filters.add("beta").expect("valid pattern");
+        app.refresh_view();
+        assert_eq!(app.document.mode(), Mode::Dimmed, "sanity");
+
+        key(&mut app, KeyCode::Char('u'));
+        assert_eq!(app.document.mode(), Mode::FilteredOnly, "u did not hide");
+
+        key(&mut app, KeyCode::Char('u'));
+        assert_eq!(app.document.mode(), Mode::Dimmed, "u did not restore");
+
+        // The aliases still work, and share the state.
+        key(&mut app, KeyCode::Char('H'));
+        assert_eq!(app.document.mode(), Mode::FilteredOnly);
+        key(&mut app, KeyCode::Char('u'));
+        assert_eq!(app.document.mode(), Mode::Dimmed);
     }
 
     #[test]

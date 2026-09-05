@@ -14,7 +14,7 @@
 
 `recon` is a terminal file viewer built around a **stack of regex filters** you
 build up interactively. Matching lines get colour; everything else dims — and
-`Ctrl-H` removes the unmatched lines entirely, keeping the original line
+`u` removes the unmatched lines entirely, keeping the original line
 numbers in the gutter so a gap tells you something was left out.
 Filters are individually toggled, disabled en masse with `!`, and survive
 loading a different file. It's for the moment when `grep -v` has become four 
@@ -54,27 +54,27 @@ motions throughout.
   into a different slot. The filter pane is on screen whenever
   the navigator is, showing `press f i to add` until you define your first
   filter, so the layout never shifts under you as the set grows and shrinks.
-- **Dim or hide, on one keystroke** — `Ctrl-H` toggles unmatched lines between
+- **Dim or hide, on one keystroke** — `u` toggles unmatched lines between
   dimmed-but-present and removed. Toggling back returns you to the exact line
   you were on. Dimming marks unmatched lines whenever a numbered *including*
   filter is enabled; a search on its own doesn't grey the file, since its
-  hits already carry a highlight — but `Ctrl-H` still collapses to them.
+  hits already carry a highlight — but `u` still collapses to them.
 - **Search is just a filter** — `/` defines one in a keystroke, `Esc` throws it
   away, and `p` keeps it: it joins the numbered set with its own colour and
   frees `/` for the next probe, so a filter set gets built by trying patterns
   rather than by retyping them. In between it behaves like any other filter —
   it survives loading another file, answers to `!`, loses to an exclude, and
-  feeds `Ctrl-H`. `n` and `N` step between *interesting* lines, whether the
+  feeds `u`. `n` and `N` step between *interesting* lines, whether the
   filters or the search made them so.
 - **Line numbers stay honest** — the gutter shows original file line numbers
   even while filtered, so gaps in the numbering mark what was hidden. While
   hiding, the last number of each run of consecutive lines is underlined, so
   the boundaries are visible without reading the numbers to find them.
 - **Filters outlive the file** — load another log and the filter set stays put,
-  along with the `Ctrl-H` hide toggle. `!` disables everything at once and
+  along with the `u` hide toggle. `!` disables everything at once and
   remembers what was on, so it's one keystroke back to an unfiltered view
   without discarding your work.
-- **Skim a directory for hits** — with a filter set and `Ctrl-H` hiding, move
+- **Skim a directory for hits** — with a filter set and `u` hiding, move
   down the navigator and each file draws only its matching lines. A file that
   comes up blank has none, which makes a directory of logs answerable by
   arrow key rather than by four chained `grep`s.
@@ -176,7 +176,7 @@ The file opens in the centre pane with its directory listed on the left. Then:
 | `f` `i` `ERROR` `Enter` | Colour every line matching `ERROR`, dim the rest |
 | `i` `WARN` `Enter` | Add a second filter, in its own colour — `f` already moved focus, so `i` alone is enough |
 | `x` `healthcheck` `Enter` | Drop `healthcheck` lines from view entirely |
-| `Ctrl-H` | Hide the dimmed lines — only `ERROR` and `WARN` remain |
+| `u` | Hide the dimmed lines — only `ERROR` and `WARN` remain |
 | `Enter` | Toggle the selected filter off and on — or, on a set's header row, the whole set |
 | `!` | Disable all filters — the whole file returns |
 | `q` | Quit |
@@ -308,7 +308,7 @@ Global (`src/lib.rs`), handled before the focused pane sees the key:
 | `space` | **Peek at the plain file** — drop every filter and flip the hide mode, so the code reads normally. Press again to put the filtered view back exactly as it was. See [Peeking at the plain file](#peeking-at-the-plain-file) |
 | `.` / `,` | Skip to the next / previous file the filters match, landing on its first / last interesting line. Works from every pane; focus stays put. The keycaps say `>` and `<` |
 | `[` / `]` | Page the file view up / down, whichever pane has focus — so a peeked file can be skimmed from the navigator |
-| `Ctrl-H` / `H` | Toggle between dimming unmatched lines and hiding them |
+| `u` / `Ctrl-H` / `H` | Toggle between dimming unmatched lines and hiding them — `u` for **u**nmatched; the other two are aliases for terminals and habits that already use them |
 | `!` | Disable every filter, remembering which were on; restores exactly that (or enables all, if none were on to remember) |
 | `&` | Combine the enabled include filters with **AND** instead of OR — a line must match every one of them. Press again for OR. See [Combining filters with AND](#combining-filters-with-and) |
 | `b` | Hide the left column — both the navigator and the filter pane — and focus the file view; press again to restore the split (focus stays in the file view; `e` returns it) |
@@ -561,6 +561,8 @@ numbered one. It differs in one place — dimming. A numbered *including*
 filter dims the rest of the file the moment it's enabled; a search on its own
 doesn't, because its hits already carry a highlight of their own and greying
 the file around them would only cost the context the search was run to see.
+
+`u` is the primary key; the two below are aliases.
 `Ctrl-H` makes no such exception: it collapses to a search's matches exactly
 as it would to a filter's. `Esc` drops the search; `p` keeps it, moving it
 into the numbered set and freeing `/` for the next one.

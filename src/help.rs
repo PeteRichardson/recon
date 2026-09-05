@@ -133,7 +133,7 @@ pub const KEYMAP: &[Section] = &[
                 action: "Page the file view up / down, from any pane",
             },
             Binding {
-                keys: &["Ctrl-h", "H"],
+                keys: &["u", "Ctrl-h", "H"],
                 action: "Dim unmatched lines, or hide them",
             },
             Binding {
