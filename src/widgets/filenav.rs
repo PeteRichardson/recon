@@ -372,7 +372,7 @@ impl FileNav<'_> {
         if self.matcher.is_some() {
             return self.step_search(self.search_reverse != opposite);
         }
-        self.step_to(opposite, |entry| matches!(entry.matched, Match::Yes(_)))
+        self.step_to_match(opposite)
     }
 
     /// The next (or previous) entry the filters selected, wrapping, whatever
@@ -380,8 +380,6 @@ impl FileNav<'_> {
     /// when it has run out of interesting lines in the current file, and the
     /// step `.`/`,` take unconditionally: the loop those keys drive is about
     /// content, so a filename hit with no interesting lines is not a stop.
-    #[allow(dead_code)]
-    // Called from App in the next task.
     pub(crate) fn step_to_match(&mut self, reverse: bool) -> Option<Action> {
         self.step_to(reverse, |entry| matches!(entry.matched, Match::Yes(_)))
     }
