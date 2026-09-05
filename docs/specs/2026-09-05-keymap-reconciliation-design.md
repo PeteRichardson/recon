@@ -319,6 +319,4 @@ Independent PRs, in this order so each is small and the loop improves first:
 - #58 owns the mouse; nothing here changes what it does.
 - Retiring `H`/`Ctrl-H` once `u` has settled.
 - Match counts in the navigator (#6).
-- Emitting the directory, visible lines, visible files or the filter set on quit, for shell
-  integration and piping. Its own issue; it needs a clean stdout (render on stderr, or a
-  `--cwd-file`-style flag) and a format choice, neither of which is a keymap question.
+- Emitting the directory, visible lines, visible files or the filter set on quit (#143).
