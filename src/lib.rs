@@ -2148,6 +2148,45 @@ impl App<'_> {
             Focus::Filters => self.filters_pane.render(&self.filters, area, buf),
         }
     }
+
+    /// The one-line notice a cross-file step leaves over the file view until
+    /// the next keypress. Centred, bordered, and cleared underneath so it
+    /// reads over any text. Nothing is drawn when there was no crossing.
+    fn render_crossing(&self, view_area: Rect, buf: &mut Buffer) {
+        use ratatui::widgets::{Block, Clear, Paragraph};
+        let Some(crossing) = &self.crossing else {
+            return;
+        };
+        let text = format!(
+            "{} {} · {}",
+            if crossing.backwards { "▲" } else { "▼" },
+            if crossing.backwards {
+                "previous file"
+            } else {
+                "next file"
+            },
+            crossing.name
+        );
+        let width = u16::try_from(UnicodeWidthStr::width(text.as_str()) + 4)
+            .unwrap_or(u16::MAX)
+            .min(view_area.width);
+        if width < 5 || view_area.height < 3 {
+            return;
+        }
+        let x = view_area.x + (view_area.width - width) / 2;
+        let y = view_area.y + (view_area.height - 3) / 2;
+        let area = Rect {
+            x,
+            y,
+            width,
+            height: 3,
+        };
+        Clear.render(area, buf);
+        Paragraph::new(text)
+            .centered()
+            .block(Block::bordered().border_style(Style::default().fg(Color::Yellow)))
+            .render(area, buf);
+    }
 }
 
 /// Shorten `text` to `width` columns by dropping characters from the *left*,
@@ -2262,7 +2301,11 @@ impl Widget for &mut App<'_> {
                 height: 0,
             };
             self.set_active_pane();
+            self.view.set_title_accent(self.crossing.is_some());
             self.render_pane(zoomed, area, buf);
+            if zoomed == Focus::View {
+                self.render_crossing(area, buf);
+            }
         } else {
             let nav_width = self.nav_width(area);
             let [left, right] = Layout::horizontal([Length(nav_width), Min(0)]).areas(area);
@@ -2293,9 +2336,11 @@ impl Widget for &mut App<'_> {
             // third widget existed — but pairing a named pane with its named
             // area leaves nothing to mismatch (#73).
             self.set_active_pane();
+            self.view.set_title_accent(self.crossing.is_some());
             self.render_pane(Focus::Nav, nav_area, buf);
             self.render_pane(Focus::View, right, buf);
             self.render_pane(Focus::Filters, filter_area, buf);
+            self.render_crossing(right, buf);
         }
 
         // Last, so it covers whatever the panes just drew — and over `area`,
@@ -7654,6 +7699,63 @@ mod tests {
 
         assert!(app.peek.is_none());
         assert_eq!(shown(&app), "c.log");
+    }
+
+    /// Log files look alike. A crossing paints a notice over the view and
+    /// accents its title; the next key clears both (#120 §1).
+    #[test]
+    fn a_crossing_paints_a_notice_over_the_file_view() {
+        let (mut app, _tx) = app_over_matching_logs("notice_paint");
+        key(&mut app, KeyCode::Char('.'));
+
+        let screen = rendered(&mut app);
+        assert!(
+            screen.contains("▼ next file · c.log"),
+            "no notice on screen:\n{screen}"
+        );
+
+        key(&mut app, KeyCode::Char('j'));
+        let screen = rendered(&mut app);
+        assert!(
+            !screen.contains("next file"),
+            "notice survived a keypress:\n{screen}"
+        );
+    }
+
+    #[test]
+    fn a_backwards_crossing_points_up() {
+        let (mut app, _tx) = app_over_matching_logs("notice_up");
+        key(&mut app, KeyCode::Char(','));
+
+        let screen = rendered(&mut app);
+        assert!(screen.contains("▲ previous file · c.log"), "{screen}");
+    }
+
+    #[test]
+    fn a_crossing_accents_the_view_title() {
+        let (mut app, _tx) = app_over_matching_logs("notice_title");
+        key(&mut app, KeyCode::Char('.'));
+        let mut buf = Buffer::empty(AREA);
+        (&mut app).render(AREA, &mut buf);
+
+        // The title sits on the view's top border; find the first cell of
+        // the file name and read its style. Search from the divider column:
+        // the navigator's own border title is the fixture directory name,
+        // which contains `notice_title` and would otherwise match `c` first.
+        let title_cell = (app.divider..AREA.width)
+            .map(|x| buf[(x, 0)].clone())
+            .find(|cell| cell.symbol() == "c")
+            .expect("the title is drawn on the top border");
+        assert_eq!(title_cell.fg, Color::Yellow, "title not accented");
+
+        key(&mut app, KeyCode::Char('j'));
+        let mut buf = Buffer::empty(AREA);
+        (&mut app).render(AREA, &mut buf);
+        let title_cell = (app.divider..AREA.width)
+            .map(|x| buf[(x, 0)].clone())
+            .find(|cell| cell.symbol() == "c")
+            .expect("title");
+        assert_ne!(title_cell.fg, Color::Yellow, "accent survived a keypress");
     }
 
     #[test]
