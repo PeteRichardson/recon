@@ -726,6 +726,22 @@ impl App<'_> {
         self.refresh_view();
     }
 
+    /// Put the filters back before a jump that leaves the peeked file.
+    ///
+    /// The peek disabled every filter, and the scan that answers "which
+    /// files match" was told so: every navigator entry is `Match::Unknown`
+    /// until `refresh_scan` runs again — which is normally after this
+    /// keypress is dispatched, too late for a cross-file step made now. So
+    /// the scan is refreshed here, and the answers come straight back from
+    /// the scan cache for every file that has not changed on disk.
+    fn restore_peek_before_moving(&mut self) {
+        if self.peek.is_none() {
+            return;
+        }
+        self.toggle_peek();
+        self.refresh_scan(false);
+    }
+
     /// Whether the file view is showing a bounded preview rather than the
     /// whole file.
     fn file_view_truncated(&self) -> bool {
@@ -1262,9 +1278,7 @@ impl App<'_> {
         // A jump that leaves the peeked context has nothing to come back to,
         // and with every filter disabled by the peek the step would find no
         // interesting line and cross files at once. Restore first (#120 §4).
-        if self.peek.is_some() {
-            self.toggle_peek();
-        }
+        self.restore_peek_before_moving();
         // `n`/`N` bypass the widget's own `handle_events`, which is where a
         // truncated preview normally promotes itself on first interaction —
         // see `promote_truncated_preview`, which `apply_search` also calls
@@ -1315,15 +1329,7 @@ impl App<'_> {
     /// `.`/`,`: the cross-file half of `n`/`N`, without first exhausting the
     /// current file. Global, so the loop can skip a file from any pane.
     fn skip_file(&mut self, backwards: bool) {
-        if self.peek.is_some() {
-            self.toggle_peek();
-            // Restoring the peek put the filters back, but the navigator's
-            // per-file match flags are still the `Unknown` the peek left
-            // them in — `handle_event`'s scan guard would repair that after
-            // this keypress returns, too late for the cross below. Force it
-            // now; the cache from before the peek makes it free.
-            self.refresh_scan(true);
-        }
+        self.restore_peek_before_moving();
         if !self.cross_file(backwards) {
             self.report("no other file matches", false);
         }
@@ -7556,6 +7562,28 @@ mod tests {
         assert!(app.peek.is_none(), "still peeking");
         assert_eq!(shown(&app), "a.log", "crossed files instead of stepping");
         assert_eq!(cursor_source(&app), 1);
+    }
+
+    /// The restore has to reach the navigator's answers too, or `n` at the
+    /// last hit finds no file to cross to and wraps in silence.
+    #[test]
+    fn n_at_the_last_hit_while_peeked_still_crosses_files() {
+        let (mut app, _tx) = app_over_matching_logs("peek_then_n_crosses");
+        key(&mut app, KeyCode::Char('n'));
+        key(&mut app, KeyCode::Char('n'));
+        assert_eq!(cursor_source(&app), 2, "sanity: on the last hit of a.log");
+        key(&mut app, KeyCode::Char(' '));
+        assert!(app.peek.is_some(), "sanity: peeking");
+
+        key(&mut app, KeyCode::Char('n'));
+
+        assert!(app.peek.is_none());
+        assert_eq!(
+            shown(&app),
+            "c.log",
+            "did not cross after restoring the peek"
+        );
+        assert_eq!(cursor_source(&app), 0);
     }
 
     /// In-file motions leave the peek alone: that is what peeking is for.
