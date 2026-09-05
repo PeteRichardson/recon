@@ -265,6 +265,11 @@ pub struct FileView<'a> {
     /// alone says the document's length is wrong without saying what is right.
     estimated_lines: Option<usize>,
     active: bool,
+    /// Draw the title in the accent colour for this frame. Set by `App` for
+    /// the one keypress after a cross-file step, so the eye catches that the
+    /// file changed even when the notice is dismissed by the same key that
+    /// raised it (#120).
+    title_accent: bool,
     /// Whether the line-number gutter is drawn. Toggled with `#`.
     hide_line_numbers: bool,
     /// Set when the buffer currently holds the single blank placeholder line
@@ -387,6 +392,12 @@ impl FileView<'_> {
     /// Give or take focus. The only writer of `active` (#81).
     pub(crate) fn set_active(&mut self, active: bool) {
         self.active = active;
+    }
+
+    /// Accent the title for one frame, or stop. The one writer of
+    /// `title_accent` (#120).
+    pub(crate) fn set_title_accent(&mut self, on: bool) {
+        self.title_accent = on;
     }
 
     /// Whether the pane holds a bounded preview rather than the whole file.
@@ -1307,10 +1318,19 @@ impl Widget for &mut FileView<'_> {
         self.apply_syntax();
         // The one place the path is rendered, and the one place a lossy
         // conversion is both correct and harmless — see the `filename` field.
-        self.textarea.set_block(crate::widgets::pane_block(
-            self.filename.display().to_string(),
-            self.active,
-        ));
+        let title = self.filename.display().to_string();
+        let title = if self.title_accent {
+            ratatui::text::Line::from(ratatui::text::Span::styled(
+                title,
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ))
+        } else {
+            ratatui::text::Line::from(title)
+        };
+        self.textarea
+            .set_block(crate::widgets::pane_block(title, self.active));
         // Apply any scroll requested since the last render — see
         // `scroll_cursor_to_row` and `apply_pending_scroll` — only now, once
         // the block above is set: `apply_pending_scroll`'s scratch render
