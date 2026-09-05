@@ -385,8 +385,6 @@ impl FileNav<'_> {
     }
 
     /// The selected entry's file name, for reporting.
-    #[allow(dead_code)]
-    // Called from App in the next task.
     pub(crate) fn selected_name(&self) -> Option<String> {
         let path = self.selected_path()?;
         Some(path.file_name()?.to_string_lossy().into_owned())

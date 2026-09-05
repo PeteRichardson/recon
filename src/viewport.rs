@@ -308,7 +308,6 @@ impl App<'_> {
     /// last interesting line (or before the first, going backwards). This is
     /// how `n` learns it has finished the file and should move to the next
     /// one rather than circle back.
-    #[allow(dead_code)]
     pub(crate) fn next_interesting_strict(&self, backwards: bool) -> Option<usize> {
         let verdicts = self.document.verdicts();
         let from = self.cursor_source();
@@ -323,7 +322,6 @@ impl App<'_> {
 
     /// The first interesting line of the file — or the last, when
     /// `from_end`. Where a cross-file step lands.
-    #[allow(dead_code)]
     pub(crate) fn first_interesting(&self, from_end: bool) -> Option<usize> {
         let verdicts = self.document.verdicts();
         if from_end {
