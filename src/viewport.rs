@@ -298,16 +298,52 @@ impl App<'_> {
             .find(|&index| matches!(verdicts[index], Verdict::Included(_) | Verdict::Searched))
     }
 
-    /// Move the file view's cursor to the next interesting line, if there is
-    /// one. Quiet when there is not.
-    pub(crate) fn step_to_interesting(&mut self, backwards: bool) {
-        let Some(target) = self.next_interesting(backwards) else {
-            return;
-        };
+    /// `next_interesting` without the wrap: `None` once the cursor is past the
+    /// last interesting line (or before the first, going backwards). This is
+    /// how `n` learns it has finished the file and should move to the next
+    /// one rather than circle back.
+    #[allow(dead_code)]
+    pub(crate) fn next_interesting_strict(&self, backwards: bool) -> Option<usize> {
+        let verdicts = self.document.verdicts();
+        let from = self.cursor_source();
+        let interesting =
+            |index: &usize| matches!(verdicts[*index], Verdict::Included(_) | Verdict::Searched);
+        if backwards {
+            (0..from).rev().find(interesting)
+        } else {
+            (from + 1..verdicts.len()).find(interesting)
+        }
+    }
+
+    /// The first interesting line of the file — or the last, when
+    /// `from_end`. Where a cross-file step lands.
+    #[allow(dead_code)]
+    pub(crate) fn first_interesting(&self, from_end: bool) -> Option<usize> {
+        let verdicts = self.document.verdicts();
+        let interesting =
+            |index: &usize| matches!(verdicts[*index], Verdict::Included(_) | Verdict::Searched);
+        if from_end {
+            (0..verdicts.len()).rev().find(interesting)
+        } else {
+            (0..verdicts.len()).find(interesting)
+        }
+    }
+
+    /// Put the cursor on source line `target`, bringing the window with it.
+    /// Quiet when the line is not visible in the current mode.
+    pub(crate) fn land_on(&mut self, target: usize) {
         let Some(row) = self.document.visible_position(target) else {
             return;
         };
         self.place_cursor_on_visible_row(row);
+    }
+
+    /// Move the file view's cursor to the next interesting line, wrapping, if
+    /// there is one. Quiet when there is not.
+    pub(crate) fn step_to_interesting(&mut self, backwards: bool) {
+        if let Some(target) = self.next_interesting(backwards) {
+            self.land_on(target);
+        }
     }
 
     /// Put the cursor on `row` of the **visible set**, bringing the window with
