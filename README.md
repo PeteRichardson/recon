@@ -562,13 +562,13 @@ filter dims the rest of the file the moment it's enabled; a search on its own
 doesn't, because its hits already carry a highlight of their own and greying
 the file around them would only cost the context the search was run to see.
 
-`u` is the primary key; the two below are aliases.
 `Ctrl-H` makes no such exception: it collapses to a search's matches exactly
 as it would to a filter's. `Esc` drops the search; `p` keeps it, moving it
 into the numbered set and freeing `/` for the next one.
 
 Excluding filters (`x`) are different: their matches are removed from view
-outright, in both modes. `Ctrl-H` (or `H`) toggles the remaining lines between
+outright, in both modes. `u` is the primary key; the two below are aliases.
+`Ctrl-H` (or `H`) toggles the remaining lines between
 dimmed and hidden. `H` is kept as an alternative binding for terminals
 configured with `stty erase ^H`, where the Backspace *key* itself sends
 `0x08` — the same byte crossterm reports as `Ctrl-H` — so pressing Backspace
