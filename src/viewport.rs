@@ -26,6 +26,12 @@ use crate::filter::Verdict;
 use crate::widgets;
 use crossterm::event::KeyCode;
 
+/// The one definition of an interesting line, shared by every query that
+/// steps or lands on one.
+fn is_interesting(verdict: &Verdict) -> bool {
+    matches!(verdict, Verdict::Included(_) | Verdict::Searched)
+}
+
 impl App<'_> {
     /// The visible-set row a long-range file-view key asks for, or `None` if
     /// this key is not one of them.
@@ -295,7 +301,7 @@ impl App<'_> {
                     (from + step) % len
                 }
             })
-            .find(|&index| matches!(verdicts[index], Verdict::Included(_) | Verdict::Searched))
+            .find(|&index| is_interesting(&verdicts[index]))
     }
 
     /// `next_interesting` without the wrap: `None` once the cursor is past the
@@ -306,12 +312,12 @@ impl App<'_> {
     pub(crate) fn next_interesting_strict(&self, backwards: bool) -> Option<usize> {
         let verdicts = self.document.verdicts();
         let from = self.cursor_source();
-        let interesting =
-            |index: &usize| matches!(verdicts[*index], Verdict::Included(_) | Verdict::Searched);
         if backwards {
-            (0..from).rev().find(interesting)
+            (0..from)
+                .rev()
+                .find(|&index| is_interesting(&verdicts[index]))
         } else {
-            (from + 1..verdicts.len()).find(interesting)
+            (from + 1..verdicts.len()).find(|&index| is_interesting(&verdicts[index]))
         }
     }
 
@@ -320,12 +326,12 @@ impl App<'_> {
     #[allow(dead_code)]
     pub(crate) fn first_interesting(&self, from_end: bool) -> Option<usize> {
         let verdicts = self.document.verdicts();
-        let interesting =
-            |index: &usize| matches!(verdicts[*index], Verdict::Included(_) | Verdict::Searched);
         if from_end {
-            (0..verdicts.len()).rev().find(interesting)
+            (0..verdicts.len())
+                .rev()
+                .find(|&index| is_interesting(&verdicts[index]))
         } else {
-            (0..verdicts.len()).find(interesting)
+            (0..verdicts.len()).find(|&index| is_interesting(&verdicts[index]))
         }
     }
 
