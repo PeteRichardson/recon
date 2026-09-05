@@ -97,6 +97,13 @@ line.
   it as today. If the listing has no interesting file at all, `n` wraps within the current
   file as today. Nothing ever goes silent: the status row reports when a step crossed a file
   and which file it landed in.
+- **Crossing a file is visible.** Log files look alike, so a crossing needs more than a
+  status-row line. Three cues, all cleared by the next keypress rather than by a timer (the
+  event loop redraws only on events, #85, and a timed fade would need a tick source that
+  does not exist): a one-line centred notice over the file view (`▼ next file · foo.log`,
+  `▲ previous file · bar.log`), the view's border title in the accent colour for that
+  keypress, and the status-row line. The border highlight is what registers when the same
+  `n` that triggered the notice is also the key that dismisses it.
 - **The navigator's selection follows.** Crossing a file is `FileNav::step_to` with the
   `Match::Yes` predicate, which selects the entry and returns `Action::Preview`; `App`
   performs it, promotes the truncated preview as `n` already does, and then steps. So the
@@ -202,7 +209,17 @@ at `::`, `.`, `(`). Then steps as `/` does. `* p` promotes it to a numbered filt
 backward twin: `#` is the gutter and `N` covers the direction. On whitespace or punctuation
 the status row says there is no word under the cursor.
 
-### 14. Documentation follows the model (§9)
+### 14. `1`–`9` toggle a filter by position (new)
+
+Global. `3` toggles the third toggleable row of the filter pane in display order: search
+row and set headers excluded, user-authored and built-in filters included. The pane prints
+the digit in its gutter beside each of the first nine such rows, so the mapping is visible;
+rows beyond nine have no key. The numbering shifts when a set is soloed, reset or reordered,
+which is exactly why the gutter shows it rather than the user counting. Implementation is
+`Filters::toggle_enabled(index)`, which exists, behind a global arm; the row-to-index walk
+is the one `FilterList::rows` already does.
+
+### 15. Documentation follows the model (§9)
 
 `KEYMAP` in `src/help.rs` and the README's *Keybindings* section regroup by layer: Global ·
 Chains · Shared motions · Navigator · File view · Filter pane. A shared motion appears once,
@@ -219,12 +236,11 @@ The README's reasoning paragraphs gain three entries beside the existing `space`
   in the view). `v` and `y` stay unbound, reserved for #67's visual mode.
 - `b`/`e` are window commands, not word motions.
 - `p`, `a`, `s`, `m`, `R`, `S`, `!`, `&`, `b`, `z`, `o`, `O`, `r`, `q`, `?`, `e`, `t`, `f`.
-- Digits `1`–`9` stay unbound, held for a future "toggle filter N".
 
 ## Keys after this change
 
-Unbound in every pane: `-`, `=`, `;`, `'`, `` ` ``, `\`, `1`–`9`. Every lowercase letter is
-bound or reserved.
+Unbound in every pane: `-`, `=`, `;`, `'`, `` ` ``, `\`. Every lowercase letter and every
+digit is bound or reserved.
 
 ## Implementation notes
 
@@ -265,7 +281,10 @@ a fixture directory). The ones that matter most:
 - `n` with no other interesting file wraps within the file, as before.
 - `n` while peeked restores the peek before moving; `j` while peeked does not.
 - `.` and `,` from each of the three panes.
+- Crossing a file shows the notice and the highlighted title; the next key clears both.
 - `[`/`]` from the navigator and filter pane page the view.
+- `3` toggles the third toggleable row; `9` with eight filters does nothing and says so; the
+  gutter digits match what the keys do after a solo.
 - `u` toggles hiding; `H` and `Ctrl-H` still do.
 - `Shift-Tab` reverses `Tab` through all three panes.
 - `g`/`G`/`Ctrl-d`/`Ctrl-u` in the navigator and filter pane.
@@ -286,11 +305,11 @@ a fixture directory). The ones that matter most:
 Independent PRs, in this order so each is small and the loop improves first:
 
 1. Cross-file `n`/`N`, `.`/`,`, global `[`/`]`, peek-then-move. (§1–4)
-2. `u`, `Shift-Tab`, shared list motions, `Esc` layering, `/` from the filter pane. (§5–7,
-   §11, §12)
+2. `u`, `Shift-Tab`, shared list motions, `Esc` layering, `/` from the filter pane, digit
+   toggles. (§5–7, §11, §12, §14)
 3. Chain return-focus and wrong-pane hints. (§8, §9)
 4. `*`. (§13)
-5. `KEYMAP` and README regroup, plus the reasoning paragraphs. (§14) Every earlier PR adds
+5. `KEYMAP` and README regroup, plus the reasoning paragraphs. (§15) Every earlier PR adds
    its rows to the existing grouping; this one rearranges.
 
 ## Out of scope
@@ -300,3 +319,6 @@ Independent PRs, in this order so each is small and the loop improves first:
 - #58 owns the mouse; nothing here changes what it does.
 - Retiring `H`/`Ctrl-H` once `u` has settled.
 - Match counts in the navigator (#6).
+- Emitting the directory, visible lines, visible files or the filter set on quit, for shell
+  integration and piping. Its own issue; it needs a clean stdout (render on stderr, or a
+  `--cwd-file`-style flag) and a format choice, neither of which is a keymap question.
