@@ -384,8 +384,7 @@ impl FileNav<'_> {
         true
     }
 
-    /// Whether a filename search is active, for tests.
-    #[cfg(test)]
+    /// Whether a filename search is active.
     pub(crate) fn has_search(&self) -> bool {
         self.matcher.is_some()
     }
