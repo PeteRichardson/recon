@@ -258,6 +258,22 @@ pub const KEYMAP: &[Section] = &[
                 keys: &["n", "N"],
                 action: "Next / previous search match, or matching file",
             },
+            Binding {
+                keys: &["g", "Home"],
+                action: "First entry",
+            },
+            Binding {
+                keys: &["G", "End"],
+                action: "Last entry",
+            },
+            Binding {
+                keys: &["Ctrl-d", "Ctrl-u"],
+                action: "Half a page down / up",
+            },
+            Binding {
+                keys: &["PageDown", "PageUp"],
+                action: "A page down / up",
+            },
         ],
     },
     Section {

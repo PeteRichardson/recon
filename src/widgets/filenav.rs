@@ -4,7 +4,7 @@ use crate::document::Mode;
 use crate::filter::DIM_STYLE;
 use crate::widgets::Action;
 use color_eyre::Result;
-use crossterm::event::{Event, KeyCode};
+use crossterm::event::{Event, KeyCode, KeyModifiers};
 use ratatui::prelude::{Buffer, Color, Modifier, Rect, Style, Widget};
 use ratatui::widgets::{List, ListItem, ListState, StatefulWidget};
 use regex::Regex;
@@ -15,6 +15,11 @@ use unicode_width::UnicodeWidthStr;
 
 /// The entry that climbs to the parent directory.
 pub(crate) const PARENT: &str = "..";
+
+/// A page, in rows, before the pane has been drawn once. `App::run` renders
+/// before it reads a key, so this only ever matters to a test — but a zero
+/// page would make `PageDown` a silent no-op, and #120 forbids silent keys.
+const ASSUMED_PAGE: usize = 20;
 
 /// Where the cursor lands after the listing is rebuilt.
 ///
@@ -210,6 +215,9 @@ pub struct FileNav<'a> {
     navlist: List<'a>,
     state: ListState,
     active: bool,
+    /// Inner height at the last render, so page motions know their page.
+    /// `None` until then; see `ASSUMED_PAGE`.
+    last_height: Option<u16>,
     /// Terminal columns the widest row needs, measured when the listing is
     /// built rather than on every frame.
     ///
@@ -445,6 +453,37 @@ impl FileNav<'_> {
                 }
                 KeyCode::Char('n') => return self.repeat_search(false),
                 KeyCode::Char('N') => return self.repeat_search(true),
+                // Shared list motions (#120 §3): the same keys, with the same
+                // meaning, as the file view. `g`/`G` and the Ctrl pair are
+                // deliberately not intercepted by `App` for this pane — only
+                // the file view holds a *window* of its document; the
+                // navigator holds all its rows, so it can answer itself.
+                KeyCode::Char('g') | KeyCode::Home => {
+                    self.select_first();
+                    return self.preview_selection();
+                }
+                KeyCode::Char('G') | KeyCode::End => {
+                    self.select_last();
+                    return self.preview_selection();
+                }
+                KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    let half = (self.page_rows() / 2).max(1);
+                    self.move_by(isize::try_from(half).unwrap_or(isize::MAX));
+                    return self.preview_selection();
+                }
+                KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    let half = (self.page_rows() / 2).max(1);
+                    self.move_by(-isize::try_from(half).unwrap_or(isize::MAX));
+                    return self.preview_selection();
+                }
+                KeyCode::PageDown => {
+                    self.move_by(isize::try_from(self.page_rows()).unwrap_or(isize::MAX));
+                    return self.preview_selection();
+                }
+                KeyCode::PageUp => {
+                    self.move_by(-isize::try_from(self.page_rows()).unwrap_or(isize::MAX));
+                    return self.preview_selection();
+                }
                 _ => {}
             }
         }
@@ -673,6 +712,35 @@ impl FileNav<'_> {
             .map_or(0, |index| (index + 1).min(last));
         self.state.select(Some(next));
     }
+
+    fn select_first(&mut self) {
+        if !self.visible.is_empty() {
+            self.state.select(Some(0));
+        }
+    }
+
+    fn select_last(&mut self) {
+        if let Some(last) = self.visible.len().checked_sub(1) {
+            self.state.select(Some(last));
+        }
+    }
+
+    /// Move the selection by `delta` rows, clamping at both ends. Positive is
+    /// down. Shared by the page motions; `j`/`k` keep their own one-row
+    /// methods, which predate this and are the ones tests already name.
+    fn move_by(&mut self, delta: isize) {
+        let Some(last) = self.visible.len().checked_sub(1) else {
+            return;
+        };
+        let from = self.state.selected().unwrap_or(0);
+        let to = from.saturating_add_signed(delta).min(last);
+        self.state.select(Some(to));
+    }
+
+    /// Rows in a page: the pane's inner height at the last render.
+    fn page_rows(&self) -> usize {
+        self.last_height.map_or(ASSUMED_PAGE, usize::from).max(1)
+    }
 }
 
 /// List `dir`, sorted, with `PARENT` first.
@@ -821,6 +889,7 @@ impl Widget for &mut FileNav<'_> {
         // swap whatever the entry count.
         let block = crate::widgets::pane_block(self.dir.display().to_string(), self.active);
         let inner = block.inner(area);
+        self.last_height = Some(inner.height);
         block.render(area, buf);
 
         let list = std::mem::take(&mut self.navlist).highlight_style(highlight_style);
@@ -832,7 +901,7 @@ impl Widget for &mut FileNav<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crossterm::event::KeyEvent;
+    use crossterm::event::{KeyEvent, KeyModifiers};
 
     fn press(nav: &mut FileNav<'_>, code: KeyCode) -> Option<Action> {
         nav.handle_events(Event::Key(KeyEvent::from(code)))
@@ -2141,6 +2210,95 @@ mod tests {
         nav.state.select(Some(0));
         nav.select_previous();
         assert_eq!(nav.state.selected(), Some(0));
+    }
+
+    // ---- shared list motions (#120 §3) ----------------------------------
+
+    fn render_at_height(nav: &mut FileNav<'_>, height: u16) {
+        let area = Rect::new(0, 0, 40, height);
+        let mut buf = Buffer::empty(area);
+        (&mut *nav).render(area, &mut buf);
+    }
+
+    // `press` above takes no modifiers, and is shared by dozens of tests that
+    // predate this one; these motions need Ctrl and Shift, so they get their
+    // own helper rather than colliding with it.
+    fn press_mod(nav: &mut FileNav<'_>, code: KeyCode, modifiers: KeyModifiers) -> Option<Action> {
+        nav.handle_events(Event::Key(KeyEvent::new(code, modifiers)))
+    }
+
+    #[test]
+    fn g_and_capital_g_select_the_first_and_last_entry() {
+        let files: Vec<String> = (0..30).map(|i| format!("f{i:02}.log")).collect();
+        let names: Vec<&str> = files.iter().map(String::as_str).collect();
+        let mut nav = nav_over("motions_ends", &names);
+        nav.select_entry(nav.files()[5].0);
+
+        let action = press_mod(&mut nav, KeyCode::Char('G'), KeyModifiers::SHIFT);
+        assert_eq!(selected_name(&nav), "f29.log", "G did not reach the end");
+        assert!(
+            matches!(action, Some(Action::Preview(_))),
+            "G did not preview"
+        );
+
+        press_mod(&mut nav, KeyCode::Char('g'), KeyModifiers::NONE);
+        assert_eq!(selected_name(&nav), PARENT, "g did not reach the top");
+
+        press_mod(&mut nav, KeyCode::End, KeyModifiers::NONE);
+        assert_eq!(selected_name(&nav), "f29.log");
+        press_mod(&mut nav, KeyCode::Home, KeyModifiers::NONE);
+        assert_eq!(selected_name(&nav), PARENT);
+    }
+
+    #[test]
+    fn page_motions_use_the_rendered_height_and_clamp() {
+        let files: Vec<String> = (0..30).map(|i| format!("f{i:02}.log")).collect();
+        let names: Vec<&str> = files.iter().map(String::as_str).collect();
+        let mut nav = nav_over("motions_page", &names);
+        // 12 rows tall, 10 inside the border: a page is 10, half is 5.
+        render_at_height(&mut nav, 12);
+        nav.select_entry(nav.files()[0].0); // row 1, under `..`
+
+        press_mod(&mut nav, KeyCode::Char('d'), KeyModifiers::CONTROL);
+        assert_eq!(selected_name(&nav), "f05.log", "Ctrl-d is not half a page");
+        press_mod(&mut nav, KeyCode::PageDown, KeyModifiers::NONE);
+        assert_eq!(selected_name(&nav), "f15.log", "PageDown is not a page");
+        press_mod(&mut nav, KeyCode::Char('u'), KeyModifiers::CONTROL);
+        assert_eq!(
+            selected_name(&nav),
+            "f10.log",
+            "Ctrl-u is not half a page up"
+        );
+
+        press_mod(&mut nav, KeyCode::PageUp, KeyModifiers::NONE);
+        press_mod(&mut nav, KeyCode::PageUp, KeyModifiers::NONE);
+        assert_eq!(
+            selected_name(&nav),
+            PARENT,
+            "PageUp did not clamp at the top"
+        );
+        for _ in 0..5 {
+            press_mod(&mut nav, KeyCode::PageDown, KeyModifiers::NONE);
+        }
+        assert_eq!(
+            selected_name(&nav),
+            "f29.log",
+            "PageDown did not clamp at the end"
+        );
+    }
+
+    /// Before the first render, a page is the assumed height rather than
+    /// zero — a zero-row page would make the keys silent no-ops.
+    #[test]
+    fn page_motions_assume_a_height_before_the_first_render() {
+        let files: Vec<String> = (0..30).map(|i| format!("f{i:02}.log")).collect();
+        let names: Vec<&str> = files.iter().map(String::as_str).collect();
+        let mut nav = nav_over("motions_unrendered", &names);
+        nav.select_entry(nav.files()[0].0);
+
+        press_mod(&mut nav, KeyCode::PageDown, KeyModifiers::NONE);
+
+        assert_eq!(selected_name(&nav), "f20.log");
     }
 
     /// Render the pane and return the selected row.
