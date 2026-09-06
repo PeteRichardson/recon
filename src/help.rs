@@ -182,7 +182,7 @@ pub const KEYMAP: &[Section] = &[
         bindings: &[
             Binding {
                 keys: &["f i", "f x"],
-                action: "Add an including / excluding filter — returns on commit",
+                action: "Add an including / excluding filter; returns on commit",
             },
             Binding {
                 keys: &["f c"],
@@ -202,7 +202,7 @@ pub const KEYMAP: &[Section] = &[
             },
             Binding {
                 keys: &["t *"],
-                action: "Search the word under the view's cursor, from the navigator",
+                action: "Search the word under the view's cursor",
             },
         ],
     },
@@ -210,12 +210,12 @@ pub const KEYMAP: &[Section] = &[
         title: "Shared motions",
         bindings: &[
             Binding {
-                keys: &["j", "k", "Down", "Up"],
-                action: "Down / up one row — line, entry or filter",
+                keys: &["j", "k"],
+                action: "Down / up a row (also the arrow keys)",
             },
             Binding {
-                keys: &["g", "G", "Home", "End"],
-                action: "First / last row",
+                keys: &["g", "G"],
+                action: "First / last row (also Home / End)",
             },
             Binding {
                 keys: &["Ctrl-d", "Ctrl-u"],
@@ -227,11 +227,11 @@ pub const KEYMAP: &[Section] = &[
             },
             Binding {
                 keys: &["n", "N"],
-                action: "Next / previous interesting line, crossing files — or matching file, in the navigator",
+                action: "Next / previous hit, or matching file in the navigator",
             },
             Binding {
                 keys: &["Enter"],
-                action: "Open the entry; toggle the filter or set; nothing in the view",
+                action: "Open the entry / toggle the filter; nothing in the view",
             },
         ],
     },
@@ -757,9 +757,13 @@ mod tests {
         // A shared motion appears in exactly one section outside Global and
         // the prompt: the shared one. Counting sections, not rows, so a key
         // that legitimately has two rows in one section is not a failure.
+        //
+        // `Home` and `End` are not in this list: the shared row spells them
+        // out in its action text ("also Home / End") rather than the `keys`
+        // array, to keep the joined key label short enough for the 150-column
+        // layout budget, so `contains(&"Home")` would find nothing.
         let shared = [
-            "j", "k", "g", "G", "Home", "End", "Ctrl-d", "Ctrl-u", "PageDown", "PageUp", "n", "N",
-            "Enter",
+            "j", "k", "g", "G", "Ctrl-d", "Ctrl-u", "PageDown", "PageUp", "n", "N", "Enter",
         ];
         for key in shared {
             let sections: Vec<&str> = KEYMAP
@@ -804,24 +808,24 @@ mod tests {
         }
     }
 
-    /// The case the whole layout exists for. A 190x42 terminal is unremarkable,
+    /// The case the whole layout exists for. A 150x42 terminal is unremarkable,
     /// and the keymap is the one screen where "most of it" is not good enough —
     /// the row you cannot see is exactly the one you opened it to find.
     ///
     /// It fails when the columns are sized against the *widest* row in the
     /// whole table rather than the widest in each column: two columns of the
-    /// global maximum need 213 columns, while correct per-column sizing needs
-    /// only 184. This area's width sits between them so the test fails on the
+    /// global maximum need 151 columns, while correct per-column sizing needs
+    /// only 149. This area's width sits between them so the test fails on the
     /// regression but passes on the correct layout.
     #[test]
     fn a_normal_terminal_shows_the_whole_keymap() {
         let rows = rows();
 
-        let columns = layout(&rows, inner(190, 42));
+        let columns = layout(&rows, inner(150, 42));
 
         assert_eq!(shown(&columns), rows.len(), "the keymap did not fit");
         assert!(
-            total_width(&columns) <= 190,
+            total_width(&columns) <= 150,
             "the columns overflowed the area they were fitted to"
         );
     }
@@ -832,7 +836,7 @@ mod tests {
     fn a_column_is_sized_to_its_own_widest_row() {
         let rows = rows();
 
-        let columns = layout(&rows, inner(190, 42));
+        let columns = layout(&rows, inner(150, 42));
 
         assert!(columns.len() > 1, "the table was not split into columns");
         assert!(
