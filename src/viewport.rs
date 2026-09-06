@@ -271,6 +271,16 @@ impl App<'_> {
         self.document.source_at(row).unwrap_or(row)
     }
 
+    /// The identifier-shaped word under the cursor, for `*` (#120 §13).
+    /// `None` on whitespace, punctuation, or past the end of the line.
+    #[allow(dead_code)]
+    // Called by the `*` arm in the next task.
+    pub(crate) fn word_under_cursor(&self) -> Option<String> {
+        let line = self.document.lines().get(self.cursor_source())?;
+        let col = self.view.cursor_col();
+        word_around(line, col).map(str::to_owned)
+    }
+
     /// The next source line matched by an enabled including filter or by the
     /// live search, walking from the cursor and wrapping once.
     ///
@@ -376,5 +386,81 @@ impl App<'_> {
         // proven (#89).
         let start = self.view.window_start();
         self.view.set_cursor_row(row.saturating_sub(start));
+    }
+}
+
+/// The maximal run of `[A-Za-z0-9_]` that contains character `col` of
+/// `line`. This is vim's default `iskeyword` narrowed to ASCII: it keeps a
+/// mangled `_ZN4core3fmt9Formatter3pad17hE` whole and stops at `::`, `.`
+/// and `(`. `col` is a character index, matching what the textarea's
+/// cursor reports, not a byte offset.
+pub(crate) fn word_around(line: &str, col: usize) -> Option<&str> {
+    let is_word = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    let chars: Vec<(usize, char)> = line.char_indices().collect();
+    let &(_, at) = chars.get(col)?;
+    if !is_word(at) {
+        return None;
+    }
+    let start = chars[..col]
+        .iter()
+        .rposition(|&(_, c)| !is_word(c))
+        .map_or(0, |i| i + 1);
+    let end = chars[col..]
+        .iter()
+        .position(|&(_, c)| !is_word(c))
+        .map_or(chars.len(), |i| col + i);
+    let byte_start = chars[start].0;
+    let byte_end = chars.get(end).map_or(line.len(), |&(b, _)| b);
+    Some(&line[byte_start..byte_end])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::word_around;
+
+    #[test]
+    fn a_word_is_a_run_of_identifier_characters_around_the_column() {
+        assert_eq!(word_around("foo::bar(x)", 0), Some("foo"));
+        assert_eq!(
+            word_around("foo::bar(x)", 2),
+            Some("foo"),
+            "last char of the word"
+        );
+        assert_eq!(word_around("foo::bar(x)", 5), Some("bar"));
+        assert_eq!(
+            word_around("foo::bar(x)", 6),
+            Some("bar"),
+            "middle of the word"
+        );
+        assert_eq!(word_around("foo::bar(x)", 9), Some("x"));
+    }
+
+    #[test]
+    fn a_mangled_name_stays_whole_and_stops_at_punctuation() {
+        let line = "_ZN4core3fmt9Formatter3pad17hE::call(a.b)";
+        assert_eq!(
+            word_around(line, 10),
+            Some("_ZN4core3fmt9Formatter3pad17hE")
+        );
+        assert_eq!(word_around(line, 37), Some("a"), "stops at the dot");
+    }
+
+    #[test]
+    fn whitespace_punctuation_and_past_the_end_have_no_word() {
+        assert_eq!(word_around("foo::bar", 3), None, "on a colon");
+        assert_eq!(word_around("a  b", 1), None, "on a space");
+        assert_eq!(word_around("abc", 3), None, "past the end");
+        assert_eq!(word_around("", 0), None);
+    }
+
+    #[test]
+    fn the_column_counts_characters_not_bytes() {
+        // Two multi-byte chars before the word: byte offsets would miss it.
+        assert_eq!(word_around("éé foo", 3), Some("foo"));
+        assert_eq!(
+            word_around("éé foo", 0),
+            None,
+            "é is not an ASCII word char"
+        );
     }
 }

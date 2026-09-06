@@ -625,6 +625,11 @@ impl FileView<'_> {
         u16::try_from(self.textarea.cursor().0.saturating_sub(usize::from(top))).unwrap_or(u16::MAX)
     }
 
+    /// The cursor column as a character index (for `word_under_cursor`).
+    pub(crate) fn cursor_col(&self) -> usize {
+        self.textarea.cursor().1
+    }
+
     /// Request that the cursor be scrolled onto `row` of the pane the next
     /// time it renders, as far as the buffer allows near its start or end.
     ///

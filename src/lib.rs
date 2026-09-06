@@ -8888,6 +8888,21 @@ mod tests {
         assert_eq!(status(&app), None);
     }
 
+    // ---- `*` (#120 §13) ----------------------------------------------------
+
+    #[test]
+    fn word_under_cursor_follows_the_view_cursor() {
+        let mut app = app_over_file("word_cursor", "foo bar\nbaz qux\n");
+        key(&mut app, KeyCode::Char('t'));
+        assert_eq!(app.word_under_cursor().as_deref(), Some("foo"));
+
+        key(&mut app, KeyCode::Char('w'));
+        assert_eq!(app.word_under_cursor().as_deref(), Some("bar"));
+
+        key(&mut app, KeyCode::Char('j'));
+        assert_eq!(app.word_under_cursor().as_deref(), Some("qux"));
+    }
+
     /// #120 §14: `3` toggles the filter the pane labels `3`. Global, so the
     /// loop can switch a filter without leaving the view.
     #[test]
