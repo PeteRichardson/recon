@@ -83,6 +83,10 @@ pub struct Section {
 /// Flat rather than context-sensitive: the overlay shows all of it whichever
 /// pane has focus. Narrowing it to the focused pane is a real improvement and
 /// deliberately deferred — see #25, where it was weighed and put off.
+///
+/// The sections after Global are the layers of #120, in the order they are
+/// checked, and a motion shared by more than one pane is documented once in
+/// "Shared motions" rather than once per pane.
 pub const KEYMAP: &[Section] = &[
     Section {
         title: "Global",
@@ -174,19 +178,82 @@ pub const KEYMAP: &[Section] = &[
         ],
     },
     Section {
+        title: "Chains",
+        bindings: &[
+            Binding {
+                keys: &["f i", "f x"],
+                action: "Add an including / excluding filter — returns on commit",
+            },
+            Binding {
+                keys: &["f c"],
+                action: "Change the selected filter — returns on commit",
+            },
+            Binding {
+                keys: &["f d", "f Enter"],
+                action: "Delete / toggle the selected filter — focus stays",
+            },
+            Binding {
+                keys: &["f f"],
+                action: "Stay in the filter pane",
+            },
+            Binding {
+                keys: &["e n"],
+                action: "Next file the filters match, from anywhere",
+            },
+            Binding {
+                keys: &["t *"],
+                action: "Search the word under the view's cursor, from the navigator",
+            },
+        ],
+    },
+    Section {
+        title: "Shared motions",
+        bindings: &[
+            Binding {
+                keys: &["j", "k", "Down", "Up"],
+                action: "Down / up one row — line, entry or filter",
+            },
+            Binding {
+                keys: &["g", "G", "Home", "End"],
+                action: "First / last row",
+            },
+            Binding {
+                keys: &["Ctrl-d", "Ctrl-u"],
+                action: "Half a page down / up",
+            },
+            Binding {
+                keys: &["PageDown", "PageUp"],
+                action: "A page down / up",
+            },
+            Binding {
+                keys: &["n", "N"],
+                action: "Next / previous interesting line, crossing files — or matching file, in the navigator",
+            },
+            Binding {
+                keys: &["Enter"],
+                action: "Open the entry; toggle the filter or set; nothing in the view",
+            },
+        ],
+    },
+    Section {
+        title: "Navigator",
+        bindings: &[
+            Binding {
+                keys: &["h", "Left"],
+                action: "Up to the parent directory",
+            },
+            Binding {
+                keys: &["l", "Right"],
+                action: "Open the entry",
+            },
+        ],
+    },
+    Section {
         title: "File view",
         bindings: &[
             Binding {
                 keys: &["h", "Left"],
                 action: "Cursor back",
-            },
-            Binding {
-                keys: &["j", "Down"],
-                action: "Cursor down",
-            },
-            Binding {
-                keys: &["k", "Up"],
-                action: "Cursor up",
             },
             Binding {
                 keys: &["l", "Right"],
@@ -209,18 +276,6 @@ pub const KEYMAP: &[Section] = &[
                 action: "Previous / next paragraph",
             },
             Binding {
-                keys: &["g", "Home"],
-                action: "Top of the file",
-            },
-            Binding {
-                keys: &["G", "End"],
-                action: "Bottom of the file",
-            },
-            Binding {
-                keys: &["n", "N"],
-                action: "Next / previous interesting line — crosses files",
-            },
-            Binding {
                 keys: &["#"],
                 action: "Toggle the line-number gutter",
             },
@@ -233,57 +288,8 @@ pub const KEYMAP: &[Section] = &[
                 action: "Scroll one line down / up",
             },
             Binding {
-                keys: &["Ctrl-d", "Ctrl-u"],
-                action: "Scroll half a page down / up",
-            },
-            Binding {
-                keys: &["Ctrl-b", "PageUp"],
-                action: "Scroll a page up",
-            },
-            Binding {
-                keys: &["Ctrl-f", "PageDown"],
-                action: "Scroll a page down",
-            },
-        ],
-    },
-    Section {
-        title: "Navigator",
-        bindings: &[
-            Binding {
-                keys: &["k", "Up"],
-                action: "Previous entry",
-            },
-            Binding {
-                keys: &["j", "Down"],
-                action: "Next entry",
-            },
-            Binding {
-                keys: &["h", "Left"],
-                action: "Up to the parent directory",
-            },
-            Binding {
-                keys: &["l", "Right", "Enter"],
-                action: "Open the entry",
-            },
-            Binding {
-                keys: &["n", "N"],
-                action: "Next / previous search match, or matching file",
-            },
-            Binding {
-                keys: &["g", "Home"],
-                action: "First entry",
-            },
-            Binding {
-                keys: &["G", "End"],
-                action: "Last entry",
-            },
-            Binding {
-                keys: &["Ctrl-d", "Ctrl-u"],
-                action: "Half a page down / up",
-            },
-            Binding {
-                keys: &["PageDown", "PageUp"],
-                action: "A page down / up",
+                keys: &["Ctrl-f", "Ctrl-b"],
+                action: "A page down / up (aliases)",
             },
         ],
     },
@@ -291,36 +297,12 @@ pub const KEYMAP: &[Section] = &[
         title: "Filter pane",
         bindings: &[
             Binding {
-                keys: &["j", "k"],
-                action: "Move the selection",
-            },
-            Binding {
-                keys: &["g", "Home"],
-                action: "First row",
-            },
-            Binding {
-                keys: &["G", "End"],
-                action: "Last row",
-            },
-            Binding {
-                keys: &["Ctrl-d", "Ctrl-u"],
-                action: "Half a page down / up",
-            },
-            Binding {
-                keys: &["PageDown", "PageUp"],
-                action: "A page down / up",
-            },
-            Binding {
                 keys: &["i"],
                 action: "Add an including filter",
             },
             Binding {
                 keys: &["x"],
                 action: "Add an excluding filter",
-            },
-            Binding {
-                keys: &["Enter"],
-                action: "Enable or disable the selected filter, or set",
             },
             Binding {
                 keys: &["c"],
@@ -753,6 +735,66 @@ mod tests {
         assert_eq!(binding.codes().collect::<Vec<_>>(), vec!['d']);
     }
 
+    /// The overlay is the model (#120 §15): one section per layer, in the
+    /// order the layers are checked, and a shared motion documented once
+    /// rather than once per pane.
+    #[test]
+    fn sections_follow_the_layer_model() {
+        let titles: Vec<&str> = KEYMAP.iter().map(|s| s.title).collect();
+        assert_eq!(
+            titles,
+            [
+                "Global",
+                "Chains",
+                "Shared motions",
+                "Navigator",
+                "File view",
+                "Filter pane",
+                "While a prompt is open",
+            ]
+        );
+
+        // A shared motion appears in exactly one section outside Global and
+        // the prompt: the shared one. Counting sections, not rows, so a key
+        // that legitimately has two rows in one section is not a failure.
+        let shared = [
+            "j", "k", "g", "G", "Home", "End", "Ctrl-d", "Ctrl-u", "PageDown", "PageUp", "n", "N",
+            "Enter",
+        ];
+        for key in shared {
+            let sections: Vec<&str> = KEYMAP
+                .iter()
+                .filter(|s| s.title != "Global" && s.title != "While a prompt is open")
+                .filter(|s| s.bindings.iter().any(|b| b.keys.contains(&key)))
+                .map(|s| s.title)
+                .collect();
+            assert_eq!(
+                sections,
+                ["Shared motions"],
+                "{key} is documented in {sections:?}"
+            );
+        }
+
+        // Pane verbs stay in their pane.
+        let pane_only = [
+            ("h", "Navigator"),
+            ("l", "Navigator"),
+            ("i", "Filter pane"),
+            ("*", "File view"),
+        ];
+        for (key, pane) in pane_only {
+            let sections: Vec<&str> = KEYMAP
+                .iter()
+                .filter(|s| s.bindings.iter().any(|b| b.keys.contains(&key)))
+                .map(|s| s.title)
+                .collect();
+            assert!(
+                sections.contains(&pane),
+                "{key} is not documented in {pane}: {sections:?}"
+            );
+        }
+    }
+
     fn inner(width: u16, height: u16) -> Rect {
         Rect {
             x: 0,
@@ -762,24 +804,24 @@ mod tests {
         }
     }
 
-    /// The case the whole layout exists for. A 150x44 terminal is unremarkable,
+    /// The case the whole layout exists for. A 190x42 terminal is unremarkable,
     /// and the keymap is the one screen where "most of it" is not good enough —
     /// the row you cannot see is exactly the one you opened it to find.
     ///
     /// It fails when the columns are sized against the *widest* row in the
     /// whole table rather than the widest in each column: two columns of the
-    /// global maximum need 151 columns, while correct per-column sizing needs
-    /// only 148. This area's width sits between them so the test fails on the
+    /// global maximum need 213 columns, while correct per-column sizing needs
+    /// only 184. This area's width sits between them so the test fails on the
     /// regression but passes on the correct layout.
     #[test]
     fn a_normal_terminal_shows_the_whole_keymap() {
         let rows = rows();
 
-        let columns = layout(&rows, inner(150, 42));
+        let columns = layout(&rows, inner(190, 42));
 
         assert_eq!(shown(&columns), rows.len(), "the keymap did not fit");
         assert!(
-            total_width(&columns) <= 150,
+            total_width(&columns) <= 190,
             "the columns overflowed the area they were fitted to"
         );
     }
@@ -790,7 +832,7 @@ mod tests {
     fn a_column_is_sized_to_its_own_widest_row() {
         let rows = rows();
 
-        let columns = layout(&rows, inner(150, 42));
+        let columns = layout(&rows, inner(190, 42));
 
         assert!(columns.len() > 1, "the table was not split into columns");
         assert!(
