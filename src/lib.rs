@@ -568,6 +568,10 @@ impl App<'_> {
                     }
                 }
             }
+            // A paste arrives as one `Char` per character. A newline in it
+            // is dropped rather than typed: the pattern is single-line, and
+            // a stray `\n` would silently make it match nothing (#120 §13).
+            KeyCode::Char('\n' | '\r') => {}
             KeyCode::Char(c) => {
                 if let Some(prompt) = self.search.as_mut() {
                     prompt.error = None;
@@ -9039,6 +9043,22 @@ mod tests {
             Some("* searches the word under the cursor · t *")
         );
         assert_eq!(app.focus, Focus::Nav);
+    }
+
+    /// A terminal paste arrives as individual `Char` events; a newline in
+    /// it must not become part of a single-line pattern (#120 §13). This
+    /// guards the `*`/paste interplay if bracketed paste is ever enabled
+    /// for #67.
+    #[test]
+    fn a_pasted_newline_is_dropped_from_the_prompt() {
+        let mut app = app_over_file("paste_newline", "alpha\n");
+        key(&mut app, KeyCode::Char('/'));
+        typed(&mut app, "al");
+        key(&mut app, KeyCode::Char('\n'));
+        key(&mut app, KeyCode::Char('\r'));
+        typed(&mut app, "pha");
+
+        assert_eq!(prompt_line(&mut app).trim_end(), "/alpha");
     }
 
     /// #120 §14: `3` toggles the filter the pane labels `3`. Global, so the
