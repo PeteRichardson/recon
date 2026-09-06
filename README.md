@@ -322,6 +322,14 @@ Global (`src/lib.rs`), handled before the focused pane sees the key:
 freed it for the overlay — it is the conventional help key in the pagers and
 file managers recon borrows the rest of its bindings from.
 
+`*` is the two-key version of "where else does this symbol appear?": the word
+under the cursor — letters, digits and `_`, so a mangled `_ZN…E` stays whole
+and `foo::bar` stops at the colons — becomes the live search, literally, and
+the cursor moves to its next occurrence exactly as `/` would. `* p` then keeps
+it as a numbered filter. There is no backward twin: `#` is the gutter, and `N`
+covers the direction. A paste into any prompt drops newlines rather than typing
+them, so a copied line never becomes a pattern that matches nothing.
+
 The overlay is a centred panel rather than a fourth pane: the three panes are
 permanent and `Tab` walks between them, while help is something you glance at
 and put away. Joining that cycle would mean tabbing past it forever after using
