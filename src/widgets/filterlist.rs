@@ -19,6 +19,10 @@ use unicode_width::UnicodeWidthStr;
 /// Rows of chrome the pane needs on top of one row per filter.
 const BORDERS: u16 = 2;
 
+/// A page, in rows, before the pane has been drawn once — see the same
+/// constant in `filenav.rs`.
+const ASSUMED_PAGE: usize = 20;
+
 /// Candidate texts for the pane's single row when no filter is defined,
 /// longest first. `render` draws the first one that fits the column.
 ///
@@ -114,6 +118,8 @@ pub(crate) fn rows(filters: &ActiveFilters) -> Vec<Row> {
 pub(crate) struct FilterList {
     pub state: ListState,
     pub active: bool,
+    /// Inner height at the last render, so page motions know their page.
+    last_height: Option<u16>,
 }
 
 impl FilterList {
@@ -135,6 +141,32 @@ impl FilterList {
         }
         let previous = self.state.selected().map_or(0, |i| i.saturating_sub(1));
         self.state.select(Some(previous));
+    }
+
+    pub(crate) fn select_first(&mut self, len: usize) {
+        if len > 0 {
+            self.state.select(Some(0));
+        }
+    }
+
+    pub(crate) fn select_last(&mut self, len: usize) {
+        if let Some(last) = len.checked_sub(1) {
+            self.state.select(Some(last));
+        }
+    }
+
+    /// Move by `delta` rows, clamping at both ends. Positive is down.
+    pub(crate) fn move_by(&mut self, delta: isize, len: usize) {
+        let Some(last) = len.checked_sub(1) else {
+            return;
+        };
+        let from = self.state.selected().unwrap_or(0);
+        self.state
+            .select(Some(from.saturating_add_signed(delta).min(last)));
+    }
+
+    fn page_rows(&self) -> usize {
+        self.last_height.map_or(ASSUMED_PAGE, usize::from).max(1)
     }
 
     /// Pull the selection back into range after the list has shrunk, and drop
@@ -160,14 +192,26 @@ impl FilterList {
     /// `App::handle_event` is: without this, `Ctrl-D` — half-page-down in the
     /// file view, and exactly the muscle memory a vim user arrives with —
     /// silently deleted the selected filter instead, since the routing that
-    /// reaches this pane discarded modifiers entirely.
+    /// reaches this pane discarded modifiers entirely. Ctrl-d now pages
+    /// instead of being dropped; see the CONTROL arm below.
     pub(crate) fn handle_key(&mut self, key: KeyEvent, rows: &[Row]) -> Option<FilterCommand> {
-        if key
-            .modifiers
-            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
-        {
+        // The two Ctrl motions are the only modified keys this pane answers.
+        // Every other modified key is dropped here — `Ctrl-D` used to read as
+        // `d` and delete the selected filter, which is the whole reason this
+        // guard exists.
+        if key.modifiers.contains(KeyModifiers::CONTROL) {
+            let half = isize::try_from((self.page_rows() / 2).max(1)).unwrap_or(isize::MAX);
+            match key.code {
+                KeyCode::Char('d') => self.move_by(half, rows.len()),
+                KeyCode::Char('u') => self.move_by(-half, rows.len()),
+                _ => {}
+            }
             return None;
         }
+        if key.modifiers.contains(KeyModifiers::ALT) {
+            return None;
+        }
+        let page = isize::try_from(self.page_rows()).unwrap_or(isize::MAX);
         match key.code {
             KeyCode::Char('j') | KeyCode::Down => {
                 self.select_next(rows.len());
@@ -175,6 +219,23 @@ impl FilterList {
             }
             KeyCode::Char('k') | KeyCode::Up => {
                 self.select_previous(rows.len());
+                return None;
+            }
+            // Shared list motions (#120 §3), same meaning as the other panes.
+            KeyCode::Char('g') | KeyCode::Home => {
+                self.select_first(rows.len());
+                return None;
+            }
+            KeyCode::Char('G') | KeyCode::End => {
+                self.select_last(rows.len());
+                return None;
+            }
+            KeyCode::PageDown => {
+                self.move_by(page, rows.len());
+                return None;
+            }
+            KeyCode::PageUp => {
+                self.move_by(-page, rows.len());
                 return None;
             }
             _ => {}
@@ -393,6 +454,7 @@ impl FilterList {
         let list = List::new(items)
             .block(crate::widgets::pane_block("Filters", self.active))
             .highlight_style(highlight);
+        self.last_height = Some(area.height.saturating_sub(BORDERS));
         StatefulWidget::render(&list, area, buf, &mut self.state);
     }
 }
@@ -1187,6 +1249,82 @@ mod tests {
             list.handle_key(KeyEvent::from(KeyCode::Char('a')), &rows),
             None
         );
+    }
+
+    // ---- shared list motions (#120 §3) ----------------------------------
+
+    /// Twelve scratch filters: enough rows for a page to be smaller than the
+    /// list on a short pane. `rows()` always appends the built-in set's own
+    /// header row after the scratch filters (#127), so the pane actually
+    /// shows thirteen rows here — the last at index 12, not 11.
+    fn twelve() -> ActiveFilters {
+        let patterns: Vec<String> = (0..12).map(|i| format!("p{i:02}")).collect();
+        let refs: Vec<&str> = patterns.iter().map(String::as_str).collect();
+        set_of(&refs, &[])
+    }
+
+    fn press(list: &mut FilterList, code: KeyCode, modifiers: KeyModifiers, rows: &[Row]) {
+        let command = list.handle_key(KeyEvent::new(code, modifiers), rows);
+        assert_eq!(command, None, "a motion is not a command");
+    }
+
+    #[test]
+    fn g_and_capital_g_select_the_first_and_last_row() {
+        let filters = twelve();
+        let rows = rows(&filters);
+        let mut list = FilterList::default();
+        list.state.select(Some(4));
+
+        press(&mut list, KeyCode::Char('G'), KeyModifiers::SHIFT, &rows);
+        assert_eq!(list.selected(), Some(12));
+        press(&mut list, KeyCode::Char('g'), KeyModifiers::NONE, &rows);
+        assert_eq!(list.selected(), Some(0));
+        press(&mut list, KeyCode::End, KeyModifiers::NONE, &rows);
+        assert_eq!(list.selected(), Some(12));
+        press(&mut list, KeyCode::Home, KeyModifiers::NONE, &rows);
+        assert_eq!(list.selected(), Some(0));
+    }
+
+    #[test]
+    fn page_motions_use_the_rendered_height_and_clamp() {
+        let filters = twelve();
+        let rows = rows(&filters);
+        let mut list = FilterList::default();
+        // 8 rows tall, 6 inside the border: a page is 6, half is 3.
+        let area = Rect::new(0, 0, 40, 8);
+        let mut buf = Buffer::empty(area);
+        list.render(&filters, area, &mut buf);
+        list.state.select(Some(0));
+
+        press(&mut list, KeyCode::Char('d'), KeyModifiers::CONTROL, &rows);
+        assert_eq!(list.selected(), Some(3), "Ctrl-d is not half a page");
+        press(&mut list, KeyCode::PageDown, KeyModifiers::NONE, &rows);
+        assert_eq!(list.selected(), Some(9), "PageDown is not a page");
+        press(&mut list, KeyCode::PageDown, KeyModifiers::NONE, &rows);
+        assert_eq!(list.selected(), Some(12), "PageDown did not clamp");
+        press(&mut list, KeyCode::Char('u'), KeyModifiers::CONTROL, &rows);
+        assert_eq!(list.selected(), Some(9), "Ctrl-u is not half a page up");
+        press(&mut list, KeyCode::PageUp, KeyModifiers::NONE, &rows);
+        press(&mut list, KeyCode::PageUp, KeyModifiers::NONE, &rows);
+        assert_eq!(list.selected(), Some(0), "PageUp did not clamp");
+    }
+
+    /// `Ctrl-d` was already guarded from reading as `d` (delete). It now
+    /// moves instead of being dropped, and still never deletes.
+    #[test]
+    fn ctrl_d_moves_and_never_deletes() {
+        let filters = twelve();
+        let rows = rows(&filters);
+        let mut list = FilterList::default();
+        list.state.select(Some(0));
+
+        let command = list.handle_key(
+            KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL),
+            &rows,
+        );
+
+        assert_eq!(command, None);
+        assert_ne!(list.selected(), Some(0), "Ctrl-d did not move");
     }
 
     #[test]

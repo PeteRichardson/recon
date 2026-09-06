@@ -284,6 +284,18 @@ pub const KEYMAP: &[Section] = &[
                 action: "Move the selection",
             },
             Binding {
+                keys: &["g", "G"],
+                action: "First / last row",
+            },
+            Binding {
+                keys: &["Ctrl-d", "Ctrl-u"],
+                action: "Half a page down / up",
+            },
+            Binding {
+                keys: &["PageDown", "PageUp"],
+                action: "A page down / up",
+            },
+            Binding {
                 keys: &["i"],
                 action: "Add an including filter",
             },
