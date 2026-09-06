@@ -291,8 +291,12 @@ pub const KEYMAP: &[Section] = &[
                 action: "Move the selection",
             },
             Binding {
-                keys: &["g", "G"],
-                action: "First / last row",
+                keys: &["g", "Home"],
+                action: "First row",
+            },
+            Binding {
+                keys: &["G", "End"],
+                action: "Last row",
             },
             Binding {
                 keys: &["Ctrl-d", "Ctrl-u"],
@@ -754,7 +758,7 @@ mod tests {
         }
     }
 
-    /// The case the whole layout exists for. A 149x44 terminal is unremarkable,
+    /// The case the whole layout exists for. A 150x44 terminal is unremarkable,
     /// and the keymap is the one screen where "most of it" is not good enough —
     /// the row you cannot see is exactly the one you opened it to find.
     ///
@@ -767,11 +771,11 @@ mod tests {
     fn a_normal_terminal_shows_the_whole_keymap() {
         let rows = rows();
 
-        let columns = layout(&rows, inner(148, 42));
+        let columns = layout(&rows, inner(150, 42));
 
         assert_eq!(shown(&columns), rows.len(), "the keymap did not fit");
         assert!(
-            total_width(&columns) <= 148,
+            total_width(&columns) <= 150,
             "the columns overflowed the area they were fitted to"
         );
     }
@@ -782,7 +786,7 @@ mod tests {
     fn a_column_is_sized_to_its_own_widest_row() {
         let rows = rows();
 
-        let columns = layout(&rows, inner(148, 42));
+        let columns = layout(&rows, inner(150, 42));
 
         assert!(columns.len() > 1, "the table was not split into columns");
         assert!(

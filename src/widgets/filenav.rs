@@ -730,6 +730,10 @@ impl FileNav<'_> {
         self.state.select(Some(next));
     }
 
+    /// A motion to the top lands on `..` when it is present, deliberately:
+    /// `..` is a row like any other and `k` reaches it same as any other row,
+    /// unlike a listing rebuild (`Select::First` via `index_of`), which skips
+    /// past it to the first real entry.
     fn select_first(&mut self) {
         if !self.visible.is_empty() {
             self.state.select(Some(0));

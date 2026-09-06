@@ -345,16 +345,20 @@ impl FilterList {
     /// renumbers the rows below it the same way deleting a filter does.
     fn texts(filters: &ActiveFilters) -> Vec<(Row, String)> {
         let numbered = numbered(filters);
+        let mut next = 0;
         rows(filters)
             .into_iter()
             .map(|row| {
                 // Built-in filters (#127) take no number: numbering, like the
-                // palette, runs over what the user wrote.
+                // palette, runs over what the user wrote. `numbered` is built
+                // by the same walk over `rows`, in the same order, so a
+                // running index into it — rather than a search per row — is
+                // enough to keep the label and the `n` key in agreement.
                 let label = match row {
-                    Row::Filter(index) => numbered
-                        .iter()
-                        .position(|&i| i == index)
-                        .map_or_else(|| " ".to_string(), |n| (n + 1).to_string()),
+                    Row::Filter(index) if numbered.get(next) == Some(&index) => {
+                        next += 1;
+                        next.to_string()
+                    }
                     _ => " ".to_string(),
                 };
                 (row, Self::row_text(filters, row, &label))
