@@ -273,8 +273,6 @@ impl App<'_> {
 
     /// The identifier-shaped word under the cursor, for `*` (#120 §13).
     /// `None` on whitespace, punctuation, or past the end of the line.
-    #[allow(dead_code)]
-    // Called by the `*` arm in the next task.
     pub(crate) fn word_under_cursor(&self) -> Option<String> {
         let line = self.document.lines().get(self.cursor_source())?;
         let col = self.view.cursor_col();

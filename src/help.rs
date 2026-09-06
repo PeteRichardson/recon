@@ -225,6 +225,10 @@ pub const KEYMAP: &[Section] = &[
                 action: "Toggle the line-number gutter",
             },
             Binding {
+                keys: &["*"],
+                action: "Search for the word under the cursor",
+            },
+            Binding {
                 keys: &["Ctrl-e", "Ctrl-y"],
                 action: "Scroll one line down / up",
             },

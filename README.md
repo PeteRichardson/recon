@@ -674,6 +674,7 @@ File view pane (`src/widgets/fileview.rs`):
 | `g` / `Home` | Move to the top |
 | `G` / `End` | Move to the bottom |
 | `#` | Toggle the line-number gutter |
+| `*` | Set the live search to the word under the cursor — a run of letters, digits and `_`, so a mangled symbol stays whole — and move to its next occurrence. `* p` makes it a numbered filter |
 | `n` / `N` | Move to the next / previous *interesting* line. Past the last one in this file, move to the first interesting line of the next file the filters match (the last, for `N`), skipping files that don't. Also works from the filter pane |
 | `Ctrl-e` / `Ctrl-y` | Scroll one line down / up |
 | `Ctrl-d` / `Ctrl-u` | Scroll half a page down / up |

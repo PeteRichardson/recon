@@ -1147,6 +1147,36 @@ impl App<'_> {
                     self.report(&format!("{c} {verb} · f {c}"), false);
                     return;
                 }
+                // `*` — the live search becomes the word under the cursor,
+                // literally, then step as `/` does (#120 §13). Vim's two-key
+                // answer to "where else does this symbol appear?", which is
+                // #67's first use case, without a selection. `regex::escape`
+                // keeps the contract literal whatever the word class becomes.
+                // Scoped to the file view, where a cursor column exists; the
+                // other panes get a hint (#120 §9). Not guarded on an empty
+                // modifier set: `*` is Shift-8 and crossterm reports the
+                // Shift, the same trap `?` and `N` document.
+                KeyCode::Char('*')
+                    if !key
+                        .modifiers
+                        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+                {
+                    if self.focus != Focus::View {
+                        self.report("* searches the word under the cursor · t *", false);
+                        return;
+                    }
+                    match self.word_under_cursor() {
+                        Some(word) => {
+                            // An escaped literal always compiles; a failure
+                            // here would be a regex-crate bug, not user input.
+                            if self.apply_search(&regex::escape(&word)).is_err() {
+                                self.report("could not search for that word", true);
+                            }
+                        }
+                        None => self.report("no word under the cursor", false),
+                    }
+                    return;
+                }
                 // Scoped away from the navigator rather than global: `n` in
                 // the navigator is the navigator's key (next filename-search
                 // hit, else next matching file) and stays that way. The
@@ -8901,6 +8931,114 @@ mod tests {
 
         key(&mut app, KeyCode::Char('j'));
         assert_eq!(app.word_under_cursor().as_deref(), Some("qux"));
+    }
+
+    /// `*` is vim's two-key version of #67's first use case: a long,
+    /// possibly mangled symbol under the cursor — where else does it appear?
+    #[test]
+    fn star_searches_for_the_word_under_the_cursor_and_steps() {
+        let mut app = app_over_file("star_basic", "foo bar\nbar\nfoo\n");
+        key(&mut app, KeyCode::Char('t'));
+
+        key(&mut app, KeyCode::Char('*'));
+
+        let search = app.filters.search().expect("a live search was set");
+        assert_eq!(search.predicate.display(), "foo");
+        assert_eq!(
+            cursor_source(&app),
+            2,
+            "did not step to the next occurrence"
+        );
+
+        key(&mut app, KeyCode::Char('k'));
+        key(&mut app, KeyCode::Char('k'));
+        key(&mut app, KeyCode::Char('w'));
+        key(&mut app, KeyCode::Char('*'));
+        assert_eq!(app.filters.search().unwrap().predicate.display(), "bar");
+        assert_eq!(cursor_source(&app), 1);
+    }
+
+    #[test]
+    fn star_keeps_a_mangled_name_whole() {
+        let body = "_ZN4core3fmt9Formatter3pad17hE::x\nplain\n_ZN4core3fmt9Formatter3pad17hE\n";
+        let mut app = app_over_file("star_mangled", body);
+        key(&mut app, KeyCode::Char('t'));
+        key(&mut app, KeyCode::Char('l'));
+        key(&mut app, KeyCode::Char('l'));
+
+        key(&mut app, KeyCode::Char('*'));
+
+        assert_eq!(
+            app.filters.search().unwrap().predicate.display(),
+            "_ZN4core3fmt9Formatter3pad17hE"
+        );
+        assert_eq!(cursor_source(&app), 2);
+    }
+
+    #[test]
+    fn star_on_whitespace_says_so() {
+        let mut app = app_over_file("star_space", "a  b\n");
+        key(&mut app, KeyCode::Char('t'));
+        key(&mut app, KeyCode::Char('l'));
+
+        key(&mut app, KeyCode::Char('*'));
+
+        assert!(
+            app.filters.search().is_none(),
+            "a search was set from whitespace"
+        );
+        assert_eq!(status(&app), Some("no word under the cursor"));
+    }
+
+    /// `* p`: the whole "symbol to filter" flow without a selection (#67).
+    #[test]
+    fn star_then_p_promotes_the_literal_word() {
+        let mut app = app_over_file("star_promote", "foo bar\nfoo\n");
+        key(&mut app, KeyCode::Char('t'));
+
+        key(&mut app, KeyCode::Char('*'));
+        key(&mut app, KeyCode::Char('p'));
+
+        assert!(
+            app.filters.search().is_none(),
+            "p did not consume the search"
+        );
+        assert_eq!(app.filters.len(), 1);
+        let numbered = widgets::filterlist::numbered(&app.filters);
+        assert_eq!(
+            app.filters.filters()[numbered[0]].predicate.display(),
+            "foo"
+        );
+    }
+
+    /// Shift arrives with `*` on most layouts; the arm must not be guarded
+    /// on an empty modifier set (the `?`/`N` trap).
+    #[test]
+    fn star_works_with_shift_reported() {
+        let mut app = app_over_file("star_shift", "foo\nfoo\n");
+        key(&mut app, KeyCode::Char('t'));
+
+        app.handle_event(event::Event::Key(event::KeyEvent::new(
+            KeyCode::Char('*'),
+            KeyModifiers::SHIFT,
+        )));
+
+        assert!(app.filters.search().is_some());
+    }
+
+    #[test]
+    fn star_outside_the_view_hints_at_t_star() {
+        let mut app = app_over_file("star_hint", "foo\n");
+        key(&mut app, KeyCode::Char('e'));
+
+        key(&mut app, KeyCode::Char('*'));
+
+        assert!(app.filters.search().is_none());
+        assert_eq!(
+            status(&app),
+            Some("* searches the word under the cursor · t *")
+        );
+        assert_eq!(app.focus, Focus::Nav);
     }
 
     /// #120 §14: `3` toggles the filter the pane labels `3`. Global, so the
