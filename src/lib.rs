@@ -1121,6 +1121,28 @@ impl App<'_> {
                     self.skip_file(c == ',');
                     return;
                 }
+                // A filter-pane verb pressed anywhere else says so, for one
+                // keypress, instead of doing nothing (#120 §9). Not a
+                // redirect: making `i` global would collapse `f i` and `i`,
+                // and `x`-not-`e` for exclude exists because `e` is a focus
+                // key. The chain stays the answer; the hint teaches it.
+                // These seven letters are unbound in the navigator and the
+                // file view, so this arm shadows nothing.
+                KeyCode::Char(c @ ('i' | 'x' | 'c' | 'd' | 'm' | 'a' | 's'))
+                    if key.modifiers.is_empty() && self.focus != Focus::Filters =>
+                {
+                    let verb = match c {
+                        'i' => "adds a filter",
+                        'x' => "adds an excluding filter",
+                        'c' => "changes the selected filter",
+                        'd' => "deletes the selected filter",
+                        'm' => "toggles include and context",
+                        'a' => "picks a profile for the set",
+                        _ => "solos the set",
+                    };
+                    self.report(&format!("{c} {verb} · f {c}"), false);
+                    return;
+                }
                 // Scoped away from the navigator rather than global: `n` in
                 // the navigator is the navigator's key (next filename-search
                 // hit, else next matching file) and stays that way. The
@@ -1936,6 +1958,20 @@ impl App<'_> {
         // `e`-to-explorer from this pane, which is the one thing these focus
         // keys exist to provide.
         if key.modifiers.is_empty() {
+            // The navigator's `h`/`l` in this pane: a hint, not a redirect,
+            // for the same reason as the filter verbs elsewhere (#120 §9).
+            match key.code {
+                KeyCode::Char('h') => {
+                    self.report("h goes up a directory · e h", false);
+                    return;
+                }
+                KeyCode::Char('l') => {
+                    self.report("l opens the entry · e l", false);
+                    return;
+                }
+                _ => {}
+            }
+
             let kind = match key.code {
                 KeyCode::Char('i') => Some(PromptKind::Filter),
                 KeyCode::Char('x') => Some(PromptKind::Exclude),
@@ -8596,6 +8632,81 @@ mod tests {
         key(&mut app, KeyCode::Enter);
 
         assert_eq!(shown(&app), before, "the doubled Enter opened an entry");
+    }
+
+    // ---- wrong-pane hints (#120 §9) ---------------------------------------
+
+    fn status<'a>(app: &'a App<'a>) -> Option<&'a str> {
+        app.status_message.as_ref().map(|m| m.text.as_str())
+    }
+
+    #[test]
+    fn a_filter_verb_in_the_view_hints_at_the_chain() {
+        let mut app = app_over_file("hint_view", "alpha\n");
+        key(&mut app, KeyCode::Char('t'));
+
+        key(&mut app, KeyCode::Char('i'));
+
+        assert_eq!(status(&app), Some("i adds a filter · f i"));
+        assert!(app.search.is_none(), "a prompt opened");
+        assert_eq!(app.focus, Focus::View, "focus moved");
+    }
+
+    #[test]
+    fn every_filter_verb_hints_in_the_navigator() {
+        let mut app = app_over("hint_nav", &["a.log"]);
+        key(&mut app, KeyCode::Char('e'));
+        let expected = [
+            ('i', "i adds a filter · f i"),
+            ('x', "x adds an excluding filter · f x"),
+            ('c', "c changes the selected filter · f c"),
+            ('d', "d deletes the selected filter · f d"),
+            ('m', "m toggles include and context · f m"),
+            ('a', "a picks a profile for the set · f a"),
+            ('s', "s solos the set · f s"),
+        ];
+        for (c, text) in expected {
+            key(&mut app, KeyCode::Char(c));
+            assert_eq!(status(&app), Some(text), "hint for {c}");
+            assert_eq!(app.focus, Focus::Nav, "{c} moved focus");
+        }
+        assert!(app.filters.is_empty(), "a verb acted outside its pane");
+    }
+
+    #[test]
+    fn a_hint_lasts_one_keypress() {
+        let mut app = app_over_file("hint_gone", "alpha\nbeta\n");
+        key(&mut app, KeyCode::Char('t'));
+        key(&mut app, KeyCode::Char('i'));
+        assert!(status(&app).is_some(), "sanity");
+
+        key(&mut app, KeyCode::Char('j'));
+
+        assert_eq!(status(&app), None);
+    }
+
+    #[test]
+    fn h_and_l_in_the_filter_pane_hint_at_the_navigator() {
+        let mut app = app_over("hint_pane", &["a.log"]);
+        key(&mut app, KeyCode::Char('f'));
+
+        key(&mut app, KeyCode::Char('h'));
+        assert_eq!(status(&app), Some("h goes up a directory · e h"));
+        key(&mut app, KeyCode::Char('l'));
+        assert_eq!(status(&app), Some("l opens the entry · e l"));
+        assert_eq!(app.focus, Focus::Filters);
+    }
+
+    /// The hint does not fire where the verb is real.
+    #[test]
+    fn a_filter_verb_in_the_filter_pane_is_not_a_hint() {
+        let mut app = app_over_file("hint_real", "alpha\n");
+        key(&mut app, KeyCode::Char('f'));
+
+        key(&mut app, KeyCode::Char('i'));
+
+        assert!(app.search.is_some(), "i did not open the prompt");
+        assert_eq!(status(&app), None);
     }
 
     /// #120 §14: `3` toggles the filter the pane labels `3`. Global, so the
