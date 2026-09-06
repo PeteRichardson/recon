@@ -109,7 +109,7 @@ pub const KEYMAP: &[Section] = &[
             },
             Binding {
                 keys: &["f"],
-                action: "Focus the filter pane",
+                action: "Focus the filter pane; f i / f x / f c return on commit",
             },
             Binding {
                 keys: &["/"],
