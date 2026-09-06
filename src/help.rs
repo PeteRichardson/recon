@@ -231,7 +231,7 @@ pub const KEYMAP: &[Section] = &[
             },
             Binding {
                 keys: &["Enter"],
-                action: "Open the entry / toggle the filter; nothing in the view",
+                action: "Open the entry; toggle the filter or set; not the view",
             },
         ],
     },
@@ -815,7 +815,7 @@ mod tests {
     /// It fails when the columns are sized against the *widest* row in the
     /// whole table rather than the widest in each column: two columns of the
     /// global maximum need 151 columns, while correct per-column sizing needs
-    /// only 149. This area's width sits between them so the test fails on the
+    /// only 148. This area's width sits between them so the test fails on the
     /// regression but passes on the correct layout.
     #[test]
     fn a_normal_terminal_shows_the_whole_keymap() {
