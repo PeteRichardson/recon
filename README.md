@@ -863,6 +863,17 @@ key that alternates hands against a right-hand vim vocabulary without leaving
 the home position. Toggling a filter is a setup action, and `Enter` already
 does it.
 
+Hide mode moved to `u` because it is toggled constantly during a review and lived
+behind Shift (`H`) or behind a key many terminals deliver as Backspace (`Ctrl-H`).
+`u` is "toggle **u**nmatched lines", which is what the mode does; vim's `u` is undo,
+and recon has no undo, so no habit collides. The two old keys stay as aliases. The
+list motions (`g`/`G`, `Ctrl-d`/`Ctrl-u`, `PageUp`/`PageDown`) are the same in every
+list pane for the same reason `n` is: a key with one meaning is one you stop
+thinking about. `Esc` clears the focused pane's own search before the live one, so a
+navigator search you thought you had dismissed cannot keep driving `n`. And the
+digits toggle the filter the pane numbers, from anywhere, because switching a filter
+off to see what it was hiding is a loop action, not a setup one.
+
 `i` and `x` work only while this pane has focus, which is what `f` is for —
 `f i` and `f x` reach them from anywhere, and `f` is a no-op when the pane
 already has focus, so the pair is always correct. They are deliberately not
