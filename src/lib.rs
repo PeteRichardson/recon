@@ -277,6 +277,13 @@ pub struct App<'a> {
     /// row — which costs them one extra press and is indistinguishable from
     /// the bounce anyway.
     swallow_next_enter: bool,
+    /// The pane that had focus when `f` moved it to the filter pane, so a
+    /// chain that commits a prompt — `f i … Enter`, `f x … Enter`,
+    /// `f c … Enter` — can put focus back and step as `n` would (#120 §8,
+    /// decision (a)). `None` once any other focus change, a prompt cancel,
+    /// or a second `f` ends the chain; a toggle or delete inside the pane
+    /// does not end it, because those are often one of several.
+    chain_origin: Option<Focus>,
     /// Whether the keymap overlay is covering the panes (#25).
     ///
     /// A plain flag rather than a fourth pane: the three panes are persistent
@@ -469,6 +476,7 @@ impl App<'_> {
             peek: None,
             crossing: None,
             swallow_next_enter: false,
+            chain_origin: None,
             help: false,
             picker: None,
             save_path: filtersets::path(),
@@ -490,7 +498,10 @@ impl App<'_> {
     /// are typed into the pattern rather than acted on.
     fn handle_search_key(&mut self, key: event::KeyEvent) {
         match key.code {
-            KeyCode::Esc => self.search = None,
+            KeyCode::Esc => {
+                self.search = None;
+                self.chain_origin = None;
+            }
             KeyCode::Enter => {
                 let Some(prompt) = self.search.as_ref() else {
                     return;
@@ -533,6 +544,12 @@ impl App<'_> {
                     // open, so the next `Enter` is another commit attempt and
                     // never reaches the filter pane to be swallowed.
                     self.swallow_next_enter = true;
+                    if matches!(
+                        kind,
+                        PromptKind::Filter | PromptKind::Exclude | PromptKind::Edit { .. }
+                    ) {
+                        self.return_to_chain_origin();
+                    }
                 } else if let Some(prompt) = self.search.as_mut() {
                     prompt.error = Some(INVALID_PATTERN.to_string());
                 }
@@ -543,6 +560,7 @@ impl App<'_> {
                     // Backspacing past the start abandons the search, as in vim.
                     if prompt.pattern.pop().is_none() {
                         self.search = None;
+                        self.chain_origin = None;
                     }
                 }
             }
@@ -1026,7 +1044,11 @@ impl App<'_> {
                 // pane — see `handle_filter_key`, which owns `i` and `x`
                 // because opening a prompt is `App`'s to do.
                 KeyCode::Char('f') if key.modifiers.is_empty() => {
+                    // A second `f` while the pane has focus is the sticky
+                    // gesture: the user is staying, so no chain to return.
+                    let origin = (self.focus != Focus::Filters).then_some(self.focus);
                     self.reveal_and_focus(Focus::Filters);
+                    self.chain_origin = origin;
                     return;
                 }
                 // Global, and claimed above every pane rather than in any of
@@ -2145,6 +2167,7 @@ impl App<'_> {
     /// names its pane directly, so there is no lookup left to get wrong
     /// (#73).
     fn focus_next(&mut self) {
+        self.chain_origin = None;
         self.focus = self.focus.next();
         // The zoomed pane is always the focused pane, so the cursor is never
         // on a pane that is not on screen. This lives inside `focus_next`
@@ -2158,6 +2181,7 @@ impl App<'_> {
     /// `Shift-Tab`. Same zoom rule as `focus_next`, kept inside the method
     /// for the same reason.
     fn focus_prev(&mut self) {
+        self.chain_origin = None;
         self.focus = self.focus.prev();
         if self.zoom.is_some() {
             self.zoom = Some(self.focus);
@@ -2199,6 +2223,7 @@ impl App<'_> {
     /// that job too.
     fn zoom_file_view(&mut self) {
         if self.toggle_zoom(Focus::View) {
+            self.chain_origin = None;
             self.focus = Focus::View;
         }
     }
@@ -2211,8 +2236,27 @@ impl App<'_> {
     /// that moved the cursor onto a pane the user cannot see would be worse
     /// than no key at all.
     fn reveal_and_focus(&mut self, pane: Focus) {
+        self.chain_origin = None;
         self.zoom = None;
         self.focus = pane;
+    }
+
+    /// End a chain that just committed: focus goes back to where `f` was
+    /// pressed, and the app behaves as if `n` were pressed there — the
+    /// first `fn` after `f i fn Enter` from the view, the next matching
+    /// file from the navigator. Dispatching a real `n` rather than calling
+    /// either step directly is what keeps "as if `n`" true per pane.
+    ///
+    /// Nothing to do when `f` was not what brought focus here.
+    fn return_to_chain_origin(&mut self) {
+        let Some(origin) = self.chain_origin.take() else {
+            return;
+        };
+        self.reveal_and_focus(origin);
+        self.dispatch_event(event::Event::Key(event::KeyEvent::from(KeyCode::Char('n'))));
+        // The synthetic `n` spent the bounce guard; re-arm it, since the
+        // `Enter` that committed is still the last key the user pressed.
+        self.swallow_next_enter = true;
     }
 
     /// Mark each pane as focused or not, before drawing.
@@ -5782,6 +5826,7 @@ mod tests {
         key(&mut app, KeyCode::Char('i'));
         typed(&mut app, "foo");
         key(&mut app, KeyCode::Enter);
+        key(&mut app, KeyCode::Char('f'));
         key(&mut app, KeyCode::Char('i'));
         typed(&mut app, "bar");
         key(&mut app, KeyCode::Enter);
@@ -7166,6 +7211,7 @@ mod tests {
         typed(&mut app, "alpha");
         key(&mut app, KeyCode::Enter);
 
+        key(&mut app, KeyCode::Char('f'));
         key(&mut app, KeyCode::Char('c'));
         assert_eq!(
             app.search.as_ref().expect("prompt open").line(),
@@ -8381,6 +8427,175 @@ mod tests {
 
         key(&mut app, KeyCode::Char('n'));
         assert_eq!(cursor_source(&app), 3);
+    }
+
+    // ---- chains return focus (#120 §8, decision (a)) ---------------------
+
+    /// `f i fn Enter` from the file view: the filter is added, focus comes
+    /// back, and the cursor lands on the first `fn` as if `n` were pressed.
+    #[test]
+    fn f_i_enter_from_the_view_returns_and_steps() {
+        let mut app = app_over_file("chain_fi_view", "plain\nfn one\nplain\nfn two\n");
+        key(&mut app, KeyCode::Char('t'));
+        assert_eq!(cursor_source(&app), 0, "sanity");
+
+        key(&mut app, KeyCode::Char('f'));
+        key(&mut app, KeyCode::Char('i'));
+        typed(&mut app, "fn");
+        key(&mut app, KeyCode::Enter);
+
+        // `len()`, not `filters().len()`: the built-in definitions set (#127)
+        // adds eleven rows of its own, and this is asking whether the user's
+        // one filter landed, not counting recon's.
+        assert_eq!(app.filters.len(), 1, "the filter was not added");
+        assert_eq!(app.focus, Focus::View, "focus did not return");
+        assert_eq!(cursor_source(&app), 1, "did not step to the first hit");
+        assert!(app.chain_origin.is_none(), "origin not consumed");
+    }
+
+    /// From the navigator, the return acts as the navigator's `n`. A
+    /// filename search is the observable form: adding a filter changes the
+    /// scan cache key, so match marks cannot be pre-sent in a test, but the
+    /// navigator's search-repeat needs no scan at all.
+    #[test]
+    fn f_i_enter_from_the_navigator_returns_and_repeats_its_n() {
+        let mut app = app_over("chain_fi_nav", &["a.log", "b.log", "c.log"]);
+        key(&mut app, KeyCode::Char('e'));
+        key(&mut app, KeyCode::Char('/'));
+        typed(&mut app, "log");
+        key(&mut app, KeyCode::Enter);
+        // The navigator starts on `a.log` and its search steps forward from
+        // there, like the `n` it shares an implementation with — the first
+        // match strictly after the current selection, not the current
+        // selection itself even when it too matches. So `/log` lands on
+        // `b.log`, not `a.log`.
+        assert_eq!(app.nav.selected_name().as_deref(), Some("b.log"), "sanity");
+
+        key(&mut app, KeyCode::Char('f'));
+        key(&mut app, KeyCode::Char('i'));
+        typed(&mut app, "x");
+        key(&mut app, KeyCode::Enter);
+
+        assert_eq!(app.focus, Focus::Nav, "focus did not return");
+        assert_eq!(
+            app.nav.selected_name().as_deref(),
+            Some("c.log"),
+            "the return did not act as the navigator's n"
+        );
+    }
+
+    /// `f c … Enter` (edit) returns too; `f d`, `f Enter` and plain `f` do not.
+    #[test]
+    fn f_c_returns_but_f_d_and_f_enter_stay() {
+        let mut app = app_over_file("chain_fc", "alpha\nbeta\n");
+        key(&mut app, KeyCode::Char('t'));
+        app.filters.add("alpha").expect("valid pattern");
+        app.filters.add("beta").expect("valid pattern");
+        app.refresh_view();
+
+        key(&mut app, KeyCode::Char('f'));
+        // Filters added directly leave the pane with no selection; `j`
+        // selects the first row, which is what a user would do before `c`.
+        key(&mut app, KeyCode::Char('j'));
+        key(&mut app, KeyCode::Char('c'));
+        typed(&mut app, "x");
+        key(&mut app, KeyCode::Enter);
+        assert_eq!(app.focus, Focus::View, "f c … Enter did not return");
+
+        key(&mut app, KeyCode::Char('f'));
+        key(&mut app, KeyCode::Enter);
+        assert_eq!(app.focus, Focus::Filters, "f Enter returned");
+
+        key(&mut app, KeyCode::Char('d'));
+        assert_eq!(app.focus, Focus::Filters, "f d returned");
+        // `len()`, not `filters().len()` — see the comment above.
+        assert_eq!(app.filters.len(), 1, "d did not delete");
+    }
+
+    /// A focus change inside the chain ends it: `f Tab i … Enter` stays put.
+    #[test]
+    fn a_focus_change_after_f_ends_the_chain() {
+        let mut app = app_over_file("chain_tab", "alpha\n");
+        key(&mut app, KeyCode::Char('t'));
+
+        key(&mut app, KeyCode::Char('f'));
+        key(&mut app, KeyCode::Tab);
+        key(&mut app, KeyCode::Tab);
+        key(&mut app, KeyCode::Tab);
+        assert_eq!(app.focus, Focus::Filters, "sanity: back on the pane");
+        key(&mut app, KeyCode::Char('i'));
+        typed(&mut app, "alpha");
+        key(&mut app, KeyCode::Enter);
+
+        assert_eq!(
+            app.focus,
+            Focus::Filters,
+            "returned after a Tab broke the chain"
+        );
+    }
+
+    /// `f f` is the sticky gesture: a second `f` keeps focus in the pane.
+    #[test]
+    fn f_f_makes_the_pane_sticky() {
+        let mut app = app_over_file("chain_ff", "alpha\n");
+        key(&mut app, KeyCode::Char('t'));
+
+        key(&mut app, KeyCode::Char('f'));
+        key(&mut app, KeyCode::Char('f'));
+        key(&mut app, KeyCode::Char('i'));
+        typed(&mut app, "alpha");
+        key(&mut app, KeyCode::Enter);
+
+        assert_eq!(app.focus, Focus::Filters);
+    }
+
+    /// A cancelled prompt ends the chain: `f i … Esc`, then `i … Enter`, stays.
+    #[test]
+    fn a_cancelled_prompt_ends_the_chain() {
+        let mut app = app_over_file("chain_cancel", "alpha\n");
+        key(&mut app, KeyCode::Char('t'));
+
+        key(&mut app, KeyCode::Char('f'));
+        key(&mut app, KeyCode::Char('i'));
+        typed(&mut app, "al");
+        key(&mut app, KeyCode::Esc);
+        key(&mut app, KeyCode::Char('i'));
+        typed(&mut app, "alpha");
+        key(&mut app, KeyCode::Enter);
+
+        assert_eq!(app.focus, Focus::Filters);
+    }
+
+    /// Search prompts are not chains: `f / … Enter` and `S … Enter` stay.
+    #[test]
+    fn search_and_save_prompts_do_not_return() {
+        let mut app = app_over_file("chain_search", "alpha\n");
+        key(&mut app, KeyCode::Char('t'));
+
+        key(&mut app, KeyCode::Char('f'));
+        key(&mut app, KeyCode::Char('/'));
+        typed(&mut app, "alpha");
+        key(&mut app, KeyCode::Enter);
+
+        assert_eq!(app.focus, Focus::Filters, "a search commit returned");
+    }
+
+    /// The `Enter` that commits is still swallowed once after the return,
+    /// so it cannot also open the navigator's selection.
+    #[test]
+    fn the_committing_enter_is_swallowed_after_a_return() {
+        let mut app = app_over("chain_swallow", &["a.log", "b.log"]);
+        key(&mut app, KeyCode::Char('e'));
+        let before = shown(&app);
+
+        key(&mut app, KeyCode::Char('f'));
+        key(&mut app, KeyCode::Char('i'));
+        typed(&mut app, "x");
+        key(&mut app, KeyCode::Enter);
+        assert_eq!(app.focus, Focus::Nav, "sanity: returned");
+        key(&mut app, KeyCode::Enter);
+
+        assert_eq!(shown(&app), before, "the doubled Enter opened an entry");
     }
 
     /// #120 §14: `3` toggles the filter the pane labels `3`. Global, so the
