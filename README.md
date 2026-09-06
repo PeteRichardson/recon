@@ -292,6 +292,17 @@ Adding a binding without documenting it breaks the build. The test says nothing
 about *this* section, which is still hand-maintained — so a new key needs a row
 here too.
 
+Every key lives in one of four layers, checked in this order, and the tables
+below follow them. A **prompt**, while open, takes every key. **Global** keys
+mean one thing everywhere and are handled before any pane sees them.
+**Chains** are a focus key followed by a pane key — `f i` adds a filter from
+anywhere, and costs nothing extra from inside the pane, where `f` is a no-op.
+**Pane** keys are either *shared motions*, bound in every pane where the idea
+exists with the same meaning, or *pane verbs* that only make sense in one place
+and are reached from elsewhere by a chain. Two rules hold across all of it: a
+key with a direction has a partner, and where vim has an opinion recon follows
+it unless a paragraph here says why not.
+
 Global (`src/lib.rs`), handled before the focused pane sees the key:
 
 | Key(s) | Action |
@@ -331,6 +342,32 @@ close it, rather than reserving some keys for scrolling. The status row stays
 visible underneath, so the HIDE badge still tells the truth while you are
 reading about `u`. On a terminal too small for the whole table, the bottom
 border says how many rows were cut.
+
+Chains — a focus key, then a pane key. Documented as commands because they
+are how a pane verb is reached from anywhere:
+
+| Keys | Action |
+| --- | --- |
+| `f i` / `f x` | Add an including / excluding filter. When the prompt commits, focus returns to where you were and `n` runs there |
+| `f c` | Change the selected filter's pattern; returns on commit the same way |
+| `f d` / `f Enter` | Delete / toggle the selected filter; focus stays in the pane, since one delete is often the first of several |
+| `f f` | Stay in the filter pane — the second `f` ends the chain |
+| `e n` | Move the navigator to the next file the filters match |
+| `t *` | Search for the word under the file view's cursor, from the navigator |
+
+Shared motions — the same key, the same meaning, in every pane where the idea
+exists:
+
+| Key(s) | Navigator | File view | Filter pane |
+| --- | --- | --- | --- |
+| `j` / `k`, `Down` / `Up` | next / previous entry | cursor down / up | next / previous row |
+| `g` / `G`, `Home` / `End` | first / last entry | top / bottom of the file | first / last row |
+| `Ctrl-d` / `Ctrl-u` | half a page | half a page | half a page |
+| `PageDown` / `PageUp` | a page | a page (also `Ctrl-f` / `Ctrl-b`) | a page |
+| `n` / `N` | next / previous filename-search match, or file the filters match | next / previous interesting line, crossing files | acts on the file view |
+| `Enter` | open the entry | — | toggle the filter, or the set |
+
+`[` and `]` page the file view from every pane and so live in the Global table.
 
 The overlay shows every binding, not just the focused pane's. Context-sensitive
 help is a genuine improvement and deliberately deferred; see issue #25.
@@ -664,22 +701,15 @@ File view pane (`src/widgets/fileview.rs`):
 | --- | --- |
 | `h` / `Left` | Move cursor back |
 | `Ctrl-h` | Nothing here — the global `Ctrl-H` hide toggle handles it first. Plain `h` still moves the cursor back. |
-| `j` / `Down` | Move cursor down |
-| `k` / `Up` | Move cursor up |
 | `l` / `Right` | Move cursor forward |
 | `w` | Move to the next word |
 | `0` / `^` | Move to the start of the line |
 | `$` | Move to the end of the line |
 | `{` / `}` | Move by paragraph, back / forward |
-| `g` / `Home` | Move to the top |
-| `G` / `End` | Move to the bottom |
 | `#` | Toggle the line-number gutter |
 | `*` | Set the live search to the word under the cursor — a run of letters, digits and `_`, so a mangled symbol stays whole — and move to its next occurrence. `* p` makes it a numbered filter |
-| `n` / `N` | Move to the next / previous *interesting* line. Past the last one in this file, move to the first interesting line of the next file the filters match (the last, for `N`), skipping files that don't. Also works from the filter pane |
 | `Ctrl-e` / `Ctrl-y` | Scroll one line down / up |
-| `Ctrl-d` / `Ctrl-u` | Scroll half a page down / up |
-| `Ctrl-b` / `PageUp` | Scroll a page up |
-| `Ctrl-f` / `PageDown` | Scroll a page down |
+| `Ctrl-f` / `Ctrl-b` | Page down / up — aliases for `PageDown` / `PageUp` |
 
 `*` is the two-key version of "where else does this symbol appear?": the word
 under the cursor — letters, digits and `_`, so a mangled `_ZN…E` stays whole
@@ -694,9 +724,9 @@ is not typed into it, and a pasted carriage return commits it, exactly as
 trade was deliberate, since returning to the navigator from a maximised file
 view is exactly when you need `e`. `w` still moves forward by word.
 
-`n` and `N` are handled globally, the same as `u`, so — like that key —
-they reach this table from the filter pane as well as the file view; the
-navigator keeps its own `n`/`N`, described below. An *interesting* line here is
+`n` and `N` are handled globally, the same as `u`, so — like that key — they
+act on the file view from the filter pane as well; the navigator keeps its
+own `n`/`N`, described below. An *interesting* line here is
 one an enabled including filter or the live search matches; stepping treats a
 line with several hits as a single stop, not one per hit, and wraps at the
 ends of the file only as the fallback taken when no other file the filters
@@ -716,15 +746,8 @@ Navigator pane (`src/widgets/filenav.rs`):
 
 | Key(s) | Action |
 | --- | --- |
-| `k` / `Up` | Select the previous entry |
-| `j` / `Down` | Select the next entry |
 | `h` / `Left` | Go to the parent directory, landing on the directory just left |
-| `l` / `Right` / `Enter` | Open the selected entry — descend into a directory, or load a file |
-| `n` / `N` | Repeat the last filename search, forward / reversed — or, with no search active, move to the next / previous file the filters match |
-| `g` / `Home` | Select the first entry |
-| `G` / `End` | Select the last entry |
-| `Ctrl-d` / `Ctrl-u` | Move half a page down / up |
-| `PageDown` / `PageUp` | Move a page down / up |
+| `l` / `Right` | Open the selected entry — descend into a directory, or load a file (`Enter` does the same) |
 
 `h` and `l` act on the pane rather than on the row: `h` climbs out whatever is
 selected, and `l` is `Enter` in every case, including on a file. They mean
@@ -803,13 +826,6 @@ screen whenever the navigator is:
 | --- | --- |
 | `i` | Add an include filter — opens the prompt at the bottom row |
 | `x` | Add an exclude filter — its matches leave the view entirely |
-| `k` / `Up` | Select the previous filter |
-| `j` / `Down` | Select the next filter |
-| `g` / `Home` | Select the first row |
-| `G` / `End` | Select the last row |
-| `Ctrl-d` / `Ctrl-u` | Move half a page down / up |
-| `PageDown` / `PageUp` | Move a page down / up |
-| `Enter` | Enable or disable the selected filter — or, on a header row, the selected set |
 | `d` | Delete the selected filter |
 | `c` | Change the selected filter's pattern — reopens the prompt over it |
 | `m` | Toggle the selected filter between *include* and *context* — see below |
