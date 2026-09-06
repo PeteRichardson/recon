@@ -276,6 +276,10 @@ pub struct App<'a> {
     /// two only disagree when a user deliberately presses `Enter` twice in a
     /// row — which costs them one extra press and is indistinguishable from
     /// the bounce anyway.
+    ///
+    /// A chain return spends this guard on its synthetic `n` and immediately
+    /// re-arms it for the real `Enter` still pending — see
+    /// `return_to_chain_origin`.
     swallow_next_enter: bool,
     /// The pane that had focus when `f` moved it to the filter pane, so a
     /// chain that commits a prompt — `f i … Enter`, `f x … Enter`,
@@ -1297,7 +1301,28 @@ impl App<'_> {
         // `perform` — resync here instead, without re-reading the file.
         let was_truncated = self.file_view_truncated();
         let action = match self.focus {
-            Focus::Nav => self.nav.handle_events(event),
+            Focus::Nav => {
+                // `n`/`N` land here whether they came from the user or from
+                // `return_to_chain_origin`'s synthetic `n`; either way, a
+                // `None` back means there was nothing to step to, and the
+                // status row is the only way that reaches the user — the
+                // key otherwise does nothing at all. `j`/`k` and every other
+                // key that can also return `None` say nothing, so this is
+                // gated on the key rather than on the result.
+                let is_step_key = matches!(&event, event::Event::Key(key)
+                    if matches!(key.code, KeyCode::Char('n' | 'N'))
+                        && !key.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT));
+                let action = self.nav.handle_events(event);
+                if action.is_none() && is_step_key {
+                    let text = if self.nav.has_search() {
+                        "no more matches"
+                    } else {
+                        "no matching file"
+                    };
+                    self.report(text, false);
+                }
+                action
+            }
             Focus::View => {
                 self.forward_to_view(event);
                 return;
@@ -2258,8 +2283,8 @@ impl App<'_> {
     /// is the documented way back, precisely so `b` does not have to carry
     /// that job too.
     fn zoom_file_view(&mut self) {
+        self.chain_origin = None;
         if self.toggle_zoom(Focus::View) {
-            self.chain_origin = None;
             self.focus = Focus::View;
         }
     }
@@ -2289,6 +2314,13 @@ impl App<'_> {
             return;
         };
         self.reveal_and_focus(origin);
+        // The commit that got us here changed the filter set, but the
+        // outer `handle_event` loop has not run `refresh_scan` yet — this
+        // is still inside the same `dispatch_event` that is doing the
+        // committing. Re-key the marks to `Unknown` now, before the
+        // synthetic `n` below reads them, or it would step to (or fail to
+        // find) a match against the filter set the user just replaced.
+        self.refresh_scan(false);
         self.dispatch_event(event::Event::Key(event::KeyEvent::from(KeyCode::Char('n'))));
         // The synthetic `n` spent the bounce guard; re-arm it, since the
         // `Enter` that committed is still the last key the user pressed.
@@ -4241,10 +4273,14 @@ mod tests {
     #[test]
     fn the_status_line_reports_filters_and_lines_shown() {
         let mut app = app_over_file("status_some", "alpha\nbeta\ngamma\n");
-        key(&mut app, KeyCode::Char('f'));
-        key(&mut app, KeyCode::Char('i'));
-        typed(&mut app, "beta");
-        key(&mut app, KeyCode::Enter);
+        // Set directly rather than through `f i … Enter` (#120): this
+        // fixture's single-file directory has nothing else for the chain's
+        // synthetic `n` to step to (the scan has not answered yet at this
+        // point in the test), and the resulting "no matching file" report
+        // would displace the status this test means to check. That
+        // interaction belongs to the keymap-chain tests, not this one.
+        app.add_filter("beta").expect("valid pattern");
+        app.refresh_view();
 
         let status = status_line(&mut app);
 
@@ -5362,11 +5398,14 @@ mod tests {
     #[test]
     fn the_status_line_shows_a_funnel_for_an_excluding_filter_while_dimmed() {
         let mut app = app_over_file("funnel_dimmed_exclude", "alpha\nnoise\ngamma\n");
-
-        key(&mut app, KeyCode::Char('f'));
-        key(&mut app, KeyCode::Char('x'));
-        typed(&mut app, "noise");
-        key(&mut app, KeyCode::Enter);
+        // Set directly rather than through `f x … Enter` (#120): an
+        // excluding-only set selects nothing, so the chain that commit
+        // triggers always ends with nothing for the navigator to step `n`
+        // to, and the resulting "no matching file" report would displace
+        // the funnel status this test means to check. That interaction
+        // belongs to the keymap-chain tests, not this one.
+        app.add_excluding_filter("noise").expect("valid pattern");
+        app.refresh_view();
 
         assert_eq!(
             app.document.mode(),
@@ -6001,10 +6040,14 @@ mod tests {
     #[test]
     fn no_badge_while_dimming() {
         let mut app = app_over_file("badge_dimmed", "alpha\nbeta\n");
-        key(&mut app, KeyCode::Char('f'));
-        key(&mut app, KeyCode::Char('x'));
-        typed(&mut app, "beta");
-        key(&mut app, KeyCode::Enter);
+        // Set directly rather than through `f x … Enter` (#120): an
+        // excluding-only set selects nothing, so the chain that commit
+        // triggers always ends with nothing for the navigator to step `n`
+        // to, and the resulting "no matching file" report would displace
+        // the status this test means to check. That interaction belongs to
+        // the keymap-chain tests, not this one.
+        app.add_excluding_filter("beta").expect("valid pattern");
+        app.refresh_view();
 
         assert_eq!(app.document.mode(), Mode::Dimmed, "sanity: still dimming");
         let row = status_line(&mut app);
@@ -6096,11 +6139,14 @@ mod tests {
     #[test]
     fn the_status_line_reports_lines_shown_not_matched() {
         let mut app = app_over_file("status_shown_not_matched", "alpha\nnoise\ngamma\n");
-
-        key(&mut app, KeyCode::Char('f'));
-        key(&mut app, KeyCode::Char('x'));
-        typed(&mut app, "noise");
-        key(&mut app, KeyCode::Enter);
+        // Set directly rather than through `f x … Enter` (#120): an
+        // excluding-only set selects nothing, so the chain that commit
+        // triggers always ends with nothing for the navigator to step `n`
+        // to, and the resulting "no matching file" report would displace
+        // the line-count status this test means to check. That interaction
+        // belongs to the keymap-chain tests, not this one.
+        app.add_excluding_filter("noise").expect("valid pattern");
+        app.refresh_view();
 
         let status = status_line(&mut app);
 
@@ -8602,9 +8648,14 @@ mod tests {
         assert_eq!(app.focus, Focus::Filters);
     }
 
-    /// Search prompts are not chains: `f / … Enter` and `S … Enter` stay.
+    /// A search prompt commit is not a chain step: `f / … Enter` stays.
+    ///
+    /// Originally named `search_and_save_prompts_do_not_return` and asserted
+    /// only this; the `S` and search-row `c` cases below need their own
+    /// setup (a non-empty scratch set, a selected search row) so they are
+    /// now separate tests rather than more steps bolted onto this one.
     #[test]
-    fn search_and_save_prompts_do_not_return() {
+    fn f_slash_search_commit_does_not_return() {
         let mut app = app_over_file("chain_search", "alpha\n");
         key(&mut app, KeyCode::Char('t'));
 
@@ -8614,6 +8665,134 @@ mod tests {
         key(&mut app, KeyCode::Enter);
 
         assert_eq!(app.focus, Focus::Filters, "a search commit returned");
+    }
+
+    /// `S … Enter` is not a chain step either, even when the scratch set it
+    /// saves was itself added through a chain (`f i … Enter`, which does
+    /// return — that part is `f_i_enter_returns`'s job, not this test's).
+    #[test]
+    fn big_s_save_commit_does_not_return() {
+        let path = save_fixture("chain_save_set");
+        let mut app = app_over_file("chain_save_set_file", "alpha\n");
+        app.save_path = Some(path.clone());
+        key(&mut app, KeyCode::Char('t'));
+
+        key(&mut app, KeyCode::Char('f'));
+        key(&mut app, KeyCode::Char('i'));
+        typed(&mut app, "alpha");
+        key(&mut app, KeyCode::Enter);
+        assert_eq!(
+            app.focus,
+            Focus::View,
+            "sanity: the filter add chained back"
+        );
+
+        key(&mut app, KeyCode::Char('f'));
+        key(&mut app, KeyCode::Char('S'));
+        typed(&mut app, "chain_save_set");
+        key(&mut app, KeyCode::Enter);
+
+        assert_eq!(app.focus, Focus::Filters, "a save-set commit returned");
+    }
+
+    /// A search-row `c` commit is not a chain step either.
+    #[test]
+    fn search_row_c_commit_does_not_return() {
+        let mut app = app_over_file("chain_edit_search", "alpha\nbeta\n");
+        // A non-empty scratch set, added directly rather than through `f i`,
+        // so `Row::Hint` does not sit ahead of `Row::Search` at row 0 (#127).
+        app.filters.add("alpha").expect("valid pattern");
+        key(&mut app, KeyCode::Char('t'));
+
+        key(&mut app, KeyCode::Char('f'));
+        key(&mut app, KeyCode::Char('/'));
+        typed(&mut app, "beta");
+        key(&mut app, KeyCode::Enter);
+        assert_eq!(app.focus, Focus::Filters, "sanity: a search commit stays");
+
+        // The sticky `f` clears any chain origin left over from the one
+        // above, so the `c` commit below is judged on its own; `g` selects
+        // the search row explicitly rather than relying on it already being
+        // the default selection.
+        key(&mut app, KeyCode::Char('f'));
+        key(&mut app, KeyCode::Char('g'));
+        key(&mut app, KeyCode::Char('c'));
+        typed(&mut app, "2");
+        key(&mut app, KeyCode::Enter);
+
+        assert_eq!(
+            app.focus,
+            Focus::Filters,
+            "a search-row edit commit returned"
+        );
+    }
+
+    /// Backspacing past the start of the prompt abandons it, the same as
+    /// `Esc` — and, like `Esc`, ends the chain: a fresh `f i … Enter`
+    /// afterwards is judged as its own chain, not a continuation.
+    #[test]
+    fn backspacing_out_of_the_prompt_ends_the_chain() {
+        let mut app = app_over_file("chain_backspace", "alpha\n");
+        key(&mut app, KeyCode::Char('t'));
+
+        key(&mut app, KeyCode::Char('f'));
+        key(&mut app, KeyCode::Char('i'));
+        typed(&mut app, "ab");
+        key(&mut app, KeyCode::Backspace);
+        key(&mut app, KeyCode::Backspace);
+        key(&mut app, KeyCode::Backspace);
+        assert!(
+            app.search.is_none(),
+            "sanity: backspacing past empty closed it"
+        );
+
+        key(&mut app, KeyCode::Char('i'));
+        typed(&mut app, "alpha");
+        key(&mut app, KeyCode::Enter);
+
+        assert_eq!(
+            app.focus,
+            Focus::Filters,
+            "the abandoned prompt should not chain"
+        );
+    }
+
+    /// `f x … Enter` returns, same as `f i … Enter`.
+    #[test]
+    fn f_x_enter_returns_too() {
+        let mut app = app_over_file("chain_fx", "alpha\nbeta\n");
+        key(&mut app, KeyCode::Char('t'));
+
+        key(&mut app, KeyCode::Char('f'));
+        key(&mut app, KeyCode::Char('x'));
+        typed(&mut app, "beta");
+        key(&mut app, KeyCode::Enter);
+
+        assert_eq!(app.focus, Focus::View, "an exclude-filter commit returned");
+        assert_eq!(app.filters.len(), 1);
+    }
+
+    /// A return to the navigator whose `n` finds nothing says so, rather
+    /// than landing silently — the scan may not have re-keyed the marks to
+    /// the new filter yet, or the new filter may just match nothing.
+    #[test]
+    fn a_return_to_the_navigator_with_no_matches_says_so() {
+        let mut app = app_over("chain_nav_nomatch", &["a.log", "b.log"]);
+        key(&mut app, KeyCode::Char('e'));
+        let before = app.nav.selected_name();
+
+        key(&mut app, KeyCode::Char('f'));
+        key(&mut app, KeyCode::Char('i'));
+        typed(&mut app, "zzz");
+        key(&mut app, KeyCode::Enter);
+
+        assert_eq!(app.focus, Focus::Nav, "sanity: returned");
+        assert_eq!(status(&app), Some("no matching file"));
+        assert_eq!(
+            app.nav.selected_name(),
+            before,
+            "nothing to step to, so the selection should not have moved"
+        );
     }
 
     /// The `Enter` that commits is still swallowed once after the return,
