@@ -708,16 +708,18 @@ mod tests {
     ///
     /// It fails when the columns are sized against the *widest* row in the
     /// whole table rather than the widest in each column: two columns of the
-    /// global maximum need 159 columns, and this area has 147 to give.
+    /// global maximum need 151 columns, while correct per-column sizing needs
+    /// only 148. This area's width sits between them so the test fails on the
+    /// regression but passes on the correct layout.
     #[test]
     fn a_normal_terminal_shows_the_whole_keymap() {
         let rows = rows();
 
-        let columns = layout(&rows, inner(160, 42));
+        let columns = layout(&rows, inner(148, 42));
 
         assert_eq!(shown(&columns), rows.len(), "the keymap did not fit");
         assert!(
-            total_width(&columns) <= 160,
+            total_width(&columns) <= 148,
             "the columns overflowed the area they were fitted to"
         );
     }
@@ -728,7 +730,7 @@ mod tests {
     fn a_column_is_sized_to_its_own_widest_row() {
         let rows = rows();
 
-        let columns = layout(&rows, inner(160, 42));
+        let columns = layout(&rows, inner(148, 42));
 
         assert!(columns.len() > 1, "the table was not split into columns");
         assert!(
