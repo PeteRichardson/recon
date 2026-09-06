@@ -272,11 +272,26 @@ impl App<'_> {
     }
 
     /// The identifier-shaped word under the cursor, for `*` (#120 §13).
-    /// `None` on whitespace, punctuation, or past the end of the line.
+    /// `None` on whitespace, punctuation, past the end of the line, or when
+    /// nothing is visible at all (hide mode with an empty visible set):
+    /// `source_at` directly, not `cursor_source`, which falls back to row 0
+    /// in that case and would silently report row 0's word instead.
     pub(crate) fn word_under_cursor(&self) -> Option<String> {
-        let line = self.document.lines().get(self.cursor_source())?;
+        let row = self.view.cursor_visible_row();
+        let source = self.document.source_at(row)?;
+        let line = self.document.lines().get(source)?;
         let col = self.view.cursor_col();
-        word_around(line, col).map(str::to_owned)
+        if let Some(word) = word_around(line, col) {
+            return Some(word.to_owned());
+        }
+        // The textarea's End puts the cursor one past the last character;
+        // retry one column back so `$` then `*` finds the last word rather
+        // than reporting none.
+        let len = line.chars().count();
+        if col == len && col > 0 {
+            return word_around(line, col - 1).map(str::to_owned);
+        }
+        None
     }
 
     /// The next source line matched by an enabled including filter or by the
@@ -392,7 +407,7 @@ impl App<'_> {
 /// mangled `_ZN4core3fmt9Formatter3pad17hE` whole and stops at `::`, `.`
 /// and `(`. `col` is a character index, matching what the textarea's
 /// cursor reports, not a byte offset.
-pub(crate) fn word_around(line: &str, col: usize) -> Option<&str> {
+fn word_around(line: &str, col: usize) -> Option<&str> {
     let is_word = |c: char| c.is_ascii_alphanumeric() || c == '_';
     let chars: Vec<(usize, char)> = line.char_indices().collect();
     let &(_, at) = chars.get(col)?;

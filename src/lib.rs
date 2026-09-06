@@ -568,6 +568,14 @@ impl App<'_> {
                     }
                 }
             }
+            // No prompt binding uses a modified character, and in raw mode
+            // a pasted line feed arrives as Ctrl-J (`Char('j')` with
+            // CONTROL) rather than as a bare `\n` — dropping it here keeps
+            // a pasted newline out of the single-line pattern (#120 §13).
+            KeyCode::Char(_)
+                if key
+                    .modifiers
+                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) => {}
             // A paste arrives as one `Char` per character. A newline in it
             // is dropped rather than typed: the pattern is single-line, and
             // a stray `\n` would silently make it match nothing (#120 §13).
@@ -1159,16 +1167,18 @@ impl App<'_> {
                 // answer to "where else does this symbol appear?", which is
                 // #67's first use case, without a selection. `regex::escape`
                 // keeps the contract literal whatever the word class becomes.
-                // Scoped to the file view, where a cursor column exists; the
-                // other panes get a hint (#120 §9). Not guarded on an empty
-                // modifier set: `*` is Shift-8 and crossterm reports the
-                // Shift, the same trap `?` and `N` document.
+                // Scoped away from the navigator, where a cursor column
+                // exists only in the view: the filter pane forwards it to
+                // the view's cursor, like `n`/`N`, `/`, and `[`/`]` (#120
+                // §11); the navigator gets a hint (#120 §9). Not guarded on
+                // an empty modifier set: `*` is Shift-8 and crossterm
+                // reports the Shift, the same trap `?` and `N` document.
                 KeyCode::Char('*')
                     if !key
                         .modifiers
                         .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
                 {
-                    if self.focus != Focus::View {
+                    if self.focus == Focus::Nav {
                         self.report("* searches the word under the cursor · t *", false);
                         return;
                     }
@@ -8997,6 +9007,53 @@ mod tests {
         assert_eq!(status(&app), Some("no word under the cursor"));
     }
 
+    /// The textarea's `$` (End) puts the cursor one past the last character;
+    /// `*` retries one column back rather than reporting no word (#120).
+    #[test]
+    fn star_after_dollar_searches_the_last_word() {
+        let mut app = app_over_file("star_eol", "foo bar\nbar\n");
+        key(&mut app, KeyCode::Char('t'));
+        key(&mut app, KeyCode::Char('$'));
+
+        key(&mut app, KeyCode::Char('*'));
+
+        assert_eq!(app.filters.search().unwrap().predicate.display(), "bar");
+        assert_eq!(cursor_source(&app), 1);
+    }
+
+    /// Hide mode with a matching-nothing including filter (#36's cousin, not
+    /// its case: `anything_including` is true here) leaves nothing visible.
+    /// `word_under_cursor` must not fall back to row 0 in that state.
+    #[test]
+    fn star_with_nothing_visible_says_no_word() {
+        let mut app = app_over_file("star_hidden", "alpha\nbeta\n");
+        key(&mut app, KeyCode::Char('t'));
+        app.filters.add("zzz").expect("valid pattern");
+        app.refresh_view();
+
+        key(&mut app, KeyCode::Char('u'));
+        key(&mut app, KeyCode::Char('*'));
+
+        assert!(app.filters.search().is_none());
+        assert_eq!(status(&app), Some("no word under the cursor"));
+    }
+
+    /// `*` while peeked behaves like `/`: it sets the search without first
+    /// clearing the peek.
+    #[test]
+    fn star_while_peeked_behaves_like_slash() {
+        let mut app = app_over_file("star_peeked", "foo\nfoo\n");
+        key(&mut app, KeyCode::Char('t'));
+        app.filters.add("nomatch").expect("valid pattern");
+        app.refresh_view();
+
+        key(&mut app, KeyCode::Char(' '));
+        key(&mut app, KeyCode::Char('*'));
+
+        assert_eq!(app.filters.search().unwrap().predicate.display(), "foo");
+        assert_eq!(cursor_source(&app), 1);
+    }
+
     /// `* p`: the whole "symbol to filter" flow without a selection (#67).
     #[test]
     fn star_then_p_promotes_the_literal_word() {
@@ -9034,7 +9091,7 @@ mod tests {
     }
 
     #[test]
-    fn star_outside_the_view_hints_at_t_star() {
+    fn star_in_the_navigator_hints_at_t_star() {
         let mut app = app_over_file("star_hint", "foo\n");
         key(&mut app, KeyCode::Char('e'));
 
@@ -9048,6 +9105,21 @@ mod tests {
         assert_eq!(app.focus, Focus::Nav);
     }
 
+    /// `*` from the filter pane acts on the view's cursor, like `n`/`N`,
+    /// `/`, and `[`/`]` (#120 §11) — not a hint.
+    #[test]
+    fn star_from_the_filter_pane_acts_on_the_view() {
+        let mut app = app_over_file("star_from_pane", "foo bar\nfoo\n");
+        key(&mut app, KeyCode::Char('t'));
+        key(&mut app, KeyCode::Char('f'));
+
+        key(&mut app, KeyCode::Char('*'));
+
+        assert_eq!(app.filters.search().unwrap().predicate.display(), "foo");
+        assert_eq!(cursor_source(&app), 1);
+        assert_eq!(app.focus, Focus::Filters);
+    }
+
     /// A terminal paste arrives as individual `Char` events; a newline in
     /// it must not become part of a single-line pattern (#120 §13). This
     /// guards the `*`/paste interplay if bracketed paste is ever enabled
@@ -9059,6 +9131,7 @@ mod tests {
         typed(&mut app, "al");
         key(&mut app, KeyCode::Char('\n'));
         key(&mut app, KeyCode::Char('\r'));
+        ctrl(&mut app, KeyCode::Char('j'));
         typed(&mut app, "pha");
 
         assert_eq!(prompt_line(&mut app).trim_end(), "/alpha");
