@@ -55,15 +55,18 @@ impl Binding {
     /// would, and this is the piece that would make it possible.
     #[cfg(test)]
     fn codes(&self) -> impl Iterator<Item = char> + '_ {
-        self.keys.iter().filter_map(|label| {
+        self.keys.iter().flat_map(|label| {
             if *label == "space" {
-                return Some(' ');
+                return vec![' '];
             }
             let bare = label.strip_prefix("Ctrl-").unwrap_or(label);
-            let mut chars = bare.chars();
-            match (chars.next(), chars.next()) {
-                (Some(c), None) => Some(c),
-                _ => None,
+            let chars: Vec<char> = bare.chars().collect();
+            match chars.as_slice() {
+                [c] => vec![*c],
+                // `1-9`: one label, nine keys. Only for a bare range — a
+                // `Ctrl-` prefix was stripped above, so `Ctrl-d` is `d`.
+                [a, '-', b] if a < b => (*a..=*b).collect(),
+                _ => Vec::new(),
             }
         })
     }
@@ -131,6 +134,10 @@ pub const KEYMAP: &[Section] = &[
             Binding {
                 keys: &["[", "]"],
                 action: "Page the file view up / down, from any pane",
+            },
+            Binding {
+                keys: &["1-9"],
+                action: "Toggle the filter with that number",
             },
             Binding {
                 keys: &["u", "Ctrl-h", "H"],
@@ -719,6 +726,23 @@ mod tests {
             vec!['e', 'H', ' '],
             "a key label was read as the wrong character"
         );
+    }
+
+    #[test]
+    fn a_range_label_documents_every_key_in_it() {
+        let binding = Binding {
+            keys: &["1-9"],
+            action: "",
+        };
+        let codes: Vec<char> = binding.codes().collect();
+        assert_eq!(codes, ('1'..='9').collect::<Vec<_>>());
+
+        // `Ctrl-d` is not a range: one key, `d`.
+        let binding = Binding {
+            keys: &["Ctrl-d"],
+            action: "",
+        };
+        assert_eq!(binding.codes().collect::<Vec<_>>(), vec!['d']);
     }
 
     fn inner(width: u16, height: u16) -> Rect {

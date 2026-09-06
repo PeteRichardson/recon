@@ -1075,6 +1075,22 @@ impl App<'_> {
                     self.forward_to_view(event);
                     return;
                 }
+                // Toggle a numbered filter from anywhere (#120 §14). The
+                // number is the one the pane draws in its gutter, and
+                // `numbered` is the walk that draws it, so key and label
+                // cannot disagree. Set headers, the search row and built-in
+                // filters have no number and no key: `f Enter` covers them.
+                KeyCode::Char(c @ '1'..='9') if key.modifiers.is_empty() => {
+                    let n = usize::from(c as u8 - b'0');
+                    match widgets::filterlist::numbered(&self.filters).get(n - 1) {
+                        Some(&index) => {
+                            self.filters.toggle_enabled(index);
+                            self.refresh_view();
+                        }
+                        None => self.report(&format!("no filter {n}"), false),
+                    }
+                    return;
+                }
                 // Global, unlike `n`: skipping a file is the outer loop of
                 // the review workflow, and it should not matter which pane
                 // the inner loop left focus in. The keycaps carry the
@@ -8367,6 +8383,85 @@ mod tests {
 
         key(&mut app, KeyCode::Char('n'));
         assert_eq!(cursor_source(&app), 3);
+    }
+
+    /// #120 §14: `3` toggles the filter the pane labels `3`. Global, so the
+    /// loop can switch a filter without leaving the view.
+    #[test]
+    fn digits_toggle_filters_by_their_pane_number() {
+        let mut app = app_over_file("digit_toggle", "alpha\nbeta\n");
+        key(&mut app, KeyCode::Char('t'));
+        app.filters.add("alpha").expect("valid pattern");
+        app.filters.add("beta").expect("valid pattern");
+        app.refresh_view();
+        assert!(app.filters.filters()[1].enabled, "sanity");
+
+        key(&mut app, KeyCode::Char('2'));
+        assert!(
+            !app.filters.filters()[1].enabled,
+            "2 did not toggle filter 2"
+        );
+        assert!(app.filters.filters()[0].enabled, "2 touched filter 1");
+        assert_eq!(app.focus, Focus::View, "focus moved");
+
+        key(&mut app, KeyCode::Char('2'));
+        assert!(app.filters.filters()[1].enabled, "2 did not toggle back");
+    }
+
+    #[test]
+    fn a_digit_with_no_filter_behind_it_says_so() {
+        let mut app = app_over_file("digit_missing", "alpha\n");
+        key(&mut app, KeyCode::Char('t'));
+        app.filters.add("alpha").expect("valid pattern");
+        app.refresh_view();
+
+        key(&mut app, KeyCode::Char('9'));
+
+        assert!(app.filters.filters()[0].enabled, "9 toggled something");
+        assert_eq!(
+            app.status_message.as_ref().map(|m| m.text.as_str()),
+            Some("no filter 9")
+        );
+    }
+
+    /// The digit toggles what the *pane* numbers: with a set soloed, the
+    /// numbering restarts inside it, and so does the key.
+    #[test]
+    fn digits_follow_the_pane_numbering_under_a_solo() {
+        // Autoload alone (`true`) only brings the *set* on; a filter needs a
+        // `default` profile to come on with it — the convention every other
+        // solo/reset test in this module already follows.
+        let mut a = filter::test_support::loaded("a", 10, true, &["alpha"]);
+        a.profiles.insert("default".into(), vec!["alpha".into()]);
+        let mut b = filter::test_support::loaded("b", 20, true, &["beta"]);
+        b.profiles.insert("default".into(), vec!["beta".into()]);
+        let mut app = app_over_file("digit_solo", "alpha\nbeta\nneither\n");
+        app.filters = ActiveFilters::with_sets(None, &[a, b]);
+        app.refresh_view();
+        key(&mut app, KeyCode::Char('t'));
+        let before = widgets::filterlist::numbered(&app.filters);
+        assert_eq!(before.len(), 2, "sanity: alpha is 1, beta is 2");
+        let beta = before[1];
+
+        // Solo set 2 (`b`): the pane now labels beta `1`, and so does the key.
+        app.filters.solo(2);
+        assert_eq!(
+            widgets::filterlist::numbered(&app.filters),
+            vec![beta],
+            "sanity"
+        );
+        assert!(app.filters.filters()[beta].enabled, "sanity");
+
+        key(&mut app, KeyCode::Char('1'));
+
+        assert!(
+            !app.filters.filters()[beta].enabled,
+            "1 did not follow the solo numbering"
+        );
+        assert!(
+            app.filters.filters()[before[0]].enabled,
+            "1 reached the soloed-out set"
+        );
     }
 
     /// `apply_search`'s ordering — `refresh_view` before `step_to_interesting`

@@ -114,6 +114,20 @@ pub(crate) fn rows(filters: &ActiveFilters) -> Vec<Row> {
     out
 }
 
+/// The user-authored filters in pane order: `numbered()[n - 1]` is the
+/// known-list index of the filter the pane labels `n`, and the one the `n`
+/// key toggles (#120 §14). One walk for both, so the label and the key
+/// cannot disagree. Built-in filters are unnumbered and absent.
+pub(crate) fn numbered(filters: &ActiveFilters) -> Vec<usize> {
+    rows(filters)
+        .into_iter()
+        .filter_map(|row| match row {
+            Row::Filter(index) => Some(index),
+            _ => None,
+        })
+        .collect()
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct FilterList {
     pub state: ListState,
@@ -330,17 +344,17 @@ impl FilterList {
     /// addresses — nothing binds a digit to a filter — so enabling a set
     /// renumbers the rows below it the same way deleting a filter does.
     fn texts(filters: &ActiveFilters) -> Vec<(Row, String)> {
-        let mut number = 0;
+        let numbered = numbered(filters);
         rows(filters)
             .into_iter()
             .map(|row| {
                 // Built-in filters (#127) take no number: numbering, like the
                 // palette, runs over what the user wrote.
                 let label = match row {
-                    Row::Filter(_) => {
-                        number += 1;
-                        number.to_string()
-                    }
+                    Row::Filter(index) => numbered
+                        .iter()
+                        .position(|&i| i == index)
+                        .map_or_else(|| " ".to_string(), |n| (n + 1).to_string()),
                     _ => " ".to_string(),
                 };
                 (row, Self::row_text(filters, row, &label))
@@ -1325,6 +1339,44 @@ mod tests {
 
         assert_eq!(command, None);
         assert_ne!(list.selected(), Some(0), "Ctrl-d did not move");
+    }
+
+    /// The digit keys and the gutter labels are one walk, so they cannot
+    /// drift: label `n` is `numbered()[n - 1]`.
+    #[test]
+    fn numbered_agrees_with_the_pane_labels() {
+        let mut filters = two_sets(true, true);
+        filters.set_search("s").expect("valid");
+        let numbered = numbered(&filters);
+
+        // The gutter has no separator between the number and the `[` that
+        // follows it (`"1[x] inc scratch"`), so the label is the leading run
+        // of digits rather than the first whitespace-delimited token.
+        let labelled: Vec<(String, Row)> = FilterList::texts(&filters)
+            .into_iter()
+            .filter_map(|(row, text)| {
+                let label: String = text
+                    .trim_start()
+                    .chars()
+                    .take_while(char::is_ascii_digit)
+                    .collect();
+                (!label.is_empty()).then_some((label, row))
+            })
+            .collect();
+
+        assert!(!labelled.is_empty(), "sanity: the pane numbers something");
+        for (label, row) in labelled {
+            let n: usize = label.parse().expect("digit label");
+            assert_eq!(
+                Some(row),
+                numbered.get(n - 1).map(|&i| Row::Filter(i)),
+                "label {n}"
+            );
+        }
+        assert!(
+            numbered.iter().all(|&i| filters.is_user_authored(i)),
+            "a built-in filter got a number"
+        );
     }
 
     #[test]
