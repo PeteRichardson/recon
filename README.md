@@ -792,6 +792,10 @@ screen whenever the navigator is:
 | `x` | Add an exclude filter — its matches leave the view entirely |
 | `k` / `Up` | Select the previous filter |
 | `j` / `Down` | Select the next filter |
+| `g` / `Home` | Select the first row |
+| `G` / `End` | Select the last row |
+| `Ctrl-d` / `Ctrl-u` | Move half a page down / up |
+| `PageDown` / `PageUp` | Move a page down / up |
 | `Enter` | Enable or disable the selected filter — or, on a header row, the selected set |
 | `d` | Delete the selected filter |
 | `c` | Change the selected filter's pattern — reopens the prompt over it |
