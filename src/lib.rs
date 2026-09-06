@@ -520,10 +520,10 @@ impl App<'_> {
                     PromptKind::Exclude => self.add_excluding_filter(&pattern),
                     PromptKind::Edit { index, .. } => self.replace_filter(index, &pattern),
                     // Straight to `apply_search`, deliberately not through
-                    // `run_search`: that dispatches on the *focused* pane, and
-                    // the filter pane — the only pane this prompt can be
-                    // opened from — has an arm there that does nothing at all.
-                    // Routing through it would discard the pattern silently.
+                    // `run_search`: `c` on the search row is "edit search",
+                    // which applies the edited pattern as-is. `/` is "new
+                    // search" — a fresh search starting from the beginning.
+                    // Routing through `run_search` would lose that distinction.
                     PromptKind::EditSearch => self.apply_search(&pattern),
                 };
                 if outcome.is_ok() {
@@ -7231,7 +7231,7 @@ mod tests {
     /// search prompt rather than doing nothing. The rest of the behavior
     /// matches the view pane: typing and Enter completes the search.
     #[test]
-    fn slash_does_nothing_while_the_filter_pane_is_focused() {
+    fn slash_from_the_filter_pane_opens_the_search_prompt() {
         let mut app = app_with_two_filters("filter_pane_slash");
         focus_filter_pane(&mut app);
 
@@ -8623,10 +8623,10 @@ mod tests {
     /// inert there would make the key look broken on one row of a pane where
     /// every other binding works on all of them.
     ///
-    /// It commits through `apply_search` rather than `run_search`: the latter
-    /// dispatches on the *focused* pane, and the filter pane's arm there does
-    /// nothing at all — so routing this through it would open a prompt whose
-    /// `Enter` silently discarded the pattern.
+    /// It commits through `apply_search` rather than `run_search`: `c` on the
+    /// search row is "edit search", applying the edited pattern as-is, while
+    /// `/` is "new search" — a fresh search from the beginning. Routing
+    /// through `run_search` would lose that distinction.
     #[test]
     fn c_on_the_search_row_edits_the_search() {
         let mut app = app_over_file("pane_edit_search", "alpha\nbeta\ngamma\n");
