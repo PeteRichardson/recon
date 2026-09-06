@@ -329,7 +329,7 @@ it once. It flows into as many columns as the terminal can hold, so the whole
 keymap fits one screen with nothing to scroll — which is what lets *any* key
 close it, rather than reserving some keys for scrolling. The status row stays
 visible underneath, so the HIDE badge still tells the truth while you are
-reading about `Ctrl-H`. On a terminal too small for the whole table, the bottom
+reading about `u`. On a terminal too small for the whole table, the bottom
 border says how many rows were cut.
 
 The overlay shows every binding, not just the focused pane's. Context-sensitive
@@ -563,17 +563,19 @@ filter dims the rest of the file the moment it's enabled; a search on its own
 doesn't, because its hits already carry a highlight of their own and greying
 the file around them would only cost the context the search was run to see.
 
-`Ctrl-H` makes no such exception: it collapses to a search's matches exactly
+`u` makes no such exception: it collapses to a search's matches exactly
 as it would to a filter's. `Esc` drops the search; `p` keeps it, moving it
 into the numbered set and freeing `/` for the next one.
 
 Excluding filters (`x`) are different: their matches are removed from view
-outright, in both modes. `u` is the primary key; the two below are aliases.
-`Ctrl-H` (or `H`) toggles the remaining lines between
-dimmed and hidden. `H` is kept as an alternative binding for terminals
-configured with `stty erase ^H`, where the Backspace *key* itself sends
-`0x08` — the same byte crossterm reports as `Ctrl-H` — so pressing Backspace
-would otherwise toggle hiding instead of doing nothing in this app. The gutter
+outright, in both modes.
+
+`u` is the primary key; the two named next are aliases. `Ctrl-H` (or `H`)
+toggles the remaining lines between dimmed and hidden. `H` is kept as an
+alternative binding for terminals configured with `stty erase ^H`, where the
+Backspace *key* itself sends `0x08` — the same byte crossterm reports as
+`Ctrl-H` — so pressing Backspace would otherwise toggle hiding instead of
+doing nothing in this app. The gutter
 keeps the original line numbers either way, so a gap in the numbering is how
 you tell something was left out — and while hiding, the last number before
 each gap is underlined, since ten matched lines, a hundred hidden ones and ten
@@ -616,13 +618,13 @@ What the mode does and does not touch:
 
 The hide toggle survives loading another file, exactly as the filter set does
 — it describes how you are reading, not which file you are reading. That is
-what makes skimming work: set a filter, press `Ctrl-H`, then walk the
+what makes skimming work: set a filter, press `u`, then walk the
 navigator with `j`. Each file is drawn hidden, so the ones with no matches
 come up blank and the ones worth opening are the ones with anything in them.
 
 Because the toggle survives file loads, it is easy to forget it is on — so
 while hiding, the bottom row carries a reverse-video **HIDE** badge. It tracks
-the mode and only the mode: it is there the instant you press `Ctrl-H` and gone
+the mode and only the mode: it is there the instant you press `u` and gone
 the instant you press it again, whether or not any filter is currently removing
 lines. The `▼` funnel beside it answers the other question — whether lines are
 actually missing from the pane right now — which is why the two do not always
@@ -682,7 +684,7 @@ File view pane (`src/widgets/fileview.rs`):
 trade was deliberate, since returning to the navigator from a maximised file
 view is exactly when you need `e`. `w` still moves forward by word.
 
-`n` and `N` are handled globally, the same as `Ctrl-H`, so — like that key —
+`n` and `N` are handled globally, the same as `u`, so — like that key —
 they reach this table from the filter pane as well as the file view; the
 navigator keeps its own `n`/`N`, described below. An *interesting* line here is
 one an enabled including filter or the live search matches; stepping treats a
@@ -834,7 +836,7 @@ navigator's colour for the file.
 With at least one include filter (or a live search) enabled, the navigator marks
 each file: a name drawn in a filter's colour has at least one line that filter
 selected; a dimmed name has none; a plain name has not been scanned yet. In hide
-mode (`Ctrl-H`), non-matching files leave the listing the way non-matching lines
+mode (`u`), non-matching files leave the listing the way non-matching lines
 leave the view. The scan runs in the background and stops each file at its first
 matching line, and toggling a filter on or off usually re-answers the whole
 folder without reading anything.
