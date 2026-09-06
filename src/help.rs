@@ -198,7 +198,7 @@ pub const KEYMAP: &[Section] = &[
             },
             Binding {
                 keys: &["e n"],
-                action: "Next file the filters match, from anywhere",
+                action: "Navigator's n — search hit, else next matching file",
             },
             Binding {
                 keys: &["t *"],
@@ -231,7 +231,7 @@ pub const KEYMAP: &[Section] = &[
             },
             Binding {
                 keys: &["Enter"],
-                action: "Open the entry; toggle the filter or set; not the view",
+                action: "Open entry; toggle filter, set or search; not the view",
             },
         ],
     },
@@ -808,8 +808,10 @@ mod tests {
         }
     }
 
-    /// The case the whole layout exists for. A 150x42 terminal is unremarkable,
-    /// and the keymap is the one screen where "most of it" is not good enough —
+    /// The case the whole layout exists for. 150 and 42 are inner columns and
+    /// rows — the area handed to `layout`, already inside the border, so 42
+    /// inner rows is a 44-row terminal. A 150x42 terminal is unremarkable, and
+    /// the keymap is the one screen where "most of it" is not good enough —
     /// the row you cannot see is exactly the one you opened it to find.
     ///
     /// It fails when the columns are sized against the *widest* row in the
@@ -817,6 +819,12 @@ mod tests {
     /// global maximum need 151 columns, while correct per-column sizing needs
     /// only 148. This area's width sits between them so the test fails on the
     /// regression but passes on the correct layout.
+    ///
+    /// The margin is exactly two columns: 148 is what the correct layout fills
+    /// the 150-column area with, exactly. So a `KEYMAP` row that widens a
+    /// column further has to be re-measured against these two totals, and this
+    /// area's width must never be raised past 151 — doing so would stop the
+    /// second test here from failing on the regression it exists to catch.
     #[test]
     fn a_normal_terminal_shows_the_whole_keymap() {
         let rows = rows();
