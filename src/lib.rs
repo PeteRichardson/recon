@@ -565,22 +565,15 @@ impl App<'_> {
         let mut view_search = false;
         let action = match self.focus {
             Focus::Nav => self.nav.search(pattern, false)?,
-            Focus::View => {
-                // Deferred rather than done here: setting the filter needs
-                // `&mut self` for `refresh_view`, and the borrow taken to
-                // reach the pane is still live.
+            // The filter pane forwards view-shaped keys to the view (#120):
+            // a search started there is the same live search. Deferred
+            // rather than done here: setting the filter needs `&mut self`
+            // for `refresh_view`, and the borrow taken to reach the pane is
+            // still live.
+            Focus::View | Focus::Filters => {
                 view_search = true;
                 None
             }
-            // Unreachable in practice: `/` is not opened at all while the
-            // filter pane has focus (see its guard in `handle_event`), and the
-            // prompt swallows every key including `Tab` while it is open.
-            //
-            // The pane *can* open a search prompt — `c` on the search row —
-            // but that commits through `apply_search` rather than here,
-            // precisely because this arm does nothing. Routing it through this
-            // function would swallow the edited pattern in silence.
-            Focus::Filters => None,
         };
 
         if let Some(action) = action {
@@ -955,15 +948,13 @@ impl App<'_> {
                     self.help = true;
                     return;
                 }
-                // The filter pane has nothing to search over, so the prompt
-                // is not opened at all while it has focus — opening it and
-                // then having `Enter` silently do nothing looked like the
-                // keystroke was simply swallowed.
-                //
-                // `?` used to open a backward search here. `n`/`N` cover both
-                // directions now, so it is unbound and reserved for the help
-                // view (#25).
-                KeyCode::Char('/') if key.modifiers.is_empty() && self.focus != Focus::Filters => {
+                // Global (#120 §7): from the filter pane too. The pane used to
+                // refuse `/` so that a swallowed `Enter` would not look like
+                // a toggle; the prompt now takes every key while open, and
+                // `swallow_next_enter` already guards the commit, so the
+                // reason is gone. `/` here is "new search"; `c` on the search
+                // row is "edit search".
+                KeyCode::Char('/') if key.modifiers.is_empty() => {
                     self.search = Some(SearchPrompt::default());
                     return;
                 }
@@ -1903,9 +1894,9 @@ impl App<'_> {
         //
         // `e` would read better than `x` for "exclude" and cannot be used: the
         // global match above runs first and returns, so a bare `e` never
-        // reaches this function. Guarding the global arm the way `/` is
-        // guarded would cost `e`-to-explorer from this pane, which is the
-        // one thing these focus keys exist to provide.
+        // reaches this function. Guarding the global arm on focus would cost
+        // `e`-to-explorer from this pane, which is the one thing these focus
+        // keys exist to provide.
         if key.modifiers.is_empty() {
             let kind = match key.code {
                 KeyCode::Char('i') => Some(PromptKind::Filter),
@@ -7236,10 +7227,9 @@ mod tests {
     }
 
     /// Finding 11: the filter pane has nothing to search over, so `/` (and
-    /// `?`) must not even open the prompt while it has focus — opening it
-    /// and then having `Enter` silently do nothing looked like the
-    /// keystroke was simply dropped, with no feedback that anything was
-    /// wrong.
+    /// `/` from the filter pane now sets a live search, so it opens the
+    /// search prompt rather than doing nothing. The rest of the behavior
+    /// matches the view pane: typing and Enter completes the search.
     #[test]
     fn slash_does_nothing_while_the_filter_pane_is_focused() {
         let mut app = app_with_two_filters("filter_pane_slash");
@@ -7247,7 +7237,7 @@ mod tests {
 
         key(&mut app, KeyCode::Char('/'));
 
-        assert!(app.search.is_none(), "a prompt opened over the filter pane");
+        assert!(app.search.is_some(), "no search prompt opened");
     }
 
     /// Deleting renumbers the filters, so every cached verdict is stale.
@@ -8357,6 +8347,26 @@ mod tests {
         key(&mut app, KeyCode::Esc);
 
         assert!(app.nav.has_search());
+    }
+
+    /// #120 §7 decision (b): the filter pane forwards `/` to the view — a
+    /// "new search", where `c` on the search row is "edit search". Focus
+    /// stays in the pane (return-focus is PR 3), and `n` works from there.
+    #[test]
+    fn slash_from_the_filter_pane_sets_a_live_search() {
+        let mut app = app_over_file("slash_from_pane", "plain\nhit\nplain\nhit\n");
+        key(&mut app, KeyCode::Char('f'));
+
+        key(&mut app, KeyCode::Char('/'));
+        typed(&mut app, "hit");
+        key(&mut app, KeyCode::Enter);
+
+        assert!(app.filters.search().is_some(), "no live search was set");
+        assert_eq!(app.focus, Focus::Filters, "focus moved");
+        assert_eq!(cursor_source(&app), 1, "did not move to the first hit");
+
+        key(&mut app, KeyCode::Char('n'));
+        assert_eq!(cursor_source(&app), 3);
     }
 
     /// `apply_search`'s ordering — `refresh_view` before `step_to_interesting`
