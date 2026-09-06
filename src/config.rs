@@ -120,6 +120,14 @@ pub struct Config {
     #[arg(skip)]
     pub filter_sets: Vec<crate::filter::LoadedSet>,
 
+    /// Whether a jump to a line the pane is not showing — `n`, `N`, `G` —
+    /// puts that line in the middle of the pane. Off, it scrolls in by the
+    /// minimum and lands on the scroll margin's edge. `None` is unset:
+    /// `center_jumps` resolves it. File-only, like the palette — a settled
+    /// preference, not a per-run choice.
+    #[arg(skip)]
+    pub center_jumps: Option<bool>,
+
     /// Colours for the file view's syntax colouring: a bundled theme name,
     /// a path to a `.tmTheme` file, or `none` to turn colouring off.
     ///
@@ -173,6 +181,7 @@ impl Default for Config {
             print_editor_config: None,
             filter_palette: None,
             filter_sets: Vec::new(),
+            center_jumps: None,
             theme: None,
         }
     }
@@ -193,6 +202,16 @@ pub struct FileConfig {
     pub filters: Option<FiltersConfig>,
     /// `[syntax]`. Same again.
     pub syntax: Option<SyntaxConfig>,
+    /// `[view]`. Same again.
+    pub view: Option<ViewConfig>,
+}
+
+/// The `[view]` table: how the file view moves.
+#[derive(Deserialize, Debug, Default, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ViewConfig {
+    /// See [`Config::center_jumps`].
+    pub center_jumps: Option<bool>,
 }
 
 /// The `[syntax]` table.
@@ -502,6 +521,7 @@ impl Config {
             editor,
             filters,
             syntax,
+            view,
         } = file;
 
         if let Some(EditorConfig { project, file }) = editor {
@@ -524,6 +544,20 @@ impl Config {
         {
             self.theme.get_or_insert(*theme);
         }
+
+        if let Some(ViewConfig { center_jumps }) = view
+            && let Some(center_jumps) = center_jumps
+        {
+            self.center_jumps.get_or_insert(*center_jumps);
+        }
+    }
+
+    /// Whether an off-screen jump centres its target — on unless the file
+    /// says otherwise. Here beside `syntax_theme` for the same reason: the
+    /// default is stated with the rest of the ladder, not in `App::new`.
+    #[must_use]
+    pub fn center_jumps(&self) -> bool {
+        self.center_jumps.unwrap_or(true)
     }
 
     /// The theme the file view colours with, once the chain has run:
@@ -1161,6 +1195,26 @@ mod tests {
         let mut config = Config::default();
         config.apply(&FileConfig::default());
         assert_eq!(config.filter_palette, None);
+    }
+
+    // ---- the view table -----------------------------------------------
+
+    #[test]
+    fn center_jumps_is_on_unless_the_file_turns_it_off() {
+        assert!(Config::default().center_jumps(), "the default is on");
+
+        let path = fixture("view-center-off.toml", "[view]\ncenter_jumps = false\n");
+        let file = load_from(&path).expect("a valid file");
+        let mut config = Config::default();
+        config.apply(&file);
+        assert!(!config.center_jumps(), "the file did not turn it off");
+    }
+
+    #[test]
+    fn an_unknown_key_inside_view_is_rejected_and_named() {
+        let path = fixture("view-unknown-key.toml", "[view]\nscrolloff = 5\n");
+        let err = load_from(&path).expect_err("unknown key must fail");
+        assert!(err.to_string().contains("scrolloff"), "{err}");
     }
 
     // ---- the syntax theme ---------------------------------------------

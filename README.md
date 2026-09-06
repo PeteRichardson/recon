@@ -742,6 +742,28 @@ everywhere" are both available. The crossing uses the filters' answer for each
 file and ignores the navigator's filename search: a filename hit with no
 interesting lines has nowhere to land.
 
+The cursor keeps five rows of context between itself and the pane's top or
+bottom edge — vim's `scrolloff`. A held `j` at the bottom of the pane scrolls
+the file up a line at a time with five lines still visible below the cursor,
+rather than pinning the cursor to the last row with nothing below it; `k` at
+the top is the mirror. The margin is waived where there is nothing beyond it:
+the first line of a file sits on the first row and the last on the last. The
+scroll keys — `Ctrl-e`, `Ctrl-y`, a half page, a page — move the view and
+let the cursor give way instead, as vim does, so `Ctrl-e` with the cursor on
+the top row still scrolls. A pane too short for five rows each side keeps a
+smaller margin.
+
+A jump — `n`, `N`, `g`, `G`, `{`, `}`, a crossing into another file — puts a
+line the pane was not showing in the middle of it, with context on both
+sides; a line already on screen is selected where it is and nothing scrolls.
+Off-screen jumps can instead scroll in by the minimum, landing on the
+margin's edge like a held `j` would, in `config.toml`:
+
+```toml
+[view]
+center_jumps = false
+```
+
 Navigator pane (`src/widgets/filenav.rs`) — its own verbs; the shared motions are tabled above:
 
 | Key(s) | Action |
