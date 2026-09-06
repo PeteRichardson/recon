@@ -708,6 +708,10 @@ Navigator pane (`src/widgets/filenav.rs`):
 | `h` / `Left` | Go to the parent directory, landing on the directory just left |
 | `l` / `Right` / `Enter` | Open the selected entry — descend into a directory, or load a file |
 | `n` / `N` | Repeat the last filename search, forward / reversed — or, with no search active, move to the next / previous file the filters match |
+| `g` / `Home` | Select the first entry |
+| `G` / `End` | Select the last entry |
+| `Ctrl-d` / `Ctrl-u` | Move half a page down / up |
+| `PageDown` / `PageUp` | Move a page down / up |
 
 `h` and `l` act on the pane rather than on the row: `h` climbs out whatever is
 selected, and `l` is `Enter` in every case, including on a file. They mean
