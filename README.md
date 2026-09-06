@@ -343,6 +343,9 @@ visible underneath, so the HIDE badge still tells the truth while you are
 reading about `u`. On a terminal too small for the whole table, the bottom
 border says how many rows were cut.
 
+The overlay shows every binding, not just the focused pane's. Context-sensitive
+help is a genuine improvement and deliberately deferred; see issue #25.
+
 Chains — a focus key, then a pane key. Documented as commands because they
 are how a pane verb is reached from anywhere:
 
@@ -352,8 +355,8 @@ are how a pane verb is reached from anywhere:
 | `f c` | Change the selected filter's pattern; returns on commit the same way |
 | `f d` / `f Enter` | Delete / toggle the selected filter; focus stays in the pane, since one delete is often the first of several |
 | `f f` | Stay in the filter pane — the second `f` ends the chain |
-| `e n` | Move the navigator to the next file the filters match |
-| `t *` | Search for the word under the file view's cursor, from the navigator |
+| `e n` | Move the navigator to its next `n`: the next filename-search hit if one is active, else the next file the filters match. Unlike `.`, focus moves to the navigator |
+| `t *` | Search for the word under the file view's cursor, from the navigator or the filter pane |
 
 Shared motions — the same key, the same meaning, in every pane where the idea
 exists:
@@ -362,15 +365,12 @@ exists:
 | --- | --- | --- | --- |
 | `j` / `k`, `Down` / `Up` | next / previous entry | cursor down / up | next / previous row |
 | `g` / `G`, `Home` / `End` | first / last entry | top / bottom of the file | first / last row |
-| `Ctrl-d` / `Ctrl-u` | half a page | half a page | half a page |
-| `PageDown` / `PageUp` | a page | a page (also `Ctrl-f` / `Ctrl-b`) | a page |
+| `Ctrl-d` / `Ctrl-u` | half a page | scroll half a page | half a page |
+| `PageDown` / `PageUp` | a page | scroll a page (also `Ctrl-f` / `Ctrl-b`) | a page |
 | `n` / `N` | next / previous filename-search match, or file the filters match | next / previous interesting line, crossing files | acts on the file view |
-| `Enter` | open the entry | — | toggle the filter, or the set |
+| `Enter` | open the entry | — | toggle the filter, the set, or the live search |
 
 `[` and `]` page the file view from every pane and so live in the Global table.
-
-The overlay shows every binding, not just the focused pane's. Context-sensitive
-help is a genuine improvement and deliberately deferred; see issue #25.
 
 Mouse: drag the vertical divider between the columns to resize them;
 double-click it to return to auto-sizing the left column to whichever of the
@@ -695,7 +695,7 @@ contents, the navigator matches entry names, so `^foo` anchors to the start of
 a filename. An invalid pattern reports `E486: invalid pattern` and leaves the
 prompt open to correct.
 
-File view pane (`src/widgets/fileview.rs`):
+File view pane (`src/widgets/fileview.rs`) — its own verbs; the shared motions are tabled above:
 
 | Key(s) | Action |
 | --- | --- |
@@ -726,7 +726,7 @@ view is exactly when you need `e`. `w` still moves forward by word.
 
 `n` and `N` are handled globally, the same as `u`, so — like that key — they
 act on the file view from the filter pane as well; the navigator keeps its
-own `n`/`N`, described below. An *interesting* line here is
+own `n`/`N`, described in the Shared motions table above. An *interesting* line here is
 one an enabled including filter or the live search matches; stepping treats a
 line with several hits as a single stop, not one per hit, and wraps at the
 ends of the file only as the fallback taken when no other file the filters
@@ -742,7 +742,7 @@ everywhere" are both available. The crossing uses the filters' answer for each
 file and ignores the navigator's filename search: a filename hit with no
 interesting lines has nowhere to land.
 
-Navigator pane (`src/widgets/filenav.rs`):
+Navigator pane (`src/widgets/filenav.rs`) — its own verbs; the shared motions are tabled above:
 
 | Key(s) | Action |
 | --- | --- |
@@ -820,7 +820,8 @@ Filter pane (`src/widgets/filterlist.rs`), reached with `f` or `Tab` — the
 pane sizes to its contents, and with no filters defined it holds a single
 dimmed row reading `press f i to add` (shortened to `press f i`, then to
 `f i`, or dropped entirely, if the column is too narrow for it). It is on
-screen whenever the navigator is:
+screen whenever the navigator is — its own verbs; the shared motions are
+tabled above:
 
 | Key(s) | Action |
 | --- | --- |
