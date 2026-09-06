@@ -519,11 +519,11 @@ impl App<'_> {
                     PromptKind::Filter => self.add_filter(&pattern),
                     PromptKind::Exclude => self.add_excluding_filter(&pattern),
                     PromptKind::Edit { index, .. } => self.replace_filter(index, &pattern),
-                    // Straight to `apply_search`, deliberately not through
-                    // `run_search`: `c` on the search row is "edit search",
-                    // which applies the edited pattern as-is. `/` is "new
-                    // search" — a fresh search starting from the beginning.
-                    // Routing through `run_search` would lose that distinction.
+                    // Straight to `apply_search`, not through `run_search`:
+                    // the search-row prompt can only be opened from the
+                    // filter pane, so dispatching on focus through
+                    // `run_search` would be needless indirection. `apply_search`
+                    // is the direct call.
                     PromptKind::EditSearch => self.apply_search(&pattern),
                 };
                 if outcome.is_ok() {
@@ -7242,10 +7242,8 @@ mod tests {
         );
     }
 
-    /// Finding 11: the filter pane has nothing to search over, so `/` (and
-    /// `/` from the filter pane now sets a live search, so it opens the
-    /// search prompt rather than doing nothing. The rest of the behavior
-    /// matches the view pane: typing and Enter completes the search.
+    /// `/` from the filter pane opens the live-search prompt rather than
+    /// doing nothing (#120 §7).
     #[test]
     fn slash_from_the_filter_pane_opens_the_search_prompt() {
         let mut app = app_with_two_filters("filter_pane_slash");
@@ -8718,10 +8716,10 @@ mod tests {
     /// inert there would make the key look broken on one row of a pane where
     /// every other binding works on all of them.
     ///
-    /// It commits through `apply_search` rather than `run_search`: `c` on the
-    /// search row is "edit search", applying the edited pattern as-is, while
-    /// `/` is "new search" — a fresh search from the beginning. Routing
-    /// through `run_search` would lose that distinction.
+    /// It commits through `apply_search` rather than `run_search`: the
+    /// search-row prompt can only be opened from the filter pane, so
+    /// dispatching on focus through `run_search` would be needless
+    /// indirection. `apply_search` is the direct call.
     #[test]
     fn c_on_the_search_row_edits_the_search() {
         let mut app = app_over_file("pane_edit_search", "alpha\nbeta\ngamma\n");
@@ -10289,6 +10287,49 @@ mod tests {
         assert_eq!(app.document.mode(), Mode::FilteredOnly);
         key(&mut app, KeyCode::Char('u'));
         assert_eq!(app.document.mode(), Mode::Dimmed);
+    }
+
+    /// `Ctrl-u` must reach the panes: the global `u` arm is guarded on an
+    /// empty modifier set precisely so it does not swallow this.
+    #[test]
+    fn ctrl_d_and_ctrl_u_page_the_navigator_through_the_app() {
+        let files: Vec<String> = (0..30).map(|i| format!("f{i:02}.log")).collect();
+        let names: Vec<&str> = files.iter().map(String::as_str).collect();
+        let mut app = app_over("ctrl_page_nav", &names);
+        draw(&mut app);
+        key(&mut app, KeyCode::Char('e'));
+        let before = app.nav.selected_name();
+
+        ctrl(&mut app, KeyCode::Char('d'));
+        let after = app.nav.selected_name();
+        assert_ne!(after, before, "Ctrl-d did not move the navigator");
+        assert_eq!(
+            app.document.mode(),
+            Mode::Dimmed,
+            "Ctrl-d toggled hide mode"
+        );
+
+        ctrl(&mut app, KeyCode::Char('u'));
+        assert_eq!(app.nav.selected_name(), before, "Ctrl-u did not move back");
+        assert_eq!(
+            app.document.mode(),
+            Mode::Dimmed,
+            "Ctrl-u toggled hide mode"
+        );
+    }
+
+    /// `u` is global: it works with the navigator focused, not only the view.
+    #[test]
+    fn u_toggles_hiding_from_the_navigator() {
+        let mut app = app_over_file("u_from_nav", "alpha\nbeta\n");
+        app.filters.add("beta").expect("valid pattern");
+        app.refresh_view();
+        key(&mut app, KeyCode::Char('e'));
+
+        key(&mut app, KeyCode::Char('u'));
+
+        assert_eq!(app.document.mode(), Mode::FilteredOnly);
+        assert_eq!(app.focus, Focus::Nav, "focus moved");
     }
 
     #[test]
