@@ -301,7 +301,7 @@ Global (`src/lib.rs`), handled before the focused pane sees the key:
 | `Tab` / `Shift-Tab` | Move focus to the next / previous of the three panes — navigator, file view, filter pane. All three are always on screen, so the cycle never skips one |
 | `/` | In the navigator, search filenames. In the file view, set a live search — a filter of its own, which moves you to its next hit from the cursor exactly as `n` would |
 | `p` | Promote the live search into the numbered filter set, freeing `/` for the next one |
-| `Esc` | Clear the live search (an open prompt takes this key first and just cancels the prompt) |
+| `Esc` | In the navigator with a filename search active, clear it; otherwise clear the live search. An open prompt takes this key first and just cancels the prompt |
 | `e` | Focus the navigator, revealing the left column if `b` or `z` hid it |
 | `t` | Focus the file view |
 | `f` | Focus the filter pane — filters are then added with `i` and `x` from inside it |

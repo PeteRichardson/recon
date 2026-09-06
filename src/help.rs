@@ -118,7 +118,7 @@ pub const KEYMAP: &[Section] = &[
             },
             Binding {
                 keys: &["Esc"],
-                action: "Clear the live search",
+                action: "Clear the pane's search, else the live search",
             },
             Binding {
                 keys: &["space"],

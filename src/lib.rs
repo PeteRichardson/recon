@@ -989,6 +989,14 @@ impl App<'_> {
                 // carries no modifiers at all, so `is_empty()` is simply
                 // correct here rather than a trap.
                 KeyCode::Esc if key.modifiers.is_empty() => {
+                    // Layered (#120 §8): the focused pane's own search first,
+                    // then the live search. The navigator's filename search
+                    // is separate state, and until now nothing but a new
+                    // search replaced it — `n` kept repeating a search the
+                    // user thought they had dismissed.
+                    if self.focus == Focus::Nav && self.nav.clear_search() {
+                        return;
+                    }
                     // `clear_search` reports whether there was one to drop, the
                     // same shape `p`'s `promote_search` guard uses just below:
                     // `refresh_view` is not free — `evaluate` is
@@ -8296,6 +8304,59 @@ mod tests {
             "zebra.log",
             "the nav search did not move the selection"
         );
+    }
+
+    /// #120 §8: `Esc` clears whichever search the focused pane owns first,
+    /// then the live search. One key, one meaning, layered.
+    #[test]
+    fn esc_clears_the_navigator_search_before_the_live_search() {
+        let mut app = app_over_files(
+            "esc_layers",
+            &[("alpha.log", "hit\n"), ("zebra.log", "hit\n")],
+        );
+        open_file(&mut app, 0);
+        key(&mut app, KeyCode::Char('t'));
+        key(&mut app, KeyCode::Char('/'));
+        typed(&mut app, "hit");
+        key(&mut app, KeyCode::Enter);
+        assert!(app.filters.search().is_some(), "sanity: live search set");
+
+        key(&mut app, KeyCode::Char('e'));
+        key(&mut app, KeyCode::Char('/'));
+        typed(&mut app, "zebra");
+        key(&mut app, KeyCode::Enter);
+        assert!(app.nav.has_search(), "sanity: navigator search set");
+
+        key(&mut app, KeyCode::Esc);
+        assert!(
+            !app.nav.has_search(),
+            "Esc did not clear the navigator search"
+        );
+        assert!(
+            app.filters.search().is_some(),
+            "Esc cleared the live search on the same press"
+        );
+
+        key(&mut app, KeyCode::Esc);
+        assert!(
+            app.filters.search().is_none(),
+            "second Esc did not clear the live search"
+        );
+    }
+
+    /// From the file view, `Esc` does not reach into the navigator.
+    #[test]
+    fn esc_in_the_view_leaves_the_navigator_search_alone() {
+        let mut app = app_over("esc_view_only", &["alpha.log", "zebra.log"]);
+        key(&mut app, KeyCode::Char('e'));
+        key(&mut app, KeyCode::Char('/'));
+        typed(&mut app, "zebra");
+        key(&mut app, KeyCode::Enter);
+        key(&mut app, KeyCode::Char('t'));
+
+        key(&mut app, KeyCode::Esc);
+
+        assert!(app.nav.has_search());
     }
 
     /// `apply_search`'s ordering — `refresh_view` before `step_to_interesting`

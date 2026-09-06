@@ -373,6 +373,23 @@ impl FileNav<'_> {
         Ok(self.step_search(reverse))
     }
 
+    /// Drop the filename search, restoring the plain listing styles.
+    /// Reports whether there was one, so `Esc` can fall through to the live
+    /// search when there was not.
+    pub(crate) fn clear_search(&mut self) -> bool {
+        if self.matcher.take().is_none() {
+            return false;
+        }
+        self.rebuild_list();
+        true
+    }
+
+    /// Whether a filename search is active, for tests.
+    #[cfg(test)]
+    pub(crate) fn has_search(&self) -> bool {
+        self.matcher.is_some()
+    }
+
     /// `n`/`N`: the next filename-search match if a search is active, else
     /// the next file the filters selected. The same "next interesting row"
     /// the file view gives these keys (#119).
