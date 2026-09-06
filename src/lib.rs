@@ -571,7 +571,10 @@ impl App<'_> {
             // A paste arrives as one `Char` per character. A newline in it
             // is dropped rather than typed: the pattern is single-line, and
             // a stray `\n` would silently make it match nothing (#120 §13).
-            KeyCode::Char('\n' | '\r') => {}
+            // Matched by guard rather than by literal so the bound-key
+            // scanner in `help.rs`, which reads every `'x'` inside `Char(..)`,
+            // does not take the escape's backslash for a key.
+            KeyCode::Char(c) if c == '\n' || c == '\r' => {}
             KeyCode::Char(c) => {
                 if let Some(prompt) = self.search.as_mut() {
                     prompt.error = None;
