@@ -304,7 +304,7 @@ Global (`src/lib.rs`), handled before the focused pane sees the key:
 | `Esc` | In the navigator with a filename search active, clear it; otherwise clear the live search. An open prompt takes this key first and just cancels the prompt |
 | `e` | Focus the navigator, revealing the left column if `b` or `z` hid it |
 | `t` | Focus the file view |
-| `f` | Focus the filter pane — filters are then added with `i` and `x` from inside it |
+| `f` | Focus the filter pane. `f i`, `f x` and `f c` are chains: the pair works from anywhere, and when the prompt commits, focus returns to where you were and the app steps as if you had pressed `n`. `f f` stays in the pane |
 | `space` | **Peek at the plain file** — drop every filter and flip the hide mode, so the code reads normally. Press again to put the filtered view back exactly as it was. See [Peeking at the plain file](#peeking-at-the-plain-file) |
 | `.` / `,` | Skip to the next / previous file the filters match, landing on its first / last interesting line. Works from every pane; focus stays put. The keycaps say `>` and `<` |
 | `[` / `]` | Page the file view up / down, whichever pane has focus — so a peeked file can be skimmed from the navigator |
@@ -876,11 +876,26 @@ navigator search you thought you had dismissed cannot keep driving `n`. And the
 digits toggle the filter the pane numbers, from anywhere, because switching a filter
 off to see what it was hiding is a loop action, not a setup one.
 
-`i` and `x` work only while this pane has focus, which is what `f` is for —
-`f i` and `f x` reach them from anywhere, and `f` is a no-op when the pane
+`i`, `x` and `c` work only while this pane has focus, which is what `f` is for —
+`f i`, `f x` and `f c` reach them from anywhere, and `f` is a no-op when the pane
 already has focus, so the pair is always correct. They are deliberately not
 global: bound app-wide they would swallow a keystroke from every other pane,
 which is exactly what `f` and `F` used to do and the reason they moved.
+
+A chain that commits a prompt returns. `f i fn Enter` from the file view adds
+the filter, puts focus back in the view, and lands on the first `fn`, as if you
+had pressed `n`; from the navigator it lands on the first matching file. Only a
+commit returns — `f d`, `f Enter`, `f m`, `f a`, `f s` and a plain `f` leave focus
+in the pane, because a toggle or a delete is often one of several. `f f` is the
+way to say "I am staying": the second `f` ends the chain. So does any other
+focus key, `Tab`, or cancelling the prompt.
+
+A pane's verb pressed in the wrong pane is not silent. `i`, `x`, `c`, `d`, `m`,
+`a` or `s` in the navigator or the file view puts a one-line hint on the status
+row — `i adds a filter · f i` — for one keypress; `h` and `l` in the filter pane
+do the same for the navigator. It is a hint rather than a redirect on purpose:
+making `i` global would make `f i` and `i` the same key, and the chain is the
+thing worth learning.
 
 Each row shows the filter's number, whether it is enabled, whether it
 includes or excludes, and its pattern — e.g. `1[x] inc foo`. Including
