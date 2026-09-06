@@ -884,11 +884,16 @@ which is exactly what `f` and `F` used to do and the reason they moved.
 
 A chain that commits a prompt returns. `f i fn Enter` from the file view adds
 the filter, puts focus back in the view, and lands on the first `fn`, as if you
-had pressed `n`; from the navigator it lands on the first matching file. Only a
-commit returns — `f d`, `f Enter`, `f m`, `f a`, `f s` and a plain `f` leave focus
-in the pane, because a toggle or a delete is often one of several. `f f` is the
-way to say "I am staying": the second `f` ends the chain. So does any other
-focus key, `Tab`, or cancelling the prompt.
+had pressed `n`; from the navigator, focus returns and `n` runs there too —
+which repeats a filename search if one is active, or otherwise steps to the
+next file the filters match once the scan has answered. Until it has, or if
+nothing matches, the status row says `no matching file` rather than landing
+anywhere. Only a commit returns — `f d`, `f Enter`, `f m`, `f a`, `f s` and a
+plain `f` leave focus in the pane, because a toggle or a delete is often one
+of several. `f f` is the way to say "I am staying": the second `f` ends the
+chain. So does any other focus key, `Tab`, or cancelling the prompt. If you
+zoomed the filter pane after `f`, the return restores the split, because the
+origin pane has to be visible to take focus.
 
 A pane's verb pressed in the wrong pane is not silent. `i`, `x`, `c`, `d`, `m`,
 `a` or `s` in the navigator or the file view puts a one-line hint on the status
