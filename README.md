@@ -308,6 +308,7 @@ Global (`src/lib.rs`), handled before the focused pane sees the key:
 | `space` | **Peek at the plain file** — drop every filter and flip the hide mode, so the code reads normally. Press again to put the filtered view back exactly as it was. See [Peeking at the plain file](#peeking-at-the-plain-file) |
 | `.` / `,` | Skip to the next / previous file the filters match, landing on its first / last interesting line. Works from every pane; focus stays put. The keycaps say `>` and `<` |
 | `[` / `]` | Page the file view up / down, whichever pane has focus — so a peeked file can be skimmed from the navigator |
+| `1` – `9` | Toggle the filter the pane numbers `1` to `9`, from any pane. Built-in filters, set headers and the search row have no number; `Enter` in the filter pane toggles those |
 | `u` / `Ctrl-H` / `H` | Toggle between dimming unmatched lines and hiding them — `u` for **u**nmatched; the other two are aliases for terminals and habits that already use them |
 | `!` | Disable every filter, remembering which were on; restores exactly that (or enables all, if none were on to remember) |
 | `&` | Combine the enabled include filters with **AND** instead of OR — a line must match every one of them. Press again for OR. See [Combining filters with AND](#combining-filters-with-and) |
