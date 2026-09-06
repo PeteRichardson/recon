@@ -362,6 +362,23 @@ impl App<'_> {
         let Some(row) = self.document.visible_position(target) else {
             return;
         };
+        self.jump_to_visible_row(row);
+    }
+
+    /// `place_cursor_on_visible_row` for a *jump* — `n`/`N`, `g`/`G`,
+    /// `{`/`}`, a cross-file landing — which also decides where on the pane
+    /// the target lands. A target the pane already shows stays where
+    /// it is; one it does not is centred, or with `center_jumps` off scrolled
+    /// in by the minimum onto the scroll margin's edge. See
+    /// `FileView::jump_landing_row`.
+    ///
+    /// Requested *before* `apply_view`, whose own restore request — the
+    /// pre-jump screen row, meaningful for a filter toggle and not for a
+    /// jump — would otherwise be the one `scroll_cursor_to_row` keeps.
+    pub(crate) fn jump_to_visible_row(&mut self, row: usize) {
+        if let Some(screen_row) = self.view.jump_landing_row(row, self.center_jumps) {
+            self.view.scroll_cursor_to_row(screen_row);
+        }
         self.place_cursor_on_visible_row(row);
     }
 

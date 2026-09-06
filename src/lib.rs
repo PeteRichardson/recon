@@ -240,6 +240,9 @@ pub struct App<'a> {
     /// is reported by the key that uses it rather than refusing to start a log
     /// viewer over a setting most sessions never touch.
     editor: editor::Templates,
+    /// Whether a jump to a line off screen centres it — `[view]
+    /// center_jumps`, resolved by `Config::center_jumps`.
+    center_jumps: bool,
     /// How `o` actually starts an editor.
     ///
     /// Boxed behind the trait so tests can swap in a double that records the
@@ -474,6 +477,7 @@ impl App<'_> {
             last_window: None,
             zoom: None,
             editor: config.editor_templates(),
+            center_jumps: config.center_jumps(),
             launcher: Box::new(editor::ProcessLauncher::new(outcomes_tx)),
             status_message: None,
             editor_outcomes: Some(outcomes_rx),
@@ -1338,7 +1342,7 @@ impl App<'_> {
             && let Some(target) = self.long_range_target(key.code)
         {
             self.promote_truncated_preview();
-            self.place_cursor_on_visible_row(target);
+            self.jump_to_visible_row(target);
             return;
         }
 
@@ -5006,15 +5010,17 @@ mod tests {
         draw(&mut app);
 
         // Put the cursor well down the file. Moving down one line at a time
-        // like this pins it to the pane's *last* screen row — the viewport
-        // scrolls minimally to keep it in view, landing it on the bottom
-        // edge every time.
+        // like this pins it to the lowest screen row the scroll margin
+        // allows — the viewport scrolls to keep `SCROLL_MARGIN` rows of
+        // context below it, landing it on the margin's edge every time.
         for _ in 0..120 {
             focus_file_view(&mut app);
             key(&mut app, KeyCode::Char('j'));
         }
         draw(&mut app);
         let pinned_row = cursor_screen_row(&app);
+        // The pane's last text row — the one a reset viewport re-anchors to.
+        let last_row = app.view.window_height() - 3;
 
         // Pull it back off that row: the pane's last row is exactly where a
         // reset viewport would re-anchor the cursor after a rebuild, so
@@ -5028,10 +5034,11 @@ mod tests {
         let before_source = cursor_source(&app);
         let before_len = view_lines(&app).len();
         assert!(
-            before_row < pinned_row,
+            before_row < last_row,
             "test setup did not move the cursor off the pane's last row \
-             (pinned_row = {pinned_row}, before_row = {before_row}) — \
-             this test would pass whether or not the fix exists"
+             (pinned_row = {pinned_row}, last_row = {last_row}, \
+             before_row = {before_row}) — this test would pass whether or \
+             not the fix exists"
         );
 
         key(&mut app, KeyCode::Char('!'));
@@ -5088,6 +5095,8 @@ mod tests {
         }
         draw(&mut app);
         let pinned_row = cursor_screen_row(&app);
+        // The pane's last text row — the one a reset viewport re-anchors to.
+        let last_row = app.view.window_height() - 3;
 
         for _ in 0..3 {
             focus_file_view(&mut app);
@@ -5098,10 +5107,11 @@ mod tests {
         let before_source = cursor_source(&app);
         let before_len = view_lines(&app).len();
         assert!(
-            before_row < pinned_row,
+            before_row < last_row,
             "test setup did not move the cursor off the pane's last row \
-             (pinned_row = {pinned_row}, before_row = {before_row}) — \
-             this test would pass whether or not the fix exists"
+             (pinned_row = {pinned_row}, last_row = {last_row}, \
+             before_row = {before_row}) — this test would pass whether or \
+             not the fix exists"
         );
 
         key(&mut app, KeyCode::Char('!'));
@@ -5149,6 +5159,8 @@ mod tests {
         }
         draw(&mut app);
         let pinned_row = cursor_screen_row(&app);
+        // The pane's last text row — the one a reset viewport re-anchors to.
+        let last_row = app.view.window_height() - 3;
 
         for _ in 0..3 {
             focus_file_view(&mut app);
@@ -5159,10 +5171,11 @@ mod tests {
         let before_source = cursor_source(&app);
         let before_len = view_lines(&app).len();
         assert!(
-            before_row < pinned_row,
+            before_row < last_row,
             "test setup did not move the cursor off the pane's last row \
-             (pinned_row = {pinned_row}, before_row = {before_row}) — \
-             this test would pass whether or not the fix exists"
+             (pinned_row = {pinned_row}, last_row = {last_row}, \
+             before_row = {before_row}) — this test would pass whether or \
+             not the fix exists"
         );
 
         // The pane's own key, not `!` — this is the criterion this test adds.
@@ -5221,6 +5234,8 @@ mod tests {
         }
         draw(&mut app);
         let pinned_row = cursor_screen_row(&app);
+        // The pane's last text row — the one a reset viewport re-anchors to.
+        let last_row = app.view.window_height() - 3;
 
         for _ in 0..3 {
             focus_file_view(&mut app);
@@ -5231,10 +5246,11 @@ mod tests {
         let before_source = cursor_source(&app);
         let before_len = view_lines(&app).len();
         assert!(
-            before_row < pinned_row,
+            before_row < last_row,
             "test setup did not move the cursor off the pane's last row \
-             (pinned_row = {pinned_row}, before_row = {before_row}) — \
-             this test would pass whether or not the fix exists"
+             (pinned_row = {pinned_row}, last_row = {last_row}, \
+             before_row = {before_row}) — this test would pass whether or \
+             not the fix exists"
         );
 
         key(&mut app, KeyCode::Char('H'));
@@ -7609,6 +7625,162 @@ mod tests {
 
         key(&mut app, KeyCode::Char('n'));
         assert_eq!(cursor_source(&app), 3, "did not reach the search match");
+    }
+
+    // ---- where a jump lands --------------------------------------
+
+    /// A pane tall enough that the centre row and the margin's edge are
+    /// different rows — on `AREA` they coincide. 36 rows is 33 of text once
+    /// the status line and the pane's borders are taken off.
+    const TALL: Rect = Rect {
+        x: 0,
+        y: 0,
+        width: 120,
+        height: 36,
+    };
+    const TALL_TEXT_ROWS: u16 = 33;
+
+    fn draw_tall(app: &mut App) {
+        let mut buf = Buffer::empty(TALL);
+        app.render(TALL, &mut buf);
+    }
+
+    /// `App` over `body` with the search `pattern` set and the view focused,
+    /// rendered once so the pane knows its height.
+    fn app_searching(name: &str, body: &str, pattern: &str, config: Config) -> App<'static> {
+        let file = fixture_path(name, body);
+        let mut app = App::new(&Config {
+            path: file.display().to_string(),
+            ..config
+        });
+        draw_tall(&mut app);
+        key(&mut app, KeyCode::Char('t'));
+        app.filters.set_search(pattern).expect("valid pattern");
+        app.refresh_view();
+        draw_tall(&mut app);
+        assert_eq!(
+            cursor_screen_row(&app),
+            0,
+            "sanity: the search alone moved the cursor"
+        );
+        app
+    }
+
+    /// A hit the pane was not showing is put in the middle of it, so there
+    /// is context on both sides — the pane had to redraw anyway.
+    #[test]
+    fn n_to_a_hit_off_screen_centres_it_in_the_pane() {
+        let mut app = app_searching(
+            "n_centres",
+            &numbered_lines(400),
+            "line 150$",
+            Config::default(),
+        );
+
+        key(&mut app, KeyCode::Char('n'));
+        draw_tall(&mut app);
+
+        assert_eq!(cursor_source(&app), 150, "did not reach the hit");
+        assert_eq!(
+            cursor_screen_row(&app),
+            TALL_TEXT_ROWS / 2,
+            "the hit was not centred"
+        );
+    }
+
+    /// A hit the pane is already showing is selected where it is: nothing
+    /// scrolls, so the eye does not have to find the text again.
+    #[test]
+    fn n_to_a_hit_already_on_screen_does_not_scroll() {
+        let mut app = app_searching(
+            "n_on_screen",
+            &numbered_lines(400),
+            "line 10$",
+            Config::default(),
+        );
+
+        key(&mut app, KeyCode::Char('n'));
+        draw_tall(&mut app);
+
+        assert_eq!(cursor_source(&app), 10, "did not reach the hit");
+        assert_eq!(cursor_screen_row(&app), 10, "the view scrolled");
+    }
+
+    /// Centring never scrolls past the end of the file: a hit near the last
+    /// line lands wherever the end-of-file view puts it, with no blank rows
+    /// pulled in below to make it central.
+    #[test]
+    fn n_to_a_hit_near_the_end_does_not_scroll_past_the_end() {
+        let mut app = app_searching(
+            "n_near_end",
+            &numbered_lines(400),
+            "line 398$",
+            Config::default(),
+        );
+
+        key(&mut app, KeyCode::Char('n'));
+        draw_tall(&mut app);
+
+        assert_eq!(cursor_source(&app), 398, "did not reach the hit");
+        assert_eq!(
+            cursor_screen_row(&app),
+            TALL_TEXT_ROWS - 2,
+            "the last lines are not on the pane's last rows"
+        );
+    }
+
+    /// `[view] center_jumps = false`: an off-screen hit scrolls in by the
+    /// minimum, landing on the bottom margin's edge like a held `j` would.
+    #[test]
+    fn center_jumps_off_lands_an_off_screen_hit_on_the_bottom_margin() {
+        let mut app = app_searching(
+            "n_no_centre",
+            &numbered_lines(400),
+            "line 150$",
+            Config {
+                center_jumps: Some(false),
+                ..Config::default()
+            },
+        );
+
+        key(&mut app, KeyCode::Char('n'));
+        draw_tall(&mut app);
+
+        assert_eq!(cursor_source(&app), 150, "did not reach the hit");
+        let margin = crate::widgets::fileview::SCROLL_MARGIN as u16;
+        assert_eq!(cursor_screen_row(&app), TALL_TEXT_ROWS - 1 - margin);
+    }
+
+    /// The margin survives the window being rebuilt under a held `j`: the
+    /// rebuild's restore puts the cursor back on the row it was captured
+    /// on, and that row was measured before the viewport had followed the
+    /// keypress — one row into the margin.
+    #[test]
+    fn a_held_j_keeps_the_margin_across_a_window_rebuild() {
+        let mut app = app_over_file("margin_rebuild", &numbered_lines(2000));
+        draw_tall(&mut app);
+        key(&mut app, KeyCode::Char('t'));
+        // `G` then `g` re-windows against the real pane height rather than
+        // the pre-render assumption, so a rebuild comes due within reach.
+        key(&mut app, KeyCode::Char('G'));
+        key(&mut app, KeyCode::Char('g'));
+        draw_tall(&mut app);
+        let lowest = TALL_TEXT_ROWS - 1 - crate::widgets::fileview::SCROLL_MARGIN as u16;
+
+        let mut rebuilt = false;
+        for press in 0..300u16 {
+            key(&mut app, KeyCode::Char('j'));
+            draw_tall(&mut app);
+            rebuilt |= app.view.window_start() != 0;
+            if press >= lowest {
+                assert_eq!(
+                    cursor_screen_row(&app),
+                    lowest,
+                    "press {press} left the cursor off the margin's edge"
+                );
+            }
+        }
+        assert!(rebuilt, "sanity: the window was never rebuilt");
     }
 
     /// Line-oriented, not span-oriented: three hits on one line is one stop.

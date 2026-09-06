@@ -48,6 +48,26 @@ const MAX_PREVIEW_BYTES: u64 = 10 << 20;
 /// fully populated and the real height takes over from the second.
 pub(crate) const ASSUMED_PANE_HEIGHT: u16 = 200;
 
+/// Rows of context kept between the cursor and the pane's top or bottom edge
+/// while there is file beyond that edge to show — vim's `scrolloff`.
+///
+/// Without it a held `j` pins the cursor to the pane's last row and every
+/// line below the selection is invisible until it is selected; the same for
+/// `k` and the first row. Five is the value most vim and helix configurations
+/// settle on: enough to read the line in its surroundings, small enough that
+/// a short pane still has a majority of rows the cursor can move through
+/// without scrolling. Shrunk on a pane too short to afford it — see
+/// `scroll_margin`.
+pub(crate) const SCROLL_MARGIN: usize = 5;
+
+/// The margin a pane `height` rows tall can afford: `SCROLL_MARGIN`, or less
+/// on a pane so short that five rows each side would leave the cursor no
+/// row that is not in a margin. The cursor always keeps at least one row of
+/// its own — on a 3-row pane the margin is 1, on a 1-row pane it is 0.
+pub(crate) fn scroll_margin(height: usize) -> usize {
+    SCROLL_MARGIN.min(height.saturating_sub(1) / 2)
+}
+
 /// How many screens of slack the window keeps beyond **each edge of the
 /// viewport** — see `WINDOW_SCREENS` for why it is two rather than one.
 const SLACK_SCREENS: usize = 2;
@@ -320,6 +340,20 @@ pub struct FileView<'a> {
     ///
     /// `None` until the first render — see `ASSUMED_PANE_HEIGHT`.
     last_height: Option<u16>,
+    /// Whether `textarea`'s viewport has been rendered since it was last
+    /// replaced or reset. `TextArea::scroll` clamps the cursor into the
+    /// viewport's *cached* dimensions, and a viewport `set_lines` has reset
+    /// to zero rows collapses the cursor onto the scroll target — so
+    /// anything that scrolls before a real render has primed those
+    /// dimensions must prime them itself with a scratch render first. See
+    /// `apply_pending_scroll`, which always does, and `keep_scroll_margin`,
+    /// which only has to when this is false.
+    viewport_primed: bool,
+    /// Rows of text the pane last rendered — the area inside its borders.
+    /// What the scroll keys measure the margin against (`scroll_view`);
+    /// `render` has the real figure and this is the last one it saw. Zero
+    /// before the first render, which makes the margin zero too.
+    viewport_height: u16,
 }
 
 impl FileView<'_> {
@@ -375,6 +409,7 @@ impl FileView<'_> {
         self.source = Arc::new(lines);
         self.text = text;
         self.textarea = TextArea::new(self.source.as_ref().clone());
+        self.viewport_primed = false;
         self.window_start = 0;
         self.rebuild_highlighter();
     }
@@ -580,6 +615,7 @@ impl FileView<'_> {
         };
         self.window_start = window_start;
         self.textarea.set_lines(lines, (row, 0));
+        self.viewport_primed = false;
     }
 
     /// Visible-set index of the buffer's first row.
@@ -623,6 +659,31 @@ impl FileView<'_> {
         // under `as` and silently scroll the view somewhere plausible.
         // Saturating turns that into a visibly pinned cursor instead.
         u16::try_from(self.textarea.cursor().0.saturating_sub(usize::from(top))).unwrap_or(u16::MAX)
+    }
+
+    /// Which row of the pane a jump to visible-set row `row` should land
+    /// on, or `None` when the pane is already showing that row and the jump
+    /// should not scroll at all.
+    ///
+    /// `center`, and the target goes in the middle of the pane: the pane
+    /// has to redraw anyway, and the middle gives context on both sides.
+    /// Otherwise the target scrolls in by the minimum and lands on the edge
+    /// of the scroll margin nearest where it came from — the same row a
+    /// held `j` or `k` would have delivered it to.
+    pub fn jump_landing_row(&self, row: usize, center: bool) -> Option<u16> {
+        let height = self.viewport_height;
+        let top = self.window_start + usize::from(self.textarea.scroll_top().0);
+        if (top..top + usize::from(height)).contains(&row) {
+            return None;
+        }
+        let margin = u16::try_from(scroll_margin(usize::from(height))).unwrap_or(0);
+        Some(if center {
+            height / 2
+        } else if row < top {
+            margin
+        } else {
+            height.saturating_sub(1 + margin)
+        })
     }
 
     /// The cursor column as a character index (for `word_under_cursor`).
@@ -671,8 +732,20 @@ impl FileView<'_> {
         (&self.textarea).render(area, &mut scratch);
 
         let cursor = self.textarea.cursor().0;
-        let desired_top = cursor.saturating_sub(usize::from(row));
         let (current_top, _) = self.textarea.scroll_top();
+        // Never past the end of the buffer on this request's account: a
+        // jump centred near the last line would otherwise pull blank rows
+        // in below it. The same waiver `keep_scroll_margin` gives — a view
+        // already past the end is left there.
+        let height = usize::from(
+            self.textarea
+                .block()
+                .map_or(area, |block| block.inner(area))
+                .height,
+        );
+        let lines = self.textarea.lines().len();
+        let max_top = lines.saturating_sub(height).max(usize::from(current_top));
+        let desired_top = cursor.saturating_sub(usize::from(row)).min(max_top);
         // A line index only exceeds `i64::MAX` in a file no filesystem can
         // hold, but `as` would make that case scroll *backwards* rather than
         // to the end, so saturate instead.
@@ -681,6 +754,108 @@ impl FileView<'_> {
             // Clamped into `i16` range first, so the conversion cannot fail.
             // `unwrap_or(0)` keeps that a skipped scroll rather than a panic
             // in a render path if the clamp above is ever changed.
+            let step =
+                i16::try_from(delta.clamp(i64::from(i16::MIN), i64::from(i16::MAX))).unwrap_or(0);
+            self.textarea.scroll((step, 0));
+        }
+    }
+
+    /// Scroll the viewport by `by` — `Ctrl-E`/`Ctrl-Y`, a half page, a
+    /// page — and then move the *cursor* into the margin the scroll pushed
+    /// over it, as vim does.
+    ///
+    /// The other half of `keep_scroll_margin`. That rule moves the view to
+    /// suit the cursor, which is right after a cursor motion and exactly
+    /// wrong after a scroll: `Ctrl-E` with the cursor on the pane's first
+    /// row would scroll the view down a line, and the render would scroll
+    /// it straight back up to restore the margin — a key that does nothing.
+    /// So a scroll settles the cursor itself, and by the time the render
+    /// rule looks the margin already holds.
+    ///
+    /// The same waivers as the render rule: no top margin when the buffer's
+    /// first row is on screen, no bottom margin when its last row is.
+    fn scroll_view(&mut self, by: impl Into<Scrolling>) {
+        self.textarea.scroll(by);
+        let height = usize::from(self.viewport_height);
+        if height == 0 {
+            // Nothing has rendered yet, so there is no margin to keep.
+            return;
+        }
+        let margin = scroll_margin(height);
+        let top = usize::from(self.textarea.scroll_top().0);
+        let lines = self.textarea.lines().len();
+        let lowest = if top == 0 { 0 } else { top + margin };
+        let highest = if top + height >= lines {
+            lines.saturating_sub(1)
+        } else {
+            top + height - 1 - margin
+        };
+        let (row, col) = self.textarea.cursor();
+        let clamped = row.clamp(lowest, highest.max(lowest));
+        if clamped != row {
+            self.textarea.set_cursor_position((clamped, col));
+        }
+    }
+
+    /// Scroll the view, if the cursor has strayed into the top or bottom
+    /// `scroll_margin`, so that it sits on the margin's edge instead — vim's
+    /// `scrolloff`.
+    ///
+    /// Run from `render`, after `apply_pending_scroll`, because that is the
+    /// one place with the pane's real height and the one moment every path
+    /// that moves the cursor — a key in `handle_events`, an `n` landed by
+    /// `App`, a rebuild's restore — has finished with it. The textarea's own
+    /// follow rule runs inside its render and only ever scrolls by the
+    /// minimum that keeps the cursor on screen; this runs first and keeps it
+    /// `margin` rows further in, so by the time the textarea looks, there is
+    /// nothing left for it to do.
+    ///
+    /// A margin is waived where there is nothing beyond it to show: the top
+    /// one at the buffer's first row, the bottom one once the buffer's last
+    /// row is on screen. That is what lets the cursor reach the last line of
+    /// a file without the view scrolling past the end into blank rows. Only
+    /// scrolls this rule itself asks for are clamped that way — a view the
+    /// user has already pushed past the end with `Ctrl-E` is left where they
+    /// put it.
+    ///
+    /// Buffer rows throughout, not visible-set rows: the window's slack
+    /// (`window_holds`) is a full screen beyond each edge of the viewport,
+    /// and a margin is at most half a screen, so this never runs into the
+    /// end of the buffer before `ensure_window` has moved it.
+    fn keep_scroll_margin(&mut self, area: Rect, height: usize) {
+        let margin = scroll_margin(height);
+        let top = usize::from(self.textarea.scroll_top().0);
+        let cursor = self.textarea.cursor().0;
+        let lines = self.textarea.lines().len();
+
+        let desired = if cursor < top + margin {
+            cursor.saturating_sub(margin)
+        } else if cursor + margin >= top + height {
+            (cursor + margin + 1).saturating_sub(height)
+        } else {
+            top
+        };
+        // Never past the end on this rule's account — but no further back
+        // than where the view already is, either.
+        let desired = desired.min(lines.saturating_sub(height).max(top));
+        if desired == top {
+            return;
+        }
+        self.scroll_top_to(desired, area);
+    }
+
+    /// Put row `desired` of the buffer on the pane's first row, priming the
+    /// viewport first if nothing has rendered it since it was reset — see
+    /// `viewport_primed`.
+    fn scroll_top_to(&mut self, desired: usize, area: Rect) {
+        if !self.viewport_primed {
+            let mut scratch = Buffer::empty(area);
+            (&self.textarea).render(area, &mut scratch);
+            self.viewport_primed = true;
+        }
+        let (current_top, _) = self.textarea.scroll_top();
+        let delta = i64::try_from(desired).unwrap_or(i64::MAX) - i64::from(current_top);
+        if delta != 0 {
             let step =
                 i16::try_from(delta.clamp(i64::from(i16::MIN), i64::from(i16::MAX))).unwrap_or(0);
             self.textarea.scroll((step, 0));
@@ -774,22 +949,22 @@ impl FileView<'_> {
                 key: Key::Char('e'),
                 ctrl: true,
                 ..
-            } => self.textarea.scroll((1, 0)),
+            } => self.scroll_view((1, 0)),
             Input {
                 key: Key::Char('y'),
                 ctrl: true,
                 ..
-            } => self.textarea.scroll((-1, 0)),
+            } => self.scroll_view((-1, 0)),
             Input {
                 key: Key::Char('d'),
                 ctrl: true,
                 ..
-            } => self.textarea.scroll(Scrolling::HalfPageDown),
+            } => self.scroll_view(Scrolling::HalfPageDown),
             Input {
                 key: Key::Char('u'),
                 ctrl: true,
                 ..
-            } => self.textarea.scroll(Scrolling::HalfPageUp),
+            } => self.scroll_view(Scrolling::HalfPageUp),
             Input {
                 key: Key::Char('b'),
                 ctrl: true,
@@ -797,7 +972,7 @@ impl FileView<'_> {
             }
             | Input {
                 key: Key::PageUp, ..
-            } => self.textarea.scroll(Scrolling::PageUp),
+            } => self.scroll_view(Scrolling::PageUp),
             // Paired deliberately, and sitting next to the `{`/`}` paragraph
             // motions above: brackets move by page, braces by paragraph, both
             // left-is-back and right-is-forward. Neither needs Shift, which is
@@ -811,11 +986,11 @@ impl FileView<'_> {
             Input {
                 key: Key::Char('['),
                 ..
-            } => self.textarea.scroll(Scrolling::PageUp),
+            } => self.scroll_view(Scrolling::PageUp),
             Input {
                 key: Key::Char(']'),
                 ..
-            } => self.textarea.scroll(Scrolling::PageDown),
+            } => self.scroll_view(Scrolling::PageDown),
             Input {
                 key: Key::Char('f'),
                 ctrl: true,
@@ -823,7 +998,7 @@ impl FileView<'_> {
             }
             | Input {
                 key: Key::PageDown, ..
-            } => self.textarea.scroll(Scrolling::PageDown),
+            } => self.scroll_view(Scrolling::PageDown),
             _ => (),
         }
     }
@@ -1344,7 +1519,17 @@ impl Widget for &mut FileView<'_> {
         // the first frame after `load`/`preview` replace the textarea (which
         // drops its block along with everything else).
         self.apply_pending_scroll(area);
+        // The block is set, so its inner area is the rows the text gets.
+        let inner_height = usize::from(
+            self.textarea
+                .block()
+                .map_or(area, |block| block.inner(area))
+                .height,
+        );
+        self.keep_scroll_margin(area, inner_height);
         (&self.textarea).render(area, buf);
+        self.viewport_primed = true;
+        self.viewport_height = u16::try_from(inner_height).unwrap_or(u16::MAX);
     }
 }
 
@@ -2439,6 +2624,189 @@ mod tests {
             3,
             "the second scroll request overwrote the first instead of being ignored"
         );
+    }
+
+    // ---- scroll margin ---------------------------------------------------
+
+    /// Render `view` into a pane `height` rows tall, borders included, so
+    /// the viewport learns its real dimensions the way a frame would give it.
+    fn render_at(view: &mut FileView<'_>, height: u16) {
+        let area = Rect::new(0, 0, 40, height);
+        let mut buf = Buffer::empty(area);
+        view.render(area, &mut buf);
+    }
+
+    /// A pane 14 rows tall outside the borders is 12 inside, so the margin
+    /// is `SCROLL_MARGIN` rows on each edge and the cursor can occupy rows
+    /// 5..=6 of the pane while there is file above and below it.
+    const MARGIN_PANE: u16 = 14;
+    const MARGIN_INNER: usize = 12;
+
+    /// One keypress, then the frame that follows it, so the viewport has
+    /// settled before the next key the way it would between real events.
+    fn press(view: &mut FileView<'_>, key: Key) {
+        send(view, key);
+        render_at(view, MARGIN_PANE);
+    }
+
+    #[test]
+    fn j_into_the_bottom_margin_scrolls_the_view_rather_than_the_cursor_down() {
+        let mut view = view_of("margin_j.txt", &numbered_lines(200));
+        render_at(&mut view, MARGIN_PANE);
+        let lowest = MARGIN_INNER - 1 - SCROLL_MARGIN;
+
+        for _ in 0..lowest {
+            press(&mut view, Key::Char('j'));
+        }
+        assert_eq!(
+            view.textarea.scroll_top().0,
+            0,
+            "scrolled before the margin was reached"
+        );
+        assert_eq!(view.cursor_screen_row(), lowest as u16);
+
+        press(&mut view, Key::Char('j'));
+        assert_eq!(
+            view.textarea.cursor().0,
+            lowest + 1,
+            "the cursor did not move down a line"
+        );
+        assert_eq!(
+            view.cursor_screen_row(),
+            lowest as u16,
+            "the cursor entered the bottom margin instead of the view scrolling"
+        );
+        assert_eq!(view.textarea.scroll_top().0, 1);
+    }
+
+    /// `Ctrl-E` moves the view, not the cursor, so the cursor is the thing
+    /// that has to give way when the scroll pushes the margin over it.
+    /// Left to the render-time rule alone, the view would be scrolled
+    /// straight back and `Ctrl-E` would do nothing at all.
+    #[test]
+    fn ctrl_e_moves_the_cursor_down_into_the_margin_rather_than_undoing_the_scroll() {
+        let mut view = view_of("margin_ctrl_e.txt", &numbered_lines(200));
+        render_at(&mut view, MARGIN_PANE);
+
+        view.handle_events(Input {
+            key: Key::Char('e'),
+            ctrl: true,
+            ..Default::default()
+        });
+        render_at(&mut view, MARGIN_PANE);
+
+        assert_eq!(view.textarea.scroll_top().0, 1, "the scroll was undone");
+        assert_eq!(view.textarea.cursor().0, 1 + SCROLL_MARGIN);
+    }
+
+    #[test]
+    fn page_down_leaves_the_cursor_a_margin_below_the_new_top() {
+        let mut view = view_of("margin_page_down.txt", &numbered_lines(200));
+        render_at(&mut view, MARGIN_PANE);
+
+        press(&mut view, Key::Char(']'));
+
+        assert_eq!(
+            view.textarea.scroll_top().0 as usize,
+            MARGIN_INNER,
+            "not a full page"
+        );
+        assert_eq!(view.textarea.cursor().0, MARGIN_INNER + SCROLL_MARGIN);
+    }
+
+    #[test]
+    fn ctrl_y_moves_the_cursor_up_out_of_the_bottom_margin() {
+        let mut view = view_of("margin_ctrl_y.txt", &numbered_lines(200));
+        render_at(&mut view, MARGIN_PANE);
+        press(&mut view, Key::Char(']'));
+        // Down to the last row the cursor may occupy without scrolling.
+        press(&mut view, Key::Char('j'));
+        let lowest = MARGIN_INNER - 1 - SCROLL_MARGIN;
+        assert_eq!(view.cursor_screen_row() as usize, lowest, "sanity");
+        let before = view.textarea.cursor().0;
+
+        view.handle_events(Input {
+            key: Key::Char('y'),
+            ctrl: true,
+            ..Default::default()
+        });
+        render_at(&mut view, MARGIN_PANE);
+
+        assert_eq!(
+            view.textarea.scroll_top().0 as usize,
+            MARGIN_INNER - 1,
+            "the scroll was undone"
+        );
+        assert_eq!(
+            view.textarea.cursor().0,
+            before - 1,
+            "the cursor stayed in the margin"
+        );
+    }
+
+    #[test]
+    fn k_into_the_top_margin_scrolls_the_view_rather_than_the_cursor_up() {
+        let mut view = view_of("margin_k.txt", &numbered_lines(200));
+        render_at(&mut view, MARGIN_PANE);
+        // Two pages down: the top margin is real here, not waived by row 0.
+        press(&mut view, Key::Char(']'));
+        press(&mut view, Key::Char(']'));
+        let top = view.textarea.scroll_top().0 as usize;
+        assert_eq!(view.textarea.cursor().0, top + SCROLL_MARGIN, "sanity");
+
+        press(&mut view, Key::Char('k'));
+
+        assert_eq!(view.textarea.cursor().0, top + SCROLL_MARGIN - 1);
+        assert_eq!(
+            view.cursor_screen_row() as usize,
+            SCROLL_MARGIN,
+            "the cursor entered the top margin instead of the view scrolling"
+        );
+        assert_eq!(view.textarea.scroll_top().0 as usize, top - 1);
+    }
+
+    /// The bottom margin is waived at the end of the file: the last line is
+    /// selectable and sits on the pane's last row, with no blank rows
+    /// scrolled in below it to make room for a margin that has nothing in it.
+    #[test]
+    fn the_last_line_reaches_the_bottom_row_without_scrolling_past_the_end() {
+        let mut view = view_of("margin_end.txt", &numbered_lines(200));
+        render_at(&mut view, MARGIN_PANE);
+
+        press(&mut view, Key::End);
+
+        assert_eq!(view.textarea.cursor().0, 199);
+        assert_eq!(view.cursor_screen_row() as usize, MARGIN_INNER - 1);
+        assert_eq!(view.textarea.scroll_top().0 as usize, 200 - MARGIN_INNER);
+    }
+
+    /// And the top margin at the start of it.
+    #[test]
+    fn the_first_line_reaches_the_top_row() {
+        let mut view = view_of("margin_start.txt", &numbered_lines(200));
+        render_at(&mut view, MARGIN_PANE);
+        press(&mut view, Key::Char(']'));
+
+        press(&mut view, Key::Home);
+
+        assert_eq!(view.textarea.cursor().0, 0);
+        assert_eq!(view.cursor_screen_row(), 0);
+        assert_eq!(view.textarea.scroll_top().0, 0);
+    }
+
+    #[test]
+    fn a_short_pane_shrinks_the_margin_to_leave_the_cursor_a_row() {
+        assert_eq!(scroll_margin(12), SCROLL_MARGIN);
+        assert_eq!(
+            scroll_margin(11),
+            SCROLL_MARGIN,
+            "one row left for the cursor"
+        );
+        assert_eq!(scroll_margin(7), 3);
+        assert_eq!(scroll_margin(3), 1);
+        assert_eq!(scroll_margin(2), 0);
+        assert_eq!(scroll_margin(1), 0);
+        assert_eq!(scroll_margin(0), 0);
     }
 
     /// Columns the line-number gutter occupies, read back off a real render.
