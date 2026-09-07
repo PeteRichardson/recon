@@ -8579,6 +8579,73 @@ mod tests {
         );
     }
 
+    /// `,` into the previous file lands on its last hit where a jump lands:
+    /// centred when there is file enough on both sides, and with the whole
+    /// visible set on screen when there is not — never on the top row with
+    /// blank rows below (#192).
+    ///
+    /// The landing used to lose to the file load that precedes it in the
+    /// same keypress: the load's window rebuild queued a restore to the row
+    /// the *previous* file's cursor was drawn on, and `scroll_cursor_to_row`
+    /// keeps the first request. So `,` landed the hit at the top margin of
+    /// a pane that had never shown it. `land_cursor_on_row` is the jump's
+    /// request, and it replaces the restore.
+    #[test]
+    fn comma_centres_the_previous_file_s_last_hit_or_shows_every_hit() {
+        let dir = fixture_dir("comma_lands_centred");
+        let body: String = (0..400)
+            .map(|i| {
+                if [100, 150, 200].contains(&i) {
+                    "HIT\n".to_string()
+                } else {
+                    format!("line {i}\n")
+                }
+            })
+            .collect();
+        fs::write(dir.join("a.log"), &body).expect("write");
+        fs::write(dir.join("b.log"), "HIT\n").expect("write");
+        let mut app = App::new(&Config {
+            path: dir.join("b.log").display().to_string(),
+            ..Config::default()
+        });
+        let (_scanner, tx) = record_scans(&mut app);
+        app.add_filter("HIT").expect("valid");
+        app.refresh_scan(false);
+        mark(&mut app, &tx, 0, true);
+        mark(&mut app, &tx, 1, true);
+        open_file(&mut app, 1);
+        focus_file_view(&mut app);
+        draw_tall(&mut app);
+
+        // Dimmed: 400 lines and the last hit at 200, with room on both sides.
+        key(&mut app, KeyCode::Char(','));
+        draw_tall(&mut app);
+        assert_eq!(shown(&app), "a.log");
+        assert_eq!(cursor_source(&app), 200);
+        assert_eq!(
+            cursor_screen_row(&app),
+            TALL_TEXT_ROWS / 2,
+            "the last hit was not centred"
+        );
+
+        // Hide mode: three visible lines, so all three are on screen and the
+        // target is the third row, not the first with blank rows under it.
+        key(&mut app, KeyCode::Char('.'));
+        draw_tall(&mut app);
+        assert_eq!(shown(&app), "b.log", "sanity: back on the later file");
+        ctrl(&mut app, KeyCode::Char('h'));
+        key(&mut app, KeyCode::Char(','));
+        draw_tall(&mut app);
+        assert_eq!(shown(&app), "a.log");
+        assert_eq!(cursor_source(&app), 200);
+        assert_eq!(
+            app.view.textarea().scroll_top().0,
+            0,
+            "the last hit is on the top row with blank rows below"
+        );
+        assert_eq!(cursor_screen_row(&app), 2);
+    }
+
     /// In-file motions leave the peek alone: that is what peeking is for.
     #[test]
     fn j_while_peeked_keeps_the_peek() {
