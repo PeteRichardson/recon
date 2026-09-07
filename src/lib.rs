@@ -1686,8 +1686,19 @@ impl App<'_> {
                         && !key.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT));
                 let action = self.nav.handle_events(event);
                 if action.is_none() && is_step_key {
+                    // "No matching file" is a claim about every file, and
+                    // it is false while the worker is still out (#158):
+                    // the chain's synthetic `n` arrives one line after
+                    // `refresh_scan` started it, when every mark is still
+                    // `Unknown`. Say what is true instead, and let the
+                    // redraw `drain_scan_results` asks for land the answer.
+                    // With no matcher there is no worker and the marks
+                    // stay `Unknown` for good, so that case keeps the
+                    // plain answer.
                     let text = if self.nav.has_search() {
                         "no more matches"
+                    } else if self.filters.matcher().is_some() && self.nav.any_unscanned() {
+                        "scanning…"
                     } else {
                         "no matching file"
                     };
@@ -10085,11 +10096,14 @@ mod tests {
     }
 
     /// A return to the navigator whose `n` finds nothing says so, rather
-    /// than landing silently — the scan may not have re-keyed the marks to
-    /// the new filter yet, or the new filter may just match nothing.
+    /// than landing silently. The commit has only just started the scan, so
+    /// every mark is still `Unknown` and the honest answer is "not scanned
+    /// yet", not "no matching file" (#158) — that one is reserved for a
+    /// listing the scan has finished answering.
     #[test]
-    fn a_return_to_the_navigator_with_no_matches_says_so() {
-        let mut app = app_over("chain_nav_nomatch", &["a.log", "b.log"]);
+    fn a_return_to_the_navigator_before_the_scan_answers_says_scanning() {
+        let mut app = app_over("chain_nav_scanning", &["a.log", "b.log"]);
+        let (_scanner, tx) = record_scans(&mut app);
         key(&mut app, KeyCode::Char('e'));
         let before = app.nav.selected_name();
 
@@ -10099,12 +10113,65 @@ mod tests {
         key(&mut app, KeyCode::Enter);
 
         assert_eq!(app.focus, Focus::Nav, "sanity: returned");
-        assert_eq!(status(&app), Some("no matching file"));
+        assert_eq!(status(&app), Some("scanning…"));
         assert_eq!(
             app.nav.selected_name(),
             before,
             "nothing to step to, so the selection should not have moved"
         );
+
+        // The scan answers: neither file matches. Now the claim is true.
+        mark(&mut app, &tx, 0, false);
+        mark(&mut app, &tx, 1, false);
+        key(&mut app, KeyCode::Char('n'));
+        assert_eq!(status(&app), Some("no matching file"));
+    }
+
+    /// With nothing to scan for — no including filter, so no matcher and no
+    /// worker — the marks stay `Unknown` for ever, and `scanning…` would be
+    /// a promise nothing keeps. Directories are always `Unknown` too, and
+    /// must not count.
+    #[test]
+    fn n_with_no_scan_running_says_no_matching_file() {
+        let dir = fixture_dir("n_no_scan");
+        fs::write(dir.join("a.log"), "x").expect("write");
+        fs::create_dir_all(dir.join("sub")).expect("mkdir");
+        let mut app = App::new(&Config {
+            path: dir.join("placeholder").display().to_string(),
+            ..Config::default()
+        });
+        key(&mut app, KeyCode::Char('e'));
+        app.add_excluding_filter("noise").expect("valid pattern");
+        app.refresh_view();
+        assert!(app.filters.matcher().is_none(), "sanity: nothing selects");
+
+        key(&mut app, KeyCode::Char('n'));
+
+        assert_eq!(status(&app), Some("no matching file"));
+    }
+
+    /// A real `n` pressed while the worker is still out says the same as
+    /// the chain's synthetic one.
+    #[test]
+    fn n_before_the_first_answer_lands_says_scanning() {
+        let mut app = app_over("n_scanning", &["a.log", "b.log"]);
+        let (_scanner, tx) = record_scans(&mut app);
+        key(&mut app, KeyCode::Char('e'));
+        app.add_filter("zzz").expect("valid pattern");
+        app.refresh_view();
+        app.refresh_scan(false);
+
+        key(&mut app, KeyCode::Char('n'));
+        assert_eq!(status(&app), Some("scanning…"));
+
+        // Half answered is still scanning.
+        mark(&mut app, &tx, 0, false);
+        key(&mut app, KeyCode::Char('n'));
+        assert_eq!(status(&app), Some("scanning…"));
+
+        mark(&mut app, &tx, 1, false);
+        key(&mut app, KeyCode::Char('n'));
+        assert_eq!(status(&app), Some("no matching file"));
     }
 
     /// The `Enter` that commits is still swallowed once after the return,
