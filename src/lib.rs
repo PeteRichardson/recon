@@ -2033,7 +2033,17 @@ impl App<'_> {
         // reaches this function. Guarding the global arm on focus would cost
         // `e`-to-explorer from this pane, which is the one thing these focus
         // keys exist to provide.
-        if key.modifiers.is_empty() {
+        // Two guards, not one. The lowercase keys want an empty modifier
+        // set. `S` cannot have one: a real terminal reports the Shift that
+        // makes it uppercase, so guarding it on `is_empty` left it firing
+        // only in tests, where `KeyEvent::from(code)` sets no modifiers
+        // (#146) — the trap `?`, `N`, `H`, `O`, `G` and `*` document. It
+        // takes the guard those arms use instead.
+        let plain = key.modifiers.is_empty();
+        let unmodified = !key
+            .modifiers
+            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
+        if plain {
             // The navigator's `h`/`l` in this pane: a hint, not a redirect,
             // for the same reason as the filter verbs elsewhere (#120 §9).
             match key.code {
@@ -2047,29 +2057,29 @@ impl App<'_> {
                 }
                 _ => {}
             }
+        }
 
-            let kind = match key.code {
-                KeyCode::Char('i') => Some(PromptKind::Filter),
-                KeyCode::Char('x') => Some(PromptKind::Exclude),
-                // `S` saves the scratch set (#131). Refused before the prompt
-                // opens when there is nothing to save: a prompt for a name
-                // that can go nowhere is worse than a message.
-                KeyCode::Char('S') => {
-                    if self.filters.filters_in(0).next().is_none() {
-                        self.report("nothing to save: the scratch set is empty", false);
-                        return;
-                    }
-                    Some(PromptKind::SaveSet)
+        let kind = match key.code {
+            KeyCode::Char('i') if plain => Some(PromptKind::Filter),
+            KeyCode::Char('x') if plain => Some(PromptKind::Exclude),
+            // `S` saves the scratch set (#131). Refused before the prompt
+            // opens when there is nothing to save: a prompt for a name
+            // that can go nowhere is worse than a message.
+            KeyCode::Char('S') if unmodified => {
+                if self.filters.filters_in(0).next().is_none() {
+                    self.report("nothing to save: the scratch set is empty", false);
+                    return;
                 }
-                _ => None,
-            };
-            if let Some(kind) = kind {
-                self.search = Some(SearchPrompt {
-                    kind,
-                    ..SearchPrompt::default()
-                });
-                return;
+                Some(PromptKind::SaveSet)
             }
+            _ => None,
+        };
+        if let Some(kind) = kind {
+            self.search = Some(SearchPrompt {
+                kind,
+                ..SearchPrompt::default()
+            });
+            return;
         }
 
         let rows = widgets::filterlist::rows(&self.filters);
@@ -5711,6 +5721,28 @@ mod tests {
         );
         // Rows: Header(bug 57), ERROR, DEBUG, Header(definitions).
         assert_eq!(widgets::filterlist::rows(&app.filters).len(), 4);
+    }
+
+    /// A real terminal reports `S` as `Char('S')` *with* `SHIFT` set;
+    /// `KeyEvent::from(code)` in the tests above sets no modifiers, which is
+    /// how an arm guarded on an empty modifier set can pass every test and
+    /// never fire for a user (#146 — the `?`/`N` trap, again).
+    #[test]
+    fn big_s_opens_the_prompt_with_shift_reported() {
+        let mut app = app_over_file("save_shift", "ERROR\n");
+        app.add_filter("ERROR").unwrap();
+        key(&mut app, KeyCode::Char('f'));
+
+        app.handle_event(event::Event::Key(event::KeyEvent::new(
+            KeyCode::Char('S'),
+            KeyModifiers::SHIFT,
+        )));
+
+        assert_eq!(
+            app.search.as_ref().map(SearchPrompt::sigil),
+            Some("save as: "),
+            "S with Shift reported did not open the save prompt"
+        );
     }
 
     #[test]
