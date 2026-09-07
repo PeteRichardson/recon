@@ -142,6 +142,12 @@ to split by the time it arrives. And with no shell in the loop there is no
 second parser to get it wrong. Pinned by tests over `/My Projects/app` and
 `/p/we"ird/$HOME.log`.
 
+Substituted argv is `OsString`, not `String` (#182). The template is text, but
+the two path placeholders are pushed as the `OsStr` they are, so a filename
+that is not valid UTF-8 — which the navigator can reach since #71 — arrives at
+the editor as its own bytes rather than a `U+FFFD` rendering of a file that does
+not exist. `Launcher::spawn` takes `&[OsString]` for the same reason.
+
 Splitting honours POSIX **grouping** and nothing else — no expansion, no
 globbing, no operators. Grouping is needed because the `osascript -e '…'`
 templates have to survive as a single argv entry; a plain whitespace split
@@ -231,19 +237,26 @@ command, so it needs no new code at all:
 wezterm cli spawn --cwd {project} -- nvim +{line} {file}
 kitty @ launch --type=window --cwd {project} nvim +{line} {file}
 ghostty -e nvim +{line} {file}
-osascript -e 'tell app "Terminal" to do script "cd \"{project}\" && nvim +{line} \"{file}\""'
+osascript -e 'on run argv' -e 'tell app "Terminal" to do script "cd " & quoted form of item 1 of argv & " && nvim +" & item 2 of argv & " " & quoted form of item 3 of argv' -e 'end run' {project} {line} {file}
 ```
 
 In-place suspend-and-restore remains out of scope, and may never be needed.
 
-**One caveat.** The `osascript` forms nest a shell command inside an AppleScript
-string. recon passes the `-e` argument through as a single argv entry and never
-re-parses it, so recon's own layer is safe — but the inner string *is* re-parsed
-by the shell in the new window, which is why the printed templates quote the
-paths inside it. The native forms (`wezterm`, `kitty`, `ghostty`) have no
-nesting and no quoting hazard, so prefer them — noting that `kitty @` needs
-`allow_remote_control yes` and `wezterm cli spawn` needs a running mux, so both
-can fail on a default install.
+**The `osascript` forms and the shell in the middle.** These hand a command
+string to the new window's shell, which *does* re-parse it. The first version of
+the templates spliced `{project}` and `{file}` into that string between escaped
+double quotes, which held for a space but not for a `"`, a backtick or `$(` in a
+filename — two parsers (AppleScript's string literal, then the shell) that a
+name could break out of, contradicting the Safety claim above (#155). The
+templates now put no path in the script at all: `{project}`, `{line}` and
+`{file}` follow the script as ordinary arguments, `on run argv` receives them,
+and AppleScript's `quoted form of` emits the exact POSIX single-quoting the
+inner shell needs. The script text is a constant; a hostile name is one argv
+entry to `osascript` and one quoted word to the shell. Pinned by a test over
+`/p/we"ird/$(touch pwned) \`id\` it's.log` for both flavours. The native forms
+(`wezterm`, `kitty`, `ghostty`) have no shell in the middle and nothing to quote,
+so prefer them — noting that `kitty @` needs `allow_remote_control yes` and
+`wezterm cli spawn` needs a running mux, so both can fail on a default install.
 
 ## `--print-editor-config`
 

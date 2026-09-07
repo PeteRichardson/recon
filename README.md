@@ -1299,17 +1299,25 @@ project = 'wezterm cli spawn --cwd {project} -- nvim +{line} {file}'
 file = 'wezterm cli spawn -- nvim +{line} {file}'
 ```
 
-Prefer the native forms (`wezterm`, `kitty`, `ghostty`) over the `osascript`
-ones — they have no nested shell string to quote. Note that `kitty @` needs
-`allow_remote_control yes` and `wezterm cli spawn` needs a running mux, so
-either can fail on a default install.
+The `osascript` forms (`terminal-nvim`, `iterm-nvim`) hand a command string to
+the new window's shell, which re-parses it. They never put a path into that
+string: the paths and the line follow the script as plain arguments, and
+AppleScript's `quoted form of` quotes each one for the shell. Prefer the native
+forms (`wezterm`, `kitty`, `ghostty`) where the terminal offers them — there is
+no shell in the middle at all. Note that `kitty @` needs `allow_remote_control
+yes` and `wezterm cli spawn` needs a running mux, so either can fail on a
+default install.
 
 ### Safety
 
 The template is split into arguments **once**, before any path is put into it,
 and nothing is ever handed to `sh -c`. A file path containing a space, a quote
 or a `$` therefore cannot change how the command is split — there is nothing
-left to split by the time it arrives.
+left to split by the time it arrives. That holds for the printed `osascript`
+templates too: the shell in the new window re-parses the command AppleScript
+gives it, so those templates pass the path as an argument for AppleScript to
+quote rather than splicing it into the script. Paths travel as the bytes the
+filesystem holds, so a filename that is not valid UTF-8 opens the file it names.
 
 The editor is started detached, with stdin/stdout/stderr nulled so it cannot
 draw over the TUI, and reaped so no zombie is left behind. A missing or failing

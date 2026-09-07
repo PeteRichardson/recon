@@ -1929,7 +1929,10 @@ impl App<'_> {
         // `editor_command` rejects an empty template, so there is always a
         // program — read defensively anyway rather than indexing, since this
         // runs inside a TUI where a panic takes the terminal with it.
-        let program = argv.first().cloned().unwrap_or_default();
+        let program = argv
+            .first()
+            .map(|program| program.to_string_lossy().into_owned())
+            .unwrap_or_default();
         match self.launcher.spawn(&argv) {
             // Reported rather than silent: a GUI editor can take seconds to
             // raise a window, and a key that appears to have done nothing is a

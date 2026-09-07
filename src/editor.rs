@@ -15,6 +15,7 @@
 //! ever handed to `sh -c`, so there is no second parser to get this wrong
 //! either. See `docs/specs/2026-08-22-opening-an-editor.md`.
 
+use std::ffi::OsString;
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
@@ -223,32 +224,38 @@ pub fn split_template(template: &str) -> Result<Vec<String>, TemplateError> {
 ///
 /// Entries are substituted whole, never re-split, so `{file}:{line}` stays one
 /// argument no matter what the path contains.
+///
+/// The result is `OsString`, not `String` (#182): a Unix filename need not be
+/// UTF-8, and the navigator can reach one (#71). The two path placeholders are
+/// pushed as the `OsStr` they are, so the editor is handed the bytes the
+/// filesystem holds rather than a `U+FFFD` rendering that names a file which
+/// does not exist. The template itself is text and stays text.
 #[must_use]
-pub fn substitute(argv: &[String], project: &Path, file: &Path, line: usize) -> Vec<String> {
-    let project = project.display().to_string();
-    let file = file.display().to_string();
+pub fn substitute(argv: &[String], project: &Path, file: &Path, line: usize) -> Vec<OsString> {
+    let project = project.as_os_str();
+    let file = file.as_os_str();
     let line = line.to_string();
 
     argv.iter()
         .map(|entry| {
-            let mut out = String::with_capacity(entry.len());
+            let mut out = OsString::with_capacity(entry.len());
             let mut rest = entry.as_str();
             while let Some(open) = rest.find('{') {
-                out.push_str(&rest[..open]);
+                out.push(&rest[..open]);
                 rest = &rest[open..];
                 // An unclosed `{` is not a placeholder at all; the rest of the
                 // entry is ordinary text and the loop must end rather than spin.
                 let Some(close) = rest.find('}') else { break };
                 match &rest[1..close] {
-                    "project" => out.push_str(&project),
-                    "file" => out.push_str(&file),
-                    "line" => out.push_str(&line),
+                    "project" => out.push(project),
+                    "file" => out.push(file),
+                    "line" => out.push(&line),
                     // Unknown: copied through braces and all.
-                    _ => out.push_str(&rest[..=close]),
+                    _ => out.push(&rest[..=close]),
                 }
                 rest = &rest[close + 1..];
             }
-            out.push_str(rest);
+            out.push(rest);
             out
         })
         .collect()
@@ -288,7 +295,7 @@ pub fn drop_project(argv: &[String]) -> Vec<String> {
 /// test asserting its exact argv, which is the only way to test editor support
 /// at all in CI.
 ///
-/// Returns `Result` rather than the bare `Vec<String>` the issue sketched: a
+/// Returns `Result` rather than the bare argv the issue sketched: a
 /// template with an unclosed quote has no correct argv, and the alternatives
 /// are a panic in the TUI or a silently truncated command.
 pub fn editor_command(
@@ -296,7 +303,7 @@ pub fn editor_command(
     project: &Path,
     file: &Path,
     line: usize,
-) -> Result<Vec<String>, TemplateError> {
+) -> Result<Vec<OsString>, TemplateError> {
     Ok(substitute(&split_template(template)?, project, file, line))
 }
 
@@ -443,7 +450,7 @@ pub trait Launcher {
     /// Start `argv`, detached. `Ok(())` means the process started, not that it
     /// succeeded — an editor that exits non-zero reports that later, out of
     /// band, because recon must not block waiting for one.
-    fn spawn(&self, argv: &[String]) -> std::io::Result<()>;
+    fn spawn(&self, argv: &[OsString]) -> std::io::Result<()>;
 }
 
 /// So `App` can hold a `Box<dyn Launcher>` in a `#[derive(Default)]` struct
@@ -479,7 +486,7 @@ impl ProcessLauncher {
 }
 
 impl Launcher for ProcessLauncher {
-    fn spawn(&self, argv: &[String]) -> std::io::Result<()> {
+    fn spawn(&self, argv: &[OsString]) -> std::io::Result<()> {
         let Some((program, args)) = argv.split_first() else {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
@@ -500,7 +507,9 @@ impl Launcher for ProcessLauncher {
             .spawn()?;
 
         let outcomes = self.outcomes.clone();
-        let name = program.clone();
+        // Lossy is right here: this is a name for a status message, not a
+        // path anything will open.
+        let name = program.to_string_lossy().into_owned();
         // Reaped on a thread rather than left alone. A child that is never
         // waited on becomes a zombie for the life of the process, and recon is
         // a long-running TUI someone may press `o` in fifty times. Waiting on
@@ -560,22 +569,26 @@ const FLAVOURS: &[(&str, &str, &str)] = &[
         "idea --line {line} {file}",
         "idea --line {line} {file}",
     ),
-    // Nested quoting, and the one hazard worth calling out: recon passes the
-    // `-e` argument through as a single argv entry and never re-parses it, but
-    // the shell in the new window *does* parse the string inside it. Hence the
-    // escaped inner quotes around the paths — that is the layer where a space
-    // in a path would otherwise split.
+    // The two forms with a shell in the middle. The AppleScript hands a
+    // command string to the new window's shell, which *does* re-parse it —
+    // so no path may ever be spliced into that string (#155). Instead the
+    // paths and the line follow the script as plain arguments, `on run argv`
+    // receives them, and AppleScript's `quoted form of` produces the exact
+    // POSIX single-quoting the inner shell needs. The script text is
+    // constant; a filename holding `"`, `$(`, a backtick or `'` is one
+    // argv entry to osascript and one quoted word to the shell, never
+    // syntax to either.
     (
         "terminal-nvim",
-        r#"osascript -e 'tell app "Terminal" to do script "cd \"{project}\" && nvim +{line} \"{file}\""'"#,
-        r#"osascript -e 'tell app "Terminal" to do script "nvim +{line} \"{file}\""'"#,
+        r#"osascript -e 'on run argv' -e 'tell app "Terminal" to do script "cd " & quoted form of item 1 of argv & " && nvim +" & item 2 of argv & " " & quoted form of item 3 of argv' -e 'end run' {project} {line} {file}"#,
+        r#"osascript -e 'on run argv' -e 'tell app "Terminal" to do script "nvim +" & item 1 of argv & " " & quoted form of item 2 of argv' -e 'end run' {line} {file}"#,
     ),
     (
         "iterm-nvim",
-        r#"osascript -e 'tell app "iTerm2" to create window with default profile command "nvim +{line} \"{file}\""'"#,
-        r#"osascript -e 'tell app "iTerm2" to create window with default profile command "nvim +{line} \"{file}\""'"#,
+        r#"osascript -e 'on run argv' -e 'tell app "iTerm2" to create window with default profile command ("nvim +" & item 1 of argv & " " & quoted form of item 2 of argv)' -e 'end run' {line} {file}"#,
+        r#"osascript -e 'on run argv' -e 'tell app "iTerm2" to create window with default profile command ("nvim +" & item 1 of argv & " " & quoted form of item 2 of argv)' -e 'end run' {line} {file}"#,
     ),
-    // The native forms: no nesting, no shell in the middle, nothing to quote.
+    // The native forms: no shell in the middle, nothing to quote at all.
     // Prefer these where the terminal offers them — noting that `wezterm cli`
     // needs a running mux and `kitty @` needs `allow_remote_control yes`, so
     // both can fail on a default install.
@@ -695,12 +708,13 @@ fn toml_string(value: &str) -> String {
 #[cfg(test)]
 pub(crate) mod double {
     use super::Launcher;
+    use std::ffi::OsString;
     use std::sync::Mutex;
 
     /// Records the argv it would have run, and can be told to fail.
     #[derive(Default)]
     pub(crate) struct RecordingLauncher {
-        pub commands: Mutex<Vec<Vec<String>>>,
+        pub commands: Mutex<Vec<Vec<OsString>>>,
         /// When set, `spawn` reports this instead of succeeding — the "editor
         /// is not installed" path, which is the whole reason the status row
         /// grew a message slot.
@@ -716,8 +730,17 @@ pub(crate) mod double {
         }
 
         /// The single command recorded, or a panic naming what was there
-        /// instead. Every test here expects exactly one.
+        /// instead. Every test here expects exactly one. Lossy strings, for
+        /// the tests that compare against text; `only_command_raw` keeps the
+        /// bytes.
         pub(crate) fn only_command(&self) -> Vec<String> {
+            self.only_command_raw()
+                .iter()
+                .map(|entry| entry.to_string_lossy().into_owned())
+                .collect()
+        }
+
+        pub(crate) fn only_command_raw(&self) -> Vec<OsString> {
             let commands = self
                 .commands
                 .lock()
@@ -735,7 +758,7 @@ pub(crate) mod double {
     }
 
     impl Launcher for RecordingLauncher {
-        fn spawn(&self, argv: &[String]) -> std::io::Result<()> {
+        fn spawn(&self, argv: &[OsString]) -> std::io::Result<()> {
             self.commands
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -754,7 +777,7 @@ pub(crate) mod double {
     /// launcher. `Launcher::spawn` takes `&self`, so the shared reference needs
     /// no interior mutability beyond the `Mutex` already there.
     impl Launcher for std::rc::Rc<RecordingLauncher> {
-        fn spawn(&self, argv: &[String]) -> std::io::Result<()> {
+        fn spawn(&self, argv: &[OsString]) -> std::io::Result<()> {
             (**self).spawn(argv)
         }
     }
@@ -764,6 +787,7 @@ pub(crate) mod double {
 mod tests {
     use super::double::RecordingLauncher;
     use super::*;
+    use std::ffi::OsStr;
     use std::fs;
     use std::sync::Mutex;
 
@@ -936,19 +960,27 @@ mod tests {
             .find(|(name, _, _)| *name == "terminal-nvim")
             .expect("terminal-nvim is a known flavour");
         let argv = split(project);
-        assert_eq!(argv.len(), 3, "expected `osascript -e <script>`: {argv:?}");
+        // `osascript -e 'on run argv' -e '<script>' -e 'end run' {project} {line} {file}`
+        assert_eq!(
+            argv.len(),
+            10,
+            "expected three -e lines and three arguments: {argv:?}"
+        );
         assert_eq!(argv[0], "osascript");
-        assert_eq!(argv[1], "-e");
+        assert_eq!(&argv[1..3], ["-e", "on run argv"]);
+        assert_eq!(argv[3], "-e");
         assert!(
-            argv[2].starts_with("tell app \"Terminal\""),
+            argv[4].starts_with("tell app \"Terminal\""),
             "the script lost its quoting: {:?}",
-            argv[2]
+            argv[4]
         );
         assert!(
-            argv[2].contains("{project}") && argv[2].contains("{file}"),
-            "the script lost its placeholders: {:?}",
-            argv[2]
+            !argv[4].contains('{'),
+            "no placeholder may sit inside script text (#155): {:?}",
+            argv[4]
         );
+        assert_eq!(&argv[5..7], ["-e", "end run"]);
+        assert_eq!(&argv[7..], ["{project}", "{line}", "{file}"]);
     }
 
     #[test]
@@ -987,8 +1019,14 @@ mod tests {
     // ---- substitution ---------------------------------------------------
 
     fn command(template: &str, project: &str, file: &str, line: usize) -> Vec<String> {
-        editor_command(template, Path::new(project), Path::new(file), line)
-            .expect("template builds a command")
+        command_raw(template, Path::new(project), Path::new(file), line)
+            .iter()
+            .map(|entry| entry.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    fn command_raw(template: &str, project: &Path, file: &Path, line: usize) -> Vec<OsString> {
+        editor_command(template, project, file, line).expect("template builds a command")
     }
 
     /// The documented table, asserted as exact argv. This is the whole of
@@ -1045,6 +1083,69 @@ mod tests {
     fn quotes_and_dollars_in_a_path_pass_through_verbatim() {
         let argv = command("zed {project} {file}", "/p", r#"/p/we"ird/$HOME.log"#, 1);
         assert_eq!(argv, ["zed", "/p", r#"/p/we"ird/$HOME.log"#]);
+    }
+
+    /// The two `osascript` flavours used to splice `{file}` into the script
+    /// text, inside a double-quoted `AppleScript` string holding a shell
+    /// command — two parsers a hostile filename could break out of (#155).
+    /// Now the paths are plain arguments after the script and `AppleScript`'s
+    /// `quoted form of` does the shell quoting, so the script text never
+    /// contains a path at all.
+    #[test]
+    fn the_osascript_flavours_pass_paths_as_arguments_not_script_text() {
+        let hostile = r#"/p/we"ird/$(touch pwned) `id` it's.log"#;
+        for flavour in ["terminal-nvim", "iterm-nvim"] {
+            let (_, project, file) = FLAVOURS
+                .iter()
+                .find(|(name, _, _)| *name == flavour)
+                .expect("known flavour");
+            for template in [project, file] {
+                let argv = command(template, "/p", hostile, 7);
+                let scripts: Vec<&String> = argv
+                    .iter()
+                    .filter(|entry| entry.contains("tell app"))
+                    .collect();
+                assert_eq!(scripts.len(), 1, "{flavour}: {argv:?}");
+                let script = scripts[0];
+                assert!(
+                    !script.contains("we\"ird") && !script.contains("pwned"),
+                    "{flavour}: the path leaked into script text: {script}"
+                );
+                assert!(
+                    script.contains("quoted form of"),
+                    "{flavour}: AppleScript must quote the path itself: {script}"
+                );
+                assert!(
+                    argv.iter().any(|entry| entry == hostile),
+                    "{flavour}: the path is its own argv entry, verbatim: {argv:?}"
+                );
+                assert!(
+                    argv.iter().any(|entry| entry == "7"),
+                    "{flavour}: the line is its own argv entry: {argv:?}"
+                );
+            }
+        }
+    }
+
+    /// Argv is `OsString` end to end, so a filename that is not UTF-8 reaches
+    /// the editor as the bytes the filesystem holds, not as U+FFFD (#182).
+    #[cfg(unix)]
+    #[test]
+    fn a_non_utf8_path_reaches_argv_as_its_bytes() {
+        use std::os::unix::ffi::{OsStrExt, OsStringExt};
+        let file = Path::new(OsStr::from_bytes(b"/p/bad\xffname.log"));
+        let argv = command_raw("zed {project} {file}:{line}", Path::new("/p"), file, 3);
+        assert_eq!(argv[0], "zed");
+        assert_eq!(argv[1], "/p");
+        assert_eq!(
+            argv[2].clone().into_vec(),
+            b"/p/bad\xffname.log:3".to_vec(),
+            "the bytes survive; a lossy path would name a file that does not exist"
+        );
+        assert!(
+            argv[2].to_str().is_none(),
+            "sanity: this is not valid UTF-8"
+        );
     }
 
     #[test]
@@ -1259,7 +1360,7 @@ mod tests {
     fn the_recording_launcher_captures_what_would_have_run() {
         let launcher = RecordingLauncher::default();
         launcher
-            .spawn(&["zed".to_string(), "/p".to_string()])
+            .spawn(&["zed".into(), "/p".into()])
             .expect("recording never fails");
         assert_eq!(launcher.only_command(), ["zed", "/p"]);
     }
@@ -1270,7 +1371,7 @@ mod tests {
     fn the_recording_launcher_can_be_told_to_fail() {
         let launcher = RecordingLauncher::failing("no such file or directory");
         let err = launcher
-            .spawn(&["nope".to_string()])
+            .spawn(&["nope".into()])
             .expect_err("configured to fail");
         assert!(err.to_string().contains("no such file"));
         assert_eq!(launcher.only_command(), ["nope"]);
@@ -1285,12 +1386,12 @@ mod tests {
         let (tx, rx) = std::sync::mpsc::channel();
         let launcher = ProcessLauncher::new(tx);
         launcher
-            .spawn(&["true".to_string()])
+            .spawn(&["true".into()])
             .expect("`true` exists on every Unix");
         // A successful child reports nothing, so the channel stays empty. The
         // failing one below is where the reporting path is actually exercised.
         launcher
-            .spawn(&["false".to_string()])
+            .spawn(&["false".into()])
             .expect("`false` exists too");
         let message = rx
             .recv_timeout(std::time::Duration::from_secs(5))
@@ -1303,7 +1404,7 @@ mod tests {
         let (tx, _rx) = std::sync::mpsc::channel();
         let launcher = ProcessLauncher::new(tx);
         let err = launcher
-            .spawn(&["recon-definitely-not-a-real-program".to_string()])
+            .spawn(&["recon-definitely-not-a-real-program".into()])
             .expect_err("a missing program cannot spawn");
         assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
     }
