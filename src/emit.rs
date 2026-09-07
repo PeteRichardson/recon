@@ -33,6 +33,10 @@ pub enum Exit {
     Emit {
         lines: Vec<Vec<u8>>,
         summary: String,
+        /// Inputs a headless run could not read (#143): warned about as
+        /// they were met and skipped, and the reason the exit code is 2.
+        /// The TUI always passes 0.
+        failed: usize,
     },
     /// `Q`, or any quit without `--emit`.
     Silent,
@@ -43,30 +47,44 @@ impl Exit {
     ///
     /// | Exit | `--emit` given | stdout | stderr | code |
     /// |---|---|---|---|---|
-    /// | `Emit` | yes | every line, newline-terminated | the summary | 0 |
+    /// | `Emit`, `failed == 0` | yes | every line, newline-terminated | the summary, unless `quiet` | 0 |
+    /// | `Emit`, `failed > 0` | yes | every line, newline-terminated | the summary, unless `quiet` | 2 |
     /// | `Silent` | yes | nothing | nothing | 1 |
     /// | `Silent` | no | nothing | nothing | 0 |
     ///
     /// `Silent` under `--emit` fails because the caller asked for output and
     /// got none: `dir=$(recon --emit cwd) && cd "$dir"` then skips the `cd`
     /// with no test on `$dir`. Empty output from a real emit is a success —
-    /// the summary is what tells the two apart.
+    /// the summary is what tells the two apart. Exit 2 is grep's code for an
+    /// input that could not be read: the output for what *was* read is
+    /// complete and the summary describes it, so both are still written.
+    ///
+    /// `quiet` (`-q`) drops the summary and nothing else — the read-failure
+    /// warnings were written as they happened, before this runs.
     ///
     /// A write error on stdout is reported on stderr and is a failure, with
     /// one exception: `BrokenPipe`, which means the consumer closed its end
     /// (`recon --emit lines big.log | head`) and already got what it asked
     /// for. That is not this process's failure, so the summary is still
-    /// written to stderr and the exit code is still success. Nothing here can
+    /// written to stderr and the exit code is unchanged. Nothing here can
     /// panic on any of it: the terminal has already been restored, and a
     /// panic's backtrace would be the last thing the user saw.
     pub fn deliver(
         self,
         requested: Option<Emit>,
+        quiet: bool,
         stdout: &mut impl Write,
         stderr: &mut impl Write,
     ) -> ExitCode {
         match (self, requested) {
-            (Self::Emit { lines, summary }, _) => {
+            (
+                Self::Emit {
+                    lines,
+                    summary,
+                    failed,
+                },
+                _,
+            ) => {
                 let written = lines
                     .iter()
                     .try_for_each(|line| {
@@ -81,8 +99,14 @@ impl Exit {
                     let _ = writeln!(stderr, "recon: could not write the output: {err}");
                     return ExitCode::FAILURE;
                 }
-                let _ = writeln!(stderr, "{summary}");
-                ExitCode::SUCCESS
+                if !quiet {
+                    let _ = writeln!(stderr, "{summary}");
+                }
+                if failed > 0 {
+                    ExitCode::from(2)
+                } else {
+                    ExitCode::SUCCESS
+                }
             }
             (Self::Silent, Some(_)) => ExitCode::FAILURE,
             (Self::Silent, None) => ExitCode::SUCCESS,
@@ -111,7 +135,7 @@ mod tests {
 
     fn deliver(exit: Exit, requested: Option<Emit>) -> (Vec<u8>, Vec<u8>, ExitCode) {
         let (mut out, mut err) = (Vec::new(), Vec::new());
-        let code = exit.deliver(requested, &mut out, &mut err);
+        let code = exit.deliver(requested, false, &mut out, &mut err);
         (out, err, code)
     }
 
@@ -120,6 +144,7 @@ mod tests {
         let exit = Exit::Emit {
             lines: vec![b"one".to_vec(), b"two".to_vec()],
             summary: "recon: emitted 2 lines".to_string(),
+            failed: 0,
         };
 
         let (out, err, code) = deliver(exit, Some(Emit::Lines));
@@ -134,6 +159,7 @@ mod tests {
         let exit = Exit::Emit {
             lines: Vec::new(),
             summary: "recon: emitted 0 files from /d, hide mode".to_string(),
+            failed: 0,
         };
 
         let (out, err, code) = deliver(exit, Some(Emit::Files));
@@ -166,6 +192,7 @@ mod tests {
         let exit = Exit::Emit {
             lines: vec![vec![0xff, 0xfe, b'x']],
             summary: String::new(),
+            failed: 0,
         };
 
         let (out, _, _) = deliver(exit, Some(Emit::Files));
@@ -204,13 +231,14 @@ mod tests {
         let exit = Exit::Emit {
             lines: vec![b"one".to_vec()],
             summary: "recon: emitted 1 line".to_string(),
+            failed: 0,
         };
         let mut stdout = FailingWriter {
             kind: std::io::ErrorKind::BrokenPipe,
         };
         let mut stderr = Vec::new();
 
-        let code = exit.deliver(Some(Emit::Lines), &mut stdout, &mut stderr);
+        let code = exit.deliver(Some(Emit::Lines), false, &mut stdout, &mut stderr);
 
         assert_eq!(code, ExitCode::SUCCESS);
         assert_eq!(stderr, b"recon: emitted 1 line\n");
@@ -221,13 +249,14 @@ mod tests {
         let exit = Exit::Emit {
             lines: vec![b"one".to_vec()],
             summary: "recon: emitted 1 line".to_string(),
+            failed: 0,
         };
         let mut stdout = FailingWriter {
             kind: std::io::ErrorKind::Other,
         };
         let mut stderr = Vec::new();
 
-        let code = exit.deliver(Some(Emit::Lines), &mut stdout, &mut stderr);
+        let code = exit.deliver(Some(Emit::Lines), false, &mut stdout, &mut stderr);
 
         assert_eq!(code, ExitCode::FAILURE);
         let stderr = String::from_utf8(stderr).expect("utf-8 message");
@@ -235,5 +264,51 @@ mod tests {
             stderr.starts_with("recon: could not write the output:"),
             "unexpected stderr: {stderr}"
         );
+    }
+
+    #[test]
+    fn quiet_drops_the_summary_and_nothing_else() {
+        let exit = Exit::Emit {
+            lines: vec![b"one".to_vec()],
+            summary: "recon: emitted 1 lines of a.log, hide mode".to_string(),
+            failed: 0,
+        };
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+
+        let code = exit.deliver(Some(Emit::Lines), true, &mut out, &mut err);
+
+        assert_eq!(out, b"one\n");
+        assert!(err.is_empty(), "stderr: {}", String::from_utf8_lossy(&err));
+        assert_eq!(code, ExitCode::SUCCESS);
+    }
+
+    #[test]
+    fn a_failed_input_exits_2_after_the_output_and_the_summary() {
+        let exit = Exit::Emit {
+            lines: vec![b"one".to_vec()],
+            summary: "recon: emitted 1 lines of 1 file, hide mode".to_string(),
+            failed: 1,
+        };
+
+        let (out, err, code) = deliver(exit, Some(Emit::Lines));
+
+        assert_eq!(out, b"one\n");
+        assert_eq!(err, b"recon: emitted 1 lines of 1 file, hide mode\n");
+        assert_eq!(code, ExitCode::from(2));
+    }
+
+    #[test]
+    fn quiet_does_not_hide_the_failure_exit_code() {
+        let exit = Exit::Emit {
+            lines: Vec::new(),
+            summary: "recon: emitted 0 lines of a.log, hide mode".to_string(),
+            failed: 1,
+        };
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+
+        let code = exit.deliver(Some(Emit::Lines), true, &mut out, &mut err);
+
+        assert!(err.is_empty());
+        assert_eq!(code, ExitCode::from(2));
     }
 }

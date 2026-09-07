@@ -1037,6 +1037,7 @@ impl App<'_> {
             return emit::Exit::Emit {
                 lines: Vec::new(),
                 summary: "recon: emitted 0 lines — the view is showing a directory".to_string(),
+                failed: 0,
             };
         }
         if !self.view.is_text() {
@@ -1044,6 +1045,7 @@ impl App<'_> {
                 lines: Vec::new(),
                 summary: "recon: emitted 0 lines — the view is showing an error, not a file"
                     .to_string(),
+                failed: 0,
             };
         }
         let text = self.document.lines();
@@ -1073,7 +1075,11 @@ impl App<'_> {
                 )
             }
         };
-        emit::Exit::Emit { lines, summary }
+        emit::Exit::Emit {
+            lines,
+            summary,
+            failed: 0,
+        }
     }
 
     /// `--emit files`: the navigator's listed files as absolute paths. Hide
@@ -1118,7 +1124,11 @@ impl App<'_> {
             };
             format!("recon: emitted {count} files from {dir}, {mode}, no filter")
         };
-        emit::Exit::Emit { lines, summary }
+        emit::Exit::Emit {
+            lines,
+            summary,
+            failed: 0,
+        }
     }
 
     /// `--emit cwd`: the directory the navigator is showing, one line.
@@ -1127,6 +1137,7 @@ impl App<'_> {
         emit::Exit::Emit {
             lines: vec![emit::path_bytes(dir)],
             summary: format!("recon: emitted {}", dir.display()),
+            failed: 0,
         }
     }
 
@@ -6453,7 +6464,7 @@ mod tests {
 
     fn emitted(app: &App) -> (Vec<String>, String) {
         match app.exit() {
-            emit::Exit::Emit { lines, summary } => (
+            emit::Exit::Emit { lines, summary, .. } => (
                 lines
                     .into_iter()
                     .map(|line| String::from_utf8(line).expect("utf-8 fixture"))

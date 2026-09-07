@@ -38,7 +38,12 @@ fn main() -> Result<ExitCode> {
     // Only now, with the alternate screen gone, does anything reach stdout:
     // the session's result, if `--emit` asked for one, and the summary that
     // names its mode on stderr (#143).
-    Ok(exit.deliver(config.emit, &mut io::stdout(), &mut io::stderr()))
+    Ok(exit.deliver(
+        config.emit,
+        config.quiet,
+        &mut io::stdout(),
+        &mut io::stderr(),
+    ))
 }
 
 //===================================================================================
