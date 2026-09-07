@@ -586,6 +586,18 @@ impl App<'_> {
         let (outcomes_tx, outcomes_rx) = std::sync::mpsc::channel();
         let (scan_tx, scan_rx) = std::sync::mpsc::channel();
 
+        let mut filters =
+            ActiveFilters::with_sets(config.filter_palette.clone(), &config.filter_sets);
+        for (set, profile) in config.sets_to_enable() {
+            // `Config::check_sets` refused an unknown name in `main` before
+            // the terminal came up; a failure here is a hand-built `Config`
+            // in a test, and the set is left off rather than the app brought
+            // down over it.
+            if let Err(err) = filters.enable_named(&set, profile.as_deref()) {
+                log::warn!("--set {set}: {err}");
+            }
+        }
+
         let mut app = Self {
             state: AppState::Running,
             nav,
@@ -599,7 +611,7 @@ impl App<'_> {
             dragging: None,
             last_divider_click: None,
             search: None,
-            filters: ActiveFilters::with_sets(config.filter_palette.clone(), &config.filter_sets),
+            filters,
             document: Document::default(),
             last_visible: None,
             last_window: None,
@@ -625,6 +637,11 @@ impl App<'_> {
             last_poll: None,
             view_stale: false,
         };
+        // `--hide`: on the document before `sync_document`, which carries
+        // the mode across into the document it builds for the loaded file.
+        if config.hide {
+            app.set_mode(Mode::FilteredOnly);
+        }
         app.sync_document();
         app.refresh_view();
         app
@@ -2970,7 +2987,7 @@ mod tests {
     // layout tests still assert against them by name, so they are imported
     // here rather than through `use super::*`.
     use crate::filter::Verdict;
-    use crate::fixtures::{fixture_dir, fixture_path as fixture_dir_path};
+    use crate::fixtures::{fixture_dir, fixture_file, fixture_path as fixture_dir_path};
     use crate::layout::{
         MAX_NAV_WIDTH, MIN_AUTO_FILTER_HEIGHT, MIN_AUTO_NAV_WIDTH, MIN_FILE_VIEW_WIDTH,
         MIN_FILTER_HEIGHT, MIN_NAV_HEIGHT, MIN_PANE_WIDTH,
@@ -6394,6 +6411,42 @@ mod tests {
     fn a_running_app_has_not_exited() {
         let app = app_emitting("quit_still_running", Some(emit::Emit::Cwd));
         assert_eq!(app.exit(), emit::Exit::Silent);
+    }
+
+    // ---- --set and --hide at startup (#143, headless) ----------------------
+
+    /// `recon --set Bugs:only_hit --hide app.log` opens the TUI with the set
+    /// on, the profile applied, and hide mode live on the loaded file — the
+    /// same flags headless mode takes, applied the same way.
+    #[test]
+    fn set_and_hide_flags_apply_at_startup() {
+        let file = fixture_file("startup_set_hide.log", b"hit\nmiss\n");
+        let mut set = filter::test_support::loaded("Bugs", 50, false, &["hit", "miss"]);
+        set.profiles
+            .insert("only_hit".to_string(), vec!["hit".to_string()]);
+
+        let app = App::new(&Config {
+            path: file.display().to_string(),
+            filter_sets: vec![set],
+            set: vec!["Bugs:only_hit".to_string()],
+            hide: true,
+            ..Config::default()
+        });
+
+        assert!(app.filters.sets()[1].enabled, "the set is on");
+        let enabled: Vec<String> = app
+            .filters
+            .filters_in(1)
+            .filter(|(_, filter)| filter.enabled)
+            .map(|(_, filter)| filter.display_name())
+            .collect();
+        assert_eq!(enabled, ["hit"], "the profile was applied, not default");
+        assert_eq!(app.document.mode(), Mode::FilteredOnly);
+        assert_eq!(
+            app.document.visible_lines(),
+            ["hit"],
+            "hide mode is live on the loaded file"
+        );
     }
 
     // ---- --emit lines --------------------------------------------------

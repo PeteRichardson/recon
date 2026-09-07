@@ -335,6 +335,28 @@ pub struct LoadedSet {
     pub builtin: bool,
 }
 
+/// Why [`ActiveFilters::enable_named`] could not apply a `--set` (#143).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EnableError {
+    /// No set of that name — or the scratch set, which has none.
+    UnknownSet(String),
+    /// The set exists but defines no such profile.
+    UnknownProfile { set: String, profile: String },
+}
+
+impl std::fmt::Display for EnableError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::UnknownSet(name) => write!(f, "unknown set {name:?}"),
+            Self::UnknownProfile { set, profile } => {
+                write!(f, "unknown profile {profile:?} for set {set:?}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for EnableError {}
+
 /// Every enabled flag in an [`ActiveFilters`], captured so it can be restored.
 ///
 /// Opaque on purpose: it is a token to hand back to
@@ -858,6 +880,34 @@ impl ActiveFilters {
             filter.enabled = members.contains(&filter.display_name());
         }
         true
+    }
+
+    /// Enable the set called `set` — `default` profile and all, exactly as
+    /// `set_enabled_set` does — then apply `profile` when one is named
+    /// (#143). Both names are checked before anything moves, so a refused
+    /// call changes nothing. `Config::check_sets` refuses the same names in
+    /// `main` before the terminal comes up; this is the same lookup, so a
+    /// name that passed there cannot fail here.
+    pub fn enable_named(&mut self, set: &str, profile: Option<&str>) -> Result<(), EnableError> {
+        let index = self
+            .sets
+            .iter()
+            .position(|meta| meta.name == set)
+            .filter(|&index| index != 0)
+            .ok_or_else(|| EnableError::UnknownSet(set.to_string()))?;
+        if let Some(profile) = profile
+            && !self.sets[index].profiles.contains_key(profile)
+        {
+            return Err(EnableError::UnknownProfile {
+                set: set.to_string(),
+                profile: profile.to_string(),
+            });
+        }
+        self.set_enabled_set(index, true);
+        if let Some(profile) = profile {
+            self.apply_profile(index, profile);
+        }
+        Ok(())
     }
 
     /// Solo `set` (#132): snapshot every set's flag — the scratch set's
@@ -1703,6 +1753,84 @@ mod tests {
             Style::default().fg(DEFAULT_PALETTE[0])
         );
         assert_eq!(set.filters()[1].style, Style::default().fg(Color::Red));
+    }
+
+    // ---- enable_named (#143) ----------------------------------------------
+
+    /// One file set `a` with filters `x`, `y`, `z`; `default` = `x`,
+    /// `p` = `y`, `z`.
+    fn with_profiles() -> ActiveFilters {
+        let mut set = loaded("a", 50, false, &["x", "y", "z"]);
+        set.profiles
+            .insert("default".to_string(), vec!["x".to_string()]);
+        set.profiles
+            .insert("p".to_string(), vec!["y".to_string(), "z".to_string()]);
+        ActiveFilters::with_sets(None, &[set])
+    }
+
+    fn enabled_names(set: &ActiveFilters) -> Vec<String> {
+        set.filters_in(1)
+            .filter(|(_, filter)| filter.enabled)
+            .map(|(_, filter)| filter.display_name())
+            .collect()
+    }
+
+    #[test]
+    fn enable_named_turns_the_set_on_and_applies_default() {
+        let mut set = with_profiles();
+
+        set.enable_named("a", None).expect("known set");
+
+        assert!(set.sets()[1].enabled);
+        assert_eq!(enabled_names(&set), ["x"]);
+    }
+
+    #[test]
+    fn enable_named_without_a_default_moves_no_flag() {
+        let mut set = ActiveFilters::with_sets(None, &[loaded("a", 50, false, &["x", "y"])]);
+
+        set.enable_named("a", None).expect("known set");
+
+        assert!(set.sets()[1].enabled);
+        assert!(
+            enabled_names(&set).is_empty(),
+            "no default profile: the set comes on with the toggles it had"
+        );
+    }
+
+    #[test]
+    fn enable_named_applies_the_named_profile_instead_of_default() {
+        let mut set = with_profiles();
+
+        set.enable_named("a", Some("p"))
+            .expect("known set and profile");
+
+        assert!(set.sets()[1].enabled);
+        assert_eq!(enabled_names(&set), ["y", "z"]);
+    }
+
+    #[test]
+    fn enable_named_refuses_an_unknown_name_and_changes_nothing() {
+        let mut set = with_profiles();
+
+        assert_eq!(
+            set.enable_named("b", None),
+            Err(EnableError::UnknownSet("b".to_string()))
+        );
+        assert_eq!(
+            set.enable_named("a", Some("nope")),
+            Err(EnableError::UnknownProfile {
+                set: "a".to_string(),
+                profile: "nope".to_string(),
+            })
+        );
+        assert_eq!(
+            set.enable_named("", None),
+            Err(EnableError::UnknownSet(String::new())),
+            "the scratch set has no name and is never enabled this way"
+        );
+        assert!(!set.sets()[1].enabled, "a refused call enables nothing");
+        assert!(enabled_names(&set).is_empty());
     }
 
     #[test]
