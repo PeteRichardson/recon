@@ -209,6 +209,11 @@ Options:
           Colours for the file view's syntax colouring: a bundled theme name, a
           path to a `.tmTheme` file, or `none` to turn colouring off [env:
           RECON_THEME=]
+      --emit <WHAT>
+          Print the session's result to stdout on `q`; `Q` quits without it
+          [possible values: lines, files, cwd]
+  -n, --line-numbers
+          With `--emit lines`: prefix each line with its line number and a tab
   -h, --help
           Print help (see more with '--help')
   -V, --version

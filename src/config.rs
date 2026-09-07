@@ -148,6 +148,21 @@ pub struct Config {
         long_help = theme_long_help(),
     )]
     pub theme: Option<syntax::Theme>,
+
+    /// Print the session's result to stdout on `q`; `Q` quits without it.
+    ///
+    /// The TUI draws on stderr, so stdout carries only this — pipe it or
+    /// capture it. Every emit also prints one summary line to stderr naming
+    /// the mode and the counts.
+    #[arg(long, value_name = "WHAT", value_enum)]
+    pub emit: Option<crate::emit::Emit>,
+
+    /// With `--emit lines`: prefix each line with its line number and a tab.
+    ///
+    /// The number is the line's position in the file, so in hide mode the
+    /// numbers are the real ones, not 1..N of the output.
+    #[arg(short = 'n', long)]
+    pub line_numbers: bool,
 }
 
 /// The `--theme` long help: the short help's two sentences, then the bundled
@@ -183,6 +198,8 @@ impl Default for Config {
             filter_sets: Vec::new(),
             center_jumps: None,
             theme: None,
+            emit: None,
+            line_numbers: false,
         }
     }
 }
@@ -370,6 +387,9 @@ pub enum ConfigError {
         path: PathBuf,
         source: toml::de::Error,
     },
+    /// `--line-numbers` without `--emit lines`. Refused rather than ignored:
+    /// a script that meant `lines` should find out (#143).
+    LineNumbersNeedLines,
 }
 
 impl fmt::Display for ConfigError {
@@ -384,6 +404,7 @@ impl fmt::Display for ConfigError {
             Self::Parse { path, source } => {
                 write!(f, "invalid config file {}\n{source}", path.display())
             }
+            Self::LineNumbersNeedLines => write!(f, "--line-numbers applies to --emit lines"),
         }
     }
 }
@@ -486,6 +507,16 @@ pub fn load_file() -> Result<FileConfig, ConfigError> {
 }
 
 impl Config {
+    /// Refuse flag combinations clap cannot express: `-n` is meaningful only
+    /// with `--emit lines`. Here rather than as a clap `requires`, because
+    /// `requires` can name a flag but not a flag's *value*.
+    pub fn check_flags(&self) -> Result<(), ConfigError> {
+        if self.line_numbers && self.emit != Some(crate::emit::Emit::Lines) {
+            return Err(ConfigError::LineNumbersNeedLines);
+        }
+        Ok(())
+    }
+
     /// Run the whole precedence chain: parse the CLI (which `clap` has already
     /// resolved against the environment), read the config file, and fold the
     /// file in underneath.
@@ -497,6 +528,7 @@ impl Config {
     /// initialised.
     pub fn load() -> Result<Self, ConfigError> {
         let mut config = Self::parse();
+        config.check_flags()?;
         config.apply(&load_file()?);
         Ok(config)
     }
@@ -950,6 +982,74 @@ mod tests {
         assert_eq!(parsed.file_editor, default.file_editor);
         assert_eq!(parsed.print_editor_config, default.print_editor_config);
         assert_eq!(parsed.theme, default.theme);
+        assert_eq!(parsed.emit, default.emit);
+        assert_eq!(parsed.line_numbers, default.line_numbers);
+    }
+
+    // ---- --emit and --line-numbers (#143) --------------------------------
+
+    #[test]
+    fn emit_parses_its_three_values_and_is_unset_by_default() {
+        use crate::emit::Emit;
+        assert_eq!(Config::try_parse_from(["recon"]).unwrap().emit, None);
+        for (flag, kind) in [
+            ("lines", Emit::Lines),
+            ("files", Emit::Files),
+            ("cwd", Emit::Cwd),
+        ] {
+            let config = Config::try_parse_from(["recon", "--emit", flag]).unwrap();
+            assert_eq!(config.emit, Some(kind), "{flag}");
+        }
+        assert!(Config::try_parse_from(["recon", "--emit", "filters"]).is_err());
+    }
+
+    #[test]
+    fn line_numbers_has_a_short_and_a_long_spelling() {
+        assert!(!Config::try_parse_from(["recon"]).unwrap().line_numbers);
+        assert!(
+            Config::try_parse_from(["recon", "-n", "--emit", "lines"])
+                .unwrap()
+                .line_numbers
+        );
+        assert!(
+            Config::try_parse_from(["recon", "--line-numbers", "--emit", "lines"])
+                .unwrap()
+                .line_numbers
+        );
+    }
+
+    /// `-n` with anything but `--emit lines` is a mistake worth stopping on:
+    /// a script that meant `lines` should find out, not get a path list.
+    #[test]
+    fn line_numbers_is_refused_unless_emitting_lines() {
+        use crate::emit::Emit;
+        let refused = |emit: Option<Emit>| {
+            let config = Config {
+                line_numbers: true,
+                emit,
+                ..Config::default()
+            };
+            config.check_flags().expect_err("must be refused")
+        };
+        for emit in [None, Some(Emit::Files), Some(Emit::Cwd)] {
+            let err = refused(emit);
+            assert!(
+                matches!(err, ConfigError::LineNumbersNeedLines),
+                "{emit:?}: {err}"
+            );
+            assert_eq!(err.to_string(), "--line-numbers applies to --emit lines");
+        }
+
+        let accepted = Config {
+            line_numbers: true,
+            emit: Some(Emit::Lines),
+            ..Config::default()
+        };
+        assert!(accepted.check_flags().is_ok());
+        assert!(
+            Config::default().check_flags().is_ok(),
+            "neither flag is fine"
+        );
     }
 
     // ---- the editor settings --------------------------------------------
