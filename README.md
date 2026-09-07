@@ -1193,10 +1193,12 @@ TUI, with `pass --hide to emit matches only` in place of the key:
 | `cwd` | `recon: emitted /var/log` |
 
 A file that cannot be read is reported as it is met — `recon: cannot read
-/var/log/secure: permission denied`, `… is a directory`, `… binary file` —
-and skipped: not emitted, not counted. The run continues and exits **2**,
-grep's convention for an input that failed. Exit 0 otherwise, empty output
-included; exit 1 for a refused flag or an unreadable `filters.toml`.
+/var/log/secure: permission denied`, `… is a directory`, and for `--emit
+lines` `… binary file` (`--emit files` scans a binary like any other file, as
+the navigator does) — and skipped: not emitted, not counted. The run
+continues and exits **2**, grep's convention for an input that failed. Exit 0
+otherwise, empty output included; exit 1 for a refused flag or an unreadable
+`filters.toml`.
 
 Not in the first version: ad-hoc patterns (`-i PATTERN`) and a live search —
 `grep` covers the one-off case, and saved sets are what headless is for.

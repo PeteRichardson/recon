@@ -186,11 +186,14 @@ recon: emitted 3 files from /var/log, hide mode
 recon: emitted 3 files of 14 inputs, hide mode
 recon: emitted 14 files from /var/log, dim mode (3 match) — pass --hide to emit matches only
 recon: emitted 14 files from /var/log, dim mode, no filter
+recon: emitted 14 files from /var/log, hide mode, no filter
 ```
 `from <dir>` when the inputs came from a `PATH` directory, `of N inputs` when
 they came from stdin. In dim mode `files` still scans, so the match count is
 real; there is no `unscanned` in headless because every scan runs to its
-answer before anything prints.
+answer before anything prints. With no including filter enabled, hide mode
+hides nothing — the navigator's rule — and the summary says `hide mode, no
+filter` rather than a bare `hide mode` that would misdescribe the run.
 
 `cwd`: the directory of `PATH`, or of the first input; `recon: emitted /dir`.
 

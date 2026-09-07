@@ -153,7 +153,9 @@ pub struct Config {
     ///
     /// The TUI draws on stderr, so stdout carries only this — pipe it or
     /// capture it. Every emit also prints one summary line to stderr naming
-    /// the mode and the counts.
+    /// the mode and the counts. With stdin that is not a terminal — a pipe,
+    /// or `< /dev/null` — the TUI is skipped and the result is computed
+    /// headless from the files on stdin or under PATH.
     #[arg(long, value_name = "WHAT", value_enum)]
     pub emit: Option<crate::emit::Emit>,
 
