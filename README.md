@@ -436,8 +436,12 @@ both are. The filters you type with `i` and `x` live in an unnamed *scratch
 set* that is always present and always first — with no `filters.toml` at all,
 recon is exactly this model with one set.
 
-- **`autoload`** — the set starts enabled. Without it a set is known and
-  listed, but off until you enable it.
+- **`autoload`** — the set starts enabled, with its `default` profile
+  applied if it has one. `autoload` says which sets are live at startup;
+  `default` says which of their filters. A set with `autoload` and no
+  `default` therefore starts enabled with every filter off — an enabled
+  header and nothing filtering until you toggle a row or apply a profile.
+  Without `autoload` a set is known and listed, but off until you enable it.
 - **Profiles** — named permutations of a set's filters. Applying one enables
   exactly those and disables the set's others. `default` is applied whenever
   the set is enabled; without a `default`, enabling a set keeps whatever
@@ -502,10 +506,11 @@ working in one set's world. Solo and `!` are independent: `!` acts on filter
 flags, solo on set flags, and each restores its own.
 
 **Reset**: `R` returns every set to its startup state — enabled if and only if
-it has `autoload`, each file filter from its set's `default` profile or off,
-no solo, no `!` memory. Filters you typed are kept, flags and all. It touches
-only flags and is one key to redo, so it asks no confirmation. `R` is
-uppercase because `r` is the global refresh-from-disk.
+it has `autoload`, each file filter from its set's `default` profile, or off
+when the set has no `default` (the same state an `autoload` set without one
+starts in), no solo, no `!` memory. Filters you typed are kept, flags and
+all. It touches only flags and is one key to redo, so it asks no
+confirmation. `R` is uppercase because `r` is the global refresh-from-disk.
 
 **Saving**: `S` in the filter pane saves the scratch filters as a named set.
 A prompt asks for the name; `Enter` appends a `[sets.<name>]` table to
