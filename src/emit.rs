@@ -52,10 +52,13 @@ impl Exit {
     /// with no test on `$dir`. Empty output from a real emit is a success —
     /// the summary is what tells the two apart.
     ///
-    /// A write error on stdout — a closed pipe, most likely — is reported on
-    /// stderr and is a failure. Nothing here can panic on it: the terminal has
-    /// already been restored, and a panic's backtrace would be the last thing
-    /// the user saw.
+    /// A write error on stdout is reported on stderr and is a failure, with
+    /// one exception: `BrokenPipe`, which means the consumer closed its end
+    /// (`recon --emit lines big.log | head`) and already got what it asked
+    /// for. That is not this process's failure, so the summary is still
+    /// written to stderr and the exit code is still success. Nothing here can
+    /// panic on any of it: the terminal has already been restored, and a
+    /// panic's backtrace would be the last thing the user saw.
     pub fn deliver(
         self,
         requested: Option<Emit>,
@@ -72,7 +75,9 @@ impl Exit {
                             .and_then(|()| stdout.write_all(b"\n"))
                     })
                     .and_then(|()| stdout.flush());
-                if let Err(err) = written {
+                if let Err(err) = written
+                    && err.kind() != std::io::ErrorKind::BrokenPipe
+                {
                     let _ = writeln!(stderr, "recon: could not write the output: {err}");
                     return ExitCode::FAILURE;
                 }
@@ -176,5 +181,59 @@ mod tests {
         let path = Path::new(OsStr::from_bytes(b"/tmp/bad\xffname"));
 
         assert_eq!(path_bytes(path), b"/tmp/bad\xffname".to_vec());
+    }
+
+    /// A stdout stand-in whose every write fails with a fixed error kind —
+    /// there is no way to close a real pipe from within a unit test.
+    struct FailingWriter {
+        kind: std::io::ErrorKind,
+    }
+
+    impl Write for FailingWriter {
+        fn write(&mut self, _buf: &[u8]) -> std::io::Result<usize> {
+            Err(std::io::Error::from(self.kind))
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_broken_pipe_on_stdout_is_a_success_and_the_summary_still_lands() {
+        let exit = Exit::Emit {
+            lines: vec![b"one".to_vec()],
+            summary: "recon: emitted 1 line".to_string(),
+        };
+        let mut stdout = FailingWriter {
+            kind: std::io::ErrorKind::BrokenPipe,
+        };
+        let mut stderr = Vec::new();
+
+        let code = exit.deliver(Some(Emit::Lines), &mut stdout, &mut stderr);
+
+        assert_eq!(code, ExitCode::SUCCESS);
+        assert_eq!(stderr, b"recon: emitted 1 line\n");
+    }
+
+    #[test]
+    fn a_different_write_error_on_stdout_still_fails_and_drops_the_summary() {
+        let exit = Exit::Emit {
+            lines: vec![b"one".to_vec()],
+            summary: "recon: emitted 1 line".to_string(),
+        };
+        let mut stdout = FailingWriter {
+            kind: std::io::ErrorKind::Other,
+        };
+        let mut stderr = Vec::new();
+
+        let code = exit.deliver(Some(Emit::Lines), &mut stdout, &mut stderr);
+
+        assert_eq!(code, ExitCode::FAILURE);
+        let stderr = String::from_utf8(stderr).expect("utf-8 message");
+        assert!(
+            stderr.starts_with("recon: could not write the output:"),
+            "unexpected stderr: {stderr}"
+        );
     }
 }
