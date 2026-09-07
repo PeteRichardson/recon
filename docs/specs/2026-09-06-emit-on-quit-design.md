@@ -76,10 +76,10 @@ decision, like `path`. The long help:
 ```
 
 `--line-numbers` with `--emit files`, `--emit cwd`, or no `--emit` is an
-error at startup — `recon: --line-numbers applies to --emit lines` — rather
-than silently ignored, so a script that meant `lines` finds out. Checked in
-`Config::load` beside the rest of the flag validation, before the terminal is
-touched.
+error at startup — it reads `Error: --line-numbers applies to --emit lines`,
+rendered by color-eyre like every other `ConfigError` — rather than silently
+ignored, so a script that meant `lines` finds out. Checked in `Config::load`
+beside the rest of the flag validation, before the terminal is touched.
 
 `Q` is a new global key: quit without emitting. Without `--emit` it is a
 synonym for `q`. Bare `Q` only, with the modifier guard the other uppercase
@@ -192,8 +192,9 @@ recon: emitted 3 files from /abs/dir, hide mode
 
 `N match` counts rows answered `Yes`. `N unscanned` appears only when some
 listed file has no answer yet, because those files might match; it is
-omitted when the scan has finished. With no filter defined at all the summary
-says `no filter` in place of the counts, and no hint.
+omitted when the scan has finished. When the navigator cannot mark files at
+all — no including filter enabled, or more than `MAX_PATTERNS` — the summary
+says `no filter` in place of the counts and no hint, and names the real mode.
 
 ### `cwd`
 

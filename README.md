@@ -255,10 +255,9 @@ RUST_LOG=recon=debug recon app.log
 ```
 
 Log output goes to **stderr** by default, which is a problem once the TUI is up:
-stderr writes to the normal screen, and `recon` is holding the alternate one, so
-a line logged mid-session is painted over the interface until the next redraw.
-Set `RECON_LOG` to a file to avoid that, and to capture the in-session messages
-at all:
+`recon` draws its interface on stderr too, so a line logged mid-session is
+painted into the TUI and stays there until the next redraw. Set `RECON_LOG`
+to a file to avoid that, and to capture the in-session messages at all:
 
 ```sh
 RECON_LOG=/tmp/recon.log RUST_LOG=recon=debug recon app.log
@@ -1123,10 +1122,13 @@ rcn() {
 ```
 
 Filenames are written as the bytes the filesystem holds, so a name that is
-not valid UTF-8 comes out unchanged. Not emitted yet: the filter set itself,
-and a structured format that carries the mode and each file's matching filter
-in the output — both are follow-ups to #143, along with a headless mode that
-takes the same `--emit` without starting the TUI.
+not valid UTF-8 comes out unchanged. Line *content* from `--emit lines` is
+decoded as UTF-8 with the replacement character standing in for anything
+that isn't, and a trailing carriage return is stripped — paths are the only
+part of the output that is byte-for-byte verbatim. Not emitted yet: the
+filter set itself, and a structured format that carries the mode and each
+file's matching filter in the output — both are follow-ups to #143, along
+with a headless mode that takes the same `--emit` without starting the TUI.
 
 ## Opening an editor
 
