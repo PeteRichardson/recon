@@ -163,6 +163,19 @@ pub struct Config {
     /// numbers are the real ones, not 1..N of the output.
     #[arg(short = 'n', long)]
     pub line_numbers: bool,
+
+    /// Enable a saved filter set at startup, as `NAME` for its `default`
+    /// profile or `NAME:PROFILE` for another. Repeatable.
+    #[arg(long = "set", value_name = "NAME[:PROFILE]")]
+    pub set: Vec<String>,
+
+    /// Start in hide mode: only matching lines and files.
+    #[arg(long)]
+    pub hide: bool,
+
+    /// Suppress the summary line on stderr; warnings still print.
+    #[arg(short = 'q', long)]
+    pub quiet: bool,
 }
 
 /// The `--theme` long help: the short help's two sentences, then the bundled
@@ -200,6 +213,9 @@ impl Default for Config {
             theme: None,
             emit: None,
             line_numbers: false,
+            set: Vec::new(),
+            hide: false,
+            quiet: false,
         }
     }
 }
@@ -390,6 +406,15 @@ pub enum ConfigError {
     /// `--line-numbers` without `--emit lines`. Refused rather than ignored:
     /// a script that meant `lines` should find out (#143).
     LineNumbersNeedLines,
+    /// `--set` naming a set `filters.toml` does not define (#143). `known`
+    /// is every set it does define, for the message.
+    UnknownSet { name: String, known: Vec<String> },
+    /// `--set SET:NAME` naming a profile `set` does not define (#143).
+    UnknownProfile {
+        set: String,
+        name: String,
+        known: Vec<String>,
+    },
 }
 
 impl fmt::Display for ConfigError {
@@ -405,6 +430,16 @@ impl fmt::Display for ConfigError {
                 write!(f, "invalid config file {}\n{source}", path.display())
             }
             Self::LineNumbersNeedLines => write!(f, "--line-numbers applies to --emit lines"),
+            Self::UnknownSet { name, known } => write!(
+                f,
+                "unknown set {name:?}; filters.toml defines: {}",
+                known_list(known)
+            ),
+            Self::UnknownProfile { set, name, known } => write!(
+                f,
+                "unknown profile {name:?}; set {set:?} defines: {}",
+                known_list(known)
+            ),
         }
     }
 }
@@ -414,6 +449,16 @@ impl fmt::Display for ConfigError {
 /// it in both places would show the same TOML snippet twice on a screen the
 /// user is reading in a hurry.
 impl std::error::Error for ConfigError {}
+
+/// A list of names for an error message, or `none` for an empty one —
+/// "defines: " followed by nothing reads as a truncated message.
+fn known_list(known: &[String]) -> String {
+    if known.is_empty() {
+        "none".to_string()
+    } else {
+        known.join(", ")
+    }
+}
 
 /// Resolve the config file's path from the two environment variables that
 /// decide it.
@@ -513,6 +558,47 @@ impl Config {
     pub fn check_flags(&self) -> Result<(), ConfigError> {
         if self.line_numbers && self.emit != Some(crate::emit::Emit::Lines) {
             return Err(ConfigError::LineNumbersNeedLines);
+        }
+        Ok(())
+    }
+
+    /// `--set` as the pairs `App::new` and headless mode apply: the set's
+    /// name and, after the first colon, the profile to apply instead of
+    /// `default`. A set name holding a colon is misparsed here; the
+    /// unknown-set error then lists the real names, so it is found rather
+    /// than hidden.
+    #[must_use]
+    pub fn sets_to_enable(&self) -> Vec<(String, Option<String>)> {
+        self.set
+            .iter()
+            .map(|spec| match spec.split_once(':') {
+                Some((set, profile)) => (set.to_string(), Some(profile.to_string())),
+                None => (spec.clone(), None),
+            })
+            .collect()
+    }
+
+    /// Refuse a `--set` naming a set `sets` does not hold, or a profile its
+    /// set does not define. Needs the loaded sets, so it runs in `main`
+    /// right after `filtersets::load_file`, where `check_flags` did not
+    /// have to wait.
+    pub fn check_sets(&self, sets: &[crate::filter::LoadedSet]) -> Result<(), ConfigError> {
+        for (name, profile) in self.sets_to_enable() {
+            let Some(set) = sets.iter().find(|set| set.name == name) else {
+                return Err(ConfigError::UnknownSet {
+                    name,
+                    known: sets.iter().map(|set| set.name.clone()).collect(),
+                });
+            };
+            if let Some(profile) = profile
+                && !set.profiles.contains_key(&profile)
+            {
+                return Err(ConfigError::UnknownProfile {
+                    set: name,
+                    name: profile,
+                    known: set.profiles.keys().cloned().collect(),
+                });
+            }
         }
         Ok(())
     }
@@ -984,6 +1070,9 @@ mod tests {
         assert_eq!(parsed.theme, default.theme);
         assert_eq!(parsed.emit, default.emit);
         assert_eq!(parsed.line_numbers, default.line_numbers);
+        assert_eq!(parsed.set, default.set);
+        assert_eq!(parsed.hide, default.hide);
+        assert_eq!(parsed.quiet, default.quiet);
     }
 
     // ---- --emit and --line-numbers (#143) --------------------------------
@@ -1049,6 +1138,115 @@ mod tests {
         assert!(
             Config::default().check_flags().is_ok(),
             "neither flag is fine"
+        );
+    }
+
+    // ---- --set, --hide, -q (#143, headless) -------------------------------
+
+    #[test]
+    fn set_splits_at_the_first_colon_and_repeats() {
+        let config = Config::try_parse_from(["recon", "--set", "Bugs", "--set", "WiFi:bug:32"])
+            .expect("parses");
+
+        assert_eq!(
+            config.sets_to_enable(),
+            vec![
+                ("Bugs".to_string(), None),
+                ("WiFi".to_string(), Some("bug:32".to_string())),
+            ]
+        );
+    }
+
+    #[test]
+    fn hide_and_quiet_parse_and_default_off() {
+        let config = Config::try_parse_from(["recon", "--hide", "-q"]).expect("parses");
+        assert!(config.hide);
+        assert!(config.quiet);
+
+        let config = Config::try_parse_from(["recon", "--quiet"]).expect("parses");
+        assert!(config.quiet);
+
+        assert!(!Config::default().hide);
+        assert!(!Config::default().quiet);
+        assert!(Config::default().set.is_empty());
+    }
+
+    /// A loaded set named `name` with one filter `x` and one profile.
+    fn set_with_profile(name: &str, profile: &str) -> crate::filter::LoadedSet {
+        let mut set = crate::filter::test_support::loaded(name, 50, false, &["x"]);
+        set.profiles
+            .insert(profile.to_string(), vec!["x".to_string()]);
+        set
+    }
+
+    #[test]
+    fn check_sets_accepts_a_known_set_with_and_without_a_profile() {
+        let sets = [set_with_profile("Bugs", "p")];
+
+        let plain = Config {
+            set: vec!["Bugs".to_string()],
+            ..Config::default()
+        };
+        assert!(plain.check_sets(&sets).is_ok());
+
+        let with_profile = Config {
+            set: vec!["Bugs:p".to_string()],
+            ..Config::default()
+        };
+        assert!(with_profile.check_sets(&sets).is_ok());
+
+        assert!(
+            Config::default().check_sets(&[]).is_ok(),
+            "no --set: nothing to check"
+        );
+    }
+
+    #[test]
+    fn an_unknown_set_names_the_known_ones() {
+        let sets = [set_with_profile("Bugs", "p"), set_with_profile("WiFi", "q")];
+        let config = Config {
+            set: vec!["Foo".to_string()],
+            ..Config::default()
+        };
+
+        let err = config.check_sets(&sets).expect_err("refused");
+
+        assert!(matches!(err, ConfigError::UnknownSet { .. }), "{err:?}");
+        assert_eq!(
+            err.to_string(),
+            "unknown set \"Foo\"; filters.toml defines: Bugs, WiFi"
+        );
+    }
+
+    #[test]
+    fn an_unknown_set_with_no_file_says_none() {
+        let config = Config {
+            set: vec!["Foo".to_string()],
+            ..Config::default()
+        };
+
+        let err = config.check_sets(&[]).expect_err("refused");
+
+        assert_eq!(
+            err.to_string(),
+            "unknown set \"Foo\"; filters.toml defines: none"
+        );
+    }
+
+    #[test]
+    fn an_unknown_profile_names_the_set_s_profiles() {
+        let sets = [set_with_profile("Bugs", "p")];
+        let config = Config {
+            set: vec!["Bugs:nope".to_string()],
+            ..Config::default()
+        };
+
+        let err = config.check_sets(&sets).expect_err("refused");
+
+        assert!(matches!(err, ConfigError::UnknownProfile { .. }), "{err:?}");
+        assert_eq!(
+            err.to_string(),
+            "unknown profile \"nope\"; set \"Bugs\" defines: p"
         );
     }
 

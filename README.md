@@ -217,6 +217,13 @@ Options:
           [possible values: lines, files, cwd]
   -n, --line-numbers
           With `--emit lines`: prefix each line with its line number and a tab
+      --set <NAME[:PROFILE]>
+          Enable a saved filter set at startup, as `NAME` for its `default`
+          profile or `NAME:PROFILE` for another. Repeatable
+      --hide
+          Start in hide mode: only matching lines and files
+  -q, --quiet
+          Suppress the summary line on stderr; warnings still print
   -h, --help
           Print help (see more with '--help')
   -V, --version
