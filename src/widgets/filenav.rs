@@ -921,6 +921,7 @@ impl Widget for &mut FileNav<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fixtures::{fixture_dir, fixture_path};
     use crossterm::event::{KeyEvent, KeyModifiers};
 
     fn press(nav: &mut FileNav<'_>, code: KeyCode) -> Option<Action> {
@@ -945,8 +946,7 @@ mod tests {
     /// A fixture with one plain file, one executable file and one directory,
     /// which is the whole matrix the palette distinguishes.
     fn nav_with_kinds(name: &str) -> FileNav<'static> {
-        let dir = Path::new("target/test-navdirs").join(name);
-        fs::remove_dir_all(&dir).ok();
+        let dir = fixture_dir(name);
         fs::create_dir_all(dir.join("subdir")).expect("create subdir");
         fs::write(dir.join("plain.txt"), "x").expect("write plain");
         let script = dir.join("script.sh");
@@ -1131,8 +1131,7 @@ mod tests {
     /// the bare name would clip the slash off the one entry that has one.
     #[test]
     fn the_width_counts_a_directory_s_trailing_slash() {
-        let dir = Path::new("target/test-navdirs/kinds_width");
-        fs::remove_dir_all(dir).ok();
+        let dir = fixture_dir("kinds_width");
         fs::create_dir_all(dir.join("the_longest_entry_here")).expect("create subdir");
         fs::write(dir.join("short.txt"), "x").expect("write");
         let nav = FileNav::new(dir.join("placeholder").display().to_string());
@@ -1196,8 +1195,7 @@ mod tests {
     /// A fixture directory with a subdirectory that has its own contents, for
     /// exercising movement in and back out.
     fn nested_fixture(name: &str) -> std::path::PathBuf {
-        let dir = Path::new("target/test-navdirs").join(name);
-        fs::remove_dir_all(&dir).ok();
+        let dir = fixture_dir(name);
         fs::create_dir_all(dir.join("beta_dir")).expect("create subdir");
         fs::write(dir.join("beta_dir/inner_a.txt"), "x").expect("write");
         fs::write(dir.join("beta_dir/inner_b.txt"), "x").expect("write");
@@ -1210,8 +1208,10 @@ mod tests {
 
     #[test]
     fn h_and_left_go_to_the_parent_directory() {
+        // One fixture for both keys: the shared registry refuses a name
+        // claimed twice, and nothing here writes into the directory.
+        let dir = nested_fixture("keys_up");
         for code in [KeyCode::Char('h'), KeyCode::Left] {
-            let dir = nested_fixture("keys_up");
             let mut nav = FileNav::new(dir.join("alpha.txt").display().to_string());
             let start = nav.dir.clone();
 
@@ -1241,8 +1241,10 @@ mod tests {
 
     #[test]
     fn l_and_right_descend_into_the_selected_directory() {
+        // One fixture for both keys: the shared registry refuses a name
+        // claimed twice, and nothing here writes into the directory.
+        let dir = nested_fixture("keys_down");
         for code in [KeyCode::Char('l'), KeyCode::Right] {
-            let dir = nested_fixture("keys_down");
             let mut nav = FileNav::new(dir.join("alpha.txt").display().to_string());
             select(&mut nav, "beta_dir");
 
@@ -1297,8 +1299,7 @@ mod tests {
     /// different in every directory depending on where its files sort.
     #[test]
     fn first_entry_means_first_entry_even_when_it_is_a_directory() {
-        let dir = Path::new("target/test-navdirs/keys_first_is_dir");
-        fs::remove_dir_all(dir).ok();
+        let dir = fixture_dir("keys_first_is_dir");
         fs::create_dir_all(dir.join("outer/aaa_dir")).expect("create");
         fs::write(dir.join("outer/zzz.txt"), "x").expect("write");
         let mut nav = FileNav::new(dir.join("placeholder").display().to_string());
@@ -1317,8 +1318,7 @@ mod tests {
     /// goes — the fallback, not the default.
     #[test]
     fn descending_into_an_empty_directory_selects_the_parent_entry() {
-        let dir = Path::new("target/test-navdirs/keys_empty");
-        fs::remove_dir_all(dir).ok();
+        let dir = fixture_dir("keys_empty");
         fs::create_dir_all(dir.join("hollow")).expect("create");
         let mut nav = FileNav::new(dir.join("placeholder").display().to_string());
         select(&mut nav, "hollow");
@@ -1442,8 +1442,7 @@ mod tests {
     /// one.
     #[test]
     fn entries_carry_size_and_modification_time() {
-        let dir = Path::new("target/test-navdirs").join("entry_metadata");
-        fs::remove_dir_all(&dir).ok();
+        let dir = fixture_dir("entry_metadata");
         fs::create_dir_all(dir.join("subdir")).expect("create fixture");
         fs::write(dir.join("alpha.txt"), "12345").expect("write fixture");
 
@@ -1501,9 +1500,7 @@ mod tests {
     }
 
     fn sort_fixture(name: &str, dirs: &[&str], files: &[&str]) -> FileNav<'static> {
-        let dir = Path::new("target/test-navdirs").join(name);
-        fs::remove_dir_all(&dir).ok();
-        fs::create_dir_all(&dir).expect("create fixture dir");
+        let dir = fixture_dir(name);
         for sub in dirs {
             fs::create_dir_all(dir.join(sub)).expect("create fixture subdir");
         }
@@ -1599,9 +1596,7 @@ mod tests {
     /// bytes, which is where these two tests actually run.
     #[cfg(unix)]
     fn non_utf8_fixture(name: &str, make: fn(&Path) -> std::io::Result<()>) -> Option<PathBuf> {
-        let dir = Path::new("target/test-navdirs").join(name);
-        fs::remove_dir_all(&dir).ok();
-        fs::create_dir_all(&dir).expect("create fixture dir");
+        let dir = fixture_dir(name);
         match make(&dir) {
             Ok(()) => Some(dir),
             Err(err) => {
@@ -1738,9 +1733,7 @@ mod tests {
     /// Build a directory with known contents, so width assertions do not
     /// depend on whatever happens to be in the working tree.
     fn nav_over(name: &str, files: &[&str]) -> FileNav<'static> {
-        let dir = Path::new("target/test-navdirs").join(name);
-        fs::remove_dir_all(&dir).ok();
-        fs::create_dir_all(&dir).expect("create fixture dir");
+        let dir = fixture_dir(name);
         for file in files {
             fs::write(dir.join(file), "x").expect("write fixture");
         }
@@ -2042,12 +2035,9 @@ mod tests {
     fn preferred_width_tracks_the_directory_being_listed() {
         let mut nav = nav_over("outer", &["short.rs"]);
         let narrow = nav.preferred_width();
-        fs::create_dir_all("target/test-navdirs/outer/a_much_longer_subdir")
-            .expect("create subdir");
-        nav.set_dir(
-            Path::new("target/test-navdirs/outer").to_path_buf(),
-            Select::First,
-        );
+        let outer = fixture_path("outer");
+        fs::create_dir_all(outer.join("a_much_longer_subdir")).expect("create subdir");
+        nav.set_dir(outer, Select::First);
 
         assert!(
             nav.preferred_width() > narrow,
@@ -2094,9 +2084,9 @@ mod tests {
         // Own fixture directory: the repo's own listing shifts as files are
         // added, which silently changes which entry follows which.
         let mut nav = nav_over("move_onto_dir", &["alpha.rs"]);
-        let dir = Path::new("target/test-navdirs/move_onto_dir");
+        let dir = fixture_path("move_onto_dir");
         fs::create_dir_all(dir.join("beta_dir")).expect("create subdir");
-        nav.set_dir(dir.to_path_buf(), Select::First);
+        nav.set_dir(dir, Select::First);
         // `beta_dir` sorts directly under `..`, ahead of `alpha.rs`, since
         // directories come first (#96).
         select(&mut nav, PARENT);
@@ -2448,8 +2438,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn descending_into_a_symlinked_directory_keeps_the_link_path() {
-        let root = Path::new("target/test-navdirs/symlink_descend");
-        fs::remove_dir_all(root).ok();
+        let root = fixture_dir("symlink_descend");
         fs::create_dir_all(root.join("real")).expect("create real");
         fs::write(root.join("real/inside.txt"), "x").expect("write");
         std::os::unix::fs::symlink("real", root.join("link")).expect("symlink");
