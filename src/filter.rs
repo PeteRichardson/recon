@@ -1821,6 +1821,24 @@ mod tests {
         assert_eq!(flags(&set, 1), vec![true, false, true]);
     }
 
+    /// `autoload` with no `default` starts the set enabled and every filter
+    /// off: `autoload` names the sets that are live at startup, `default`
+    /// names their filters, and a set without one names none. Decided on
+    /// #161 and documented in the README's `autoload` and `Reset`
+    /// paragraphs; pinned here so the alternative that issue offered —
+    /// switching every filter on — cannot arrive by accident.
+    #[test]
+    fn autoload_without_a_default_starts_enabled_with_every_filter_off() {
+        let set = ActiveFilters::with_sets(None, &[loaded("a", 50, true, &["x", "y"])]);
+        assert!(set.sets()[1].enabled, "the set is enabled");
+        assert_eq!(
+            flags(&set, 1),
+            vec![false, false],
+            "and its filters are off"
+        );
+        assert!(!set.any_enabled(), "nothing filters until a row is toggled");
+    }
+
     /// `autoload` goes through the same path, so `default` applies at startup.
     #[test]
     fn autoload_applies_default() {
