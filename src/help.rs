@@ -339,11 +339,35 @@ pub const KEYMAP: &[Section] = &[
         bindings: &[
             Binding {
                 keys: &["printable"],
-                action: "Append to the pattern",
+                action: "Insert at the cursor",
+            },
+            Binding {
+                keys: &["Left", "Right"],
+                action: "Move the cursor",
+            },
+            Binding {
+                keys: &["Home", "Ctrl-a"],
+                action: "Start of the pattern",
+            },
+            Binding {
+                keys: &["End", "Ctrl-e"],
+                action: "End of the pattern",
             },
             Binding {
                 keys: &["Backspace"],
-                action: "Delete a character; cancel when empty",
+                action: "Delete before the cursor; cancel when empty",
+            },
+            Binding {
+                keys: &["Delete"],
+                action: "Delete under the cursor",
+            },
+            Binding {
+                keys: &["Ctrl-w"],
+                action: "Delete the word before the cursor",
+            },
+            Binding {
+                keys: &["Ctrl-u"],
+                action: "Delete everything before the cursor",
             },
             Binding {
                 keys: &["Enter"],

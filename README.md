@@ -685,10 +685,21 @@ While a search or filter prompt is open it consumes every key, so `q` and
 
 | Key(s) | Action |
 | --- | --- |
-| printable characters | Append to the pattern |
-| `Backspace` | Delete the last character; on an empty pattern, cancel |
+| printable characters | Insert at the cursor |
+| `Left` / `Right` | Move the cursor one character |
+| `Home` / `End`, `Ctrl-a` / `Ctrl-e` | Jump to the start / end of the pattern |
+| `Backspace` | Delete the character before the cursor; on an empty pattern, cancel |
+| `Delete` | Delete the character under the cursor |
+| `Ctrl-w` | Delete the word before the cursor — a run of letters, digits and `_`, or a run of punctuation, plus any blanks between it and the cursor |
+| `Ctrl-u` | Delete everything before the cursor |
 | `Enter` | Run the search, or add the filter — or, for a prompt opened with `c`, overwrite the filter being edited |
 | `Esc` | Cancel |
+
+The cursor is the reversed cell on the prompt row; the terminal's own cursor
+stays hidden. The editing keys are vim's command-line set, with `Ctrl-a` and
+`Ctrl-e` added for hands that reach for the shell's. To turn a `load_file`
+filter into `print_file`: `f c`, `Left` five times, `Backspace` four times,
+type `print`, `Enter`.
 
 A prompt opened with `c` starts pre-filled with the pattern being edited, with
 the cursor at the end; every other prompt starts empty. That is the tell for
