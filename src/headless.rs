@@ -5,18 +5,23 @@
 //! from the `PATH` argument; the result leaves through the same `Exit` a
 //! TUI session hands back, so `main` prints both the same way.
 
+use crate::config::Config;
 use crate::document::{self, Document, Mode};
-use crate::emit::{Exit, path_bytes};
-use crate::filter::ActiveFilters;
+use crate::emit::{Emit, Exit, path_bytes};
+use crate::filter::{ActiveFilters, Matcher};
 use crate::path::lexical_absolute;
+use crate::scan::{self, Progress};
 use crate::viewport::is_interesting;
 use crate::widgets::filenav::{Kind, sorted_entries};
-use std::io::{self, BufRead, Write};
+use color_eyre::{Result, eyre::eyre};
+use std::fs::File;
+use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::AtomicBool;
 
 /// The files a headless run reads, and where the list came from.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Inputs {
+pub(crate) struct Inputs {
     /// Absolute, in the order they were given.
     pub files: Vec<PathBuf>,
     pub from: Source,
@@ -24,13 +29,67 @@ pub struct Inputs {
 
 /// Where the input list came from — the summary and `cwd` differ by it.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Source {
+pub(crate) enum Source {
     /// One path per line on stdin.
     Stdin,
     /// `PATH` named a directory: its files, in the navigator's order.
     Directory(PathBuf),
     /// `PATH` named a file — or nothing that exists: that path alone.
     File,
+}
+
+/// Run headless: read the input list, build the filters `--set` asks for,
+/// and collect what `--emit` names. Read-failure warnings go to stderr as
+/// they are met; the `Exit` carries the output, the summary and the
+/// failure count for `main` to deliver.
+pub fn run(config: &Config) -> Result<Exit> {
+    let Some(what) = config.emit else {
+        return Err(eyre!("headless mode needs --emit"));
+    };
+    let inputs = inputs(io::stdin().lock(), Path::new(&config.path))?;
+    let filters = filters_for(config)?;
+    let mode = if config.hide {
+        Mode::FilteredOnly
+    } else {
+        Mode::Dimmed
+    };
+    Ok(collect(
+        what,
+        &inputs,
+        &filters,
+        mode,
+        config.line_numbers,
+        &mut io::stderr(),
+    ))
+}
+
+/// The startup filter set: the loaded sets, then each `--set` enabled — the
+/// same two steps `App::new` takes.
+fn filters_for(config: &Config) -> Result<ActiveFilters> {
+    let mut filters = ActiveFilters::with_sets(config.filter_palette.clone(), &config.filter_sets);
+    for (set, profile) in config.sets_to_enable() {
+        filters
+            .enable_named(&set, profile.as_deref())
+            .map_err(|err| eyre!("--set {set}: {err}"))?;
+    }
+    Ok(filters)
+}
+
+/// What `--emit` names, over `inputs`. `warnings` gets one line per input
+/// that could not be read.
+pub(crate) fn collect(
+    what: Emit,
+    inputs: &Inputs,
+    filters: &ActiveFilters,
+    mode: Mode,
+    line_numbers: bool,
+    warnings: &mut impl Write,
+) -> Exit {
+    match what {
+        Emit::Lines => collect_lines(inputs, filters, mode, line_numbers, warnings),
+        Emit::Files => collect_files(inputs, filters, mode, warnings),
+        Emit::Cwd => collect_cwd(inputs),
+    }
 }
 
 /// Read the input list: every non-blank line of `stdin` as a path, or, when
@@ -42,7 +101,7 @@ pub enum Source {
 /// verbatim. A trailing `\r` is dropped so a CRLF list works; nothing else
 /// is trimmed, since a name can end in a space. A line that is only
 /// whitespace is skipped.
-pub fn inputs(mut stdin: impl BufRead, path: &Path) -> io::Result<Inputs> {
+pub(crate) fn inputs(mut stdin: impl BufRead, path: &Path) -> io::Result<Inputs> {
     let mut files = Vec::new();
     let mut line = Vec::new();
     loop {
@@ -86,7 +145,6 @@ pub fn inputs(mut stdin: impl BufRead, path: &Path) -> io::Result<Inputs> {
 /// `N<TAB>` under `-n` — so `path<TAB>N<TAB>line`, and with one input
 /// exactly what the TUI emits. The match count is the TUI's: interesting
 /// verdicts, summed over the files that were read.
-#[allow(dead_code)] // Wired into `run` by the next task.
 fn collect_lines(
     inputs: &Inputs,
     filters: &ActiveFilters,
@@ -154,9 +212,104 @@ fn collect_lines(
     }
 }
 
+/// `--emit files`: every readable input in dim mode; in hide mode, the
+/// inputs the matcher selects — or every readable input when nothing
+/// selects, which is the navigator's rule: it hides nothing it cannot mark.
+///
+/// One scan per file, stopping at the first selecting line, which is what
+/// the navigator's scan costs. With nothing to scan, each input is still
+/// opened, so an unreadable one is warned about and skipped in every mode.
+/// The summary's `from <dir>` / `of N inputs` follows where the list came
+/// from; there is no `unscanned` here, since every scan runs to its answer
+/// before anything prints.
+fn collect_files(
+    inputs: &Inputs,
+    filters: &ActiveFilters,
+    mode: Mode,
+    warnings: &mut impl Write,
+) -> Exit {
+    let matcher = filters.matcher();
+    let mut lines = Vec::new();
+    let mut matched = 0;
+    let mut failed = 0;
+    for path in &inputs.files {
+        let answer = match &matcher {
+            Some(matcher) => file_matches(path, matcher),
+            None => open_input(path).map(|_| false),
+        };
+        let yes = match answer {
+            Ok(yes) => yes,
+            Err(err) => {
+                warn(warnings, path, &err);
+                failed += 1;
+                continue;
+            }
+        };
+        if yes {
+            matched += 1;
+        }
+        let listed = match mode {
+            Mode::Dimmed => true,
+            Mode::FilteredOnly => yes || matcher.is_none(),
+        };
+        if listed {
+            lines.push(path_bytes(path));
+        }
+    }
+    let emitted = lines.len();
+    let origin = match &inputs.from {
+        Source::Directory(dir) => format!("from {}", dir.display()),
+        Source::Stdin | Source::File => format!("of {}", count(inputs.files.len(), "input")),
+    };
+    let summary = match (matcher.is_some(), mode) {
+        (true, Mode::FilteredOnly) => {
+            format!("recon: emitted {emitted} files {origin}, hide mode")
+        }
+        (true, Mode::Dimmed) => format!(
+            "recon: emitted {emitted} files {origin}, dim mode ({matched} match) — pass --hide to emit matches only"
+        ),
+        (false, Mode::Dimmed) => {
+            format!("recon: emitted {emitted} files {origin}, dim mode, no filter")
+        }
+        (false, Mode::FilteredOnly) => {
+            format!("recon: emitted {emitted} files {origin}, hide mode, no filter")
+        }
+    };
+    Exit::Emit {
+        lines,
+        summary,
+        failed,
+    }
+}
+
+/// Open an input for scanning. A directory is refused up front: `File::open`
+/// accepts one on Unix and only the read fails, and `scan` swallows a read
+/// error as end of file.
+fn open_input(path: &Path) -> io::Result<File> {
+    if path.is_dir() {
+        return Err(io::Error::new(
+            io::ErrorKind::IsADirectory,
+            "is a directory",
+        ));
+    }
+    File::open(path)
+}
+
+/// Whether any line of `path` selects under `matcher` — `Record::answer`'s
+/// rule, over a scan run to its answer.
+fn file_matches(path: &Path, matcher: &Matcher) -> io::Result<bool> {
+    let reader = BufReader::new(open_input(path)?);
+    let progress = scan::scan(
+        reader,
+        matcher,
+        Progress::default(),
+        &AtomicBool::new(false),
+    );
+    Ok(progress.seen.iter().any(|&bits| matcher.selects(bits)))
+}
+
 /// `--emit cwd`: the directory `PATH` named, or the first input's. Nothing
 /// is read.
-#[allow(dead_code)] // Wired into `run` by the next task.
 fn collect_cwd(inputs: &Inputs) -> Exit {
     let dir = match &inputs.from {
         Source::Directory(dir) => dir.clone(),
@@ -174,7 +327,6 @@ fn collect_cwd(inputs: &Inputs) -> Exit {
 }
 
 /// `recon: cannot read PATH: reason`, written as the failure is met.
-#[allow(dead_code)] // Wired into `run` by the next task.
 fn warn(warnings: &mut impl Write, path: &Path, err: &io::Error) {
     let _ = writeln!(
         warnings,
@@ -186,7 +338,6 @@ fn warn(warnings: &mut impl Write, path: &Path, err: &io::Error) {
 
 /// The reason in the words a person reads, where the kind is plain; the OS
 /// message, `(os error N)` and all, where it is not.
-#[allow(dead_code)] // Wired into `run` by the next task.
 fn reason(err: &io::Error) -> String {
     match err.kind() {
         io::ErrorKind::NotFound => "no such file".to_string(),
@@ -198,7 +349,6 @@ fn reason(err: &io::Error) -> String {
 }
 
 /// `1 file`, `3 files`.
-#[allow(dead_code)] // Wired into `run` by the next task.
 fn count(n: usize, noun: &str) -> String {
     if n == 1 {
         format!("1 {noun}")
@@ -227,7 +377,7 @@ fn path_from_bytes(bytes: &[u8]) -> PathBuf {
 mod tests {
     use super::*;
     use crate::document::Mode;
-    use crate::emit::Exit;
+    use crate::emit::{Emit, Exit};
     use crate::filter::ActiveFilters;
     use crate::fixtures::{fixture_dir, fixture_file, fixture_path};
     use std::fs;
@@ -567,5 +717,227 @@ mod tests {
         };
         let (lines, _, _) = emitted(collect_cwd(&from_file));
         assert_eq!(lines, [dir.display().to_string()]);
+    }
+
+    // ---- files -------------------------------------------------------------
+
+    fn three_logs(name: &str) -> Inputs {
+        from_stdin(
+            name,
+            &[
+                ("a.log", "hit\n"),
+                ("b.log", "miss\n"),
+                ("c.log", "x\nhit\n"),
+            ],
+        )
+    }
+
+    fn displayed(inputs: &Inputs) -> Vec<String> {
+        inputs
+            .files
+            .iter()
+            .map(|path| path.display().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn files_in_hide_mode_lists_the_inputs_the_matcher_selects() {
+        let inputs = three_logs("headless_files_hide");
+        let mut warnings = Vec::new();
+
+        let exit = collect_files(
+            &inputs,
+            &filters_matching("hit"),
+            Mode::FilteredOnly,
+            &mut warnings,
+        );
+
+        let (lines, summary, failed) = emitted(exit);
+        let all = displayed(&inputs);
+        assert_eq!(lines, [all[0].clone(), all[2].clone()]);
+        assert_eq!(summary, "recon: emitted 2 files of 3 inputs, hide mode");
+        assert_eq!(failed, 0);
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn files_in_dim_mode_lists_every_input_with_the_match_count() {
+        let inputs = three_logs("headless_files_dim");
+
+        let exit = collect_files(
+            &inputs,
+            &filters_matching("hit"),
+            Mode::Dimmed,
+            &mut Vec::new(),
+        );
+
+        let (lines, summary, _) = emitted(exit);
+        assert_eq!(lines, displayed(&inputs));
+        assert_eq!(
+            summary,
+            "recon: emitted 3 files of 3 inputs, dim mode (2 match) — pass --hide to emit matches only"
+        );
+    }
+
+    #[test]
+    fn files_from_a_path_directory_says_from() {
+        let mut inputs = three_logs("headless_files_from_dir");
+        let dir = lexical_absolute(&fixture_path("headless_files_from_dir"));
+        inputs.from = Source::Directory(dir.clone());
+
+        let exit = collect_files(
+            &inputs,
+            &filters_matching("hit"),
+            Mode::FilteredOnly,
+            &mut Vec::new(),
+        );
+
+        let (_, summary, _) = emitted(exit);
+        assert_eq!(
+            summary,
+            format!("recon: emitted 2 files from {}, hide mode", dir.display())
+        );
+    }
+
+    #[test]
+    fn files_in_hide_mode_with_no_matcher_lists_everything() {
+        let inputs = three_logs("headless_files_no_matcher");
+        let mut exclude_only = ActiveFilters::new();
+        exclude_only.add_excluding("x").expect("valid pattern");
+        assert!(exclude_only.matcher().is_none(), "sanity: nothing selects");
+
+        let exit = collect_files(&inputs, &exclude_only, Mode::FilteredOnly, &mut Vec::new());
+        let (lines, summary, _) = emitted(exit);
+        assert_eq!(lines, displayed(&inputs), "nothing to hide against");
+        assert_eq!(
+            summary,
+            "recon: emitted 3 files of 3 inputs, hide mode, no filter"
+        );
+
+        let exit = collect_files(
+            &inputs,
+            &ActiveFilters::new(),
+            Mode::Dimmed,
+            &mut Vec::new(),
+        );
+        let (lines, summary, _) = emitted(exit);
+        assert_eq!(lines, displayed(&inputs));
+        assert_eq!(
+            summary,
+            "recon: emitted 3 files of 3 inputs, dim mode, no filter"
+        );
+    }
+
+    #[test]
+    fn files_warns_about_and_skips_an_unreadable_input_in_both_modes() {
+        let mut inputs = three_logs("headless_files_unreadable");
+        let dir = lexical_absolute(&fixture_path("headless_files_unreadable"));
+        let missing = dir.join("missing.log");
+        inputs.files.insert(1, missing.clone());
+        inputs.files.push(dir.clone());
+        let expected_warnings = format!(
+            "recon: cannot read {}: no such file\nrecon: cannot read {}: is a directory\n",
+            missing.display(),
+            dir.display(),
+        );
+
+        let mut warnings = Vec::new();
+        let exit = collect_files(
+            &inputs,
+            &filters_matching("hit"),
+            Mode::Dimmed,
+            &mut warnings,
+        );
+        let (lines, summary, failed) = emitted(exit);
+        assert_eq!(warnings_of(&warnings), expected_warnings);
+        assert_eq!(lines.len(), 3, "the three readable files: {lines:?}");
+        assert_eq!(
+            summary,
+            "recon: emitted 3 files of 5 inputs, dim mode (2 match) — pass --hide to emit matches only"
+        );
+        assert_eq!(failed, 2);
+
+        let mut warnings = Vec::new();
+        let exit = collect_files(&inputs, &ActiveFilters::new(), Mode::Dimmed, &mut warnings);
+        let (_, _, failed) = emitted(exit);
+        assert_eq!(
+            warnings_of(&warnings),
+            expected_warnings,
+            "checked even with nothing to scan"
+        );
+        assert_eq!(failed, 2);
+    }
+
+    // ---- collect -----------------------------------------------------------
+
+    #[test]
+    fn collect_dispatches_on_the_emit_kind() {
+        let inputs = one_file("headless_collect.log", b"hit\n");
+        let filters = filters_matching("hit");
+        let mut warnings = Vec::new();
+
+        let (lines, _, _) = emitted(collect(
+            Emit::Lines,
+            &inputs,
+            &filters,
+            Mode::FilteredOnly,
+            false,
+            &mut warnings,
+        ));
+        assert_eq!(lines, ["hit"]);
+
+        let (lines, _, _) = emitted(collect(
+            Emit::Files,
+            &inputs,
+            &filters,
+            Mode::FilteredOnly,
+            false,
+            &mut warnings,
+        ));
+        assert_eq!(lines, [inputs.files[0].display().to_string()]);
+
+        let (lines, _, _) = emitted(collect(
+            Emit::Cwd,
+            &inputs,
+            &filters,
+            Mode::FilteredOnly,
+            false,
+            &mut warnings,
+        ));
+        assert_eq!(
+            lines,
+            [inputs.files[0]
+                .parent()
+                .expect("has a parent")
+                .display()
+                .to_string()]
+        );
+        assert!(warnings.is_empty());
+    }
+
+    /// `run` reads real stdin, so its wiring is exercised by
+    /// `tests/headless.rs`; the filter construction it delegates to is
+    /// checked here.
+    #[test]
+    fn filters_for_enables_each_set_and_refuses_an_unknown_one() {
+        let mut set = crate::filter::test_support::loaded("Bugs", 50, false, &["hit"]);
+        set.profiles
+            .insert("p".to_string(), vec!["hit".to_string()]);
+        let config = crate::config::Config {
+            filter_sets: vec![set],
+            set: vec!["Bugs:p".to_string()],
+            ..crate::config::Config::default()
+        };
+
+        let filters = filters_for(&config).expect("known set");
+        assert!(filters.sets()[1].enabled);
+        assert!(filters.matcher().is_some(), "the profile enabled `hit`");
+
+        let config = crate::config::Config {
+            set: vec!["Nope".to_string()],
+            ..crate::config::Config::default()
+        };
+        let err = filters_for(&config).expect_err("unknown set");
+        assert!(err.to_string().contains("unknown set \"Nope\""), "{err}");
     }
 }
