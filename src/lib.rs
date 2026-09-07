@@ -257,6 +257,7 @@ impl SearchPrompt {
 pub mod config;
 pub mod document;
 pub mod editor;
+pub mod emit;
 pub mod filter;
 pub mod filtersets;
 #[cfg(test)]
