@@ -1414,20 +1414,29 @@ mod tests {
 
     /// A bare filename has no directory component, so the nav pane should fall
     /// back to the current directory rather than listing nothing.
+    ///
+    /// The one test here that is *about* the working directory, so it reads
+    /// the working directory — but compares against a fresh listing of it
+    /// rather than naming entries it expects to find (#163). Whether `src`
+    /// and `Cargo.toml` are in the cwd is a fact about where the suite was
+    /// run, not about the navigator.
     #[test]
     fn bare_filename_lists_current_directory() {
-        let nav = FileNav::new("Cargo.toml".to_string());
-        assert!(
-            nav.entries.iter().any(|e| e.name == "Cargo.toml"),
-            "expected Cargo.toml among entries, got {:?}",
-            nav.entries
+        let nav = FileNav::new("any-bare-name.txt".to_string());
+        let cwd = std::env::current_dir().expect("cwd");
+
+        assert_eq!(nav.dir, cwd, "did not fall back to the current directory");
+        let listed = sorted_entries(&cwd).expect("cwd is readable");
+        assert_eq!(
+            drawn(&nav.entries[1..]),
+            drawn(&listed),
+            "the entries are not the current directory's"
         );
-        assert!(nav.entries.iter().any(|e| e.name == "src"));
     }
 
     #[test]
     fn parent_entry_comes_first() {
-        let nav = FileNav::new("Cargo.toml".to_string());
+        let nav = nav_over("parent_first", &["a.txt"]);
         assert_eq!(names(&nav).first().map(String::as_str), Some(PARENT));
     }
 
@@ -1466,10 +1475,13 @@ mod tests {
     }
 
     /// The real repo root, in the pane's own order — a guard that the listing
-    /// is sorted at all, over a directory nobody curated for the test.
+    /// is sorted at all, over a directory nobody curated for the test. Found
+    /// through the manifest directory rather than the cwd, so the test reads
+    /// the same root wherever the suite is run from (#163).
     #[test]
     fn entries_after_parent_are_sorted() {
-        let nav = FileNav::new("Cargo.toml".to_string());
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
+        let nav = FileNav::new(root.display().to_string());
         let rest = &nav.entries[1..];
         let mut sorted = rest.to_vec();
         sorted.sort_by_cached_key(sort_key);
@@ -1714,7 +1726,8 @@ mod tests {
 
     #[test]
     fn path_with_directory_lists_that_directory() {
-        let nav = FileNav::new("src/lib.rs".to_string());
+        let dir = repo_like("path_with_directory");
+        let nav = FileNav::new(dir.join("src/lib.rs").display().to_string());
         assert!(
             nav.entries.iter().any(|e| e.name == "lib.rs"),
             "expected lib.rs among entries, got {:?}",
@@ -1728,6 +1741,20 @@ mod tests {
     fn missing_directory_still_offers_parent() {
         let nav = FileNav::new("no/such/dir/file.txt".to_string());
         assert_eq!(names(&nav), vec![PARENT]);
+    }
+
+    /// A directory shaped like a crate root — `Cargo.toml` beside
+    /// `src/lib.rs` — for the tests that used to run on the real one (#163).
+    /// Those tests are about moving between a file, a directory and its
+    /// parent; what recon's own root happens to contain is not their
+    /// subject, and a checkout with extra entries in it changed their
+    /// answers.
+    fn repo_like(name: &str) -> PathBuf {
+        let dir = fixture_dir(name);
+        fs::create_dir_all(dir.join("src")).expect("create src");
+        fs::write(dir.join("Cargo.toml"), "[package]\n").expect("write Cargo.toml");
+        fs::write(dir.join("src/lib.rs"), "pub struct Lib;\n").expect("write lib.rs");
+        dir
     }
 
     /// Build a directory with known contents, so width assertions do not
@@ -2123,7 +2150,8 @@ mod tests {
 
     #[test]
     fn enter_on_a_file_requests_a_load() {
-        let mut nav = FileNav::new("Cargo.toml".to_string());
+        let dir = repo_like("enter_on_file");
+        let mut nav = FileNav::new(dir.join("Cargo.toml").display().to_string());
         select(&mut nav, "Cargo.toml");
 
         let action = enter(&mut nav);
@@ -2139,7 +2167,8 @@ mod tests {
 
     #[test]
     fn enter_on_a_directory_navigates_into_it() {
-        let mut nav = FileNav::new("Cargo.toml".to_string());
+        let dir = repo_like("enter_on_directory");
+        let mut nav = FileNav::new(dir.join("Cargo.toml").display().to_string());
         select(&mut nav, "src");
 
         let action = enter(&mut nav);
@@ -2160,7 +2189,8 @@ mod tests {
     /// Descending lands on the first entry — index 1, since `..` is 0. It
     /// used to land on `..` itself, which is the way back out.
     fn descending_selects_the_first_entry_not_the_parent() {
-        let mut nav = FileNav::new("Cargo.toml".to_string());
+        let dir = repo_like("descend_first_entry");
+        let mut nav = FileNav::new(dir.join("Cargo.toml").display().to_string());
         select(&mut nav, "src");
         enter(&mut nav);
         assert_eq!(nav.state.selected(), Some(1));
@@ -2168,7 +2198,8 @@ mod tests {
 
     #[test]
     fn parent_entry_climbs_back_up() {
-        let mut nav = FileNav::new("src/lib.rs".to_string());
+        let dir = repo_like("parent_climbs");
+        let mut nav = FileNav::new(dir.join("src/lib.rs").display().to_string());
         let start = nav.dir.clone();
         select(&mut nav, PARENT);
 
@@ -2186,7 +2217,8 @@ mod tests {
     /// accumulate `./src/..` path segments.
     #[test]
     fn round_trip_returns_to_the_same_directory() {
-        let mut nav = FileNav::new("Cargo.toml".to_string());
+        let dir = repo_like("nav_round_trip");
+        let mut nav = FileNav::new(dir.join("Cargo.toml").display().to_string());
         let start = nav.dir.clone();
 
         select(&mut nav, "src");
@@ -2200,7 +2232,8 @@ mod tests {
     /// Startup lands on the file recon was launched with, not on `..`.
     #[test]
     fn starts_on_the_launched_file() {
-        let nav = FileNav::new("Cargo.toml".to_string());
+        let dir = repo_like("starts_on_file");
+        let nav = FileNav::new(dir.join("Cargo.toml").display().to_string());
         assert_eq!(selected_name(&nav), "Cargo.toml");
     }
 
@@ -2208,7 +2241,8 @@ mod tests {
     /// index rather than inheriting whatever the startup argument selected.
     #[test]
     fn select_next_advances_selection() {
-        let mut nav = FileNav::new("Cargo.toml".to_string());
+        let dir = repo_like("select_next");
+        let mut nav = FileNav::new(dir.join("Cargo.toml").display().to_string());
         nav.state.select(Some(0));
         nav.select_next();
         assert_eq!(nav.state.selected(), Some(1));
@@ -2216,7 +2250,8 @@ mod tests {
 
     #[test]
     fn select_previous_clamps_at_first_entry() {
-        let mut nav = FileNav::new("Cargo.toml".to_string());
+        let dir = repo_like("select_previous");
+        let mut nav = FileNav::new(dir.join("Cargo.toml").display().to_string());
         nav.state.select(Some(0));
         nav.select_previous();
         assert_eq!(nav.state.selected(), Some(0));
@@ -2421,7 +2456,8 @@ mod tests {
     fn j_and_k_move_in_vim_directions() {
         use crossterm::event::{KeyCode, KeyEvent};
 
-        let mut nav = FileNav::new("Cargo.toml".to_string());
+        let dir = repo_like("j_and_k");
+        let mut nav = FileNav::new(dir.join("Cargo.toml").display().to_string());
         nav.state.select(Some(0));
         nav.handle_events(Event::Key(KeyEvent::from(KeyCode::Char('j'))));
         assert_eq!(nav.state.selected(), Some(1), "j should move down");
