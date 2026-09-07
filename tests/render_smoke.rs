@@ -64,13 +64,77 @@ fn press(app: &mut App, code: KeyCode) {
     app.handle_event(Event::Key(KeyEvent::from(code)));
 }
 
-#[test]
-fn renders_file_contents_into_buffer() {
+/// The one line of `Cargo.toml` the view tests look for. A fixture's, not
+/// the repo's: this file used to look for `tui-textarea-2` in the real
+/// `Cargo.toml`, which was on screen only because a comment happened to
+/// mention it near the top.
+const MARKER: &str = "name = \"render-smoke-fixture\"";
+
+/// A directory of known files under `target/test-navdirs/render_smoke/`,
+/// one per test so the tests can run in parallel.
+///
+/// Every test here used to run against the repo root, which made each one a
+/// claim about the working tree: that `..` fits above `Cargo.toml` in a
+/// 13-row navigator, that `Cargo.toml` mentions a vendored crate in its
+/// first screen, that `Cargo.lock` exists, that `filenav.rs` is longer than
+/// a page. An untracked directory or two in the root — a worktree, a tool's
+/// cache — scrolled `..` off and failed a test that had nothing to do with
+/// the change (#152, and #82 before it). What the working tree contains is
+/// not any of these tests' subject.
+///
+/// The layout, in navigator order — directories first, then names
+/// case-insensitively:
+///
+/// ```text
+/// ..
+/// beta_dir/      first.rs, second.rs
+/// alpha.rs       one line, "content"
+/// Cargo.lock     a `[[package]]` table
+/// Cargo.toml     `[package]` first, then `MARKER`
+/// long.rs        sixty numbered lines, longer than any pane here
+/// ```
+///
+/// `beta_dir` is the only directory, so it sits directly above `alpha.rs`:
+/// the directory tests step between the two.
+fn fixture(name: &str) -> std::path::PathBuf {
+    let dir = std::path::Path::new("target/test-navdirs/render_smoke").join(name);
+    std::fs::remove_dir_all(&dir).ok();
+    std::fs::create_dir_all(dir.join("beta_dir")).expect("create fixture dir");
+    let write = |rel: &str, body: &str| {
+        std::fs::write(dir.join(rel), body).expect("write fixture");
+    };
+    write(
+        "Cargo.toml",
+        &format!("[package]\n{MARKER}\nversion = \"0.0.0\"\n"),
+    );
+    write(
+        "Cargo.lock",
+        "# fixture\nversion = 3\n\n[[package]]\nname = \"render-smoke-fixture\"\n",
+    );
+    write("alpha.rs", "content\n");
+    write("beta_dir/first.rs", "the first entry's text\n");
+    write("beta_dir/second.rs", "the second entry's text\n");
+    let long = (0..60).fold(String::new(), |mut body, i| {
+        use std::fmt::Write as _;
+        let _ = writeln!(body, "line {i}");
+        body
+    });
+    write("long.rs", &long);
+    dir
+}
+
+/// An `App` opened on `file` inside a fresh fixture directory named `name`.
+fn app_on(name: &str, file: &str) -> App<'static> {
     let config = Config {
-        path: "Cargo.toml".to_string(),
+        path: fixture(name).join(file).display().to_string(),
         ..Config::default()
     };
-    let mut app = App::new(&config);
+    App::new(&config)
+}
+
+#[test]
+fn renders_file_contents_into_buffer() {
+    let mut app = app_on("renders_file_contents", "Cargo.toml");
     let area = Rect::new(0, 0, 80, 24);
     let mut buf = Buffer::empty(area);
 
@@ -82,7 +146,7 @@ fn renders_file_contents_into_buffer() {
         .map(ratatui::buffer::Cell::symbol)
         .collect();
     assert!(
-        text.contains("tui-textarea-2"),
+        text.contains(MARKER),
         "textarea did not render file contents:\n{text}"
     );
     assert!(text.contains("Cargo.toml"), "block title missing");
@@ -104,11 +168,7 @@ fn nav_pane_rows(buf: &Buffer) -> Vec<String> {
 
 #[test]
 fn nav_pane_renders_directory_entries() {
-    let config = Config {
-        path: "Cargo.toml".to_string(),
-        ..Config::default()
-    };
-    let mut app = App::new(&config);
+    let mut app = app_on("nav_pane_entries", "Cargo.toml");
     let area = Rect::new(0, 0, 80, 24);
     let mut buf = Buffer::empty(area);
 
@@ -122,7 +182,10 @@ fn nav_pane_renders_directory_entries() {
         pane.contains("Cargo.toml"),
         "nav pane did not list real directory entries:\n{pane}"
     );
-    assert!(pane.contains("src"), "nav pane missing src entry:\n{pane}");
+    assert!(
+        pane.contains("beta_dir"),
+        "nav pane missing the directory entry:\n{pane}"
+    );
     assert!(
         highlighted_row_index(&buf).is_some(),
         "nav pane drew no selection highlight:\n{pane}"
@@ -183,16 +246,12 @@ fn highlight(app: &mut App, name: &str) {
 
 #[test]
 fn enter_on_a_file_loads_it_into_the_view() {
-    let config = Config {
-        path: "Cargo.toml".to_string(),
-        ..Config::default()
-    };
-    let mut app = App::new(&config);
-    // `[package]`, this file's first line — not `[dependencies]`, which this
-    // assertion used until adding a comment block to Cargo.toml pushed that
-    // header below the pane and failed a test that had nothing to do with the
-    // change (#82). The claim is "the file named on the CLI is in the view at
-    // startup", and only the top of it is guaranteed to be on screen.
+    let mut app = app_on("enter_on_a_file", "Cargo.toml");
+    // The claim is "the file named on the CLI is in the view at startup", and
+    // only the top of it is guaranteed to be on screen — which is why this
+    // once broke when a comment block pushed the header it looked for below
+    // the pane (#82). The fixture's file is three lines, so the whole thing
+    // is on screen.
     assert!(
         view_pane(&mut app).contains("[package]"),
         "expected Cargo.toml in the view at startup"
@@ -211,11 +270,7 @@ fn enter_on_a_file_loads_it_into_the_view() {
 /// Moving the selection is enough on its own; Enter is only for directories.
 #[test]
 fn moving_onto_a_file_loads_it_without_enter() {
-    let config = Config {
-        path: "Cargo.toml".to_string(),
-        ..Config::default()
-    };
-    let mut app = App::new(&config);
+    let mut app = app_on("moving_onto_a_file", "Cargo.toml");
 
     highlight(&mut app, "Cargo.lock");
 
@@ -232,20 +287,9 @@ fn moving_onto_a_file_loads_it_without_enter() {
 /// directory contained that text. The pane now always describes what is
 /// actually selected.
 ///
-/// Own fixture directory: the repo's own listing shifts as files are added,
-/// which silently changes which entry follows which.
 #[test]
 fn moving_onto_a_directory_shows_that_it_is_a_directory() {
-    let dir = std::path::Path::new("target/test-navdirs/render_move_onto_dir");
-    std::fs::remove_dir_all(dir).ok();
-    std::fs::create_dir_all(dir.join("beta_dir")).expect("create fixture dir");
-    std::fs::write(dir.join("alpha.rs"), "content\n").expect("write fixture");
-
-    let config = Config {
-        path: dir.join("alpha.rs").display().to_string(),
-        ..Config::default()
-    };
-    let mut app = App::new(&config);
+    let mut app = app_on("moving_onto_a_directory", "alpha.rs");
 
     // `beta_dir` sits directly above `alpha.rs`: directories sort first (#96),
     // so the step onto it is upwards.
@@ -259,12 +303,13 @@ fn moving_onto_a_directory_shows_that_it_is_a_directory() {
 
     assert_eq!(highlighted_name(&mut app), "beta_dir");
     let shown = view_text(&mut app);
-    // `beta_dir` is empty, so the listing has nothing to show and says so.
-    // The probe used to be `<directory>`, which every directory rendered;
-    // that placeholder now survives only for the empty case.
+    // Selecting a directory previews its listing, so the probe for "a
+    // directory is selected" is a name from inside it. The probe used to be
+    // `<directory>`, which every directory rendered; that placeholder now
+    // survives only for the empty case.
     assert!(
-        shown.contains("<empty directory>"),
-        "the view did not say it was a directory:\n{shown}"
+        shown.contains("first.rs"),
+        "the view did not list the directory:\n{shown}"
     );
     assert!(
         !shown.contains("content"),
@@ -279,23 +324,11 @@ fn moving_onto_a_directory_shows_that_it_is_a_directory() {
 /// went on looking at a file from the one you had just left.
 #[test]
 fn enter_on_a_directory_relists_and_previews_its_first_entry() {
-    // Own fixture directory, for the same reason as the test above: this
-    // walked the repo's own `src/` and named `document.rs` as the entry that
-    // sorts first, so adding `src/config.rs` broke a test about pressing
-    // Enter. What sorts first in recon's source tree is not this test's
-    // subject.
-    let dir = std::path::Path::new("target/test-navdirs/render_enter_dir");
-    std::fs::remove_dir_all(dir).ok();
-    std::fs::create_dir_all(dir.join("beta_dir")).expect("create fixture dir");
-    std::fs::write(dir.join("alpha.rs"), "content\n").expect("write fixture");
-    std::fs::write(dir.join("beta_dir/first.rs"), "the first entry's text\n").expect("write");
-    std::fs::write(dir.join("beta_dir/second.rs"), "the second entry's text\n").expect("write");
-
-    let config = Config {
-        path: dir.join("alpha.rs").display().to_string(),
-        ..Config::default()
-    };
-    let mut app = App::new(&config);
+    // This once walked the repo's own `src/` and named `document.rs` as the
+    // entry that sorts first, so adding `src/config.rs` broke a test about
+    // pressing Enter. What sorts first in recon's source tree is not this
+    // test's subject; the fixture's `beta_dir` has two entries of its own.
+    let mut app = app_on("enter_on_a_directory", "alpha.rs");
 
     highlight(&mut app, "beta_dir");
     let view_before = view_text(&mut app);
@@ -327,12 +360,8 @@ fn enter_on_a_directory_relists_and_previews_its_first_entry() {
 
 #[test]
 fn tab_moves_focus_to_the_file_view() {
-    // A long file, so that a page-down actually has somewhere to scroll to.
-    let config = Config {
-        path: "src/widgets/filenav.rs".to_string(),
-        ..Config::default()
-    };
-    let mut app = App::new(&config);
+    // The long file, so that a page-down actually has somewhere to scroll to.
+    let mut app = app_on("tab_moves_focus", "long.rs");
 
     press(&mut app, KeyCode::Tab);
     let before = view_pane(&mut app);
@@ -347,11 +376,7 @@ fn tab_moves_focus_to_the_file_view() {
 /// The panes size themselves to the longest entry name, capped at a default.
 #[test]
 fn nav_pane_snaps_to_its_contents() {
-    let config = Config {
-        path: "Cargo.toml".to_string(),
-        ..Config::default()
-    };
-    let mut app = App::new(&config);
+    let mut app = app_on("nav_pane_snaps", "Cargo.toml");
     let mut buf = Buffer::empty(AREA);
     (&mut app).render(AREA, &mut buf);
 
@@ -385,11 +410,7 @@ fn click(app: &mut App, kind: MouseEventKind, column: u16) {
 
 #[test]
 fn dragging_the_divider_resizes_the_panes_on_screen() {
-    let config = Config {
-        path: "Cargo.toml".to_string(),
-        ..Config::default()
-    };
-    let mut app = App::new(&config);
+    let mut app = app_on("dragging_the_divider", "Cargo.toml");
     let mut buf = Buffer::empty(AREA);
     (&mut app).render(AREA, &mut buf);
     let before = divider_column(&buf);
