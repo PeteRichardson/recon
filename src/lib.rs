@@ -1960,6 +1960,21 @@ impl App<'_> {
         let Some(path) = self.save_path.clone() else {
             return Err("no config home ($XDG_CONFIG_HOME, $HOME unset); nowhere to save".into());
         };
+        // Two scratch filters with one pattern would be two file filters
+        // answering to the same name, which `parse` rejects with advice
+        // about a `name` key the pane cannot set. Say it in the pane's
+        // terms instead (#190).
+        let mut patterns: Vec<String> = self
+            .filters
+            .filters_in(0)
+            .map(|(_, filter)| filter.predicate.display())
+            .collect();
+        patterns.sort_unstable();
+        if let Some([shared, _]) = patterns.windows(2).find(|pair| pair[0] == pair[1]) {
+            return Err(format!(
+                "two scratch filters share the pattern {shared:?}; delete one before saving"
+            ));
+        }
         let to_save = filtersets::SetToSave {
             name,
             filters: self
@@ -1985,8 +2000,24 @@ impl App<'_> {
             std::fs::create_dir_all(dir)
                 .map_err(|err| format!("could not create {}: {err}", dir.display()))?;
         }
-        std::fs::write(&path, after)
-            .map_err(|err| format!("could not write {}: {err}", path.display()))?;
+        // Write beside the file and rename over it (#153): `fs::write`
+        // truncates first, so a crash, a `kill` or a full disk between the
+        // truncate and the write would leave the user's hand-edited file
+        // empty or partial, and the next start refuses to run on it. The
+        // rename is atomic on every filesystem recon runs on, so the file is
+        // always either the old text or the new.
+        let file_name = path
+            .file_name()
+            .map_or_else(|| "filters.toml".into(), std::ffi::OsStr::to_os_string);
+        let mut tmp_name = file_name;
+        tmp_name.push(".tmp");
+        let tmp = path.with_file_name(tmp_name);
+        std::fs::write(&tmp, after)
+            .map_err(|err| format!("could not write {}: {err}", tmp.display()))?;
+        if let Err(err) = std::fs::rename(&tmp, &path) {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(format!("could not replace {}: {err}", path.display()));
+        }
         self.filters.adopt_scratch_as(name, path);
         self.refresh_view();
         self.report(&format!("saved set {name:?}"), false);
@@ -6244,6 +6275,95 @@ mod tests {
             !app.filters.sets()[1].enabled,
             "a's state is untouched by the save"
         );
+    }
+
+    /// A set added to the file by hand since startup is not in memory, so the
+    /// name check in `save_scratch_as` cannot see it; `append_set` must refuse
+    /// it rather than replace the table (#154).
+    #[test]
+    fn big_s_refuses_a_set_added_to_the_file_since_startup() {
+        let path = save_fixture("save_since_startup");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let before = "# my file\n[sets.bug]\n[[sets.bug.filters]]\npattern = 'ORIGINAL'\n";
+        fs::write(&path, before).unwrap();
+        let mut app = app_over_file("save_since_startup_file", "alpha\n");
+        app.save_path = Some(path.clone());
+        // Started before `[sets.bug]` was written: the file is not loaded.
+        app.filters = ActiveFilters::with_sets(None, &[]);
+        app.add_filter("alpha").unwrap();
+        key(&mut app, KeyCode::Char('f'));
+        key(&mut app, KeyCode::Char('S'));
+        typed(&mut app, "bug");
+        key(&mut app, KeyCode::Enter);
+        assert!(app.search.is_some(), "the prompt stays open");
+        let error = app
+            .search
+            .as_ref()
+            .and_then(|p| p.error.as_deref())
+            .unwrap_or_default();
+        assert!(error.contains("already in filters.toml"), "{error}");
+        assert!(error.contains("since recon started"), "{error}");
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            before,
+            "the hand-written table and its comment survive"
+        );
+        assert_eq!(app.filters.filters_in(0).count(), 1, "scratch intact");
+    }
+
+    /// Two scratch filters with one pattern would be two file filters
+    /// answering to one name. The refusal names the pattern and the fix the
+    /// UI offers — delete one — not the file's `name` key (#190).
+    #[test]
+    fn big_s_refuses_duplicate_scratch_patterns_with_a_pane_level_message() {
+        let path = save_fixture("save_dup_pattern");
+        let mut app = app_over_file("save_dup_pattern_file", "foo\n");
+        app.save_path = Some(path.clone());
+        app.add_filter("foo").unwrap();
+        app.add_excluding_filter("foo").unwrap();
+        key(&mut app, KeyCode::Char('f'));
+        key(&mut app, KeyCode::Char('S'));
+        typed(&mut app, "dup");
+        key(&mut app, KeyCode::Enter);
+        assert!(app.search.is_some(), "the prompt stays open");
+        let error = app
+            .search
+            .as_ref()
+            .and_then(|p| p.error.as_deref())
+            .unwrap_or_default();
+        assert!(
+            error.contains("two scratch filters share the pattern \"foo\""),
+            "{error}"
+        );
+        assert!(error.contains("delete one"), "{error}");
+        assert!(
+            !error.contains("`name`"),
+            "no advice about a file key: {error}"
+        );
+        assert!(!path.exists(), "nothing written");
+    }
+
+    /// The file is written beside itself and renamed over, so a crash
+    /// mid-write leaves the old file, not a truncated one (#153). After a
+    /// save the temporary is gone; a stale one from an earlier crash is
+    /// simply overwritten.
+    #[test]
+    fn big_s_writes_through_a_temporary_and_leaves_none_behind() {
+        let path = save_fixture("save_atomic");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let tmp = path.with_file_name("filters.toml.tmp");
+        fs::write(&tmp, "garbage from a crash").unwrap();
+        let mut app = app_over_file("save_atomic_file", "alpha\n");
+        app.save_path = Some(path.clone());
+        app.add_filter("alpha").unwrap();
+        key(&mut app, KeyCode::Char('f'));
+        key(&mut app, KeyCode::Char('S'));
+        typed(&mut app, "a");
+        key(&mut app, KeyCode::Enter);
+        assert!(app.search.is_none(), "committed");
+        let text = fs::read_to_string(&path).unwrap();
+        assert!(text.contains("[sets.a]"), "{text}");
+        assert!(!tmp.exists(), "the temporary was renamed over the file");
     }
 
     // ---- solo and reset (#132) -----------------------------------------------

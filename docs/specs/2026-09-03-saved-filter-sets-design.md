@@ -354,7 +354,11 @@ Two rules are stated here so #127 adds a variant and nothing else:
 The one write path. `S` in the filter pane saves the scratch set as a named set:
 
 1. A prompt asks for the set's name. A name already loaded is refused with a
-   message; so is an empty scratch set.
+   message; so is an empty scratch set, and so are two scratch filters sharing
+   one pattern (#190) — they would be two file filters answering to one name,
+   and the message says to delete one rather than to set a `name` key the pane
+   cannot. A name that is in the file but was not loaded — a table added by hand
+   since startup — is refused by the append itself (#154), not replaced.
 2. The new table is appended to `filters.toml` with `toml_edit` — one
    `[[sets.<name>.filters]]` entry per scratch filter with its `pattern` and,
    when not `include`, its `sense`; a `profiles.default` listing the filters that
@@ -366,9 +370,11 @@ The one write path. `S` in the filter pane saves the scratch set as a named set:
    on, at priority 50. Other sets keep whatever state they are in — the model
    is not rebuilt from the file, so a save never undoes the user's toggles.
 
-If the file does not exist it is created. If it cannot be written the save fails
-with a status message and the scratch set is left alone. Names are used as
-written, so `bug 57` becomes the quoted key `[sets."bug 57"]`.
+If the file does not exist it is created. The text is written to
+`filters.toml.tmp` beside it and renamed over the original (#153), so a crash or
+a full disk mid-save leaves the old file, never a truncated one. If it cannot be
+written the save fails with a status message and the scratch set is left alone.
+Names are used as written, so `bug 57` becomes the quoted key `[sets."bug 57"]`.
 
 Not in #131: saving a profile onto an existing set, editing a set's members or
 priority from inside recon, or deleting a set. Each is a one-line hand edit to a
