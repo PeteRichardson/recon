@@ -6,35 +6,17 @@ use crossterm::{
 };
 use ratatui::{Terminal, prelude::CrosstermBackend};
 use recon::{App, Config};
-use std::io::{self, Stdout};
+use std::io::{self, Stderr};
 use std::panic;
+use std::process::ExitCode;
 
-fn main() -> Result<()> {
+fn main() -> Result<ExitCode> {
     install_error_hooks()?;
 
     setup_logging();
-    // Before `init_terminal`, and that ordering is load-bearing rather than
-    // incidental. A config error printed after raw mode and the alternate
-    // screen are in place is wiped off the screen a frame later, so the only
-    // place a bad `config.toml` can be reported legibly is here — on stderr,
-    // on the normal screen, while recon still has it. Hence a hard failure
-    // rather than a warning: "warn and carry on" would be "carry on silently".
-    //
-    // This used to say "where the existing `[DEBUG] Config { .. }` line already
-    // goes". That line was removed in `fadffdb` and the comment outlived it by
-    // long enough to be cited in #83 as evidence the logging was abandoned. The
-    // reasoning never depended on it — stderr before the alternate screen is
-    // the only legible place regardless of what else is printed there.
     let mut config = Config::load()?;
-    // The second file, by the same rule: read and validated before the
-    // terminal is taken, so its error is legible on the normal screen.
     config.filter_sets = recon::filtersets::load_file()?;
 
-    // Before the terminal, for the same reason the config error is: this prints
-    // a snippet to be copied out of the scrollback, and the alternate screen
-    // would take it away the moment it was drawn. It also *only* prints —
-    // recon never writes `config.toml` (see `Cargo.toml`) and will not write a
-    // shell rc either, so there is nothing to undo afterwards.
     if let Some(flavour) = &config.print_editor_config {
         print!(
             "{}",
@@ -43,14 +25,17 @@ fn main() -> Result<()> {
                 std::env::var("TERM_PROGRAM").ok().as_deref(),
             )?
         );
-        return Ok(());
+        return Ok(ExitCode::SUCCESS);
     }
 
     let terminal = init_terminal()?;
-    App::new(&config).run(terminal)?;
+    let exit = App::new(&config).run(terminal)?;
     restore_terminal()?;
 
-    Ok(())
+    // Only now, with the alternate screen gone, does anything reach stdout:
+    // the session's result, if `--emit` asked for one, and the summary that
+    // names its mode on stderr (#143).
+    Ok(exit.deliver(config.emit, &mut io::stdout(), &mut io::stderr()))
 }
 
 //===================================================================================
@@ -136,12 +121,15 @@ fn setup_logging() {
     builder.init();
 }
 
-fn init_terminal() -> Result<Terminal<CrosstermBackend<Stdout>>> {
-    // setup terminal
+/// The TUI draws on **stderr** (#143), so stdout carries nothing but what
+/// `--emit` asks for and can be piped or captured while the TUI is up — the
+/// same arrangement fzf uses. Unconditional rather than switched on whether
+/// stdout is a terminal: one code path, and a difference nobody could see.
+fn init_terminal() -> Result<Terminal<CrosstermBackend<Stderr>>> {
     enable_raw_mode()?;
-    let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
-    let backend = CrosstermBackend::new(stdout);
+    let mut stderr = io::stderr();
+    execute!(stderr, EnterAlternateScreen, EnableMouseCapture)?;
+    let backend = CrosstermBackend::new(stderr);
     let mut terminal = Terminal::new(backend)?;
     terminal.clear()?;
     Ok(terminal)
@@ -149,8 +137,8 @@ fn init_terminal() -> Result<Terminal<CrosstermBackend<Stdout>>> {
 
 fn restore_terminal() -> Result<()> {
     disable_raw_mode()?;
-    let mut stdout = io::stdout();
-    execute!(stdout, LeaveAlternateScreen, DisableMouseCapture)?;
+    let mut stderr = io::stderr();
+    execute!(stderr, LeaveAlternateScreen, DisableMouseCapture)?;
     // terminal.show_cursor()?;
     Ok(())
 }
