@@ -1785,6 +1785,15 @@ mod tests {
         fixture_file(name, bytes)
     }
 
+    /// A view over nothing, for the tests whose first act is to `load` or
+    /// `preview` something else. These used to open the real `Cargo.toml`
+    /// for a buffer they replaced on the next line, which read the working
+    /// tree in twenty-odd tests that had nothing to say about it (#163). A
+    /// path that does not exist reads nothing and needs no fixture name.
+    fn placeholder_view() -> FileView<'static> {
+        FileView::new("target/test-fixtures/placeholder-never-written".to_string())
+    }
+
     fn long_file(name: &str, lines: usize) -> std::path::PathBuf {
         let body = numbered_lines(lines);
         fixture(name, &body)
@@ -1894,7 +1903,7 @@ mod tests {
     #[test]
     fn preview_stops_at_the_line_cap() {
         let path = long_file("long.txt", 30);
-        let mut view = FileView::new("Cargo.toml".to_string());
+        let mut view = placeholder_view();
 
         view.preview_with_caps(&path, 10, MAX_PREVIEW_BYTES);
 
@@ -1952,7 +1961,7 @@ mod tests {
     #[test]
     fn the_real_line_cap_still_truncates_a_file_past_it() {
         let path = long_file("past_cap.txt", PREVIEW_LINES + 10);
-        let mut view = FileView::new("Cargo.toml".to_string());
+        let mut view = placeholder_view();
 
         view.preview(&path);
 
@@ -1968,7 +1977,7 @@ mod tests {
     #[test]
     fn a_log_sized_file_is_read_whole_rather_than_previewed() {
         let path = long_file("log_sized.txt", 10_000);
-        let mut view = FileView::new("Cargo.toml".to_string());
+        let mut view = placeholder_view();
 
         view.preview(&path);
 
@@ -1982,7 +1991,7 @@ mod tests {
     #[test]
     fn preview_of_a_short_file_is_complete() {
         let path = long_file("short.txt", 3);
-        let mut view = FileView::new("Cargo.toml".to_string());
+        let mut view = placeholder_view();
 
         view.preview(&path);
 
@@ -2001,7 +2010,7 @@ mod tests {
         let cap: u64 = 64;
         let blob = "x".repeat((cap as usize) * 3);
         let path = fixture("blob.txt", &blob);
-        let mut view = FileView::new("Cargo.toml".to_string());
+        let mut view = placeholder_view();
 
         view.preview_with_caps(&path, PREVIEW_LINES, cap);
 
@@ -2015,7 +2024,7 @@ mod tests {
     #[test]
     fn interacting_upgrades_a_truncated_preview() {
         let path = long_file("upgrade.txt", 30);
-        let mut view = FileView::new("Cargo.toml".to_string());
+        let mut view = placeholder_view();
         view.preview_with_caps(&path, 10, MAX_PREVIEW_BYTES);
         assert!(view.truncated);
 
@@ -2066,7 +2075,7 @@ mod tests {
     #[test]
     fn interacting_with_a_complete_file_changes_nothing() {
         let path = long_file("complete.txt", 3);
-        let mut view = FileView::new("Cargo.toml".to_string());
+        let mut view = placeholder_view();
         view.preview(&path);
 
         view.handle_events(Input {
@@ -2086,7 +2095,7 @@ mod tests {
             "preview_stray_byte.log",
             b"alpha\nbra\xffvo\ncharlie\n".as_slice(),
         );
-        let mut view = FileView::new("Cargo.toml".to_string());
+        let mut view = placeholder_view();
 
         view.preview(&path);
 
@@ -2105,7 +2114,7 @@ mod tests {
             "load_stray_byte.log",
             b"alpha\nbra\xffvo\ncharlie\n".as_slice(),
         );
-        let mut view = FileView::new("Cargo.toml".to_string());
+        let mut view = placeholder_view();
 
         view.load(&path);
 
@@ -2124,7 +2133,7 @@ mod tests {
         let mut bytes = vec![b'x'; BINARY_SNIFF_BYTES];
         bytes.extend_from_slice(b"\ntail\0end\n");
         let path = byte_fixture("late_nul.log", &bytes);
-        let mut view = FileView::new("Cargo.toml".to_string());
+        let mut view = placeholder_view();
 
         view.load(&path);
 
@@ -2139,7 +2148,7 @@ mod tests {
     #[test]
     fn preview_reports_a_binary_file() {
         let path = byte_fixture("preview_binary.bin", &[0xff, 0xfe, 0x00, 0x80]);
-        let mut view = FileView::new("Cargo.toml".to_string());
+        let mut view = placeholder_view();
 
         view.preview(&path);
 
@@ -2152,7 +2161,7 @@ mod tests {
 
     #[test]
     fn preview_of_a_missing_file_shows_a_message() {
-        let mut view = FileView::new("Cargo.toml".to_string());
+        let mut view = placeholder_view();
 
         view.preview(Path::new("no/such/file.txt"));
 
@@ -2166,24 +2175,29 @@ mod tests {
 
     #[test]
     fn loads_file_contents() {
-        let view = FileView::new("Cargo.toml".to_string());
-        assert!(contents(&view).contains("tui-textarea-2"));
+        let path = fixture("new_loads.txt", "the launched file's text\n");
+        let view = FileView::new(path.display().to_string());
+        assert!(contents(&view).contains("the launched file's text"));
     }
 
     #[test]
     fn load_replaces_contents_and_title() {
-        let mut view = FileView::new("Cargo.toml".to_string());
+        let first = fixture("load_replaces_first.txt", "first file\n");
+        let second = fixture("load_replaces_second.rs", "pub struct Second;\n");
+        let mut view = FileView::new(first.display().to_string());
 
-        view.load(Path::new("src/lib.rs"));
+        view.load(&second);
 
         let text = contents(&view);
         assert!(
-            text.contains("pub struct App"),
-            "did not load lib.rs:\n{text}"
+            text.contains("pub struct Second"),
+            "did not load the second file:\n{text}"
         );
-        assert!(!text.contains("[dependencies]"), "old contents lingered");
+        assert!(!text.contains("first file"), "old contents lingered");
         assert!(
-            view.filename().to_string_lossy().contains("lib.rs"),
+            view.filename()
+                .to_string_lossy()
+                .contains("load_replaces_second.rs"),
             "title not updated"
         );
     }
@@ -2191,7 +2205,8 @@ mod tests {
     /// A missing file must render a message, not panic the whole TUI.
     #[test]
     fn missing_file_shows_a_message() {
-        let mut view = FileView::new("Cargo.toml".to_string());
+        let first = fixture("missing_file_first.txt", "first file\n");
+        let mut view = FileView::new(first.display().to_string());
 
         view.load(Path::new("no/such/file.txt"));
 
@@ -2200,7 +2215,7 @@ mod tests {
             text.starts_with('<') && text.ends_with('>'),
             "not a message: {text}"
         );
-        assert!(!text.contains("[dependencies]"), "old contents lingered");
+        assert!(!text.contains("first file"), "old contents lingered");
     }
 
     /// `File::open` succeeds on a directory on Unix; the failure only surfaces
@@ -2213,9 +2228,10 @@ mod tests {
     /// failure it guards against is unchanged.
     #[test]
     fn a_directory_is_not_misreported_as_binary_or_an_os_error() {
-        let mut view = FileView::new("Cargo.toml".to_string());
+        let dir = dir_fixture("load_a_directory", &["lib.rs"], &[]);
+        let mut view = placeholder_view();
 
-        view.load(Path::new("src"));
+        view.load(&dir);
 
         let text = contents(&view);
         assert!(text.contains("lib.rs"), "not the listing: {text}");
@@ -2232,7 +2248,7 @@ mod tests {
     #[test]
     fn binary_file_is_reported_as_binary() {
         let path = byte_fixture("load_binary.bin", &[0xff, 0xfe, 0x00, 0x80]);
-        let mut view = FileView::new("Cargo.toml".to_string());
+        let mut view = placeholder_view();
 
         view.load(&path);
 
@@ -2955,7 +2971,7 @@ mod tests {
     #[test]
     fn the_listing_shows_size_and_modification_time() {
         let dir = dir_fixture("dir_columns", &["alpha.txt"], &["subdir"]);
-        let mut view = FileView::new("Cargo.toml".to_string());
+        let mut view = placeholder_view();
 
         view.preview(&dir);
 
@@ -2996,7 +3012,7 @@ mod tests {
     #[test]
     fn a_directory_previews_as_its_listing() {
         let dir = dir_fixture("dir_listing", &["alpha.txt", "beta.txt"], &["subdir"]);
-        let mut view = FileView::new("Cargo.toml".to_string());
+        let mut view = placeholder_view();
 
         view.preview(&dir);
 
@@ -3057,7 +3073,7 @@ mod tests {
     #[test]
     fn an_empty_directory_says_so() {
         let dir = dir_fixture("dir_empty", &[], &[]);
-        let mut view = FileView::new("Cargo.toml".to_string());
+        let mut view = placeholder_view();
 
         view.preview(&dir);
 
@@ -3072,7 +3088,7 @@ mod tests {
     #[test]
     fn loading_a_directory_lists_it_the_same_way() {
         let dir = dir_fixture("dir_load", &["gamma.txt"], &[]);
-        let mut view = FileView::new("Cargo.toml".to_string());
+        let mut view = placeholder_view();
 
         view.load(&dir);
 
@@ -3088,7 +3104,7 @@ mod tests {
     #[test]
     fn a_preview_reserves_the_gutter_the_full_file_will_need() {
         let path = long_file("gutter_preview.txt", 5000);
-        let mut view = FileView::new("Cargo.toml".to_string());
+        let mut view = placeholder_view();
 
         view.preview(&path);
         let previewed = gutter_digits(&mut view);
@@ -3117,7 +3133,7 @@ mod tests {
     #[test]
     fn a_short_file_reserves_nothing() {
         let path = long_file("gutter_short.txt", 12);
-        let mut view = FileView::new("Cargo.toml".to_string());
+        let mut view = placeholder_view();
 
         view.preview(&path);
 
@@ -3138,7 +3154,7 @@ mod tests {
             body
         });
         let path = fixture("gutter_wide.txt", &body);
-        let mut view = FileView::new("Cargo.toml".to_string());
+        let mut view = placeholder_view();
 
         view.preview(&path);
         let previewed = gutter_digits(&mut view);
@@ -3157,7 +3173,7 @@ mod tests {
     fn loading_clears_a_reservation_the_preview_made() {
         let big = long_file("gutter_clear_big.txt", 5000);
         let small = long_file("gutter_clear_small.txt", 5);
-        let mut view = FileView::new("Cargo.toml".to_string());
+        let mut view = placeholder_view();
 
         // Capped low so the preview truncates and so reserves gutter room;
         // 5000 lines is well inside the shipped cap and would be read whole.
