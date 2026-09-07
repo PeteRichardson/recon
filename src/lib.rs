@@ -367,10 +367,6 @@ pub struct App<'a> {
     /// What `--emit` asked for, or `None`. Read once, when the session ends.
     emit: Option<emit::Emit>,
     /// `-n`: prefix each emitted line with its source line number and a tab.
-    ///
-    /// Read starting with the emit task that fills in `collect` (#143); until
-    /// then nothing reads it.
-    #[allow(dead_code)]
     line_numbers: bool,
     /// How `o` actually starts an editor.
     ///
@@ -1007,10 +1003,72 @@ impl App<'_> {
         }
     }
 
-    /// The output `--emit <kind>` asks for, from what the panes are showing.
-    /// Filled in per kind by the emit tasks; until then nothing is emitted.
+    /// The output `--emit <kind>` asks for, from what the panes are showing
+    /// (#143). Reads the visible sets; computes nothing new.
     fn collect(&self, kind: emit::Emit) -> emit::Exit {
-        let _ = kind;
+        match kind {
+            emit::Emit::Lines => self.collect_lines(),
+            emit::Emit::Files => self.collect_files(),
+            emit::Emit::Cwd => self.collect_cwd(),
+        }
+    }
+
+    /// `--emit lines`: the file view's visible lines in the current mode,
+    /// with `-n` prefixing each by its 1-based source line number and a tab.
+    fn collect_lines(&self) -> emit::Exit {
+        if self.view.showing_directory() {
+            return emit::Exit::Emit {
+                lines: Vec::new(),
+                summary: "recon: emitted 0 lines — the view is showing a directory".to_string(),
+            };
+        }
+        if !self.view.is_text() {
+            return emit::Exit::Emit {
+                lines: Vec::new(),
+                summary: "recon: emitted 0 lines — the view is showing an error, not a file"
+                    .to_string(),
+            };
+        }
+        let text = self.document.lines();
+        let visible = self.document.visible();
+        let lines = visible
+            .iter()
+            .map(|&source| {
+                let mut line = Vec::new();
+                if self.line_numbers {
+                    line.extend_from_slice(format!("{}\t", source + 1).as_bytes());
+                }
+                line.extend_from_slice(text[source].as_bytes());
+                line
+            })
+            .collect();
+        let name = self.view.filename().display();
+        let summary = match self.document.mode() {
+            Mode::Dimmed => format!(
+                "recon: emitted {} lines of {name}, dim mode ({} match) — Ctrl-H to emit matches only",
+                visible.len(),
+                self.interesting_count(),
+            ),
+            Mode::FilteredOnly => {
+                format!(
+                    "recon: emitted {} lines of {name}, hide mode",
+                    visible.len()
+                )
+            }
+        };
+        emit::Exit::Emit { lines, summary }
+    }
+
+    /// `--emit files`. Filled in by the next task.
+    fn collect_files(&self) -> emit::Exit {
+        emit::Exit::Emit {
+            lines: Vec::new(),
+            summary: String::from("recon: emitted"),
+        }
+    }
+
+    /// `--emit cwd`. Filled in by the next task.
+    fn collect_cwd(&self) -> emit::Exit {
         emit::Exit::Emit {
             lines: Vec::new(),
             summary: String::from("recon: emitted"),
@@ -6298,6 +6356,135 @@ mod tests {
     fn a_running_app_has_not_exited() {
         let app = app_emitting("quit_still_running", Some(emit::Emit::Cwd));
         assert_eq!(app.exit(), emit::Exit::Silent);
+    }
+
+    // ---- --emit lines --------------------------------------------------
+
+    fn emitted(app: &App) -> (Vec<String>, String) {
+        match app.exit() {
+            emit::Exit::Emit { lines, summary } => (
+                lines
+                    .into_iter()
+                    .map(|line| String::from_utf8(line).expect("utf-8 fixture"))
+                    .collect(),
+                summary,
+            ),
+            emit::Exit::Silent => panic!("the session was silent"),
+        }
+    }
+
+    fn app_emitting_lines(name: &str, body: &str, line_numbers: bool) -> App<'static> {
+        let file = fixture_path(name, body);
+        let mut app = App::new(&Config {
+            path: file.display().to_string(),
+            emit: Some(emit::Emit::Lines),
+            line_numbers,
+            ..Config::default()
+        });
+        key(&mut app, KeyCode::Char('t'));
+        app
+    }
+
+    #[test]
+    fn lines_in_dim_mode_emits_every_visible_line_and_counts_the_matches() {
+        let mut app = app_emitting_lines("emit_lines_dim", "hit one\nplain\nhit two\n", false);
+        app.add_filter("hit").expect("valid");
+        key(&mut app, KeyCode::Char('q'));
+
+        let (lines, summary) = emitted(&app);
+
+        assert_eq!(lines, vec!["hit one", "plain", "hit two"]);
+        let name = app.view.filename().display().to_string();
+        assert_eq!(
+            summary,
+            format!(
+                "recon: emitted 3 lines of {name}, dim mode (2 match) — Ctrl-H to emit matches only"
+            )
+        );
+    }
+
+    #[test]
+    fn lines_in_hide_mode_emits_only_the_matches() {
+        let mut app = app_emitting_lines("emit_lines_hide", "hit one\nplain\nhit two\n", false);
+        app.add_filter("hit").expect("valid");
+        ctrl(&mut app, KeyCode::Char('h'));
+        key(&mut app, KeyCode::Char('q'));
+
+        let (lines, summary) = emitted(&app);
+
+        assert_eq!(lines, vec!["hit one", "hit two"]);
+        let name = app.view.filename().display().to_string();
+        assert_eq!(
+            summary,
+            format!("recon: emitted 2 lines of {name}, hide mode")
+        );
+    }
+
+    /// `-n` numbers are the *source* line numbers — the gutter's — so hide
+    /// mode gives `1` and `3`, not `1` and `2`.
+    #[test]
+    fn line_numbers_are_source_numbers_with_a_tab() {
+        let mut app = app_emitting_lines("emit_lines_numbered", "hit one\nplain\nhit two\n", true);
+        app.add_filter("hit").expect("valid");
+        ctrl(&mut app, KeyCode::Char('h'));
+        key(&mut app, KeyCode::Char('q'));
+
+        let (lines, _) = emitted(&app);
+
+        assert_eq!(lines, vec!["1\thit one", "3\thit two"]);
+    }
+
+    #[test]
+    fn lines_with_no_filter_still_counts_zero_matches() {
+        let mut app = app_emitting_lines("emit_lines_nofilter", "a\nb\n", false);
+        key(&mut app, KeyCode::Char('q'));
+
+        let (lines, summary) = emitted(&app);
+
+        assert_eq!(lines, vec!["a", "b"]);
+        assert!(summary.contains("dim mode (0 match)"), "{summary}");
+    }
+
+    #[test]
+    fn lines_over_a_directory_listing_emits_nothing_and_says_so() {
+        let dir = fixture_dir("emit_lines_directory");
+        fs::write(dir.join("a.txt"), "x\n").expect("write");
+        let mut app = App::new(&Config {
+            path: dir.display().to_string(),
+            emit: Some(emit::Emit::Lines),
+            ..Config::default()
+        });
+        // The navigator starts on `a.txt`; select `..` so the view shows a
+        // listing rather than a file.
+        key(&mut app, KeyCode::Char('g'));
+        key(&mut app, KeyCode::Char('q'));
+
+        let (lines, summary) = emitted(&app);
+
+        assert!(lines.is_empty());
+        assert_eq!(
+            summary,
+            "recon: emitted 0 lines — the view is showing a directory"
+        );
+    }
+
+    #[test]
+    fn lines_over_an_unreadable_file_emits_nothing_and_says_so() {
+        let dir = fixture_dir("emit_lines_missing");
+        let mut app = App::new(&Config {
+            path: dir.join("nope.log").display().to_string(),
+            emit: Some(emit::Emit::Lines),
+            ..Config::default()
+        });
+        key(&mut app, KeyCode::Char('q'));
+
+        let (lines, summary) = emitted(&app);
+
+        assert!(lines.is_empty());
+        assert_eq!(
+            summary,
+            "recon: emitted 0 lines — the view is showing an error, not a file"
+        );
     }
 
     #[test]
