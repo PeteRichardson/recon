@@ -100,6 +100,10 @@ pub const KEYMAP: &[Section] = &[
                 action: "Quit",
             },
             Binding {
+                keys: &["Q"],
+                action: "Quit, emitting nothing",
+            },
+            Binding {
                 keys: &["Tab", "Shift-Tab"],
                 action: "Focus the next / previous pane",
             },
