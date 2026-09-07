@@ -364,6 +364,14 @@ pub struct App<'a> {
     /// Whether a jump to a line off screen centres it — `[view]
     /// center_jumps`, resolved by `Config::center_jumps`.
     center_jumps: bool,
+    /// What `--emit` asked for, or `None`. Read once, when the session ends.
+    emit: Option<emit::Emit>,
+    /// `-n`: prefix each emitted line with its source line number and a tab.
+    ///
+    /// Read starting with the emit task that fills in `collect` (#143); until
+    /// then nothing reads it.
+    #[allow(dead_code)]
+    line_numbers: bool,
     /// How `o` actually starts an editor.
     ///
     /// Boxed behind the trait so tests can swap in a double that records the
@@ -540,11 +548,14 @@ enum EditorScope {
     File,
 }
 
-#[derive(Debug, Default, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 enum AppState {
     #[default]
-    Running, // The app is running
-    Quit, // The user has requested the app to quit
+    Running,
+    /// The user has asked to quit. `emit` is whether they pressed `q` (yes)
+    /// or `Q` (no); what that means depends on whether `--emit` was given —
+    /// see `App::exit`.
+    Quit { emit: bool },
 }
 
 impl App<'_> {
@@ -599,6 +610,8 @@ impl App<'_> {
             zoom: None,
             editor: config.editor_templates(),
             center_jumps: config.center_jumps(),
+            emit: config.emit,
+            line_numbers: config.line_numbers,
             launcher: Box::new(editor::ProcessLauncher::new(outcomes_tx)),
             status_message: None,
             editor_outcomes: Some(outcomes_rx),
@@ -966,7 +979,7 @@ impl App<'_> {
     /// the navigator's `List`, every `Entry::display()` string, and every
     /// filter row. For a log viewer that sits open on a desk all day that is
     /// the difference between idling at 0% and idling at a few percent.
-    pub fn run<B>(mut self, mut terminal: Terminal<B>) -> Result<()>
+    pub fn run<B>(mut self, mut terminal: Terminal<B>) -> Result<emit::Exit>
     where
         B: Backend,
         B::Error: std::error::Error + Send + Sync + 'static,
@@ -981,7 +994,27 @@ impl App<'_> {
             }
             dirty = self.handle_events()?;
         }
-        Ok(())
+        Ok(self.exit())
+    }
+
+    /// What this session hands back, given how it ended (#143). `Emit`
+    /// only when `q` ended it *and* `--emit` was given; a `Q`, a missing
+    /// `--emit`, or a session still running is `Silent`.
+    pub(crate) fn exit(&self) -> emit::Exit {
+        match (self.state, self.emit) {
+            (AppState::Quit { emit: true }, Some(kind)) => self.collect(kind),
+            _ => emit::Exit::Silent,
+        }
+    }
+
+    /// The output `--emit <kind>` asks for, from what the panes are showing.
+    /// Filled in per kind by the emit tasks; until then nothing is emitted.
+    fn collect(&self, kind: emit::Emit) -> emit::Exit {
+        let _ = kind;
+        emit::Exit::Emit {
+            lines: Vec::new(),
+            summary: String::from("recon: emitted"),
+        }
     }
 
     const fn is_running(&self) -> bool {
@@ -1112,7 +1145,19 @@ impl App<'_> {
                 // through to the focused widget instead of being swallowed
                 // here.
                 KeyCode::Char('q') if key.modifiers.is_empty() => {
-                    self.state = AppState::Quit;
+                    self.state = AppState::Quit { emit: true };
+                    return;
+                }
+                // `Q` quits without emitting (#143). Without `--emit` it is
+                // `q`. Not guarded on an empty modifier set: a terminal
+                // reports the Shift that makes it uppercase — the same trap
+                // `?`, `N` and `S` document.
+                KeyCode::Char('Q')
+                    if !key
+                        .modifiers
+                        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+                {
+                    self.state = AppState::Quit { emit: false };
                     return;
                 }
                 KeyCode::Tab => {
@@ -6200,6 +6245,59 @@ mod tests {
             .filter(|v| matches!(v, filter::Verdict::Included(_)))
             .count();
         assert_eq!(included, 1, "the view re-evaluated under the profile");
+    }
+
+    // ---- emit on quit (#143): which quit emits --------------------------
+
+    fn app_emitting(name: &str, emit: Option<emit::Emit>) -> App<'static> {
+        let file = fixture_path(name, "alpha\n");
+        App::new(&Config {
+            path: file.display().to_string(),
+            emit,
+            ..Config::default()
+        })
+    }
+
+    #[test]
+    fn q_quits_emitting_and_big_q_quits_silently() {
+        let mut app = app_emitting("quit_q_emits", Some(emit::Emit::Cwd));
+        key(&mut app, KeyCode::Char('q'));
+        assert_eq!(app.state, AppState::Quit { emit: true });
+        assert!(matches!(app.exit(), emit::Exit::Emit { .. }));
+
+        let mut app = app_emitting("quit_big_q_silent", Some(emit::Emit::Cwd));
+        key(&mut app, KeyCode::Char('Q'));
+        assert_eq!(app.state, AppState::Quit { emit: false });
+        assert_eq!(app.exit(), emit::Exit::Silent);
+    }
+
+    /// A terminal reports `Q` with Shift set; the arm must not be guarded on
+    /// an empty modifier set (the `?`/`N`/`S` trap).
+    #[test]
+    fn big_q_quits_with_shift_reported() {
+        let mut app = app_emitting("quit_big_q_shift", Some(emit::Emit::Cwd));
+        app.handle_event(event::Event::Key(event::KeyEvent::new(
+            KeyCode::Char('Q'),
+            KeyModifiers::SHIFT,
+        )));
+        assert_eq!(app.state, AppState::Quit { emit: false });
+    }
+
+    #[test]
+    fn without_emit_both_quits_are_silent() {
+        let mut app = app_emitting("quit_no_emit_q", None);
+        key(&mut app, KeyCode::Char('q'));
+        assert_eq!(app.exit(), emit::Exit::Silent);
+
+        let mut app = app_emitting("quit_no_emit_big_q", None);
+        key(&mut app, KeyCode::Char('Q'));
+        assert_eq!(app.exit(), emit::Exit::Silent);
+    }
+
+    #[test]
+    fn a_running_app_has_not_exited() {
+        let app = app_emitting("quit_still_running", Some(emit::Emit::Cwd));
+        assert_eq!(app.exit(), emit::Exit::Silent);
     }
 
     #[test]
