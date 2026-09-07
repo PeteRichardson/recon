@@ -36,6 +36,8 @@ motions throughout.
 - [Quick Start](#quick-start)
 - [Usage](#usage)
 - [Keybindings](#keybindings)
+- [Peeking at the plain file](#peeking-at-the-plain-file)
+- [Emitting the result](#emitting-the-result)
 - [Opening an editor](#opening-an-editor)
 - [Syntax colouring](#syntax-colouring)
 - [Known Limitations](#known-limitations)
@@ -121,7 +123,7 @@ motions throughout.
   Both it and `recon` are edition 2024, which itself needs only 1.85; the
   fork's own floor is what sets 1.88.
 - **A terminal.** `recon` enters raw mode and the alternate screen; it exits
-  with `Device not configured (os error 6)` if stdout isn't a TTY.
+  with `Device not configured (os error 6)` if stderr isn't a TTY. stdout may be a pipe or a capture — see [Emitting the result](#emitting-the-result).
 
 Developed and tested on macOS.
 
@@ -1066,6 +1068,65 @@ effect the moment the filters come back.
 This is also why the flip is safe at all. Flipping into hide mode with no
 filters left enabled would blank the pane, were it not for the rule above —
 which is enforced in `Document::recompute_visible` and predates this key.
+
+## Emitting the result
+
+recon is good at finding things; `--emit` is how the result leaves with the
+process. The TUI draws on stderr, so stdout is free for it — pipe it, capture
+it, or read it off the terminal.
+
+```sh
+recon --emit lines app.log | sort | uniq -c      # the visible lines
+recon --emit files /var/log | xargs wc -l        # the listed files
+dir="$(recon --emit cwd)" && cd "$dir"           # where you ended up
+```
+
+| `--emit` | Prints, on `q` | Summary on stderr |
+| --- | --- | --- |
+| `lines` | the file view's visible lines, verbatim, in the current mode | `recon: emitted 812 lines of app.log, dim mode (27 match) — Ctrl-H to emit matches only` |
+| `files` | the navigator's listed files, one absolute path per line, in navigator order | `recon: emitted 14 files from /var/log, dim mode (3 match, 2 unscanned) — Ctrl-H to emit matches only` |
+| `cwd` | the directory the navigator is showing | `recon: emitted /var/log` |
+
+**`q` emits, `Q` doesn't.** `Q` quits without printing and exits 1 when
+`--emit` was given, so an aborted browse never `cd`s anywhere and a pipeline
+under `set -e` stops. Without `--emit`, `Q` is `q`.
+
+**The mode is the trap.** Dim mode emits everything on screen — every line of
+the file, every file in the listing; hide mode emits only the matches. The
+output cannot say which, so every emit prints one summary line to stderr
+naming the mode and the counts, and it reaches the terminal even when stdout is
+piped or captured. `dim mode (3 match)` when you wanted the three is the cue to
+press `Ctrl-H` and quit again. `unscanned` appears while the navigator's scan
+is still running: those files might match. Empty output is legitimate — hide
+mode with no matches emits nothing and exits 0.
+
+**`-n` numbers the lines.** With `--emit lines`, `-n` (or `--line-numbers`)
+prefixes each line with its line number in the file and a tab, so hide mode
+gives the real numbers rather than 1..N of the output:
+
+```sh
+recon --emit lines -n app.log | cut -f1          # the matching line numbers
+recon --emit lines -n app.log | cut -f2-         # the text again
+```
+
+A tab rather than `grep -n`'s colon: a line can contain colons, a tab never
+appears in a line number, and the text after it is byte-for-byte the file's.
+`-n` with anything but `--emit lines` is refused at startup.
+
+The shell function the `cwd` output exists for:
+
+```sh
+rcn() {
+  local dir
+  dir="$(recon --emit cwd "$@")" && cd "$dir"
+}
+```
+
+Filenames are written as the bytes the filesystem holds, so a name that is
+not valid UTF-8 comes out unchanged. Not emitted yet: the filter set itself,
+and a structured format that carries the mode and each file's matching filter
+in the output — both are follow-ups to #143, along with a headless mode that
+takes the same `--emit` without starting the TUI.
 
 ## Opening an editor
 
