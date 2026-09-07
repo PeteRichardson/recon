@@ -1,3 +1,6 @@
+#[cfg(test)]
+use crate::document::BINARY_SNIFF_BYTES;
+use crate::document::{self, read_lossy_line, sniff_binary};
 use crate::syntax::{Highlighter, Span, Theme};
 use crate::widgets::filenav::Entry;
 /// `FileView` Widget
@@ -6,7 +9,7 @@ use crate::widgets::filenav::Entry;
 use color_eyre::Result;
 use ratatui::prelude::{Buffer, Color, Modifier, Rect, Style, Widget};
 use std::fs::File;
-use std::io::{BufRead, BufReader, Cursor, Read};
+use std::io::{BufReader, Cursor, Read};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tui_textarea::{CursorMove, Input, Key, Scrolling, TextArea};
@@ -195,16 +198,6 @@ pub(crate) fn window_holds(
 /// on a NUL in the file's head, so the message names what was actually found
 /// — undecodable bytes on their own no longer stop the file being read.
 const BINARY_MESSAGE: &str = "<binary file: contains NUL bytes>";
-
-/// How much of a file's head is sniffed for a NUL byte before deciding it is
-/// binary rather than text.
-///
-/// Bounded because the decision has to be made before any of the file is
-/// shown, and unbounded means reading a two-gigabyte log twice. A NUL past
-/// this window is treated as ordinary data, on the same terms as any other
-/// undecodable byte: it costs a replacement character where it sits and
-/// nothing more.
-const BINARY_SNIFF_BYTES: usize = 8 << 10;
 
 /// Shown when the navigator's selection is a directory with nothing in it.
 ///
@@ -1054,49 +1047,9 @@ impl FileView<'_> {
     }
 }
 
-/// Whether the head of `reader` looks like binary rather than text, along with
-/// the bytes that had to be read to decide — they are the file's first bytes
-/// and belong back in front of the stream.
-///
-/// A NUL byte is the signal, not a decode error. A decode error says one byte
-/// in the file is not UTF-8, which is routine in a log; a NUL in the first few
-/// KiB says the file is not a document at all.
-fn sniff_binary<R: Read>(reader: &mut R) -> std::io::Result<(bool, Vec<u8>)> {
-    let mut head = Vec::new();
-    (&mut *reader)
-        .take(BINARY_SNIFF_BYTES as u64)
-        .read_to_end(&mut head)?;
-    Ok((head.contains(&0), head))
-}
-
-/// Read one newline-terminated line, decoded lossily. `None` at end of file.
-///
-/// Lossy, not fatal: one bad byte in a two-gigabyte log must not cost the
-/// other two gigabytes. U+FFFD marks the spot in place and the read carries
-/// on, which is the whole difference from `lines()` — that short-circuits the
-/// entire file on its first undecodable byte.
-fn read_lossy_line<R: BufRead>(
-    reader: &mut R,
-    buf: &mut Vec<u8>,
-) -> std::io::Result<Option<String>> {
-    buf.clear();
-    if reader.read_until(b'\n', buf)? == 0 {
-        return Ok(None);
-    }
-    Ok(Some(
-        String::from_utf8_lossy(buf)
-            .trim_end_matches(['\n', '\r'])
-            .to_string(),
-    ))
-}
-
 /// Read `path` whole, or a single-line message describing why it could not
-/// be read.
-///
-/// `File::open` succeeds on a directory on Unix and only fails when read, so
-/// that case is recognised up front; anything else the OS refuses is reported
-/// verbatim. A file whose head holds a NUL is reported as binary; one that
-/// merely holds undecodable bytes is read anyway, a U+FFFD per bad sequence.
+/// be read. The reading itself is `document::read_lines` (#143); this wraps
+/// its error the way the pane shows it.
 ///
 /// Never `truncated`, and never estimating: the whole file is here.
 fn read_lines(path: &Path) -> Contents {
@@ -1105,55 +1058,22 @@ fn read_lines(path: &Path) -> Contents {
     if path.is_dir() {
         return directory_listing(path, usize::MAX);
     }
-    // Logged as well as shown (#83). The pane gets `<{err}>` in place of the
-    // file, which tells the user *that* it failed; the log is where the
-    // full path lives, and the pane's title is elided when the pane is narrow.
-    let file = match File::open(path) {
-        Ok(file) => file,
+    match document::read_lines(path) {
+        Ok(lines) => Contents {
+            lines,
+            truncated: false,
+            estimated_lines: None,
+            text: true,
+        },
+        Err(err) if document::is_binary(&err) => Contents::message(BINARY_MESSAGE.to_string()),
+        // Logged as well as shown (#83). The pane gets `<{err}>` in place of
+        // the file, which tells the user *that* it failed; the log is where
+        // the full path lives, and the pane's title is elided when the pane
+        // is narrow.
         Err(err) => {
-            log::warn!("cannot open {}: {err}", path.display());
-            return Contents::message(format!("<{err}>"));
+            log::warn!("cannot read {}: {err}", path.display());
+            Contents::message(format!("<{err}>"))
         }
-    };
-
-    let mut reader = BufReader::new(file);
-    let (binary, head) = match sniff_binary(&mut reader) {
-        Ok(sniffed) => sniffed,
-        Err(err) => {
-            log::warn!("cannot read the start of {}: {err}", path.display());
-            return Contents::message(format!("<{err}>"));
-        }
-    };
-    if binary {
-        return Contents::message(BINARY_MESSAGE.to_string());
-    }
-
-    // The sniffed bytes are content, so they go back in front of the rest.
-    let mut reader = Cursor::new(head).chain(reader);
-    let mut lines = Vec::new();
-    let mut buf = Vec::new();
-    loop {
-        match read_lossy_line(&mut reader, &mut buf) {
-            Ok(Some(line)) => lines.push(line),
-            Ok(None) => break,
-            Err(err) => {
-                // The line number is worth having: this one fails partway
-                // through a file that opened cleanly, so "which line" is the
-                // only thing that distinguishes it from the two above.
-                log::warn!(
-                    "cannot read {} at line {}: {err}",
-                    path.display(),
-                    lines.len() + 1,
-                );
-                return Contents::message(format!("<{err}>"));
-            }
-        }
-    }
-    Contents {
-        lines,
-        truncated: false,
-        estimated_lines: None,
-        text: true,
     }
 }
 
