@@ -1063,6 +1063,13 @@ impl App<'_> {
     /// mode has already dropped the non-matching rows, so the list is the
     /// matches; dim mode lists every file and the summary says how many
     /// match, and how many the scan has not answered yet.
+    ///
+    /// The counting branch follows what the navigator can answer, not
+    /// whether any filter is switched on: `matcher()` is `None` both with no
+    /// including filter enabled (an exclude-only set, or none at all) and
+    /// above `MAX_PATTERNS`, and in both states `refresh_scan` never runs, so
+    /// every file sits at `Match::Unknown` and a "0 match, N unscanned" line
+    /// would describe a scan that will never happen.
     fn collect_files(&self) -> emit::Exit {
         let listed = self.nav.listed_files();
         let lines = listed
@@ -1071,7 +1078,7 @@ impl App<'_> {
             .collect();
         let dir = self.nav.dir().display();
         let count = listed.len();
-        let summary = if self.filters.any_enabled() {
+        let summary = if self.filters.matcher().is_some() {
             match self.document.mode() {
                 Mode::FilteredOnly => format!("recon: emitted {count} files from {dir}, hide mode"),
                 Mode::Dimmed => {
@@ -1088,7 +1095,11 @@ impl App<'_> {
                 }
             }
         } else {
-            format!("recon: emitted {count} files from {dir}, dim mode, no filter")
+            let mode = match self.document.mode() {
+                Mode::Dimmed => "dim mode",
+                Mode::FilteredOnly => "hide mode",
+            };
+            format!("recon: emitted {count} files from {dir}, {mode}, no filter")
         };
         emit::Exit::Emit { lines, summary }
     }
@@ -6606,6 +6617,29 @@ mod tests {
         assert_eq!(
             summary,
             format!("recon: emitted 2 files from {dir}, dim mode, no filter")
+        );
+    }
+
+    #[test]
+    fn files_with_only_an_excluding_filter_says_no_filter_rather_than_unscanned() {
+        let mut app = app_over_files(
+            "emit_files_exclude_only",
+            &[("a.log", "x\n"), ("b.log", "y\n"), ("c.log", "z\n")],
+        );
+        app.emit = Some(emit::Emit::Files);
+        app.add_excluding_filter("noise").expect("valid");
+        app.refresh_scan(false);
+        key(&mut app, KeyCode::Char('q'));
+
+        let (_, summary) = emitted(&app);
+
+        assert!(
+            summary.ends_with(", no filter"),
+            "an exclude-only filter set should read as unscannable, not counted: {summary}"
+        );
+        assert!(
+            !summary.contains("unscanned"),
+            "an exclude-only filter set never scans, so nothing is unscanned: {summary}"
         );
     }
 
