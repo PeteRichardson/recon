@@ -135,9 +135,12 @@ enum Source { Stdin, Directory(PathBuf), File }
 Read stdin to the end. Each non-blank line is a path, absolutised against
 the current directory the way `FileNav::new` absolutises its argument
 (`path::absolute`). If stdin yielded nothing: `PATH` a file → that file;
-`PATH` a directory → `sorted_entries(dir)` minus `Dir` and `Parent` entries,
-joined onto the directory — the navigator's listing, in its order. `Source`
-is remembered for the summary and for `cwd`.
+`PATH` a directory → `sorted_entries(dir)` minus `Dir` and `Parent` entries —
+and minus `Special` ones (#221): a FIFO, socket or device is listed by the
+navigator but has no end to read to, and `File::open` on a FIFO blocks until a
+writer appears, which is a cron job that never finishes — joined onto the
+directory: the navigator's listing, in its order. `Source` is remembered for the
+summary and for `cwd`.
 
 ### 2. The filters
 
@@ -153,7 +156,10 @@ the same lossy decoding and newline stripping, the same size behaviour, but
 returning the error instead of a placeholder message. `FileView` keeps its
 `Contents::message` handling on top of it, so the widget's behaviour does not
 change. The read failure cases are: not found, permission, a directory, a
-binary file (`sniff_binary` hit) — the last reported as `binary file`.
+FIFO, socket or device (`not a regular file`, from one `stat` before the open
+so the open can never block — `document::refuse_unreadable`, shared with the
+navigator's preview), a binary file (`sniff_binary` hit) — the last reported as
+`binary file`.
 
 For each input, in order:
 

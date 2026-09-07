@@ -12,7 +12,7 @@ use crate::filter::{ActiveFilters, Matcher};
 use crate::path::lexical_absolute;
 use crate::scan::{self, Progress};
 use crate::viewport::is_interesting;
-use crate::widgets::filenav::{Kind, sorted_entries};
+use crate::widgets::filenav::sorted_entries;
 use color_eyre::{Result, eyre::eyre};
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Write};
@@ -126,7 +126,7 @@ pub(crate) fn inputs(mut stdin: impl BufRead, path: &Path) -> io::Result<Inputs>
     if path.is_dir() {
         let files = sorted_entries(&path)?
             .into_iter()
-            .filter(|entry| !matches!(entry.kind, Kind::Dir | Kind::Parent))
+            .filter(|entry| entry.kind.is_readable())
             .map(|entry| path.join(entry.name))
             .collect();
         return Ok(Inputs {
@@ -285,14 +285,11 @@ fn collect_files(
 
 /// Open an input for scanning. A directory is refused up front: `File::open`
 /// accepts one on Unix and only the read fails, and `scan` swallows a read
-/// error as end of file.
+/// error as end of file. So is a FIFO, socket or device (#221), whose open
+/// would block or whose read has no end — `document::refuse_unreadable` is
+/// the one stat both readers share.
 fn open_input(path: &Path) -> io::Result<File> {
-    if path.is_dir() {
-        return Err(io::Error::new(
-            io::ErrorKind::IsADirectory,
-            "is a directory",
-        ));
-    }
+    document::refuse_unreadable(path)?;
     File::open(path)
 }
 
@@ -419,6 +416,73 @@ mod tests {
         let dir = lexical_absolute(&dir);
         assert_eq!(got.from, Source::Directory(dir.clone()));
         assert_eq!(got.files, vec![dir.join("A.log"), dir.join("b.log")]);
+    }
+
+    /// A FIFO under the directory would block the first read for ever — a
+    /// cron job that never finishes (#221). The navigator's `Kind::Special`
+    /// is what `inputs` skips, so the two agree on what a file is.
+    #[cfg(unix)]
+    #[test]
+    fn a_path_directory_skips_sockets_and_fifos() {
+        let dir = fixture_dir("headless_inputs_special");
+        fs::write(dir.join("a.log"), "x").expect("write");
+        let _listener = std::os::unix::net::UnixListener::bind(dir.join("sock")).expect("bind");
+        // `mkfifo` rather than libc, which is not a dependency; a system
+        // without it (none known) skips the FIFO half rather than failing.
+        let fifo = std::process::Command::new("mkfifo")
+            .arg(dir.join("fifo"))
+            .status()
+            .is_ok_and(|status| status.success());
+
+        let got = inputs(Cursor::new(&b""[..]), &dir).expect("reads");
+
+        let dir = lexical_absolute(&dir);
+        assert_eq!(got.files, vec![dir.join("a.log")], "fifo made: {fifo}");
+    }
+
+    /// `PATH` naming a FIFO directly: refused by the stat, not read. Without
+    /// the guard this test would hang rather than fail.
+    #[cfg(unix)]
+    #[test]
+    fn a_fifo_named_directly_is_a_read_failure_not_a_hang() {
+        let dir = fixture_dir("headless_fifo_direct");
+        let fifo = dir.join("fifo");
+        if !std::process::Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .is_ok_and(|status| status.success())
+        {
+            eprintln!("skipping: no mkfifo");
+            return;
+        }
+
+        let err = open_input(&fifo).expect_err("a FIFO is refused");
+        assert_eq!(reason(&err), "not a regular file");
+
+        let mut warnings = Vec::new();
+        let exit = collect(
+            Emit::Lines,
+            &Inputs {
+                files: vec![fifo.clone()],
+                from: Source::File,
+            },
+            &ActiveFilters::new(),
+            Mode::Dimmed,
+            false,
+            &mut warnings,
+        );
+        let Exit::Emit { lines, failed, .. } = exit else {
+            panic!("silent");
+        };
+        assert!(lines.is_empty());
+        assert_eq!(failed, 1);
+        assert_eq!(
+            String::from_utf8_lossy(&warnings),
+            format!(
+                "recon: cannot read {}: not a regular file\n",
+                fifo.display()
+            )
+        );
     }
 
     #[test]

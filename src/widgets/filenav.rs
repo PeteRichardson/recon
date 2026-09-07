@@ -97,6 +97,14 @@ pub(crate) enum Kind {
     Dir,
     Executable,
     Plain,
+    /// A FIFO, socket or device (#221): listed, since it is there, but not a
+    /// file with an end to read to — `File::open` on a FIFO blocks until a
+    /// writer appears, which would hang the scanner, a preview and a
+    /// headless run alike. Nothing that reads is ever handed one: `files`,
+    /// `listed_files` and `headless::inputs` all skip it, and the readers
+    /// refuse one named directly. Drawn dimmed, like `..`: present, not
+    /// content.
+    Special,
     /// The `..` row. A directory, but never one you are looking *for* — see
     /// `PARENT_STYLE`.
     ///
@@ -105,6 +113,16 @@ pub(crate) enum Kind {
     /// place that cares about the distinction (`style`, `display`,
     /// `activate_selection`) then asks the same question the same way.
     Parent,
+}
+
+impl Kind {
+    /// Whether an entry of this kind is a file something may read to its
+    /// end — what the scanner, `--emit files` and a headless `PATH`
+    /// directory hand on. Directories are listings, not files; `Special`
+    /// has no end to read to.
+    pub(crate) fn is_readable(self) -> bool {
+        matches!(self, Self::Plain | Self::Executable)
+    }
 }
 
 /// Whether a file would show a line under the active filters — the answer the
@@ -174,7 +192,7 @@ impl Entry {
         match self.kind {
             Kind::Dir => DIR_STYLE,
             Kind::Executable => EXEC_STYLE,
-            Kind::Parent => PARENT_STYLE,
+            Kind::Parent | Kind::Special => PARENT_STYLE,
             // The common case pays for no colour. With directories and
             // executables marked, a plain row is unambiguous by absence, and
             // the terminal's own theme governs the rows there are most of.
@@ -574,7 +592,7 @@ impl FileNav<'_> {
         self.entries
             .iter()
             .enumerate()
-            .filter(|(_, entry)| !matches!(entry.kind, Kind::Dir | Kind::Parent))
+            .filter(|(_, entry)| entry.kind.is_readable())
             .map(|(index, entry)| (index, self.dir.join(&entry.name)))
             .collect()
     }
@@ -586,7 +604,7 @@ impl FileNav<'_> {
         self.visible
             .iter()
             .filter_map(|&index| self.entries.get(index))
-            .filter(|entry| !matches!(entry.kind, Kind::Dir | Kind::Parent))
+            .filter(|entry| entry.kind.is_readable())
             .map(|entry| ListedFile {
                 path: self.dir.join(&entry.name),
                 matched: match entry.matched {
@@ -877,15 +895,36 @@ fn sort_key(entry: &Entry) -> (bool, String, OsString) {
 /// made for the executable bit alone and the `Metadata` thrown away, so size
 /// and mtime cost nothing new here — only directories are stat'd where they
 /// were not before, which is what gives them an mtime to show.
+///
+/// A symlink is the one entry that costs a second stat (#181): `lstat`
+/// describes the link itself — not a directory, and mode `0777` on most
+/// systems, which would paint every link green — so a link is followed with
+/// `fs::metadata` and described as its target: a link to a directory is a
+/// directory, drawn with the `/` and never handed to the scanner, which is
+/// what `activate_selection` already did with it. A dangling link keeps the
+/// `lstat` and reads as a plain entry; opening it reports not found, the
+/// same as any other missing file.
+///
+/// Anything that is neither a directory nor a regular file — a FIFO, a
+/// socket, a device — is `Kind::Special` (#221).
 fn describe(entry: &fs::DirEntry) -> Entry {
-    let meta = entry.metadata().ok();
-    let is_dir = entry.file_type().is_ok_and(|file_type| file_type.is_dir());
-    let kind = if is_dir {
-        Kind::Dir
-    } else if meta.as_ref().is_some_and(is_executable) {
-        Kind::Executable
-    } else {
-        Kind::Plain
+    let linked = entry
+        .file_type()
+        .is_ok_and(|file_type| file_type.is_symlink())
+        .then(|| fs::metadata(entry.path()).ok())
+        .flatten();
+    let meta = linked.or_else(|| entry.metadata().ok());
+    let file_type = meta.as_ref().map(fs::Metadata::file_type);
+    let is_dir = file_type.is_some_and(|file_type| file_type.is_dir());
+    let kind = match file_type {
+        Some(file_type) if file_type.is_dir() => Kind::Dir,
+        // Still a symlink after following means the link did not resolve:
+        // a plain row, and never executable — the `lstat` mode is the
+        // link's own `0777`, not anything the user set.
+        Some(file_type) if file_type.is_symlink() => Kind::Plain,
+        Some(file_type) if !file_type.is_file() => Kind::Special,
+        _ if meta.as_ref().is_some_and(is_executable) => Kind::Executable,
+        _ => Kind::Plain,
     };
     Entry {
         // Exactly the bytes `readdir` returned. Converting here is what made a
@@ -1581,6 +1620,109 @@ mod tests {
         assert_eq!(
             listing(&nav),
             ["../", "src/", "zeta_dir/", "app.log", "beta.rs"]
+        );
+    }
+
+    /// `file_type()` does not follow symlinks, so a link to a directory used
+    /// to be `Kind::Plain`: drawn as a file, sorted among files, and handed to
+    /// the scanner, which then opened a directory — while `activate_selection`
+    /// followed the link and descended, so the pane and the key disagreed
+    /// (#181).
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_to_a_directory_is_listed_as_one() {
+        let dir = fixture_dir("symlink_to_dir");
+        fs::create_dir_all(dir.join("real")).expect("mkdir");
+        fs::write(dir.join("zed.log"), "x").expect("write");
+        // A relative target, resolved against the link's own directory.
+        std::os::unix::fs::symlink("real", dir.join("link")).expect("symlink");
+        let nav = FileNav::new(dir.join("placeholder").display().to_string());
+
+        assert_eq!(listing(&nav), ["../", "link/", "real/", "zed.log"]);
+        let link = nav
+            .entries
+            .iter()
+            .find(|entry| entry.name == "link")
+            .expect("listed");
+        assert_eq!(link.kind, Kind::Dir);
+        assert!(
+            nav.files().iter().all(|(_, path)| !path.ends_with("link")),
+            "a directory is never a file to scan: {:?}",
+            nav.files()
+        );
+    }
+
+    /// A symlink's own `lstat` mode is `0777` on most systems, so reading the
+    /// executable bit from it would paint every link green. The link takes
+    /// its target's kind, size and time.
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_to_a_file_takes_its_target_s_kind() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = fixture_dir("symlink_to_file");
+        fs::write(dir.join("plain.log"), "twelve bytes").expect("write");
+        fs::write(dir.join("run.sh"), "#!/bin/sh\n").expect("write");
+        fs::set_permissions(dir.join("run.sh"), fs::Permissions::from_mode(0o755)).expect("chmod");
+        std::os::unix::fs::symlink("plain.log", dir.join("to_plain")).expect("ln");
+        std::os::unix::fs::symlink("run.sh", dir.join("to_run")).expect("ln");
+        std::os::unix::fs::symlink("missing", dir.join("dangling")).expect("ln");
+        let nav = FileNav::new(dir.join("placeholder").display().to_string());
+        let kind_of = |name: &str| {
+            nav.entries
+                .iter()
+                .find(|entry| entry.name == name)
+                .unwrap_or_else(|| panic!("{name} listed"))
+        };
+
+        assert_eq!(
+            kind_of("to_plain").kind,
+            Kind::Plain,
+            "the link mode is not the file's"
+        );
+        assert_eq!(
+            kind_of("to_plain").size,
+            Some(12),
+            "the target's size, not the link's"
+        );
+        assert_eq!(kind_of("to_run").kind, Kind::Executable);
+        assert_eq!(
+            kind_of("dangling").kind,
+            Kind::Plain,
+            "a dangling link is an ordinary entry; opening it reports not found"
+        );
+    }
+
+    /// A socket, FIFO or device is not a file that can be read to its end:
+    /// `File::open` on a FIFO blocks until a writer appears, which hangs the
+    /// scanner and a headless run alike (#221). It is listed, dimmed, and
+    /// handed to nothing that reads.
+    #[cfg(unix)]
+    #[test]
+    fn a_socket_is_special_and_never_handed_to_the_scanner() {
+        let dir = fixture_dir("special_socket");
+        fs::write(dir.join("a.log"), "x").expect("write");
+        let _listener = std::os::unix::net::UnixListener::bind(dir.join("sock")).expect("bind");
+        let nav = FileNav::new(dir.join("placeholder").display().to_string());
+
+        let sock = nav
+            .entries
+            .iter()
+            .find(|entry| entry.name == "sock")
+            .expect("a socket is still listed");
+        assert_eq!(sock.kind, Kind::Special);
+        assert_eq!(sock.style(), DIM_STYLE, "dimmed, like `..`: not content");
+        assert_eq!(sock.display(), "sock", "no suffix; the dimming is the cue");
+        let scanned: Vec<_> = nav.files().into_iter().map(|(_, path)| path).collect();
+        assert_eq!(
+            scanned,
+            [nav.dir.join("a.log")],
+            "the scanner never opens it"
+        );
+        assert!(
+            nav.listed_files()
+                .iter()
+                .all(|file| !file.path.ends_with("sock")),
+            "`--emit files` never names it either"
         );
     }
 

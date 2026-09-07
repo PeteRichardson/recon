@@ -372,6 +372,32 @@ pub(crate) const BINARY_SNIFF_BYTES: usize = 8 << 10;
 /// into its own `<binary file>` message and headless mode prints it as is.
 pub(crate) const BINARY_FILE: &str = "binary file";
 
+/// The message for a FIFO, socket or device named as a file (#221).
+pub(crate) const NOT_A_FILE: &str = "not a regular file";
+
+/// Refuse, before opening, what an open would get wrong: a directory opens
+/// fine on macOS and only the read fails `EISDIR`, and a FIFO's open blocks
+/// until a writer appears — for ever, in a scanner thread or a cron job.
+/// One `stat`, following symlinks, so a link to a file is a file. A path
+/// that cannot be stat'd is left for `File::open` to report in its own
+/// words: not found, permission denied.
+pub(crate) fn refuse_unreadable(path: &Path) -> io::Result<()> {
+    let Ok(meta) = std::fs::metadata(path) else {
+        return Ok(());
+    };
+    let file_type = meta.file_type();
+    if file_type.is_dir() {
+        return Err(io::Error::new(
+            io::ErrorKind::IsADirectory,
+            "is a directory",
+        ));
+    }
+    if !file_type.is_file() {
+        return Err(io::Error::new(io::ErrorKind::Unsupported, NOT_A_FILE));
+    }
+    Ok(())
+}
+
 /// Whether `err` is `read_lines`' own binary-file refusal rather than an OS
 /// error.
 #[must_use]
@@ -423,12 +449,7 @@ pub(crate) fn read_lossy_line<R: BufRead>(
 /// bytes is read anyway, a U+FFFD per bad sequence. Anything else the OS
 /// refuses comes back verbatim.
 pub fn read_lines(path: &Path) -> io::Result<Vec<String>> {
-    if path.is_dir() {
-        return Err(io::Error::new(
-            io::ErrorKind::IsADirectory,
-            "is a directory",
-        ));
-    }
+    refuse_unreadable(path)?;
     let mut reader = BufReader::new(File::open(path)?);
     let (binary, head) = sniff_binary(&mut reader)?;
     if binary {
@@ -1071,6 +1092,23 @@ mod tests {
 
         assert_eq!(err.kind(), io::ErrorKind::IsADirectory);
         assert_eq!(err.to_string(), "is a directory");
+        assert!(!is_binary(&err));
+    }
+
+    /// A FIFO blocks `File::open` until a writer appears and a socket cannot
+    /// be opened as a file at all; neither has an end to read to. Refused by
+    /// a stat before the open, so the caller never blocks (#221).
+    #[cfg(unix)]
+    #[test]
+    fn read_lines_refuses_a_non_regular_file_before_opening_it() {
+        let dir = fixture_dir("document_read_socket");
+        let sock = dir.join("sock");
+        let _listener = std::os::unix::net::UnixListener::bind(&sock).expect("bind");
+
+        let err = read_lines(&sock).expect_err("a socket is not a file");
+
+        assert_eq!(err.kind(), io::ErrorKind::Unsupported);
+        assert_eq!(err.to_string(), NOT_A_FILE);
         assert!(!is_binary(&err));
     }
 
