@@ -203,8 +203,13 @@ translation lives in `FileView::cursor_visible_row()` and nothing outside reads
 filter change leaving the same rows on screen does not reset the scroll position.
 
 That cache is now keyed on the **window as well**: an unchanged visible set with
-a moved window still needs a rebuild. `last_visible` gains a companion
-`last_window`, and both must match for the rebuild to be skipped.
+a moved window still needs a rebuild. The visible-set half of the key is
+`Document::generation`, a `u64` that `recompute_visible` advances exactly when
+the rows it computed differ from the current ones (#159) — so the O(visible)
+compare happens once per filter change, inside the document, and `apply_view`
+compares two integers per arrow key instead of two index vectors the length of
+the file, copying nothing. `last_generation` and `last_window` must both match
+for the rebuild to be skipped.
 
 Omitting this would be the subtlest possible bug — scrolling into a new window
 would silently keep showing the old rows.

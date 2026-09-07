@@ -327,24 +327,24 @@ pub struct App<'a> {
     search: Option<SearchPrompt>,
     filters: ActiveFilters,
     document: Document,
-    /// Source line indices the file view's buffer was last rebuilt from, or
-    /// `None` when what the buffer holds is unknown and a rebuild is owed
-    /// unconditionally.
+    /// The `Document::generation` the file view's buffer was last rebuilt
+    /// from, or `None` when what the buffer holds is unknown and a rebuild is
+    /// owed unconditionally.
     ///
-    /// `refresh_view` rebuilds only when the new visible set differs from
-    /// this, so a filter change that leaves the same rows on screen does not
-    /// reset the viewport's scroll position.
+    /// The generation moves exactly when the document's visible set does, so
+    /// `refresh_view` rebuilds only when the rows on screen differ, and a
+    /// filter change that leaves the same rows does not reset the viewport's
+    /// scroll position. It used to be the visible index vector itself,
+    /// compared and copied whole on every `apply_view` (#159).
     ///
-    /// `Option`, not a plain empty `Vec`: `sync_document` has to say "this
-    /// buffer belongs to a document that no longer exists, rebuild whatever
-    /// happens next", and an empty `Vec` cannot say that. An empty *visible
-    /// set* is a real, reachable state — every line filtered away — and it
-    /// compares equal to an empty `Vec`, so the guard read "nothing changed"
-    /// and left the previous file's buffer on screen. `None` is unequal to
+    /// `Option`, not a bare `u64`: `sync_document` has to say "this buffer
+    /// belongs to a document that no longer exists, rebuild whatever happens
+    /// next", and no number can say that — a fresh document starts at
+    /// generation 0, as the previous one may well have. `None` is unequal to
     /// every `Some`, so the rebuild always happens.
-    last_visible: Option<Vec<usize>>,
+    last_generation: Option<u64>,
     /// The window bounds `apply_view` last handed the file view, paired with
-    /// `last_visible` as the rebuild-skip key (#7).
+    /// `last_generation` as the rebuild-skip key (#7).
     ///
     /// The visible set alone is no longer enough to decide a rebuild can be
     /// skipped: scrolling into a new window leaves the visible set untouched
@@ -614,7 +614,7 @@ impl App<'_> {
             search: None,
             filters,
             document: Document::default(),
-            last_visible: None,
+            last_generation: None,
             last_window: None,
             zoom: None,
             editor: config.editor_templates(),
@@ -2327,12 +2327,12 @@ impl App<'_> {
         // The buffer the view is showing belongs to the *previous* document,
         // so the record of what it was built from is meaningless now.
         // Clearing it forces the next `apply_view` to rebuild: two different
-        // documents can easily produce an equal visible list — reloading the
-        // same file with a filter active produces an identical one every
-        // time, which would otherwise leave the just-loaded, unfiltered
-        // buffer in place under numbers and styles sized for the filtered
-        // subset.
-        self.last_visible = None;
+        // documents can easily carry an equal generation — every fresh one
+        // starts at 0, and reloading the same file with a filter active
+        // lands on the same count every time — which would otherwise leave
+        // the just-loaded, unfiltered buffer in place under numbers and
+        // styles sized for the filtered subset.
+        self.last_generation = None;
         // Both halves of the rebuild-skip key, or the surviving half could
         // still match and skip a rebuild this just decided is owed.
         self.last_window = None;
@@ -4418,9 +4418,10 @@ mod tests {
     /// "nothing changed" and left the freshly loaded file on screen in full —
     /// showing exactly the lines the filter existed to remove.
     ///
-    /// This is why `last_visible` is an `Option`: "the buffer holds no rows"
-    /// and "what the buffer holds is unknown" are different claims, and only
-    /// the second one may force a rebuild.
+    /// This is why the key (`last_generation` now, `last_visible` then) is an
+    /// `Option`: "the buffer holds no rows" and "what the buffer holds is
+    /// unknown" are different claims, and only the second one may force a
+    /// rebuild.
     #[test]
     fn loading_a_file_that_every_filter_excludes_leaves_a_blank_view() {
         let mut app = app_over_file("exclude_all_load", "noise one\nnoise two\n");
@@ -4475,12 +4476,12 @@ mod tests {
     }
 
     /// `sync_document` replaces `self.document` wholesale, so whatever
-    /// `last_visible` (finding 1's rebuild-skip guard) held is meaningless
+    /// `last_generation` (finding 1's rebuild-skip guard) held is meaningless
     /// afterwards — it describes a buffer built from the *previous*
     /// document. Reloading the *same* file while an excluding filter is
-    /// active reproduces an identical `visible()` list every time (the
-    /// document is genuinely equal), which the guard alone cannot tell apart
-    /// from "nothing changed". `FileNav` fires `Action::Load` unconditionally
+    /// active reproduces an identical generation every time (the document
+    /// is genuinely equal), which the guard alone cannot tell apart from
+    /// "nothing changed". `FileNav` fires `Action::Load` unconditionally
     /// on `Enter`, even over the entry that is already open, so this is not a
     /// contrived path.
     #[test]
@@ -9607,21 +9608,21 @@ mod tests {
     /// empty search must not pay for it. Nothing in the filter set itself
     /// tells "refreshed and found nothing new" apart from "never refreshed",
     /// so this reaches for `apply_view`'s own tell instead: it only
-    /// overwrites `last_visible` when the visible set it just computed
-    /// differs from what is already there. Seeding a value that can never
-    /// match the real one means a leftover mismatch after Esc is direct
-    /// evidence that `refresh_view` never ran.
+    /// overwrites `last_generation` when the key it just computed differs
+    /// from what is already there. Seeding a value the document can never
+    /// reach means a leftover mismatch after Esc is direct evidence that
+    /// `refresh_view` never ran.
     #[test]
     fn escape_with_no_search_does_not_refresh() {
         let mut app = app_over_file("esc_no_refresh", "alpha\n");
         key(&mut app, KeyCode::Char('t'));
-        app.last_visible = Some(vec![usize::MAX]);
+        app.last_generation = Some(u64::MAX);
 
         key(&mut app, KeyCode::Esc);
 
         assert_eq!(
-            app.last_visible,
-            Some(vec![usize::MAX]),
+            app.last_generation,
+            Some(u64::MAX),
             "Esc refreshed the view with nothing to clear"
         );
     }
