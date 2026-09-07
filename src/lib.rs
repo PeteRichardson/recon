@@ -4585,6 +4585,33 @@ mod tests {
 
     const LONG_FILE_LINES: usize = 5_000;
 
+    /// The buffer `load` seeds is a window, not the file (#151), and every
+    /// production path replaces it through `apply_view` before the first
+    /// frame — this pins that a fresh load of a long file still draws from
+    /// its first line and can reach its last.
+    #[test]
+    fn a_fresh_load_of_a_long_file_renders_its_first_line_and_reaches_its_last() {
+        let mut app = app_over_long_file("fresh_load_renders");
+        draw_tall(&mut app);
+        assert!(
+            view_lines(&app).iter().any(|line| line == "line 1"),
+            "the first screen of a fresh load is not the file's start"
+        );
+
+        key(&mut app, KeyCode::Char('G'));
+        draw_tall(&mut app);
+
+        assert_eq!(
+            cursor_source(&app),
+            LONG_FILE_LINES - 1,
+            "G did not reach the last line"
+        );
+        assert!(
+            view_lines(&app).iter().any(|line| line == "line 4999"),
+            "the window around the last line does not hold it"
+        );
+    }
+
     /// **The structural form of #7's memory acceptance criterion.**
     ///
     /// The win is not measured in bytes — that is allocator- and
