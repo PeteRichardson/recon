@@ -372,12 +372,14 @@ impl App<'_> {
     /// in by the minimum onto the scroll margin's edge. See
     /// `FileView::jump_landing_row`.
     ///
-    /// Requested *before* `apply_view`, whose own restore request — the
-    /// pre-jump screen row, meaningful for a filter toggle and not for a
-    /// jump — would otherwise be the one `scroll_cursor_to_row` keeps.
+    /// Requested through `land_cursor_on_row`, which replaces any restore
+    /// already queued — by the `apply_view` below, or by the file load that
+    /// precedes a cross-file landing in the same keypress (#192). A
+    /// restore's row is the pre-jump screen row, meaningful for a filter
+    /// toggle and not for a jump.
     pub(crate) fn jump_to_visible_row(&mut self, row: usize) {
         if let Some(screen_row) = self.view.jump_landing_row(row, self.center_jumps) {
-            self.view.scroll_cursor_to_row(screen_row);
+            self.view.land_cursor_on_row(screen_row);
         }
         self.place_cursor_on_visible_row(row);
     }

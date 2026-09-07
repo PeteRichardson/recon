@@ -737,6 +737,21 @@ impl FileView<'_> {
         self.pending_screen_row.get_or_insert(row);
     }
 
+    /// A *jump's* request for the cursor's row, which replaces any restore
+    /// a rebuild queued earlier in the same frame rather than yielding to
+    /// it (#192).
+    ///
+    /// `scroll_cursor_to_row` keeps the first request because two rebuilds
+    /// in one frame are the same question asked twice, and the first answer
+    /// is the one measured against a valid viewport. A jump is a different
+    /// question: it has decided where the target lands, and a restore queued
+    /// by the file load that preceded it in the same keypress — `,` loads
+    /// the previous file and then lands on its last hit — would put the
+    /// cursor back on the row the *previous* file's cursor was drawn on.
+    pub fn land_cursor_on_row(&mut self, row: u16) {
+        self.pending_screen_row = Some(row);
+    }
+
     /// Apply a pending `scroll_cursor_to_row` request, if any, against
     /// `area` — the pane's real area for the frame about to render.
     ///
