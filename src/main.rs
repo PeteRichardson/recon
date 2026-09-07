@@ -125,11 +125,16 @@ fn setup_logging() {
 /// `--emit` asks for and can be piped or captured while the TUI is up — the
 /// same arrangement fzf uses. Unconditional rather than switched on whether
 /// stdout is a terminal: one code path, and a difference nobody could see.
-fn init_terminal() -> Result<Terminal<CrosstermBackend<Stderr>>> {
+///
+/// The writer is a `BufWriter`: unlike `Stdout`, `Stderr` carries no
+/// buffering of its own, so every `queue!`'d cell write during a redraw would
+/// otherwise be its own `write(2)`. `Terminal::draw` flushes the backend at
+/// the end of every frame, so nothing is left sitting in the buffer between
+/// draws.
+fn init_terminal() -> Result<Terminal<CrosstermBackend<io::BufWriter<Stderr>>>> {
     enable_raw_mode()?;
-    let mut stderr = io::stderr();
-    execute!(stderr, EnterAlternateScreen, EnableMouseCapture)?;
-    let backend = CrosstermBackend::new(stderr);
+    execute!(io::stderr(), EnterAlternateScreen, EnableMouseCapture)?;
+    let backend = CrosstermBackend::new(io::BufWriter::new(io::stderr()));
     let mut terminal = Terminal::new(backend)?;
     terminal.clear()?;
     Ok(terminal)
