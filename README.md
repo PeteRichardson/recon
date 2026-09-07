@@ -503,6 +503,15 @@ same way deleting a filter does. `d`, `c` and `m` on a header do nothing to the
 set and say so on the status row: sets are edited in `filters.toml`. `!` and
 `space` act on filter flags across every set and never on a set's own flag.
 
+Sets can also be switched on from the command line: `--set WiFi_debug`
+enables the set at startup with its `default` profile, `--set
+WiFi_debug:WiFi_bug_32` applies that profile instead, and the flag repeats
+for several sets. `--hide` alongside it starts the session in hide mode. A
+set without a `default` profile comes on with every filter off, exactly as
+`Enter` on its header would leave it — give it a `default` if it is meant to
+be used this way. The same flags drive a run with no TUI at all; see
+[Headless mode](#headless-mode).
+
 A header carries `*` when its set has profiles. `a` on that row opens a small
 picker over the panes listing the set's profile names; `j`/`k` move, `Enter`
 applies the chosen profile — exactly its members on, the set's other filters
@@ -1134,8 +1143,63 @@ decoded as UTF-8 with the replacement character standing in for anything
 that isn't, and a trailing carriage return is stripped — paths are the only
 part of the output that is byte-for-byte verbatim. Not emitted yet: the
 filter set itself, and a structured format that carries the mode and each
-file's matching filter in the output — both are follow-ups to #143, along
-with a headless mode that takes the same `--emit` without starting the TUI.
+file's matching filter in the output — both are follow-ups to #143.
+
+### Headless mode
+
+`--emit` with stdin that is not a terminal skips the TUI altogether: the
+files come from stdin or the argument, the filters from `--set`, and the
+result goes to stdout exactly as `q` would have sent it.
+
+```sh
+ls -1 *.log | recon --emit files --set BugFilters:Bug57 --hide
+find . -name '*.log' | recon --emit lines -n --set BugFilters --hide | cut -f1,2
+recon --emit files --hide /var/log < /dev/null
+```
+
+Headless is inferred, never flagged. A pipe on stdin, a cron job, a script
+with stdin closed all get it; `recon --emit lines app.log` from a terminal
+still opens the TUI, because the terminal is where its keys come from. From
+a terminal, `< /dev/null` forces it.
+
+**Inputs.** Each non-blank line of stdin is a path — what `ls -1` and `find`
+print. With nothing on stdin, a `PATH` directory means its files,
+non-recursive, in the navigator's order, and a `PATH` file means itself.
+
+**Flags.** `--set NAME` enables a saved set with its `default` profile;
+`--set NAME:PROFILE` applies another profile instead. Repeat it for several
+sets. `--hide` starts in hide mode, so only matches are emitted; without it
+the run is in dim mode and emits everything, with the match count in the
+summary. `-n` numbers lines as in the TUI. `-q` drops the summary; warnings
+still print. All four work in the TUI too. An unknown set or profile is
+refused before anything is read, and the error lists the names
+`filters.toml` defines.
+
+**Several files.** With more than one input, `--emit lines` prefixes each
+line with its path and a tab, and `-n` puts the line number and a tab after
+that — `path<TAB>N<TAB>line` — so `cut -f1` is the paths and `cut -f3-` the
+text. One input is exactly the TUI's output.
+
+**Summaries and exit codes.** The summary names the mode as it does in the
+TUI, with `pass --hide to emit matches only` in place of the key:
+
+| Run | Summary |
+| --- | --- |
+| `lines`, one file, hide mode | `recon: emitted 27 lines of app.log, hide mode` |
+| `lines`, several files, dim mode | `recon: emitted 812 lines of 3 files, dim mode (27 match) — pass --hide to emit matches only` |
+| `files` from a `PATH` directory | `recon: emitted 3 files from /var/log, hide mode` |
+| `files` from stdin | `recon: emitted 3 files of 14 inputs, hide mode` |
+| `files` with no include filter enabled | `recon: emitted 14 files from /var/log, dim mode, no filter` |
+| `cwd` | `recon: emitted /var/log` |
+
+A file that cannot be read is reported as it is met — `recon: cannot read
+/var/log/secure: permission denied`, `… is a directory`, `… binary file` —
+and skipped: not emitted, not counted. The run continues and exits **2**,
+grep's convention for an input that failed. Exit 0 otherwise, empty output
+included; exit 1 for a refused flag or an unreadable `filters.toml`.
+
+Not in the first version: ad-hoc patterns (`-i PATTERN`) and a live search —
+`grep` covers the one-off case, and saved sets are what headless is for.
 
 ## Opening an editor
 
