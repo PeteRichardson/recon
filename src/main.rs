@@ -9,7 +9,7 @@ use crossterm::{
 };
 use ratatui::{Terminal, prelude::CrosstermBackend};
 use recon::{App, Config};
-use std::io::{self, Stderr};
+use std::io::{self, IsTerminal, Stderr};
 use std::panic;
 use std::process::ExitCode;
 
@@ -19,6 +19,10 @@ fn main() -> Result<ExitCode> {
     setup_logging();
     let mut config = Config::load()?;
     config.filter_sets = recon::filtersets::load_file()?;
+    // Needs the loaded sets, which is why it is not inside `Config::load`
+    // with `check_flags`. Still before any terminal setup: the message must
+    // reach a screen that is not about to be replaced (#143).
+    config.check_sets(&config.filter_sets)?;
 
     if let Some(flavour) = &config.print_editor_config {
         print!(
@@ -31,13 +35,24 @@ fn main() -> Result<ExitCode> {
         return Ok(ExitCode::SUCCESS);
     }
 
-    let terminal = init_terminal()?;
-    let exit = App::new(&config).run(terminal)?;
-    restore_terminal()?;
+    // Headless (#143): `--emit` with no terminal on stdin. A TUI needs stdin
+    // for its keys, so a pipe or `/dev/null` there is not a session that
+    // could have been driven anyway; the result is computed and printed
+    // instead. `recon --emit lines app.log` from a terminal still gets the
+    // TUI, and `< /dev/null` forces headless from one.
+    let headless = config.emit.is_some() && !io::stdin().is_terminal();
+    let exit = if headless {
+        recon::headless::run(&config)?
+    } else {
+        let terminal = init_terminal()?;
+        let exit = App::new(&config).run(terminal)?;
+        restore_terminal()?;
+        exit
+    };
 
-    // Only now, with the alternate screen gone, does anything reach stdout:
-    // the session's result, if `--emit` asked for one, and the summary that
-    // names its mode on stderr (#143).
+    // Only now, with the alternate screen gone (or never entered), does
+    // anything reach stdout: the result, if `--emit` asked for one, and the
+    // summary that names its mode on stderr (#143).
     Ok(exit.deliver(
         config.emit,
         config.quiet,
