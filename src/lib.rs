@@ -1059,19 +1059,46 @@ impl App<'_> {
         emit::Exit::Emit { lines, summary }
     }
 
-    /// `--emit files`. Filled in by the next task.
+    /// `--emit files`: the navigator's listed files as absolute paths. Hide
+    /// mode has already dropped the non-matching rows, so the list is the
+    /// matches; dim mode lists every file and the summary says how many
+    /// match, and how many the scan has not answered yet.
     fn collect_files(&self) -> emit::Exit {
-        emit::Exit::Emit {
-            lines: Vec::new(),
-            summary: String::from("recon: emitted"),
-        }
+        let listed = self.nav.listed_files();
+        let lines = listed
+            .iter()
+            .map(|file| emit::path_bytes(&file.path))
+            .collect();
+        let dir = self.nav.dir().display();
+        let count = listed.len();
+        let summary = if self.filters.any_enabled() {
+            match self.document.mode() {
+                Mode::FilteredOnly => format!("recon: emitted {count} files from {dir}, hide mode"),
+                Mode::Dimmed => {
+                    let matched = listed.iter().filter(|f| f.matched == Some(true)).count();
+                    let unscanned = listed.iter().filter(|f| f.matched.is_none()).count();
+                    let counts = if unscanned == 0 {
+                        format!("{matched} match")
+                    } else {
+                        format!("{matched} match, {unscanned} unscanned")
+                    };
+                    format!(
+                        "recon: emitted {count} files from {dir}, dim mode ({counts}) — Ctrl-H to emit matches only"
+                    )
+                }
+            }
+        } else {
+            format!("recon: emitted {count} files from {dir}, dim mode, no filter")
+        };
+        emit::Exit::Emit { lines, summary }
     }
 
-    /// `--emit cwd`. Filled in by the next task.
+    /// `--emit cwd`: the directory the navigator is showing, one line.
     fn collect_cwd(&self) -> emit::Exit {
+        let dir = self.nav.dir();
         emit::Exit::Emit {
-            lines: Vec::new(),
-            summary: String::from("recon: emitted"),
+            lines: vec![emit::path_bytes(dir)],
+            summary: format!("recon: emitted {}", dir.display()),
         }
     }
 
@@ -6485,6 +6512,145 @@ mod tests {
             summary,
             "recon: emitted 0 lines — the view is showing an error, not a file"
         );
+    }
+
+    // ---- --emit files and --emit cwd -----------------------------------
+
+    fn app_emitting_files(name: &str) -> (App<'static>, Sender<scan::Scanned>) {
+        let mut app = app_over_files(
+            name,
+            &[("a.log", "hit\n"), ("b.log", "plain\n"), ("c.log", "hit\n")],
+        );
+        app.emit = Some(emit::Emit::Files);
+        let (_scanner, tx) = record_scans(&mut app);
+        app.add_filter("hit").expect("valid");
+        app.refresh_scan(false);
+        (app, tx)
+    }
+
+    #[test]
+    fn files_in_dim_mode_emits_every_listed_file_with_the_counts() {
+        let (mut app, tx) = app_emitting_files("emit_files_dim");
+        mark(&mut app, &tx, 0, true);
+        mark(&mut app, &tx, 1, false);
+        // c.log deliberately unscanned.
+        key(&mut app, KeyCode::Char('q'));
+
+        let (lines, summary) = emitted(&app);
+
+        let dir = app.nav.dir().display().to_string();
+        assert_eq!(
+            lines,
+            vec![
+                format!("{dir}/a.log"),
+                format!("{dir}/b.log"),
+                format!("{dir}/c.log")
+            ]
+        );
+        assert_eq!(
+            summary,
+            format!(
+                "recon: emitted 3 files from {dir}, dim mode (1 match, 1 unscanned) — Ctrl-H to emit matches only"
+            )
+        );
+    }
+
+    #[test]
+    fn files_omits_the_unscanned_count_once_the_scan_is_complete() {
+        let (mut app, tx) = app_emitting_files("emit_files_scanned");
+        mark(&mut app, &tx, 0, true);
+        mark(&mut app, &tx, 1, false);
+        mark(&mut app, &tx, 2, true);
+        key(&mut app, KeyCode::Char('q'));
+
+        let (_, summary) = emitted(&app);
+
+        let dir = app.nav.dir().display().to_string();
+        assert_eq!(
+            summary,
+            format!(
+                "recon: emitted 3 files from {dir}, dim mode (2 match) — Ctrl-H to emit matches only"
+            )
+        );
+    }
+
+    #[test]
+    fn files_in_hide_mode_emits_only_the_matches() {
+        let (mut app, tx) = app_emitting_files("emit_files_hide");
+        mark(&mut app, &tx, 0, true);
+        mark(&mut app, &tx, 1, false);
+        mark(&mut app, &tx, 2, true);
+        ctrl(&mut app, KeyCode::Char('h'));
+        key(&mut app, KeyCode::Char('q'));
+
+        let (lines, summary) = emitted(&app);
+
+        let dir = app.nav.dir().display().to_string();
+        assert_eq!(lines, vec![format!("{dir}/a.log"), format!("{dir}/c.log")]);
+        assert_eq!(
+            summary,
+            format!("recon: emitted 2 files from {dir}, hide mode")
+        );
+    }
+
+    #[test]
+    fn files_with_no_filter_says_so_instead_of_counting() {
+        let mut app = app_over_files("emit_files_nofilter", &[("a.log", "x\n"), ("b.log", "y\n")]);
+        app.emit = Some(emit::Emit::Files);
+        key(&mut app, KeyCode::Char('q'));
+
+        let (lines, summary) = emitted(&app);
+
+        assert_eq!(lines.len(), 2);
+        let dir = app.nav.dir().display().to_string();
+        assert_eq!(
+            summary,
+            format!("recon: emitted 2 files from {dir}, dim mode, no filter")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn files_writes_a_non_utf8_name_as_its_bytes() {
+        use std::os::unix::ffi::OsStrExt;
+        let dir = fixture_dir("emit_files_bytes");
+        let odd = std::ffi::OsStr::from_bytes(b"bad\xffname.log");
+        // APFS and HFS+ enforce valid UTF-8 in filenames and reject this one
+        // with EILSEQ, so on macOS there is no such file to list and nothing
+        // to assert (see `non_utf8_fixture` in `widgets::filenav::tests`).
+        // ext4, XFS, tmpfs and every other Unix filesystem take arbitrary
+        // bytes, which is where this test actually runs.
+        if let Err(err) = fs::write(dir.join(odd), "x\n") {
+            eprintln!("skipping: this filesystem rejects non-UTF-8 names ({err})");
+            return;
+        }
+        let mut app = App::new(&Config {
+            path: dir.join("placeholder").display().to_string(),
+            emit: Some(emit::Emit::Files),
+            ..Config::default()
+        });
+        key(&mut app, KeyCode::Char('q'));
+
+        let emit::Exit::Emit { lines, .. } = app.exit() else {
+            panic!("silent");
+        };
+
+        let expected = emit::path_bytes(&dir.join(odd));
+        assert_eq!(lines, vec![expected]);
+    }
+
+    #[test]
+    fn cwd_emits_the_navigator_s_directory() {
+        let mut app = app_over_files("emit_cwd", &[("a.log", "x\n")]);
+        app.emit = Some(emit::Emit::Cwd);
+        key(&mut app, KeyCode::Char('q'));
+
+        let (lines, summary) = emitted(&app);
+
+        let dir = app.nav.dir().display().to_string();
+        assert_eq!(lines, vec![dir.clone()]);
+        assert_eq!(summary, format!("recon: emitted {dir}"));
+        assert!(app.nav.dir().is_absolute());
     }
 
     #[test]

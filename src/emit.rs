@@ -90,14 +90,12 @@ impl Exit {
 /// On Unix that is the `OsStr` verbatim. Elsewhere paths are not bytes at
 /// all, and the lossy string is the only honest rendering.
 #[cfg(unix)]
-#[allow(dead_code)]
 pub(crate) fn path_bytes(path: &Path) -> Vec<u8> {
     use std::os::unix::ffi::OsStrExt;
     path.as_os_str().as_bytes().to_vec()
 }
 
 #[cfg(not(unix))]
-#[allow(dead_code)]
 pub(crate) fn path_bytes(path: &Path) -> Vec<u8> {
     path.to_string_lossy().into_owned().into_bytes()
 }
