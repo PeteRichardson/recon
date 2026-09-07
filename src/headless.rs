@@ -858,12 +858,26 @@ mod tests {
         assert_eq!(failed, 2);
 
         let mut warnings = Vec::new();
-        let exit = collect_files(&inputs, &ActiveFilters::new(), Mode::Dimmed, &mut warnings);
-        let (_, _, failed) = emitted(exit);
+        let exit = collect_files(
+            &inputs,
+            &ActiveFilters::new(),
+            Mode::FilteredOnly,
+            &mut warnings,
+        );
+        let (lines, summary, failed) = emitted(exit);
         assert_eq!(
             warnings_of(&warnings),
             expected_warnings,
             "checked even with nothing to scan"
+        );
+        assert_eq!(
+            lines.len(),
+            3,
+            "all readable files in hide mode with no filter"
+        );
+        assert_eq!(
+            summary,
+            "recon: emitted 3 files of 5 inputs, hide mode, no filter"
         );
         assert_eq!(failed, 2);
     }
