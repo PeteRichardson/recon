@@ -396,19 +396,43 @@ impl FileView<'_> {
         self.highlighter.as_ref().map(Highlighter::syntax_name)
     }
 
-    /// Install freshly read lines: as `source`, as the textarea's whole
-    /// buffer, and as the input to a new highlighter.
+    /// Install freshly read lines: as `source`, as the textarea's buffer,
+    /// and as the input to a new highlighter.
     ///
     /// Shared by `load` and `preview_with_caps`, which differ only in what
-    /// they say about the rest of the file. A fresh buffer is never a window
-    /// onto anything, so `window_start` goes back to zero: this buffer is the
-    /// file's own lines, and leaving a previous file's offset here would
-    /// misreport the cursor's line until the next `apply_view` — see
-    /// `cursor_visible_row`.
+    /// they say about the rest of the file. The buffer starts at the file's
+    /// first line, so `window_start` goes back to zero: leaving a previous
+    /// file's offset here would misreport the cursor's line until the next
+    /// `apply_view` — see `cursor_visible_row`.
+    ///
+    /// **A window of the lines, not a copy of all of them** (#151). This
+    /// used to clone every line into the textarea, and every production
+    /// caller — `load` and `preview` both run through `sync_document` and
+    /// `apply_view` — replaced that clone through `show_window` before the
+    /// first draw, because `sync_document` clears the record `apply_view`
+    /// keys its rebuild on. So a full load was resident three times at its
+    /// peak, and every navigator arrow copied the preview twice, for a
+    /// buffer nothing ever rendered. The textarea now gets exactly the window
+    /// `apply_view` builds before the first render — `window_for` with the
+    /// cursor on the first line and the pre-render pane height — which is the
+    /// whole file when the file is shorter than that and a bounded slice when
+    /// it is not. Bounded, rather than the single blank row it could be: the
+    /// pane still shows a file on its own, which is what keeps this widget
+    /// testable without an `App` around it.
     fn adopt(&mut self, lines: Vec<String>, text: bool) {
         self.source = Arc::new(lines);
         self.text = text;
-        self.textarea = TextArea::new(self.source.as_ref().clone());
+        let (start, end) = window_for(self.source.len(), self.window_height(), 0, 0);
+        self.textarea = TextArea::new(self.source[start..end].to_vec());
+        // The buffer numbers its own rows when nothing supplies numbers, and a
+        // window's rows run short of the file's. Reserve the width the whole
+        // file needs so the gutter does not widen when `apply_view` numbers
+        // it properly — the same reasoning `preview_with_caps` applies to a
+        // truncated read. A file the buffer holds whole reserves nothing.
+        if end < self.source.len() {
+            self.textarea
+                .set_min_line_number_width(digits(self.source.len()));
+        }
         self.viewport_primed = false;
         self.window_start = 0;
         self.rebuild_highlighter();
@@ -1909,6 +1933,48 @@ mod tests {
         );
     }
 
+    // ---- adopt hands the textarea a window (#151) -----------------------
+
+    /// `adopt` used to give the textarea a copy of every line read, and every
+    /// production caller replaced that copy through `show_window` before the
+    /// first draw — so a full load was resident three times at its peak and
+    /// every navigator arrow copied the preview twice. The textarea now gets
+    /// the window `apply_view` would build before the first render, and no
+    /// more.
+    #[test]
+    fn a_fresh_load_hands_the_textarea_a_window_not_the_whole_file() {
+        let path = long_file("adopt_window.txt", 5000);
+        let view = FileView::new(path.display().to_string());
+
+        assert_eq!(view.source().len(), 5000, "the file itself is read whole");
+        assert_eq!(
+            view.textarea.lines().len(),
+            WINDOW_SCREENS * usize::from(ASSUMED_PANE_HEIGHT),
+            "the buffer got a copy of every line"
+        );
+        assert_eq!(view.window_start(), 0);
+    }
+
+    /// The gutter still fits the whole file's numbers when the buffer is
+    /// only a window of it: a 5000-line file needs four digits even though
+    /// the window's own rows number to three.
+    #[test]
+    fn a_windowed_load_reserves_the_gutter_the_whole_file_needs() {
+        let path = long_file("adopt_window_gutter.txt", 5000);
+        let mut view = FileView::new(path.display().to_string());
+
+        assert_eq!(gutter_digits(&mut view), 4);
+    }
+
+    #[test]
+    fn a_file_shorter_than_the_window_is_its_own_window() {
+        let path = long_file("adopt_short.txt", 30);
+        let view = FileView::new(path.display().to_string());
+
+        assert_eq!(view.textarea.lines().len(), 30);
+        assert_eq!(view.window_start(), 0);
+    }
+
     /// The value the shipped constant actually takes, kept separate from the
     /// mechanism above: a file past `PREVIEW_LINES` still truncates.
     #[test]
@@ -1918,7 +1984,7 @@ mod tests {
 
         view.preview(&path);
 
-        assert_eq!(view.textarea.lines().len(), PREVIEW_LINES);
+        assert_eq!(view.source().len(), PREVIEW_LINES);
         assert!(view.truncated);
     }
 
@@ -1934,7 +2000,7 @@ mod tests {
 
         view.preview(&path);
 
-        assert_eq!(view.textarea.lines().len(), 10_000);
+        assert_eq!(view.source().len(), 10_000);
         assert!(
             !view.truncated,
             "a log-sized file was previewed rather than read whole"
