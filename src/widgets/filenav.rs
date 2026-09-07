@@ -159,6 +159,16 @@ pub(crate) struct Entry {
     pub matched: Match,
 }
 
+/// One row of the listing as `--emit files` sees it (#143).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ListedFile {
+    /// Absolute.
+    pub path: PathBuf,
+    /// `Some(true)` for a `Yes` answer, `Some(false)` for `No`, `None` while
+    /// unscanned — which hide mode keeps, since it might still match.
+    pub matched: Option<bool>,
+}
+
 impl Entry {
     fn style(&self) -> Style {
         match self.kind {
@@ -566,6 +576,25 @@ impl FileNav<'_> {
             .enumerate()
             .filter(|(_, entry)| !matches!(entry.kind, Kind::Dir | Kind::Parent))
             .map(|(index, entry)| (index, self.dir.join(&entry.name)))
+            .collect()
+    }
+
+    /// The files among the rows currently on screen, in row order (#143).
+    /// `files` reads every entry, because the scanner needs them all; this
+    /// reads the visible rows, so hide mode has already dropped the `No`s.
+    pub(crate) fn listed_files(&self) -> Vec<ListedFile> {
+        self.visible
+            .iter()
+            .filter_map(|&index| self.entries.get(index))
+            .filter(|entry| !matches!(entry.kind, Kind::Dir | Kind::Parent))
+            .map(|entry| ListedFile {
+                path: self.dir.join(&entry.name),
+                matched: match entry.matched {
+                    Match::Yes(_) => Some(true),
+                    Match::No => Some(false),
+                    Match::Unknown => None,
+                },
+            })
             .collect()
     }
 
@@ -2551,6 +2580,59 @@ mod tests {
                 .all(|(i, p)| nav.path_at(*i).as_ref() == Some(p))
         );
         assert!(files.iter().all(|(_, p)| p.is_absolute()));
+    }
+
+    /// `listed_files` is `files` restricted to the rows on screen: hide
+    /// mode drops the `No` answers, directories and `..` are never files, and
+    /// the answer travels with the path so the caller can count matches
+    /// without a second pass over the entries (#143).
+    #[test]
+    fn listed_files_follows_the_visible_rows_and_carries_the_answer() {
+        let nav = nav_over("listed_files", &["no.log", "unk.log", "yes.log"]);
+        std::fs::create_dir_all(nav.dir().join("sub")).expect("subdir");
+        let mut nav = FileNav::new(nav.dir().join("placeholder").display().to_string());
+        let idx = |nav: &FileNav<'_>, name: &str| {
+            nav.entries.iter().position(|e| e.name == name).expect(name)
+        };
+        nav.set_answer(idx(&nav, "no.log"), Match::No);
+        nav.set_answer(idx(&nav, "yes.log"), Match::Yes(Style::default()));
+        nav.restyle();
+
+        let dim: Vec<(String, Option<bool>)> = nav
+            .listed_files()
+            .into_iter()
+            .map(|f| {
+                (
+                    f.path.file_name().unwrap().to_string_lossy().into_owned(),
+                    f.matched,
+                )
+            })
+            .collect();
+        assert_eq!(
+            dim,
+            vec![
+                ("no.log".to_string(), Some(false)),
+                ("unk.log".to_string(), None),
+                ("yes.log".to_string(), Some(true)),
+            ],
+            "dim mode lists every file, with its answer"
+        );
+        assert!(
+            nav.listed_files().iter().all(|f| f.path.is_absolute()),
+            "paths are absolute"
+        );
+
+        nav.set_mode(Mode::FilteredOnly);
+        let hidden: Vec<String> = nav
+            .listed_files()
+            .into_iter()
+            .map(|f| f.path.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            hidden,
+            vec!["unk.log".to_string(), "yes.log".to_string()],
+            "hide mode drops the No, keeps the unscanned"
+        );
     }
 
     #[test]
