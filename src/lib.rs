@@ -4122,6 +4122,36 @@ mod tests {
         );
     }
 
+    /// The sequence from #150: `!`, then `Enter` on a filter row to switch
+    /// it back on by hand, then `!` again. The second `!` sees an enabled
+    /// filter and must disable it — it used to find the capture still
+    /// pending and do nothing, and every `!` after it did nothing too.
+    #[test]
+    fn toggling_a_filter_by_hand_after_bang_does_not_leave_bang_inert() {
+        let mut app = app_over_file("bang_after_toggle", "alpha\nbeta\n");
+        for pattern in ["alpha", "beta"] {
+            key(&mut app, KeyCode::Char('f'));
+            key(&mut app, KeyCode::Char('i'));
+            typed(&mut app, pattern);
+            key(&mut app, KeyCode::Enter);
+        }
+        key(&mut app, KeyCode::Char('!'));
+        assert!(!app.filters.any_enabled(), "sanity: ! disabled both");
+
+        focus_filter_pane(&mut app);
+        key(&mut app, KeyCode::Enter);
+        assert!(app.filters.any_enabled(), "sanity: Enter re-enabled a row");
+
+        key(&mut app, KeyCode::Char('!'));
+        assert!(
+            !app.filters.any_enabled(),
+            "! went inert after a filter was toggled by hand"
+        );
+
+        key(&mut app, KeyCode::Char('!'));
+        assert!(app.filters.any_enabled(), "! did not restore anything");
+    }
+
     /// The bottom row when no prompt is open.
     fn status_line(app: &mut App) -> String {
         let mut buf = Buffer::empty(AREA);
