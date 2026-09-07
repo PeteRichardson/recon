@@ -436,6 +436,16 @@ impl FileNav<'_> {
         self.step_to(reverse, |entry| matches!(entry.matched, Match::Yes(_)))
     }
 
+    /// Whether any file the scan could answer for is still `Unknown` (#158):
+    /// what tells "not scanned yet" apart from "no file matches". Only
+    /// readable entries count — a directory, `..` or a special file is
+    /// never scanned and would read as unanswered for ever.
+    pub(crate) fn any_unscanned(&self) -> bool {
+        self.entries
+            .iter()
+            .any(|entry| entry.kind.is_readable() && entry.matched == Match::Unknown)
+    }
+
     /// The selected entry's file name, for reporting.
     pub(crate) fn selected_name(&self) -> Option<String> {
         let path = self.selected_path()?;
