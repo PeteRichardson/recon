@@ -300,11 +300,13 @@ This section and the in-app overlay both describe that code.
 
 The four would drift silently, so they don't have to be checked by hand:
 `KEYMAP` in `src/help.rs` is the table the overlay draws, and
-`every_bound_key_is_documented` reads all three source locations back at test
-time and fails when a key is bound in a `Char(..)` arm and named by no row.
-Adding a binding without documenting it breaks the build. The test says nothing
-about *this* section, which is still hand-maintained — so a new key needs a row
-here too.
+`every_bound_key_is_documented` reads the source files back at test time —
+`lib.rs`, `viewport.rs` and every widget, the profile picker included — and
+fails when a key is bound in a `KeyCode::…` / `Key::…` arm and named by no row:
+a character in `Char(..)`, or a named key such as `PageDown`, `Home` or
+`Shift-Tab`. Adding a binding without documenting it breaks the build. The
+test says nothing about *this* section, which is still hand-maintained — so a
+new key needs a row here too.
 
 Every key lives in one of four layers, checked in this order, and the tables
 below follow them. A **prompt**, while open, takes every key. **Global** keys

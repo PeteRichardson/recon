@@ -10,10 +10,11 @@
 //!
 //! So `KEYMAP` below is the one list this crate keeps, and
 //! `every_bound_key_is_documented` reads the *source files* back at test time
-//! and fails when a character bound in a `KeyCode::Char(..)` / `Key::Char(..)`
-//! arm is not named by any row here. That is the cheapest of the three options
-//! #25 weighed, and it catches the common case: a new binding added without
-//! being documented.
+//! and fails when a key bound in a `KeyCode::…` / `Key::…` arm — a character
+//! in `Char(..)`, or a named key such as `PageDown` or `BackTab` — is not
+//! named by any row here. That is the cheapest of the three options #25
+//! weighed, and it catches the common case: a new binding added without being
+//! documented.
 //!
 //! It does not catch the reverse (a row describing a key that no longer
 //! exists), and it deliberately says nothing about the README — that stays
@@ -41,31 +42,86 @@ pub struct Binding {
     pub action: &'static str,
 }
 
+/// A key as the drift test sees it: what a `KeyCode::…` / `Key::…` arm binds
+/// and what a `KEYMAP` label names, in one currency so the two can be
+/// compared (#162).
+///
+/// `Named` carries the `KeyCode` variant's identifier — `PageDown`, `BackTab`,
+/// `Esc` — which is the spelling both the source and the labels have to
+/// agree on. `F` stands for every function key: `KeyCode::F(n)` is one arm
+/// whichever `n` it matches.
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Key {
+    Char(char),
+    Named(&'static str),
+}
+
+/// The `KeyCode` variants a label may name, spelled as the variants are.
+/// `Shift-Tab` is the one label that maps elsewhere: crossterm reports it as
+/// `BackTab`, not `Tab` with a modifier.
+#[cfg(test)]
+const NAMED_KEYS: &[&str] = &[
+    "Backspace",
+    "Enter",
+    "Left",
+    "Right",
+    "Up",
+    "Down",
+    "Home",
+    "End",
+    "PageUp",
+    "PageDown",
+    "Tab",
+    "BackTab",
+    "Delete",
+    "Insert",
+    "Esc",
+];
+
 impl Binding {
-    /// The characters this row documents, for the drift test.
+    /// The keys this row documents, for the drift test.
     ///
     /// A label is a character binding when it is a single character, or
     /// `Ctrl-` plus one — `Ctrl-e` documents `Key::Char('e')` with the modifier
     /// held. `space` is spelled out because a bare ` ` in a table reads as an
-    /// empty cell. Everything else (`Tab`, `Enter`, `PageDown`, `printable`)
-    /// names a key that is not a `Char`, and yields nothing.
+    /// empty cell. A label spelled like a `KeyCode` variant (`Tab`, `Enter`,
+    /// `PageDown`) documents that named key; `Shift-Tab` documents `BackTab`,
+    /// which is what the terminal actually reports; `F1`…`F12` document the
+    /// one `F(_)` arm. Everything else — `printable`, a chain such as `f i` —
+    /// names no single key and yields nothing.
     ///
-    /// Test-only for now: nothing in the running app needs to know which
-    /// characters a row covers. Generating the README's tables from `KEYMAP`
-    /// would, and this is the piece that would make it possible.
+    /// Test-only for now: nothing in the running app needs to know which keys
+    /// a row covers. Generating the README's tables from `KEYMAP` would, and
+    /// this is the piece that would make it possible.
     #[cfg(test)]
-    fn codes(&self) -> impl Iterator<Item = char> + '_ {
+    fn codes(&self) -> impl Iterator<Item = Key> + '_ {
         self.keys.iter().flat_map(|label| {
             if *label == "space" {
-                return vec![' '];
+                return vec![Key::Char(' ')];
             }
-            let bare = label.strip_prefix("Ctrl-").unwrap_or(label);
+            if *label == "Shift-Tab" {
+                return vec![Key::Named("BackTab")];
+            }
+            let bare = label
+                .strip_prefix("Ctrl-")
+                .or_else(|| label.strip_prefix("Alt-"))
+                .unwrap_or(label);
+            if let Some(named) = NAMED_KEYS.iter().find(|named| **named == bare) {
+                return vec![Key::Named(named)];
+            }
+            if bare.len() > 1
+                && bare.starts_with('F')
+                && bare[1..].chars().all(|c| c.is_ascii_digit())
+            {
+                return vec![Key::Named("F")];
+            }
             let chars: Vec<char> = bare.chars().collect();
             match chars.as_slice() {
-                [c] => vec![*c],
+                [c] => vec![Key::Char(*c)],
                 // `1-9`: one label, nine keys. Only for a bare range — a
                 // `Ctrl-` prefix was stripped above, so `Ctrl-d` is `d`.
-                [a, '-', b] if a < b => (*a..=*b).collect(),
+                [a, '-', b] if a < b => (*a..=*b).map(Key::Char).collect(),
                 _ => Vec::new(),
             }
         })
@@ -213,9 +269,12 @@ pub const KEYMAP: &[Section] = &[
     Section {
         title: "Shared motions",
         bindings: &[
+            // The arrows are in `keys`, not the action text, so the drift
+            // test can see them (#162): `Up`/`Down` are bound in every pane
+            // and were named by no row. The row is narrower for it.
             Binding {
-                keys: &["j", "k"],
-                action: "Down / up a row (also the arrow keys)",
+                keys: &["j", "k", "Down", "Up"],
+                action: "Down / up a row",
             },
             Binding {
                 keys: &["g", "G"],
@@ -627,32 +686,66 @@ mod tests {
             "src/widgets/filterlist.rs",
             include_str!("widgets/filterlist.rs"),
         ),
+        // The profile picker's own `j`/`k`/`Up`/`Down`/`Enter`/`Esc` (#162).
+        ("src/widgets/picker.rs", include_str!("widgets/picker.rs")),
     ];
 
-    /// The characters bound by `Char(..)` patterns in `source`.
+    /// Where a source file's own test module begins. Everything after it is
+    /// fixtures pressing keys by the hundred, and a `KeyCode::Char('z')` in
+    /// an assertion is not a binding.
     ///
-    /// Scans to the file's own test module and stops: fixtures press keys by
-    /// the hundred, and a `KeyCode::Char('z')` in an assertion is not a
-    /// binding. Deliberately a scan rather than a regex, so `Char(c @ ('n' |
-    /// 'N'))` — the shape `n`/`N` are actually written in — yields both
-    /// characters instead of neither.
-    fn bound_chars(source: &str) -> BTreeSet<char> {
-        let code = source.split("\n#[cfg(test)]").next().unwrap_or(source);
+    /// The marker is the module header, not the bare attribute: `lib.rs`
+    /// carries `#[cfg(test)] pub(crate) mod fixtures;` at line 263 of twelve
+    /// thousand and `fileview.rs` opens with a `#[cfg(test)] use`, so a split
+    /// on the attribute alone stopped the scan before either file's first
+    /// binding. Every global key went unchecked, and the test kept passing
+    /// because nothing happened to be undocumented (#162).
+    const TEST_MODULE: &str = "\n#[cfg(test)]\nmod tests";
+
+    /// The keys bound in `source`: every character in a `Char(..)` pattern,
+    /// and every named `KeyCode::…` / `Key::…` variant — `Enter`, `PageDown`,
+    /// `BackTab`, with `F(_)` read as `F`.
+    ///
+    /// Deliberately a scan rather than a regex, so `Char(c @ ('n' | 'N'))` —
+    /// the shape `n`/`N` are actually written in — yields both characters
+    /// instead of neither.
+    fn bound_keys(source: &str) -> BTreeSet<Key> {
+        let code = source.split(TEST_MODULE).next().unwrap_or(source);
         let mut found = BTreeSet::new();
-        for (start, matched) in code.match_indices("Char(") {
-            let rest = &code[start + matched.len()..];
-            // The first `)` closes either the pattern itself (`Char('q')`) or
-            // the or-pattern inside it (`Char(c @ ('n' | 'N'))`). Both hold
-            // every character the arm binds.
-            let end = rest.find(')').unwrap_or(rest.len());
-            let mut chars = rest[..end].chars();
-            while let Some(c) = chars.next() {
-                if c == '\'' {
-                    if let Some(bound) = chars.next() {
-                        found.insert(bound);
+        for prefix in ["KeyCode::", "Key::"] {
+            for (start, matched) in code.match_indices(prefix) {
+                let rest = &code[start + matched.len()..];
+                let ident: &str = rest
+                    .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+                    .next()
+                    .unwrap_or("");
+                if !ident.starts_with(|c: char| c.is_ascii_uppercase()) {
+                    continue;
+                }
+                if ident != "Char" {
+                    if let Some(named) = NAMED_KEYS.iter().find(|named| **named == ident) {
+                        found.insert(Key::Named(named));
+                    } else if ident == "F" {
+                        found.insert(Key::Named("F"));
                     }
-                    // Skip the closing quote so `'''` cannot be misread.
-                    chars.next();
+                    continue;
+                }
+                let Some(rest) = rest[ident.len()..].strip_prefix('(') else {
+                    continue;
+                };
+                // The first `)` closes either the pattern itself (`Char('q')`)
+                // or the or-pattern inside it (`Char(c @ ('n' | 'N'))`). Both
+                // hold every character the arm binds.
+                let end = rest.find(')').unwrap_or(rest.len());
+                let mut chars = rest[..end].chars();
+                while let Some(c) = chars.next() {
+                    if c == '\'' {
+                        if let Some(bound) = chars.next() {
+                            found.insert(Key::Char(bound));
+                        }
+                        // Skip the closing quote so `'''` cannot be misread.
+                        chars.next();
+                    }
                 }
             }
         }
@@ -661,7 +754,7 @@ mod tests {
 
     #[test]
     fn every_bound_key_is_documented() {
-        let documented: BTreeSet<char> = KEYMAP
+        let documented: BTreeSet<Key> = KEYMAP
             .iter()
             .flat_map(|section| section.bindings)
             .flat_map(Binding::codes)
@@ -669,9 +762,9 @@ mod tests {
 
         let mut missing = Vec::new();
         for (path, source) in SOURCES {
-            for c in bound_chars(source) {
-                if !documented.contains(&c) {
-                    missing.push(format!("{c:?} bound in {path}"));
+            for key in bound_keys(source) {
+                if !documented.contains(&key) {
+                    missing.push(format!("{key:?} bound in {path}"));
                 }
             }
         }
@@ -694,10 +787,12 @@ mod tests {
     /// would be bound and undocumented with nothing to say so (#95).
     #[test]
     fn the_long_range_table_is_scanned_too() {
-        let bound = bound_chars(include_str!("viewport.rs"));
+        let bound = bound_keys(include_str!("viewport.rs"));
 
         assert!(
-            ['g', 'G', '{', '}'].iter().all(|c| bound.contains(c)),
+            ['g', 'G', '{', '}']
+                .iter()
+                .all(|c| bound.contains(&Key::Char(*c))),
             "src/viewport.rs no longer holds the long-range table; \
              this test and SOURCES both need to follow it: {bound:?}"
         );
@@ -716,18 +811,77 @@ mod tests {
         let source = "KeyCode::Char('q') KeyCode::Char(c @ ('n' | 'N'))";
 
         assert_eq!(
-            bound_chars(source),
-            BTreeSet::from(['q', 'n', 'N']),
+            bound_keys(source),
+            BTreeSet::from([Key::Char('q'), Key::Char('n'), Key::Char('N')]),
             "an or-pattern binding was not read"
+        );
+    }
+
+    /// Named keys are bindings too (#162): `Home`, `PageDown` and `BackTab`
+    /// used to be outside the test's reach, along with every F-key. The
+    /// textarea's `Key::…` spelling counts the same as crossterm's, and a
+    /// `KeyModifiers::…` or a non-key variant such as `Null` does not.
+    #[test]
+    fn the_scan_reads_named_keys() {
+        let source = "KeyCode::PageDown | Key::Home => x, KeyCode::BackTab, KeyCode::F(5), \
+                      KeyModifiers::CONTROL, KeyCode::Null";
+
+        assert_eq!(
+            bound_keys(source),
+            BTreeSet::from([
+                Key::Named("PageDown"),
+                Key::Named("Home"),
+                Key::Named("BackTab"),
+                Key::Named("F"),
+            ]),
+            "a named key was not read, or a non-key identifier was"
         );
     }
 
     /// Keys pressed in a file's own tests are not bindings.
     #[test]
     fn the_scan_stops_at_the_test_module() {
-        let source = "KeyCode::Char('q')\n#[cfg(test)]\nKeyCode::Char('\u{263a}')";
+        let source = "KeyCode::Char('q')\n#[cfg(test)]\nmod tests {\nKeyCode::Char('\u{263a}')";
 
-        assert_eq!(bound_chars(source), BTreeSet::from(['q']));
+        assert_eq!(bound_keys(source), BTreeSet::from([Key::Char('q')]));
+    }
+
+    /// A `#[cfg(test)]` on a `use` or a fixtures module is not the test
+    /// module, and must not end the scan (#162): `lib.rs` has one at line 263
+    /// of twelve thousand, and the old split there left every global key
+    /// unchecked.
+    #[test]
+    fn the_scan_does_not_stop_at_an_early_cfg_test_attribute() {
+        let source = "#[cfg(test)]\nuse x;\nKeyCode::Char('q')\n#[cfg(test)]\npub(crate) mod fixtures;\n\
+                      KeyCode::Enter\n#[cfg(test)]\nmod tests {\nKeyCode::Char('z')";
+
+        assert_eq!(
+            bound_keys(source),
+            BTreeSet::from([Key::Char('q'), Key::Named("Enter")])
+        );
+    }
+
+    /// The scan reaches the global keys at all — the regression #162 found:
+    /// every `lib.rs` binding sits past the fixtures module's attribute. And
+    /// it reaches the picker, which `SOURCES` did not list.
+    #[test]
+    fn the_global_keys_and_the_picker_are_scanned() {
+        let bound = bound_keys(include_str!("lib.rs"));
+        assert!(
+            bound.contains(&Key::Char('q')) && bound.contains(&Key::Named("BackTab")),
+            "src/lib.rs's global keys are not reached by the scan: {bound:?}"
+        );
+        let bound = bound_keys(include_str!("widgets/picker.rs"));
+        assert!(
+            bound.contains(&Key::Named("Esc")),
+            "src/widgets/picker.rs is not reached by the scan: {bound:?}"
+        );
+        assert!(
+            SOURCES
+                .iter()
+                .any(|(path, _)| *path == "src/widgets/picker.rs"),
+            "src/widgets/picker.rs binds keys, but SOURCES does not list it"
+        );
     }
 
     /// `codes` derives from the labels that get drawn, so a label shape it
@@ -735,14 +889,30 @@ mod tests {
     #[test]
     fn a_labels_bound_character_is_derived_from_how_it_is_drawn() {
         let binding = Binding {
-            keys: &["Ctrl-e", "H", "space", "PageDown"],
+            keys: &[
+                "Ctrl-e",
+                "H",
+                "space",
+                "PageDown",
+                "Shift-Tab",
+                "F3",
+                "f i",
+                "printable",
+            ],
             action: "irrelevant",
         };
 
         assert_eq!(
             binding.codes().collect::<Vec<_>>(),
-            vec!['e', 'H', ' '],
-            "a key label was read as the wrong character"
+            vec![
+                Key::Char('e'),
+                Key::Char('H'),
+                Key::Char(' '),
+                Key::Named("PageDown"),
+                Key::Named("BackTab"),
+                Key::Named("F"),
+            ],
+            "a key label was read as the wrong key"
         );
     }
 
@@ -752,15 +922,15 @@ mod tests {
             keys: &["1-9"],
             action: "",
         };
-        let codes: Vec<char> = binding.codes().collect();
-        assert_eq!(codes, ('1'..='9').collect::<Vec<_>>());
+        let codes: Vec<Key> = binding.codes().collect();
+        assert_eq!(codes, ('1'..='9').map(Key::Char).collect::<Vec<_>>());
 
         // `Ctrl-d` is not a range: one key, `d`.
         let binding = Binding {
             keys: &["Ctrl-d"],
             action: "",
         };
-        assert_eq!(binding.codes().collect::<Vec<_>>(), vec!['d']);
+        assert_eq!(binding.codes().collect::<Vec<_>>(), vec![Key::Char('d')]);
     }
 
     /// The overlay is the model (#120 §15): one section per layer, in the
