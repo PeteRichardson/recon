@@ -1560,9 +1560,9 @@ impl Widget for &mut FileView<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fixtures::{fixture_dir, fixture_file};
     use std::fmt::Write as _;
     use std::fs;
-    use std::sync::Mutex;
 
     fn contents(view: &FileView<'_>) -> String {
         view.textarea.lines().join("\n")
@@ -1772,45 +1772,17 @@ mod tests {
         }
     }
 
-    /// Every fixture file name claimed so far in this process. `fixture` and
-    /// `byte_fixture` both write directly into `target/test-fixtures/<name>`,
-    /// so they share one namespace.
-    static FIXTURE_NAMES: Mutex<Vec<String>> = Mutex::new(Vec::new());
-
-    /// Panic loudly if `name` has already been used for a fixture file in
-    /// this process, instead of letting two tests race to write the same
-    /// path — the same class of bug that caused a release-only flake in the
-    /// `target/test-appdirs` fixtures (see `lib.rs`'s `claim_fixture_dir`).
-    fn claim_fixture_name(name: &str) {
-        let mut names = FIXTURE_NAMES
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        assert!(
-            !names.iter().any(|used| used == name),
-            "fixture file name {name:?} is already in use by another test — pick a unique name"
-        );
-        names.push(name.to_string());
-    }
-
     /// Write a fixture under `target/` so the tests do not depend on whatever
-    /// happens to be in the working tree.
+    /// happens to be in the working tree. Claimed through the shared
+    /// registry (#164), so a name another module's directory fixture uses is
+    /// refused here too.
     fn fixture(name: &str, contents: &str) -> std::path::PathBuf {
-        claim_fixture_name(name);
-        let dir = Path::new("target/test-fixtures");
-        fs::create_dir_all(dir).expect("create fixture dir");
-        let path = dir.join(name);
-        fs::write(&path, contents).expect("write fixture");
-        path
+        fixture_file(name, contents.as_bytes())
     }
 
     /// Write a fixture of raw bytes, for content that is not valid UTF-8.
     fn byte_fixture(name: &str, bytes: &[u8]) -> std::path::PathBuf {
-        claim_fixture_name(name);
-        let dir = Path::new("target/test-fixtures");
-        fs::create_dir_all(dir).expect("create fixture dir");
-        let path = dir.join(name);
-        fs::write(&path, bytes).expect("write fixture");
-        path
+        fixture_file(name, bytes)
     }
 
     fn long_file(name: &str, lines: usize) -> std::path::PathBuf {
@@ -2904,10 +2876,7 @@ mod tests {
 
     /// A directory of known contents, for the listing tests.
     fn dir_fixture(name: &str, files: &[&str], subdirs: &[&str]) -> std::path::PathBuf {
-        claim_fixture_name(name);
-        let dir = Path::new("target/test-fixtures").join(name);
-        fs::remove_dir_all(&dir).ok();
-        fs::create_dir_all(&dir).expect("create fixture dir");
+        let dir = fixture_dir(name);
         for file in files {
             fs::write(dir.join(file), "x").expect("write fixture file");
         }

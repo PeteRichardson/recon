@@ -141,6 +141,8 @@ pub mod document;
 pub mod editor;
 pub mod filter;
 pub mod filtersets;
+#[cfg(test)]
+pub(crate) mod fixtures;
 pub mod help;
 mod layout;
 mod path;
@@ -2671,6 +2673,7 @@ mod tests {
     // layout tests still assert against them by name, so they are imported
     // here rather than through `use super::*`.
     use crate::filter::Verdict;
+    use crate::fixtures::{fixture_dir, fixture_path as fixture_dir_path};
     use crate::layout::{
         MAX_NAV_WIDTH, MIN_AUTO_FILTER_HEIGHT, MIN_AUTO_NAV_WIDTH, MIN_FILE_VIEW_WIDTH,
         MIN_FILTER_HEIGHT, MIN_NAV_HEIGHT, MIN_PANE_WIDTH,
@@ -2680,7 +2683,6 @@ mod tests {
     use ratatui::style::Modifier; // the tests assert on Modifier::DIM
     use std::fmt::Write as _;
     use std::fs;
-    use std::sync::Mutex;
 
     /// `n` newline-terminated lines, `line 0` through `line n-1`.
     ///
@@ -2702,71 +2704,9 @@ mod tests {
         height: 10,
     };
 
-    /// Every fixture directory name claimed so far in this process.
-    /// `app_over` and `app_over_file` both derive `target/test-appdirs/<name>`
-    /// from `name`, so they share one namespace.
-    static FIXTURE_DIR_NAMES: Mutex<Vec<String>> = Mutex::new(Vec::new());
-
-    /// Panic loudly if `name` has already been used for a fixture directory
-    /// in this process, instead of letting two tests race to
-    /// `remove_dir_all`/`create_dir_all` the same path. That race is exactly
-    /// what caused a real, release-only flake: both tests "succeeded" and
-    /// just clobbered each other's files depending on interleaving.
-    ///
-    /// **Compared case-insensitively, because the filesystem is** (#69). This
-    /// guard was `used == name` and so had a hole exactly the shape of the bug
-    /// it exists to prevent: macOS ships case-insensitive APFS, so `o_ctrl` and
-    /// `O_ctrl` name one directory, and five `o_*`/`O_*` fixture pairs sat on
-    /// top of each other undetected. The failure was a `NotFound` on
-    /// `fs::write` roughly one run in five — one test's `remove_dir_all`
-    /// landing between the other's `create_dir_all` and its `fs::write`.
-    ///
-    /// Deliberately not conditioned on the host filesystem. A guard that only
-    /// fired on macOS would let a colliding pair be added on Linux and
-    /// rediscovered by whoever next ran the suite on a Mac; refusing the pair
-    /// everywhere costs nothing but a fixture rename.
-    ///
-    /// `eq_ignore_ascii_case` rather than a full Unicode case fold: fixture
-    /// names here are hand-written ASCII identifiers, and the ASCII form needs
-    /// no allocation. A non-ASCII fixture name would slip through, which is a
-    /// smaller hole than the one this closes and not one this suite can reach.
-    fn claim_fixture_dir(name: &str) {
-        let mut names = FIXTURE_DIR_NAMES
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        assert!(
-            !names.iter().any(|used| used.eq_ignore_ascii_case(name)),
-            "fixture directory name {name:?} is already in use by another test \
-             (compared case-insensitively — macOS treats {name:?} and its \
-             other-case spellings as one directory) — pick a unique name"
-        );
-        names.push(name.to_string());
-    }
-
-    /// Two fixture names differing only in case are a collision, not two names.
-    ///
-    /// macOS ships a case-insensitive filesystem by default, so
-    /// `target/test-appdirs/o_ctrl` and `target/test-appdirs/O_ctrl` are one
-    /// directory. A case-sensitive guard sees two distinct strings, says
-    /// nothing, and lets the two tests race to `remove_dir_all` and
-    /// `create_dir_all` the same path — one of them deleting the other's
-    /// `logs/` between its `create_dir_all` and its `fs::write` (#69).
-    ///
-    /// The probe names are deliberately not any real fixture's: claiming a name
-    /// here consumes it for the rest of the process.
-    #[test]
-    #[should_panic(expected = "already in use")]
-    fn a_fixture_name_differing_only_in_case_is_a_collision() {
-        claim_fixture_dir("zz_case_probe");
-        claim_fixture_dir("ZZ_CASE_PROBE");
-    }
-
     /// An app listing a directory with known entry names.
     fn app_over(name: &str, files: &[&str]) -> App<'static> {
-        claim_fixture_dir(name);
-        let dir = std::path::Path::new("target/test-appdirs").join(name);
-        fs::remove_dir_all(&dir).ok();
-        fs::create_dir_all(&dir).expect("create fixture dir");
+        let dir = fixture_dir(name);
         for file in files {
             fs::write(dir.join(file), "x").expect("write fixture");
         }
@@ -2779,10 +2719,7 @@ mod tests {
     /// `app_over`, with real contents. The app starts on a placeholder path
     /// that does not exist, so nothing is loaded until `open_file`.
     fn app_over_files(name: &str, files: &[(&str, &str)]) -> App<'static> {
-        claim_fixture_dir(name);
-        let dir = std::path::Path::new("target/test-appdirs").join(name);
-        fs::remove_dir_all(&dir).ok();
-        fs::create_dir_all(&dir).expect("create fixture dir");
+        let dir = fixture_dir(name);
         for (file, body) in files {
             fs::write(dir.join(file), body).expect("write fixture");
         }
@@ -3012,7 +2949,7 @@ mod tests {
     #[test]
     fn a_pinned_width_survives_navigating_to_another_directory() {
         let mut app = app_over("pinned", &["a.rs"]);
-        fs::create_dir_all("target/test-appdirs/pinned/subdir").expect("subdir");
+        fs::create_dir_all(fixture_dir_path("pinned").join("subdir")).expect("subdir");
         draw(&mut app);
         let divider = app.divider;
         drag_to(&mut app, divider, 55);
@@ -3405,7 +3342,7 @@ mod tests {
     fn a_nav_search_previews_the_matched_file() {
         let mut app = app_over("prompt_preview", &["alpha.rs", "gamma.rs"]);
         fs::write(
-            "target/test-appdirs/prompt_preview/gamma.rs",
+            fixture_dir_path("prompt_preview").join("gamma.rs"),
             "GAMMA MARKER\n",
         )
         .unwrap();
@@ -3538,9 +3475,7 @@ mod tests {
     /// silently dropped.
     #[test]
     fn a_configured_palette_colours_the_filters() {
-        let dir = std::path::Path::new("target/test-appdirs").join("configured_palette");
-        fs::remove_dir_all(&dir).ok();
-        fs::create_dir_all(&dir).expect("create fixture dir");
+        let dir = fixture_dir("configured_palette");
         fs::write(dir.join("a.rs"), "x").expect("write fixture");
 
         let mut app = App::new(&Config {
@@ -3580,10 +3515,7 @@ mod tests {
     /// claiming the fixture directory name first so a duplicate is rejected
     /// loudly rather than racing another test for the same path.
     fn fixture_path(name: &str, body: &str) -> std::path::PathBuf {
-        claim_fixture_dir(name);
-        let dir = std::path::Path::new("target/test-appdirs").join(name);
-        fs::remove_dir_all(&dir).ok();
-        fs::create_dir_all(&dir).expect("create fixture dir");
+        let dir = fixture_dir(name);
         let file = dir.join("log.txt");
         fs::write(&file, body).expect("write fixture");
         file
@@ -3724,9 +3656,7 @@ mod tests {
     /// itself would have produced.
     #[test]
     fn a_directory_argument_previews_the_first_entry() {
-        let dir = std::path::Path::new("target/test-appdirs/arg_is_a_dir");
-        fs::remove_dir_all(dir).ok();
-        fs::create_dir_all(dir).expect("create fixture dir");
+        let dir = fixture_dir("arg_is_a_dir");
         fs::write(dir.join("aaa.txt"), "first file contents\n").expect("write");
         fs::write(dir.join("zzz.txt"), "last file contents\n").expect("write");
 
@@ -3751,9 +3681,7 @@ mod tests {
     /// starting recon in a directory of large logs reads one of them whole.
     #[test]
     fn a_directory_argument_previews_rather_than_loads() {
-        let dir = std::path::Path::new("target/test-appdirs/arg_dir_bounded");
-        fs::remove_dir_all(dir).ok();
-        fs::create_dir_all(dir).expect("create fixture dir");
+        let dir = fixture_dir("arg_dir_bounded");
         // Past the line cap, which is what "previewed rather than loaded" now
         // means: below the cap the two are the same thing, deliberately, since
         // reading a log-sized file whole costs well under a millisecond.
@@ -3833,7 +3761,7 @@ mod tests {
         typed(&mut app, "beta");
         key(&mut app, KeyCode::Enter);
 
-        let dir = std::path::Path::new("target/test-appdirs/restyle_reload");
+        let dir = fixture_dir_path("restyle_reload");
         fs::write(dir.join("other.txt"), "beta again\nnothing\n").expect("write");
         app.perform(Action::Load(dir.join("other.txt")));
 
@@ -3859,7 +3787,7 @@ mod tests {
         assert_eq!(app.document.mode(), Mode::FilteredOnly, "sanity: hiding");
         assert_eq!(view_lines(&app), vec!["beta".to_string()]);
 
-        let dir = std::path::Path::new("target/test-appdirs/hide_mode_load");
+        let dir = fixture_dir_path("hide_mode_load");
         fs::write(dir.join("other.txt"), "beta again\nnothing\n").expect("write");
         app.perform(Action::Load(dir.join("other.txt")));
 
@@ -3888,7 +3816,7 @@ mod tests {
         key(&mut app, KeyCode::Enter);
         key(&mut app, KeyCode::Char('H'));
 
-        let dir = std::path::Path::new("target/test-appdirs/hide_mode_preview");
+        let dir = fixture_dir_path("hide_mode_preview");
         fs::write(dir.join("other.txt"), "beta again\nnothing\n").expect("write");
         app.perform(Action::Preview(dir.join("other.txt")));
 
@@ -3913,7 +3841,7 @@ mod tests {
         key(&mut app, KeyCode::Enter);
         key(&mut app, KeyCode::Char('H'));
 
-        let dir = std::path::Path::new("target/test-appdirs/hide_mode_no_match");
+        let dir = fixture_dir_path("hide_mode_no_match");
         fs::write(dir.join("quiet.txt"), "nothing\nhere\n").expect("write");
         app.perform(Action::Preview(dir.join("quiet.txt")));
 
@@ -3951,7 +3879,7 @@ mod tests {
             "sanity: the filter excluded every line"
         );
 
-        let dir = std::path::Path::new("target/test-appdirs/exclude_all_load");
+        let dir = fixture_dir_path("exclude_all_load");
         fs::write(dir.join("other.txt"), "noise three\nnoise four\n").expect("write");
         app.perform(Action::Load(dir.join("other.txt")));
 
@@ -3979,7 +3907,7 @@ mod tests {
         key(&mut app, KeyCode::Enter);
         key(&mut app, KeyCode::Char('H'));
 
-        let dir = std::path::Path::new("target/test-appdirs/hide_mode_untoggle");
+        let dir = fixture_dir_path("hide_mode_untoggle");
         fs::write(dir.join("other.txt"), "beta again\nnothing\n").expect("write");
         app.perform(Action::Load(dir.join("other.txt")));
         key(&mut app, KeyCode::Char('H'));
@@ -4004,8 +3932,7 @@ mod tests {
     #[test]
     fn reloading_the_same_file_reapplies_an_active_excluding_filter() {
         let mut app = app_over_file("reload_same_file", "alpha\nnoise\ngamma\n");
-        let path =
-            std::path::Path::new("target/test-appdirs/reload_same_file/log.txt").to_path_buf();
+        let path = fixture_dir_path("reload_same_file").join("log.txt");
 
         key(&mut app, KeyCode::Char('f'));
         key(&mut app, KeyCode::Char('x'));
@@ -4254,7 +4181,7 @@ mod tests {
         // Past the preview's line cap, so the view truncates and there is an
         // estimate to report.
         let body = numbered_lines(crate::widgets::fileview::PREVIEW_LINES + 100);
-        let dir = std::path::Path::new("target/test-appdirs/status_preview");
+        let dir = fixture_dir_path("status_preview");
         fs::write(dir.join("big.txt"), &body).expect("write");
         app.perform(Action::Preview(dir.join("big.txt")));
 
@@ -4454,9 +4381,7 @@ mod tests {
     /// unfiltered and the style vector stuck at the stale preview length.
     #[test]
     fn upgrading_a_truncated_preview_resyncs_styles_without_reloading() {
-        let dir = std::path::Path::new("target/test-appdirs").join("preview_upgrade_resync");
-        fs::remove_dir_all(&dir).ok();
-        fs::create_dir_all(&dir).expect("create fixture dir");
+        let dir = fixture_dir("preview_upgrade_resync");
         // Past PREVIEW_LINES, so the first preview is truncated. The match
         // sits inside the preview too, so it is visible both before and after
         // the upgrade to a full load.
@@ -5587,10 +5512,7 @@ mod tests {
     /// Like `app_over_file`, but the fixture file is named `file` so that a
     /// grammar can be found for it.
     fn app_over_named_file(dir: &str, file: &str, body: &str) -> App<'static> {
-        claim_fixture_dir(dir);
-        let dir = std::path::Path::new("target/test-appdirs").join(dir);
-        fs::remove_dir_all(&dir).ok();
-        fs::create_dir_all(&dir).expect("create fixture dir");
+        let dir = fixture_dir(dir);
         let path = dir.join(file);
         fs::write(&path, body).expect("write fixture");
         App::new(&Config {
@@ -5679,10 +5601,7 @@ mod tests {
 
     /// A `filters.toml` path under `target/` that does not exist yet.
     fn save_fixture(name: &str) -> std::path::PathBuf {
-        claim_fixture_dir(name);
-        let dir = std::path::Path::new("target/test-appdirs").join(name);
-        fs::remove_dir_all(&dir).ok();
-        dir.join("recon").join("filters.toml")
+        fixture_dir(name).join("recon").join("filters.toml")
     }
 
     #[test]
@@ -8004,10 +7923,7 @@ mod tests {
     /// puts the hit on row 1, so a leak is observable as the cursor moving.
     #[test]
     fn n_in_the_navigator_does_not_move_the_file_view_cursor() {
-        claim_fixture_dir("n_nav");
-        let dir = std::path::Path::new("target/test-appdirs").join("n_nav");
-        fs::remove_dir_all(&dir).ok();
-        fs::create_dir_all(&dir).expect("create fixture dir");
+        let dir = fixture_dir("n_nav");
         fs::write(dir.join("alpha.log"), "alpha\nx\n").expect("write fixture");
 
         let mut app = App::new(&Config {
@@ -8275,10 +8191,7 @@ mod tests {
     /// past `PREVIEW_LINES` would land on the bounded preview and miss it.
     #[test]
     fn comma_lands_on_the_last_hit_of_a_file_that_was_only_previewed() {
-        claim_fixture_dir("comma_lands_on_truncated");
-        let dir = std::path::Path::new("target/test-appdirs").join("comma_lands_on_truncated");
-        fs::remove_dir_all(&dir).ok();
-        fs::create_dir_all(&dir).expect("create fixture dir");
+        let dir = fixture_dir("comma_lands_on_truncated");
         fs::write(dir.join("a.log"), "hit a\n").expect("write fixture");
         // Past PREVIEW_LINES, so the first preview of this file is truncated;
         // the hit sits beyond the preview boundary, reachable only once
@@ -9553,10 +9466,7 @@ mod tests {
     /// wrap inside the preview and never reach a hit past it.
     #[test]
     fn n_promotes_a_truncated_preview_before_stepping() {
-        claim_fixture_dir("n_truncated_promote");
-        let dir = std::path::Path::new("target/test-appdirs").join("n_truncated_promote");
-        fs::remove_dir_all(&dir).ok();
-        fs::create_dir_all(&dir).expect("create fixture dir");
+        let dir = fixture_dir("n_truncated_promote");
         // Past PREVIEW_LINES, so the first preview is truncated; the hit sits
         // beyond the preview boundary, reachable only once promoted.
         let hit_at = crate::widgets::fileview::PREVIEW_LINES + 50;
@@ -9603,10 +9513,7 @@ mod tests {
     /// stays wherever it started.
     #[test]
     fn slash_promotes_a_truncated_preview_before_landing_on_a_hit() {
-        claim_fixture_dir("slash_truncated_promote");
-        let dir = std::path::Path::new("target/test-appdirs").join("slash_truncated_promote");
-        fs::remove_dir_all(&dir).ok();
-        fs::create_dir_all(&dir).expect("create fixture dir");
+        let dir = fixture_dir("slash_truncated_promote");
         // Same shape as the `n` fixture above: past PREVIEW_LINES, with the
         // only hit beyond the preview boundary.
         let hit_at = crate::widgets::fileview::PREVIEW_LINES + 50;
@@ -9900,7 +9807,7 @@ mod tests {
         typed(&mut app, "beta");
         key(&mut app, KeyCode::Enter);
 
-        let dir = std::path::Path::new("target/test-appdirs/hl_reload");
+        let dir = fixture_dir_path("hl_reload");
         fs::write(dir.join("other.txt"), "beta again\nnothing\n").expect("write");
         app.perform(Action::Load(dir.join("other.txt")));
 
@@ -9966,9 +9873,7 @@ mod tests {
     /// editor. Pinning the top rung takes the environment out of it. The ladder
     /// below is unit-tested with the environment injected, in `editor.rs`.
     fn app_over_project(name: &str, body: &str) -> (App<'static>, std::path::PathBuf) {
-        claim_fixture_dir(name);
-        let root = std::path::Path::new("target/test-appdirs").join(name);
-        fs::remove_dir_all(&root).ok();
+        let root = fixture_dir(name);
         fs::create_dir_all(root.join("logs")).expect("create fixture project");
         fs::write(root.join("go.mod"), "module fixture\n").expect("write marker");
         let file = root.join("logs/log.txt");
@@ -10059,10 +9964,7 @@ mod tests {
     /// command — this is the whole ladder in `config.rs` proved end to end.
     #[test]
     fn a_configured_template_is_what_runs() {
-        claim_fixture_dir("o_template");
-        let root = std::path::Path::new("target/test-appdirs/o_template");
-        fs::remove_dir_all(root).ok();
-        fs::create_dir_all(root).expect("create fixture dir");
+        let root = fixture_dir("o_template");
         fs::write(root.join("go.mod"), "module fixture\n").expect("write marker");
         let file = root.join("log.txt");
         fs::write(&file, "alpha\n").expect("write fixture");
@@ -10080,7 +9982,7 @@ mod tests {
             launcher.only_command(),
             [
                 "code".to_string(),
-                absolute(root),
+                absolute(&root),
                 "-g".to_string(),
                 format!("{}:1", absolute(&file)),
             ]
@@ -10112,10 +10014,7 @@ mod tests {
     /// never stops recon opening a log.
     #[test]
     fn a_broken_template_is_reported_rather_than_run() {
-        claim_fixture_dir("o_broken_template");
-        let root = std::path::Path::new("target/test-appdirs/o_broken_template");
-        fs::remove_dir_all(root).ok();
-        fs::create_dir_all(root).expect("create fixture dir");
+        let root = fixture_dir("o_broken_template");
         let file = root.join("log.txt");
         fs::write(&file, "alpha\n").expect("write fixture");
 
@@ -10138,10 +10037,7 @@ mod tests {
     /// editor as though it existed.
     #[test]
     fn o_refuses_a_file_that_is_not_there() {
-        claim_fixture_dir("o_missing");
-        let dir = std::path::Path::new("target/test-appdirs/o_missing");
-        fs::remove_dir_all(dir).ok();
-        fs::create_dir_all(dir).expect("create fixture dir");
+        let dir = fixture_dir("o_missing");
 
         let mut app = App::new(&Config {
             path: dir.join("nope.log").display().to_string(),
@@ -10357,10 +10253,7 @@ mod tests {
     /// by dropping the `{project}` entry rather than by string surgery.
     #[test]
     fn the_file_template_is_derived_from_the_project_template() {
-        claim_fixture_dir("shift_o_derived");
-        let root = std::path::Path::new("target/test-appdirs/shift_o_derived");
-        fs::remove_dir_all(root).ok();
-        fs::create_dir_all(root).expect("create fixture dir");
+        let root = fixture_dir("shift_o_derived");
         fs::write(root.join("go.mod"), "module fixture\n").expect("write marker");
         let file = root.join("log.txt");
         fs::write(&file, "alpha\n").expect("write fixture");
@@ -10388,10 +10281,7 @@ mod tests {
     /// on the ladder, proved through the key rather than in isolation.
     #[test]
     fn an_explicit_file_template_beats_the_derived_one() {
-        claim_fixture_dir("shift_o_explicit");
-        let root = std::path::Path::new("target/test-appdirs/shift_o_explicit");
-        fs::remove_dir_all(root).ok();
-        fs::create_dir_all(root).expect("create fixture dir");
+        let root = fixture_dir("shift_o_explicit");
         let file = root.join("log.txt");
         fs::write(&file, "alpha\n").expect("write fixture");
 
@@ -10419,10 +10309,7 @@ mod tests {
     /// that catches the arms being wired to the same field.
     #[test]
     fn the_two_keys_do_not_share_a_template() {
-        claim_fixture_dir("shift_o_distinct");
-        let root = std::path::Path::new("target/test-appdirs/shift_o_distinct");
-        fs::remove_dir_all(root).ok();
-        fs::create_dir_all(root).expect("create fixture dir");
+        let root = fixture_dir("shift_o_distinct");
         let file = root.join("log.txt");
         fs::write(&file, "alpha\n").expect("write fixture");
 
