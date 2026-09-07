@@ -288,6 +288,12 @@ pub struct SetToSave<'a> {
 
 /// Append `set` to the file's `text`, touching nothing else.
 ///
+/// A `[sets.<name>]` already in `text` is refused, not replaced (#154):
+/// `Table::insert` would overwrite it, comment and all, and the caller's
+/// name check runs over the sets it *loaded*, which is not the file as it
+/// is now — a table added by hand since startup is exactly what it cannot
+/// see.
+///
 /// `toml_edit` rather than `toml`'s serializer, which stays off in
 /// `Cargo.toml`: a hand-edited file's comments, key order and whitespace all
 /// survive, and the new tables go at the end. A pattern goes in as a
@@ -313,6 +319,12 @@ pub fn append_set(text: &str, set: &SetToSave<'_>) -> Result<String, String> {
         .as_table_mut()
         .ok_or_else(|| "`sets` is not a table".to_string())?;
     sets.set_implicit(true);
+    if sets.contains_key(set.name) {
+        return Err(format!(
+            "a set named {:?} is already in filters.toml; it was added since recon started",
+            set.name
+        ));
+    }
 
     let mut table = Table::new();
     if !set.default.is_empty() {
@@ -650,6 +662,28 @@ sense = "context"
         assert!(after.contains("[sets.n]"), "{after}");
         assert!(!after.contains("profiles"), "no empty default: {after}");
         assert!(parse(&after, Path::new("t")).is_ok());
+    }
+
+    /// `Table::insert` would replace an existing `[sets.<name>]`, comment
+    /// and all. The caller checks the name against what it loaded, which is
+    /// not the file as it is now (#154).
+    #[test]
+    fn append_set_refuses_a_name_the_file_already_holds() {
+        let before = "# my file\n[sets.bug]\n[[sets.bug.filters]]\npattern = 'ORIGINAL'\n";
+        let err = append_set(
+            before,
+            &SetToSave {
+                name: "bug",
+                filters: vec![("NEW".into(), Sense::Include)],
+                default: vec![],
+            },
+        )
+        .expect_err("refused");
+        assert!(
+            err.contains("a set named \"bug\" is already in filters.toml"),
+            "{err}"
+        );
+        assert!(err.contains("since recon started"), "{err}");
     }
 
     /// A pattern a literal string cannot hold falls back to a basic string,

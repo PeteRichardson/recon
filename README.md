@@ -544,9 +544,13 @@ are on right now, so the set opens the way it was saved. Comments and every
 existing table survive untouched; the file is created if it does not exist.
 Then the scratch set becomes that set in place, enabled, with the same flags,
 and the other sets keep whatever state they are in. A name already in use, an
-empty name, or an empty scratch set is refused with a message and nothing is
-written. Priority, `autoload` and colours are not written: each is a one-line
-hand edit to a file `S` has just shown you the shape of.
+empty name, an empty scratch set, or two scratch filters sharing one pattern is
+refused with a message and nothing is written. "In use" means the file as it is
+now, not only what was loaded at startup: a table added by hand since is
+refused rather than replaced. The file is written beside itself as
+`filters.toml.tmp` and renamed over, so an interrupted save leaves the old file
+rather than a truncated one. Priority, `autoload` and colours are not written:
+each is a one-line hand edit to a file `S` has just shown you the shape of.
 
 #### Definition filters
 
