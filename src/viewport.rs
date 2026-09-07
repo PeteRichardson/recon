@@ -28,7 +28,7 @@ use crossterm::event::KeyCode;
 
 /// The one definition of an interesting line, shared by every query that
 /// steps or lands on one.
-fn is_interesting(verdict: &Verdict) -> bool {
+pub(crate) fn is_interesting(verdict: &Verdict) -> bool {
     matches!(verdict, Verdict::Included(_) | Verdict::Searched)
 }
 
