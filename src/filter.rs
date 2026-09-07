@@ -1304,11 +1304,19 @@ impl ActiveFilters {
 
     /// Disable every filter, recording which were enabled.
     ///
-    /// A second call before a restore is ignored: the flags at that point are
-    /// the ones this method just cleared, so capturing them again would
-    /// overwrite the real state with all-disabled and lose it for good.
+    /// A second call before a restore is ignored *while everything is still
+    /// off*: the flags at that point are the ones this method just cleared,
+    /// so capturing them again would overwrite the real state with
+    /// all-disabled and lose it for good.
+    ///
+    /// Guarded on that, not on the capture alone (#150). A filter switched
+    /// back on by hand in between — `Enter` on its row, a profile, a solo —
+    /// leaves the set with something enabled and a stale capture pending, and
+    /// ignoring the call then made `!` inert until an add or remove dropped
+    /// the capture. A set with something enabled is a real state, so it
+    /// replaces the stale one and the next `!` restores it.
     pub fn disable_all_remembering(&mut self) {
-        if self.remembered.is_some() {
+        if self.remembered.is_some() && !self.any_enabled() {
             return;
         }
         self.remembered = Some(self.filters.iter().map(|f| f.enabled).collect());
@@ -3290,6 +3298,54 @@ mod tests {
             "nothing was captured any more, so restore is a no-op"
         );
         assert!(set.filters()[1].enabled, "still enabled, exactly as added");
+    }
+
+    /// A filter switched back on by hand while a capture is pending — `Enter`
+    /// on its row, a profile, a solo — leaves something enabled, so the next
+    /// `!` is asked to disable everything again. It used to refuse because a
+    /// capture already existed, and kept refusing until an add or remove
+    /// dropped it (#150). The fear that early return guarded against was
+    /// capturing an all-disabled set; a set with something enabled is a
+    /// state worth capturing, so it replaces the stale one.
+    #[test]
+    fn toggling_a_filter_during_bang_does_not_leave_bang_inert() {
+        let mut set = set_with(&["foo", "bar"]);
+        set.set_enabled(1, false);
+        set.disable_all_remembering();
+        assert!(!set.any_enabled(), "sanity: the first ! disabled both");
+
+        set.toggle_enabled(0);
+        assert!(set.any_enabled(), "sanity: toggled back on by hand");
+
+        set.disable_all_remembering();
+        assert!(
+            !set.any_enabled(),
+            "! went inert: the hand-enabled filter stayed on"
+        );
+
+        set.restore_remembered();
+        // The scratch pair only: `filters()` also holds every loaded set.
+        let flags: Vec<bool> = set.filters()[..2].iter().map(|f| f.enabled).collect();
+        assert_eq!(
+            flags,
+            vec![true, false],
+            "restore should bring back the state the second ! captured"
+        );
+    }
+
+    /// The early return still has its original job: `!` while everything is
+    /// already off must not overwrite a real capture with all-disabled.
+    #[test]
+    fn a_second_capture_while_everything_is_off_keeps_the_first() {
+        let mut set = set_with(&["foo", "bar"]);
+        set.set_enabled(1, false);
+        set.disable_all_remembering();
+
+        set.disable_all_remembering();
+
+        set.restore_remembered();
+        let flags: Vec<bool> = set.filters()[..2].iter().map(|f| f.enabled).collect();
+        assert_eq!(flags, vec![true, false], "the real capture was overwritten");
     }
 
     #[test]
