@@ -172,6 +172,7 @@ fn collect_lines(
         document.set_mode(mode);
         document.evaluate(filters);
         read += 1;
+        // The TUI's definition, `App::interesting_count` in viewport.rs.
         interesting += document
             .verdicts()
             .iter()
@@ -305,6 +306,7 @@ fn file_matches(path: &Path, matcher: &Matcher) -> io::Result<bool> {
         Progress::default(),
         &AtomicBool::new(false),
     );
+    // The positive half of `scan::Record::answer`: a selecting bitmask was seen.
     Ok(progress.seen.iter().any(|&bits| matcher.selects(bits)))
 }
 
@@ -443,6 +445,19 @@ mod tests {
 
         assert_eq!(got.from, Source::Stdin);
         assert_eq!(got.files, vec![PathBuf::from("/only/this.log")]);
+    }
+
+    /// The README's promise: a filename is carried as the bytes the
+    /// filesystem holds, so a name that is not UTF-8 reaches the output
+    /// unchanged. No fixture — the path need not exist to be listed.
+    #[cfg(unix)]
+    #[test]
+    fn a_non_utf8_stdin_line_keeps_its_bytes() {
+        use std::os::unix::ffi::OsStrExt;
+
+        let got = inputs(Cursor::new(&b"/tmp/we\xffird.log\n"[..]), Path::new(".")).expect("reads");
+
+        assert_eq!(got.files[0].as_os_str().as_bytes(), b"/tmp/we\xffird.log");
     }
 
     // ---- shared helpers ----------------------------------------------------
@@ -880,6 +895,48 @@ mod tests {
             "recon: emitted 3 files of 5 inputs, hide mode, no filter"
         );
         assert_eq!(failed, 2);
+    }
+
+    /// A NUL-bearing file is a read failure for `lines` (`Document::read`
+    /// sniffs it) but an ordinary input for `files` (`scan` reads bytes, as
+    /// the navigator's scan does). Pinned so the asymmetry is a decision on
+    /// record, not an accident.
+    #[test]
+    fn a_binary_input_is_listed_by_files_but_refused_by_lines() {
+        let dir = fixture_dir("headless_files_binary");
+        let binary = lexical_absolute(&dir.join("core.bin"));
+        fs::write(&binary, b"hit\0\n").expect("write");
+        let inputs = Inputs {
+            files: vec![binary.clone()],
+            from: Source::Stdin,
+        };
+        let filters = filters_matching("hit");
+
+        let mut warnings = Vec::new();
+        let (lines, _, failed) = emitted(collect_files(
+            &inputs,
+            &filters,
+            Mode::FilteredOnly,
+            &mut warnings,
+        ));
+        assert_eq!(lines, [binary.display().to_string()], "files lists it");
+        assert_eq!(failed, 0);
+        assert!(warnings.is_empty());
+
+        let mut warnings = Vec::new();
+        let (lines, _, failed) = emitted(collect_lines(
+            &inputs,
+            &filters,
+            Mode::FilteredOnly,
+            false,
+            &mut warnings,
+        ));
+        assert!(lines.is_empty(), "lines refuses it");
+        assert_eq!(failed, 1);
+        assert_eq!(
+            warnings_of(&warnings),
+            format!("recon: cannot read {}: binary file\n", binary.display())
+        );
     }
 
     // ---- collect -----------------------------------------------------------
