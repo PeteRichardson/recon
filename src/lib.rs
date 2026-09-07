@@ -262,6 +262,7 @@ pub mod filter;
 pub mod filtersets;
 #[cfg(test)]
 pub(crate) mod fixtures;
+pub mod headless;
 pub mod help;
 mod layout;
 mod path;
