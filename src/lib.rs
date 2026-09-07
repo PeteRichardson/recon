@@ -99,6 +99,7 @@ struct SearchPrompt {
     pattern: String,
     error: Option<String>,
     kind: PromptKind,
+    cursor: usize,
 }
 
 impl SearchPrompt {
@@ -133,6 +134,123 @@ impl SearchPrompt {
             Some(error) => error.clone(),
             None => format!("{}{}", self.sigil(), self.pattern),
         }
+    }
+
+    /// An empty prompt of `kind`, cursor at its start.
+    fn new(kind: PromptKind) -> Self {
+        Self {
+            kind,
+            ..Self::default()
+        }
+    }
+
+    /// A prompt pre-filled with `pattern`, cursor at its end — where `c`
+    /// starts, so a `Backspace` or a typed character acts on the tail.
+    fn editing(pattern: String, kind: PromptKind) -> Self {
+        let cursor = pattern.chars().count();
+        Self {
+            pattern,
+            kind,
+            cursor,
+            ..Self::default()
+        }
+    }
+
+    /// Where the row draws the cursor: the column after the sigil and the
+    /// characters before the cursor. `None` while an error is showing, which
+    /// replaces the pattern on the row and has no cursor in it.
+    fn cursor_column(&self) -> Option<usize> {
+        self.error
+            .is_none()
+            .then(|| self.sigil().chars().count() + self.cursor)
+    }
+
+    /// Byte offset of character `index` — `cursor` is a character index,
+    /// because `Left` and `Right` step by character and the row draws by
+    /// column, and the pattern is `String`.
+    fn byte_at(&self, index: usize) -> usize {
+        self.pattern
+            .char_indices()
+            .nth(index)
+            .map_or(self.pattern.len(), |(byte, _)| byte)
+    }
+
+    fn insert(&mut self, c: char) {
+        let at = self.byte_at(self.cursor);
+        self.pattern.insert(at, c);
+        self.cursor += 1;
+    }
+
+    fn move_left(&mut self) {
+        self.cursor = self.cursor.saturating_sub(1);
+    }
+
+    fn move_right(&mut self) {
+        self.cursor = (self.cursor + 1).min(self.pattern.chars().count());
+    }
+
+    fn move_to_start(&mut self) {
+        self.cursor = 0;
+    }
+
+    fn move_to_end(&mut self) {
+        self.cursor = self.pattern.chars().count();
+    }
+
+    /// Delete the character before the cursor. `false` when there is none
+    /// — at the start of the pattern, which is the only place the caller
+    /// has to distinguish an empty pattern from a full one.
+    fn delete_before(&mut self) -> bool {
+        if self.cursor == 0 {
+            return false;
+        }
+        let (start, end) = (self.byte_at(self.cursor - 1), self.byte_at(self.cursor));
+        self.pattern.replace_range(start..end, "");
+        self.cursor -= 1;
+        true
+    }
+
+    /// Delete the character under the cursor; nothing at the end.
+    fn delete_at(&mut self) {
+        let (start, end) = (self.byte_at(self.cursor), self.byte_at(self.cursor + 1));
+        if start < end {
+            self.pattern.replace_range(start..end, "");
+        }
+    }
+
+    /// vim's command-line `Ctrl-w`: blanks between the cursor and the word
+    /// before it go, then the word — a run of identifier characters, the
+    /// same definition `*` uses, or a run of anything else that is not a
+    /// blank, so `foo::` loses `::` and then `foo` in two presses.
+    fn delete_word_before(&mut self) {
+        let chars: Vec<char> = self.pattern.chars().collect();
+        let mut start = self.cursor;
+        while start > 0 && chars[start - 1].is_whitespace() {
+            start -= 1;
+        }
+        let is_word = |c: char| c.is_ascii_alphanumeric() || c == '_';
+        if start > 0 {
+            let in_word = is_word(chars[start - 1]);
+            while start > 0
+                && !chars[start - 1].is_whitespace()
+                && is_word(chars[start - 1]) == in_word
+            {
+                start -= 1;
+            }
+        }
+        self.delete_range(start, self.cursor);
+    }
+
+    /// vim's command-line `Ctrl-u`: everything before the cursor goes.
+    fn delete_to_start(&mut self) {
+        self.delete_range(0, self.cursor);
+    }
+
+    /// Delete characters `start..end` and leave the cursor at `start`.
+    fn delete_range(&mut self, start: usize, end: usize) {
+        let (from, to) = (self.byte_at(start), self.byte_at(end));
+        self.pattern.replace_range(from..to, "");
+        self.cursor = start;
     }
 }
 
@@ -567,12 +685,37 @@ impl App<'_> {
             KeyCode::Backspace => {
                 if let Some(prompt) = self.search.as_mut() {
                     prompt.error = None;
-                    // Backspacing past the start abandons the search, as in vim.
-                    if prompt.pattern.pop().is_none() {
+                    // Backspacing past the start of an *empty* prompt
+                    // abandons it, as in vim. At the start of a pattern with
+                    // text after the cursor there is nothing to delete and
+                    // nothing to abandon: the text is what the user is
+                    // keeping (#206).
+                    if !prompt.delete_before() && prompt.pattern.is_empty() {
                         self.search = None;
                         self.chain_origin = None;
                     }
                 }
+            }
+            // The cursor keys (#206): vim's command-line set, plus the
+            // readline pair for the ends, which the same hands type at a
+            // shell. Guarded on the prompt being open only by the `as_mut`
+            // — every key reaches here through `search.is_some()`.
+            KeyCode::Left => self.edit_prompt(SearchPrompt::move_left),
+            KeyCode::Right => self.edit_prompt(SearchPrompt::move_right),
+            KeyCode::Home => self.edit_prompt(SearchPrompt::move_to_start),
+            KeyCode::End => self.edit_prompt(SearchPrompt::move_to_end),
+            KeyCode::Delete => self.edit_prompt(SearchPrompt::delete_at),
+            KeyCode::Char('a') if key.modifiers == KeyModifiers::CONTROL => {
+                self.edit_prompt(SearchPrompt::move_to_start);
+            }
+            KeyCode::Char('e') if key.modifiers == KeyModifiers::CONTROL => {
+                self.edit_prompt(SearchPrompt::move_to_end);
+            }
+            KeyCode::Char('w') if key.modifiers == KeyModifiers::CONTROL => {
+                self.edit_prompt(SearchPrompt::delete_word_before);
+            }
+            KeyCode::Char('u') if key.modifiers == KeyModifiers::CONTROL => {
+                self.edit_prompt(SearchPrompt::delete_to_start);
             }
             // No prompt binding uses a modified character, and in raw mode
             // a pasted line feed arrives as Ctrl-J (`Char('j')` with
@@ -589,13 +732,18 @@ impl App<'_> {
             // scanner in `help.rs`, which reads every `'x'` inside `Char(..)`,
             // does not take the escape's backslash for a key.
             KeyCode::Char(c) if c == '\n' || c == '\r' => {}
-            KeyCode::Char(c) => {
-                if let Some(prompt) = self.search.as_mut() {
-                    prompt.error = None;
-                    prompt.pattern.push(c);
-                }
-            }
+            KeyCode::Char(c) => self.edit_prompt(|prompt| prompt.insert(c)),
             _ => {}
+        }
+    }
+
+    /// Apply one editing step to the open prompt. Any edit clears a pending
+    /// error: the row goes back to showing the pattern, which is what the
+    /// user is now correcting.
+    fn edit_prompt(&mut self, edit: impl FnOnce(&mut SearchPrompt)) {
+        if let Some(prompt) = self.search.as_mut() {
+            prompt.error = None;
+            edit(prompt);
         }
     }
 
@@ -2077,10 +2225,7 @@ impl App<'_> {
             _ => None,
         };
         if let Some(kind) = kind {
-            self.search = Some(SearchPrompt {
-                kind,
-                ..SearchPrompt::default()
-            });
+            self.search = Some(SearchPrompt::new(kind));
             return;
         }
 
@@ -2151,24 +2296,22 @@ impl App<'_> {
                 // a property of the pane's own bounds, not a promise this
                 // function has to make.
                 if let Some(filter) = self.filters.filters().get(index) {
-                    self.search = Some(SearchPrompt {
-                        pattern: filter.predicate.display(),
-                        kind: PromptKind::Edit {
+                    self.search = Some(SearchPrompt::editing(
+                        filter.predicate.display(),
+                        PromptKind::Edit {
                             index,
                             sense: filter.sense,
                         },
-                        ..SearchPrompt::default()
-                    });
+                    ));
                 }
                 return;
             }
             FilterCommand::EditSearch => {
                 if let Some(search) = self.filters.search() {
-                    self.search = Some(SearchPrompt {
-                        pattern: search.predicate.display(),
-                        kind: PromptKind::EditSearch,
-                        ..SearchPrompt::default()
-                    });
+                    self.search = Some(SearchPrompt::editing(
+                        search.predicate.display(),
+                        PromptKind::EditSearch,
+                    ));
                 }
                 return;
             }
@@ -2661,6 +2804,18 @@ impl Widget for &mut App<'_> {
             room,
             style,
         );
+        // The prompt's cursor, drawn as the file view draws its own: the
+        // cell in reversed video. The terminal cursor is hidden for the
+        // whole session, so without this an edit in the middle of a pattern
+        // (#206) would have nothing on screen to say where the middle is.
+        // One blank past the text when the cursor is at the end.
+        if let Some(column) = self.search.as_ref().and_then(SearchPrompt::cursor_column)
+            && column < room
+        {
+            let x = prompt_area.x + badge_width as u16 + column as u16;
+            buf[(x, prompt_area.y)]
+                .set_style(style.add_modifier(ratatui::style::Modifier::REVERSED));
+        }
     }
 }
 
@@ -3257,6 +3412,200 @@ mod tests {
             .collect::<String>()
             .trim_end()
             .to_string()
+    }
+
+    // ---- editing inside the prompt (#206) --------------------------------
+
+    fn prompt<'a>(app: &'a App) -> &'a SearchPrompt {
+        app.search.as_ref().expect("the prompt should be open")
+    }
+
+    /// The issue's own example. A filter `load_file`, changed with `c`:
+    /// left over `_file`, backspace over `load`, type `print`, Enter — and
+    /// the result is `print_file`, not `load_fileprint` and not a prompt
+    /// that had to be emptied first.
+    #[test]
+    fn the_prompt_edits_at_the_cursor_not_only_at_the_end() {
+        let mut app = app_over_file("prompt_cursor_edit", "print_file\nload_file\n");
+        app.add_filter("load_file").unwrap();
+        focus_filter_pane(&mut app);
+        key(&mut app, KeyCode::Char('c'));
+        assert_eq!(prompt(&app).pattern, "load_file", "sanity: prefilled");
+
+        for _ in 0..5 {
+            key(&mut app, KeyCode::Left);
+        }
+        for _ in 0..4 {
+            key(&mut app, KeyCode::Backspace);
+        }
+        typed(&mut app, "print");
+        assert_eq!(prompt(&app).pattern, "print_file");
+
+        key(&mut app, KeyCode::Enter);
+
+        assert!(app.search.is_none(), "committed");
+        assert_eq!(app.filters.filters()[0].predicate.display(), "print_file");
+    }
+
+    #[test]
+    fn typing_inserts_at_the_cursor() {
+        let mut app = app_over_file("prompt_insert", "x\n");
+        key(&mut app, KeyCode::Char('/'));
+        typed(&mut app, "ac");
+        key(&mut app, KeyCode::Left);
+
+        typed(&mut app, "b");
+
+        assert_eq!(prompt(&app).pattern, "abc");
+        assert_eq!(prompt(&app).cursor, 2, "the cursor follows the insertion");
+    }
+
+    #[test]
+    fn left_stops_at_the_start_and_right_at_the_end() {
+        let mut app = app_over_file("prompt_left_right", "x\n");
+        key(&mut app, KeyCode::Char('/'));
+        typed(&mut app, "ab");
+        assert_eq!(
+            prompt(&app).cursor,
+            2,
+            "sanity: a fresh prompt types at its end"
+        );
+
+        for _ in 0..3 {
+            key(&mut app, KeyCode::Left);
+        }
+        assert_eq!(prompt(&app).cursor, 0);
+        for _ in 0..3 {
+            key(&mut app, KeyCode::Right);
+        }
+        assert_eq!(prompt(&app).cursor, 2);
+    }
+
+    /// `Home`/`End` and the readline pair both jump; vim's command line
+    /// takes the same keys.
+    #[test]
+    fn home_end_and_the_ctrl_pair_jump_to_the_pattern_s_ends() {
+        let mut app = app_over_file("prompt_home_end", "x\n");
+        key(&mut app, KeyCode::Char('/'));
+        typed(&mut app, "abc");
+
+        key(&mut app, KeyCode::Home);
+        assert_eq!(prompt(&app).cursor, 0, "Home");
+        key(&mut app, KeyCode::End);
+        assert_eq!(prompt(&app).cursor, 3, "End");
+        ctrl(&mut app, KeyCode::Char('a'));
+        assert_eq!(prompt(&app).cursor, 0, "Ctrl-a");
+        ctrl(&mut app, KeyCode::Char('e'));
+        assert_eq!(prompt(&app).cursor, 3, "Ctrl-e");
+    }
+
+    #[test]
+    fn delete_removes_the_character_under_the_cursor() {
+        let mut app = app_over_file("prompt_delete", "x\n");
+        key(&mut app, KeyCode::Char('/'));
+        typed(&mut app, "abc");
+        key(&mut app, KeyCode::Left);
+        key(&mut app, KeyCode::Left);
+
+        key(&mut app, KeyCode::Delete);
+        assert_eq!(prompt(&app).pattern, "ac");
+        assert_eq!(prompt(&app).cursor, 1, "the cursor stays put");
+
+        key(&mut app, KeyCode::End);
+        key(&mut app, KeyCode::Delete);
+        assert_eq!(
+            prompt(&app).pattern,
+            "ac",
+            "nothing under the cursor at the end"
+        );
+    }
+
+    /// Backspace on an empty pattern still cancels — but at the *start* of
+    /// a pattern with text after the cursor there is nothing to delete and
+    /// nothing to cancel: the text the user is keeping is still there.
+    #[test]
+    fn backspace_at_the_start_of_a_pattern_deletes_nothing_and_keeps_the_prompt() {
+        let mut app = app_over_file("prompt_backspace_start", "x\n");
+        key(&mut app, KeyCode::Char('/'));
+        typed(&mut app, "ab");
+        key(&mut app, KeyCode::Home);
+
+        key(&mut app, KeyCode::Backspace);
+
+        assert_eq!(prompt(&app).pattern, "ab");
+        assert!(app.search.is_some(), "the prompt was cancelled");
+    }
+
+    /// vim's command-line `Ctrl-w`: the word before the cursor goes, with any
+    /// blanks between it and the cursor; a run of punctuation counts as a
+    /// word of its own. The same word definition as `*`.
+    #[test]
+    fn ctrl_w_deletes_the_word_before_the_cursor() {
+        let mut app = app_over_file("prompt_ctrl_w", "x\n");
+        key(&mut app, KeyCode::Char('/'));
+        typed(&mut app, "foo::bar baz");
+
+        ctrl(&mut app, KeyCode::Char('w'));
+        assert_eq!(prompt(&app).pattern, "foo::bar ");
+        ctrl(&mut app, KeyCode::Char('w'));
+        assert_eq!(
+            prompt(&app).pattern,
+            "foo::",
+            "the blank went with the word"
+        );
+        ctrl(&mut app, KeyCode::Char('w'));
+        assert_eq!(
+            prompt(&app).pattern,
+            "foo",
+            "punctuation is a word of its own"
+        );
+        ctrl(&mut app, KeyCode::Char('w'));
+        assert_eq!(prompt(&app).pattern, "");
+        assert!(app.search.is_some(), "emptying by word does not cancel");
+    }
+
+    #[test]
+    fn ctrl_u_deletes_everything_before_the_cursor() {
+        let mut app = app_over_file("prompt_ctrl_u", "x\n");
+        key(&mut app, KeyCode::Char('/'));
+        typed(&mut app, "abcd");
+        key(&mut app, KeyCode::Left);
+
+        ctrl(&mut app, KeyCode::Char('u'));
+
+        assert_eq!(prompt(&app).pattern, "d");
+        assert_eq!(prompt(&app).cursor, 0);
+    }
+
+    /// The terminal cursor is hidden, so the prompt row draws its own: the
+    /// cell under the cursor in reversed video, one blank past the text when
+    /// the cursor is at the end.
+    #[test]
+    fn the_prompt_row_shows_the_cursor_as_a_reversed_cell() {
+        let mut app = app_over_file("prompt_cursor_cell", "x\n");
+        key(&mut app, KeyCode::Char('/'));
+        typed(&mut app, "ab");
+        let y = AREA.height - 1;
+        let reversed = |app: &mut App, x: u16| {
+            let mut buf = Buffer::empty(AREA);
+            app.render(AREA, &mut buf);
+            buf[(x, y)]
+                .style()
+                .add_modifier
+                .contains(ratatui::style::Modifier::REVERSED)
+        };
+
+        // `/ab` with the cursor at the end: columns 0..3 are the text, the
+        // cursor cell is column 3.
+        assert!(reversed(&mut app, 3), "no cursor cell after the text");
+        assert!(
+            !reversed(&mut app, 2),
+            "the last character is not the cursor"
+        );
+
+        key(&mut app, KeyCode::Left);
+        assert!(reversed(&mut app, 2), "the cursor did not move on screen");
+        assert!(!reversed(&mut app, 3));
     }
 
     #[test]
