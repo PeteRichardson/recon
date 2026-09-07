@@ -1104,7 +1104,9 @@ fn read_preview_with_caps(path: &Path, max_lines: usize, max_bytes: u64) -> Cont
     if path.is_dir() {
         return directory_listing(path, max_lines);
     }
-    let file = match File::open(path) {
+    // The same stat guards a FIFO (#221): its open would block until a
+    // writer appeared, and this runs on every selection move.
+    let file = match document::refuse_unreadable(path).and_then(|()| File::open(path)) {
         Ok(file) => file,
         Err(err) => return Contents::message(format!("<{err}>")),
     };
@@ -2955,6 +2957,22 @@ mod tests {
     /// it from being the "navigable-looking list you cannot navigate" that
     /// #15 rejected: `l` on the selected directory makes it the navigator's
     /// listing, so there is a one-key path from looking to being there.
+    /// Moving the selection onto a FIFO fires a preview, and `File::open` on
+    /// a FIFO blocks until a writer appears — the TUI would hang on an arrow
+    /// key. The stat guard turns it into a message (#221).
+    #[cfg(unix)]
+    #[test]
+    fn a_non_regular_file_previews_as_a_message_without_opening_it() {
+        let dir = fixture_dir("preview_socket");
+        let sock = dir.join("sock");
+        let _listener = std::os::unix::net::UnixListener::bind(&sock).expect("bind");
+        let mut view = placeholder_view();
+
+        view.preview(&sock);
+
+        assert_eq!(contents(&view), "<not a regular file>");
+    }
+
     #[test]
     fn a_directory_previews_as_its_listing() {
         let dir = dir_fixture("dir_listing", &["alpha.txt", "beta.txt"], &["subdir"]);
