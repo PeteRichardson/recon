@@ -368,6 +368,17 @@ impl FileView<'_> {
         &self.filename
     }
 
+    /// Whether the pane is showing a directory's listing rather than a file.
+    pub(crate) fn showing_directory(&self) -> bool {
+        self.showing_directory
+    }
+
+    /// Whether the pane is showing a file's own text — as opposed to a
+    /// listing, or a message standing in for a file that could not be shown.
+    pub(crate) fn is_text(&self) -> bool {
+        self.text
+    }
+
     /// The file's lines as read, for `App::sync_document`, which shares them
     /// with the `Document` rather than copying them.
     ///

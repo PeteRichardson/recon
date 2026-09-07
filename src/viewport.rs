@@ -356,6 +356,16 @@ impl App<'_> {
         }
     }
 
+    /// How many lines are interesting — the count `--emit`'s summary reports
+    /// as "N match" (#143). The same definition `n` steps by.
+    pub(crate) fn interesting_count(&self) -> usize {
+        self.document
+            .verdicts()
+            .iter()
+            .filter(|verdict| is_interesting(verdict))
+            .count()
+    }
+
     /// Put the cursor on source line `target`, bringing the window with it.
     /// Quiet when the line is not visible in the current mode.
     pub(crate) fn land_on(&mut self, target: usize) {
