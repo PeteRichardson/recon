@@ -2,7 +2,10 @@ use color_eyre::{Result, config::HookBuilder, eyre};
 use crossterm::{
     event::{DisableMouseCapture, EnableMouseCapture},
     execute,
-    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
+    terminal::{
+        Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode,
+        enable_raw_mode,
+    },
 };
 use ratatui::{Terminal, prelude::CrosstermBackend};
 use recon::{App, Config};
@@ -131,12 +134,25 @@ fn setup_logging() {
 /// otherwise be its own `write(2)`. `Terminal::draw` flushes the backend at
 /// the end of every frame, so nothing is left sitting in the buffer between
 /// draws.
+///
+/// The screen is cleared with a `Clear(All)` on the same `execute!` as the
+/// alternate screen, **not** with `Terminal::clear`. That method snapshots
+/// the cursor first, and crossterm answers a cursor-position query by
+/// writing `ESC [ 6 n` to *stdout* regardless of where the backend draws —
+/// into the pipe, when there is one, where no terminal will ever answer it.
+/// `recon --emit cwd | xargs …` then sat on a black screen for two seconds
+/// and died with "the cursor position could not be read". Nothing else in
+/// the draw path asks where the cursor is.
 fn init_terminal() -> Result<Terminal<CrosstermBackend<io::BufWriter<Stderr>>>> {
     enable_raw_mode()?;
-    execute!(io::stderr(), EnterAlternateScreen, EnableMouseCapture)?;
+    execute!(
+        io::stderr(),
+        EnterAlternateScreen,
+        EnableMouseCapture,
+        Clear(ClearType::All)
+    )?;
     let backend = CrosstermBackend::new(io::BufWriter::new(io::stderr()));
-    let mut terminal = Terminal::new(backend)?;
-    terminal.clear()?;
+    let terminal = Terminal::new(backend)?;
     Ok(terminal)
 }
 
