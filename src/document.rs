@@ -48,6 +48,17 @@ pub struct Document {
     anything_including: bool,
     mode: Mode,
     visible: Vec<usize>,
+    /// The buffer `recompute_visible` builds the next visible set into, kept
+    /// so the rebuild is allocation-free after the first: it is compared
+    /// against `visible` and swapped in only if it differs.
+    scratch: Vec<usize>,
+    /// Moves exactly when `visible` changes. The viewport's rebuild-skip key
+    /// (#159): comparing two `u64`s per `apply_view` — every arrow key —
+    /// instead of two index vectors the length of the file, and no copy of
+    /// that vector on every rebuild. `sync_document` replaces the whole
+    /// document, so a fresh one starting at 0 is never mistaken for the
+    /// previous one at 0: the viewport clears its key alongside.
+    generation: u64,
     /// Where `lines` came from, for the grammar lookup a definition filter
     /// needs (#123). `None` for a document with no file behind it.
     path: Option<std::path::PathBuf>,
@@ -69,6 +80,8 @@ impl Document {
             anything_including: false,
             mode: Mode::default(),
             visible: Vec::new(),
+            scratch: Vec::new(),
+            generation: 0,
             path: None,
             kinds: None,
         }
@@ -103,6 +116,11 @@ impl Document {
     }
 
     /// Recompute every line's verdict. Call when the lines or the filters change.
+    ///
+    /// The verdicts are overwritten in place (#185): `clear` keeps the
+    /// allocation, so a 1M-line file no longer pays a 16 MB allocation and
+    /// free on every toggle. The vector is the length of `lines` before and
+    /// after, so nothing that indexes it by row sees a size change.
     pub fn evaluate(&mut self, filters: &ActiveFilters) {
         // The whole-file grammar pass, once, and only when a filter will
         // read its answer. A set of regex filters never pays for it.
@@ -115,16 +133,20 @@ impl Document {
             );
         }
         let kinds = self.kinds.as_deref().unwrap_or(&[]);
-        self.verdicts = self
-            .lines
-            .iter()
-            .enumerate()
-            .map(|(row, line)| {
+        self.verdicts.clear();
+        self.verdicts
+            .extend(self.lines.iter().enumerate().map(|(row, line)| {
                 filters.verdict(line, kinds.get(row).copied().unwrap_or(KindSet::EMPTY))
-            })
-            .collect();
+            }));
         self.anything_including = filters.any_including();
         self.recompute_visible();
+    }
+
+    /// The rebuild-skip key: unchanged for as long as `visible` is, moved
+    /// every time `recompute_visible` (and so `evaluate`) changes it.
+    #[must_use]
+    pub fn generation(&self) -> u64 {
+        self.generation
     }
 
     /// Recompute `visible` from the existing verdicts and the current mode,
@@ -134,32 +156,49 @@ impl Document {
     /// on the verdicts and the mode. So toggling the mode (`H` / `Ctrl-H`)
     /// only needs this, not a full `evaluate` — which matters, since
     /// `evaluate` is O(lines × filters) and this is O(lines).
+    ///
+    /// Built into `scratch` and swapped in only when it differs from the
+    /// current set, so `generation` moves exactly when the rows on screen
+    /// do. A filter change that leaves the same rows visible — an including
+    /// filter swapped for another in dimmed mode, a search with no hits —
+    /// therefore keeps the viewport's buffer, cursor column and scroll
+    /// exactly where they were, which is what the old whole-vector compare
+    /// in `apply_view` bought and what the `u64` key keeps (#159). The
+    /// compare is O(visible), paid once per filter change here rather than
+    /// once per arrow key there, and nothing is allocated or copied.
     pub fn recompute_visible(&mut self) {
-        self.visible = self
-            .verdicts
-            .iter()
-            .enumerate()
-            .filter(|(_, verdict)| match (self.mode, verdict) {
-                // Excluded lines are gone in both modes; the toggle governs
-                // unmatched lines only.
-                (_, Verdict::Excluded) => false,
-                (Mode::Dimmed, _) => true,
-                // A context line stays in hide mode: that is what the sense
-                // is for. Only `n` treats it differently from an include.
-                (
-                    Mode::FilteredOnly,
-                    Verdict::Included(_) | Verdict::Context(_) | Verdict::Searched,
-                ) => true,
-                // Issue #36: with nothing including, there is nothing to hide
-                // *against*, so hiding shows the file rather than blanking the
-                // pane. Dimming has always had this guard in `style_for`;
-                // hiding never did, which made `Ctrl-H` with no filters — and
-                // with only excluding filters — produce an empty view that read
-                // as "this file is empty".
-                (Mode::FilteredOnly, Verdict::Unmatched) => !self.anything_including,
-            })
-            .map(|(index, _)| index)
-            .collect();
+        let mode = self.mode;
+        let anything_including = self.anything_including;
+        self.scratch.clear();
+        self.scratch.extend(
+            self.verdicts
+                .iter()
+                .enumerate()
+                .filter(|(_, verdict)| match (mode, verdict) {
+                    // Excluded lines are gone in both modes; the toggle governs
+                    // unmatched lines only.
+                    (_, Verdict::Excluded) => false,
+                    (Mode::Dimmed, _) => true,
+                    // A context line stays in hide mode: that is what the sense
+                    // is for. Only `n` treats it differently from an include.
+                    (
+                        Mode::FilteredOnly,
+                        Verdict::Included(_) | Verdict::Context(_) | Verdict::Searched,
+                    ) => true,
+                    // Issue #36: with nothing including, there is nothing to hide
+                    // *against*, so hiding shows the file rather than blanking the
+                    // pane. Dimming has always had this guard in `style_for`;
+                    // hiding never did, which made `Ctrl-H` with no filters — and
+                    // with only excluding filters — produce an empty view that read
+                    // as "this file is empty".
+                    (Mode::FilteredOnly, Verdict::Unmatched) => !anything_including,
+                })
+                .map(|(index, _)| index),
+        );
+        if self.scratch != self.visible {
+            std::mem::swap(&mut self.scratch, &mut self.visible);
+            self.generation = self.generation.wrapping_add(1);
+        }
     }
 
     /// One style slot per line, for `FileView::set_line_styles`.
@@ -518,6 +557,68 @@ mod tests {
             document.verdicts(),
             &[Verdict::Included(0), Verdict::Unmatched]
         );
+    }
+
+    /// A 1M-line file paid a 16 MB allocation and free on every toggle;
+    /// the verdicts are overwritten in place now, so the second `evaluate`
+    /// reuses the first one's buffer (#185).
+    #[test]
+    fn re_evaluating_reuses_the_verdict_allocation() {
+        let mut document = doc(&["alpha", "beta", "gamma"]);
+        document.evaluate(&set_with(&["beta"]));
+        let before = document.verdicts().as_ptr();
+
+        document.evaluate(&set_with(&["alpha"]));
+
+        assert_eq!(
+            document.verdicts().as_ptr(),
+            before,
+            "evaluate allocated a fresh Vec<Verdict>"
+        );
+        assert_eq!(document.verdicts().len(), 3);
+    }
+
+    /// The viewport keys its rebuild-skip on `generation`, so it must move
+    /// exactly when the visible set does (#159): a filter change that leaves
+    /// the same rows on screen must not disturb the view, and one that
+    /// changes them must rebuild.
+    #[test]
+    fn the_generation_advances_only_when_the_visible_set_changes() {
+        let mut document = doc(&["alpha", "beta", "gamma"]);
+        let start = document.generation();
+
+        document.evaluate(&set_with(&["beta"]));
+        let after_first = document.generation();
+        assert_ne!(after_first, start, "the first evaluate fills `visible`");
+
+        // Dimmed mode shows every line an excluding filter did not remove,
+        // so a different including filter leaves the same rows on screen.
+        document.evaluate(&set_with(&["gamma"]));
+        assert_eq!(
+            document.generation(),
+            after_first,
+            "same rows, same generation — the view must not be rebuilt"
+        );
+
+        document.set_mode(Mode::FilteredOnly);
+        document.recompute_visible();
+        assert_ne!(
+            document.generation(),
+            after_first,
+            "hiding changed the rows"
+        );
+        assert_eq!(document.visible(), &[2]);
+    }
+
+    /// `set_mode` alone changes nothing on screen until `recompute_visible`
+    /// runs, so it moves nothing here either.
+    #[test]
+    fn set_mode_alone_leaves_the_generation() {
+        let mut document = doc(&["alpha"]);
+        document.evaluate(&set_with(&["alpha"]));
+        let generation = document.generation();
+        document.set_mode(Mode::FilteredOnly);
+        assert_eq!(document.generation(), generation);
     }
 
     // ---- windowed accessors (#7) ---------------------------------------

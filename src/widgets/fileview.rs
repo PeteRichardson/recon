@@ -490,7 +490,7 @@ impl FileView<'_> {
         // A pending restore was measured against the buffer this just threw
         // away; carrying it into an unrelated file would apply it to the
         // wrong data entirely — see `sync_document`'s clearing of
-        // `last_visible` in `lib.rs` for the same reasoning.
+        // `last_generation` in `lib.rs` for the same reasoning.
         self.pending_screen_row = None;
     }
 

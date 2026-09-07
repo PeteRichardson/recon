@@ -208,11 +208,15 @@ impl App<'_> {
         // see `FileView::show_lines_with_cursor`.)
         // Keyed on the window as well as the visible set: scrolling into a new
         // window leaves the visible set untouched and still needs the buffer
-        // replaced.
-        let rebuild = self.last_visible.as_deref() != Some(self.document.visible())
+        // replaced. The visible set is represented by the document's
+        // generation, which moves exactly when the set does (#159) — two
+        // `u64`s compared here on every arrow key, rather than two index
+        // vectors the length of the file, and nothing copied on a rebuild.
+        let generation = self.document.generation();
+        let rebuild = self.last_generation != Some(generation)
             || self.last_window != Some((window_start, window_end));
         let lines = if rebuild {
-            self.last_visible = Some(self.document.visible().to_vec());
+            self.last_generation = Some(generation);
             self.last_window = Some((window_start, window_end));
             Some(self.document.visible_lines_range(window_start, window_end))
         } else {
