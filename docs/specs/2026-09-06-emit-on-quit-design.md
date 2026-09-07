@@ -49,11 +49,18 @@ alternative does not get re-proposed.
    output from a real emit exits 0; the summary is what tells the two apart.
 7. **`App` decides, `main` does I/O.** `run` returns a value; `main` prints it
    after the terminal is restored. Every emit is testable with no terminal.
+8. **`-n` prefixes each line with its source line number and a tab.** The
+   gutter already carries each visible row's source number, so hide mode
+   emits the real numbers, not 1..N of the output. A tab rather than grep's
+   `N:` because a line can contain colons and a tab never appears in a line
+   number, so `cut -f1` and `cut -f2-` split it without a regex, and the
+   source text stays byte-for-byte what the file has. Fixed now because
+   headless mode extends it to `path<TAB>N<TAB>line` over several files.
 
 ## The command line
 
 ```
-recon [--emit lines|files|cwd] [PATH]
+recon [--emit lines|files|cwd] [-n | --line-numbers] [PATH]
 ```
 
 `--emit` is a clap `ValueEnum` on `Config`, `Option<Emit>`, `None` when absent.
@@ -61,11 +68,18 @@ No environment variable and no `config.toml` key: what to emit is a per-run
 decision, like `path`. The long help:
 
 ```
---emit <WHAT>  Print the session's result to stdout on `q`; `Q` quits without it.
-               lines  the file view's visible lines, in the current mode
-               files  the navigator's listed files, one absolute path per line
-               cwd    the directory the navigator is showing
+--emit <WHAT>       Print the session's result to stdout on `q`; `Q` quits without it.
+                    lines  the file view's visible lines, in the current mode
+                    files  the navigator's listed files, one absolute path per line
+                    cwd    the directory the navigator is showing
+-n, --line-numbers  With --emit lines: prefix each line with its line number and a tab
 ```
+
+`--line-numbers` with `--emit files`, `--emit cwd`, or no `--emit` is an
+error at startup — `recon: --line-numbers applies to --emit lines` — rather
+than silently ignored, so a script that meant `lines` finds out. Checked in
+`Config::load` beside the rest of the flag validation, before the terminal is
+touched.
 
 `Q` is a new global key: quit without emitting. Without `--emit` it is a
 synonym for `q`. Bare `Q` only, with the modifier guard the other uppercase
@@ -137,7 +151,12 @@ buffers.
 
 `document.visible_lines()`: exactly the rows the file view would draw, in the
 current mode — every line in dim mode, matches only in hide mode. Verbatim,
-one per line, no line numbers, no styling. The summary:
+one per line, no styling. With `-n`, each line is `N<TAB>line`: `N` is the
+1-based *source* line number — `document.visible()` holds it, and it is the
+number the gutter shows — and the line follows the tab unchanged, so
+`cut -f1` gives a list `sed -i '12s/Foo/Bar/'` or an editor jump list can
+use, and `cut -f2-` gives the text back. The summary is the same with or
+without `-n`:
 
 ```
 recon: emitted 812 lines of app.log, dim mode (27 match) — Ctrl-H to emit matches only
@@ -213,8 +232,11 @@ rcn() {
 - **`collect`, through `App` with no terminal.** An app over a fixture
   directory, keys to set the mode and position, then assert on the returned
   `Exit` for each kind in both modes, plus the directory-listing and
-  read-error cases for `lines`, the unscanned and no-filter cases for
-  `files`, and non-UTF-8 filenames for `files` on Unix.
+  read-error cases for `lines`, `-n` in hide mode (source numbers, not
+  1..N), the unscanned and no-filter cases for `files`, and non-UTF-8
+  filenames for `files` on Unix.
+- **`--line-numbers` validation.** `Config` tests for the three rejected
+  combinations and the accepted one.
 - **`q` versus `Q`.** Three state tests: `q` under `--emit` collects, `Q`
   under `--emit` is `Silent`, either without `--emit` is `Silent`.
 - **`deliver`, on its own.** Two `Vec<u8>` sinks; assert the bytes written to
@@ -226,9 +248,10 @@ rcn() {
 
 ## Documentation
 
-- README: `--emit` in Usage; the "Emitting the result" section with the
-  three outputs, the summary line, the mode trap and `Ctrl-H`, the exit
-  codes, and `rcn`; `Q` in the Global keybindings table.
+- README: `--emit` and `-n` in Usage; the "Emitting the result" section
+  with the three outputs, `-n` and the `cut`/`sed` example, the summary line,
+  the mode trap and `Ctrl-H`, the exit codes, and `rcn`; `Q` in the Global
+  keybindings table.
 - `--help`: the long help above.
 - Help overlay: a `Q` row in Global.
 
@@ -244,7 +267,8 @@ rcn() {
 - **Headless mode** (#143, second half): `--emit` with the TUI never
   started, files from arguments or stdin, filters and profile from new flags.
   It reuses `collect`'s output kinds, `deliver`, the summary line and the exit
-  codes; the summary's mode field becomes whatever `--hide` was passed.
+  codes; the summary's mode field becomes whatever `--hide` was passed. With
+  `-n` over several files it emits `path<TAB>N<TAB>line`.
 - **`filters` and a structured format** (`--format json`): the per-file
   matching filter, the mode, and the counts move into the output itself,
   which is the durable answer to the mode trap the summary line guards
