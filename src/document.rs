@@ -3,6 +3,8 @@
 use crate::filter::{ActiveFilters, Verdict};
 use crate::syntax::{self, KindSet};
 use ratatui::style::Style;
+use std::fs::File;
+use std::io::{self, BufRead, BufReader, Cursor, Read};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -80,6 +82,14 @@ impl Document {
             path: Some(path.to_path_buf()),
             ..Self::new(lines)
         }
+    }
+
+    /// A document over the whole of `path`, read the way the file view reads
+    /// a file (#143): the same NUL sniff, the same lossy decoding, the same
+    /// line-end stripping — and the error instead of a placeholder message,
+    /// which is what headless mode needs and the widget wraps.
+    pub fn read(path: &Path) -> io::Result<Self> {
+        Ok(Self::for_file(path, read_lines(path)?))
     }
 
     #[must_use]
@@ -315,9 +325,90 @@ impl Document {
     }
 }
 
+/// How much of a file's head is examined for a NUL before it is read as text.
+pub(crate) const BINARY_SNIFF_BYTES: usize = 8 << 10;
+
+/// The message on the `InvalidData` error `read_lines` returns for a file
+/// whose head holds a NUL. `is_binary` recognises it; the file view turns it
+/// into its own `<binary file>` message and headless mode prints it as is.
+pub(crate) const BINARY_FILE: &str = "binary file";
+
+/// Whether `err` is `read_lines`' own binary-file refusal rather than an OS
+/// error.
+#[must_use]
+pub(crate) fn is_binary(err: &io::Error) -> bool {
+    err.kind() == io::ErrorKind::InvalidData && err.to_string() == BINARY_FILE
+}
+
+/// Whether the head of `reader` looks like binary rather than text, along with
+/// the bytes that had to be read to decide — they are the file's first bytes
+/// and belong back in front of the stream.
+///
+/// A NUL byte is the signal, not a decode error. A decode error says one byte
+/// in the file is not UTF-8, which is routine in a log; a NUL in the first few
+/// KiB says the file is not a document at all.
+pub(crate) fn sniff_binary<R: Read>(reader: &mut R) -> io::Result<(bool, Vec<u8>)> {
+    let mut head = Vec::new();
+    (&mut *reader)
+        .take(BINARY_SNIFF_BYTES as u64)
+        .read_to_end(&mut head)?;
+    Ok((head.contains(&0), head))
+}
+
+/// Read one newline-terminated line, decoded lossily. `None` at end of file.
+///
+/// Lossy, not fatal: one bad byte in a two-gigabyte log must not cost the
+/// other two gigabytes. U+FFFD marks the spot in place and the read carries
+/// on, which is the whole difference from `lines()` — that short-circuits the
+/// entire file on its first undecodable byte.
+pub(crate) fn read_lossy_line<R: BufRead>(
+    reader: &mut R,
+    buf: &mut Vec<u8>,
+) -> io::Result<Option<String>> {
+    buf.clear();
+    if reader.read_until(b'\n', buf)? == 0 {
+        return Ok(None);
+    }
+    Ok(Some(
+        String::from_utf8_lossy(buf)
+            .trim_end_matches(['\n', '\r'])
+            .to_string(),
+    ))
+}
+
+/// Read `path` whole, as lines.
+///
+/// `File::open` succeeds on a directory on Unix and only fails when read, so
+/// that case is refused up front with `IsADirectory`. A file whose head holds
+/// a NUL is refused as [`BINARY_FILE`]; one that merely holds undecodable
+/// bytes is read anyway, a U+FFFD per bad sequence. Anything else the OS
+/// refuses comes back verbatim.
+pub fn read_lines(path: &Path) -> io::Result<Vec<String>> {
+    if path.is_dir() {
+        return Err(io::Error::new(
+            io::ErrorKind::IsADirectory,
+            "is a directory",
+        ));
+    }
+    let mut reader = BufReader::new(File::open(path)?);
+    let (binary, head) = sniff_binary(&mut reader)?;
+    if binary {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, BINARY_FILE));
+    }
+    // The sniffed bytes are content, so they go back in front of the rest.
+    let mut reader = Cursor::new(head).chain(reader);
+    let mut lines = Vec::new();
+    let mut buf = Vec::new();
+    while let Some(line) = read_lossy_line(&mut reader, &mut buf)? {
+        lines.push(line);
+    }
+    Ok(lines)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fixtures::{fixture_dir, fixture_file};
 
     // ---- definition filters (#123) -----------------------------------------
 
@@ -838,5 +929,55 @@ mod tests {
             verdicts_before.as_slice(),
             "recompute_visible must not touch the verdicts"
         );
+    }
+
+    // ---- reading (#143) -----------------------------------------------------
+
+    #[test]
+    fn read_lines_strips_line_ends_and_decodes_lossily() {
+        let file = fixture_file("document_read_lossy.log", b"one\r\ntwo\xff\nthree");
+
+        let lines = read_lines(&file).expect("readable");
+
+        assert_eq!(lines, ["one", "two\u{FFFD}", "three"]);
+    }
+
+    #[test]
+    fn read_builds_a_document_over_the_file() {
+        let file = fixture_file("document_read_document.log", b"a\nb\n");
+
+        let document = Document::read(&file).expect("readable");
+
+        assert_eq!(document.lines(), ["a", "b"]);
+        assert_eq!(document.verdicts().len(), 2, "one verdict slot per line");
+    }
+
+    #[test]
+    fn read_lines_refuses_a_binary_file() {
+        let file = fixture_file("document_read_binary.bin", b"abc\0def\n");
+
+        let err = read_lines(&file).expect_err("a NUL in the head is binary");
+
+        assert!(is_binary(&err), "not the binary error: {err}");
+        assert_eq!(err.to_string(), BINARY_FILE);
+    }
+
+    #[test]
+    fn read_lines_refuses_a_directory_up_front() {
+        let dir = fixture_dir("document_read_dir");
+
+        let err = read_lines(&dir).expect_err("a directory is not a file");
+
+        assert_eq!(err.kind(), io::ErrorKind::IsADirectory);
+        assert_eq!(err.to_string(), "is a directory");
+        assert!(!is_binary(&err));
+    }
+
+    #[test]
+    fn read_lines_reports_a_missing_file_as_not_found() {
+        let err =
+            read_lines(Path::new("target/document_read_no_such_file.log")).expect_err("missing");
+
+        assert_eq!(err.kind(), io::ErrorKind::NotFound);
     }
 }
