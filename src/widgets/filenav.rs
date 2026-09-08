@@ -1,3 +1,4 @@
+use super::listmotion::ListMotion;
 /// `FileNav`
 ///
 use crate::document::Mode;
@@ -6,7 +7,7 @@ use crate::widgets::Action;
 use color_eyre::Result;
 use crossterm::event::{Event, KeyCode, KeyModifiers};
 use ratatui::prelude::{Buffer, Color, Modifier, Rect, Style, Widget};
-use ratatui::widgets::{List, ListItem, ListState, StatefulWidget};
+use ratatui::widgets::{List, ListItem, StatefulWidget};
 use regex::Regex;
 use std::ffi::OsString;
 use std::fs;
@@ -15,11 +16,6 @@ use unicode_width::UnicodeWidthStr;
 
 /// The entry that climbs to the parent directory.
 pub(crate) const PARENT: &str = "..";
-
-/// A page, in rows, before the pane has been drawn once. `App::run` renders
-/// before it reads a key, so this only ever matters to a test — but a zero
-/// page would make `PageDown` a silent no-op, and #120 forbids silent keys.
-const ASSUMED_PAGE: usize = 20;
 
 /// Where the cursor lands after the listing is rebuilt.
 ///
@@ -242,11 +238,9 @@ pub(crate) struct FileNav<'a> {
     /// in step with this, which only `rebuild_list` keeps true (#81).
     entries: Vec<Entry>,
     navlist: List<'a>,
-    state: ListState,
+    /// The cursor over `visible`, and the page size (#194).
+    list: ListMotion,
     active: bool,
-    /// Inner height at the last render, so page motions know their page.
-    /// `None` until then; see `ASSUMED_PAGE`.
-    last_height: Option<u16>,
     /// Terminal columns the widest row needs, measured when the listing is
     /// built rather than on every frame.
     ///
@@ -325,7 +319,7 @@ impl FileNav<'_> {
         // Fresh entries are all `Unknown`, so every row is visible whatever
         // the mode; `rebuild_visible` also rebuilds the drawn list.
         self.rebuild_visible();
-        self.state = ListState::default();
+        self.list.reset();
         self.select_entry(self.index_of(&select));
     }
 
@@ -473,7 +467,7 @@ impl FileNav<'_> {
         if count == 0 {
             return None;
         }
-        let start = self.state.selected().unwrap_or(0);
+        let start = self.list.selected().unwrap_or(0);
 
         let found = (1..=count)
             .map(|offset| {
@@ -485,7 +479,7 @@ impl FileNav<'_> {
             })
             .find(|&row| wanted(&self.entries[self.visible[row]]))?;
 
-        self.state.select(Some(found));
+        self.list.select(Some(found));
         self.preview_selection()
     }
 
@@ -593,7 +587,13 @@ impl FileNav<'_> {
     /// selection into something that can be opened.
     #[cfg(test)]
     pub(crate) fn selected(&self) -> Option<usize> {
-        self.state.selected()
+        self.list.selected()
+    }
+
+    /// Put the cursor on `row`, for tests that set up a position by hand.
+    #[cfg(test)]
+    pub(crate) fn select(&mut self, row: usize) {
+        self.list.select(Some(row));
     }
 
     /// The path the cursor is sitting on.
@@ -707,7 +707,7 @@ impl FileNav<'_> {
     /// removed, and only in `FilteredOnly`.
     pub(crate) fn rebuild_visible(&mut self) {
         let keep = self.selected_entry();
-        let row_before = self.state.selected();
+        let row_before = self.list.selected();
         let mode = self.mode;
         let visible: Vec<usize> = self
             .entries
@@ -722,25 +722,25 @@ impl FileNav<'_> {
             .collect();
         self.visible = visible;
         self.rebuild_list();
-        // The same rule `FilterList::clamp_selection` follows: never `None`
-        // while there is a row to be on, and `..` is always a row.
+        // The same rule `ListMotion::clamp` follows: never `None` while
+        // there is a row to be on, and `..` is always a row.
         let row = keep
             .and_then(|index| self.visible.iter().position(|&v| v == index))
             .or_else(|| row_before.map(|row| row.min(self.visible.len().saturating_sub(1))))
             .unwrap_or(0);
-        self.state.select((!self.visible.is_empty()).then_some(row));
+        self.list.select((!self.visible.is_empty()).then_some(row));
     }
 
     /// The `entries` index of the selected row.
     pub(crate) fn selected_entry(&self) -> Option<usize> {
-        self.visible.get(self.state.selected()?).copied()
+        self.visible.get(self.list.selected()?).copied()
     }
 
     /// Select by `entries` index. A hidden entry cannot be selected; the
     /// selection is left where it was.
     pub(crate) fn select_entry(&mut self, index: usize) {
         if let Some(row) = self.visible.iter().position(|&v| v == index) {
-            self.state.select(Some(row));
+            self.list.select(Some(row));
         }
     }
 
@@ -783,25 +783,17 @@ impl FileNav<'_> {
         }
     }
 
+    /// `ListState`'s own `select_previous`, kept as it was: with nothing
+    /// selected it wraps to the end, which `ListMotion::select_previous`
+    /// does not, and the navigator always has a row selected anyway.
     fn select_previous(&mut self) {
-        self.state.select_previous();
+        self.list.state_mut().select_previous();
     }
 
-    /// Move down one, stopping at the last entry.
-    ///
-    /// Clamps explicitly rather than using `ListState::select_next`, which
-    /// increments without knowing the list length: at the bottom it moved the
-    /// selection *past* the last entry, where `selected_path` returns `None`
-    /// and previewing silently stopped until you pressed `k`. Rendering hid
-    /// it, because `List` clamps the highlight for drawing. `FilterList`
-    /// already clamps the same way.
+    /// Move down one, stopping at the last entry — see
+    /// `ListMotion::select_next` for why not `ListState`'s.
     fn select_next(&mut self) {
-        let last = self.visible.len().saturating_sub(1);
-        let next = self
-            .state
-            .selected()
-            .map_or(0, |index| (index + 1).min(last));
-        self.state.select(Some(next));
+        self.list.select_next(self.visible.len());
     }
 
     /// A motion to the top lands on `..` when it is present, deliberately:
@@ -809,32 +801,23 @@ impl FileNav<'_> {
     /// unlike a listing rebuild (`Select::First` via `index_of`), which skips
     /// past it to the first real entry.
     fn select_first(&mut self) {
-        if !self.visible.is_empty() {
-            self.state.select(Some(0));
-        }
+        self.list.select_first(self.visible.len());
     }
 
     fn select_last(&mut self) {
-        if let Some(last) = self.visible.len().checked_sub(1) {
-            self.state.select(Some(last));
-        }
+        self.list.select_last(self.visible.len());
     }
 
     /// Move the selection by `delta` rows, clamping at both ends. Positive is
     /// down. Shared by the page motions; `j`/`k` keep their own one-row
     /// methods, which predate this and are the ones tests already name.
     fn move_by(&mut self, delta: isize) {
-        let Some(last) = self.visible.len().checked_sub(1) else {
-            return;
-        };
-        let from = self.state.selected().unwrap_or(0);
-        let to = from.saturating_add_signed(delta).min(last);
-        self.state.select(Some(to));
+        self.list.move_by(delta, self.visible.len());
     }
 
     /// Rows in a page: the pane's inner height at the last render.
     fn page_rows(&self) -> usize {
-        self.last_height.map_or(ASSUMED_PAGE, usize::from).max(1)
+        self.list.page_rows()
     }
 }
 
@@ -1005,11 +988,11 @@ impl Widget for &mut FileNav<'_> {
         // swap whatever the entry count.
         let block = crate::widgets::pane_block(self.dir.display().to_string(), self.active);
         let inner = block.inner(area);
-        self.last_height = Some(inner.height);
+        self.list.rendered(inner.height);
         block.render(area, buf);
 
         let list = std::mem::take(&mut self.navlist).highlight_style(highlight_style);
-        StatefulWidget::render(&list, inner, buf, &mut self.state);
+        StatefulWidget::render(&list, inner, buf, self.list.state_mut());
         self.navlist = list;
     }
 }
@@ -1037,7 +1020,7 @@ mod tests {
             .iter()
             .position(|e| e.name == name)
             .unwrap_or_else(|| panic!("{name} not among {:?}", nav.entries));
-        nav.state.select(Some(index));
+        nav.select(index);
     }
 
     /// A fixture with one plain file, one executable file and one directory,
@@ -1498,11 +1481,11 @@ mod tests {
     fn select_next_stops_at_the_last_entry() {
         let mut nav = nav_over("clamp_bottom", &["alpha.txt"]);
         let last = nav.entries.len() - 1;
-        nav.state.select(Some(last));
+        nav.select(last);
 
         let action = press(&mut nav, KeyCode::Char('j'));
 
-        assert_eq!(nav.state.selected(), Some(last), "ran off the end");
+        assert_eq!(nav.selected(), Some(last), "ran off the end");
         assert!(
             action.is_some(),
             "preview stopped at the bottom of the list"
@@ -1841,7 +1824,7 @@ mod tests {
             2,
             "expected `..` and the one fixture file"
         );
-        nav.state.select(Some(1));
+        nav.select(1);
 
         let path = nav.selected_path().expect("an entry is selected");
 
@@ -1904,7 +1887,7 @@ mod tests {
             visible: vec![0],
             ..Default::default()
         };
-        nav.state.select(Some(0));
+        nav.select(0);
 
         assert_eq!(
             nav.selected_path(),
@@ -2397,7 +2380,7 @@ mod tests {
         let mut nav = FileNav::new(dir.join("Cargo.toml").display().to_string());
         select(&mut nav, "src");
         enter(&mut nav);
-        assert_eq!(nav.state.selected(), Some(1));
+        assert_eq!(nav.selected(), Some(1));
     }
 
     #[test]
@@ -2447,18 +2430,18 @@ mod tests {
     fn select_next_advances_selection() {
         let dir = repo_like("select_next");
         let mut nav = FileNav::new(dir.join("Cargo.toml").display().to_string());
-        nav.state.select(Some(0));
+        nav.select(0);
         nav.select_next();
-        assert_eq!(nav.state.selected(), Some(1));
+        assert_eq!(nav.selected(), Some(1));
     }
 
     #[test]
     fn select_previous_clamps_at_first_entry() {
         let dir = repo_like("select_previous");
         let mut nav = FileNav::new(dir.join("Cargo.toml").display().to_string());
-        nav.state.select(Some(0));
+        nav.select(0);
         nav.select_previous();
-        assert_eq!(nav.state.selected(), Some(0));
+        assert_eq!(nav.selected(), Some(0));
     }
 
     // ---- shared list motions (#120 §3) ----------------------------------
@@ -2662,12 +2645,12 @@ mod tests {
 
         let dir = repo_like("j_and_k");
         let mut nav = FileNav::new(dir.join("Cargo.toml").display().to_string());
-        nav.state.select(Some(0));
+        nav.select(0);
         nav.handle_events(Event::Key(KeyEvent::from(KeyCode::Char('j'))));
-        assert_eq!(nav.state.selected(), Some(1), "j should move down");
+        assert_eq!(nav.selected(), Some(1), "j should move down");
 
         nav.handle_events(Event::Key(KeyEvent::from(KeyCode::Char('k'))));
-        assert_eq!(nav.state.selected(), Some(0), "k should move back up");
+        assert_eq!(nav.selected(), Some(0), "k should move back up");
     }
 
     /// #78: the navigator must show the path the user walked, not wherever a

@@ -1,6 +1,7 @@
 pub(crate) mod filenav;
 pub(crate) mod fileview;
 pub(crate) mod filterlist;
+pub(crate) mod listmotion;
 pub(crate) mod picker;
 
 use ratatui::prelude::{Color, Style};

@@ -2766,7 +2766,7 @@ impl App<'_> {
     fn set_active_pane(&mut self) {
         self.nav.set_active(self.focus == Focus::Nav);
         self.view.set_active(self.focus == Focus::View);
-        self.filters_pane.active = self.focus == Focus::Filters;
+        self.filters_pane.set_active(self.focus == Focus::Filters);
     }
 
     /// Draw one pane into `area`.
@@ -6119,11 +6119,11 @@ mod tests {
         let set = definitions_index(&app);
         key(&mut app, KeyCode::Char('f'));
         // Rows: the `f i` hint, then Header(definitions), with an empty scratch set.
-        app.filters_pane.state.select(Some(1));
+        app.filters_pane.select(1);
         key(&mut app, KeyCode::Enter);
         assert!(app.filters.sets()[set].enabled);
         assert_eq!(included(&app), 0, "expanded, but every row is off");
-        app.filters_pane.state.select(Some(2)); // functions
+        app.filters_pane.select(2); // functions
         key(&mut app, KeyCode::Enter);
         let verdicts = app.document.verdicts().to_vec();
         assert_eq!(
@@ -6421,13 +6421,13 @@ mod tests {
         key(&mut app, KeyCode::Char('f'));
         assert_eq!(included(&app), 3, "sanity: alpha, beta, scratch");
         // Rows: scratch, Header(a), alpha, Header(b), beta, Header(c).
-        app.filters_pane.state.select(Some(3));
+        app.filters_pane.select(3);
         key(&mut app, KeyCode::Char('s'));
         assert_eq!(app.filters.soloed(), Some(2));
         assert_eq!(widgets::filterlist::rows(&app.filters).len(), 2);
         assert_eq!(included(&app), 1, "only beta");
         // The soloed header is now row 0.
-        app.filters_pane.state.select(Some(0));
+        app.filters_pane.select(0);
         key(&mut app, KeyCode::Char('s'));
         assert_eq!(app.filters.soloed(), None);
         assert_eq!(included(&app), 3);
@@ -6437,7 +6437,7 @@ mod tests {
     fn s_on_a_disabled_set_enables_it_with_default_and_solos() {
         let mut app = app_with_three_sets("solo_disabled");
         key(&mut app, KeyCode::Char('f'));
-        app.filters_pane.state.select(Some(5)); // Header(c)
+        app.filters_pane.select(5); // Header(c)
         key(&mut app, KeyCode::Char('s'));
         assert_eq!(app.filters.soloed(), Some(3));
         assert!(app.filters.sets()[3].enabled);
@@ -6448,7 +6448,7 @@ mod tests {
     fn big_r_resets_every_set_and_keeps_the_scratch_filter() {
         let mut app = app_with_three_sets("reset_all");
         key(&mut app, KeyCode::Char('f'));
-        app.filters_pane.state.select(Some(3));
+        app.filters_pane.select(3);
         key(&mut app, KeyCode::Char('s')); // solo b
         app.filters.set_enabled(1, false); // beta off, contrary to default
         key(&mut app, KeyCode::Char('R'));
@@ -6490,7 +6490,7 @@ mod tests {
     fn a_opens_the_picker_and_enter_applies_the_profile() {
         let mut app = app_with_profiles("picker_apply");
         key(&mut app, KeyCode::Char('f'));
-        app.filters_pane.state.select(Some(0)); // Header(a)
+        app.filters_pane.select(0); // Header(a)
         assert_eq!(
             flags_of(&app, 1),
             vec![true, false],
@@ -6901,7 +6901,7 @@ mod tests {
     fn esc_closes_the_picker_without_changing_a_flag() {
         let mut app = app_with_profiles("picker_esc");
         key(&mut app, KeyCode::Char('f'));
-        app.filters_pane.state.select(Some(0));
+        app.filters_pane.select(0);
         key(&mut app, KeyCode::Char('a'));
         key(&mut app, KeyCode::Char('j'));
         key(&mut app, KeyCode::Esc);
@@ -6914,7 +6914,7 @@ mod tests {
         let mut app = app_with_profiles("picker_none");
         key(&mut app, KeyCode::Char('f'));
         // Rows: Header(a), alpha, beta, Header(b), neither — b's header is row 3.
-        app.filters_pane.state.select(Some(3));
+        app.filters_pane.select(3);
         key(&mut app, KeyCode::Char('a'));
         assert!(app.picker.is_none());
         assert!(
@@ -6930,7 +6930,7 @@ mod tests {
     fn the_open_picker_is_visible() {
         let mut app = app_with_profiles("picker_draw");
         key(&mut app, KeyCode::Char('f'));
-        app.filters_pane.state.select(Some(0));
+        app.filters_pane.select(0);
         key(&mut app, KeyCode::Char('a'));
         let area = Rect::new(0, 0, 80, 20);
         let mut buf = Buffer::empty(area);
@@ -6971,7 +6971,7 @@ mod tests {
         };
         assert_eq!(included(&app), 1, "sanity: a's alpha is live");
         // Rows: Header(a), Filter(alpha), Header(b) — select b's header.
-        app.filters_pane.state.select(Some(2));
+        app.filters_pane.select(2);
         key(&mut app, KeyCode::Enter);
         assert!(app.filters.sets()[2].enabled);
         assert_eq!(included(&app), 1, "b has no default, so beta stays off");
@@ -6979,7 +6979,7 @@ mod tests {
         app.refresh_view();
         assert_eq!(included(&app), 2);
         // Collapse a: select its header at row 0.
-        app.filters_pane.state.select(Some(0));
+        app.filters_pane.select(0);
         key(&mut app, KeyCode::Enter);
         assert!(!app.filters.sets()[1].enabled);
         assert_eq!(included(&app), 1, "alpha stopped matching");
@@ -6993,7 +6993,7 @@ mod tests {
     fn d_on_a_header_reports_and_changes_nothing() {
         let mut app = app_with_two_sets("pane_header_read_only");
         key(&mut app, KeyCode::Char('f'));
-        app.filters_pane.state.select(Some(0));
+        app.filters_pane.select(0);
         key(&mut app, KeyCode::Char('d'));
         assert_eq!(app.filters.sets().len(), 4);
         assert_eq!(app.filters.len(), 2);

@@ -10,18 +10,15 @@
 //! derive from that list, so they cannot disagree about what a row is.
 
 use super::FilterCommand;
+use super::listmotion::ListMotion;
 use crate::filter::{ActiveFilters, SEARCH_STYLE, Sense};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::prelude::{Buffer, Color, Modifier, Rect, Style};
-use ratatui::widgets::{List, ListItem, ListState, StatefulWidget};
+use ratatui::widgets::{List, ListItem, StatefulWidget};
 use unicode_width::UnicodeWidthStr;
 
 /// Rows of chrome the pane needs on top of one row per filter.
 const BORDERS: u16 = 2;
-
-/// A page, in rows, before the pane has been drawn once — see the same
-/// constant in `filenav.rs`.
-const ASSUMED_PAGE: usize = 20;
 
 /// Candidate texts for the pane's single row when no filter is defined,
 /// longest first. `render` draws the first one that fits the column.
@@ -128,70 +125,63 @@ pub(crate) fn numbered(filters: &ActiveFilters) -> Vec<usize> {
         .collect()
 }
 
+/// The pane's own state: where the cursor is and whether it has focus.
+/// Both private (#169), as on the other two panes since #81 — `set_active`
+/// is the one writer of `active`, and the cursor moves only through the
+/// motions below, so `App` cannot leave it somewhere the rows do not reach.
 #[derive(Debug, Default)]
 pub(crate) struct FilterList {
-    pub state: ListState,
-    pub active: bool,
-    /// Inner height at the last render, so page motions know their page.
-    last_height: Option<u16>,
+    /// The cursor over the rows, and the page size (#194).
+    list: ListMotion,
+    active: bool,
 }
 
 impl FilterList {
     pub(crate) fn selected(&self) -> Option<usize> {
-        self.state.selected()
+        self.list.selected()
+    }
+
+    /// Put the cursor on `row`, for tests that set up a position by hand.
+    /// Production moves it only through the motions, which clamp.
+    #[cfg(test)]
+    pub(crate) fn select(&mut self, row: usize) {
+        self.list.select(Some(row));
+    }
+
+    /// Give or take focus. The only writer of `active`.
+    pub(crate) fn set_active(&mut self, active: bool) {
+        self.active = active;
     }
 
     pub(crate) fn select_next(&mut self, len: usize) {
-        if len == 0 {
-            return;
-        }
-        let next = self.state.selected().map_or(0, |i| (i + 1).min(len - 1));
-        self.state.select(Some(next));
+        self.list.select_next(len);
     }
 
     pub(crate) fn select_previous(&mut self, len: usize) {
-        if len == 0 {
-            return;
-        }
-        let previous = self.state.selected().map_or(0, |i| i.saturating_sub(1));
-        self.state.select(Some(previous));
+        self.list.select_previous(len);
     }
 
     pub(crate) fn select_first(&mut self, len: usize) {
-        if len > 0 {
-            self.state.select(Some(0));
-        }
+        self.list.select_first(len);
     }
 
     pub(crate) fn select_last(&mut self, len: usize) {
-        if let Some(last) = len.checked_sub(1) {
-            self.state.select(Some(last));
-        }
+        self.list.select_last(len);
     }
 
     /// Move by `delta` rows, clamping at both ends. Positive is down.
     pub(crate) fn move_by(&mut self, delta: isize, len: usize) {
-        let Some(last) = len.checked_sub(1) else {
-            return;
-        };
-        let from = self.state.selected().unwrap_or(0);
-        self.state
-            .select(Some(from.saturating_add_signed(delta).min(last)));
+        self.list.move_by(delta, len);
     }
 
     fn page_rows(&self) -> usize {
-        self.last_height.map_or(ASSUMED_PAGE, usize::from).max(1)
+        self.list.page_rows()
     }
 
     /// Pull the selection back into range after the list has shrunk, and drop
     /// it entirely when nothing is left.
     pub(crate) fn clamp_selection(&mut self, len: usize) {
-        if len == 0 {
-            self.state.select(None);
-        } else {
-            let index = self.state.selected().unwrap_or(0).min(len - 1);
-            self.state.select(Some(index));
-        }
+        self.list.clamp(len);
     }
 
     /// Handle a key, reporting any change `App` must make to the filter set.
@@ -475,8 +465,8 @@ impl FilterList {
         let list = List::new(items)
             .block(crate::widgets::pane_block("Filters", self.active))
             .highlight_style(highlight);
-        self.last_height = Some(area.height.saturating_sub(BORDERS));
-        StatefulWidget::render(&list, area, buf, &mut self.state);
+        self.list.rendered(area.height.saturating_sub(BORDERS));
+        StatefulWidget::render(&list, area, buf, self.list.state_mut());
     }
 }
 
@@ -958,7 +948,7 @@ mod tests {
         set.add("ERROR").expect("valid pattern");
         set.set_search("timeout").expect("valid pattern");
         let mut list = FilterList::default();
-        list.state.select(Some(1));
+        list.select(1);
 
         let command = list.handle_key(KeyEvent::from(KeyCode::Enter), &rows(&set));
 
@@ -970,7 +960,7 @@ mod tests {
         let mut set = ActiveFilters::new();
         set.set_search("timeout").expect("valid pattern");
         let mut list = FilterList::default();
-        list.state.select(Some(0));
+        list.select(0);
 
         let command = list.handle_key(KeyEvent::from(KeyCode::Enter), &rows(&set));
 
@@ -986,7 +976,7 @@ mod tests {
         let mut set = ActiveFilters::new();
         set.add("ERROR").expect("valid pattern");
         let mut list = FilterList::default();
-        list.state.select(Some(0));
+        list.select(0);
 
         let command = list.handle_key(KeyEvent::from(KeyCode::Char(' ')), &rows(&set));
 
@@ -1011,7 +1001,7 @@ mod tests {
         let rows = rows(&set);
 
         for (row, (_, text)) in FilterList::texts(&set).into_iter().enumerate() {
-            list.state.select(Some(row));
+            list.select(row);
             let command = list
                 .handle_key(KeyEvent::from(KeyCode::Enter), &rows)
                 .unwrap_or_else(|| panic!("row {row}: no command"));
@@ -1034,7 +1024,7 @@ mod tests {
     #[test]
     fn d_on_the_search_row_deletes_the_search() {
         let mut list = FilterList::default();
-        list.state.select(Some(0));
+        list.select(0);
 
         let command = list.handle_key(KeyEvent::from(KeyCode::Char('d')), &[Row::Search]);
 
@@ -1047,7 +1037,7 @@ mod tests {
     #[test]
     fn c_below_the_search_row_edits_the_right_filter() {
         let mut list = FilterList::default();
-        list.state.select(Some(1));
+        list.select(1);
 
         let command = list.handle_key(
             KeyEvent::from(KeyCode::Char('c')),
@@ -1060,7 +1050,7 @@ mod tests {
     #[test]
     fn c_on_the_search_row_edits_the_search() {
         let mut list = FilterList::default();
-        list.state.select(Some(0));
+        list.select(0);
 
         let command = list.handle_key(KeyEvent::from(KeyCode::Char('c')), &[Row::Search]);
 
@@ -1205,7 +1195,7 @@ mod tests {
         let filters = two_sets(true, false);
         let rows = rows(&filters);
         let mut list = FilterList::default();
-        list.state.select(Some(1)); // Header(1)
+        list.select(1); // Header(1)
         assert_eq!(
             list.handle_key(KeyEvent::from(KeyCode::Enter), &rows),
             Some(FilterCommand::ToggleSet(1))
@@ -1217,7 +1207,7 @@ mod tests {
         let filters = two_sets(true, false);
         let rows = rows(&filters);
         let mut list = FilterList::default();
-        list.state.select(Some(1));
+        list.select(1);
         for c in ['d', 'c', 'm'] {
             assert_eq!(
                 list.handle_key(KeyEvent::from(KeyCode::Char(c)), &rows),
@@ -1261,12 +1251,12 @@ mod tests {
         let filters = two_sets(true, false);
         let rows = rows(&filters);
         let mut list = FilterList::default();
-        list.state.select(Some(1)); // Header(1)
+        list.select(1); // Header(1)
         assert_eq!(
             list.handle_key(KeyEvent::from(KeyCode::Char('a')), &rows),
             Some(FilterCommand::PickProfile(1))
         );
-        list.state.select(Some(0)); // the scratch filter
+        list.select(0); // the scratch filter
         assert_eq!(
             list.handle_key(KeyEvent::from(KeyCode::Char('a')), &rows),
             None
@@ -1295,7 +1285,7 @@ mod tests {
         let filters = twelve();
         let rows = rows(&filters);
         let mut list = FilterList::default();
-        list.state.select(Some(4));
+        list.select(4);
 
         press(&mut list, KeyCode::Char('G'), KeyModifiers::SHIFT, &rows);
         assert_eq!(list.selected(), Some(12));
@@ -1316,7 +1306,7 @@ mod tests {
         let area = Rect::new(0, 0, 40, 8);
         let mut buf = Buffer::empty(area);
         list.render(&filters, area, &mut buf);
-        list.state.select(Some(0));
+        list.select(0);
 
         press(&mut list, KeyCode::Char('d'), KeyModifiers::CONTROL, &rows);
         assert_eq!(list.selected(), Some(3), "Ctrl-d is not half a page");
@@ -1338,7 +1328,7 @@ mod tests {
         let filters = twelve();
         let rows = rows(&filters);
         let mut list = FilterList::default();
-        list.state.select(Some(0));
+        list.select(0);
 
         let command = list.handle_key(
             KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL),
@@ -1414,12 +1404,12 @@ mod tests {
         let filters = two_sets(true, false);
         let rows = rows(&filters);
         let mut list = FilterList::default();
-        list.state.select(Some(1)); // Header(1)
+        list.select(1); // Header(1)
         assert_eq!(
             list.handle_key(KeyEvent::from(KeyCode::Char('s')), &rows),
             Some(FilterCommand::Solo(1))
         );
-        list.state.select(Some(0)); // the scratch filter
+        list.select(0); // the scratch filter
         assert_eq!(
             list.handle_key(KeyEvent::from(KeyCode::Char('s')), &rows),
             None
@@ -1435,7 +1425,7 @@ mod tests {
     fn selection_clamps_to_the_rows_shown() {
         let mut filters = two_sets(true, true);
         let mut list = FilterList::default();
-        list.state.select(Some(rows(&filters).len() - 1));
+        list.select(rows(&filters).len() - 1);
         filters.set_enabled_set(2, false);
         list.clamp_selection(rows(&filters).len());
         assert_eq!(list.selected(), Some(rows(&filters).len() - 1));
