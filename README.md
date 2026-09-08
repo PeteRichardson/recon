@@ -98,9 +98,12 @@ motions throughout.
 - **Cheap navigation** — moving through the navigator renders a bounded preview
   (50,000 lines / 10 MiB), so scrolling a directory of very large logs doesn't
   stutter. Ordinary files are well inside those bounds and are simply read.
-- **Mouse resize** — drag either pane divider: the vertical one to set the left
-  column's width, the horizontal one under the navigator to set how tall the
-  filter pane is. Double-click either to return it to auto-sizing.
+- **Mouse** — click a file to open it, a directory to look inside it (twice to
+  enter it), a filter to switch it, a row of the look-ahead listing to go
+  straight to it, or the status row to add a filter. Drag either pane divider
+  to resize: the vertical one sets the left column's width, the horizontal one
+  under the navigator sets how tall the filter pane is. Double-click either to
+  return it to auto-sizing.
 - **Code is coloured** — keywords, strings and comments in around 150
   languages, Swift and TOML included, using your terminal's own palette by
   default so it matches whatever theme you already run. Pick a bundled theme
@@ -394,9 +397,21 @@ exists:
 
 `[` and `]` page the file view from every pane and so live in the Global table.
 
-Mouse: drag the vertical divider between the columns to resize them;
-double-click it to return to auto-sizing the left column to whichever of the
-navigator or the filter pane currently needs more room.
+Mouse: a click does what the cursor keys and `Enter` would do to the row under
+it, and focuses the pane it lands in. In the navigator, one click on a file
+opens it and one click on a directory looks inside it; a second click on the
+same directory (or on `..`) enters it, the way `Enter` does. In the filter pane
+a click toggles the filter, the set header, or the live search on that row. In
+the file view, a click on a row of a directory's look-ahead listing takes the
+navigator into that directory and opens the entry clicked — one click instead
+of `l`, a cursor motion and `Enter`. A click on the status row opens the
+include prompt, exactly as `f i` does, and committing it returns focus to the
+pane you clicked from. The wheel scrolls the file view while it has focus, as
+before.
+
+Drag the vertical divider between the columns to resize them; double-click it
+to return to auto-sizing the left column to whichever of the navigator or the
+filter pane currently needs more room.
 
 The horizontal divider — the border between the navigator and the filter pane
 below it — drags the same way, and sets how many rows the filter pane gets.

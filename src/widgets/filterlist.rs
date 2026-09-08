@@ -257,11 +257,7 @@ impl FilterList {
             // filter off. `App` swallows exactly one `Enter` immediately after
             // a commit; see `swallow_next_enter` in `lib.rs`. The guard lives
             // there rather than here because only `App` knows a prompt closed.
-            (KeyCode::Enter, Row::Filter(index) | Row::BuiltIn(index)) => {
-                Some(FilterCommand::Toggle(index))
-            }
-            (KeyCode::Enter, Row::Search) => Some(FilterCommand::ToggleSearch),
-            (KeyCode::Enter, Row::Header(set)) => Some(FilterCommand::ToggleSet(set)),
+            (KeyCode::Enter, row) => Self::toggle_command(row),
             (KeyCode::Char('d'), Row::Filter(index)) => Some(FilterCommand::Delete(index)),
             (KeyCode::Char('d'), Row::Search) => Some(FilterCommand::DeleteSearch),
             // `c` for change, as in vim.
@@ -289,6 +285,28 @@ impl FilterList {
             (KeyCode::Char('R'), _) => Some(FilterCommand::Reset),
             _ => None,
         }
+    }
+
+    /// What `Enter` does on `row`: switch the thing it names. Shared with
+    /// `click`, so a click and `Enter` cannot drift apart on which rows
+    /// toggle what (#58). The hint row is inert to both.
+    fn toggle_command(row: Row) -> Option<FilterCommand> {
+        match row {
+            Row::Filter(index) | Row::BuiltIn(index) => Some(FilterCommand::Toggle(index)),
+            Row::Search => Some(FilterCommand::ToggleSearch),
+            Row::Header(set) => Some(FilterCommand::ToggleSet(set)),
+            Row::Hint => None,
+        }
+    }
+
+    /// A click `line` rows below the pane's top border: put the cursor on
+    /// that row and report what `Enter` there would do (#58). A click below
+    /// the last row moves nothing and reports nothing.
+    pub(crate) fn click(&mut self, line: u16, rows: &[Row]) -> Option<FilterCommand> {
+        let row = self.list.row_at(line);
+        let target = *rows.get(row)?;
+        self.list.select(Some(row));
+        Self::toggle_command(target)
     }
 
     /// Rows this pane wants: one per row plus its borders, and never fewer

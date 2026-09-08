@@ -113,6 +113,14 @@ impl ListMotion {
         self.last_height = Some(inner_height);
     }
 
+    /// The row drawn on the pane's first inner line at the last render, so a
+    /// click `line` rows below it can be turned into a row index (#58).
+    /// `StatefulWidget::render` is what moves this; before the first render
+    /// it is zero, which is also what an unscrolled list draws.
+    pub(crate) fn row_at(&self, line: u16) -> usize {
+        self.state.offset() + usize::from(line)
+    }
+
     /// The state itself, for `StatefulWidget::render`, which scrolls it.
     pub(crate) fn state_mut(&mut self) -> &mut ListState {
         &mut self.state

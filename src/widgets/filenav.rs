@@ -548,6 +548,55 @@ impl FileNav<'_> {
         None
     }
 
+    /// Act on a click `line` rows below the pane's top border (#58).
+    ///
+    /// The row under the mouse is selected, as a cursor key would have, and
+    /// then what happens depends on what it is and whether this is the
+    /// second click of a pair: a file loads on one click, since looking at a
+    /// file is the only thing to do with it; a directory (or `..`) is looked
+    /// ahead into on one click and entered on two, so a click on a directory
+    /// row reads as "select this" rather than moving the whole listing out
+    /// from under the next click. Two clicks on a file are one click and
+    /// nothing: it is already loaded.
+    ///
+    /// A click below the last row is not a selection of anything, and the
+    /// cursor stays where it was.
+    pub(crate) fn click(&mut self, line: u16, double: bool) -> Option<Action> {
+        let row = self.list.row_at(line);
+        let entry = self.entries.get(*self.visible.get(row)?)?;
+        let is_dir = matches!(entry.kind, Kind::Dir | Kind::Parent);
+        self.list.select(Some(row));
+        match (is_dir, double) {
+            (true, true) | (false, false) => self.activate_selection(),
+            (true, false) => self.preview_selection(),
+            (false, true) => None,
+        }
+    }
+
+    /// The visible row drawn `line` rows below the top border, if there is
+    /// one — so `App` can tell two clicks on one row from two on neighbours.
+    pub(crate) fn row_at(&self, line: u16) -> Option<usize> {
+        let row = self.list.row_at(line);
+        (row < self.visible.len()).then_some(row)
+    }
+
+    /// Enter `dir` and open its `index`th entry, where `index` counts the
+    /// directory's own entries in `sorted_entries` order — the order the
+    /// file view lists a directory in, without the `..` this pane prepends.
+    /// A click on that listing lands here (#58): one click instead of `l`
+    /// and then a cursor motion and `Enter`.
+    ///
+    /// Looked up by name rather than by adding one to the index: the two
+    /// listings are built by separate reads of the directory, and a file
+    /// created between them would otherwise open the entry *next to* the one
+    /// clicked. A miss — the entry has gone, or the row was the message a
+    /// listing shows in place of entries — leaves the pane exactly as it was.
+    pub(crate) fn open_listed(&mut self, dir: &Path, index: usize) -> Option<Action> {
+        let name = sorted_entries(dir).ok()?.get(index)?.name.clone();
+        self.set_dir(dir.to_path_buf(), Select::Named(name));
+        self.activate_selection()
+    }
+
     /// Columns needed to show the longest entry in full.
     ///
     /// Measures the row *as drawn*, so a directory's trailing `/` is counted;
