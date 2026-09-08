@@ -1324,7 +1324,14 @@ fn estimate_lines(file_bytes: Option<u64>, bytes_read: u64, lines_read: usize) -
 
 /// Decimal digits in `n`, for sizing the gutter. `0` and `1` both need one.
 fn digits(n: usize) -> u8 {
-    if n == 0 { 1 } else { n.ilog10() as u8 + 1 }
+    // `try_from` rather than `as`, as every other narrowing in this file:
+    // `ilog10` of a `usize` is at most 19, so the fallback is unreachable
+    // and the cast is spelled out so that it is seen to be (#173).
+    if n == 0 {
+        1
+    } else {
+        u8::try_from(n.ilog10() + 1).unwrap_or(u8::MAX)
+    }
 }
 
 /// Widget impl for `FileView`
@@ -2887,6 +2894,18 @@ mod tests {
     /// border is `\u{2502}`, three bytes in UTF-8, so `str::find` returns a
     /// byte offset two greater than the column and every measurement taken
     /// that way is quietly wrong.
+    /// The gutter width is the digit count of the last line number, with a
+    /// column for an empty file so the gutter never vanishes (#173).
+    #[test]
+    fn digits_counts_decimal_places_and_never_returns_zero() {
+        assert_eq!(digits(0), 1);
+        assert_eq!(digits(9), 1);
+        assert_eq!(digits(10), 2);
+        assert_eq!(digits(999), 3);
+        assert_eq!(digits(1000), 4);
+        assert_eq!(digits(usize::MAX), 20);
+    }
+
     fn gutter_digits(view: &mut FileView<'_>) -> usize {
         let area = Rect::new(0, 0, 60, 4);
         let mut buf = Buffer::empty(area);
