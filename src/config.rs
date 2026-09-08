@@ -113,6 +113,18 @@ pub struct Config {
     #[arg(skip)]
     pub filter_palette: Option<Vec<Color>>,
 
+    /// Whether the terminal background is dark or light: picks the built-in
+    /// filter palette and the grey of dimmed lines. Falls back to a top-level
+    /// `background` in `config.toml`, then to `dark`.
+    //
+    // recon cannot ask the terminal (#231): there is no portable answer, and
+    // the one query that exists (OSC 11) is a round-trip with a timeout
+    // before the TUI starts. A `[filters] palette` beats the background's
+    // palette; the dim grey still follows the background. `Option` for the
+    // usual reason: the default lives in `background()`, below the file.
+    #[arg(long, env = "RECON_BACKGROUND", value_name = "BACKGROUND", value_enum)]
+    pub background: Option<crate::filter::Background>,
+
     /// Sets read from `filters.toml`, in pane order (#128). Filled by `main`
     /// after `load`, so that a file error refuses to start the way a
     /// `config.toml` error does. `#[arg(skip)]` because no flag names the
@@ -210,6 +222,7 @@ impl Default for Config {
             file_editor: None,
             print_editor_config: None,
             filter_palette: None,
+            background: None,
             filter_sets: Vec::new(),
             center_jumps: None,
             theme: None,
@@ -229,6 +242,10 @@ impl Default for Config {
 #[derive(Deserialize, Debug, Default, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct FileConfig {
+    /// Top-level `background = "dark" | "light"` (#231). Top-level rather
+    /// than under `[filters]` because it governs more than the palette: the
+    /// dim grey too, and whatever else a light page will want to know.
+    pub background: Option<crate::filter::Background>,
     /// `[editor]`. Absent when the file does not mention editors at all, which
     /// is different from present-but-empty only in that neither sets anything —
     /// both leave the ladder to the layers below.
@@ -638,11 +655,16 @@ impl Config {
     /// a bug whose symptom is "my setting parses fine and does nothing".
     fn apply(&mut self, file: &FileConfig) {
         let FileConfig {
+            background,
             editor,
             filters,
             syntax,
             view,
         } = file;
+
+        if let Some(background) = background {
+            self.background.get_or_insert(*background);
+        }
 
         if let Some(EditorConfig { project, file }) = editor {
             if let Some(project) = project {
@@ -678,6 +700,24 @@ impl Config {
     #[must_use]
     pub fn center_jumps(&self) -> bool {
         self.center_jumps.unwrap_or(true)
+    }
+
+    /// The terminal background, once the chain has run: dark unless said
+    /// otherwise (#231).
+    #[must_use]
+    pub fn background(&self) -> crate::filter::Background {
+        self.background.unwrap_or_default()
+    }
+
+    /// The colours successive filters take: `[filters] palette` when the
+    /// file sets one, else the built-in palette for the background. The
+    /// one place the two settings meet, so `App::new` and headless mode
+    /// cannot disagree about it.
+    #[must_use]
+    pub fn filter_palette(&self) -> Vec<Color> {
+        self.filter_palette
+            .clone()
+            .unwrap_or_else(|| self.background().palette().to_vec())
     }
 
     /// The theme the file view colours with, once the chain has run:
@@ -1069,6 +1109,7 @@ mod tests {
         assert_eq!(parsed.editor, default.editor);
         assert_eq!(parsed.file_editor, default.file_editor);
         assert_eq!(parsed.print_editor_config, default.print_editor_config);
+        assert_eq!(parsed.background, default.background);
         assert_eq!(parsed.theme, default.theme);
         assert_eq!(parsed.emit, default.emit);
         assert_eq!(parsed.line_numbers, default.line_numbers);
@@ -1562,6 +1603,63 @@ mod tests {
                 .as_deref(),
             Some("Dracula")
         );
+    }
+
+    // ---- the background (#231) --------------------------------------
+
+    #[test]
+    fn the_background_flag_parses_and_defaults_to_dark() {
+        use crate::filter::{Background, DEFAULT_PALETTE, LIGHT_PALETTE};
+        let config = Config::try_parse_from(["recon", "--background", "light"]).unwrap();
+        assert_eq!(config.background, Some(Background::Light));
+        assert_eq!(config.background(), Background::Light);
+        assert_eq!(config.filter_palette(), LIGHT_PALETTE.to_vec());
+
+        let unset = Config::try_parse_from(["recon"]).unwrap();
+        assert_eq!(unset.background, None);
+        assert_eq!(unset.background(), Background::Dark);
+        assert_eq!(unset.filter_palette(), DEFAULT_PALETTE.to_vec());
+
+        let err = Config::try_parse_from(["recon", "--background", "dim"]).unwrap_err();
+        assert!(err.to_string().contains("--background"), "{err}");
+    }
+
+    #[test]
+    fn a_top_level_background_key_parses_and_sits_below_the_flag() {
+        use crate::filter::Background;
+        let path = fixture("background-light.toml", "background = 'light'\n");
+        let file = load_from(&path).unwrap();
+        assert_eq!(file.background, Some(Background::Light));
+
+        let mut config = Config::try_parse_from(["recon"]).unwrap();
+        config.apply(&file);
+        assert_eq!(config.background(), Background::Light);
+
+        let mut config = Config::try_parse_from(["recon", "--background", "dark"]).unwrap();
+        config.apply(&file);
+        assert_eq!(config.background(), Background::Dark, "the flag wins");
+
+        let bad = fixture("background-bad.toml", "background = 'dim'\n");
+        assert!(
+            load_from(&bad).is_err(),
+            "a spelling that is not a background is refused"
+        );
+    }
+
+    /// A configured palette beats the background's; the background still
+    /// decides the dim grey, which `Config` does not resolve — that is
+    /// `ActiveFilters::set_background`'s half.
+    #[test]
+    fn a_configured_palette_beats_the_background_s() {
+        use crate::filter::Background;
+        let path = fixture(
+            "background-with-palette.toml",
+            "background = 'light'\n[filters]\npalette = ['#010203']\n",
+        );
+        let mut config = Config::try_parse_from(["recon"]).unwrap();
+        config.apply(&load_from(&path).unwrap());
+        assert_eq!(config.background(), Background::Light);
+        assert_eq!(config.filter_palette(), vec![Color::Rgb(1, 2, 3)]);
     }
 
     #[test]

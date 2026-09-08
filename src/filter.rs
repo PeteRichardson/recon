@@ -26,14 +26,89 @@ use std::path::PathBuf;
 /// pins. Change one and that test is what tells you whether the replacement
 /// still reads as its own colour. The same greyscale-ramp reasoning applies
 /// here as to [`DIM_GREY`].
-pub const DEFAULT_PALETTE: [Color; 6] = [
+pub const DEFAULT_PALETTE: [Color; 13] = [
     Color::Indexed(220), // gold        #ffd700
     Color::Indexed(51),  // cyan        #00ffff
     Color::Indexed(46),  // pure green  #00ff00
     Color::Indexed(201), // magenta     #ff00ff
     Color::Indexed(105), // periwinkle  #8787ff
     Color::Indexed(196), // red         #ff0000
+    // The tail (#231): the first six are the long-standing set and stay in
+    // front; these follow in the order a greedy pass chose, each the
+    // candidate furthest from everything before it. Snapped from the
+    // issue's list to the nearest of the 256 so no truecolor is needed, and
+    // every one at least 150 from black, from white (the search colour) and
+    // from `DIM_GREY`, so no filter reads as background, search or dimmed
+    // text. Pairwise separation falls from 170 to 95 down the tail — less
+    // distinct than the first six, far better than wrapping to a repeat.
+    Color::Indexed(120), // light green  #87ff87
+    Color::Indexed(203), // salmon       #ff5f5f
+    Color::Indexed(42),  // sea green    #00d787
+    Color::Indexed(33),  // azure        #0087ff
+    Color::Indexed(161), // raspberry    #d7005f
+    Color::Indexed(170), // orchid       #d75fd7
+    Color::Indexed(202), // orange       #ff5f00
 ];
+
+/// The palette for a light terminal background (#231), where `DEFAULT_PALETTE`'s
+/// gold, cyan and green vanish into white.
+///
+/// Chosen the same way as the dark tail, against a white background and the
+/// lighter `LIGHT_DIM_GREY`: each entry at least 150 from white, 120 from the
+/// dim grey and 100 from black, so a filter is never mistaken for the page,
+/// dimmed text or plain text; no greys, which on white *are* plain text.
+/// Snapped to the 256-colour cube from the issue's list. The first six are
+/// at least 120 apart, the rest at least 80.
+pub const LIGHT_PALETTE: [Color; 13] = [
+    Color::Indexed(33),  // azure        #0087ff
+    Color::Indexed(124), // dark red     #af0000
+    Color::Indexed(28),  // green        #008700
+    Color::Indexed(55),  // indigo       #5f00af
+    Color::Indexed(167), // coral        #d75f5f
+    Color::Indexed(24),  // teal blue    #005f87
+    Color::Indexed(136), // ochre        #af8700
+    Color::Indexed(65),  // sage         #5f875f
+    Color::Indexed(18),  // navy         #000087
+    Color::Indexed(69),  // cornflower   #5f87ff
+    Color::Indexed(35),  // jade         #00af5f
+    Color::Indexed(126), // plum         #af0087
+    Color::Indexed(64),  // olive        #5f8700
+];
+
+/// Whether the terminal's background is dark or light (#231): the one fact
+/// that decides both which built-in palette filters draw from and which grey
+/// dimmed text takes. recon cannot ask the terminal — see the README — so
+/// this is `background` in `config.toml`, `--background`, or
+/// `RECON_BACKGROUND`, and dark when unset.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Background {
+    /// Light text on a dark background: the compiled-in default.
+    #[default]
+    Dark,
+    /// Dark text on a light background.
+    Light,
+}
+
+impl Background {
+    /// The built-in filter palette for this background.
+    #[must_use]
+    pub fn palette(self) -> &'static [Color] {
+        match self {
+            Self::Dark => &DEFAULT_PALETTE,
+            Self::Light => &LIGHT_PALETTE,
+        }
+    }
+
+    /// How dimmed text is drawn on this background — see `DIM_STYLE`.
+    #[must_use]
+    pub fn dim_style(self) -> Style {
+        match self {
+            Self::Dark => DIM_STYLE,
+            Self::Light => LIGHT_DIM_STYLE,
+        }
+    }
+}
 
 /// How lines matching no including filter are rendered.
 ///
@@ -48,8 +123,20 @@ pub const DEFAULT_PALETTE: [Color; 6] = [
 /// 232 (near-black) to 255 (near-white).
 const DIM_GREY: u8 = 240;
 
+/// `DIM_GREY`'s counterpart on a light background (#231). 240 is `#585858`,
+/// near-black on white; this is `#bcbcbc`, the same distance short of the
+/// page. **Higher is lighter** here: 248 is clear, 250 subtle, 252 faint.
+const LIGHT_DIM_GREY: u8 = 250;
+
+/// The dark-background dim style. `Background::dim_style` is what the app
+/// reads; this constant is the default it resolves to, and what a test
+/// with no background in play compares against.
 pub(crate) const DIM_STYLE: Style = Style::new()
     .fg(Color::Indexed(DIM_GREY))
+    .add_modifier(Modifier::DIM);
+
+pub(crate) const LIGHT_DIM_STYLE: Style = Style::new()
+    .fg(Color::Indexed(LIGHT_DIM_GREY))
     .add_modifier(Modifier::DIM);
 
 /// The colour reserved for the live search.
@@ -534,6 +621,11 @@ pub struct ActiveFilters {
     /// Where filter colours come from. Whole-list replacement, never a merge —
     /// see [`crate::config::FiltersConfig`] for why.
     palette: Palette,
+    /// Which grey dimmed lines take (#231). The palette above is already the
+    /// one the background chose — `Config::filter_palette` resolves that —
+    /// so this carries only the half the palette cannot: `style_for`'s
+    /// answer for an unmatched line.
+    background: Background,
     /// How the enabled include filters combine. `Or` by default; `&` flips it.
     combine: Combine,
     filters: Vec<Filter>,
@@ -598,6 +690,7 @@ impl ActiveFilters {
             sets: vec![FilterSet::scratch()],
             solo: None,
             palette: palette.map_or_else(Palette::default, Palette::new),
+            background: Background::default(),
             combine: Combine::default(),
             filters: Vec::new(),
             search: None,
@@ -1620,9 +1713,23 @@ impl ActiveFilters {
                 self.filters.get(index).map(|f| f.style)
             }
             Verdict::Searched => Some(SEARCH_STYLE),
-            Verdict::Unmatched if self.any_numbered_including() => Some(DIM_STYLE),
+            Verdict::Unmatched if self.any_numbered_including() => Some(self.dim_style()),
             Verdict::Unmatched | Verdict::Excluded => None,
         }
+    }
+
+    /// Tell the set which background it is drawn on (#231). Only the dim
+    /// style follows: the palette was resolved before construction, by
+    /// `Config::filter_palette`, because file filters take their colours in
+    /// `with_sets` and a change afterwards would not reach them.
+    pub fn set_background(&mut self, background: Background) {
+        self.background = background;
+    }
+
+    /// The grey a dimmed line, row or header takes on this background.
+    #[must_use]
+    pub fn dim_style(&self) -> Style {
+        self.background.dim_style()
     }
 }
 
@@ -2804,38 +2911,155 @@ mod tests {
     /// promise rather than a hope.
     #[test]
     fn the_default_palette_names_no_theme_dependent_colour() {
-        for (position, colour) in DEFAULT_PALETTE.iter().enumerate() {
-            assert!(
-                rgb_of(*colour).is_some(),
-                "palette entry {position} is {colour:?}, whose appearance the \
-                 terminal theme decides; use an indexed or RGB colour"
-            );
-        }
-    }
-
-    /// The distance below which two filter colours read as "the same one" at a
-    /// glance. Yellow-vs-green was the complaint; this is what stops any pair
-    /// from drifting back into it.
-    const MIN_SEPARATION: f64 = 150.0;
-
-    #[test]
-    fn every_default_palette_pair_is_visibly_distinct() {
-        for (i, first) in DEFAULT_PALETTE.iter().enumerate() {
-            for (j, second) in DEFAULT_PALETTE.iter().enumerate().skip(i + 1) {
-                let (a, b) = (
-                    rgb_of(*first).expect("palette colours have fixed values"),
-                    rgb_of(*second).expect("palette colours have fixed values"),
-                );
-                let apart = distance(a, b);
+        for background in [Background::Dark, Background::Light] {
+            for (position, colour) in background.palette().iter().enumerate() {
                 assert!(
-                    apart >= MIN_SEPARATION,
-                    "filters {} and {} are only {apart:.0} apart ({first:?} {a:?} vs \
-                     {second:?} {b:?}); {MIN_SEPARATION} is the minimum",
-                    i + 1,
-                    j + 1,
+                    rgb_of(*colour).is_some(),
+                    "{background:?} palette entry {position} is {colour:?}, whose \
+                     appearance the terminal theme decides; use an indexed or RGB colour"
                 );
             }
         }
+    }
+
+    /// What each built-in palette promises (#231): how far apart its first
+    /// six are, how far apart every pair is, and how far every entry keeps
+    /// from the three things a filter colour must never be mistaken for on
+    /// that background — the page itself, dimmed text, and the search
+    /// colour. The bars differ because the light list's source material is
+    /// darker and closer together; both are what the greedy pass that
+    /// ordered the lists was run with, so a hand edit that breaks one is
+    /// caught here.
+    struct Promise {
+        background: Background,
+        /// Between any two of the first six. Yellow-vs-green was the
+        /// complaint (#62); this is what stops any pair from drifting back
+        /// into it.
+        first_six_apart: f64,
+        /// Between any two entries at all.
+        every_pair_apart: f64,
+        /// From the page: black, or white.
+        page: (i32, i32, i32),
+        page_apart: f64,
+        /// From the dim grey of unmatched lines.
+        dim_apart: f64,
+        /// From `SEARCH_STYLE`'s white, which on a light page is the page.
+        search_apart: f64,
+    }
+
+    const PROMISES: [Promise; 2] = [
+        Promise {
+            background: Background::Dark,
+            first_six_apart: 150.0,
+            every_pair_apart: 90.0,
+            page: (0, 0, 0),
+            page_apart: 150.0,
+            dim_apart: 150.0,
+            search_apart: 150.0,
+        },
+        Promise {
+            background: Background::Light,
+            first_six_apart: 120.0,
+            every_pair_apart: 80.0,
+            page: (255, 255, 255),
+            page_apart: 150.0,
+            dim_apart: 120.0,
+            search_apart: 150.0,
+        },
+    ];
+
+    fn fixed(colour: Color) -> (i32, i32, i32) {
+        rgb_of(colour).expect("palette colours have fixed values")
+    }
+
+    #[test]
+    fn every_palette_pair_is_visibly_distinct() {
+        for promise in &PROMISES {
+            let palette = promise.background.palette();
+            for (i, first) in palette.iter().enumerate() {
+                for (j, second) in palette.iter().enumerate().skip(i + 1) {
+                    let (a, b) = (fixed(*first), fixed(*second));
+                    let apart = distance(a, b);
+                    let minimum = if j < 6 {
+                        promise.first_six_apart
+                    } else {
+                        promise.every_pair_apart
+                    };
+                    assert!(
+                        apart >= minimum,
+                        "{:?} filters {} and {} are only {apart:.0} apart ({first:?} {a:?} \
+                         vs {second:?} {b:?}); {minimum} is the minimum",
+                        promise.background,
+                        i + 1,
+                        j + 1,
+                    );
+                }
+            }
+        }
+    }
+
+    /// A filter colour that reads as the page, as dimmed text or as the
+    /// search highlight is worse than an indistinct one: it says the wrong
+    /// thing rather than nothing (#231).
+    #[test]
+    fn no_palette_entry_is_mistakable_for_page_dim_or_search() {
+        for promise in &PROMISES {
+            let dim = fixed(promise.background.dim_style().fg.expect("dim has a colour"));
+            let search = (255, 255, 255);
+            for (position, colour) in promise.background.palette().iter().enumerate() {
+                let c = fixed(*colour);
+                for (name, other, minimum) in [
+                    ("the page", promise.page, promise.page_apart),
+                    ("dimmed text", dim, promise.dim_apart),
+                    ("the search colour", search, promise.search_apart),
+                ] {
+                    let apart = distance(c, other);
+                    assert!(
+                        apart >= minimum,
+                        "{:?} filter {} ({colour:?} {c:?}) is only {apart:.0} from {name} \
+                         {other:?}; {minimum} is the minimum",
+                        promise.background,
+                        position + 1,
+                    );
+                }
+                if promise.background == Background::Light {
+                    assert!(
+                        !(c.0 == c.1 && c.1 == c.2),
+                        "light filter {} is a grey, which on white is plain text",
+                        position + 1
+                    );
+                }
+            }
+        }
+    }
+
+    /// The first six of the dark palette are the ones users have had since
+    /// #62 (#231's decision): a saved set's colours must not change under it.
+    #[test]
+    fn the_dark_palette_keeps_its_original_six_in_front() {
+        assert_eq!(
+            &DEFAULT_PALETTE[..6],
+            &[
+                Color::Indexed(220),
+                Color::Indexed(51),
+                Color::Indexed(46),
+                Color::Indexed(201),
+                Color::Indexed(105),
+                Color::Indexed(196),
+            ]
+        );
+    }
+
+    /// The dim grey follows the background (#231): 240 is near-black on
+    /// white, so a light page dims with a light grey instead.
+    #[test]
+    fn dimming_follows_the_background() {
+        let mut set = set_with(&["alpha"]);
+        assert_eq!(set.style_for(Verdict::Unmatched), Some(DIM_STYLE));
+        set.set_background(Background::Light);
+        assert_eq!(set.style_for(Verdict::Unmatched), Some(LIGHT_DIM_STYLE));
+        assert_eq!(set.dim_style(), LIGHT_DIM_STYLE);
+        assert_ne!(DIM_STYLE.fg, LIGHT_DIM_STYLE.fg);
     }
 
     // ---- a configured palette ------------------------------------------
