@@ -441,23 +441,31 @@ impl App<'_> {
 /// and `(`. `col` is a character index, matching what the textarea's
 /// cursor reports, not a byte offset.
 fn word_around(line: &str, col: usize) -> Option<&str> {
-    let is_word = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    let (start, end) = word_span(line, col)?;
     let chars: Vec<(usize, char)> = line.char_indices().collect();
-    let &(_, at) = chars.get(col)?;
+    let byte_start = chars[start].0;
+    let byte_end = chars.get(end).map_or(line.len(), |&(b, _)| b);
+    Some(&line[byte_start..byte_end])
+}
+
+/// `word_around` as a character range, `start..end`, for a double-click
+/// that wants to select the word rather than read it (#67).
+pub(crate) fn word_span(line: &str, col: usize) -> Option<(usize, usize)> {
+    let is_word = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    let chars: Vec<char> = line.chars().collect();
+    let &at = chars.get(col)?;
     if !is_word(at) {
         return None;
     }
     let start = chars[..col]
         .iter()
-        .rposition(|&(_, c)| !is_word(c))
+        .rposition(|&c| !is_word(c))
         .map_or(0, |i| i + 1);
     let end = chars[col..]
         .iter()
-        .position(|&(_, c)| !is_word(c))
+        .position(|&c| !is_word(c))
         .map_or(chars.len(), |i| col + i);
-    let byte_start = chars[start].0;
-    let byte_end = chars.get(end).map_or(line.len(), |&(b, _)| b);
-    Some(&line[byte_start..byte_end])
+    Some((start, end))
 }
 
 #[cfg(test)]

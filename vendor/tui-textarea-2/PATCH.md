@@ -150,6 +150,20 @@ No interaction with the gutter's width, so change 2's `WrapMode::None` caveat
 does not extend here: styling a number cannot change how many columns it
 needs.
 
+### 7. Gutter width reporting
+
+- `src/textarea.rs`: added `gutter_width` after `scroll_top`.
+- `tests/line_presentation.rs`: two tests appended.
+
+The mirror of change 3. `scroll_top` let `recon` turn a buffer position into
+a screen row; this lets it turn a screen column back into a character column,
+which a mouse click needs. `widget.rs` adds `line_number_width() + 2` to the
+cursor's column in two places; this is that same figure, or zero while line
+numbers are off, so a caller subtracting it from a clicked column lands on
+the character the pointer was over rather than on one a gutter's width to its
+right. Computed from the existing crate-internal `line_number_width`, so the
+minimum from change 4 and the overrides from change 2 are already in it.
+
 ### Local-only: removed `[profile.bench]`
 
 - `Cargo.toml`: dropped `[profile.bench] lto = "thin"`.

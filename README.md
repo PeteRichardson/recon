@@ -39,6 +39,7 @@ motions throughout.
 - [Peeking at the plain file](#peeking-at-the-plain-file)
 - [Emitting the result](#emitting-the-result)
 - [Opening an editor](#opening-an-editor)
+- [Copying text](#copying-text)
 - [Syntax colouring](#syntax-colouring)
 - [Known Limitations](#known-limitations)
 - [Vendored dependency](#vendored-dependency)
@@ -98,9 +99,15 @@ motions throughout.
 - **Cheap navigation** — moving through the navigator renders a bounded preview
   (50,000 lines / 10 MiB), so scrolling a directory of very large logs doesn't
   stutter. Ordinary files are well inside those bounds and are simply read.
+- **Copy what you found** — `v` or `V` starts a selection in the file view,
+  the motions grow it, `y` puts it on the system clipboard. Or drag with the
+  mouse, or double-click a word. A yank copies the lines you can *see*, so a
+  selection made while unmatched lines are hidden copies only the matches.
+  See [Copying text](#copying-text).
 - **Mouse** — click a file to open it, a directory to look inside it (twice to
   enter it), a filter to switch it, a row of the look-ahead listing to go
-  straight to it, or the status row to add a filter. Drag either pane divider
+  straight to it, the status row to add a filter, or the file's text to put the
+  cursor there. Drag either pane divider
   to resize: the vertical one sets the left column's width, the horizontal one
   under the navigator sets how tall the filter pane is. Double-click either to
   return it to auto-sizing.
@@ -207,6 +214,10 @@ Options:
           Command template `O` runs. Defaults to `--editor` with the `{project}`
           argument dropped, so one setting normally configures both keys [env:
           RECON_FILE_EDITOR=]
+      --clipboard <COMMAND>
+          Command `y` pipes a selection to, e.g. `pbcopy` or `xclip -selection
+          clipboard`. Falls back to `[clipboard] command` in `config.toml`, then
+          to the platform's own tool [env: RECON_CLIPBOARD=]
       --print-editor-config [<FLAVOUR>]
           Print a ready-to-paste `[editor]` stanza and exit. Takes a flavour —
           `zed`, `vscode`, `wezterm-nvim`, … — or `auto` to guess from
@@ -404,7 +415,10 @@ same directory (or on `..`) enters it, the way `Enter` does. In the filter pane
 a click toggles the filter, the set header, or the live search on that row. In
 the file view, a click on a row of a directory's look-ahead listing takes the
 navigator into that directory and opens the entry clicked — one click instead
-of `l`, a cursor motion and `Enter`. A click on the status row opens the
+of `l`, a cursor motion and `Enter`. A click on a *file's* text puts the cursor
+on the character under the pointer; dragging from there selects, and
+double-clicking selects the word, both ready for `y` — see
+[Copying text](#copying-text). A click on the status row opens the
 include prompt, exactly as `f i` does, and committing it returns focus to the
 pane you clicked from. The wheel scrolls the file view while it has focus, as
 before.
@@ -811,6 +825,9 @@ File view pane (`src/widgets/fileview.rs`) — its own verbs; the shared motions
 | `{` / `}` | Move by paragraph, back / forward |
 | `#` | Toggle the line-number gutter |
 | `*` | Set the live search to the word under the cursor — a run of letters, digits and `_`, so a mangled symbol stays whole — and move to its next occurrence. `* p` makes it a numbered filter |
+| `v` / `V` | Start a selection by character / by whole lines; press the same key again to end it, or the other to switch between them. The motions grow it |
+| `y` | Copy the selection to the clipboard and end the selection. `Ctrl-y` still scrolls |
+| `Esc` | End the selection. With none, this is the global `Esc` and clears the searches instead |
 | `Ctrl-e` / `Ctrl-y` | Scroll one line down / up |
 | `Ctrl-f` / `Ctrl-b` | Page down / up — aliases for `PageDown` / `PageUp` |
 
@@ -1394,6 +1411,78 @@ Full reasoning: `docs/specs/2026-08-22-opening-an-editor.md`.
 
 ---
 
+## Copying text
+
+`v` starts a selection at the cursor and `y` copies it. In between, every
+motion the file view has grows the selection: `j`, `k`, `w`, `$`, `G`, even `n`
+and `/`. `V` selects whole lines instead of characters, which is what a run of
+log lines wants; pressing `v` or `V` again ends the selection, and pressing the
+other switches between the two without losing where you started. The status row
+carries a ` VISUAL ` or ` V-LINE ` badge for as long as one is live.
+
+The mouse does the same job with no keys: drag across the text to select it,
+or double-click to select the word under the pointer — by the same rule `*`
+uses, so a mangled `_ZN…E` comes whole. Releasing the button leaves the
+selection up; `y` copies it. A plain click just moves the cursor, and ends any
+selection.
+
+Two things the selection is deliberately *not*:
+
+- **It is not a screen rectangle.** Both ends are lines of the document, so
+  `u`, `!`, `space`, `1`–`9` and the rest keep working while you are selecting,
+  and none of them can invalidate what you have picked out. They change only
+  what a `y` would copy.
+- **It does not survive leaving the file.** Moving focus to another pane, or
+  loading another file, ends it. The anchor is a line of *this* document, and a
+  selection you cannot see or act on is worse than none.
+
+### What a yank actually copies
+
+**The lines you can see, between the two ends.** That one rule covers both
+modes:
+
+- **Hiding** (`u`) — hidden lines between the ends are skipped. Press `u`
+  mid-selection and the revealed lines join the selection, because the ends
+  never moved; press `y` again for the whole range instead.
+- **Dimming** — dimmed lines are on screen, so they are copied. A yank over a
+  dimmed region gets the file as it reads, unmatched lines and all.
+
+`V` copies whole lines with a trailing newline, so the text pastes into a file
+as lines. `v` copies exactly the characters between the ends, inclusive of the
+one under the cursor as vim's is, and adds no newline — so a symbol selected
+with `v` pastes straight into an `f i` prompt.
+
+That is the loop the whole feature exists for: `v`, grow, `y`, then `f i`,
+paste, `Enter` — the symbol you found becomes the filter you read the rest of
+the log with. `*` is the two-key version when a word boundary can find the
+symbol for you; `v` is for everything it cannot.
+
+### Configuring the clipboard
+
+recon pipes the text to a **command**, the same way it hands a file to an
+editor, and for the same reasons: no shell is involved, so a template is split
+into arguments once and nothing in the copied text can be interpreted as one.
+
+The default is whatever the platform has — `pbcopy` on macOS, `clip` on
+Windows, `wl-copy` under Wayland and `xclip -selection clipboard` on other
+X11 desktops. To change it:
+
+```toml
+# ~/.config/recon/config.toml
+[clipboard]
+command = 'xsel --clipboard --input'
+```
+
+or `--clipboard` / `RECON_CLIPBOARD` for one session, under the usual
+`CLI > env > file > defaults` chain. A command that is missing or exits
+non-zero reports on the status row in red; nothing is silently dropped.
+
+There is deliberately no OSC 52 escape sequence, which would copy through the
+terminal itself and work over SSH. Terminal.app does not honour it and several
+terminals ship it disabled, so it fails *silently* in exactly the places a
+command fails loudly. On a terminal that does support it, a one-line script in
+the template gets it back.
+
 ## Syntax colouring
 
 Source files are coloured by their grammar — keywords, strings, comments,
@@ -1511,7 +1600,8 @@ needs every line's answer at once — see *Definition filters*.
   `$XDG_CONFIG_HOME/recon/config.toml`, falling back to
   `~/.config/recon/config.toml` on every platform including macOS, under a
   `CLI > env > file > defaults` precedence chain. The settings so far are the
-  two editor templates below, `[filters] palette` and `[syntax] theme`; every other key in the
+  two editor templates below, `[clipboard] command`, `[filters] palette`,
+  `[syntax] theme` and `[view] center_jumps`; every other key in the
   file is reported as an unknown key. Settings land one issue at a time
   against github issue #18; see
   `docs/specs/2026-08-22-configuration-mechanism.md` for the rules and the list

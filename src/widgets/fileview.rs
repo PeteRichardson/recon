@@ -13,7 +13,7 @@ use std::io::{BufReader, Cursor, Read};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tui_textarea::{CursorMove, Input, Key, Scrolling, TextArea};
-use unicode_width::UnicodeWidthStr;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 /// Lines read for a preview.
 ///
@@ -348,6 +348,13 @@ pub(crate) struct FileView<'a> {
     /// `render` has the real figure and this is the last one it saw. Zero
     /// before the first render, which makes the margin zero too.
     viewport_height: u16,
+    /// The selection to paint this frame, as buffer rows and character
+    /// columns with the end exclusive, or `None` (#67). Set by `App` before
+    /// every render from an anchor it holds in *source* lines — this pane
+    /// cannot translate one, so it is handed the answer rather than the
+    /// question, the same way `set_line_numbers` is. Rows between the two
+    /// ends are painted whole.
+    selection: Option<((usize, usize), (usize, usize))>,
 }
 
 impl FileView<'_> {
@@ -736,6 +743,58 @@ impl FileView<'_> {
     /// The cursor column as a character index (for `word_under_cursor`).
     pub(crate) fn cursor_col(&self) -> usize {
         self.textarea.cursor().1
+    }
+
+    /// Put the cursor on buffer row `row`, column `col` — a click (#67).
+    /// Clamped to the buffer by the textarea, as `set_cursor_row` is.
+    pub(crate) fn set_cursor(&mut self, row: usize, col: usize) {
+        self.textarea.set_cursor_position((row, col));
+    }
+
+    /// The length in characters of buffer row `row`, or zero past the end.
+    pub(crate) fn line_len(&self, row: usize) -> usize {
+        self.textarea
+            .lines()
+            .get(row)
+            .map_or(0, |line| line.chars().count())
+    }
+
+    /// The selection to paint on the next render — see the field.
+    pub(crate) fn set_selection(&mut self, selection: Option<((usize, usize), (usize, usize))>) {
+        self.selection = selection;
+    }
+
+    /// The buffer row and character column under a pointer `line` rows
+    /// below the pane's top border and `column` cells right of its left one,
+    /// or `None` below the last line (#67).
+    ///
+    /// The inverse of what the textarea does to draw a character: the
+    /// pointer's cell, plus the horizontal scroll, minus the gutter, is a
+    /// display column into the row's text; the characters are then walked
+    /// with the width each one is drawn at — a tab to its next stop, a wide
+    /// glyph as two cells — until the column is reached. A click in the
+    /// gutter is column 0; one past the last character is the character
+    /// count, where `$` also puts the cursor.
+    pub(crate) fn position_at(&self, line: u16, column: u16) -> Option<(usize, usize)> {
+        let (top_row, top_col) = self.textarea.scroll_top();
+        let row = usize::from(top_row) + usize::from(line);
+        let text = self.textarea.lines().get(row)?;
+        let target = (usize::from(column) + usize::from(top_col))
+            .saturating_sub(usize::from(self.textarea.gutter_width()));
+        let tab = usize::from(self.textarea.tab_length());
+        let mut width = 0;
+        for (index, c) in text.chars().enumerate() {
+            let cells = if c == '\t' {
+                if tab == 0 { 0 } else { tab - width % tab }
+            } else {
+                c.width().unwrap_or(0)
+            };
+            if target < width + cells {
+                return Some((row, index));
+            }
+            width += cells;
+        }
+        Some((row, text.chars().count()))
     }
 
     /// Request that the cursor be scrolled onto `row` of the pane the next
@@ -1371,6 +1430,11 @@ impl<'a> FileView<'a> {
 /// else ever pushed at the same offset wins.
 const SYNTAX_PRIORITY: u8 = 1;
 
+/// Priority of the selection bar (#67). Above syntax, though the two never
+/// share a row: `apply_syntax` skips selected rows, so this is a statement
+/// of intent for anything pushed later at the same byte.
+const SELECTION_PRIORITY: u8 = 2;
+
 /// Most source lines one frame may parse for colour.
 ///
 /// About 50 ms in release. A window of filter hits thousands of lines apart
@@ -1404,6 +1468,10 @@ impl FileView<'_> {
     ///   would replace the black-on-yellow. The match ranges are cut out of
     ///   the spans before they are pushed, and the search style is painted
     ///   onto a plain background as before.
+    /// * **A selected row** (#67), for the cursor line's reason: the
+    ///   selection is drawn as the same reversed bar, and a syntax span
+    ///   starting inside it would punch a hole. `paint_selection` runs after
+    ///   this and paints the bar.
     fn apply_syntax(&mut self) {
         self.textarea.clear_custom_highlight();
         let Some(highlighter) = self.highlighter.as_mut() else {
@@ -1411,6 +1479,7 @@ impl FileView<'_> {
         };
         let rows = self.textarea.lines().len();
         let cursor_row = self.active.then(|| self.textarea.cursor().0);
+        let selected = self.selection.map(|(start, end)| start.0..=end.0);
         // Buffer row → source line: the gutter override when there is one
         // (always, in production — see `App::apply_view`), otherwise the
         // window's offset, which is what a freshly loaded, unwindowed buffer
@@ -1421,7 +1490,10 @@ impl FileView<'_> {
         let mut budget = SYNTAX_BUDGET;
         let mut pushes: Vec<(usize, Span)> = Vec::new();
         for (row, line) in self.textarea.lines().iter().enumerate() {
-            if Some(row) == cursor_row || styles.get(row).copied().flatten().is_some() {
+            if Some(row) == cursor_row
+                || styles.get(row).copied().flatten().is_some()
+                || selected.as_ref().is_some_and(|rows| rows.contains(&row))
+            {
                 continue;
             }
             let source = numbers.get(row).copied().unwrap_or(self.window_start + row);
@@ -1448,6 +1520,59 @@ impl FileView<'_> {
                 span.style,
                 SYNTAX_PRIORITY,
             );
+        }
+    }
+}
+
+impl FileView<'_> {
+    /// The style the cursor line is drawn in while this pane is active, for
+    /// buffer row `row`: the row's own filter colour if it has one, else
+    /// green, reversed either way. `render` uses it for the cursor line and
+    /// `paint_selection` for every selected row, so a selection reads as the
+    /// cursor bar stretched over the rows it covers.
+    fn bar_style(&self, row: usize) -> Style {
+        let own_style = self.textarea.line_styles().get(row).copied().flatten();
+        let mut style = own_style.unwrap_or_default();
+        if own_style.is_none() {
+            style = style.fg(Color::Green);
+        }
+        style.add_modifier(Modifier::REVERSED)
+    }
+
+    /// Paint the selection `App` handed `set_selection`, one custom
+    /// highlight per row (#67).
+    ///
+    /// After `apply_syntax`, which skipped these rows, and in *byte* offsets:
+    /// the selection arrives in character columns, which is what the cursor
+    /// reports, and the fork's `custom_highlight` compares bytes. Whole rows
+    /// between the ends run to the line's end; a first or last row runs
+    /// from or to its column. An empty range on a row — an empty line, or a
+    /// cursor at the end of one — paints nothing, which the fork would have
+    /// skipped anyway.
+    fn paint_selection(&mut self) {
+        let Some(((start_row, start_col), (end_row, end_col))) = self.selection else {
+            return;
+        };
+        let rows = self.textarea.lines().len();
+        for row in start_row..=end_row.min(rows.saturating_sub(1)) {
+            let line = &self.textarea.lines()[row];
+            let from = if row == start_row { start_col } else { 0 };
+            let to = if row == end_row {
+                end_col
+            } else {
+                line.chars().count()
+            };
+            let byte_at = |col: usize| {
+                line.char_indices()
+                    .nth(col)
+                    .map_or(line.len(), |(byte, _)| byte)
+            };
+            let (from, to) = (byte_at(from), byte_at(to));
+            if from < to {
+                let style = self.bar_style(row);
+                self.textarea
+                    .custom_highlight(((row, from), (row, to)), style, SELECTION_PRIORITY);
+            }
         }
     }
 }
@@ -1503,23 +1628,21 @@ impl Widget for &mut FileView<'_> {
         // only when the line has no colour of its own — otherwise a matched
         // line under the cursor would be indistinguishable from a dimmed one.
         let cursor_row = self.textarea.cursor().0;
-        let own_style = self
-            .textarea
-            .line_styles()
-            .get(cursor_row)
-            .copied()
-            .flatten();
-        let mut style = own_style.unwrap_or_default();
-        if self.active {
-            if own_style.is_none() {
-                style = style.fg(Color::Green);
-            }
-            style = style.add_modifier(Modifier::REVERSED);
-        }
+        let style = if self.active {
+            self.bar_style(cursor_row)
+        } else {
+            self.textarea
+                .line_styles()
+                .get(cursor_row)
+                .copied()
+                .flatten()
+                .unwrap_or_default()
+        };
         self.textarea.set_cursor_line_style(style);
         self.textarea
             .set_search_style(Style::default().fg(Color::Black).bg(Color::Yellow));
         self.apply_syntax();
+        self.paint_selection();
         // The one place the path is rendered, and the one place a lossy
         // conversion is both correct and harmless — see the `filename` field.
         let title = self.filename.display().to_string();

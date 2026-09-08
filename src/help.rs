@@ -347,6 +347,18 @@ pub const KEYMAP: &[Section] = &[
                 action: "Search for the word under the cursor",
             },
             Binding {
+                keys: &["v", "V"],
+                action: "Select by character / by line; again to end",
+            },
+            Binding {
+                keys: &["y"],
+                action: "Copy the selection to the clipboard",
+            },
+            Binding {
+                keys: &["Esc"],
+                action: "End the selection",
+            },
+            Binding {
                 keys: &["Ctrl-e", "Ctrl-y"],
                 action: "Scroll one line down / up",
             },
