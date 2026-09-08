@@ -1,6 +1,6 @@
 #[cfg(test)]
 use crate::document::BINARY_SNIFF_BYTES;
-use crate::document::{self, read_lossy_line, sniff_binary};
+use crate::document::{self, Sniff, read_lossy_line, read_utf16_lines, sniff};
 use crate::syntax::{Highlighter, Span, Theme};
 use crate::widgets::filenav::Entry;
 /// `FileView` Widget
@@ -196,7 +196,8 @@ pub(crate) fn window_holds(
 /// It used to say `not valid UTF-8`, which was both the check and a libel: a
 /// single stray byte in a log condemned the whole file. The verdict now rests
 /// on a NUL in the file's head, so the message names what was actually found
-/// — undecodable bytes on their own no longer stop the file being read.
+/// — undecodable bytes on their own no longer stop the file being read, and
+/// a UTF-16 byte-order mark explains its NULs away (#165).
 const BINARY_MESSAGE: &str = "<binary file: contains NUL bytes>";
 
 /// Shown when the navigator's selection is a directory with nothing in it.
@@ -1115,13 +1116,28 @@ fn read_preview_with_caps(path: &Path, max_lines: usize, max_bytes: u64) -> Cont
     let file_bytes = file.metadata().ok().map(|meta| meta.len());
 
     let mut reader = BufReader::new(file.take(max_bytes));
-    let (binary, head) = match sniff_binary(&mut reader) {
-        Ok(sniffed) => sniffed,
+    let head = match sniff(&mut reader) {
+        Ok((Sniff::Text, head)) => head,
+        Ok((Sniff::Binary, _)) => return Contents::message(BINARY_MESSAGE.to_string()),
+        // UTF-16 is decoded whole, so the byte cap is the only cap the read
+        // itself knows; the line cap is applied to the result below.
+        Ok((Sniff::Utf16(endian), head)) => {
+            let mut lines = match read_utf16_lines(head, &mut reader, endian) {
+                Ok(lines) => lines,
+                Err(err) => return Contents::message(format!("<{err}>")),
+            };
+            let over_the_line_cap = lines.len() > max_lines;
+            lines.truncate(max_lines);
+            let remaining = reader.into_inner().limit();
+            return capped(
+                lines,
+                over_the_line_cap || remaining == 0,
+                file_bytes,
+                max_bytes - remaining,
+            );
+        }
         Err(err) => return Contents::message(format!("<{err}>")),
     };
-    if binary {
-        return Contents::message(BINARY_MESSAGE.to_string());
-    }
 
     // The sniffed bytes are content, so they go back in front of the rest.
     let mut reader = Cursor::new(head).chain(reader);
@@ -1141,8 +1157,19 @@ fn read_preview_with_caps(path: &Path, max_lines: usize, max_bytes: u64) -> Cont
     // redundant re-read the first time the view is used.
     let remaining = reader.into_inner().1.into_inner().limit();
     let truncated = lines.len() == max_lines || remaining == 0;
+    capped(lines, truncated, file_bytes, max_bytes - remaining)
+}
+
+/// A preview's `Contents`, with a line estimate only when it was cut short —
+/// there is nothing to estimate about a file that was read whole.
+fn capped(
+    lines: Vec<String>,
+    truncated: bool,
+    file_bytes: Option<u64>,
+    bytes_read: u64,
+) -> Contents {
     let estimated_lines = if truncated {
-        estimate_lines(file_bytes, max_bytes - remaining, lines.len())
+        estimate_lines(file_bytes, bytes_read, lines.len())
     } else {
         None
     };
@@ -2093,9 +2120,41 @@ mod tests {
         assert_eq!(lines.len(), 2, "lines lost to a late NUL: {lines:?}");
     }
 
+    /// UTF-16 with a byte-order mark is text, whatever its NUL count (#165):
+    /// both the preview and the full load decode it, and the byte cap still
+    /// holds — a preview cut mid-file is truncated, not an error.
+    #[test]
+    fn preview_and_load_decode_a_utf16_file() {
+        let mut bytes = vec![0xff, 0xfe];
+        bytes.extend(
+            "alpha\nbravo\ncharlie\n"
+                .encode_utf16()
+                .flat_map(u16::to_le_bytes),
+        );
+        let path = byte_fixture("utf16.txt", &bytes);
+        let mut view = placeholder_view();
+
+        view.preview(&path);
+        assert_eq!(view.textarea.lines(), ["alpha", "bravo", "charlie"]);
+        assert!(!view.truncated);
+
+        view.preview_with_caps(&path, 2, MAX_PREVIEW_BYTES);
+        assert_eq!(view.textarea.lines(), ["alpha", "bravo"]);
+        assert!(view.truncated, "the line cap applies to UTF-16 too");
+
+        // 2 (mark) + 12 (alpha\n) + 4 (br) = 18 bytes: the cap lands mid "bravo".
+        view.preview_with_caps(&path, PREVIEW_LINES, 18);
+        assert_eq!(view.textarea.lines(), ["alpha", "br"]);
+        assert!(view.truncated, "the byte cap applies to UTF-16 too");
+
+        view.load(&path);
+        assert_eq!(view.textarea.lines(), ["alpha", "bravo", "charlie"]);
+        assert!(!view.truncated);
+    }
+
     #[test]
     fn preview_reports_a_binary_file() {
-        let path = byte_fixture("preview_binary.bin", &[0xff, 0xfe, 0x00, 0x80]);
+        let path = byte_fixture("preview_binary.bin", b"\x7fELF\x02\x01\x01\x00");
         let mut view = placeholder_view();
 
         view.preview(&path);
@@ -2195,7 +2254,7 @@ mod tests {
 
     #[test]
     fn binary_file_is_reported_as_binary() {
-        let path = byte_fixture("load_binary.bin", &[0xff, 0xfe, 0x00, 0x80]);
+        let path = byte_fixture("load_binary.bin", b"\x7fELF\x02\x01\x01\x00");
         let mut view = placeholder_view();
 
         view.load(&path);
