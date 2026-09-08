@@ -466,17 +466,15 @@ pub(crate) fn read_utf16_lines<R: Read>(
 ) -> io::Result<Vec<String>> {
     let mut bytes = head;
     reader.read_to_end(&mut bytes)?;
-    let mut units: Vec<u16> = bytes
-        .chunks_exact(2)
-        .map(|pair| {
-            let pair = [pair[0], pair[1]];
-            match endian {
-                Endian::Little => u16::from_le_bytes(pair),
-                Endian::Big => u16::from_be_bytes(pair),
-            }
+    let (pairs, odd_byte) = bytes.as_chunks::<2>();
+    let mut units: Vec<u16> = pairs
+        .iter()
+        .map(|&pair| match endian {
+            Endian::Little => u16::from_le_bytes(pair),
+            Endian::Big => u16::from_be_bytes(pair),
         })
         .collect();
-    if bytes.len() % 2 == 1 {
+    if !odd_byte.is_empty() {
         units.push(0xfffd);
     }
     let text = String::from_utf16_lossy(&units);
