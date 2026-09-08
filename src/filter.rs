@@ -699,8 +699,11 @@ impl ActiveFilters {
         Self::default()
     }
 
+    /// A set with no file sets and a palette of its own. Test-only (#167):
+    /// `App` and headless mode go through `with_sets` with the loaded sets.
+    #[cfg(test)]
     #[must_use]
-    pub fn with_palette(palette: Vec<Color>) -> Self {
+    pub(crate) fn with_palette(palette: Vec<Color>) -> Self {
         Self::with_sets(Some(palette), &[])
     }
 
@@ -809,9 +812,11 @@ impl ActiveFilters {
     /// One search at a time, like vim's search register: a second `/` is a
     /// new question, not another filter.
     /// Add an including filter that selects lines starting a definition of
-    /// `kind` (#123). Coloured and numbered like any other filter; nothing
-    /// user-facing creates one yet — that is #127's built-in set.
-    pub fn add_definition(&mut self, kind: Kind) {
+    /// `kind` (#123), coloured and numbered like any other filter. Test-only
+    /// (#167): the built-in `definitions` set (#127) is how a user gets one,
+    /// and this is the direct route the filter and document tests take.
+    #[cfg(test)]
+    pub(crate) fn add_definition(&mut self, kind: Kind) {
         let style = self.next_style();
         self.insert_scratch(Filter {
             predicate: Predicate::Definition(kind),

@@ -70,8 +70,10 @@ pub struct Document {
 }
 
 impl Document {
-    #[must_use]
-    pub fn new(lines: impl Into<Arc<Vec<String>>>) -> Self {
+    /// A document over `lines` with no file behind it. Private (#167):
+    /// `for_file` and the tests are its only callers, and as `pub` in a
+    /// `pub mod` it was outside `unreachable_pub`'s sight.
+    fn new(lines: impl Into<Arc<Vec<String>>>) -> Self {
         let lines = lines.into();
         let verdicts = vec![Verdict::Unmatched; lines.len()];
         Self {
