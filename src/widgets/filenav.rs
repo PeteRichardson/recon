@@ -159,31 +159,31 @@ pub(crate) struct Entry {
     ///
     /// The lossy conversion happens once, in `display()`, where a replacement
     /// character is the correct and harmless answer.
-    pub name: OsString,
-    pub kind: Kind,
+    pub(crate) name: OsString,
+    pub(crate) kind: Kind,
     /// Bytes, for a file. `None` for a directory — a `stat` there reports the
     /// size of the directory *file*, not of what is in it, so showing it
     /// beside real file sizes would be a wrong answer rather than a blank.
     /// Also `None` when the entry could not be stat'd at all.
-    pub size: Option<u64>,
+    pub(crate) size: Option<u64>,
     /// Last modification time, or `None` when the entry could not be stat'd.
     ///
     /// Kept as a `SystemTime` rather than a formatted string: formatting is a
     /// rendering decision (and a width-dependent one), and doing it here would
     /// bake a format into the listing every consumer then has to live with.
-    pub modified: Option<std::time::SystemTime>,
+    pub(crate) modified: Option<std::time::SystemTime>,
     /// See [`Match`]. Always `Unknown` for a directory and for `..`.
-    pub matched: Match,
+    pub(crate) matched: Match,
 }
 
 /// One row of the listing as `--emit files` sees it (#143).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ListedFile {
     /// Absolute.
-    pub path: PathBuf,
+    pub(crate) path: PathBuf,
     /// `Some(true)` for a `Yes` answer, `Some(false)` for `No`, `None` while
     /// unscanned — which hide mode keeps, since it might still match.
-    pub matched: Option<bool>,
+    pub(crate) matched: Option<bool>,
 }
 
 impl Entry {
@@ -232,7 +232,7 @@ impl Entry {
 }
 
 #[derive(Debug, Default)]
-pub struct FileNav<'a> {
+pub(crate) struct FileNav<'a> {
     /// Directory currently being listed.
     dir: PathBuf,
     /// `PARENT` followed by the sorted contents of `dir`.
@@ -280,7 +280,7 @@ impl FileNav<'_> {
     /// file has its parent listed, with the cursor on the file — which is
     /// already open in the view, so starting on `..` was strictly less
     /// useful.
-    pub fn new(path: String) -> Self {
+    pub(crate) fn new(path: String) -> Self {
         let path = Path::new(&path);
         let mut nav = Self::default();
 
@@ -399,7 +399,11 @@ impl FileNav<'_> {
     ///
     /// The pattern is a regular expression, matching how the file view
     /// searches, so `^foo` anchors to the start of a name.
-    pub fn search(&mut self, pattern: &str, reverse: bool) -> Result<Option<Action>, regex::Error> {
+    pub(crate) fn search(
+        &mut self,
+        pattern: &str,
+        reverse: bool,
+    ) -> Result<Option<Action>, regex::Error> {
         self.matcher = Some(Regex::new(pattern)?);
         self.search_reverse = reverse;
         self.rebuild_list();
@@ -490,7 +494,7 @@ impl FileNav<'_> {
     /// Not a `Result`: nothing in here can fail. It used to return one for
     /// symmetry with the rest of the chain, which is exactly what clippy's
     /// `unnecessary_wraps` was flagging (#80).
-    pub fn handle_events(&mut self, event: Event) -> Option<Action> {
+    pub(crate) fn handle_events(&mut self, event: Event) -> Option<Action> {
         if let Event::Key(key) = event {
             match key.code {
                 KeyCode::Up | KeyCode::Char('k') => {
@@ -564,7 +568,7 @@ impl FileNav<'_> {
     /// A field read. `App::nav_width` calls this from inside `App::render`, so
     /// the old version allocated a `String` per directory entry on every frame
     /// to re-measure a listing that had not changed (#84).
-    pub fn preferred_width(&self) -> u16 {
+    pub(crate) fn preferred_width(&self) -> u16 {
         u16::try_from(self.widest + BORDERS).unwrap_or(u16::MAX)
     }
 

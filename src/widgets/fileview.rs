@@ -238,7 +238,7 @@ impl Contents {
 }
 
 #[derive(Debug, Default)]
-pub struct FileView<'a> {
+pub(crate) struct FileView<'a> {
     /// The file being shown, as a path rather than a rendering of one.
     ///
     /// A `String` here meant storing `Path::display()`, which is explicitly
@@ -351,7 +351,13 @@ pub struct FileView<'a> {
 }
 
 impl FileView<'_> {
-    pub fn new(filename: String) -> Self {
+    /// A view already showing `filename`. Test-only: `App` builds the pane
+    /// with `default()` and then `load`s or `preview`s into it, and this is
+    /// the one caller-free constructor the visibility sweep (#166) exposed
+    /// to `dead_code` — the rest of #167 lives in `filter.rs` and
+    /// `document.rs`.
+    #[cfg(test)]
+    pub(crate) fn new(filename: String) -> Self {
         let mut view = Self::default();
         view.load(Path::new(&filename));
         view
@@ -390,7 +396,7 @@ impl FileView<'_> {
     ///
     /// Applies to the file already on screen as well as to later ones, so
     /// `App::new` can set it after the first `load`.
-    pub fn set_theme(&mut self, theme: Theme) {
+    pub(crate) fn set_theme(&mut self, theme: Theme) {
         self.theme = theme;
         self.rebuild_highlighter();
     }
@@ -480,7 +486,7 @@ impl FileView<'_> {
     /// A file that cannot be read is reported in the pane itself rather than
     /// bringing the TUI down, since any entry in the nav pane can be selected.
     /// Rebuilding the `TextArea` also resets the cursor and scroll position.
-    pub fn load(&mut self, path: &Path) {
+    pub(crate) fn load(&mut self, path: &Path) {
         self.filename = path.to_path_buf();
         let contents = read_lines(path);
         self.adopt(contents.lines, contents.text);
@@ -501,7 +507,7 @@ impl FileView<'_> {
     /// key would stutter on large logs. While the nav pane holds focus the
     /// view cannot be scrolled, so a screenful is all that can be seen; the
     /// rest is read by `handle_events` as soon as the view is actually used.
-    pub fn preview(&mut self, path: &Path) {
+    pub(crate) fn preview(&mut self, path: &Path) {
         self.preview_with_caps(path, PREVIEW_LINES, MAX_PREVIEW_BYTES);
     }
 
@@ -539,7 +545,7 @@ impl FileView<'_> {
     ///
     /// The line the cursor is on keeps its style too: `render` folds it into
     /// the cursor-line style, because the textarea replaces rather than merges.
-    pub fn set_line_styles(&mut self, styles: Vec<Option<Style>>) {
+    pub(crate) fn set_line_styles(&mut self, styles: Vec<Option<Style>>) {
         self.textarea.set_line_styles(styles);
     }
 
@@ -549,7 +555,7 @@ impl FileView<'_> {
     /// Used when the buffer holds only the lines matching a filter, so the
     /// gutter still reads as positions in the original file. Cleared by
     /// `load` and `preview`, as above.
-    pub fn set_line_numbers(&mut self, numbers: Vec<usize>) {
+    pub(crate) fn set_line_numbers(&mut self, numbers: Vec<usize>) {
         self.textarea.set_line_numbers(numbers);
     }
 
@@ -565,7 +571,7 @@ impl FileView<'_> {
     ///
     /// Cleared by `load` and `preview`, as with `set_line_styles` and
     /// `set_line_numbers` above.
-    pub fn set_group_ends(&mut self, ends: Vec<bool>) {
+    pub(crate) fn set_group_ends(&mut self, ends: Vec<bool>) {
         self.textarea.set_line_number_styles(
             ends.into_iter()
                 .map(|end| end.then(|| Style::default().add_modifier(Modifier::UNDERLINED)))
@@ -576,7 +582,7 @@ impl FileView<'_> {
     /// Suppress the gutter entirely, for the placeholder row shown when
     /// nothing is visible. See the `gutter_blank` field for why an empty
     /// `set_line_numbers` override is not enough on its own.
-    pub fn set_gutter_blank(&mut self, blank: bool) {
+    pub(crate) fn set_gutter_blank(&mut self, blank: bool) {
         self.gutter_blank = blank;
     }
 
@@ -589,7 +595,7 @@ impl FileView<'_> {
     /// too, same as `set_line_styles`/`set_line_numbers` above, so
     /// `App::apply_view` re-applies it on every pass rather than only when
     /// the pattern changes.
-    pub fn set_highlight(&mut self, pattern: Option<&str>) -> Result<(), regex::Error> {
+    pub(crate) fn set_highlight(&mut self, pattern: Option<&str>) -> Result<(), regex::Error> {
         self.textarea.set_search_pattern(pattern.unwrap_or(""))
     }
 
@@ -600,7 +606,7 @@ impl FileView<'_> {
     /// helper (#76). Answers the issue's open question for this method: it is
     /// a leftover, not reserved API.
     #[cfg(test)]
-    pub fn highlight(&self) -> Option<String> {
+    pub(crate) fn highlight(&self) -> Option<String> {
         self.textarea
             .search_pattern()
             .map(|pattern| pattern.as_str().to_string())
@@ -624,7 +630,7 @@ impl FileView<'_> {
     /// zero, kept because several tests want the unwindowed form to compare a
     /// windowed result against (#76).
     #[cfg(test)]
-    pub fn show_lines_with_cursor(&mut self, lines: Vec<String>, row: usize) {
+    pub(crate) fn show_lines_with_cursor(&mut self, lines: Vec<String>, row: usize) {
         self.show_window(lines, 0, row);
     }
 
@@ -635,7 +641,7 @@ impl FileView<'_> {
     /// `show_lines_with_cursor` is this with a window of zero offset, which is
     /// what an unwindowed document (anything shorter than three screens) always
     /// produces.
-    pub fn show_window(&mut self, lines: Vec<String>, window_start: usize, row: usize) {
+    pub(crate) fn show_window(&mut self, lines: Vec<String>, window_start: usize, row: usize) {
         // set_lines rejects an empty vector; an empty buffer is one blank line.
         let lines = if lines.is_empty() {
             vec![String::new()]
@@ -648,12 +654,12 @@ impl FileView<'_> {
     }
 
     /// Visible-set index of the buffer's first row.
-    pub fn window_start(&self) -> usize {
+    pub(crate) fn window_start(&self) -> usize {
         self.window_start
     }
 
     /// Visible-set index of the buffer's last row, exclusive.
-    pub fn window_end(&self) -> usize {
+    pub(crate) fn window_end(&self) -> usize {
         self.window_start + self.textarea.lines().len()
     }
 
@@ -664,13 +670,13 @@ impl FileView<'_> {
     /// Everything else goes through here, because getting the translation wrong
     /// fails silently — it yields a line number off by `window_start`, which
     /// looks entirely plausible.
-    pub fn cursor_visible_row(&self) -> usize {
+    pub(crate) fn cursor_visible_row(&self) -> usize {
         self.window_start + self.textarea.cursor().0
     }
 
     /// The pane height to size a window against: the area last rendered into,
     /// or a generous assumption before the first render.
-    pub fn window_height(&self) -> u16 {
+    pub(crate) fn window_height(&self) -> u16 {
         self.last_height.unwrap_or(ASSUMED_PANE_HEIGHT)
     }
 
@@ -679,7 +685,7 @@ impl FileView<'_> {
     /// Used to hold a line in place across a rebuild: `set_lines` resets the
     /// viewport, so without this the cursor re-anchors to the pane's last row
     /// and the view lurches whenever a filter changes.
-    pub fn cursor_screen_row(&self) -> u16 {
+    pub(crate) fn cursor_screen_row(&self) -> u16 {
         let (top, _) = self.textarea.scroll_top();
         // The subtraction is a screen offset, so it fits `u16` for any pane a
         // terminal can actually draw. `try_from` rather than `as` because
@@ -699,7 +705,7 @@ impl FileView<'_> {
     /// Otherwise the target scrolls in by the minimum and lands on the edge
     /// of the scroll margin nearest where it came from — the same row a
     /// held `j` or `k` would have delivered it to.
-    pub fn jump_landing_row(&self, row: usize, center: bool) -> Option<u16> {
+    pub(crate) fn jump_landing_row(&self, row: usize, center: bool) -> Option<u16> {
         let height = self.viewport_height;
         let top = self.window_start + usize::from(self.textarea.scroll_top().0);
         if (top..top + usize::from(height)).contains(&row) {
@@ -738,7 +744,7 @@ impl FileView<'_> {
     ///
     /// `get_or_insert`: see the field doc on `pending_screen_row` for why a
     /// second request before the next render must not overwrite the first.
-    pub fn scroll_cursor_to_row(&mut self, row: u16) {
+    pub(crate) fn scroll_cursor_to_row(&mut self, row: u16) {
         self.pending_screen_row.get_or_insert(row);
     }
 
@@ -753,7 +759,7 @@ impl FileView<'_> {
     /// by the file load that preceded it in the same keypress — `,` loads
     /// the previous file and then lands on its last hit — would put the
     /// cursor back on the row the *previous* file's cursor was drawn on.
-    pub fn land_cursor_on_row(&mut self, row: u16) {
+    pub(crate) fn land_cursor_on_row(&mut self, row: u16) {
         self.pending_screen_row = Some(row);
     }
 
@@ -911,14 +917,14 @@ impl FileView<'_> {
     /// Used by `n`/`N`, which decide *which* line to land on in `App` — the
     /// only place that can see both the verdicts and the cursor — and then
     /// ask the view to go there.
-    pub fn set_cursor_row(&mut self, row: usize) {
+    pub(crate) fn set_cursor_row(&mut self, row: usize) {
         self.textarea.set_cursor_position((row, 0));
     }
 
     /// Not a `Result`: every arm is a cursor move or a local toggle, and none
     /// of them can fail (#80). The one genuinely fallible thing this pane does
     /// — `set_highlight` — is called from `App::apply_view`, not from here.
-    pub fn handle_events(&mut self, input: Input) {
+    pub(crate) fn handle_events(&mut self, input: Input) {
         // The user is interacting with the view, so a preview is no longer
         // enough: they can now scroll past the end of it.
         if self.truncated {

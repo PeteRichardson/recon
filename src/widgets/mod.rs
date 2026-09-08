@@ -36,7 +36,7 @@ pub(crate) fn pane_block<'a>(title: impl Into<ratatui::text::Line<'a>>, active: 
 /// A request raised by a widget that only `App` can carry out, because it
 /// needs to reach a sibling widget.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Action {
+pub(crate) enum Action {
     /// Show this file in the file view, reading all of it.
     Load(PathBuf),
     /// Show enough of this file to fill the pane, as the selection passes over
