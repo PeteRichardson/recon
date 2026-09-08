@@ -342,8 +342,13 @@ impl App<'_> {
 
     /// The divider under `(column, row)`, if either is.
     ///
-    /// A divider is the pair of adjacent borders between two panes, with a
-    /// cell of slack either side so it is not fiddly to grab.
+    /// A divider is the pair of adjacent borders between two panes — the
+    /// navigator's right border and the view's left, or the navigator's
+    /// bottom border and the filter pane's top — and exactly that pair. It
+    /// used to take a cell of slack either side, to be less fiddly to grab;
+    /// now that a click on a row does something (#58), the slack would have
+    /// swallowed the filter pane's first row and the view's first column, and
+    /// two cells is a target the same size as the one it had.
     ///
     /// The vertical one is tested first and so wins the single corner where
     /// the two meet. That is an arbitrary choice between two reasonable ones,
@@ -355,9 +360,14 @@ impl App<'_> {
     /// click anywhere across the file view at the same height would resize
     /// the filter pane.
     pub(crate) fn divider_at(&self, column: u16, row: u16) -> Option<Divider> {
-        if column.abs_diff(self.divider) <= 1 {
+        // `column <= divider` first, so the subtraction cannot underflow: the
+        // pair is the divider column and the one to its left, never the right.
+        if column <= self.divider && self.divider - column <= 1 {
             Some(Divider::Vertical)
-        } else if column < self.divider && row.abs_diff(self.filter_area.y) <= 1 {
+        } else if column < self.divider
+            && row <= self.filter_area.y
+            && self.filter_area.y - row <= 1
+        {
             Some(Divider::Horizontal)
         } else {
             None
