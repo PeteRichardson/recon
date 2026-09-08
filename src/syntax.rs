@@ -580,6 +580,11 @@ impl Kind {
     }
 
     /// The plural noun the pane will call a filter of this kind.
+    ///
+    /// A compatibility contract, not just a label (#220): these are the
+    /// names a `[sets.definitions.profiles]` table in `filters.toml` refers
+    /// to, so renaming one breaks a user's file. Add kinds freely; rename
+    /// one only with an alias or a release note.
     #[must_use]
     pub fn plural(self) -> &'static str {
         match self {

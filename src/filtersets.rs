@@ -13,6 +13,7 @@
 
 use crate::config::parse_colour;
 use crate::filter::{LoadedFilter, LoadedSet, Predicate, Sense};
+use crate::syntax::Kind;
 use regex::Regex;
 use serde::Deserialize;
 use std::collections::BTreeMap;
@@ -148,6 +149,9 @@ impl std::error::Error for Error {}
 
 /// Parse and validate one file's text. Pure: `path` is only for messages.
 ///
+/// The built-in set is always in the result, whether or not the file names
+/// it (#220); see [`LoadedSet::builtin_default`].
+///
 /// The result is sorted by `(priority, name)`, which is the pane's order.
 /// Everything the spec lists as rejected is rejected here, with the set and
 /// filter named, so that a user reading the message in a hurry can go
@@ -178,25 +182,45 @@ pub fn parse(text: &str, path: &Path) -> Result<Vec<LoadedSet>, Error> {
                 format!("mode {mode:?} is not supported; only {ONLY_MODE:?} is"),
             ));
         }
-        // A table naming a built-in set (#127) positions and switches it,
-        // and may carry nothing else: its filters are recon's.
+        // A table naming a built-in set (#127) positions and switches it
+        // and may give it profiles (#220); what it may not do is add
+        // filters, which are recon's. A profile's members are the kinds'
+        // plural names — `functions`, `types` — which the file never shows,
+        // so a refusal lists them.
         if crate::filter::is_builtin_name(&name) {
-            if !schema.filters.is_empty() || !schema.profiles.is_empty() {
+            if !schema.filters.is_empty() {
                 return Err(invalid(
                     &name,
                     None,
                     format!(
-                        "{name:?} is a built-in set; its table may set `priority` and \
-                         `autoload` only"
+                        "{name:?} is a built-in set; its table may set `priority`, \
+                         `autoload` and `profiles` only"
                     ),
                 ));
+            }
+            for (profile, members) in &schema.profiles {
+                if let Some(missing) = members
+                    .iter()
+                    .find(|member| !Kind::ALL.iter().any(|kind| kind.plural() == *member))
+                {
+                    let kinds: Vec<&str> = Kind::ALL.iter().map(|kind| kind.plural()).collect();
+                    return Err(invalid(
+                        &name,
+                        None,
+                        format!(
+                            "profile {profile:?} names {missing:?}, which is not a filter in \
+                             this set; the built-in filters are {}",
+                            kinds.join(", ")
+                        ),
+                    ));
+                }
             }
             sets.push(LoadedSet {
                 name,
                 path: path.to_path_buf(),
                 priority: schema.priority.unwrap_or(DEFAULT_PRIORITY),
                 autoload: schema.autoload.unwrap_or(false),
-                profiles: BTreeMap::new(),
+                profiles: schema.profiles,
                 filters: Vec::new(),
                 builtin: true,
             });
@@ -212,15 +236,17 @@ pub fn parse(text: &str, path: &Path) -> Result<Vec<LoadedSet>, Error> {
 
         let mut filters: Vec<LoadedFilter> = Vec::with_capacity(schema.filters.len());
         for entry in schema.filters {
+            // What the pane will call it, and so what a message calls it
+            // (#200): the `name` when there is one, the pattern otherwise.
+            let display = entry.name.unwrap_or_else(|| entry.pattern.clone());
             let regex = Regex::new(&entry.pattern)
-                .map_err(|err| invalid(&name, Some(&entry.pattern), err.to_string()))?;
+                .map_err(|err| invalid(&name, Some(&display), err.to_string()))?;
             let colour = entry
                 .colour
                 .as_deref()
                 .map(parse_colour)
                 .transpose()
-                .map_err(|message| invalid(&name, Some(&entry.pattern), message))?;
-            let display = entry.name.unwrap_or_else(|| entry.pattern.clone());
+                .map_err(|message| invalid(&name, Some(&display), message))?;
             if filters.iter().any(|filter| filter.name == display) {
                 return Err(invalid(
                     &name,
@@ -260,6 +286,12 @@ pub fn parse(text: &str, path: &Path) -> Result<Vec<LoadedSet>, Error> {
             filters,
             builtin: false,
         });
+    }
+    // The built-in set is always among the loaded sets (#220), so the
+    // `--set` check in `main` and `with_sets` read one list. A file that
+    // names it has already pushed it; one that does not gets the default.
+    if !sets.iter().any(|set| set.builtin) {
+        sets.push(LoadedSet::builtin_default());
     }
     sets.sort_by(|a, b| {
         a.priority
@@ -398,10 +430,11 @@ fn load_from(path: &Path) -> Result<Vec<LoadedSet>, Error> {
     let text = match std::fs::read_to_string(path) {
         Ok(text) => text,
         // The overwhelmingly common case, and not a failure: recon runs with
-        // the scratch set alone. Only this one kind is forgiven — a
-        // permission error or a directory in the file's place is real.
+        // the scratch set and the built-in one. Only this one kind is
+        // forgiven — a permission error or a directory in the file's place
+        // is real.
         Err(source) if source.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(Vec::new());
+            return Ok(vec![LoadedSet::builtin_default()]);
         }
         Err(source) => {
             return Err(Error::Read {
@@ -418,7 +451,7 @@ fn load_from(path: &Path) -> Result<Vec<LoadedSet>, Error> {
 pub fn load_file() -> Result<Vec<LoadedSet>, Error> {
     let Some(path) = path() else {
         log::debug!("no config home ($XDG_CONFIG_HOME, $HOME unset); no filters.toml read");
-        return Ok(Vec::new());
+        return Ok(vec![LoadedSet::builtin_default()]);
     };
     // Which file was read is the first thing anyone asks when a set does
     // not appear; absence is logged too, since "no file" and "the wrong
@@ -447,15 +480,26 @@ mod tests {
 
     const MINIMAL: &str = "[sets.a]\n[[sets.a.filters]]\npattern = 'foo'\n";
 
+    /// The built-in set is the loader's to supply (#220): a file that never
+    /// names it still yields it, at its defaults, so `--set definitions` is
+    /// validated against the same list `with_sets` builds from.
     #[test]
-    fn an_empty_file_has_no_sets() {
-        assert!(parsed("").is_empty());
+    fn an_empty_file_has_only_the_builtin_set() {
+        let sets = parsed("");
+        assert_eq!(sets.len(), 1);
+        let builtin = &sets[0];
+        assert!(builtin.builtin);
+        assert_eq!(builtin.name, crate::filter::DEFINITIONS_SET);
+        assert_eq!(builtin.priority, DEFAULT_PRIORITY);
+        assert!(!builtin.autoload);
+        assert!(builtin.profiles.is_empty());
+        assert!(builtin.filters.is_empty());
     }
 
     #[test]
     fn a_minimal_set_takes_every_default() {
         let sets = parsed(MINIMAL);
-        assert_eq!(sets.len(), 1);
+        assert_eq!(sets.len(), 2, "the set and the built-in one");
         let a = &sets[0];
         assert_eq!(a.name, "a");
         assert_eq!(a.path, Path::new("t/filters.toml"));
@@ -511,7 +555,11 @@ sense = "context"
              [sets.alpha]\n[[sets.alpha.filters]]\npattern = 'a'\n",
         );
         let names: Vec<&str> = sets.iter().map(|s| s.name.as_str()).collect();
-        assert_eq!(names, ["zebra", "alpha", "beta"]);
+        assert_eq!(
+            names,
+            ["zebra", "alpha", "beta", "definitions"],
+            "the built-in set sorts among the file's by the same rule"
+        );
     }
 
     #[test]
@@ -546,11 +594,13 @@ sense = "context"
         assert!(message.contains("\"nope\""), "{message}");
     }
 
-    /// `[sets.definitions]` positions and switches the built-in set (#127).
+    /// `[sets.definitions]` positions and switches the built-in set (#127)
+    /// and may carry profiles over its filters' display names (#220); what
+    /// it may not do is add filters, which are recon's.
     #[test]
-    fn a_builtin_set_table_carries_priority_and_autoload_only() {
+    fn a_builtin_set_table_carries_priority_autoload_and_profiles() {
         let sets = parsed("[sets.definitions]\npriority = 80\nautoload = true\n");
-        assert_eq!(sets.len(), 1);
+        assert_eq!(sets.len(), 1, "the table stands in for the default");
         assert!(sets[0].builtin);
         assert_eq!((sets[0].priority, sets[0].autoload), (80, true));
         assert!(sets[0].filters.is_empty());
@@ -558,12 +608,43 @@ sense = "context"
             rejected("[sets.definitions]\n[[sets.definitions.filters]]\npattern = 'x'\n")
                 .contains("built-in")
         );
-        assert!(
-            rejected("[sets.definitions]\n[sets.definitions.profiles]\ndefault = []\n")
-                .contains("built-in")
+        let sets = parsed(
+            "[sets.definitions]\n[sets.definitions.profiles]\ndefault = ['functions']\n\
+             types = ['types', 'structs', 'enums']\n",
         );
+        assert_eq!(sets.len(), 1);
+        assert_eq!(sets[0].profiles["default"], vec!["functions".to_string()]);
+        assert_eq!(sets[0].profiles["types"].len(), 3);
         // An empty table is fine: it names the set and changes nothing.
         assert!(parsed("[sets.definitions]\n")[0].builtin);
+    }
+
+    /// A built-in profile's members are checked against the kinds, the same
+    /// way a file set's are checked against its filters, and the message
+    /// lists what the names are — nothing in the file shows them.
+    #[test]
+    fn a_builtin_profile_must_name_definition_kinds() {
+        let message = rejected(
+            "[sets.definitions]\n[sets.definitions.profiles]\ntypes = ['types', 'nope']\n",
+        );
+        assert!(message.contains("[sets.definitions]"), "{message}");
+        assert!(message.contains("profile \"types\""), "{message}");
+        assert!(message.contains("\"nope\""), "{message}");
+        assert!(message.contains("functions"), "lists the kinds: {message}");
+        assert!(message.contains("sections"), "lists the kinds: {message}");
+    }
+
+    /// `Error::Invalid` names the filter by its `name` when it has one (#200);
+    /// the pattern is the fallback, not the rule.
+    #[test]
+    fn a_bad_filter_is_named_by_its_name_when_it_has_one() {
+        let message = rejected("[sets.a]\n[[sets.a.filters]]\nname = 'opener'\npattern = '('\n");
+        assert!(message.contains("filter 'opener'"), "{message}");
+        assert!(!message.contains("filter '('"), "{message}");
+        let message = rejected(
+            "[sets.a]\n[[sets.a.filters]]\nname = 'warm'\npattern = 'x'\ncolour = 'reddish'\n",
+        );
+        assert!(message.contains("filter 'warm'"), "{message}");
     }
 
     #[test]
@@ -642,7 +723,7 @@ sense = "context"
             "no bare [sets] header:\n{after}"
         );
         let sets = parse(&after, Path::new("t")).expect("round-trips");
-        assert_eq!(sets.len(), 2);
+        assert_eq!(sets.len(), 3, "a, bug 57 and the built-in set");
         assert_eq!(sets[1].name, "bug 57");
         assert_eq!(sets[1].filters[0].predicate.display(), r"\bERROR\b");
         assert_eq!(sets[1].profiles["default"], vec![r"\bERROR\b".to_string()]);
@@ -701,7 +782,11 @@ sense = "context"
         .expect("edits");
         assert!(after.contains("pattern = \"it's\""), "{after}");
         let sets = parse(&after, Path::new("t")).expect("round-trips");
-        assert_eq!(sets[0].filters[0].predicate.display(), "it's");
+        let q = sets
+            .iter()
+            .find(|set| set.name == "q")
+            .expect("q was appended");
+        assert_eq!(q.filters[0].predicate.display(), "it's");
     }
 
     #[test]
@@ -718,10 +803,11 @@ sense = "context"
     }
 
     #[test]
-    fn a_missing_file_is_no_sets() {
+    fn a_missing_file_is_the_builtin_set_alone() {
         let sets =
             load_from(Path::new("target/test-config/no-such-filters.toml")).expect("not an error");
-        assert!(sets.is_empty());
+        assert_eq!(sets.len(), 1);
+        assert!(sets[0].builtin);
     }
 
     #[test]

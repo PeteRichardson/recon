@@ -449,11 +449,24 @@ impl fmt::Display for ConfigError {
                 write!(f, "invalid config file {}\n{source}", path.display())
             }
             Self::LineNumbersNeedLines => write!(f, "--line-numbers applies to --emit lines"),
-            Self::UnknownSet { name, known } => write!(
-                f,
-                "unknown set {name:?}; filters.toml defines: {}",
-                known_list(known)
-            ),
+            // The built-in set is listed apart: it is among the known names
+            // — `--set definitions` is accepted (#220) — but the file does
+            // not define it, and the message says what the file defines.
+            Self::UnknownSet { name, known } => {
+                let (builtin, file): (Vec<String>, Vec<String>) = known
+                    .iter()
+                    .cloned()
+                    .partition(|set| crate::filter::is_builtin_name(set));
+                write!(
+                    f,
+                    "unknown set {name:?}; filters.toml defines: {}",
+                    known_list(&file)
+                )?;
+                if !builtin.is_empty() {
+                    write!(f, "; built in: {}", builtin.join(", "))?;
+                }
+                Ok(())
+            }
             Self::UnknownProfile { set, name, known } => write!(
                 f,
                 "unknown profile {name:?}; set {set:?} defines: {}",
@@ -1241,6 +1254,55 @@ mod tests {
         assert!(
             Config::default().check_sets(&[]).is_ok(),
             "no --set: nothing to check"
+        );
+    }
+
+    /// The loader always supplies the built-in set, so `--set definitions`
+    /// and a profile on it pass the same check a file set does (#220).
+    #[test]
+    fn check_sets_accepts_the_builtin_set_and_its_profiles() {
+        let sets = [crate::filter::test_support::builtin_with_profiles(
+            false,
+            &[("types", &["types"])],
+        )];
+
+        for spec in ["definitions", "definitions:types"] {
+            let config = Config {
+                set: vec![spec.to_string()],
+                ..Config::default()
+            };
+            assert!(config.check_sets(&sets).is_ok(), "{spec}");
+        }
+
+        let config = Config {
+            set: vec!["definitions:nope".to_string()],
+            ..Config::default()
+        };
+        let err = config.check_sets(&sets).expect_err("refused");
+        assert_eq!(
+            err.to_string(),
+            "unknown profile \"nope\"; set \"definitions\" defines: types"
+        );
+    }
+
+    /// The built-in set is listed apart from the file's own: the message
+    /// says what `filters.toml` defines, and it does not define that one.
+    #[test]
+    fn an_unknown_set_lists_the_builtin_set_apart_from_the_file_s() {
+        let sets = [
+            set_with_profile("Bugs", "p"),
+            crate::filter::test_support::builtin_override(50, false),
+        ];
+        let config = Config {
+            set: vec!["Foo".to_string()],
+            ..Config::default()
+        };
+
+        let err = config.check_sets(&sets).expect_err("refused");
+
+        assert_eq!(
+            err.to_string(),
+            "unknown set \"Foo\"; filters.toml defines: Bugs; built in: definitions"
         );
     }
 
