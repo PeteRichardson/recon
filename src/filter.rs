@@ -416,10 +416,32 @@ pub struct LoadedSet {
     pub autoload: bool,
     pub profiles: BTreeMap<String, Vec<String>>,
     pub filters: Vec<LoadedFilter>,
-    /// A `[sets.<name>]` table naming a built-in set: `priority` and
-    /// `autoload` are the file's, the filters are recon's, and `filters`
-    /// above is empty.
+    /// A `[sets.<name>]` table naming a built-in set: `priority`,
+    /// `autoload` and `profiles` are the file's, the filters are recon's,
+    /// and `filters` above is empty.
     pub builtin: bool,
+}
+
+impl LoadedSet {
+    /// The built-in definitions set as it is when `filters.toml` has no
+    /// table for it: collapsed, at the default priority, no profiles.
+    ///
+    /// The loader appends this to every file that does not name the set,
+    /// so the list `Config::check_sets` validates `--set` against and the
+    /// list `with_sets` builds from are the same list (#220). `with_sets`
+    /// falls back to it too, for a caller that never ran the loader.
+    #[must_use]
+    pub fn builtin_default() -> Self {
+        Self {
+            name: DEFINITIONS_SET.to_string(),
+            path: PathBuf::new(),
+            priority: crate::filtersets::DEFAULT_PRIORITY,
+            autoload: false,
+            profiles: BTreeMap::new(),
+            filters: Vec::new(),
+            builtin: true,
+        }
+    }
 }
 
 /// Why [`ActiveFilters::enable_named`] could not apply a `--set` (#143).
@@ -826,21 +848,14 @@ impl ActiveFilters {
     #[must_use]
     pub fn with_sets(palette: Option<Vec<Color>>, sets: &[LoadedSet]) -> Self {
         let mut this = Self::bare(palette);
-        // The built-in set is always present. The file may position and
-        // switch it — the loader passes such a table through as a
-        // `builtin` set with no filters — and otherwise it takes its
-        // defaults: collapsed, at the default priority, sorted among the
-        // file sets on the same terms.
+        // The built-in set is always present. The loader supplies it — a
+        // `[sets.definitions]` table passed through with its `priority`,
+        // `autoload` and `profiles` and no filters, or the default when the
+        // file has no such table — so a caller that ran the loader never
+        // reaches the fallback. It is here for the ones that did not:
+        // `new`, `with_palette` and the tests.
         let mut ordered: Vec<&LoadedSet> = sets.iter().collect();
-        let default_builtin = LoadedSet {
-            name: DEFINITIONS_SET.to_string(),
-            path: PathBuf::new(),
-            priority: crate::filtersets::DEFAULT_PRIORITY,
-            autoload: false,
-            profiles: BTreeMap::new(),
-            filters: Vec::new(),
-            builtin: true,
-        };
+        let default_builtin = LoadedSet::builtin_default();
         if !ordered.iter().any(|set| set.builtin) {
             ordered.push(&default_builtin);
         }
@@ -853,13 +868,15 @@ impl ActiveFilters {
         for loaded in ordered {
             let index = this.sets.len();
             if loaded.builtin {
+                // The profiles are the file's, over the kinds' plural
+                // names; the loader has checked every member is one.
                 this.sets.push(FilterSet {
                     name: loaded.name.clone(),
                     origin: Origin::BuiltIn,
                     priority: loaded.priority,
                     autoload: loaded.autoload,
                     enabled: false,
-                    profiles: BTreeMap::new(),
+                    profiles: loaded.profiles.clone(),
                 });
                 // No palette colour: a built-in filter wears the terminal's
                 // default, so the pane's colours stay the user's own.
@@ -1771,20 +1788,32 @@ pub(crate) mod test_support {
     /// A `[sets.definitions]` override, as the loader would pass it through.
     pub(crate) fn builtin_override(priority: i32, autoload: bool) -> LoadedSet {
         LoadedSet {
-            name: super::DEFINITIONS_SET.to_string(),
-            path: PathBuf::from("test/filters.toml"),
             priority,
             autoload,
-            profiles: BTreeMap::new(),
-            filters: Vec::new(),
-            builtin: true,
+            path: PathBuf::from("test/filters.toml"),
+            ..LoadedSet::builtin_default()
         }
+    }
+
+    /// `builtin_override` with profiles, each a list of kind names (#220).
+    pub(crate) fn builtin_with_profiles(autoload: bool, profiles: &[(&str, &[&str])]) -> LoadedSet {
+        let mut set = builtin_override(super::super::filtersets::DEFAULT_PRIORITY, autoload);
+        set.profiles = profiles
+            .iter()
+            .map(|(profile, members)| {
+                (
+                    (*profile).to_string(),
+                    members.iter().map(|m| (*m).to_string()).collect(),
+                )
+            })
+            .collect();
+        set
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::test_support::{builtin_override, loaded};
+    use super::test_support::{builtin_override, builtin_with_profiles, loaded};
     use super::*;
 
     fn set_with(patterns: &[&str]) -> ActiveFilters {
@@ -2395,6 +2424,45 @@ mod tests {
         assert!(set.sets()[index].enabled, "autoload");
         assert_eq!(set.filters_in(index).count(), Kind::ALL.len());
         assert_eq!(set.sets().len(), 3, "no second definitions set");
+    }
+
+    /// A `[sets.definitions]` table's profiles are the set's (#220): the
+    /// `default` one applies on autoload, another applies by name, and the
+    /// members are the kinds' plural names.
+    #[test]
+    fn a_file_override_gives_the_definitions_set_profiles() {
+        let mut set = ActiveFilters::with_sets(
+            None,
+            &[builtin_with_profiles(
+                true,
+                &[
+                    ("default", &["functions"]),
+                    ("types", &["types", "structs", "enums"]),
+                ],
+            )],
+        );
+        let index = builtin_index(&set);
+        assert_eq!(set.sets()[index].profiles.len(), 2);
+        let on = |set: &ActiveFilters| -> Vec<String> {
+            set.filters_in(index)
+                .filter(|(_, f)| f.enabled)
+                .map(|(_, f)| f.display_name())
+                .collect()
+        };
+        assert_eq!(on(&set), ["functions"], "autoload applied `default`");
+        assert!(set.apply_profile(index, "types"));
+        assert_eq!(
+            on(&set),
+            ["structs", "enums", "types"],
+            "in Kind::ALL order"
+        );
+        assert_eq!(
+            set.enable_named(DEFINITIONS_SET, Some("nope")),
+            Err(EnableError::UnknownProfile {
+                set: DEFINITIONS_SET.to_string(),
+                profile: "nope".to_string(),
+            })
+        );
     }
 
     /// The grammar pass is paid only once a definition filter takes effect.

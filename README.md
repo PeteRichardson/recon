@@ -580,14 +580,28 @@ with their real line numbers, and every sense works — `m` for "functions with
 context", or an excluding definition for "everything except functions". Its
 rows carry no number and no palette colour, so your own filters keep theirs;
 `d` and `c` refuse them, since they are recon's. Solo, reset, `!` and the peek
-treat the set as any other. Position it or start it expanded from
-`filters.toml`, with a table that may carry only these two keys:
+treat the set as any other. Position it, start it expanded, or give it
+profiles from `filters.toml`, with a table that may carry `priority`,
+`autoload` and `profiles` — never `filters`, which are recon's:
 
 ```toml
 [sets.definitions]
 priority = 80
 autoload = true
+
+[sets.definitions.profiles]
+default = ["functions"]
+types = ["types", "structs", "enums"]
 ```
+
+A profile's members are the eleven filter names above — `functions`,
+`classes`, `structs`, `enums`, `types`, `traits`, `modules`, `impls`,
+`constants`, `macros`, `sections` — and naming anything else is refused at
+startup, as a file set's profile naming a missing filter is. With `autoload`
+and a `default` the set starts with that subset on; `--set definitions:types`
+applies a profile from the command line, the same as for any set. The set is
+always known to `--set`, table or no table: without one, `--set definitions`
+enables it with every filter off, like any set with no `default`.
 
 On a log file the rows exist and are inert. The navigator's file matching does
 not evaluate definition filters — it reads text it never parses — so they
@@ -1215,7 +1229,7 @@ the run is in dim mode and emits everything, with the match count in the
 summary. `-n` numbers lines as in the TUI. `-q` drops the summary; warnings
 still print. All four work in the TUI too. An unknown set or profile is
 refused before anything is read, and the error lists the names
-`filters.toml` defines.
+`filters.toml` defines, with the built-in `definitions` set named apart.
 
 **Several files.** With more than one input, `--emit lines` prefixes each
 line with its path and a tab, and `-n` puts the line number and a tab after
