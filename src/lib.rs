@@ -559,7 +559,8 @@ impl App<'_> {
     #[must_use]
     pub fn new(config: &Config) -> Self {
         let argument = std::path::Path::new(&config.path);
-        let nav = FileNav::new(config.path.clone());
+        let mut nav = FileNav::new(config.path.clone());
+        nav.set_background(config.background());
         let mut view = FileView::default();
 
         match nav.selected_path() {
@@ -587,8 +588,11 @@ impl App<'_> {
         let (outcomes_tx, outcomes_rx) = std::sync::mpsc::channel();
         let (scan_tx, scan_rx) = std::sync::mpsc::channel();
 
+        // The background's palette, unless the file set one (#231); the
+        // background itself follows for the dim grey.
         let mut filters =
-            ActiveFilters::with_sets(config.filter_palette.clone(), &config.filter_sets);
+            ActiveFilters::with_sets(Some(config.filter_palette()), &config.filter_sets);
+        filters.set_background(config.background());
         for (set, profile) in config.sets_to_enable() {
             // `Config::check_sets` refused an unknown name in `main` before
             // the terminal came up; a failure here is a hand-built `Config`

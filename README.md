@@ -208,6 +208,11 @@ Options:
           Print a ready-to-paste `[editor]` stanza and exit. Takes a flavour —
           `zed`, `vscode`, `wezterm-nvim`, … — or `auto` to guess from
           `$TERM_PROGRAM`
+      --background <BACKGROUND>
+          Whether the terminal background is dark or light: picks the built-in
+          filter palette and the grey of dimmed lines. Falls back to a top-level
+          `background` in `config.toml`, then to `dark` [env: RECON_BACKGROUND=]
+          [possible values: dark, light]
       --theme <THEME>
           Colours for the file view's syntax colouring: a bundled theme name, a
           path to a `.tmTheme` file, or `none` to turn colouring off [env:
@@ -593,10 +598,33 @@ never pays it.
 #### The filter palette
 
 Successive filters take successive colours, wrapping once the list runs out.
-The built-in six are fixed 256-colour shades — gold, cyan, green, magenta,
-periwinkle, red — rather than `Color::Yellow` and friends, because the named
-variants are ANSI slots whose actual appearance your terminal theme decides,
-and recon cannot promise contrast between two colours it doesn't choose.
+The built-in list is thirteen fixed 256-colour shades — gold, cyan, green,
+magenta, periwinkle and red first, then seven more — rather than
+`Color::Yellow` and friends, because the named variants are ANSI slots whose
+actual appearance your terminal theme decides, and recon cannot promise
+contrast between two colours it doesn't choose. The first six are at least
+150 apart in RGB from each other; the rest are at least 90 apart from every
+other entry, which is less distinct than the first six and far better than
+wrapping to a repeat. Every entry also keeps its distance from black, from the
+search highlight's white, and from the grey of dimmed lines, so no filter is
+ever mistaken for one of those.
+
+**Light backgrounds.** That list is chosen for a dark terminal; on white,
+gold and cyan all but vanish, and the grey dimmed lines wear is near-black.
+Say so and recon uses a second list of thirteen chosen against white, and a
+lighter grey for dimming:
+
+```toml
+background = "light"    # top level, not under [filters]; "dark" is the default
+```
+
+or `--background light`, or `RECON_BACKGROUND=light`. recon cannot ask the
+terminal which it is — there is no portable answer, and the one query that
+exists is a round-trip before the interface starts — so this is a setting
+like the syntax theme, and lives at the top of the file because it governs
+more than the palette. `[filters] palette` below still replaces the list
+wholesale whichever background is set; only the dim grey keeps following the
+background.
 
 Override the whole list in `config.toml`:
 
@@ -1384,7 +1412,9 @@ navigator's blue and green make — the result follows your terminal theme
 instead of fighting it, works on a light background as well as a dark one, and
 needs no truecolor support. `base16` is the same idea with a fixed foreground.
 Every other bundled theme paints 24-bit colour and expects a background it
-does not paint, so pick one that suits your terminal's.
+does not paint, so pick one that suits your terminal's — and tell the filter
+palette the same thing with `background = "light"` (see *The filter palette*
+above), which the theme does not do for it.
 
 ### What stays on top
 

@@ -10,7 +10,7 @@
 //! derive from that list, so they cannot disagree about what a row is.
 
 use super::FilterCommand;
-use crate::filter::{ActiveFilters, DIM_STYLE, SEARCH_STYLE, Sense};
+use crate::filter::{ActiveFilters, SEARCH_STYLE, Sense};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::prelude::{Buffer, Color, Modifier, Rect, Style};
 use ratatui::widgets::{List, ListItem, ListState, StatefulWidget};
@@ -419,18 +419,21 @@ impl FilterList {
     /// explicit grey foreground is what actually shows the difference, and
     /// the `[ ]` marker still carries the signal if colour fails.
     fn row_style(filters: &ActiveFilters, row: Row) -> Style {
+        // The background's grey (#231), not the constant: the pane and the
+        // file view must dim alike.
+        let dim = filters.dim_style();
         match row {
-            Row::Hint => DIM_STYLE,
+            Row::Hint => dim,
             Row::Search => match filters.search() {
                 Some(search) if search.enabled => SEARCH_STYLE,
-                _ => DIM_STYLE,
+                _ => dim,
             },
             Row::Header(set) if filters.sets()[set].enabled => Style::default(),
-            Row::Header(_) => DIM_STYLE,
+            Row::Header(_) => dim,
             Row::Filter(index) | Row::BuiltIn(index) => {
                 let filter = &filters.filters()[index];
                 if !filter.enabled {
-                    return DIM_STYLE;
+                    return dim;
                 }
                 match filter.sense {
                     Sense::Include | Sense::Context => filter.style,
@@ -492,6 +495,7 @@ fn sense_word(sense: Sense) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::filter::DIM_STYLE;
 
     fn set_of(includes: &[&str], excludes: &[&str]) -> ActiveFilters {
         let mut set = ActiveFilters::new();

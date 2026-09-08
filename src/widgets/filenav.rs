@@ -1,7 +1,7 @@
 /// `FileNav`
 ///
 use crate::document::Mode;
-use crate::filter::DIM_STYLE;
+use crate::filter::Background;
 use crate::widgets::Action;
 use color_eyre::Result;
 use crossterm::event::{Event, KeyCode, KeyModifiers};
@@ -77,19 +77,18 @@ const DIR_STYLE: Style = Style::new()
 /// only disagree with it.
 const EXEC_STYLE: Style = Style::new().fg(Color::Green);
 
-/// The `..` row: chrome, not content.
-///
-/// Reuses `filter.rs`'s `DIM_STYLE` — the same grey that already says "not what
-/// you are looking for" on unmatched lines and on disabled filters — rather
-/// than picking a second shade of grey that would drift from it.
-///
-/// `..` *is* a directory, and drawing it as one is defensible; but it is the
-/// single row in every listing that is never the thing being looked for, and
-/// bright blue and bold made it the loudest row on screen. Dimming leaves it
-/// discoverable — it is still the only visible way up, and still the escape
-/// hatch from a directory that would otherwise render as an empty box — while
-/// letting the eye skip it.
-const PARENT_STYLE: Style = DIM_STYLE;
+// The `..` row is chrome, not content, and takes the dim style — the same
+// grey that already says "not what you are looking for" on unmatched lines
+// and on disabled filters, rather than a second shade that would drift from
+// it. Which grey that is follows the background (#231), so it is read from
+// `FileNav::background` rather than held as a constant.
+//
+// `..` *is* a directory, and drawing it as one is defensible; but it is the
+// single row in every listing that is never the thing being looked for, and
+// bright blue and bold made it the loudest row on screen. Dimming leaves it
+// discoverable — it is still the only visible way up, and still the escape
+// hatch from a directory that would otherwise render as an empty box — while
+// letting the eye skip it.
 
 /// What an entry is, which is all the palette encodes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -188,11 +187,13 @@ pub(crate) struct ListedFile {
 }
 
 impl Entry {
-    fn style(&self) -> Style {
+    /// `dim` is the background's dim style, which `..` and a special entry
+    /// wear — see the note above `Kind`'s `Parent` variant.
+    fn style(&self, dim: Style) -> Style {
         match self.kind {
             Kind::Dir => DIR_STYLE,
             Kind::Executable => EXEC_STYLE,
-            Kind::Parent | Kind::Special => PARENT_STYLE,
+            Kind::Parent | Kind::Special => dim,
             // The common case pays for no colour. With directories and
             // executables marked, a plain row is unambiguous by absence, and
             // the terminal's own theme governs the rows there are most of.
@@ -259,6 +260,9 @@ pub struct FileNav<'a> {
     matcher: Option<Regex>,
     /// Direction the search was started in, so `n` repeats and `N` reverses.
     search_reverse: bool,
+    /// Which grey dims a `No` row, `..` and a special entry (#231). Pushed
+    /// in by `App` once at startup; dark until then, like everything else.
+    background: Background,
     /// Whether rows answered `Match::No` are dimmed or removed. Pushed in by
     /// `App` so it is always the file view's mode too: one key, one meaning,
     /// both panes (#119).
@@ -372,13 +376,14 @@ impl FileNav<'_> {
             .iter()
             .map(|&index| &self.entries[index])
             .map(|entry| {
+                let dim = self.background.dim_style();
                 let style = match matcher {
                     // Asked for by name: the search highlight outranks the answer.
                     Some(pattern) if pattern.is_match(&entry.matchable()) => MATCH_STYLE,
                     _ => match entry.matched {
                         Match::Yes(style) => style,
-                        Match::No => DIM_STYLE,
-                        Match::Unknown => entry.style(),
+                        Match::No => dim,
+                        Match::Unknown => entry.style(dim),
                     },
                 };
                 let text = entry.display();
@@ -651,6 +656,15 @@ impl FileNav<'_> {
     /// a row in `FilteredOnly` mode, so this is `rebuild_visible`.
     pub(crate) fn restyle(&mut self) {
         self.rebuild_visible();
+    }
+
+    /// Which grey dims rows (#231). Redraws, since `..` and every `No` row
+    /// change colour with it.
+    pub(crate) fn set_background(&mut self, background: Background) {
+        if self.background != background {
+            self.background = background;
+            self.rebuild_list();
+        }
     }
 
     /// Dim or hide rows answered `No`. The same `Mode` the file view uses.
@@ -999,6 +1013,7 @@ impl Widget for &mut FileNav<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::filter::DIM_STYLE;
     use crate::fixtures::{fixture_dir, fixture_path};
     use crossterm::event::{KeyEvent, KeyModifiers};
 
@@ -1720,7 +1735,11 @@ mod tests {
             .find(|entry| entry.name == "sock")
             .expect("a socket is still listed");
         assert_eq!(sock.kind, Kind::Special);
-        assert_eq!(sock.style(), DIM_STYLE, "dimmed, like `..`: not content");
+        assert_eq!(
+            sock.style(DIM_STYLE),
+            DIM_STYLE,
+            "dimmed, like `..`: not content"
+        );
         assert_eq!(sock.display(), "sock", "no suffix; the dimming is the cue");
         let scanned: Vec<_> = nav.files().into_iter().map(|(_, path)| path).collect();
         assert_eq!(

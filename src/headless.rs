@@ -66,7 +66,8 @@ pub fn run(config: &Config) -> Result<Exit> {
 /// The startup filter set: the loaded sets, then each `--set` enabled — the
 /// same two steps `App::new` takes.
 fn filters_for(config: &Config) -> Result<ActiveFilters> {
-    let mut filters = ActiveFilters::with_sets(config.filter_palette.clone(), &config.filter_sets);
+    let mut filters = ActiveFilters::with_sets(Some(config.filter_palette()), &config.filter_sets);
+    filters.set_background(config.background());
     for (set, profile) in config.sets_to_enable() {
         filters
             .enable_named(&set, profile.as_deref())
