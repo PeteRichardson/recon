@@ -429,3 +429,35 @@ fn a_minimum_width_shifts_the_cursor_column_too() {
         "cursor column did not follow the reserved gutter ({wide_col} vs {narrow_col})"
     );
 }
+
+/// `gutter_width` is the figure `widget.rs` adds to the cursor's column, so
+/// subtracting it from a clicked column has to land on the character under
+/// the pointer: the first text cell is exactly `gutter_width` columns in.
+#[test]
+fn gutter_width_is_where_the_text_starts() {
+    let mut textarea = TextArea::new(vec!["ab".to_string()]);
+    assert_eq!(textarea.gutter_width(), 0, "no gutter without line numbers");
+
+    textarea.set_line_number_style(Style::default());
+    let area = Rect::new(0, 0, 20, 1);
+    let mut buf = Buffer::empty(area);
+    Widget::render(&textarea, area, &mut buf);
+    let first_text_cell = (0..area.width)
+        .find(|&x| buf[(x, 0)].symbol() == "a")
+        .expect("the text was rendered");
+    assert_eq!(textarea.gutter_width(), first_text_cell);
+}
+
+/// A reserved minimum and a wide override both widen the gutter, and the
+/// figure has to follow them — it is derived from `line_number_width`, not
+/// from the buffer's own numbering.
+#[test]
+fn gutter_width_follows_the_minimum_and_the_overrides() {
+    let mut textarea = TextArea::new(vec!["ab".to_string()]);
+    textarea.set_line_number_style(Style::default());
+    assert_eq!(textarea.gutter_width(), 3);
+    textarea.set_line_numbers(vec![999]);
+    assert_eq!(textarea.gutter_width(), 6, "three digits plus margins");
+    textarea.set_min_line_number_width(5);
+    assert_eq!(textarea.gutter_width(), 7, "the minimum raises it further");
+}

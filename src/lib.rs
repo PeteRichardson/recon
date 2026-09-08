@@ -56,6 +56,13 @@ const STALE_BADGE_TEXT: &str = " changed on disk · r ";
 /// and is easy to forget while moving fast.
 const AND_BADGE_TEXT: &str = " AND ";
 
+/// The badges saying a selection is in progress (#67), character-wise and
+/// line-wise. Same style as `HIDE`, and for the same reason: the mode
+/// changes what the next keys do — `y` copies, `Esc` ends it — and is easy
+/// to forget mid-scroll. Vim's own words for the two, shortened to fit.
+const VISUAL_BADGE_TEXT: &str = " VISUAL ";
+const VLINE_BADGE_TEXT: &str = " V-LINE ";
+
 /// How often `poll_stamps` re-stats the listing while the feature is on.
 const POLL_INTERVAL: Duration = Duration::from_secs(2);
 
@@ -260,6 +267,7 @@ impl SearchPrompt {
     }
 }
 
+pub mod clipboard;
 pub mod config;
 pub mod document;
 pub mod editor;
@@ -274,6 +282,7 @@ mod layout;
 mod mouse;
 mod path;
 pub mod scan;
+mod selection;
 pub mod syntax;
 mod viewport;
 mod widgets;
@@ -283,6 +292,7 @@ pub use config::Config;
 // need a `layout::` prefix. The pane-geometry constants are *not* re-exported
 // here — nothing outside `layout` reads them any more except the tests, which
 // import them directly (#74).
+use clipboard::Clipboard;
 use document::{Document, Mode};
 use editor::Launcher;
 use filter::ActiveFilters;
@@ -418,6 +428,23 @@ pub struct App<'a> {
     peek: Option<PeekState>,
     /// The cross-file step `n`, `N`, `.` or `,` just made, if any (#120).
     crossing: Option<Crossing>,
+    /// The fixed end of a selection in progress, or `None` outside visual
+    /// mode (#67). Anchored to a *source* line, so a filter or hide toggle
+    /// mid-selection changes what a yank contains without invalidating it.
+    /// Ends when focus leaves the view or the document is replaced — see
+    /// `selection.rs`.
+    visual: Option<selection::Visual>,
+    /// Where `y` sends the selection. Boxed behind the trait for the reason
+    /// `launcher` is: a test asserts on what would have been copied rather
+    /// than touching the real pasteboard.
+    clipboard: Box<dyn Clipboard>,
+    /// Where the left button went down on the view's text, as a source line
+    /// and column, while it is still held: the anchor a drag starts its
+    /// selection from. `None` once released.
+    press: Option<(usize, usize)>,
+    /// The last click on the view's text, by source line, for the
+    /// double-click that selects a word — timed here as `last_nav_click` is.
+    last_view_click: Option<(usize, Instant)>,
     /// Set when a prompt commits, so the `Enter` that committed it cannot also
     /// toggle the filter under the cursor (#48).
     ///
@@ -657,6 +684,12 @@ impl App<'_> {
             editor_outcomes: Some(outcomes_rx),
             peek: None,
             crossing: None,
+            visual: None,
+            clipboard: Box::new(clipboard::ProcessClipboard::new(
+                &config.clipboard_template(),
+            )),
+            press: None,
+            last_view_click: None,
             swallow_next_enter: false,
             chain_origin: None,
             help: false,
@@ -1209,6 +1242,10 @@ impl App<'_> {
     /// one of them.
     pub fn handle_event(&mut self, event: event::Event) {
         self.dispatch_event(event);
+        // Here, beside `refresh_scan`, for the same reason: the dispatch has
+        // two dozen early returns and every one of them may have moved
+        // focus (#67).
+        self.drop_visual_outside_the_view();
         self.refresh_scan(false);
     }
 
@@ -1372,6 +1409,18 @@ impl App<'_> {
                 // keyboard-enhancement flags — see `main.rs`), a bare Esc byte
                 // carries no modifiers at all, so `is_empty()` is simply
                 // correct here rather than a trap.
+                // Visual mode takes `Esc` before the search layers below
+                // (#67): `v` changes what `Esc` means in the view, and a
+                // stray press should end the selection without also
+                // dropping the live search the selection was made under.
+                KeyCode::Esc
+                    if key.modifiers.is_empty()
+                        && self.focus == Focus::View
+                        && self.visual.is_some() =>
+                {
+                    self.end_visual();
+                    return;
+                }
                 KeyCode::Esc if key.modifiers.is_empty() => {
                     // Layered (#120 §8): the focused pane's own search first,
                     // then the live search. The navigator's filename search
@@ -1516,6 +1565,38 @@ impl App<'_> {
                         _ => "solos the set",
                     };
                     self.report(&format!("{c} {verb} · f {c}"), false);
+                    return;
+                }
+                // `v`/`V` start, switch or end a selection; `y` copies it
+                // (#67). View keys rather than global ones, since a
+                // selection is a place in the view's text, but claimed here
+                // rather than in the widget because the yank reads the
+                // document and the anchor is a source line. From either
+                // other pane they hint, as `*` does from the navigator (#120
+                // §9) — there is no cursor column there to anchor to. `V`
+                // is Shift-v and crossterm reports the Shift, so the
+                // CONTROL/ALT guard rather than `is_empty()`, the same trap
+                // `?` and `N` document; `y` keeps `is_empty()` so `Ctrl-y`
+                // still scrolls.
+                KeyCode::Char(c @ ('v' | 'V'))
+                    if !key
+                        .modifiers
+                        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+                {
+                    if self.focus == Focus::View {
+                        self.promote_truncated_preview();
+                        self.toggle_visual(c == 'V');
+                    } else {
+                        self.report("v selects text in the file view · t v", false);
+                    }
+                    return;
+                }
+                KeyCode::Char('y') if key.modifiers.is_empty() => {
+                    if self.focus == Focus::View {
+                        self.yank();
+                    } else {
+                        self.report("y copies a selection in the file view · t v", false);
+                    }
                     return;
                 }
                 // `*` — the live search becomes the word under the cursor,
@@ -2379,6 +2460,8 @@ impl App<'_> {
         let mode = self.document.mode();
         self.document = Document::for_file(self.view.filename(), lines);
         self.set_mode(mode);
+        // The anchor was a line of the document this just replaced (#67).
+        self.visual = None;
         // The buffer the view is showing belongs to the *previous* document,
         // so the record of what it was built from is meaningless now.
         // Clearing it forces the next `apply_view` to rebuild: two different
@@ -2930,6 +3013,7 @@ impl Widget for &mut App<'_> {
         let badges: Vec<&str> = [
             (self.document.mode() == Mode::FilteredOnly).then_some(HIDE_BADGE_TEXT),
             self.filters.is_and().then_some(AND_BADGE_TEXT),
+            self.visual_badge(),
             self.view_stale.then_some(STALE_BADGE_TEXT),
         ]
         .into_iter()
@@ -2976,6 +3060,7 @@ impl Widget for &mut App<'_> {
             };
             self.set_active_pane();
             self.view.set_title_accent(self.crossing.is_some());
+            self.view.set_selection(self.painted_selection());
             self.render_pane(zoomed, area, buf);
             if zoomed == Focus::View {
                 self.render_crossing(area, buf);
@@ -3013,6 +3098,7 @@ impl Widget for &mut App<'_> {
             // area leaves nothing to mismatch (#73).
             self.set_active_pane();
             self.view.set_title_accent(self.crossing.is_some());
+            self.view.set_selection(self.painted_selection());
             self.render_pane(Focus::Nav, nav_area, buf);
             self.render_pane(Focus::View, right, buf);
             self.render_pane(Focus::Filters, filter_area, buf);
@@ -12905,5 +12991,472 @@ mod tests {
 
         assert_eq!(shown(&app), "b.log");
         assert_eq!(app.zoom, Some(Focus::Nav));
+    }
+
+    // ---- visual mode and the yank (#67) ---------------------------------
+
+    use clipboard::double::RecordingClipboard;
+    use ratatui::layout::Margin;
+
+    /// Swap in the recording clipboard and hand back a handle the test can
+    /// read afterwards — the shape `record_launches` uses for the editor,
+    /// and for the same reason: `Clipboard::copy` takes `&self`, so the
+    /// shared reference needs no mutability beyond the `Mutex` inside.
+    fn record_copies(app: &mut App) -> Rc<RecordingClipboard> {
+        let clipboard = Rc::new(RecordingClipboard::default());
+        app.clipboard = Box::new(Rc::clone(&clipboard));
+        clipboard
+    }
+
+    /// An app over one file, focused on the view with a recording clipboard
+    /// in place: what nearly every test below starts from.
+    fn app_for_yank(name: &str, body: &str) -> (App<'static>, Rc<RecordingClipboard>) {
+        let mut app = app_over_file(name, body);
+        let clipboard = record_copies(&mut app);
+        key(&mut app, KeyCode::Char('t'));
+        (app, clipboard)
+    }
+
+    /// The status row's transient message, or `None`.
+    fn message<'a>(app: &'a App<'_>) -> Option<&'a str> {
+        app.status_message.as_ref().map(|m| m.text.as_str())
+    }
+
+    /// The headline acceptance criterion, use case 2 in the issue: a run of
+    /// log lines selected with `V` and `j`, copied with `y`.
+    #[test]
+    fn v_shift_j_y_copies_the_selected_lines() {
+        let (mut app, clipboard) = app_for_yank("yank_lines", "alpha\nbeta\ngamma\ndelta\n");
+        key(&mut app, KeyCode::Char('V'));
+        key(&mut app, KeyCode::Char('j'));
+        key(&mut app, KeyCode::Char('j'));
+        key(&mut app, KeyCode::Char('y'));
+
+        assert_eq!(clipboard.only_copy(), "alpha\nbeta\ngamma\n");
+        assert_eq!(message(&app), Some("yanked 3 lines"));
+        assert!(app.visual.is_none(), "the yank left visual mode on");
+    }
+
+    /// Use case 1: a symbol selected character-wise and copied, ready to be
+    /// pasted into an `f i` prompt. `l` grows the selection a character at a
+    /// time, and the character under the cursor is included, as vim's `v` is.
+    #[test]
+    fn v_l_y_copies_the_characters_under_the_selection() {
+        let (mut app, clipboard) = app_for_yank("yank_chars", "_ZN4core3fmt::pad\n");
+        key(&mut app, KeyCode::Char('v'));
+        for _ in 0..4 {
+            key(&mut app, KeyCode::Char('l'));
+        }
+        key(&mut app, KeyCode::Char('y'));
+
+        assert_eq!(clipboard.only_copy(), "_ZN4c");
+        assert_eq!(message(&app), Some("yanked 5 characters"));
+    }
+
+    /// `v` twice ends the selection, as vim does; `V` on a character-wise
+    /// selection switches it rather than ending it, keeping the anchor.
+    #[test]
+    fn v_toggles_and_shift_v_switches_without_losing_the_anchor() {
+        let (mut app, clipboard) = app_for_yank("yank_toggle", "alpha\nbeta\ngamma\n");
+        key(&mut app, KeyCode::Char('v'));
+        assert!(app.visual.is_some());
+        key(&mut app, KeyCode::Char('v'));
+        assert!(app.visual.is_none(), "a second v did not end the selection");
+
+        key(&mut app, KeyCode::Char('v'));
+        key(&mut app, KeyCode::Char('j'));
+        key(&mut app, KeyCode::Char('V'));
+        assert_eq!(
+            app.visual.map(|v| (v.anchor, v.linewise)),
+            Some((0, true)),
+            "V lost the anchor or did not switch"
+        );
+        key(&mut app, KeyCode::Char('y'));
+        assert_eq!(clipboard.only_copy(), "alpha\nbeta\n");
+    }
+
+    /// `Esc` ends the selection, and — the reason it is layered above the
+    /// search arms — leaves the live search alone.
+    #[test]
+    fn esc_ends_the_selection_and_keeps_the_live_search() {
+        let (mut app, _) = app_for_yank("yank_esc", "alpha\nbeta\n");
+        key(&mut app, KeyCode::Char('/'));
+        typed(&mut app, "beta");
+        key(&mut app, KeyCode::Enter);
+        assert!(app.filters.search().is_some(), "sanity: a search is live");
+
+        key(&mut app, KeyCode::Char('v'));
+        key(&mut app, KeyCode::Esc);
+        assert!(app.visual.is_none(), "Esc did not end the selection");
+        assert!(
+            app.filters.search().is_some(),
+            "Esc dropped the live search as well as the selection"
+        );
+
+        // A second Esc, with no selection, reaches the search as before.
+        key(&mut app, KeyCode::Esc);
+        assert!(
+            app.filters.search().is_none(),
+            "Esc no longer clears the search"
+        );
+    }
+
+    /// The rule the issue settles: a yank copies the lines that are on
+    /// screen. `u` mid-selection reveals the rest, and the selection grows
+    /// to include them, because the anchor is a document line.
+    #[test]
+    fn a_yank_copies_the_visible_lines_and_u_grows_the_selection() {
+        let (mut app, clipboard) = app_for_yank("yank_hidden", "hit a\nmiss\nhit b\nmiss\nhit c\n");
+        key(&mut app, KeyCode::Char('f'));
+        key(&mut app, KeyCode::Char('i'));
+        typed(&mut app, "hit");
+        key(&mut app, KeyCode::Enter);
+        key(&mut app, KeyCode::Char('t'));
+        key(&mut app, KeyCode::Char('u'));
+        assert_eq!(
+            view_lines(&app),
+            vec![
+                "hit a".to_string(),
+                "hit b".to_string(),
+                "hit c".to_string()
+            ],
+            "sanity: hiding"
+        );
+
+        key(&mut app, KeyCode::Char('g'));
+        key(&mut app, KeyCode::Char('V'));
+        key(&mut app, KeyCode::Char('G'));
+        // `u` while the selection is live: the hidden lines come back and
+        // are inside `[anchor, cursor]`, so they join the yank.
+        key(&mut app, KeyCode::Char('u'));
+        assert!(app.visual.is_some(), "u invalidated the selection");
+        key(&mut app, KeyCode::Char('y'));
+
+        assert_eq!(clipboard.only_copy(), "hit a\nmiss\nhit b\nmiss\nhit c\n");
+    }
+
+    /// The same selection yanked *while* hiding takes only the visible
+    /// lines — the other half of the rule above.
+    #[test]
+    fn a_yank_while_hiding_skips_the_hidden_lines() {
+        let (mut app, clipboard) =
+            app_for_yank("yank_hidden_only", "hit a\nmiss\nhit b\nmiss\nhit c\n");
+        key(&mut app, KeyCode::Char('f'));
+        key(&mut app, KeyCode::Char('i'));
+        typed(&mut app, "hit");
+        key(&mut app, KeyCode::Enter);
+        key(&mut app, KeyCode::Char('t'));
+        key(&mut app, KeyCode::Char('u'));
+
+        key(&mut app, KeyCode::Char('g'));
+        key(&mut app, KeyCode::Char('V'));
+        key(&mut app, KeyCode::Char('G'));
+        key(&mut app, KeyCode::Char('y'));
+
+        assert_eq!(clipboard.only_copy(), "hit a\nhit b\nhit c\n");
+    }
+
+    /// A yank in dimmed view includes the dimmed lines: they are visible,
+    /// and the issue says so explicitly.
+    #[test]
+    fn a_yank_in_dimmed_view_includes_the_dimmed_lines() {
+        let (mut app, clipboard) = app_for_yank("yank_dimmed", "hit a\nmiss\nhit b\n");
+        key(&mut app, KeyCode::Char('f'));
+        key(&mut app, KeyCode::Char('i'));
+        typed(&mut app, "hit");
+        key(&mut app, KeyCode::Enter);
+        key(&mut app, KeyCode::Char('t'));
+        assert_eq!(app.document.mode(), Mode::Dimmed, "sanity: dimming");
+
+        key(&mut app, KeyCode::Char('g'));
+        key(&mut app, KeyCode::Char('V'));
+        key(&mut app, KeyCode::Char('G'));
+        key(&mut app, KeyCode::Char('y'));
+
+        assert_eq!(clipboard.only_copy(), "hit a\nmiss\nhit b\n");
+    }
+
+    /// Leaving the view drops the selection, by whichever route. Parking it
+    /// would leave a selection live in a pane where no key can act on it.
+    #[test]
+    fn leaving_the_view_ends_the_selection() {
+        for leave in [KeyCode::Char('e'), KeyCode::Char('f'), KeyCode::Tab] {
+            let (mut app, _) = app_for_yank(
+                &format!("yank_focus_{}", format!("{leave:?}").to_lowercase()),
+                "alpha\nbeta\n",
+            );
+            key(&mut app, KeyCode::Char('v'));
+            assert!(app.visual.is_some(), "sanity: selecting");
+            key(&mut app, leave);
+            assert!(
+                app.visual.is_none(),
+                "{leave:?} left the selection live outside the view"
+            );
+        }
+    }
+
+    /// Loading another file ends it too: the anchor names a line of a
+    /// document that no longer exists.
+    #[test]
+    fn loading_another_file_ends_the_selection() {
+        let mut app = app_over_file("yank_load", "alpha\nbeta\n");
+        record_copies(&mut app);
+        key(&mut app, KeyCode::Char('t'));
+        key(&mut app, KeyCode::Char('V'));
+
+        let dir = fixture_dir_path("yank_load");
+        fs::write(dir.join("other.txt"), "gamma\n").expect("write");
+        app.perform(Action::Load(dir.join("other.txt")));
+
+        assert!(app.visual.is_none(), "the load left the selection live");
+    }
+
+    /// `y` with nothing selected says how to select something, rather than
+    /// doing nothing at all (#120 §9's rule for a key that has no effect
+    /// where it was pressed).
+    #[test]
+    fn y_with_nothing_selected_says_so_and_copies_nothing() {
+        let (mut app, clipboard) = app_for_yank("yank_nothing", "alpha\n");
+        key(&mut app, KeyCode::Char('y'));
+        assert_eq!(
+            message(&app),
+            Some("nothing selected · v starts a selection")
+        );
+        assert!(clipboard.copies().is_empty());
+    }
+
+    /// `v`, `V` and `y` outside the view hint rather than acting: there is no
+    /// cursor column in the other panes to anchor a selection to.
+    #[test]
+    fn v_and_y_outside_the_view_hint() {
+        let (mut app, clipboard) = app_for_yank("yank_hint", "alpha\n");
+        key(&mut app, KeyCode::Char('e'));
+        key(&mut app, KeyCode::Char('v'));
+        assert_eq!(message(&app), Some("v selects text in the file view · t v"));
+        assert!(app.visual.is_none());
+        key(&mut app, KeyCode::Char('y'));
+        assert_eq!(
+            message(&app),
+            Some("y copies a selection in the file view · t v")
+        );
+        assert!(clipboard.copies().is_empty());
+    }
+
+    /// A clipboard that fails reports on the status row in red, the way a
+    /// missing editor does, and the selection still ends — the user's next
+    /// `y` should not silently re-copy an old range.
+    #[test]
+    fn a_failing_clipboard_reports_and_still_ends_the_selection() {
+        let mut app = app_over_file("yank_fail", "alpha\nbeta\n");
+        app.clipboard = Box::new(RecordingClipboard::failing("pbcopy: not found"));
+        key(&mut app, KeyCode::Char('t'));
+        key(&mut app, KeyCode::Char('V'));
+        key(&mut app, KeyCode::Char('y'));
+
+        let message = app.status_message.as_ref().expect("a message");
+        assert!(
+            message.text.contains("pbcopy: not found"),
+            "{}",
+            message.text
+        );
+        assert!(
+            message.error,
+            "a clipboard failure was not reported as an error"
+        );
+        assert!(app.visual.is_none());
+    }
+
+    /// `Ctrl-y` still scrolls: `y` claims the bare key only.
+    #[test]
+    fn ctrl_y_still_scrolls_the_view() {
+        let (mut app, clipboard) = app_for_yank("yank_ctrl", &numbered_lines(60));
+        for _ in 0..20 {
+            key(&mut app, KeyCode::Char('j'));
+        }
+        draw(&mut app);
+        let before = app.view.textarea().scroll_top().0;
+        ctrl(&mut app, KeyCode::Char('y'));
+        assert!(
+            app.view.textarea().scroll_top().0 < before,
+            "Ctrl-y did not scroll up"
+        );
+        assert!(clipboard.copies().is_empty(), "Ctrl-y reached the yank");
+    }
+
+    /// The badge names the mode, so a selection is never invisible while
+    /// the cursor is off screen.
+    #[test]
+    fn the_status_row_badges_the_visual_mode() {
+        let (mut app, _) = app_for_yank("yank_badge", "alpha\nbeta\n");
+        assert!(!rendered(&mut app).contains("VISUAL"));
+        key(&mut app, KeyCode::Char('v'));
+        assert!(rendered(&mut app).contains("VISUAL"), "no badge for v");
+        key(&mut app, KeyCode::Char('V'));
+        assert!(rendered(&mut app).contains("V-LINE"), "no badge for V");
+        key(&mut app, KeyCode::Esc);
+        assert!(
+            !rendered(&mut app).contains("V-LINE"),
+            "the badge outlived the mode"
+        );
+    }
+
+    /// The selection is drawn, not merely held: the selected characters wear
+    /// the reversed bar the cursor line wears.
+    #[test]
+    fn the_selection_is_painted_over_the_selected_text() {
+        let (mut app, _) = app_for_yank("yank_paint", "alpha\nbeta\n");
+        key(&mut app, KeyCode::Char('V'));
+        key(&mut app, KeyCode::Char('j'));
+
+        let mut buf = Buffer::empty(AREA);
+        app.render(AREA, &mut buf);
+        let row_of = |needle: &str| {
+            (0..AREA.height)
+                .find(|&y| {
+                    (0..AREA.width)
+                        .map(|x| buf[(x, y)].symbol())
+                        .collect::<String>()
+                        .contains(needle)
+                })
+                .unwrap_or_else(|| panic!("{needle} is not on screen"))
+        };
+        let reversed = |y: u16| {
+            (0..AREA.width).any(|x| {
+                buf[(x, y)]
+                    .style()
+                    .add_modifier
+                    .contains(Modifier::REVERSED)
+            })
+        };
+        assert!(reversed(row_of("alpha")), "the anchor row is not painted");
+        assert!(reversed(row_of("beta")), "the cursor row is not painted");
+    }
+
+    // ---- the mouse selects too (#67) ------------------------------------
+
+    /// A click in the file view puts the cursor where the pointer is, which
+    /// is the motions that would have got there.
+    #[test]
+    fn a_click_in_the_view_moves_the_cursor_to_the_character() {
+        let (mut app, _) = app_for_yank("click_cursor", "alpha beta\ngamma delta\n");
+        draw(&mut app);
+        let inner = app.view_area.inner(Margin::new(1, 1));
+        // Row 1 of the text, six columns in past the gutter.
+        let gutter = app.view.textarea().gutter_width();
+        mouse_at(
+            &mut app,
+            MouseEventKind::Down(MouseButton::Left),
+            inner.x + gutter + 6,
+            inner.y + 1,
+        );
+
+        assert_eq!(view_cursor_row(&app), 1);
+        assert_eq!(app.view.cursor_col(), 6, "the column missed the character");
+    }
+
+    /// A drag selects from the press point to the pointer, and `y` copies
+    /// it — the mouse selects, the key copies, as `v` … `y` does.
+    #[test]
+    fn a_drag_selects_and_y_copies_it() {
+        let (mut app, clipboard) = app_for_yank("drag_select", "alpha beta\ngamma delta\n");
+        draw(&mut app);
+        let inner = app.view_area.inner(Margin::new(1, 1));
+        let gutter = app.view.textarea().gutter_width();
+        mouse_at(
+            &mut app,
+            MouseEventKind::Down(MouseButton::Left),
+            inner.x + gutter + 6,
+            inner.y,
+        );
+        mouse_at(
+            &mut app,
+            MouseEventKind::Drag(MouseButton::Left),
+            inner.x + gutter + 4,
+            inner.y + 1,
+        );
+        mouse_at(
+            &mut app,
+            MouseEventKind::Up(MouseButton::Left),
+            inner.x + gutter + 4,
+            inner.y + 1,
+        );
+
+        assert!(app.visual.is_some(), "the release ended the selection");
+        key(&mut app, KeyCode::Char('y'));
+        assert_eq!(clipboard.only_copy(), "beta\ngamma");
+    }
+
+    /// A double-click selects the word under the pointer, by `*`'s rule for
+    /// a word — so a mangled symbol comes whole.
+    #[test]
+    fn a_double_click_selects_the_word() {
+        let (mut app, clipboard) = app_for_yank("double_click", "call _ZN4core3fmt(x)\n");
+        draw(&mut app);
+        let inner = app.view_area.inner(Margin::new(1, 1));
+        let gutter = app.view.textarea().gutter_width();
+        let at = inner.x + gutter + 8;
+        mouse_at(
+            &mut app,
+            MouseEventKind::Down(MouseButton::Left),
+            at,
+            inner.y,
+        );
+        mouse_at(&mut app, MouseEventKind::Up(MouseButton::Left), at, inner.y);
+        mouse_at(
+            &mut app,
+            MouseEventKind::Down(MouseButton::Left),
+            at,
+            inner.y,
+        );
+
+        key(&mut app, KeyCode::Char('y'));
+        assert_eq!(clipboard.only_copy(), "_ZN4core3fmt");
+    }
+
+    /// A click ends a selection in progress, as it does in vim.
+    #[test]
+    fn a_click_ends_a_selection() {
+        let (mut app, _) = app_for_yank("click_ends", "alpha beta\ngamma\n");
+        draw(&mut app);
+        key(&mut app, KeyCode::Char('v'));
+        let inner = app.view_area.inner(Margin::new(1, 1));
+        let at = inner.x + app.view.textarea().gutter_width() + 2;
+        mouse_at(
+            &mut app,
+            MouseEventKind::Down(MouseButton::Left),
+            at,
+            inner.y + 1,
+        );
+        assert!(app.visual.is_none(), "the click left the selection live");
+    }
+
+    /// A click on a directory listing still opens the entry: the listing's
+    /// rows are entries, not text, and #58's behaviour is unchanged.
+    #[test]
+    fn a_click_on_a_listing_row_still_opens_the_entry() {
+        let mut app = app_over_files(
+            "click_listing",
+            &[("a.log", "alpha\n"), ("b.log", "beta\n")],
+        );
+        record_copies(&mut app);
+        // Point the view at the directory so it shows the listing.
+        let dir = fixture_dir_path("click_listing");
+        app.perform(Action::Preview(dir));
+        assert!(app.view.showing_directory(), "sanity: a listing");
+        draw(&mut app);
+
+        let inner = app.view_area.inner(Margin::new(1, 1));
+        mouse_at(
+            &mut app,
+            MouseEventKind::Down(MouseButton::Left),
+            inner.x + 2,
+            inner.y,
+        );
+        assert_eq!(
+            shown(&app),
+            "a.log",
+            "the listing row did not open its entry"
+        );
+        assert!(app.visual.is_none(), "a listing row started a selection");
     }
 }

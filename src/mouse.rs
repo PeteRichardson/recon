@@ -18,12 +18,20 @@ use crate::{App, PromptKind, SearchPrompt};
 impl App<'_> {
     /// Handle a click, reporting whether it was consumed.
     ///
-    /// Only the left button's press: a release and a drag are the divider's
-    /// (see `handle_divider`, which runs first), the wheel is the focused
-    /// pane's, and there is nothing here for the other buttons to mean.
+    /// The left button only: the wheel is the focused pane's, and there is
+    /// nothing here for the other buttons to mean. A press is a click; a
+    /// drag or a release is a selection's (#67) when the press landed on the
+    /// view's text, and the divider's otherwise (`handle_divider` runs
+    /// first and has already taken those).
     pub(crate) fn handle_click(&mut self, mouse: MouseEvent) -> bool {
-        if mouse.kind != MouseEventKind::Down(MouseButton::Left) {
-            return false;
+        match mouse.kind {
+            MouseEventKind::Down(MouseButton::Left) => {}
+            MouseEventKind::Drag(MouseButton::Left) if self.press.is_some() => {
+                self.drag_view(mouse);
+                return true;
+            }
+            MouseEventKind::Up(MouseButton::Left) => return self.press.take().is_some(),
+            _ => return false,
         }
         let at = Position::new(mouse.column, mouse.row);
         if self.status_area.contains(at) {
@@ -52,7 +60,7 @@ impl App<'_> {
         match pane {
             Focus::Nav => self.click_nav(line),
             Focus::Filters => self.click_filter(line),
-            Focus::View => self.click_view(line),
+            Focus::View => self.click_view(line, mouse.column - inner.x),
         }
         true
     }
@@ -116,21 +124,78 @@ impl App<'_> {
 
     /// A row of the look-ahead listing: the navigator enters the directory
     /// the view is showing and opens the entry clicked, which is the `l`,
-    /// cursor motion and `Enter` that would otherwise get there. Anything
-    /// else in the view — a file's text, a message — has no row to act on,
-    /// and the click has already moved focus, which is all it can mean.
-    fn click_view(&mut self, line: u16) {
-        if !self.view.showing_directory() {
+    /// cursor motion and `Enter` that would otherwise get there.
+    ///
+    /// A file's text: the cursor goes to the character under the pointer,
+    /// which is the motions that would have got there (#67). That is also
+    /// where a drag's selection starts, so the press point is remembered
+    /// until the button comes up. A click ends a selection in progress, as
+    /// it does in vim; a second click on the same row inside `DOUBLE_CLICK`
+    /// selects the word under the pointer — by `*`'s rule for a word — so
+    /// `y` can copy it. A message standing in for a file has nothing to
+    /// select, and the click has already moved focus, which is all it can
+    /// mean there.
+    fn click_view(&mut self, line: u16, column: u16) {
+        if self.view.showing_directory() {
+            let Some(index) = self.view.line_at(line) else {
+                return;
+            };
+            let dir = self.view.filename().to_path_buf();
+            if let Some(action) = self.nav.open_listed(&dir, index) {
+                self.perform(action);
+            }
+            self.ensure_window();
             return;
         }
-        let Some(index) = self.view.line_at(line) else {
+        if !self.view.is_text() {
+            return;
+        }
+        let Some((row, col)) = self.view.position_at(line, column) else {
             return;
         };
-        let dir = self.view.filename().to_path_buf();
-        if let Some(action) = self.nav.open_listed(&dir, index) {
-            self.perform(action);
+        self.promote_truncated_preview();
+        self.view.set_cursor(row, col);
+        self.end_visual();
+        let source = self.cursor_source();
+        let now = Instant::now();
+        let double = self
+            .last_view_click
+            .is_some_and(|(last, at)| last == source && now.duration_since(at) <= DOUBLE_CLICK);
+        self.last_view_click = (!double).then_some((source, now));
+        self.press = Some((source, col));
+        if double
+            && let Some(line) = self.document.lines().get(source)
+            && let Some((start, end)) = crate::viewport::word_span(line, col)
+        {
+            self.start_visual_at(source, start);
+            self.view.set_cursor(row, end - 1);
         }
-        self.ensure_window();
+    }
+
+    /// The button is held from a press on the view's text and the pointer
+    /// has moved: the cursor follows it, and the first move starts a
+    /// character-wise selection from the press point — `v` at the press,
+    /// motions to the pointer. Releasing leaves visual mode on; `y` copies,
+    /// exactly as it would after the keys. A pointer past the pane's edge is
+    /// held at the edge, so a drag off the bottom selects to the last row on
+    /// screen rather than nothing.
+    fn drag_view(&mut self, mouse: MouseEvent) {
+        let Some((anchor, anchor_col)) = self.press else {
+            return;
+        };
+        let inner = self.pane_area(Focus::View).inner(Margin::new(1, 1));
+        if inner.is_empty() {
+            return;
+        }
+        let row = mouse.row.clamp(inner.y, inner.bottom() - 1) - inner.y;
+        let column = mouse.column.clamp(inner.x, inner.right() - 1) - inner.x;
+        let Some((row, col)) = self.view.position_at(row, column) else {
+            return;
+        };
+        self.view.set_cursor(row, col);
+        if self.visual.is_none() {
+            self.start_visual_at(anchor, anchor_col);
+        }
     }
 
     /// The status row: `f i`, as one click. Focus goes to the filter pane

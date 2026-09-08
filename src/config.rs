@@ -83,6 +83,16 @@ pub struct Config {
     )]
     pub file_editor: Option<String>,
 
+    /// Command `y` pipes a selection to, e.g. `pbcopy` or `xclip -selection
+    /// clipboard`. Falls back to `[clipboard] command` in `config.toml`, then
+    /// to the platform's own tool
+    //
+    // `Option` for the same reason `editor` is: the platform default lives at
+    // the bottom of the ladder, in `clipboard::default_template`, and a clap
+    // default would beat the file layer.
+    #[arg(long, env = "RECON_CLIPBOARD", value_name = "COMMAND")]
+    pub clipboard: Option<String>,
+
     /// Print a ready-to-paste `[editor]` stanza and exit. Takes a flavour —
     /// `zed`, `vscode`, `wezterm-nvim`, … — or `auto` to guess from `$TERM_PROGRAM`.
     ///
@@ -220,6 +230,7 @@ impl Default for Config {
             path: ".".to_string(),
             editor: None,
             file_editor: None,
+            clipboard: None,
             print_editor_config: None,
             filter_palette: None,
             background: None,
@@ -250,6 +261,8 @@ pub struct FileConfig {
     /// is different from present-but-empty only in that neither sets anything —
     /// both leave the ladder to the layers below.
     pub editor: Option<EditorConfig>,
+    #[serde(default)]
+    pub clipboard: Option<ClipboardConfig>,
     /// `[filters]`. Same absent-vs-empty reasoning as `editor`.
     pub filters: Option<FiltersConfig>,
     /// `[syntax]`. Same again.
@@ -385,6 +398,13 @@ pub(crate) fn parse_colour(spelling: &str) -> Result<Color, String> {
              (\"0-255\", e.g. \"220\")"
         )
     })
+}
+
+/// The `[clipboard]` table (#67): the command `y` pipes a selection to.
+#[derive(Deserialize, Debug, Default, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ClipboardConfig {
+    pub command: Option<String>,
 }
 
 /// The `[editor]` table.
@@ -670,6 +690,7 @@ impl Config {
         let FileConfig {
             background,
             editor,
+            clipboard,
             filters,
             syntax,
             view,
@@ -686,6 +707,12 @@ impl Config {
             if let Some(file) = file {
                 self.file_editor.get_or_insert_with(|| file.clone());
             }
+        }
+
+        if let Some(ClipboardConfig { command }) = clipboard
+            && let Some(command) = command
+        {
+            self.clipboard.get_or_insert_with(|| command.clone());
         }
 
         if let Some(FiltersConfig { palette }) = filters
@@ -705,6 +732,16 @@ impl Config {
         {
             self.center_jumps.get_or_insert(*center_jumps);
         }
+    }
+
+    /// The clipboard command, once the chain has run: the flag, the
+    /// environment, the file, or the platform's own tool (#67). Beside the
+    /// other rungs for the reason `syntax_theme` is.
+    #[must_use]
+    pub fn clipboard_template(&self) -> String {
+        self.clipboard
+            .clone()
+            .unwrap_or_else(crate::clipboard::default_template)
     }
 
     /// Whether an off-screen jump centres its target — on unless the file
@@ -1618,6 +1655,45 @@ mod tests {
         let path = fixture("view-unknown-key.toml", "[view]\nscrolloff = 5\n");
         let err = load_from(&path).expect_err("unknown key must fail");
         assert!(err.to_string().contains("scrolloff"), "{err}");
+    }
+
+    // ---- the clipboard command (#67) ----------------------------------
+
+    #[test]
+    fn the_clipboard_falls_back_to_the_file_then_the_platform() {
+        let default = Config::default().clipboard_template();
+        assert_eq!(default, crate::clipboard::default_template());
+
+        let path = fixture(
+            "clipboard-command.toml",
+            "[clipboard]\ncommand = 'wl-copy -n'\n",
+        );
+        let file = load_from(&path).expect("a valid file");
+        let mut config = Config::default();
+        config.apply(&file);
+        assert_eq!(
+            config.clipboard_template(),
+            "wl-copy -n",
+            "the file did not apply"
+        );
+
+        let mut flagged = Config::try_parse_from(["recon", "--clipboard", "pbcopy"]).unwrap();
+        flagged.apply(&file);
+        assert_eq!(
+            flagged.clipboard_template(),
+            "pbcopy",
+            "the file beat the flag"
+        );
+    }
+
+    #[test]
+    fn an_unknown_key_inside_clipboard_is_rejected_and_named() {
+        let path = fixture(
+            "clipboard-unknown-key.toml",
+            "[clipboard]\nprogram = 'pbcopy'\n",
+        );
+        let err = load_from(&path).expect_err("unknown key must fail");
+        assert!(err.to_string().contains("program"), "{err}");
     }
 
     // ---- the syntax theme ---------------------------------------------

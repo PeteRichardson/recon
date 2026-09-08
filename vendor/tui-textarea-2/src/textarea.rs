@@ -2898,6 +2898,32 @@ impl<'a> TextArea<'a> {
         self.viewport.scroll_top()
     }
 
+    /// Columns the line-number gutter occupies at the left of each rendered
+    /// row — the number's width plus its two margins — or zero while line
+    /// numbers are off.
+    ///
+    /// The same figure `widget.rs` adds to the cursor's screen column, made
+    /// public so a caller can go the other way and turn a screen column into
+    /// a character column: a mouse click lands on a screen cell, and without
+    /// this the caller would have to re-derive the gutter's width from its
+    /// own copy of the numbering rules.
+    /// ```
+    /// use ratatui::style::Style;
+    /// use tui_textarea::TextArea;
+    ///
+    /// let mut textarea = TextArea::from(["a", "b", "c"]);
+    /// assert_eq!(textarea.gutter_width(), 0);
+    /// textarea.set_line_number_style(Style::default());
+    /// assert_eq!(textarea.gutter_width(), 3); // one digit plus two margins
+    /// ```
+    pub fn gutter_width(&self) -> u16 {
+        if self.line_number_style().is_some() {
+            u16::from(self.line_number_width()) + 2
+        } else {
+            0
+        }
+    }
+
     pub(crate) fn screen_cursor(&self) -> ScreenCursor {
         self.cursor.to_screen_cursor(self)
     }
