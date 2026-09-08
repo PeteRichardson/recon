@@ -405,6 +405,25 @@ pub(crate) fn is_binary(err: &io::Error) -> bool {
     err.kind() == io::ErrorKind::InvalidData && err.to_string() == BINARY_FILE
 }
 
+/// The byte order a UTF-16 byte-order mark announced.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Endian {
+    Little,
+    Big,
+}
+
+/// What the sniff made of a file's head.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Sniff {
+    /// No NUL in the head: read as lines, decoded lossily from UTF-8.
+    Text,
+    /// A UTF-16 byte-order mark (#165). Half the bytes are NULs and every
+    /// one of them is text; the file is decoded whole in the marked order.
+    Utf16(Endian),
+    /// A NUL in the head and nothing to explain it.
+    Binary,
+}
+
 /// Whether the head of `reader` looks like binary rather than text, along with
 /// the bytes that had to be read to decide — they are the file's first bytes
 /// and belong back in front of the stream.
@@ -412,12 +431,65 @@ pub(crate) fn is_binary(err: &io::Error) -> bool {
 /// A NUL byte is the signal, not a decode error. A decode error says one byte
 /// in the file is not UTF-8, which is routine in a log; a NUL in the first few
 /// KiB says the file is not a document at all.
-pub(crate) fn sniff_binary<R: Read>(reader: &mut R) -> io::Result<(bool, Vec<u8>)> {
+///
+/// The one exception is UTF-16, which is text made of NULs. A byte-order mark
+/// — `FF FE` or `FE FF` — is the only signal short of statistics that the
+/// NULs are encoding, not content, so it is the only one read: UTF-16 without
+/// a mark is still reported binary, as the README says (#165).
+pub(crate) fn sniff<R: Read>(reader: &mut R) -> io::Result<(Sniff, Vec<u8>)> {
     let mut head = Vec::new();
     (&mut *reader)
         .take(BINARY_SNIFF_BYTES as u64)
         .read_to_end(&mut head)?;
-    Ok((head.contains(&0), head))
+    let verdict = match head.first_chunk::<2>() {
+        Some([0xff, 0xfe]) => Sniff::Utf16(Endian::Little),
+        Some([0xfe, 0xff]) => Sniff::Utf16(Endian::Big),
+        _ if head.contains(&0) => Sniff::Binary,
+        _ => Sniff::Text,
+    };
+    Ok((verdict, head))
+}
+
+/// The lines of a UTF-16 file whose head `sniff` read into `head` and whose
+/// remainder is still in `reader`, decoded in `endian`'s order.
+///
+/// Whole, not streamed: a line ends at a two-byte `0A 00` (or `00 0A`), and a
+/// byte-at-a-time `read_until` would cut it in half, so the file is decoded
+/// first and split after. The byte-order mark is dropped, an unpaired
+/// surrogate becomes U+FFFD as an undecodable UTF-8 sequence would, and an
+/// odd byte at the end — a file cut mid-unit by a preview's byte cap, or
+/// simply damaged — is one more U+FFFD rather than an error.
+pub(crate) fn read_utf16_lines<R: Read>(
+    head: Vec<u8>,
+    reader: &mut R,
+    endian: Endian,
+) -> io::Result<Vec<String>> {
+    let mut bytes = head;
+    reader.read_to_end(&mut bytes)?;
+    let mut units: Vec<u16> = bytes
+        .chunks_exact(2)
+        .map(|pair| {
+            let pair = [pair[0], pair[1]];
+            match endian {
+                Endian::Little => u16::from_le_bytes(pair),
+                Endian::Big => u16::from_be_bytes(pair),
+            }
+        })
+        .collect();
+    if bytes.len() % 2 == 1 {
+        units.push(0xfffd);
+    }
+    let text = String::from_utf16_lossy(&units);
+    let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
+    Ok(lines_of(text))
+}
+
+/// `text` split as `read_lossy_line` would have read it: one line per `\n`,
+/// line ends stripped, and no phantom empty line after a final newline.
+fn lines_of(text: &str) -> Vec<String> {
+    text.split_inclusive('\n')
+        .map(|line| line.trim_end_matches(['\n', '\r']).to_string())
+        .collect()
 }
 
 /// Read one newline-terminated line, decoded lossily. `None` at end of file.
@@ -445,16 +517,20 @@ pub(crate) fn read_lossy_line<R: BufRead>(
 ///
 /// `File::open` succeeds on a directory on Unix and only fails when read, so
 /// that case is refused up front with `IsADirectory`. A file whose head holds
-/// a NUL is refused as [`BINARY_FILE`]; one that merely holds undecodable
-/// bytes is read anyway, a U+FFFD per bad sequence. Anything else the OS
-/// refuses comes back verbatim.
+/// a NUL is refused as [`BINARY_FILE`] — unless a byte-order mark says the
+/// NULs are UTF-16, in which case it is decoded as such; one that merely
+/// holds undecodable bytes is read anyway, a U+FFFD per bad sequence.
+/// Anything else the OS refuses comes back verbatim.
 pub fn read_lines(path: &Path) -> io::Result<Vec<String>> {
     refuse_unreadable(path)?;
     let mut reader = BufReader::new(File::open(path)?);
-    let (binary, head) = sniff_binary(&mut reader)?;
-    if binary {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, BINARY_FILE));
-    }
+    let head = match sniff(&mut reader)? {
+        (Sniff::Text, head) => head,
+        (Sniff::Utf16(endian), head) => return read_utf16_lines(head, &mut reader, endian),
+        (Sniff::Binary, _) => {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, BINARY_FILE));
+        }
+    };
     // The sniffed bytes are content, so they go back in front of the rest.
     let mut reader = Cursor::new(head).chain(reader);
     let mut lines = Vec::new();
@@ -1082,6 +1158,75 @@ mod tests {
 
         assert!(is_binary(&err), "not the binary error: {err}");
         assert_eq!(err.to_string(), BINARY_FILE);
+    }
+
+    /// UTF-16 text is half NUL bytes, and the sniff used to call every such
+    /// file binary (#165). A byte-order mark says what the NULs are: the
+    /// file is decoded, the mark dropped, and the lines come out as they
+    /// would from the same text in UTF-8.
+    #[test]
+    fn read_lines_decodes_utf16_with_a_byte_order_mark() {
+        let le = fixture_file(
+            "document_read_utf16le.txt",
+            &utf16(Endian::Little, "hi\nthere\r\n"),
+        );
+        let be = fixture_file(
+            "document_read_utf16be.txt",
+            &utf16(Endian::Big, "hi\nthere\r\n"),
+        );
+
+        assert_eq!(read_lines(&le).expect("UTF-16 LE is text"), ["hi", "there"]);
+        assert_eq!(read_lines(&be).expect("UTF-16 BE is text"), ["hi", "there"]);
+    }
+
+    /// The same lenience as UTF-8: an unpaired surrogate and a stray odd byte
+    /// at the end each become U+FFFD, and the rest of the file survives.
+    #[test]
+    fn read_lines_decodes_damaged_utf16_lossily() {
+        let mut bytes = utf16(Endian::Little, "ok\n");
+        bytes.extend_from_slice(&[0x00, 0xd8]); // a lone high surrogate
+        bytes.extend_from_slice(&utf16_body(Endian::Little, "x\n"));
+        bytes.push(0x41); // an odd trailing byte
+        let file = fixture_file("document_read_utf16_damaged.txt", &bytes);
+
+        assert_eq!(
+            read_lines(&file).expect("damage is lossy, not fatal"),
+            ["ok", "\u{fffd}x", "\u{fffd}"]
+        );
+    }
+
+    /// Without a byte-order mark the NULs are still the verdict: the rule the
+    /// README documents is unchanged, only its exception is new.
+    #[test]
+    fn read_lines_still_refuses_utf16_without_a_byte_order_mark() {
+        let file = fixture_file(
+            "document_read_utf16_no_bom.txt",
+            &utf16_body(Endian::Little, "hi\n"),
+        );
+
+        let err = read_lines(&file).expect_err("no mark, so the NULs are binary");
+
+        assert!(is_binary(&err), "not the binary error: {err}");
+    }
+
+    /// `text` in UTF-16 with `endian`'s byte order, byte-order mark first.
+    fn utf16(endian: Endian, text: &str) -> Vec<u8> {
+        let mut bytes = match endian {
+            Endian::Little => vec![0xff, 0xfe],
+            Endian::Big => vec![0xfe, 0xff],
+        };
+        bytes.extend(utf16_body(endian, text));
+        bytes
+    }
+
+    /// `text` in UTF-16 with `endian`'s byte order and no mark.
+    fn utf16_body(endian: Endian, text: &str) -> Vec<u8> {
+        text.encode_utf16()
+            .flat_map(|unit| match endian {
+                Endian::Little => unit.to_le_bytes(),
+                Endian::Big => unit.to_be_bytes(),
+            })
+            .collect()
     }
 
     #[test]
