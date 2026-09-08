@@ -2,7 +2,7 @@
 //! scanning is tested over a `Cursor` in `src/scan.rs`.
 
 use recon::filter::ActiveFilters;
-use recon::scan::{Progress, Request, Scan, Scanned, Scanner};
+use recon::scan::{FileToScan, Progress, Request, Scan, Scanned, Scanner};
 use std::fmt::Write as _;
 use std::fs;
 use std::path::Path;
@@ -45,9 +45,21 @@ fn a_scanner_thread_answers_every_file_it_is_given() {
         cache_id: 7,
         matcher: set.matcher().expect("selects"),
         files: vec![
-            (1, hit.clone(), Progress::default()),
-            (2, miss.clone(), Progress::default()),
-            (3, gone.clone(), Progress::default()),
+            FileToScan {
+                index: 1,
+                path: hit.clone(),
+                progress: Progress::default(),
+            },
+            FileToScan {
+                index: 2,
+                path: miss.clone(),
+                progress: Progress::default(),
+            },
+            FileToScan {
+                index: 3,
+                path: gone.clone(),
+                progress: Progress::default(),
+            },
         ],
     });
 
@@ -97,7 +109,11 @@ fn no_workers_result_is_lost_across_a_handoff() {
     let request = |cache_id| Request {
         cache_id,
         matcher: set.matcher().expect("selects"),
-        files: vec![(0, big.clone(), Progress::default())],
+        files: vec![FileToScan {
+            index: 0,
+            path: big.clone(),
+            progress: Progress::default(),
+        }],
     };
 
     scanner.start(request(1));

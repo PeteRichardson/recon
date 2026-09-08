@@ -2152,7 +2152,11 @@ impl App<'_> {
                     .get(&path)
                     .map(|record| record.progress.clone())
                     .unwrap_or_default();
-                pending.push((index, path, progress));
+                pending.push(scan::FileToScan {
+                    index,
+                    path,
+                    progress,
+                });
                 Match::Unknown
             };
             self.nav.set_answer(index, matched);
@@ -11998,7 +12002,7 @@ mod tests {
         let names: Vec<_> = requests[0]
             .files
             .iter()
-            .map(|(_, p, _)| p.file_name().unwrap().to_owned())
+            .map(|file| file.path.file_name().unwrap().to_owned())
             .collect();
         assert_eq!(names, ["a.log", "b.log"]);
     }
@@ -12055,7 +12059,7 @@ mod tests {
         app.refresh_scan(false);
         let request = &scanner.requests()[0];
         // Pretend the scan finished: every file read to EOF, one matched beta.
-        for (i, (index, path, _)) in request.files.iter().enumerate() {
+        for (i, scan::FileToScan { index, path, .. }) in request.files.iter().enumerate() {
             let seen = if i == 0 { vec![0, 0b10] } else { vec![0] };
             app.scan_cache.records.insert(
                 path.clone(),
@@ -12110,7 +12114,7 @@ mod tests {
         let (scanner, _tx) = record_scans(&mut app);
         app.add_filter("alpha").expect("valid pattern");
         app.refresh_scan(false);
-        for (_, path, _) in &scanner.requests()[0].files {
+        for scan::FileToScan { path, .. } in &scanner.requests()[0].files {
             app.scan_cache.records.insert(
                 path.clone(),
                 scan::Record {
@@ -12150,7 +12154,7 @@ mod tests {
         app.add_filter("alpha").expect("valid pattern");
         app.add_filter("beta").expect("valid pattern");
         app.refresh_scan(false);
-        let (_, path, _) = scanner.requests()[0].files[0].clone();
+        let path = scanner.requests()[0].files[0].path.clone();
         app.scan_cache.records.insert(
             path.clone(),
             scan::Record {
@@ -12422,7 +12426,7 @@ mod tests {
         );
         let last = scanner.requests().last().expect("a rescan").clone();
         assert!(
-            last.files.iter().any(|(_, p, _)| *p == path),
+            last.files.iter().any(|file| file.path == path),
             "the changed file should be in the reissued request: {last:?}"
         );
     }

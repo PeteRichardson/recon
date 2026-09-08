@@ -90,16 +90,25 @@ impl Record {
     }
 }
 
+/// One file a [`Request`] asks for, named the way [`Scanned`] names its
+/// answer (#171): `index` is the navigator row, `progress` is how far an
+/// earlier scan got, so the worker resumes rather than restarts.
+#[derive(Debug, Clone)]
+pub struct FileToScan {
+    pub index: usize,
+    pub path: PathBuf,
+    pub progress: Progress,
+}
+
 /// One scan: which files, from where, matched with what.
 ///
 /// `cache_id` is echoed on every [`Scanned`] so the receiver can drop results
-/// from a cache that has since been replaced. `files` carries each file's
-/// existing [`Progress`] so the worker resumes rather than restarts.
+/// from a cache that has since been replaced.
 #[derive(Debug, Clone)]
 pub struct Request {
     pub cache_id: u64,
     pub matcher: Matcher,
-    pub files: Vec<(usize, PathBuf, Progress)>,
+    pub files: Vec<FileToScan>,
 }
 
 /// One file's result. `index` is the navigator row the request named; the
@@ -175,7 +184,12 @@ fn worker(request: Request, tx: &Sender<Scanned>, cancel: &AtomicBool) {
         matcher,
         files,
     } = request;
-    for (index, path, progress) in files {
+    for FileToScan {
+        index,
+        path,
+        progress,
+    } in files
+    {
         let stamp = stamp(&path).ok();
         let progress = match File::open(&path) {
             Ok(mut file) => {
