@@ -91,11 +91,14 @@ fn install_error_hooks() -> Result<()> {
 ///
 /// The variable exists because of where recon spends its time: stderr goes to
 /// the *normal* screen, and recon is holding the alternate one from
-/// `init_terminal` until it exits. A line logged in between is drawn over the
-/// TUI and stays there until the next full redraw, so on stderr only the
-/// startup and shutdown call sites are safe to fire. Pointing this at a file
-/// makes every call site usable, which is the whole reason the in-session ones
-/// were worth adding (#83).
+/// `init_terminal` until it exits. A line logged in between would be drawn
+/// over the TUI and stay there until the next full redraw, so on stderr recon
+/// drops every record logged while the screen is held (#246). Only the
+/// startup and shutdown call sites reach stderr.
+///
+/// Pointing this at a file makes every call site usable, which is the whole
+/// reason the in-session ones were worth adding (#83), and it is the only way
+/// to see them.
 const LOG_FILE_VAR: &str = "RECON_LOG";
 
 /// Bring up the logger, before anything has anything to say.
@@ -117,6 +120,11 @@ const LOG_FILE_VAR: &str = "RECON_LOG";
 /// reading exactly this code, so an explicit call is the cheapest way to stop
 /// the next reader reaching the same wrong conclusion. It costs one idempotent
 /// call at startup.
+///
+/// **`build` rather than `init`.** `init` installs the logger immediately,
+/// and #246 needs to wrap it first. The two lines `init` would have run —
+/// `set_boxed_logger` and `set_max_level` — are spelled out at the end of
+/// the function instead. See `Muted`.
 fn setup_logging() {
     let mut builder = env_logger::builder();
     builder
@@ -125,10 +133,12 @@ fn setup_logging() {
         .format_target(false)
         .format_timestamp(None);
 
+    let mut to_file = false;
     if let Some(path) = std::env::var_os(LOG_FILE_VAR) {
         match std::fs::File::create(&path) {
             Ok(file) => {
                 builder.target(env_logger::Target::Pipe(Box::new(file)));
+                to_file = true;
             }
             // Warned about and carried on, which is the opposite of the call
             // `Config::load` makes two lines below — and deliberately. A
@@ -147,7 +157,30 @@ fn setup_logging() {
         }
     }
 
-    builder.init();
+    // `build` and not `init`, so that the logger can be wrapped before it is
+    // installed (#246). `init` is `set_boxed_logger` plus `set_max_level`, so
+    // both are done by hand here.
+    let logger = builder.build();
+    log::set_max_level(logger.filter());
+
+    // The failed-to-open branch above falls back to stderr, so it takes the
+    // muted path too — `to_file` tracks where the records actually go, not
+    // whether the variable was set.
+    let installed = if to_file {
+        log::set_boxed_logger(Box::new(logger))
+    } else {
+        log::set_boxed_logger(Box::new(Muted {
+            inner: logger,
+            hold: || TERMINAL_UP.load(Ordering::Relaxed),
+        }))
+    };
+
+    // Only reachable if something else already installed a logger, which
+    // nothing in this binary does. Reported and survived for the same reason
+    // as the file failure above: a debugging aid must not stop the program.
+    if let Err(err) = installed {
+        eprintln!("recon: the logger could not be installed: {err}");
+    }
 }
 
 /// The TUI draws on **stderr** (#143), so stdout carries nothing but what
@@ -216,4 +249,128 @@ fn restore_terminal() -> Result<()> {
     let mut stderr = io::stderr();
     execute!(stderr, LeaveAlternateScreen, DisableMouseCapture)?;
     Ok(())
+}
+
+/// A logger that drops a record while the TUI owns the screen.
+///
+/// recon draws on stderr, so a record written between `init_terminal` and
+/// `restore_terminal` lands on top of the frame and stays there until the
+/// next full redraw. #83 added call sites that fire during a session, and
+/// #189 added more, which turned a latent problem into one per navigator
+/// keypress (#246).
+///
+/// Dropping is the least bad of the three answers. Buffering needs a bound
+/// and a flush point, and nothing would ever read the buffer on the normal
+/// exit path. Reporting on the status row needs a channel from every call
+/// site, including ones inside worker threads. `RECON_LOG` already exists
+/// and already puts every record somewhere the screen cannot see, so the
+/// recovery costs the user one environment variable.
+///
+/// Installed only when no file target was set: with `RECON_LOG` the records
+/// go to the file, so nothing is dropped.
+struct Muted<L> {
+    inner: L,
+    /// True while a record must not reach stderr.
+    ///
+    /// A function pointer and not a direct read of `TERMINAL_UP`, so that a
+    /// test can drive the gate without touching a process-wide static.
+    hold: fn() -> bool,
+}
+
+impl<L: log::Log> log::Log for Muted<L> {
+    fn enabled(&self, metadata: &log::Metadata) -> bool {
+        !(self.hold)() && self.inner.enabled(metadata)
+    }
+
+    // This guard is the one that does the work: the `log!` macros call `log`
+    // directly and never consult `enabled` first. `enabled` carries the same
+    // guard so that `log_enabled!` gives the answer `log` will act on.
+    fn log(&self, record: &log::Record) {
+        if !(self.hold)() {
+            self.inner.log(record);
+        }
+    }
+
+    fn flush(&self) {
+        self.inner.flush();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use log::Log as _;
+    use std::sync::Mutex;
+
+    /// Keeps what reached it, so a test can see what `Muted` passed on.
+    #[derive(Default)]
+    struct Spy(Mutex<Vec<String>>);
+
+    impl log::Log for Spy {
+        fn enabled(&self, _: &log::Metadata) -> bool {
+            true
+        }
+
+        fn log(&self, record: &log::Record) {
+            self.0.lock().unwrap().push(record.args().to_string());
+        }
+
+        fn flush(&self) {}
+    }
+
+    /// Build and log one record in a single statement.
+    ///
+    /// `format_args!` borrows its arguments and cannot outlive the statement
+    /// that made it, so the record cannot be returned from a helper — it has
+    /// to be logged where it is built.
+    fn record(logger: &dyn log::Log, message: &str) {
+        logger.log(
+            &log::Record::builder()
+                .args(format_args!("{message}"))
+                .level(log::Level::Warn)
+                .build(),
+        );
+    }
+
+    #[test]
+    fn muted_drops_a_record_while_the_screen_is_held() {
+        let muted = Muted {
+            inner: Spy::default(),
+            hold: || true,
+        };
+
+        record(&muted, "a scan warning, mid-session");
+
+        assert!(
+            muted.inner.0.lock().unwrap().is_empty(),
+            "a record reached stderr while the TUI held the screen"
+        );
+    }
+
+    #[test]
+    fn muted_passes_a_record_when_the_screen_is_free() {
+        let muted = Muted {
+            inner: Spy::default(),
+            hold: || false,
+        };
+
+        record(&muted, "a startup warning");
+
+        let seen = muted.inner.0.lock().unwrap();
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0], "a startup warning");
+    }
+
+    #[test]
+    fn muted_reports_not_enabled_while_the_screen_is_held() {
+        let muted = Muted {
+            inner: Spy::default(),
+            hold: || true,
+        };
+
+        assert!(
+            !muted.enabled(&log::Metadata::builder().level(log::Level::Warn).build()),
+            "log_enabled! would disagree with what log() actually does"
+        );
+    }
 }
