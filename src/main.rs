@@ -166,6 +166,11 @@ fn setup_logging() {
 /// the draw path asks where the cursor is.
 fn init_terminal() -> Result<Terminal<CrosstermBackend<io::BufWriter<Stderr>>>> {
     enable_raw_mode()?;
+    // Set as soon as raw mode is on, not after the rest of setup below: the
+    // hooks call `restore_terminal` the moment any `?` past this point turns
+    // an error into a `Report`, and raw mode is what still needs undoing even
+    // when the alternate screen and mouse capture were never reached.
+    TERMINAL_UP.store(true, Ordering::Relaxed);
     execute!(
         io::stderr(),
         EnterAlternateScreen,
@@ -174,7 +179,6 @@ fn init_terminal() -> Result<Terminal<CrosstermBackend<io::BufWriter<Stderr>>>> 
     )?;
     let backend = CrosstermBackend::new(io::BufWriter::new(io::stderr()));
     let terminal = Terminal::new(backend)?;
-    TERMINAL_UP.store(true, Ordering::Relaxed);
     Ok(terminal)
 }
 
