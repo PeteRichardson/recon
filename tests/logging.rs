@@ -90,6 +90,31 @@ fn an_unreadable_file_is_logged() {
     );
 }
 
+/// A pattern set that will not compile turns the navigator's marking off.
+/// That is a state the user can see, so it must reach the log (#187).
+///
+/// Driven through `ActiveFilters` and not through `App`: this is the unit
+/// that owns `recompile`, `filter` is a public module, and `App`'s only
+/// public entry points are `new`, `run` and `handle_event`.
+#[test]
+fn a_pattern_set_that_will_not_compile_is_logged() {
+    install();
+    let mut filters = recon::filter::ActiveFilters::new();
+
+    // Each pattern is valid alone. Together they exceed the compiled size
+    // limit, which is what makes RegexSet::new fail rather than Regex::new.
+    for index in 1..40 {
+        let pattern = format!("(?i)(aaaa{index}|bbbb{index}|cccc{index}){{200,400}}");
+        let _ = filters.add(&pattern);
+    }
+
+    let records = records_mentioning("cannot compile the filter patterns");
+    assert!(
+        records.iter().any(|(level, _)| *level == log::Level::Warn),
+        "no warning was logged: {records:?}"
+    );
+}
+
 /// The one that would have caught the original regression on its own: some
 /// call site, somewhere, emits a record. `setup_logging` can be perfectly
 /// configured and still be pointless, which is exactly the state #83 found.

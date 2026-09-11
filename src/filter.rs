@@ -1559,6 +1559,10 @@ impl ActiveFilters {
     /// One pass over the line, not one per filter. See `compiled`.
     #[must_use]
     pub fn verdict(&self, line: &str, kinds: KindSet) -> Verdict {
+        debug_assert!(
+            self.compiled.as_ref().is_none_or(|set| self.in_step(set)),
+            "the compiled set is out of step with the filters"
+        );
         let Some(set) = self.compiled.as_ref().filter(|set| self.in_step(set)) else {
             return self.verdict_by_scanning(line, kinds);
         };
@@ -1626,13 +1630,27 @@ impl ActiveFilters {
 
     /// Rebuild the compiled set. Called by every method that adds, removes or
     /// replaces a pattern — and by none that only flips an `enabled` flag.
+    ///
+    /// A failure is rare and its consequences are invisible without this
+    /// warning: `verdict` falls back to per-filter scanning, which is only
+    /// slow, but `matcher` returns `None` and the navigator's marking
+    /// switches off with nothing said (#187).
     fn recompile(&mut self) {
         let patterns = self
             .filters
             .iter()
             .chain(self.search.as_ref())
             .map(|filter| filter.predicate.source());
-        self.compiled = RegexSet::new(patterns).ok();
+        match RegexSet::new(patterns) {
+            Ok(set) => self.compiled = Some(set),
+            Err(err) => {
+                log::warn!(
+                    "cannot compile the filter patterns together: {err}; \
+                     the navigator stops marking files until they change"
+                );
+                self.compiled = None;
+            }
+        }
     }
 
     /// The snapshot a scan thread matches with, or `None` when there is no
@@ -1643,6 +1661,10 @@ impl ActiveFilters {
     /// applies for #36 — and when the pattern count exceeds the bitset width.
     #[must_use]
     pub fn matcher(&self) -> Option<Matcher> {
+        debug_assert!(
+            self.compiled.as_ref().is_none_or(|set| self.in_step(set)),
+            "the compiled set is out of step with the filters"
+        );
         let set = self.compiled.as_ref().filter(|set| self.in_step(set))?;
         if set.len() > MAX_PATTERNS {
             return None;
