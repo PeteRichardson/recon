@@ -4,7 +4,6 @@ use super::listmotion::ListMotion;
 use crate::document::Mode;
 use crate::filter::Background;
 use crate::widgets::Action;
-use color_eyre::Result;
 use crossterm::event::{Event, KeyCode, KeyModifiers};
 use ratatui::prelude::{Buffer, Color, Modifier, Rect, Style, Widget};
 use ratatui::widgets::{List, ListItem, StatefulWidget};
