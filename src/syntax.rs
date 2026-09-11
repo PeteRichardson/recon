@@ -423,8 +423,18 @@ impl Highlighter {
         if start != self.next {
             self.state = HighlightLines::new(self.syntax, self.theme);
         }
+        // The parser is advanced over every line in the range, because the
+        // state at `row` depends on all of them — but a slot that already
+        // holds spans keeps them. Those came from a parse that started at
+        // the top of the file and are exact; these come from a fresh state
+        // `RESYNC_LOOKBACK` lines up and are a good guess. Overwriting the
+        // first with the second degrades colour the user has already seen
+        // (#183).
         for (slot, line) in self.spans[start..=row].iter_mut().zip(&lines[start..=row]) {
-            *slot = Some(Self::colour_line(&mut self.state, line));
+            let spans = Self::colour_line(&mut self.state, line);
+            if slot.is_none() {
+                *slot = Some(spans);
+            }
         }
         self.next = row + 1;
         true
@@ -1303,6 +1313,43 @@ int main(void) { return 0; }
             spans[0].style.fg,
             Some(Color::Green),
             "coloured as a comment"
+        );
+    }
+
+    /// A resync writes a range that can reach rows which are already exact.
+    /// Those must survive: colour from the top is correct, and colour from a
+    /// 64-line lookback is a guess (#183).
+    ///
+    /// The fixture is one long block comment, so the two answers differ. A row
+    /// inside it is comment-coloured when the parse came from the top, and is
+    /// coloured as ordinary code when a fresh parser started below the `/*`.
+    #[test]
+    fn a_resync_keeps_the_spans_that_are_already_exact() {
+        let mut text = String::from("/*\n");
+        text.push_str(&"still inside the comment\n".repeat(RESYNC_GAP * 4));
+        text.push_str("*/\nlet x = 1;\n");
+        let (mut highlighter, lines) = rust(Theme::builtin(), &text);
+        let mut budget = usize::MAX;
+
+        // Colour 0..=exact from the top, so `exact` is right by construction.
+        let exact = RESYNC_LOOKBACK * 2;
+        assert!(highlighter.ensure(&lines, exact, &mut budget));
+        let before = highlighter.spans(exact).first().map(|span| span.style.fg);
+        assert!(before.is_some(), "the fixture coloured nothing");
+
+        // Jump far away. This resyncs and moves `next` past the gap.
+        let far = RESYNC_GAP * 3;
+        assert!(highlighter.ensure(&lines, far, &mut budget));
+
+        // Come back. `start` is `back - RESYNC_LOOKBACK`, which is below
+        // `exact`, so the write range covers rows that are already exact.
+        let back = exact + RESYNC_LOOKBACK / 2;
+        assert!(highlighter.ensure(&lines, back, &mut budget));
+
+        assert_eq!(
+            highlighter.spans(exact).first().map(|span| span.style.fg),
+            before,
+            "an already-exact row was overwritten by the resync"
         );
     }
 
