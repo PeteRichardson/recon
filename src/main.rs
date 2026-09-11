@@ -19,12 +19,11 @@ fn main() -> Result<ExitCode> {
 
     setup_logging();
     let mut config = Config::load()?;
-    config.filter_sets = recon::filtersets::load_file()?;
-    // Needs the loaded sets, which is why it is not inside `Config::load`
-    // with `check_flags`. Still before any terminal setup: the message must
-    // reach a screen that is not about to be replaced (#143).
-    config.check_sets(&config.filter_sets)?;
 
+    // Before the filter sets are read, not after: this command prints an
+    // `[editor]` stanza and exits, and it uses nothing from `filters.toml`.
+    // A syntax error in that file used to stop a command that does not
+    // consult it (#191).
     if let Some(flavour) = &config.print_editor_config {
         print!(
             "{}",
@@ -35,6 +34,12 @@ fn main() -> Result<ExitCode> {
         );
         return Ok(ExitCode::SUCCESS);
     }
+
+    config.filter_sets = recon::filtersets::load_file()?;
+    // Needs the loaded sets, which is why it is not inside `Config::load`
+    // with `check_flags`. Still before any terminal setup: the message must
+    // reach a screen that is not about to be replaced (#143).
+    config.check_sets(&config.filter_sets)?;
 
     // Headless (#143): `--emit` with no terminal on stdin. A TUI needs stdin
     // for its keys, so a pipe or `/dev/null` there is not a session that
