@@ -228,3 +228,19 @@ fn a_refusal_before_the_terminal_writes_no_escape_sequences() {
         text(&out.stderr)
     );
 }
+
+/// `--print-editor-config` prints a stanza and exits. It must not need
+/// `filters.toml`, and a syntax error in that file must not stop it (#191).
+#[test]
+fn print_editor_config_survives_a_malformed_filters_toml() {
+    let dir = fixture("bad_filters_print");
+    let home = dir.join("config");
+    std::fs::create_dir_all(home.join("recon")).expect("create config dir");
+    std::fs::write(home.join("recon/filters.toml"), "this is not toml =\n")
+        .expect("write filters.toml");
+
+    let out = recon(&home, &["--print-editor-config", "vscode"], b"");
+
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", text(&out.stderr));
+    assert!(!out.stdout.is_empty(), "nothing was printed");
+}
