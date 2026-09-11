@@ -847,7 +847,17 @@ impl App<'_> {
     fn run_search(&mut self, pattern: &str) -> Result<(), regex::Error> {
         let mut view_search = false;
         let action = match self.focus {
-            Focus::Nav => self.nav.search(pattern, false)?,
+            Focus::Nav => {
+                // `step_to` answers `None` when no name matches. Dropping it
+                // closed the prompt with nothing moved and nothing said,
+                // which a user cannot tell apart from `Esc` (#243). `n`/`N`
+                // already report their dead end; so does this one.
+                let action = self.nav.search(pattern, false)?;
+                if action.is_none() {
+                    self.report(&format!("no filenames match \"{pattern}\""), false);
+                }
+                action
+            }
             // The filter pane forwards view-shaped keys to the view (#120):
             // a search started there is the same live search. Deferred
             // rather than done here: setting the filter needs `&mut self`
@@ -4069,6 +4079,31 @@ mod tests {
             text.contains("GAMMA MARKER"),
             "matched file was not previewed"
         );
+    }
+
+    /// From the navigator, `/` searches file names. A pattern that matches no
+    /// name used to close the prompt in silence, which looks the same as `Esc`.
+    /// Say so, the way `n` reports a dead end (#243).
+    #[test]
+    fn a_nav_search_with_no_matching_filename_says_so() {
+        let mut app = app_over("nav_search_dead_end", &["alpha.log", "beta.log"]);
+
+        app.run_search("ERROR").expect("valid pattern");
+
+        assert_eq!(
+            app.status_message.as_ref().map(|m| m.text.as_str()),
+            Some("no filenames match \"ERROR\"")
+        );
+    }
+
+    /// The report is for the dead end only. A name that does match stays quiet.
+    #[test]
+    fn a_nav_search_that_matches_reports_nothing() {
+        let mut app = app_over("nav_search_hit", &["alpha.log", "beta.log"]);
+
+        app.run_search("beta").expect("valid pattern");
+
+        assert!(app.status_message.is_none());
     }
 
     /// The prompt only takes a row while it is open.
