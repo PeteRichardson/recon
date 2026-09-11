@@ -132,3 +132,56 @@ fn the_crate_logs_at_all() {
         "no log record was emitted by any call site — `log` is a dead dependency again"
     );
 }
+
+/// A directory that cannot be listed reports `<err>` in the pane, where the
+/// title is elided and the path is lost. The log is the only place the path
+/// survives, exactly as for an unreadable file (#189).
+///
+/// `App::new`'s own `_ => view.load(argument)` arm cannot be the route here:
+/// for *any* directory argument, `nav.selected_path()` is always `Some` —
+/// `read_dir_entries` seeds `..` unconditionally even when the real listing
+/// fails, so an unreadable directory's navigator still selects `..` rather
+/// than nothing — and that keeps `App::new` on its `view.preview` arm, never
+/// its `_` arm. So the fixture instead makes the *navigator's own directory*
+/// readable, with one unreadable child inside it: the navigator lists the
+/// parent fine and selects that child as its first (only) entry, previewing
+/// it exactly as arrowing onto it would — which is `read_preview_with_caps`'s
+/// own `is_dir` branch, i.e. `directory_listing` on the child directly.
+///
+/// Asserting on the fixture name alone is not enough here either: opening the
+/// parent makes the navigator itself log nothing (it lists successfully), but
+/// once the preview reaches the child, `read_preview_with_caps` calls
+/// `directory_listing`, whose only failure this fixture can trigger is the
+/// one this test exists to prove exists. Asserting on `directory_listing`'s
+/// distinct phrasing, `"cannot show the listing for"`, rather than the
+/// fixture name alone, makes plain which call site is under test (R8).
+#[test]
+fn a_directory_that_cannot_be_listed_is_logged() {
+    use std::os::unix::fs::PermissionsExt;
+
+    install();
+    let child_name = "unlistable_child_for_the_logging_test";
+    let parent = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("target")
+        .join("unlistable_child_for_the_logging_test_parent");
+    let child = parent.join(child_name);
+    std::fs::create_dir_all(&child).expect("create fixture dirs");
+    std::fs::set_permissions(&child, std::fs::Permissions::from_mode(0o000))
+        .expect("make the child directory unreadable");
+
+    // The navigator lists `parent` (readable) and selects `child` — its only
+    // entry — as the preview target, exactly as arrowing onto it would.
+    let _app = app_over(&parent.display().to_string());
+
+    // Restored before the assertion, so a failure does not leave a directory
+    // behind that the next run cannot remove.
+    std::fs::set_permissions(&child, std::fs::Permissions::from_mode(0o755)).ok();
+
+    let records = records_mentioning("cannot show the listing for");
+    assert!(
+        records
+            .iter()
+            .any(|(level, message)| *level == log::Level::Warn && message.contains(child_name)),
+        "no warning naming {child_name} was logged: {records:?}"
+    );
+}

@@ -1185,7 +1185,13 @@ fn read_preview_with_caps(path: &Path, max_lines: usize, max_bytes: u64) -> Cont
     // writer appeared, and this runs on every selection move.
     let file = match document::refuse_unreadable(path).and_then(|()| File::open(path)) {
         Ok(file) => file,
-        Err(err) => return Contents::message(format!("<{err}>")),
+        // Logged as well as shown, as `read_lines` does (#83, #189). The
+        // preview is the arrow-key case: the pane's title is elided when
+        // the pane is narrow, so the log is where the path survives.
+        Err(err) => {
+            log::warn!("cannot preview {}: {err}", path.display());
+            return Contents::message(format!("<{err}>"));
+        }
     };
     // Read before the bytes are consumed; a file that cannot be stat'd simply
     // gets no estimate rather than failing the preview.
@@ -1200,7 +1206,14 @@ fn read_preview_with_caps(path: &Path, max_lines: usize, max_bytes: u64) -> Cont
         Ok((Sniff::Utf16(endian), head)) => {
             let mut lines = match read_utf16_lines(head, &mut reader, endian) {
                 Ok(lines) => lines,
-                Err(err) => return Contents::message(format!("<{err}>")),
+                // Logged as well as shown, as `read_lines` does (#83, #189).
+                // The preview is the arrow-key case: the pane's title is
+                // elided when the pane is narrow, so the log is where the
+                // path survives.
+                Err(err) => {
+                    log::warn!("cannot preview {}: {err}", path.display());
+                    return Contents::message(format!("<{err}>"));
+                }
             };
             let over_the_line_cap = lines.len() > max_lines;
             lines.truncate(max_lines);
@@ -1212,7 +1225,13 @@ fn read_preview_with_caps(path: &Path, max_lines: usize, max_bytes: u64) -> Cont
                 max_bytes - remaining,
             );
         }
-        Err(err) => return Contents::message(format!("<{err}>")),
+        // Logged as well as shown, as `read_lines` does (#83, #189). The
+        // preview is the arrow-key case: the pane's title is elided when
+        // the pane is narrow, so the log is where the path survives.
+        Err(err) => {
+            log::warn!("cannot preview {}: {err}", path.display());
+            return Contents::message(format!("<{err}>"));
+        }
     };
 
     // The sniffed bytes are content, so they go back in front of the rest.
@@ -1224,7 +1243,13 @@ fn read_preview_with_caps(path: &Path, max_lines: usize, max_bytes: u64) -> Cont
         match read_lossy_line(&mut reader, &mut buf) {
             Ok(Some(line)) => lines.push(line),
             Ok(None) => break,
-            Err(err) => return Contents::message(format!("<{err}>")),
+            // Logged as well as shown, as `read_lines` does (#83, #189). The
+            // preview is the arrow-key case: the pane's title is elided when
+            // the pane is narrow, so the log is where the path survives.
+            Err(err) => {
+                log::warn!("cannot preview {}: {err}", path.display());
+                return Contents::message(format!("<{err}>"));
+            }
         }
     }
 
@@ -1338,7 +1363,14 @@ fn directory_listing(path: &Path, max_lines: usize) -> Contents {
     let entries = match crate::widgets::filenav::sorted_entries(path) {
         Ok(entries) => entries,
         // Same shape as an unreadable file: say why, verbatim from the OS.
-        Err(err) => return Contents::message(format!("<{err}>")),
+        // Worded distinctly from the navigator's own "cannot list" (#83, in
+        // filenav.rs): that is a different subsystem failing at the same
+        // directory, and a reader of the log should be able to tell them
+        // apart rather than seeing two identical lines.
+        Err(err) => {
+            log::warn!("cannot show the listing for {}: {err}", path.display());
+            return Contents::message(format!("<{err}>"));
+        }
     };
     if entries.is_empty() {
         return Contents::message(EMPTY_DIRECTORY_MESSAGE.to_string());
