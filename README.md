@@ -280,17 +280,19 @@ wrong, and warnings are the only level that reaches you unasked.
 RUST_LOG=recon=debug recon app.log
 ```
 
-Log output goes to **stderr** by default, which is a problem once the TUI is up:
-`recon` draws its interface on stderr too, so a line logged mid-session is
-painted into the TUI and stays there until the next redraw. Set `RECON_LOG`
-to a file to avoid that, and to capture the in-session messages at all:
+Log output goes to **stderr** by default, and `recon` draws its interface on
+stderr too, so `recon` drops any record logged while the TUI holds the
+screen — only the startup and shutdown records reach you. Set `RECON_LOG`
+to a file to avoid losing the rest, and to see the in-session messages at
+all:
 
 ```sh
 RECON_LOG=/tmp/recon.log RUST_LOG=recon=debug recon app.log
 ```
 
-The file is truncated on each run. If it cannot be opened, `recon` says so and
-carries on logging to stderr rather than refusing to start.
+The file is truncated on each run. If it cannot be opened, `recon` says so
+and carries on logging to stderr — which, once the TUI is up, means the
+in-session records are dropped rather than merely hard to see.
 
 What gets recorded:
 
