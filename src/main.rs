@@ -12,6 +12,7 @@ use recon::{App, Config};
 use std::io::{self, IsTerminal, Stderr};
 use std::panic;
 use std::process::ExitCode;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 fn main() -> Result<ExitCode> {
     install_error_hooks()?;
@@ -173,8 +174,20 @@ fn init_terminal() -> Result<Terminal<CrosstermBackend<io::BufWriter<Stderr>>>> 
     )?;
     let backend = CrosstermBackend::new(io::BufWriter::new(io::stderr()));
     let terminal = Terminal::new(backend)?;
+    TERMINAL_UP.store(true, Ordering::Relaxed);
     Ok(terminal)
 }
+
+/// Whether `init_terminal` has run and its undo is still owed.
+///
+/// The error and panic hooks run for every failure, including one that
+/// happens before any terminal setup — `--set` naming a set that
+/// `filters.toml` does not define, an unreadable `filters.toml`, `-n`
+/// without `--emit lines`. Without this flag they wrote `LeaveAlternateScreen`
+/// and `DisableMouseCapture` to stderr anyway, which put about 30 bytes of
+/// control characters in front of the message. Headless mode makes that
+/// script-facing: a redirected stderr holds them verbatim (#222).
+static TERMINAL_UP: AtomicBool = AtomicBool::new(false);
 
 /// Undo `init_terminal`: leave the alternate screen and stop mouse reports.
 ///
@@ -185,6 +198,11 @@ fn init_terminal() -> Result<Terminal<CrosstermBackend<io::BufWriter<Stderr>>>> 
 /// rather than restored, because `LeaveAlternateScreen` already returns the
 /// normal screen with the cursor it had.
 fn restore_terminal() -> Result<()> {
+    // `swap` and not `load`: the normal path calls this once and the hooks
+    // can call it again on the way out, and the undo must happen one time.
+    if !TERMINAL_UP.swap(false, Ordering::Relaxed) {
+        return Ok(());
+    }
     disable_raw_mode()?;
     let mut stderr = io::stderr();
     execute!(stderr, LeaveAlternateScreen, DisableMouseCapture)?;
