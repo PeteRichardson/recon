@@ -157,7 +157,16 @@ impl Scan for Scanner {
         let flag = Arc::new(AtomicBool::new(false));
         *self.cancel.lock().unwrap_or_else(PoisonError::into_inner) = Arc::clone(&flag);
         let tx = self.tx.clone();
-        std::thread::spawn(move || worker(request, &tx, &flag));
+        // `Builder` and not `thread::spawn`: spawn panics when the OS
+        // refuses a thread, and takes the TUI down with it. A refusal here
+        // costs the marking, which is worth a line in the log and nothing
+        // more (#188).
+        if let Err(err) = std::thread::Builder::new()
+            .name("recon-scan".to_string())
+            .spawn(move || worker(request, &tx, &flag))
+        {
+            log::warn!("cannot start the scan thread: {err}; files stay unmarked");
+        }
     }
 
     fn cancel(&self) {
@@ -166,6 +175,33 @@ impl Scan for Scanner {
             .unwrap_or_else(PoisonError::into_inner)
             .store(true, Ordering::Relaxed);
     }
+}
+
+/// `scan`, with a panic turned into a finished file.
+///
+/// `Scanner` keeps its own `Sender`, so a worker that panics never
+/// disconnects the channel: `drain_scan_results`'s `Disconnected` warning
+/// cannot fire, and the file stays `Unknown` for ever with nothing said. A
+/// caught panic is reported as `eof: true` instead — the file is answered,
+/// wrongly but finitely, and the navigator stops waiting (#188).
+fn scan_caught(
+    reader: impl BufRead,
+    matcher: &Matcher,
+    progress: Progress,
+    cancel: &AtomicBool,
+) -> Progress {
+    // `scan` takes `progress` by value, so the closure moves it — leaving
+    // nothing behind to fall back to once it has panicked. Clone first so
+    // the caller's progress survives the unwind.
+    let fallback = progress.clone();
+    let guarded = std::panic::AssertUnwindSafe(|| scan(reader, matcher, progress, cancel));
+    std::panic::catch_unwind(guarded).unwrap_or_else(|_| {
+        log::warn!("a file's scan panicked; it is reported as read to the end");
+        Progress {
+            eof: true,
+            ..fallback
+        }
+    })
 }
 
 /// The thread body. One file at a time; a cancel between files stops the
@@ -210,7 +246,7 @@ fn worker(request: Request, tx: &Sender<Scanned>, cancel: &AtomicBool) {
                 } else {
                     progress
                 };
-                scan(BufReader::new(file), &matcher, progress, cancel)
+                scan_caught(BufReader::new(file), &matcher, progress, cancel)
             }
             // Unreadable answers "no", complete: it will show nothing. Not
             // retried until its stamp changes.
@@ -566,6 +602,36 @@ mod tests {
             Some(Owner::Search)
         );
         assert_eq!(record(&[0], true).owner(&m), None);
+    }
+
+    /// A panic inside one file's scan must not lose the file. It is reported
+    /// complete, so the navigator stops waiting on it, and the run continues
+    /// with the next file (#188).
+    #[test]
+    fn a_panicking_read_is_reported_complete_rather_than_lost() {
+        struct Panicking;
+
+        impl std::io::Read for Panicking {
+            fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+                panic!("the reader panicked");
+            }
+        }
+
+        impl std::io::BufRead for Panicking {
+            fn fill_buf(&mut self) -> std::io::Result<&[u8]> {
+                panic!("the reader panicked");
+            }
+
+            fn consume(&mut self, _: usize) {}
+        }
+
+        // `matcher` and `never` are this module's own test helpers.
+        let matcher = matcher(&["hit"], &[]);
+        let cancel = never();
+
+        let progress = scan_caught(Panicking, &matcher, Progress::default(), &cancel);
+
+        assert!(progress.eof, "a panicked file must not stay unanswered");
     }
 
     #[test]
