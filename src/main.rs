@@ -89,6 +89,11 @@ enum OnPanic {
 /// editor reaper is `recon-editor`. Anything else that is not `main` is
 /// treated as a worker, which is the safe way round: a new thread added later
 /// gets the quiet path by default and cannot damage the screen.
+///
+/// The scan worker's `catch_unwind` (`scan_caught`, `src/scan.rs`) only
+/// guards the per-file scan; a panic anywhere else in that thread still
+/// reaches this hook and ends the whole batch silently (`scan_caught`'s own
+/// doc comment).
 fn on_panic(thread: Option<&str>) -> OnPanic {
     if thread == Some("main") {
         OnPanic::Report
