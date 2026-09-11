@@ -69,6 +69,34 @@ fn main() -> Result<ExitCode> {
 
 //===================================================================================
 
+/// What the panic hook must do, decided by the thread that panicked.
+#[derive(Debug, PartialEq, Eq)]
+enum OnPanic {
+    /// Restore the terminal, then print the report.
+    Report,
+    /// End the thread and say nothing to the screen.
+    Quiet,
+}
+
+/// Only the main thread may touch the terminal on the way out.
+///
+/// A worker that panicked used to run `restore_terminal` from the hook. That
+/// tore down a TUI the user was still looking at, printed a report over it,
+/// and — because the undo is one-shot (#222) — left the real exit with
+/// nothing to do, so the alternate screen stayed up after recon ended (#245).
+///
+/// Rust names the main thread `main`. The scan worker is `recon-scan` and the
+/// editor reaper is `recon-editor`. Anything else that is not `main` is
+/// treated as a worker, which is the safe way round: a new thread added later
+/// gets the quiet path by default and cannot damage the screen.
+fn on_panic(thread: Option<&str>) -> OnPanic {
+    if thread == Some("main") {
+        OnPanic::Report
+    } else {
+        OnPanic::Quiet
+    }
+}
+
 /// Install `color_eyre` panic and error hooks
 ///
 /// The hooks restore the terminal to a usable state before printing the error message.
@@ -81,6 +109,16 @@ fn install_error_hooks() -> Result<()> {
         error(e)
     }))?;
     panic::set_hook(Box::new(move |info| {
+        let current = std::thread::current();
+        let name = current.name();
+        if on_panic(name) == OnPanic::Quiet {
+            // The only trace a worker's panic leaves. With `RECON_LOG` it
+            // reaches the file; without it the TUI is up, so `Muted` drops it
+            // too (#246). That cost is recorded in the 1.0 spec: the user sees
+            // only that the marks on the files stop changing.
+            log::error!("panic on thread {}: {info}", name.unwrap_or("<unnamed>"));
+            return;
+        }
         let _ = restore_terminal();
         panic(info);
     }));
@@ -372,5 +410,20 @@ mod tests {
             !muted.enabled(&log::Metadata::builder().level(log::Level::Warn).build()),
             "log_enabled! would disagree with what log() actually does"
         );
+    }
+
+    #[test]
+    fn the_main_thread_reports_its_panic() {
+        assert_eq!(on_panic(Some("main")), OnPanic::Report);
+    }
+
+    #[test]
+    fn the_scan_worker_dies_quietly() {
+        assert_eq!(on_panic(Some("recon-scan")), OnPanic::Quiet);
+    }
+
+    #[test]
+    fn an_unnamed_thread_dies_quietly() {
+        assert_eq!(on_panic(None), OnPanic::Quiet);
     }
 }

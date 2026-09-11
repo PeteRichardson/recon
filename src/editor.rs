@@ -515,32 +515,47 @@ impl Launcher for ProcessLauncher {
         // a long-running TUI someone may press `o` in fifty times. Waiting on
         // the main thread instead would freeze the UI for as long as the editor
         // runs, which for a terminal editor is the whole session.
-        std::thread::spawn(move || {
-            let status = match child.wait() {
-                Ok(status) => status,
-                Err(err) => {
-                    log::warn!("could not wait for {name}: {err}");
-                    return;
-                }
-            };
-            if !status.success()
-                && let Some(outcomes) = outcomes
-            {
-                // A closed receiver means recon is shutting down, which is not
-                // worth reporting to anyone — hence `debug!` rather than
-                // `warn!`, and hence the send failure still being ignored (#83).
-                // Logged at all because "the editor exited badly and recon said
-                // nothing" is otherwise indistinguishable from "recon never
-                // launched it".
-                log::warn!("{name} exited with {status}");
-                if outcomes
-                    .send(format!("{name} exited with {status}"))
-                    .is_err()
+        //
+        // Named, and so spawned through `Builder`: the panic hook decides what
+        // to do by thread name (#245), and a named thread makes its log line
+        // say which one died. `Builder` also returns the spawn failure that
+        // `thread::spawn` would panic on.
+        let reaped = std::thread::Builder::new()
+            .name("recon-editor".to_string())
+            .spawn(move || {
+                let status = match child.wait() {
+                    Ok(status) => status,
+                    Err(err) => {
+                        log::warn!("could not wait for {name}: {err}");
+                        return;
+                    }
+                };
+                if !status.success()
+                    && let Some(outcomes) = outcomes
                 {
-                    log::debug!("nothing left to report {name}'s exit to; shutting down");
+                    // A closed receiver means recon is shutting down, which is not
+                    // worth reporting to anyone — hence `debug!` rather than
+                    // `warn!`, and hence the send failure still being ignored (#83).
+                    // Logged at all because "the editor exited badly and recon said
+                    // nothing" is otherwise indistinguishable from "recon never
+                    // launched it".
+                    log::warn!("{name} exited with {status}");
+                    if outcomes
+                        .send(format!("{name} exited with {status}"))
+                        .is_err()
+                    {
+                        log::debug!("nothing left to report {name}'s exit to; shutting down");
+                    }
                 }
-            }
-        });
+            });
+
+        // The editor is already running, so a failure here costs a zombie and
+        // a missing exit message, not the launch. Reported and survived rather
+        // than returned: the user's editor did open.
+        if let Err(err) = reaped {
+            log::warn!("could not spawn a thread to wait for the editor: {err}");
+        }
+
         Ok(())
     }
 }
