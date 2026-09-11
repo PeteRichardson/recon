@@ -12,9 +12,10 @@
 //! Nothing remembers which profile was applied — see the spec's "a profile is
 //! an action, not a live binding".
 
-use crossterm::event::{KeyCode, KeyEvent};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::prelude::{Buffer, Modifier, Rect, Style, Widget};
 use ratatui::widgets::{Block, Clear};
+use unicode_width::UnicodeWidthStr;
 
 /// What one key did to the picker.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -55,7 +56,17 @@ impl ProfilePicker {
 
     /// Feed a key. `j`/`k` and the arrows move; `Enter` chooses; `Esc`
     /// closes; everything else is swallowed, as a prompt swallows it.
+    ///
+    /// A modified key is dropped before the match, the rule every other pane
+    /// follows since #120: without this, `Ctrl-j` read as `j` and moved the
+    /// selection, and `Ctrl-c` was swallowed in silence.
     pub(crate) fn handle_key(&mut self, key: KeyEvent) -> PickerOutcome {
+        if key
+            .modifiers
+            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+        {
+            return PickerOutcome::Open;
+        }
         match key.code {
             KeyCode::Char('j') | KeyCode::Down => {
                 self.selected = (self.selected + 1).min(self.names.len().saturating_sub(1));
@@ -84,7 +95,7 @@ impl ProfilePicker {
         let widest = self
             .names
             .iter()
-            .map(|name| name.chars().count())
+            .map(|name| UnicodeWidthStr::width(name.as_str()))
             .max()
             .unwrap_or(0);
         // Two for the borders, two for a column of padding each side.
@@ -204,6 +215,39 @@ mod tests {
                 .add_modifier
                 .contains(Modifier::REVERSED)
         );
+    }
+
+    /// A modified key must not act as the bare key. `Ctrl-j` moved the
+    /// selection and `Ctrl-c` was swallowed, after #120 settled the opposite
+    /// rule for every other pane (#193).
+    #[test]
+    fn a_modified_key_does_not_move_the_selection() {
+        let mut p = picker();
+
+        let outcome = p.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL));
+
+        assert_eq!(outcome, PickerOutcome::Open);
+        assert_eq!(p.selected(), 0, "Ctrl-j moved the selection");
+
+        p.handle_key(KeyEvent::new(KeyCode::Char('k'), KeyModifiers::ALT));
+        assert_eq!(p.selected(), 0, "Alt-k moved the selection");
+    }
+
+    /// Width is display columns, not characters: a CJK name occupies two
+    /// columns per ideograph, and a box sized by `chars().count()` clips it
+    /// (#97, #193).
+    #[test]
+    fn the_panel_is_sized_in_display_columns() {
+        let p = ProfilePicker::new(1, vec!["日本語ログ".into()]);
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 40,
+            height: 10,
+        };
+
+        // Five ideographs are ten columns, plus two borders and two of padding.
+        assert_eq!(p.panel(area).width, 14);
     }
 
     /// The panel never leaves its area, at any size — including an area smaller
