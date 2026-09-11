@@ -607,7 +607,15 @@ enum AppState {
 impl App<'_> {
     #[must_use]
     pub fn new(config: &Config) -> Self {
-        let argument = std::path::Path::new(&config.path);
+        // Absolute from here on, which is the rule the navigator, the scan
+        // cache and `check_stamps` already share. Held as typed, the
+        // argument was a second spelling of one path: `check_stamps`
+        // compared `path == active` against `dir.join(name)` and never
+        // matched, so the changed-on-disk badge never fired for a file
+        // opened from the command line, and the title changed from
+        // `app.log` to the full path after the first navigation (#157).
+        let argument = crate::path::lexical_absolute(std::path::Path::new(&config.path));
+        let argument = argument.as_path();
         let mut nav = FileNav::new(config.path.clone());
         nav.set_background(config.background());
         let mut view = FileView::default();
@@ -3249,6 +3257,27 @@ mod tests {
             path: dir.join("placeholder").display().to_string(),
             ..Config::default()
         })
+    }
+
+    /// The argument is held the way the navigator holds it, absolute. Two
+    /// spellings of one path made `check_stamps` compare unequal, so the
+    /// changed-on-disk badge never fired for a file opened from the command
+    /// line, and the title changed after the first navigation (#157).
+    #[test]
+    fn the_command_line_argument_is_held_absolute() {
+        // No fixture file: `lexical_absolute` resolves against the process
+        // directory whether or not the file exists, and `App::new` loads the
+        // argument either way. What is under test is the spelling, not the read.
+        let app = App::new(&Config {
+            path: "a.log".to_string(),
+            ..Config::default()
+        });
+
+        assert!(
+            app.view.filename().is_absolute(),
+            "the view holds {} relative",
+            app.view.filename().display()
+        );
     }
 
     /// Select the `row`th file in the navigator and load it into the view,
@@ -11385,7 +11414,13 @@ mod tests {
             launcher.is_empty(),
             "a missing file was handed to an editor"
         );
-        assert!(status_line(&mut app).contains("no such file"));
+        // The startup argument is held absolute (#157), so this message
+        // carries a full path rather than the short relative one the
+        // default 120-column `AREA` was fitting before. The width here is
+        // incidental to what is under test — the message's content — so it
+        // is widened rather than the shared `status_line`/`AREA` that 47
+        // other tests render through.
+        assert!(status_line_at(&mut app, 300).contains("no such file"));
     }
 
     // An editor exits on its own schedule, so its report is the one change
