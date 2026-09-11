@@ -205,3 +205,26 @@ fn an_unknown_set_is_refused_before_anything_is_read() {
     );
     assert_eq!(out.status.code(), Some(1));
 }
+
+/// A refusal that happens before any terminal setup must not write terminal
+/// control codes. A script that keeps stderr in a file holds them verbatim,
+/// and the message is then not the first thing in the file (#222).
+#[test]
+fn a_refusal_before_the_terminal_writes_no_escape_sequences() {
+    let dir = fixture("no_escapes");
+    let home = config_home(&dir);
+
+    let out = recon(&home, &["--emit", "files", "--set", "Nope"], b"");
+
+    assert_ne!(
+        out.stderr.first(),
+        Some(&0x1b),
+        "stderr starts with an escape sequence: {:?}",
+        text(&out.stderr)
+    );
+    assert!(
+        text(&out.stderr).contains("unknown set"),
+        "stderr: {}",
+        text(&out.stderr)
+    );
+}
