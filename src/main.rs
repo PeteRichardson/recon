@@ -176,10 +176,17 @@ fn init_terminal() -> Result<Terminal<CrosstermBackend<io::BufWriter<Stderr>>>> 
     Ok(terminal)
 }
 
+/// Undo `init_terminal`: leave the alternate screen and stop mouse reports.
+///
+/// The cursor needs nothing here. `init_terminal` never hides it — the
+/// `execute!` above sends `EnterAlternateScreen`, `EnableMouseCapture` and
+/// `Clear`, and no path in `src/` calls `hide_cursor`. A `show_cursor` call
+/// sat commented out here for months with no reason recorded; it is deleted
+/// rather than restored, because `LeaveAlternateScreen` already returns the
+/// normal screen with the cursor it had.
 fn restore_terminal() -> Result<()> {
     disable_raw_mode()?;
     let mut stderr = io::stderr();
     execute!(stderr, LeaveAlternateScreen, DisableMouseCapture)?;
-    // terminal.show_cursor()?;
     Ok(())
 }
