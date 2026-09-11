@@ -6,7 +6,6 @@ use crate::widgets::filenav::Entry;
 /// `FileView` Widget
 ///
 ///
-use color_eyre::Result;
 use ratatui::prelude::{Buffer, Color, Modifier, Rect, Style, Widget};
 use std::fs::File;
 use std::io::{BufReader, Cursor, Read};
