@@ -461,7 +461,7 @@ impl FilterList {
         let interior = area.width.saturating_sub(BORDERS) as usize;
         let hint = EMPTY_HINTS
             .iter()
-            .find(|hint| hint.chars().count() <= interior)
+            .find(|hint| UnicodeWidthStr::width(**hint) <= interior)
             .map_or("", |hint| *hint);
         let items: Vec<ListItem> = Self::texts(filters)
             .into_iter()
