@@ -15,6 +15,7 @@
 use color_eyre::Result;
 use crossterm::event::{self, KeyCode, KeyModifiers};
 use ratatui::prelude::{Backend, Buffer, Color, Constraint, Layout, Rect, Style, Terminal, Widget};
+use std::borrow::Cow;
 use std::time::{Duration, Instant};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
@@ -46,10 +47,25 @@ const HIDE_BADGE_STYLE: Style = Style::new()
 /// The badge saying the file on screen is not the file on disk (#119).
 ///
 /// Raised by `poll_stamps` when the *active* file's stamp moves, cleared by
-/// `r`. The navigator's answer for that file updates on its own; the view does
-/// not reload on its own. That is a real inconsistency between the panes, and
-/// the badge exists so it is never a silent one: one key resolves it.
-const STALE_BADGE_TEXT: &str = " changed on disk · r ";
+/// reloading. The navigator's answer for that file updates on its own; the
+/// view does not reload on its own. That is a real inconsistency between the
+/// panes, and the badge exists so it is never a silent one: one key resolves
+/// it.
+///
+/// A function rather than a `const` (task 8 fix round 2, #199): the badge
+/// names the key that reloads, so — like the on-screen hints — it is
+/// generated from `DEFAULT` rather than hard-coded, and stays correct after
+/// a rebind. The default keymap renders this byte-identically to the old
+/// constant, `" changed on disk · r "`, leading and trailing spaces
+/// included — see `badges` in `Widget::render`, which pads each badge with
+/// exactly the same column of separation regardless of where its text came
+/// from.
+fn stale_badge_text() -> String {
+    format!(
+        " changed on disk · {} ",
+        crate::keymap::label_for(crate::keymap::ActionId::GlobalReload)
+    )
+}
 
 /// The badge saying the include filters are combined with AND (#39). Same style
 /// as `HIDE`, and for the same reason: the mode changes what the pane shows
@@ -3064,11 +3080,16 @@ impl Widget for &mut App<'_> {
         // is exactly the state the issue was reported from. A badge threaded
         // through that function would need a second conditional to dodge the
         // early return, and a conditional can go stale.
-        let badges: Vec<&str> = [
-            (self.document.mode() == Mode::FilteredOnly).then_some(HIDE_BADGE_TEXT),
-            self.filters.is_and().then_some(AND_BADGE_TEXT),
-            self.visual_badge(),
-            self.view_stale.then_some(STALE_BADGE_TEXT),
+        // `Cow` rather than `&str` (task 8 fix round 2, #199): every other
+        // badge is a fixed string, but the stale badge names a key generated
+        // from the table, so it owns a freshly-built `String` when present.
+        let badges: Vec<Cow<'static, str>> = [
+            (self.document.mode() == Mode::FilteredOnly).then_some(Cow::Borrowed(HIDE_BADGE_TEXT)),
+            self.filters
+                .is_and()
+                .then_some(Cow::Borrowed(AND_BADGE_TEXT)),
+            self.visual_badge().map(Cow::Borrowed),
+            self.view_stale.then(|| Cow::Owned(stale_badge_text())),
         ]
         .into_iter()
         .flatten()
@@ -3202,7 +3223,7 @@ impl Widget for &mut App<'_> {
             buf.set_stringn(
                 x,
                 prompt_area.y,
-                badge,
+                badge.as_ref(),
                 prompt_area.width as usize,
                 HIDE_BADGE_STYLE,
             );
@@ -12861,6 +12882,22 @@ mod tests {
         assert!(
             status_line(&mut app).contains("changed on disk"),
             "{}",
+            status_line(&mut app)
+        );
+    }
+
+    /// The stale badge is generated from `DEFAULT`, not hard-coded (task 8
+    /// fix round 2, #199), so nothing pins its default-keymap text as
+    /// `assert_eq!` on the whole row: this is what would catch it going
+    /// stale after a rebind changed the reload key.
+    #[test]
+    fn the_stale_badge_names_the_reload_key() {
+        let mut app = app_over_logs("stale_badge_key");
+        app.view_stale = true;
+
+        assert!(
+            status_line(&mut app).contains(" changed on disk · r "),
+            "the badge must name the key that reloads: {}",
             status_line(&mut app)
         );
     }
