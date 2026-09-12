@@ -1250,8 +1250,20 @@ mod tests {
     #[test]
     fn the_reserved_keys_are_bound_to_nothing_by_default() {
         let keymap = Keymap::default();
+        // Every scope, not just the panes: the promise is that a reserved
+        // key binds nothing anywhere, and `Prompt` or `Picker` growing a
+        // default binding later should fail this test rather than slip past
+        // it.
         for (label, _) in RESERVED {
-            for scope in [Scope::Global, Scope::View, Scope::Nav, Scope::Filters] {
+            for scope in [
+                Scope::Prompt,
+                Scope::Help,
+                Scope::Picker,
+                Scope::Global,
+                Scope::Nav,
+                Scope::View,
+                Scope::Filters,
+            ] {
                 assert!(
                     !keymap
                         .entries

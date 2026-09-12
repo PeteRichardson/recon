@@ -451,16 +451,16 @@ one key or, for an action several keys reach today, a list:
 
 ```toml
 [keymap]
-'global.quit' = 'q'
+'global.reload' = 'F5'
 'nav.up' = ['k', 'Up']
 ```
 
 An entry replaces that action's keys entirely; any action the stanza does not
-mention keeps its default. `--print-keymap` prints recon's whole default set
-in exactly this syntax, ready to copy from and edit — it prints the
-**defaults**, not whatever `[keymap]` you already have, and runs before
-`config.toml` is even read, so it still works when that file is the thing
-that's broken:
+mention keeps its default. An empty list, `'global.quit' = []`, unbinds the
+action: no key reaches it, and the `?` overlay shows it as `unbound`.
+`--print-keymap` prints recon's whole default set in exactly this syntax,
+ready to copy from and edit — it prints the **defaults**, not whatever
+`[keymap]` you already have:
 
 ```console
 $ recon --print-keymap
@@ -482,6 +482,20 @@ recon never writes `config.toml` — paste the line yourself, the same as
 A name the tables don't list, or a key spelling recon can't parse, refuses to
 start and names the offender, rather than surfacing the first time you press
 the key.
+
+A key is spelled as one of:
+
+- a single character, such as `q` or `?`, optionally with a `Ctrl-` or
+  `Alt-` prefix — `Ctrl-q`, `Alt-j`
+- `space`, or `Shift-Tab` — spelled exactly that way, with no prefix
+- one of the named keys — `Backspace`, `Enter`, `Left`, `Right`, `Up`,
+  `Down`, `Home`, `End`, `PageUp`, `PageDown`, `Tab`, `BackTab`, `Delete`,
+  `Insert`, `Esc` — optionally with a `Ctrl-` or `Alt-` prefix
+- `F` followed by digits, `F1` through `F12`, optionally with a `Ctrl-` or
+  `Alt-` prefix
+- a bare character range such as `1-9`, which binds every key in it — bare
+  only, since a `Ctrl-` prefix is stripped before a range is read, so
+  `Ctrl-d` means `d`, not a range
 
 Two keys, `-` and `:`, are reserved rather than bound: 1.0 promises them to
 1.1 (a hex view and a command palette), so whichever key a later release
