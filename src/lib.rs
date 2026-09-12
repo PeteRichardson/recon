@@ -12282,9 +12282,17 @@ mod tests {
         );
     }
 
-    /// A real terminal sends `?` as Shift-`/`, so an `is_empty()` guard would
-    /// make the binding unreachable outside a test harness — the trap `O` and
-    /// `n`/`N` already document.
+    /// A user presses `?` as Shift-`/` on the keyboard, but crossterm only
+    /// attaches `SHIFT` when the character itself is uppercase (`keymap::Key`'s
+    /// doc comment records the rule once) — and `'?'` is not uppercase, so a
+    /// real terminal reports it with no modifiers at all. An `is_empty()`
+    /// guard would have been satisfied here; the risk such a guard actually
+    /// poses is the one `O` and `n`/`N` document, where the letter really does
+    /// carry `SHIFT`.
+    ///
+    /// This test does not reproduce what a terminal sends: it hand-builds an
+    /// event carrying `SHIFT` on `'?'`, which `normalise` drops. It pins that
+    /// dropping behaviour, not real keypress handling.
     #[test]
     fn shift_does_not_stop_the_help_overlay_opening() {
         let mut app = app_over("help_shift", &["a.rs"]);

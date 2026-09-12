@@ -847,9 +847,10 @@ mod tests {
 
     /// The README's `## Usage` block, as embedded at compile time.
     ///
-    /// `include_str!` rather than reading the file at run time, matching
-    /// `help.rs`'s `SOURCES`: no working-directory assumption, and the test
-    /// cannot pass by silently failing to find the file.
+    /// `include_str!` rather than reading the file at run time: the embedded
+    /// text travels with the binary, so the test carries no
+    /// working-directory assumption and cannot pass by silently failing to
+    /// find the file.
     const README: &str = include_str!("../README.md");
 
     /// Pull the first fenced block after the `## Usage` heading out of `README`.
@@ -877,11 +878,11 @@ mod tests {
     /// down the README, so this was drift in the one block a reader treats as
     /// authoritative rather than a gap in coverage.
     ///
-    /// This is `help.rs`'s `every_bound_key_is_documented` applied to the CLI
-    /// surface — that module's own doc names generating README sections as "the
-    /// obvious next step", and this is that step for the flags. Comparing
-    /// rendered output rather than checking for flag names means a *changed*
-    /// description fails too, not only an added flag.
+    /// This test compares the CLI's actual rendered help text against the
+    /// README's usage block directly, rather than checking that each flag
+    /// name merely appears somewhere in it. Comparing rendered output rather
+    /// than checking for flag names means a *changed* description fails too,
+    /// not only an added flag.
     #[test]
     fn readme_usage_block_matches_the_real_help() {
         use clap::CommandFactory;

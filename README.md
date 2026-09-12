@@ -342,30 +342,30 @@ it unless a paragraph here says why not.
 
 Global (`src/lib.rs`), handled before the focused pane sees the key:
 
-| Key(s) | Action |
-| --- | --- |
-| `?` | Show the keymap overlay — every binding on one screen. Any key closes it, and that key does nothing else |
-| `q` | Quit |
-| `Q` | Quit without emitting — the same as `q` unless `--emit` was given |
-| `Tab` / `Shift-Tab` | Move focus to the next / previous of the three panes — navigator, file view, filter pane. All three are always on screen, so the cycle never skips one |
-| `/` | In the navigator, search filenames. In the file view or the filter pane, set a live search — a filter of its own, which moves you to its next hit from the cursor exactly as `n` would |
-| `p` | Promote the live search into the numbered filter set, freeing `/` for the next one |
-| `Esc` | In the navigator with a filename search active, clear it; otherwise clear the live search. An open prompt takes this key first and just cancels the prompt |
-| `e` | Focus the navigator, revealing the left column if `b` or `z` hid it |
-| `t` | Focus the file view |
-| `f` | Focus the filter pane. `f i`, `f x` and `f c` are chains: the pair works from anywhere, and when the prompt commits, focus returns to where you were and the app steps as if you had pressed `n`. `f f` stays in the pane |
-| `space` | **Peek at the plain file** — drop every filter and flip the hide mode, so the code reads normally. Press again to put the filtered view back exactly as it was. See [Peeking at the plain file](#peeking-at-the-plain-file) |
-| `.` / `,` | Skip to the next / previous file the filters match, landing on its first / last interesting line. Works from every pane; focus stays put. The keycaps say `>` and `<` |
-| `[` / `]` | Page the file view up / down, whichever pane has focus — so a peeked file can be skimmed from the navigator |
-| `1` – `9` | Toggle the filter the pane numbers `1` to `9`, from any pane. Built-in filters, set headers and the search row have no number; `Enter` in the filter pane toggles those |
-| `u` / `Ctrl-H` / `H` | Toggle between dimming unmatched lines and hiding them — `u` for **u**nmatched; the other two are aliases for terminals and habits that already use them |
-| `!` | Disable every filter, remembering which were on; restores exactly that (or enables all, if none were on to remember) |
-| `&` | Combine the enabled include filters with **AND** instead of OR — a line must match every one of them. Press again for OR. See [Combining filters with AND](#combining-filters-with-and) |
-| `b` | Hide the left column — both the navigator and the filter pane — and focus the file view; press again to restore the split (focus stays in the file view; `e` returns it) |
-| `z` | Maximise the focused pane, or restore the split — works in the navigator too, for long filenames |
-| `o` | Open the selected file's enclosing **project** in your editor, at the line the cursor is on — see [Opening an editor](#opening-an-editor) |
-| `O` | Open the selected **file alone**, at the same line — no project, no walk-up |
-| `r` | **Refresh from disk** — re-list, re-stat and rescan the navigator's listing (so a file created since the listing was built appears), and reload the file in the view with the cursor kept on its line. The status row shows `changed on disk · r` when the open file's size or mtime has moved |
+| Key(s) | Action | Name(s) |
+| --- | --- | --- |
+| `?` | Show the keymap overlay — every binding on one screen. Any key closes it, and that key does nothing else | `global.help` |
+| `q` | Quit | `global.quit` |
+| `Q` | Quit without emitting — the same as `q` unless `--emit` was given | `global.quit.silent` |
+| `Tab` / `Shift-Tab` | Move focus to the next / previous of the three panes — navigator, file view, filter pane. All three are always on screen, so the cycle never skips one | `global.focus.next` / `global.focus.prev` |
+| `/` | In the navigator, search filenames. In the file view or the filter pane, set a live search — a filter of its own, which moves you to its next hit from the cursor exactly as `n` would | `global.search` |
+| `p` | Promote the live search into the numbered filter set, freeing `/` for the next one | `global.search.promote` |
+| `Esc` | In the navigator with a filename search active, clear it; otherwise clear the live search. An open prompt takes this key first and just cancels the prompt | `global.escape` |
+| `e` | Focus the navigator, revealing the left column if `b` or `z` hid it | `global.focus.nav` |
+| `t` | Focus the file view | `global.focus.view` |
+| `f` | Focus the filter pane. `f i`, `f x` and `f c` are chains: the pair works from anywhere, and when the prompt commits, focus returns to where you were and the app steps as if you had pressed `n`. `f f` stays in the pane | `global.focus.filters` |
+| `space` | **Peek at the plain file** — drop every filter and flip the hide mode, so the code reads normally. Press again to put the filtered view back exactly as it was. See [Peeking at the plain file](#peeking-at-the-plain-file) | `global.peek` |
+| `.` / `,` | Skip to the next / previous file the filters match, landing on its first / last interesting line. Works from every pane; focus stays put. The keycaps say `>` and `<` | `global.file.next` / `global.file.prev` |
+| `[` / `]` | Page the file view up / down, whichever pane has focus — so a peeked file can be skimmed from the navigator | `global.page.up` / `global.page.down` |
+| `1` – `9` | Toggle the filter the pane numbers `1` to `9`, from any pane. Built-in filters, set headers and the search row have no number; `Enter` in the filter pane toggles those | `global.filters.toggle` |
+| `u` / `Ctrl-H` / `H` | Toggle between dimming unmatched lines and hiding them — `u` for **u**nmatched; the other two are aliases for terminals and habits that already use them | `global.toggle.hide` |
+| `!` | Disable every filter, remembering which were on; restores exactly that (or enables all, if none were on to remember) | `global.filters.disable` |
+| `&` | Combine the enabled include filters with **AND** instead of OR — a line must match every one of them. Press again for OR. See [Combining filters with AND](#combining-filters-with-and) | `global.filters.and` |
+| `b` | Hide the left column — both the navigator and the filter pane — and focus the file view; press again to restore the split (focus stays in the file view; `e` returns it) | `global.zoom.view` |
+| `z` | Maximise the focused pane, or restore the split — works in the navigator too, for long filenames | `global.zoom.focused` |
+| `o` | Open the selected file's enclosing **project** in your editor, at the line the cursor is on — see [Opening an editor](#opening-an-editor) | `global.editor.project` |
+| `O` | Open the selected **file alone**, at the same line — no project, no walk-up | `global.editor.file` |
+| `r` | **Refresh from disk** — re-list, re-stat and rescan the navigator's listing (so a file created since the listing was built appears), and reload the file in the view with the cursor kept on its line. The status row shows `changed on disk · r` when the open file's size or mtime has moved | `global.reload` |
 
 `?` used to search backward. `n`/`N` cover both directions now, which is what
 freed it for the overlay — it is the conventional help key in the pagers and
@@ -387,26 +387,26 @@ help is a genuine improvement and deliberately deferred; see issue #25.
 Chains — a focus key, then a pane key. Documented as commands because they
 are how a pane verb is reached from anywhere:
 
-| Keys | Action |
-| --- | --- |
-| `f i` / `f x` | Add an including / excluding filter. When the prompt commits, focus returns to where you were and `n` runs there |
-| `f c` | Change the selected filter's pattern; returns on commit the same way |
-| `f d` / `f Enter` | Delete / toggle the selected filter; focus stays in the pane, since one delete is often the first of several |
-| `f f` | Stay in the filter pane — the second `f` ends the chain |
-| `e n` | Move the navigator to its next `n`: the next filename-search hit if one is active, else the next file the filters match. Unlike `.`, focus moves to the navigator |
-| `t *` | Search for the word under the file view's cursor, from the navigator or the filter pane |
+| Keys | Action | Name(s) |
+| --- | --- | --- |
+| `f i` / `f x` | Add an including / excluding filter. When the prompt commits, focus returns to where you were and `n` runs there | — |
+| `f c` | Change the selected filter's pattern; returns on commit the same way | — |
+| `f d` / `f Enter` | Delete / toggle the selected filter; focus stays in the pane, since one delete is often the first of several | — |
+| `f f` | Stay in the filter pane — the second `f` ends the chain | — |
+| `e n` | Move the navigator to its next `n`: the next filename-search hit if one is active, else the next file the filters match. Unlike `.`, focus moves to the navigator | — |
+| `t *` | Search for the word under the file view's cursor, from the navigator or the filter pane | — |
 
 Shared motions — the same key, the same meaning, in every pane where the idea
 exists:
 
-| Key(s) | Navigator | File view | Filter pane |
-| --- | --- | --- | --- |
-| `j` / `k`, `Down` / `Up` | next / previous entry | cursor down / up | next / previous row |
-| `g` / `G`, `Home` / `End` | first / last entry | top / bottom of the file | first / last row |
-| `Ctrl-d` / `Ctrl-u` | half a page | scroll half a page | half a page |
-| `PageDown` / `PageUp` | a page | scroll a page (also `Ctrl-f` / `Ctrl-b`) | a page |
-| `n` / `N` | next / previous filename-search match, or file the filters match | next / previous interesting line, crossing files | acts on the file view |
-| `Enter` | open the entry | — | toggle the filter, the set, or the live search |
+| Key(s) | Navigator | File view | Filter pane | Name(s) |
+| --- | --- | --- | --- | --- |
+| `j` / `k`, `Down` / `Up` | next / previous entry | cursor down / up | next / previous row | `nav.up` / `nav.down` / `view.up` / `view.down` / `filters.up` / `filters.down` |
+| `g` / `G`, `Home` / `End` | first / last entry | top / bottom of the file | first / last row | `nav.goto.start` / `nav.goto.end` / `view.goto.start` / `view.goto.end` / `filters.goto.start` / `filters.goto.end` |
+| `Ctrl-d` / `Ctrl-u` | half a page | scroll half a page | half a page | `nav.halfpage.down` / `nav.halfpage.up` / `view.halfpage.down` / `view.halfpage.up` / `filters.halfpage.down` / `filters.halfpage.up` |
+| `PageDown` / `PageUp` | a page | scroll a page (also `Ctrl-f` / `Ctrl-b`) | a page | `nav.page.down` / `nav.page.up` / `view.page.down` / `view.page.up` / `filters.page.down` / `filters.page.up` |
+| `n` / `N` | next / previous filename-search match, or file the filters match | next / previous interesting line, crossing files | acts on the file view | `hit.next` / `hit.prev` / `nav.hit.next` / `nav.hit.prev` |
+| `Enter` | open the entry | — | toggle the filter, the set, or the live search | `nav.open` / `filters.toggle` |
 
 `[` and `]` page the file view from every pane and so live in the Global table.
 
@@ -786,17 +786,17 @@ sees the key. Plain `h` is unaffected.
 While a search or filter prompt is open it consumes every key, so `q` and
 `Tab` are typed into the pattern rather than acted on:
 
-| Key(s) | Action |
-| --- | --- |
-| printable characters | Insert at the cursor |
-| `Left` / `Right` | Move the cursor one character |
-| `Home` / `End`, `Ctrl-a` / `Ctrl-e` | Jump to the start / end of the pattern |
-| `Backspace` | Delete the character before the cursor; on an empty pattern, cancel |
-| `Delete` | Delete the character under the cursor |
-| `Ctrl-w` | Delete the word before the cursor — a run of letters, digits and `_`, or a run of punctuation, plus any blanks between it and the cursor |
-| `Ctrl-u` | Delete everything before the cursor |
-| `Enter` | Run the search, or add the filter — or, for a prompt opened with `c`, overwrite the filter being edited |
-| `Esc` | Cancel |
+| Key(s) | Action | Name(s) |
+| --- | --- | --- |
+| printable characters | Insert at the cursor | — |
+| `Left` / `Right` | Move the cursor one character | `prompt.left` / `prompt.right` |
+| `Home` / `End`, `Ctrl-a` / `Ctrl-e` | Jump to the start / end of the pattern | `prompt.start` / `prompt.end` |
+| `Backspace` | Delete the character before the cursor; on an empty pattern, cancel | `prompt.delete.back` |
+| `Delete` | Delete the character under the cursor | `prompt.delete.forward` |
+| `Ctrl-w` | Delete the word before the cursor — a run of letters, digits and `_`, or a run of punctuation, plus any blanks between it and the cursor | `prompt.delete.word` |
+| `Ctrl-u` | Delete everything before the cursor | `prompt.delete.start` |
+| `Enter` | Run the search, or add the filter — or, for a prompt opened with `c`, overwrite the filter being edited | `prompt.commit` |
+| `Esc` | Cancel | `prompt.cancel` |
 
 The cursor is the reversed cell on the prompt row; the terminal's own cursor
 stays hidden. The editing keys are vim's command-line set, with `Ctrl-a` and
@@ -816,22 +816,22 @@ prompt open to correct.
 
 File view pane (`src/widgets/fileview.rs`) — its own verbs; the shared motions are tabled above:
 
-| Key(s) | Action |
-| --- | --- |
-| `h` / `Left` | Move cursor back |
-| `Ctrl-h` | Nothing here — the global `Ctrl-H` hide toggle handles it first. Plain `h` still moves the cursor back. |
-| `l` / `Right` | Move cursor forward |
-| `w` | Move to the next word |
-| `0` / `^` | Move to the start of the line |
-| `$` | Move to the end of the line |
-| `{` / `}` | Move by paragraph, back / forward |
-| `#` | Toggle the line-number gutter |
-| `*` | Set the live search to the word under the cursor — a run of letters, digits and `_`, so a mangled symbol stays whole — and move to its next occurrence. `* p` makes it a numbered filter |
-| `v` / `V` | Start a selection by character / by whole lines; press the same key again to end it, or the other to switch between them. The motions grow it |
-| `y` | Copy the selection to the clipboard and end the selection. `Ctrl-y` still scrolls |
-| `Esc` | End the selection. With none, this is the global `Esc` and clears the searches instead |
-| `Ctrl-e` / `Ctrl-y` | Scroll one line down / up |
-| `Ctrl-f` / `Ctrl-b` | Page down / up — aliases for `PageDown` / `PageUp` |
+| Key(s) | Action | Name(s) |
+| --- | --- | --- |
+| `h` / `Left` | Move cursor back | `view.left` |
+| `Ctrl-h` | Nothing here — the global `Ctrl-H` hide toggle handles it first. Plain `h` still moves the cursor back. | — |
+| `l` / `Right` | Move cursor forward | `view.right` |
+| `w` | Move to the next word | `view.word.forward` |
+| `0` / `^` | Move to the start of the line | `view.line.start` |
+| `$` | Move to the end of the line | `view.line.end` |
+| `{` / `}` | Move by paragraph, back / forward | `view.paragraph.prev` / `view.paragraph.next` |
+| `#` | Toggle the line-number gutter | `view.toggle.linenumbers` |
+| `*` | Set the live search to the word under the cursor — a run of letters, digits and `_`, so a mangled symbol stays whole — and move to its next occurrence. `* p` makes it a numbered filter | `global.search.word` |
+| `v` / `V` | Start a selection by character / by whole lines; press the same key again to end it, or the other to switch between them. The motions grow it | `global.visual.char` / `global.visual.line` |
+| `y` | Copy the selection to the clipboard and end the selection. `Ctrl-y` still scrolls | `global.yank` |
+| `Esc` | End the selection. With none, this is the global `Esc` and clears the searches instead | `global.escape` |
+| `Ctrl-e` / `Ctrl-y` | Scroll one line down / up | `view.scroll.down` / `view.scroll.up` |
+| `Ctrl-f` / `Ctrl-b` | Page down / up — aliases for `PageDown` / `PageUp` | `view.page.down` / `view.page.up` |
 
 `*` is the two-key version of "where else does this symbol appear?": the word
 under the cursor — letters, digits and `_`, so a mangled `_ZN…E` stays whole
@@ -888,10 +888,10 @@ center_jumps = false
 
 Navigator pane (`src/widgets/filenav.rs`) — its own verbs; the shared motions are tabled above:
 
-| Key(s) | Action |
-| --- | --- |
-| `h` / `Left` | Go to the parent directory, landing on the directory just left |
-| `l` / `Right` | Open the selected entry — descend into a directory, or load a file (`Enter` does the same) |
+| Key(s) | Action | Name(s) |
+| --- | --- | --- |
+| `h` / `Left` | Go to the parent directory, landing on the directory just left | `nav.parent` |
+| `l` / `Right` | Open the selected entry — descend into a directory, or load a file (`Enter` does the same) | `nav.open` |
 
 `h` and `l` act on the pane rather than on the row: `h` climbs out whatever is
 selected, and `l` is `Enter` in every case, including on a file. They mean

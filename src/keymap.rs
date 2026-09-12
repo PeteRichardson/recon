@@ -212,7 +212,8 @@ impl ActionId {
     /// The name a user writes, and the name the documentation shows.
     ///
     /// No caller outside `the_table_and_the_documentation_agree` below as of
-    /// task 4 (#199): task 8's generated hints are its production caller.
+    /// task 4 (#199): plan 2b's `--print-keymap` is its production caller,
+    /// via `action.name()`.
     #[allow(dead_code)]
     pub(crate) fn name(self) -> &'static str {
         match self {

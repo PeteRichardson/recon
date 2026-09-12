@@ -65,9 +65,11 @@ match_same_arms = "allow"
 # `&self` is what makes them interchangeable at the call site.
 unused_self = "allow"
 
-# Both are the top-level event dispatch — one long, flat `match` over keys.
-# Splitting it into helpers to satisfy a line count would scatter the one
-# place you can currently read the whole keymap.
+# The keymap itself lives in one place: `keymap::DEFAULT`. `dispatch_event`
+# walks the scope ladder in precedence order, and `perform` holds one arm per
+# action, each carrying the body its key arm used to carry. Splitting either
+# to satisfy a line count would scatter bodies that belong beside the action
+# names they implement.
 too_many_lines = "allow"
 
 # `FileView`'s bools are independent view flags, not a state enum in disguise;
