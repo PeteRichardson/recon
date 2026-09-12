@@ -886,8 +886,13 @@ mod tests {
             "src/widgets/filterlist.rs",
             include_str!("widgets/filterlist.rs"),
         ),
-        // The profile picker's own `j`/`k`/`Up`/`Down`/`Enter`/`Esc` (#162).
-        ("src/widgets/picker.rs", include_str!("widgets/picker.rs")),
+        // `src/widgets/picker.rs` is deliberately absent too, and for the
+        // same reason as `viewport.rs` above: it used to hold the profile
+        // picker's own `j`/`k`/`Up`/`Down`/`Enter`/`Esc` as literal
+        // `KeyCode::…` patterns (#162), but task 7 (#199) turned
+        // `ProfilePicker::handle_key` into `ProfilePicker::perform`, which
+        // matches `ActionId`, not a key. The keys themselves live only in
+        // `keymap::DEFAULT` now.
     ];
 
     /// Where a source file's own test module begins. Everything after it is
@@ -997,6 +1002,26 @@ mod tests {
         );
     }
 
+    /// `j`, `k`, `Up`, `Down`, `Enter` and `Esc` used to be bound in
+    /// `ProfilePicker::handle_key`'s own `match`, which is why that file used
+    /// to be a `SOURCES` entry (#162). Task 7 (#199) turned it into
+    /// `ProfilePicker::perform`, which matches an already-resolved
+    /// `ActionId` — so there is no longer a `KeyCode::…` pattern in
+    /// `picker.rs` for a scan to miss, and `keymap.rs`'s own
+    /// `DEFAULT`-against-`KEYMAP` test is what now catches an undocumented
+    /// row there, the same as `viewport.rs` above.
+    #[test]
+    fn picker_no_longer_binds_keys_of_its_own() {
+        let bound = bound_keys(include_str!("widgets/picker.rs"));
+
+        assert!(
+            bound.is_empty(),
+            "src/widgets/picker.rs binds a key again ({bound:?}); either it needs a \
+             SOURCES entry restored, or it should route through keymap::DEFAULT \
+             like everything else"
+        );
+    }
+
     /// The scan is the whole test's foundation, so it gets its own coverage:
     /// a `bound_chars` that silently found nothing would make
     /// `every_bound_key_is_documented` pass forever.
@@ -1055,33 +1080,25 @@ mod tests {
         );
     }
 
-    /// The scan reaches the global keys at all — the regression #162 found:
-    /// every `lib.rs` binding sits past the fixtures module's attribute. And
-    /// it reaches the picker, which `SOURCES` did not list.
+    /// The scan reaches the global keys at all — the regression #162 found
+    /// that every `lib.rs` binding sits past the fixtures module's
+    /// attribute.
     #[test]
-    fn the_global_keys_and_the_picker_are_scanned() {
+    fn the_global_keys_are_scanned() {
         let bound = bound_keys(include_str!("lib.rs"));
-        // `q` and `BackTab` were this probe's canaries before task 4 (#199):
-        // both now resolve through `keymap::DEFAULT` instead of a literal
-        // `KeyCode::…` pattern in `lib.rs`, so the scan legitimately no
-        // longer finds them here. `n` and `Esc` are still bound by a literal
-        // pattern past the fixtures module — the hint arm `n`/`N` stays a
-        // fallthrough until task 6, and the prompt's `Esc` until task 7 — so
-        // they still prove the scan reaches this file's real bindings.
+        // `q` and `BackTab` were this probe's canaries before task 4 (#199),
+        // and the prompt's `Esc` before task 7; each in turn now resolves
+        // through `keymap::DEFAULT` instead of a literal `KeyCode::…`
+        // pattern in `lib.rs`, so the scan legitimately no longer finds them
+        // here. `n` (the chain's synthetic replay in
+        // `return_to_chain_origin`) and `i` (the filter-pane hint arm) are
+        // still bound by a literal pattern past the fixtures module — task 8
+        // regenerates the hint's *text* from the table, not its `KeyCode`
+        // match — so they still prove the scan reaches this file's real
+        // bindings.
         assert!(
-            bound.contains(&Key::Char('n')) && bound.contains(&Key::Named("Esc")),
+            bound.contains(&Key::Char('n')) && bound.contains(&Key::Char('i')),
             "src/lib.rs's global keys are not reached by the scan: {bound:?}"
-        );
-        let bound = bound_keys(include_str!("widgets/picker.rs"));
-        assert!(
-            bound.contains(&Key::Named("Esc")),
-            "src/widgets/picker.rs is not reached by the scan: {bound:?}"
-        );
-        assert!(
-            SOURCES
-                .iter()
-                .any(|(path, _)| *path == "src/widgets/picker.rs"),
-            "src/widgets/picker.rs binds keys, but SOURCES does not list it"
         );
     }
 

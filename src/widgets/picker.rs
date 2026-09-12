@@ -12,7 +12,6 @@
 //! Nothing remembers which profile was applied — see the spec's "a profile is
 //! an action, not a live binding".
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::prelude::{Buffer, Modifier, Rect, Style, Widget};
 use ratatui::widgets::{Block, Clear};
 use unicode_width::UnicodeWidthStr;
@@ -54,33 +53,37 @@ impl ProfilePicker {
         self.selected
     }
 
-    /// Feed a key. `j`/`k` and the arrows move; `Enter` chooses; `Esc`
-    /// closes; everything else is swallowed, as a prompt swallows it.
+    /// Carry out a `Scope::Picker` action. `j`/`k` move; `Enter` chooses;
+    /// `Esc` closes.
     ///
-    /// A modified key is dropped before the match, the rule every other pane
-    /// follows since #120: without this, `Ctrl-j` read as `j` and moved the
-    /// selection, and `Ctrl-c` was swallowed in silence.
-    pub(crate) fn handle_key(&mut self, key: KeyEvent) -> PickerOutcome {
-        if key
-            .modifiers
-            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
-        {
-            return PickerOutcome::Open;
-        }
-        match key.code {
-            KeyCode::Char('j') | KeyCode::Down => {
+    /// `App`'s modal dispatch is the only caller (task 7, #199): it resolves
+    /// the key against `Scope::Picker` first, and a key that names no action
+    /// there is swallowed by `App` itself — the same "takes every key"
+    /// behaviour the old `_ =>` arm gave directly, now given by `App` never
+    /// calling this function at all. That also retires the modified-key
+    /// guard this used to open with: `Ctrl-j` no longer resolves to
+    /// `PickerDown` in the table (#120, #193), so it never reaches here
+    /// either.
+    pub(crate) fn perform(&mut self, action: crate::keymap::ActionId) -> PickerOutcome {
+        use crate::keymap::ActionId as A;
+        match action {
+            A::PickerDown => {
                 self.selected = (self.selected + 1).min(self.names.len().saturating_sub(1));
                 PickerOutcome::Open
             }
-            KeyCode::Char('k') | KeyCode::Up => {
+            A::PickerUp => {
                 self.selected = self.selected.saturating_sub(1);
                 PickerOutcome::Open
             }
-            KeyCode::Enter => match self.names.get(self.selected) {
+            A::PickerChoose => match self.names.get(self.selected) {
                 Some(name) => PickerOutcome::Chosen(name.clone()),
                 None => PickerOutcome::Closed,
             },
-            KeyCode::Esc => PickerOutcome::Closed,
+            A::PickerCancel => PickerOutcome::Closed,
+            // See `FileNav::perform`'s trailing arm: `resolve(Scope::Picker,
+            // ..)` only ever answers with one of the four arms above, so this
+            // is unreached today, and stays inert rather than panicking if
+            // that ever stops being true.
             _ => PickerOutcome::Open,
         }
     }
@@ -146,48 +149,41 @@ impl ProfilePicker {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crossterm::event::KeyModifiers;
+    use crate::keymap::ActionId as A;
 
     fn picker() -> ProfilePicker {
         ProfilePicker::new(1, vec!["default".into(), "loud".into()])
     }
 
-    fn key(code: KeyCode) -> KeyEvent {
-        KeyEvent::new(code, KeyModifiers::NONE)
-    }
-
     #[test]
     fn j_and_k_move_and_clamp() {
         let mut p = picker();
-        assert_eq!(p.handle_key(key(KeyCode::Char('k'))), PickerOutcome::Open);
+        assert_eq!(p.perform(A::PickerUp), PickerOutcome::Open);
         assert_eq!(p.selected(), 0);
-        p.handle_key(key(KeyCode::Char('j')));
-        p.handle_key(key(KeyCode::Char('j')));
+        p.perform(A::PickerDown);
+        p.perform(A::PickerDown);
         assert_eq!(p.selected(), 1);
-        p.handle_key(key(KeyCode::Up));
+        p.perform(A::PickerUp);
         assert_eq!(p.selected(), 0);
     }
 
     #[test]
     fn enter_chooses_and_esc_closes() {
         let mut p = picker();
-        p.handle_key(key(KeyCode::Char('j')));
+        p.perform(A::PickerDown);
         assert_eq!(
-            p.handle_key(key(KeyCode::Enter)),
+            p.perform(A::PickerChoose),
             PickerOutcome::Chosen("loud".into())
         );
-        assert_eq!(
-            picker().handle_key(key(KeyCode::Esc)),
-            PickerOutcome::Closed
-        );
+        assert_eq!(picker().perform(A::PickerCancel), PickerOutcome::Closed);
     }
 
+    /// `resolve(Scope::Picker, ..)` never actually produces anything but the
+    /// four arms above, but `perform` still answers safely if it ever did —
+    /// see the comment on its trailing arm.
     #[test]
-    fn other_keys_are_swallowed() {
-        assert_eq!(
-            picker().handle_key(key(KeyCode::Char('q'))),
-            PickerOutcome::Open
-        );
+    fn an_unrelated_action_is_swallowed() {
+        assert_eq!(picker().perform(A::GlobalQuit), PickerOutcome::Open);
     }
 
     #[test]
@@ -215,22 +211,6 @@ mod tests {
                 .add_modifier
                 .contains(Modifier::REVERSED)
         );
-    }
-
-    /// A modified key must not act as the bare key. `Ctrl-j` moved the
-    /// selection and `Ctrl-c` was swallowed, after #120 settled the opposite
-    /// rule for every other pane (#193).
-    #[test]
-    fn a_modified_key_does_not_move_the_selection() {
-        let mut p = picker();
-
-        let outcome = p.handle_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::CONTROL));
-
-        assert_eq!(outcome, PickerOutcome::Open);
-        assert_eq!(p.selected(), 0, "Ctrl-j moved the selection");
-
-        p.handle_key(KeyEvent::new(KeyCode::Char('k'), KeyModifiers::ALT));
-        assert_eq!(p.selected(), 0, "Alt-k moved the selection");
     }
 
     /// Width is display columns, not characters: a CJK name occupies two

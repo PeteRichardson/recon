@@ -726,98 +726,102 @@ impl App<'_> {
     /// While it is open it consumes every key, so app-wide commands like `q`
     /// are typed into the pattern rather than acted on.
     fn handle_search_key(&mut self, key: event::KeyEvent) {
-        match key.code {
-            KeyCode::Esc => {
-                self.search = None;
-                self.chain_origin = None;
-            }
-            KeyCode::Enter => {
-                let Some(prompt) = self.search.as_ref() else {
-                    return;
-                };
-                let (pattern, kind) = (prompt.pattern.clone(), prompt.kind);
+        let pressed = crate::keymap::normalise(key);
+        if let Some(action) = crate::keymap::resolve(crate::keymap::Scope::Prompt, pressed) {
+            use crate::keymap::ActionId as A;
+            match action {
+                A::PromptCancel => {
+                    self.search = None;
+                    self.chain_origin = None;
+                }
+                A::PromptCommit => {
+                    let Some(prompt) = self.search.as_ref() else {
+                        return;
+                    };
+                    let (pattern, kind) = (prompt.pattern.clone(), prompt.kind);
 
-                // `SaveSet` is not a pattern: its failures are messages,
-                // shown in the prompt in place of `INVALID_PATTERN`.
-                if kind == PromptKind::SaveSet {
-                    match self.save_scratch_as(&pattern) {
-                        Ok(()) => {
-                            self.search = None;
-                            self.swallow_next_enter = true;
-                        }
-                        Err(message) => {
-                            if let Some(prompt) = self.search.as_mut() {
-                                prompt.error = Some(message);
+                    // `SaveSet` is not a pattern: its failures are messages,
+                    // shown in the prompt in place of `INVALID_PATTERN`.
+                    if kind == PromptKind::SaveSet {
+                        match self.save_scratch_as(&pattern) {
+                            Ok(()) => {
+                                self.search = None;
+                                self.swallow_next_enter = true;
+                            }
+                            Err(message) => {
+                                if let Some(prompt) = self.search.as_mut() {
+                                    prompt.error = Some(message);
+                                }
                             }
                         }
+                        return;
                     }
-                    return;
-                }
-                let outcome = match kind {
-                    PromptKind::Search => self.run_search(&pattern),
-                    PromptKind::SaveSet => unreachable!("handled above"),
-                    PromptKind::Filter => self.add_filter(&pattern),
-                    PromptKind::Exclude => self.add_excluding_filter(&pattern),
-                    PromptKind::Edit { index, .. } => self.replace_filter(index, &pattern),
-                    // Straight to `apply_search`, not through `run_search`:
-                    // the search-row prompt can only be opened from the
-                    // filter pane, so dispatching on focus through
-                    // `run_search` would be needless indirection. `apply_search`
-                    // is the direct call.
-                    PromptKind::EditSearch => self.apply_search(&pattern),
-                };
-                if outcome.is_ok() {
-                    self.search = None;
-                    // Arm the bounce guard (#48). Only on the branch that
-                    // actually closes the prompt: a rejected pattern leaves it
-                    // open, so the next `Enter` is another commit attempt and
-                    // never reaches the filter pane to be swallowed.
-                    self.swallow_next_enter = true;
-                    if matches!(
-                        kind,
-                        PromptKind::Filter | PromptKind::Exclude | PromptKind::Edit { .. }
-                    ) {
-                        self.return_to_chain_origin();
-                    }
-                } else if let Some(prompt) = self.search.as_mut() {
-                    prompt.error = Some(INVALID_PATTERN.to_string());
-                }
-            }
-            KeyCode::Backspace => {
-                if let Some(prompt) = self.search.as_mut() {
-                    prompt.error = None;
-                    // Backspacing past the start of an *empty* prompt
-                    // abandons it, as in vim. At the start of a pattern with
-                    // text after the cursor there is nothing to delete and
-                    // nothing to abandon: the text is what the user is
-                    // keeping (#206).
-                    if !prompt.delete_before() && prompt.pattern.is_empty() {
+                    let outcome = match kind {
+                        PromptKind::Search => self.run_search(&pattern),
+                        PromptKind::SaveSet => unreachable!("handled above"),
+                        PromptKind::Filter => self.add_filter(&pattern),
+                        PromptKind::Exclude => self.add_excluding_filter(&pattern),
+                        PromptKind::Edit { index, .. } => self.replace_filter(index, &pattern),
+                        // Straight to `apply_search`, not through `run_search`:
+                        // the search-row prompt can only be opened from the
+                        // filter pane, so dispatching on focus through
+                        // `run_search` would be needless indirection. `apply_search`
+                        // is the direct call.
+                        PromptKind::EditSearch => self.apply_search(&pattern),
+                    };
+                    if outcome.is_ok() {
                         self.search = None;
-                        self.chain_origin = None;
+                        // Arm the bounce guard (#48). Only on the branch that
+                        // actually closes the prompt: a rejected pattern leaves it
+                        // open, so the next `Enter` is another commit attempt and
+                        // never reaches the filter pane to be swallowed.
+                        self.swallow_next_enter = true;
+                        if matches!(
+                            kind,
+                            PromptKind::Filter | PromptKind::Exclude | PromptKind::Edit { .. }
+                        ) {
+                            self.return_to_chain_origin();
+                        }
+                    } else if let Some(prompt) = self.search.as_mut() {
+                        prompt.error = Some(INVALID_PATTERN.to_string());
                     }
                 }
+                A::PromptDeleteBack => {
+                    if let Some(prompt) = self.search.as_mut() {
+                        prompt.error = None;
+                        // Backspacing past the start of an *empty* prompt
+                        // abandons it, as in vim. At the start of a pattern with
+                        // text after the cursor there is nothing to delete and
+                        // nothing to abandon: the text is what the user is
+                        // keeping (#206).
+                        if !prompt.delete_before() && prompt.pattern.is_empty() {
+                            self.search = None;
+                            self.chain_origin = None;
+                        }
+                    }
+                }
+                // The cursor keys (#206): vim's command-line set, plus the
+                // readline pair for the ends, which the same hands type at a
+                // shell. `Home`/`Ctrl-a` share `PromptStart` and `End`/`Ctrl-e`
+                // share `PromptEnd` — two labels, one action, one arm each.
+                A::PromptLeft => self.edit_prompt(SearchPrompt::move_left),
+                A::PromptRight => self.edit_prompt(SearchPrompt::move_right),
+                A::PromptStart => self.edit_prompt(SearchPrompt::move_to_start),
+                A::PromptEnd => self.edit_prompt(SearchPrompt::move_to_end),
+                A::PromptDeleteForward => self.edit_prompt(SearchPrompt::delete_at),
+                A::PromptDeleteWord => self.edit_prompt(SearchPrompt::delete_word_before),
+                A::PromptDeleteStart => self.edit_prompt(SearchPrompt::delete_to_start),
+                // `resolve(Scope::Prompt, ..)` only ever answers with one of
+                // the arms above — see `DEFAULT`'s `Scope::Prompt` rows — so
+                // this is unreached today. Not a wildcard omitted by
+                // accident: matched explicitly, like `FileNav::perform`'s
+                // trailing arm, so a scope neither of us wired stays inert
+                // instead of panicking a user's terminal.
+                _ => {}
             }
-            // The cursor keys (#206): vim's command-line set, plus the
-            // readline pair for the ends, which the same hands type at a
-            // shell. Guarded on the prompt being open only by the `as_mut`
-            // — every key reaches here through `search.is_some()`.
-            KeyCode::Left => self.edit_prompt(SearchPrompt::move_left),
-            KeyCode::Right => self.edit_prompt(SearchPrompt::move_right),
-            KeyCode::Home => self.edit_prompt(SearchPrompt::move_to_start),
-            KeyCode::End => self.edit_prompt(SearchPrompt::move_to_end),
-            KeyCode::Delete => self.edit_prompt(SearchPrompt::delete_at),
-            KeyCode::Char('a') if key.modifiers == KeyModifiers::CONTROL => {
-                self.edit_prompt(SearchPrompt::move_to_start);
-            }
-            KeyCode::Char('e') if key.modifiers == KeyModifiers::CONTROL => {
-                self.edit_prompt(SearchPrompt::move_to_end);
-            }
-            KeyCode::Char('w') if key.modifiers == KeyModifiers::CONTROL => {
-                self.edit_prompt(SearchPrompt::delete_word_before);
-            }
-            KeyCode::Char('u') if key.modifiers == KeyModifiers::CONTROL => {
-                self.edit_prompt(SearchPrompt::delete_to_start);
-            }
+            return;
+        }
+        match key.code {
             // No prompt binding uses a modified character, and in raw mode
             // a pasted line feed arrives as Ctrl-J (`Char('j')` with
             // CONTROL) rather than as a bare `\n` — dropping it here keeps
@@ -833,6 +837,8 @@ impl App<'_> {
             // scanner in `help.rs`, which reads every `'x'` inside `Char(..)`,
             // does not take the escape's backslash for a key.
             KeyCode::Char(c) if c == '\n' || c == '\r' => {}
+            // Every character that is not bound is not a binding, and cannot
+            // be rebound: it types itself, which is what a prompt is for.
             KeyCode::Char(c) => self.edit_prompt(|prompt| prompt.insert(c)),
             _ => {}
         }
@@ -1318,17 +1324,24 @@ impl App<'_> {
 
         // The picker takes every key while open, like the search prompt:
         // `q` inside it means nothing, and `Enter` applies rather than
-        // toggling whatever the pane has selected underneath.
+        // toggling whatever the pane has selected underneath. A key that
+        // resolves to nothing in `Scope::Picker` is swallowed right here —
+        // it is not handed to `Global` or any other scope, and `perform` is
+        // never called without an action to give it (task 7, #199).
         if let Some(picker) = self.picker.as_mut() {
             if let event::Event::Key(key) = event {
-                match picker.handle_key(key) {
-                    widgets::picker::PickerOutcome::Open => {}
-                    widgets::picker::PickerOutcome::Closed => self.picker = None,
-                    widgets::picker::PickerOutcome::Chosen(name) => {
-                        let set = picker.set;
-                        self.picker = None;
-                        self.filters.apply_profile(set, &name);
-                        self.refresh_view();
+                let pressed = crate::keymap::normalise(key);
+                if let Some(action) = crate::keymap::resolve(crate::keymap::Scope::Picker, pressed)
+                {
+                    match picker.perform(action) {
+                        widgets::picker::PickerOutcome::Open => {}
+                        widgets::picker::PickerOutcome::Closed => self.picker = None,
+                        widgets::picker::PickerOutcome::Chosen(name) => {
+                            let set = picker.set;
+                            self.picker = None;
+                            self.filters.apply_profile(set, &name);
+                            self.refresh_view();
+                        }
                     }
                 }
             }
@@ -1518,12 +1531,12 @@ impl App<'_> {
     /// Before this, the same behaviour was reachable from up to four `match`
     /// arms in different files, which is the drift #199 describes.
     ///
-    /// `Scope::Global` and `Scope::View` resolve into this. `Nav` and
-    /// `Filters` never do — each resolves at its own call site and is
-    /// carried out there or by its widget's own `perform`, never through
-    /// here — and `Prompt`/`Picker` are Task 7's. Until each of the
-    /// remaining scopes is wired, its variants are listed explicitly rather
-    /// than caught by a wildcard — see the comment on that block.
+    /// `Scope::Global` and `Scope::View` resolve into this. `Nav`, `Filters`,
+    /// `Prompt` and `Picker` never do — each resolves at its own call site
+    /// and is carried out there or by its widget's own `perform`, never
+    /// through here. Every variant that can never reach this function is
+    /// still listed explicitly rather than caught by a wildcard — see the
+    /// comment on those two blocks.
     ///
     /// Takes the resolved `Key` alongside the `ActionId`, even though most
     /// arms ignore it: `GlobalFiltersToggle` needs the digit that fired it,
@@ -1818,8 +1831,19 @@ impl App<'_> {
                     "{action:?} resolves against its own widget, never through `perform`"
                 );
             }
-            // The modal scopes — Task 7. The help overlay dismisses on any
-            // key and has no `ActionId` of its own, so it has no group here.
+            // The modal scopes (task 7, #199): `Scope::Prompt` resolves in
+            // `handle_search_key` and `Scope::Picker` resolves in
+            // `dispatch_event`'s picker guard, and each is carried out right
+            // there — neither ever reaches this function, for the reason
+            // Ruling 30 gives: a modal's `None` case must swallow the key
+            // and return, not fall through to `Global` the way every pane
+            // scope does, so there is no path from a modal scope into
+            // `perform` for a fallthrough to take. Same `debug_assert!` as
+            // the group above, and the same reason it exists: plan 2b's
+            // `config.toml` can still bind a `Scope::Global` key to one of
+            // these actions, and `resolve(Scope::Global, key)` would hand it
+            // straight here. The help overlay dismisses on any key and has
+            // no `ActionId` of its own, so it has no arm here at all.
             A::PromptCommit
             | A::PromptCancel
             | A::PromptLeft
@@ -1833,7 +1857,12 @@ impl App<'_> {
             | A::PickerUp
             | A::PickerDown
             | A::PickerChoose
-            | A::PickerCancel => (),
+            | A::PickerCancel => {
+                debug_assert!(
+                    false,
+                    "{action:?} resolves in its own modal dispatch, never through `perform`"
+                );
+            }
         }
     }
 
@@ -7118,6 +7147,51 @@ mod tests {
         key(&mut app, KeyCode::Esc);
         assert!(app.picker.is_none());
         assert_eq!(flags_of(&app, 1), vec![true, false]);
+    }
+
+    /// A key that names no `Scope::Picker` action is swallowed right there
+    /// (task 7, Ruling 30): it must not fall through to `Scope::Global` the
+    /// way a pane scope's unresolved key does. Getting this wrong is silent
+    /// and severe — `q` would quit the program from inside the picker — and
+    /// nothing else in the suite presses an unbound key against an open
+    /// picker and checks the app is still running.
+    #[test]
+    fn an_unbound_key_is_swallowed_by_an_open_picker_rather_than_quitting() {
+        let mut app = app_with_profiles("picker_swallow");
+        key(&mut app, KeyCode::Char('f'));
+        app.filters_pane.select(0);
+        key(&mut app, KeyCode::Char('a'));
+        assert!(app.picker.is_some());
+
+        key(&mut app, KeyCode::Char('q'));
+
+        assert!(app.picker.is_some(), "q closed the picker");
+        assert_eq!(
+            app.state,
+            AppState::Running,
+            "q quit from inside the picker"
+        );
+    }
+
+    /// A modified key must not act as the bare key: `Ctrl-j` moving the
+    /// selection (rather than `Ctrl-j` resolving to nothing, like every
+    /// other pane since #120) was the exact bug #193 fixed. `resolve` is
+    /// what enforces this now, not a guard inside the picker itself.
+    #[test]
+    fn a_modified_key_does_not_move_the_picker_selection() {
+        let mut app = app_with_profiles("picker_modified_key");
+        key(&mut app, KeyCode::Char('f'));
+        app.filters_pane.select(0);
+        key(&mut app, KeyCode::Char('a'));
+        let selected_before = app.picker.as_ref().unwrap().selected();
+
+        ctrl(&mut app, KeyCode::Char('j'));
+
+        assert_eq!(
+            app.picker.as_ref().unwrap().selected(),
+            selected_before,
+            "Ctrl-j moved the selection"
+        );
     }
 
     #[test]
