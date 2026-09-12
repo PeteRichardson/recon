@@ -474,6 +474,29 @@ pub(crate) const DEFAULT: &[(Scope, &str, ActionId)] = &[
 pub(crate) const RESERVED: &[(&str, &str)] =
     &[("-", "the hex view (#242)"), (":", "a command palette")];
 
+/// Which of `labels` are reserved, each paired with what claims it.
+///
+/// A pure function of the label list one `[keymap]` line supplies for one
+/// action — never of the action's scopes — which is what makes "one
+/// reserved key, one warning" true regardless of how many `DEFAULT` scopes
+/// the action occupies (#242). `hit.next`/`hit.prev` hold a row in both
+/// `Scope::View` and `Scope::Filters` (Ruling 12), but a `[keymap]` line
+/// names an action once, with one label list; this reads that list once, so
+/// a two-scope action cannot make it report a key twice. Extracted from
+/// `Keymap::new`'s loop so a test can call it with the same list `Keymap::new`
+/// would build for `hit.next`, without a logging harness.
+fn reserved_hits(labels: &[String]) -> Vec<(&'static str, &'static str)> {
+    labels
+        .iter()
+        .filter_map(|label| {
+            RESERVED
+                .iter()
+                .copied()
+                .find(|(reserved, _)| *reserved == label.as_str())
+        })
+        .collect()
+}
+
 /// The action `name` spells, or `None` when no action does.
 fn action_named(name: &str) -> Option<ActionId> {
     DEFAULT
@@ -558,24 +581,17 @@ impl Keymap {
                     label: bad.clone(),
                 });
             }
-            // Once per reserved key this config line names, not once per
-            // scope `rebind` below puts it back in: `hit.next`/`hit.prev`
-            // hold two scopes each, and a user who bound one key should read
-            // one warning, not one per scope the action happens to occupy.
-            // Reached only from `Config::build_keymap`, called by `main`
-            // before `init_terminal` — the same reason `check_sets` is
-            // called there rather than from `Config::load` — so this still
-            // reaches stderr rather than being dropped by `Muted` (#246).
-            for label in labels {
-                if let Some((_, claim)) = RESERVED
-                    .iter()
-                    .find(|(reserved, _)| *reserved == label.as_str())
-                {
-                    log::warn!(
-                        "{name} binds '{label}', which is reserved for {claim}; \
-                         a later release will want it back, but recon binds it anyway"
-                    );
-                }
+            // `reserved_hits` above is what keeps this to one warning per
+            // reserved key rather than one per scope. Reached only from
+            // `Config::build_keymap`, called by `main` before
+            // `init_terminal` — the same reason `check_sets` is called there
+            // rather than from `Config::load` — so this still reaches
+            // stderr rather than being dropped by `Muted` (#246).
+            for (label, claim) in reserved_hits(labels) {
+                log::warn!(
+                    "{name} binds '{label}', which is reserved for {claim}; \
+                     a later release will want it back, but recon binds it anyway"
+                );
             }
             keymap.rebind(action, labels);
         }
@@ -1175,6 +1191,32 @@ mod tests {
         assert_eq!(
             keymap.resolve(Scope::Global, dash),
             Some(ActionId::GlobalQuit)
+        );
+    }
+
+    /// The case `binding_a_reserved_key_warns_and_obeys` above cannot tell
+    /// apart from a bug: `global.quit` holds one scope, so it would pass
+    /// even if the check fired once per scope instead of once per key.
+    /// `hit.next` is the real two-scope action (Ruling 12: a `DEFAULT` row
+    /// in both `Scope::View` and `Scope::Filters`), and a `[keymap]` line
+    /// for it still supplies exactly one label list — the same one
+    /// `reserved_hits` is handed here. A version of the check that walked
+    /// `Scope`s instead of this list — say, one moved inside `rebind`'s
+    /// per-scope loop — would report the key twice; this asserts it does
+    /// not, without needing a logging harness to watch `Keymap::new` warn.
+    #[test]
+    fn a_two_scope_actions_reserved_key_is_one_hit_not_two() {
+        let mut bindings = std::collections::BTreeMap::new();
+        bindings.insert("hit.next".to_string(), vec!["-".to_string()]);
+        let overlay = crate::config::KeymapConfig { bindings };
+
+        // The same slice `Keymap::new` would read for this config line —
+        // one list, regardless of `hit.next` holding two `DEFAULT` scopes.
+        let labels = &overlay.bindings["hit.next"];
+        assert_eq!(
+            reserved_hits(labels),
+            vec![("-", "the hex view (#242)")],
+            "hit.next holds two scopes, but one config line must warn once"
         );
     }
 
