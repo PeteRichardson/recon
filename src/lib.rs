@@ -1383,21 +1383,25 @@ impl App<'_> {
                 //
                 // Not resolved through the table (#199): these are guidance,
                 // not a binding, and deliberately have no `ActionId` — see
-                // the doc comment on `keymap::ActionId`. Task 8 replaces this
-                // hand-written text with text generated from the table.
+                // the doc comment on `keymap::ActionId`. The hint text is
+                // generated from the table (task 8), so it names the key
+                // that actually reaches the filter action, not the key this
+                // arm happens to match.
                 KeyCode::Char(c @ ('i' | 'x' | 'c' | 'd' | 'm' | 'a' | 's'))
                     if key.modifiers.is_empty() && self.focus != Focus::Filters =>
                 {
-                    let verb = match c {
-                        'i' => "adds a filter",
-                        'x' => "adds an excluding filter",
-                        'c' => "changes the selected filter",
-                        'd' => "deletes the selected filter",
-                        'm' => "toggles include and context",
-                        'a' => "picks a profile for the set",
-                        _ => "solos the set",
+                    use crate::keymap::ActionId as A;
+                    let (action, verb) = match c {
+                        'i' => (A::FiltersInclude, "adds a filter"),
+                        'x' => (A::FiltersExclude, "adds an excluding filter"),
+                        'c' => (A::FiltersEdit, "changes the selected filter"),
+                        'd' => (A::FiltersDelete, "deletes the selected filter"),
+                        'm' => (A::FiltersContext, "toggles include and context"),
+                        'a' => (A::FiltersProfile, "picks a profile for the set"),
+                        _ => (A::FiltersSolo, "solos the set"),
                     };
-                    self.report(&format!("{c} {verb} · f {c}"), false);
+                    let hint = crate::keymap::hint_for(action, verb, A::GlobalFocusFilters);
+                    self.report(&hint, false);
                     return;
                 }
                 _ => {}
@@ -2541,18 +2545,27 @@ impl App<'_> {
         use crate::keymap::ActionId as A;
 
         // The navigator's `h`/`l` in this pane: a hint, not a redirect, for
-        // the same reason as the filter verbs elsewhere (#120 §9). Neither
-        // has an `ActionId` or a table row — `FilterList` cannot report,
-        // since the status row is `App`'s — so this stays a pre-resolution
-        // special case, guarded on an empty modifier set as before.
+        // the same reason as the filter verbs elsewhere (#120 §9). The keys
+        // themselves have no `ActionId` in `Scope::Filters` — `FilterList`
+        // cannot report, since the status row is `App`'s — so this stays a
+        // pre-resolution special case, guarded on an empty modifier set as
+        // before; but the text names the nav actions they point at, so it
+        // is generated from the table (task 8) rather than hand-written.
         if key.modifiers.is_empty() {
             match key.code {
                 KeyCode::Char('h') => {
-                    self.report("h goes up a directory · e h", false);
+                    let hint = crate::keymap::hint_for(
+                        A::NavParent,
+                        "goes up a directory",
+                        A::GlobalFocusNav,
+                    );
+                    self.report(&hint, false);
                     return;
                 }
                 KeyCode::Char('l') => {
-                    self.report("l opens the entry · e l", false);
+                    let hint =
+                        crate::keymap::hint_for(A::NavOpen, "opens the entry", A::GlobalFocusNav);
+                    self.report(&hint, false);
                     return;
                 }
                 _ => {}
@@ -10617,6 +10630,20 @@ mod tests {
         key(&mut app, KeyCode::Char('l'));
         assert_eq!(status(&app), Some("l opens the entry · e l"));
         assert_eq!(app.focus, Focus::Filters);
+    }
+
+    #[test]
+    fn a_hint_names_the_key_the_table_holds() {
+        let (mut app, _root) = app_over_project("hint", "alpha\n");
+        app.focus = Focus::Nav;
+
+        key(&mut app, KeyCode::Char('i'));
+
+        let hint = app.status_message.as_ref().expect("a hint was reported");
+        assert!(
+            hint.text.contains('f') && hint.text.contains('i'),
+            "the hint must name the keys that reach filters.include: {hint:?}"
+        );
     }
 
     /// The hint does not fire where the verb is real.

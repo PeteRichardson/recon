@@ -478,6 +478,39 @@ pub(crate) fn resolve(scope: Scope, key: Key) -> Option<ActionId> {
         .map(|(_, _, action)| *action)
 }
 
+/// The key label `DEFAULT` binds to `action`.
+///
+/// An action bound to more than one key (`nav.parent` also binds `Left`)
+/// takes its first `DEFAULT` row: that is the canonical spelling, listed
+/// first, and the one a hint should show.
+fn label_for(action: ActionId) -> &'static str {
+    DEFAULT
+        .iter()
+        .find(|(_, _, a)| *a == action)
+        .map(|(_, label, _)| *label)
+        .expect("every action passed to hint_for has a DEFAULT row")
+}
+
+/// Build a key hint: the key that reaches `action`, the verb describing what
+/// it does, and the key that reaches `opener`.
+///
+/// Task 8 (#199): the callers used to spell the key inside their own hint
+/// text, so a rebind that changed which key reached `action` left the hint
+/// naming the wrong one. Looking the key up here instead means the hint
+/// tracks a rebind for free.
+///
+/// The verb is not looked up here: `DEFAULT` holds no prose, and
+/// `help::KEYMAP`'s `action` text is both the wrong register for a
+/// status-line sentence (imperative and capitalised, for a command list —
+/// not third-person lowercase, for a sentence) and, for `nav.open`,
+/// ambiguous — it names two different rows. So a caller supplies its own
+/// verb, and only the key and the opener are generated.
+pub(crate) fn hint_for(action: ActionId, verb: &str, opener: ActionId) -> String {
+    let key = label_for(action);
+    let opener_key = label_for(opener);
+    format!("{key} {verb} · {opener_key} {key}")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
