@@ -745,7 +745,8 @@ fn rows(keymap: &crate::keymap::Keymap) -> Vec<Row<'static>> {
 }
 
 /// The keys one row shows: its own labels, each replaced by whatever the
-/// keymap in force put in its place (#61).
+/// keymap in force put in its place, followed by any key the config added
+/// that the row has no label to hold (#61).
 ///
 /// Substituting label by label, rather than listing everything the row's
 /// actions are now bound to, because `keys` is a curated list and the overlay
@@ -774,6 +775,31 @@ fn keys_for(
             }
         }
     }
+
+    // A rebind may bind *more* keys than the row lists, and a key past the end
+    // of the row's own list has no literal to replace. `global.reload`'s row
+    // carries one key, so `global.reload = ['r', 'F5']` would show `r` alone
+    // and `F5` would appear nowhere a user could see it — the README is static
+    // text and `--print-keymap` prints the defaults (task 7 fix round 1).
+    //
+    // Only a label the defaults do not already hold is appended, which is what
+    // keeps the curated list curated: `Home` and `End` are in
+    // `nav.goto.start`'s default labels and merely held off the row by prose
+    // (`keymap::tests::DOCUMENTED_IN_PROSE`), so they are never appended. Under
+    // a default keymap the two lists are identical and nothing is appended at
+    // all, which is what leaves the pinned rendering untouched.
+    for name in binding.names {
+        let Some(action) = crate::keymap::action_named(name) else {
+            continue;
+        };
+        let default_labels = defaults.labels_for(action);
+        for label in keymap.labels_for(action) {
+            if !default_labels.contains(&label) && !shown.iter().any(|seen| seen == label) {
+                shown.push(label.to_string());
+            }
+        }
+    }
+
     if shown.is_empty() {
         return UNBOUND.to_string();
     }
@@ -1355,6 +1381,20 @@ mod tests {
         // Three default keys replaced by one: the two the config dropped are
         // gone rather than left on the row reaching nothing.
         assert_eq!(keys_of(&rows, HIDE), "U");
+    }
+
+    /// A rebind may bind more keys than the row has labels to hold.
+    /// `global.reload`'s row carries one key, so a second key the config gives
+    /// it has no literal to replace — and a row that dropped it would leave it
+    /// visible nowhere at all: the README is static text and `--print-keymap`
+    /// prints the defaults (task 7 fix round 1).
+    #[test]
+    fn a_key_the_row_has_no_label_for_is_still_shown() {
+        let rows = rows(&keymap(&[("global.reload", &["r", "F5"])]));
+
+        // The row's own key first, as the table orders it, then what the
+        // config added, in the order the config listed it.
+        assert_eq!(keys_of(&rows, RELOAD), "r / F5");
     }
 
     /// A row carrying several names documents several actions, and each of
