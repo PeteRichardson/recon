@@ -20,6 +20,8 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
 
+use crate::toml_fmt::toml_string;
+
 /// Files and directories that mark the root of a project.
 ///
 /// `.git` is listed as a name rather than a directory: in a linked worktree it
@@ -699,20 +701,6 @@ pub fn print_editor_config(
         toml_string(project),
         toml_string(file),
     ))
-}
-
-/// Quote a template as a TOML string.
-///
-/// A literal string (`'…'`) wherever the template has no single quote in it,
-/// which keeps the backslashes in the `osascript` forms readable — TOML's basic
-/// strings would double every one of them. Falls back to a basic string with
-/// the two escapes TOML requires when the template contains a `'`.
-fn toml_string(value: &str) -> String {
-    if value.contains('\'') {
-        format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
-    } else {
-        format!("'{value}'")
-    }
 }
 
 /// The test double the [`Launcher`] trait exists for.

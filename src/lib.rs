@@ -301,6 +301,7 @@ mod path;
 pub mod scan;
 mod selection;
 pub mod syntax;
+mod toml_fmt;
 mod viewport;
 mod widgets;
 pub use config::Config;
