@@ -1482,26 +1482,34 @@ impl App<'_> {
         // loaded buffer. The table normalises the key instead, so the scope
         // decides what a key means and the modifier cannot.
         //
-        // That guarantee holds only for keys `Scope::View` binds. An
-        // unresolved key still falls through to `Focus::View =>
-        // self.forward_to_view(event)` below, carrying its original,
+        // An unresolved key is dropped here rather than handed on, and that
+        // is what extends the guarantee above from the bound keys to every
+        // key. It used to fall through to `Focus::View =>
+        // self.forward_to_view(event)` below carrying its original,
         // un-normalised event, and `FileView::handle_events` matches on the
         // character alone (`..` on the modifier fields) — so an unbound
-        // *modified* key, `Alt-j` for instance, still reaches the file view
-        // and moves the cursor as if the modifier were never pressed. The
-        // navigator and the filter pane have no such gap: both resolve
-        // through their own scope and drop an unresolved key rather than
-        // forwarding the raw event (`Scope::for_focus` below;
-        // `handle_filter_key`). The view is the one exception, and closing
-        // it is plan 2b's, not this phase's.
+        // *modified* key, `Alt-j` for instance, reached the file view and
+        // moved the cursor as if the modifier were never pressed, forcing a
+        // truncated preview to a full load on the way in. The navigator and
+        // the filter pane never had that gap: both resolve through their own
+        // scope and drop an unresolved key rather than forwarding the raw
+        // event (`Scope::for_focus` below; `handle_filter_key`). The view
+        // matches them now.
+        //
+        // `[`/`]` are untouched by this, though the widget acts on them and
+        // `Scope::View` has no row for either: they resolve in
+        // `Scope::Global` above, which is checked first, and
+        // `GlobalPageDown`/`GlobalPageUp` hand the widget a rebuilt key
+        // directly. The `Focus::View` arm below is left for mouse events,
+        // which resolve through no scope at all.
         if let event::Event::Key(key) = event
             && self.focus == Focus::View
         {
             let pressed = crate::keymap::normalise(key);
             if let Some(action) = self.keymap.resolve(crate::keymap::Scope::View, pressed) {
                 self.perform(action, pressed);
-                return;
             }
+            return;
         }
 
         // The file view upgrades its own truncated preview to a full load on
@@ -3862,6 +3870,18 @@ mod tests {
         )));
     }
 
+    /// `key`, with Alt held.
+    ///
+    /// No `keymap::DEFAULT` row carries Alt in any scope, so whatever this
+    /// sends is unbound by construction — which is the point at every call
+    /// site: an unbound *modified* key must do nothing at all.
+    fn alt(app: &mut App, code: KeyCode) {
+        app.handle_event(event::Event::Key(event::KeyEvent::new(
+            code,
+            KeyModifiers::ALT,
+        )));
+    }
+
     fn typed(app: &mut App, text: &str) {
         for c in text.chars() {
             key(app, KeyCode::Char(c));
@@ -5499,6 +5519,97 @@ mod tests {
             cursor_source(&app),
             499,
             "G must reach the document's last line, not the buffer's (#250)"
+        );
+    }
+
+    /// The half of #250 the normalising intercept left open. `Scope::View`
+    /// normalises a key before resolving it, but an *unresolved* key used to
+    /// fall through to `FileView::handle_events`, which matches the character
+    /// with the modifier fields ignored — so `Alt-j` moved the cursor as
+    /// though the modifier had never been pressed. The navigator and the
+    /// filter pane have always dropped what their own scope does not
+    /// resolve; the view does too now.
+    #[test]
+    fn an_unbound_modified_key_does_not_move_the_view_cursor() {
+        let mut app = app_over_long_file("alt_j_moves_nothing");
+        let before = cursor_source(&app);
+
+        alt(&mut app, KeyCode::Char('j'));
+
+        assert_eq!(
+            cursor_source(&app),
+            before,
+            "Alt-j moved the cursor, so an unbound modified key still reaches the widget"
+        );
+    }
+
+    /// The second-order cost of the same gap, and the one a user feels on a
+    /// large file: `FileView::handle_events` promotes a truncated preview on
+    /// entry, before it matches anything at all. So an unbound modified key
+    /// did not merely move the cursor — it forced a full load of a file the
+    /// user had never asked to load.
+    #[test]
+    fn an_unbound_modified_key_does_not_promote_a_truncated_preview() {
+        let dir = fixture_dir("alt_j_keeps_the_preview");
+        // Past PREVIEW_LINES, so the first preview of this file is truncated.
+        let body = numbered_lines(crate::widgets::fileview::PREVIEW_LINES + 100);
+        fs::write(dir.join("big.log"), &body).expect("write fixture");
+
+        let mut app = App::new(&Config {
+            path: dir.join("placeholder").display().to_string(),
+            ..Config::default()
+        });
+        // The startup argument names a file that does not exist, so the
+        // navigator falls back to the first real entry — the log — and
+        // previews it rather than reading the whole thing.
+        key(&mut app, KeyCode::Down);
+        focus_file_view(&mut app);
+        assert!(app.view.is_truncated(), "sanity: the preview is truncated");
+
+        alt(&mut app, KeyCode::Char('j'));
+
+        assert!(
+            app.view.is_truncated(),
+            "Alt-j promoted the preview to a full load the user never asked for"
+        );
+    }
+
+    /// The other half of dropping an unresolved key: it must not cost a key
+    /// that works. `j` resolves in `Scope::View`. `]` does not — it is the
+    /// one key `FileView::handle_events` acts on that has no `Scope::View`
+    /// row at all, so it is the most exposed to this change; it resolves in
+    /// `Scope::Global`, which is checked first, and reaches the widget
+    /// through `GlobalPageDown`'s rebuilt key rather than through the
+    /// dropped fallthrough.
+    #[test]
+    fn the_keys_the_view_acts_on_still_reach_the_widget() {
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 120,
+            height: 36,
+        };
+        let mut buf = Buffer::empty(area);
+        let mut app = app_over_file("view_keys_still_work", &numbered_lines(7_000));
+        (&mut app).render(area, &mut buf);
+        key(&mut app, KeyCode::Char('t'));
+        (&mut app).render(area, &mut buf);
+
+        key(&mut app, KeyCode::Char('j'));
+        assert_eq!(cursor_source(&app), 1, "j no longer moves the cursor");
+
+        let top = |app: &App| -> usize {
+            let (scroll, _) = app.view.textarea().scroll_top();
+            app.view.window_start() + scroll as usize
+        };
+        let before = top(&app);
+
+        key(&mut app, KeyCode::Char(']'));
+        (&mut app).render(area, &mut buf);
+
+        assert!(
+            top(&app) > before,
+            "] no longer pages the view down (Scope::Global -> forward_to_view)"
         );
     }
 
