@@ -196,11 +196,19 @@ impl App<'_> {
             // Only the key is generated, not a full `hint_for` — this line
             // has no verb of its own before "starts a selection", so it
             // calls `label_for` directly (task 8 fix round 1, #199).
-            let key = crate::keymap::label_for(crate::keymap::ActionId::GlobalVisualChar);
-            self.report(
-                &format!("nothing selected · {key} starts a selection"),
-                false,
-            );
+            //
+            // Owned before `report` takes `self` mutably, and the advice is
+            // left off rather than half-said when a `[keymap]` line has left
+            // the action with no key to name (#61).
+            let key = self
+                .keymap
+                .label_for(crate::keymap::ActionId::GlobalVisualChar)
+                .map(str::to_string);
+            let text = match key {
+                Some(key) => format!("nothing selected · {key} starts a selection"),
+                None => "nothing selected".to_string(),
+            };
+            self.report(&text, false);
             return;
         };
         let cursor = self.cursor_end();

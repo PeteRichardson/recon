@@ -875,6 +875,26 @@ impl Config {
         Ok(())
     }
 
+    /// Refuse a `[keymap]` table naming an action recon does not have, or a
+    /// key spelling it cannot read.
+    ///
+    /// Runs in `main` for the reason `check_sets` does, and at the same
+    /// moment: the message has to reach a screen that is not about to be
+    /// replaced by the alternate one (#61). `App::new` builds the table again
+    /// from the same input — one wasted pass over 121 rows at startup, in
+    /// exchange for a check that cannot be skipped by a caller that forgets
+    /// it, exactly as the `--set` check is arranged.
+    ///
+    /// # Errors
+    ///
+    /// [`ConfigError::UnknownAction`] or [`ConfigError::BadKeyLabel`].
+    pub fn check_keymap(&self) -> Result<(), ConfigError> {
+        if let Some(overlay) = &self.keymap {
+            crate::keymap::Keymap::new(overlay)?;
+        }
+        Ok(())
+    }
+
     /// Run the whole precedence chain: parse the CLI (which `clap` has already
     /// resolved against the environment), read the config file, and fold the
     /// file in underneath.
@@ -1025,6 +1045,7 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::keymap::Keymap;
     use std::fs;
     use std::sync::Mutex;
 
@@ -2093,10 +2114,9 @@ mod tests {
 
     // ---- [keymap] --------------------------------------------------------
     //
-    // Only this one test: `an_unknown_action_is_refused_and_the_known_ones_listed`
-    // and `an_unparseable_key_is_refused_and_names_its_action` both call
-    // `Keymap::new`, which task 4 adds. Task 4 writes both, alongside a third
-    // deferred from task 2.
+    // Parsing the stanza is this file's job; deciding whether what it holds
+    // names anything real is `Keymap::new`'s, so the two tests at the end of
+    // the section reach across to it.
 
     #[test]
     fn a_keymap_entry_takes_one_key_or_several() {
@@ -2140,5 +2160,35 @@ mod tests {
         let message = err.to_string();
         assert!(message.contains("global.hide.toggle"), "{message}");
         assert!(!message.contains("Keys"), "{message}");
+    }
+
+    /// A typo in an action name is the common case, and the list of names
+    /// recon does define is the fix (#61).
+    #[test]
+    fn an_unknown_action_is_refused_and_the_known_ones_listed() {
+        let path = fixture(
+            "keymap-unknown-action.toml",
+            "[keymap]\n'global.qiut' = 'q'\n",
+        );
+        let file = load_from(&path).expect("the file parses");
+        let err = Keymap::new(&file.keymap.unwrap()).expect_err("a typo must be refused");
+
+        let message = err.to_string();
+        assert!(message.contains("global.qiut"), "{message}");
+        assert!(
+            message.contains("global.quit"),
+            "the message must list what is valid: {message}"
+        );
+    }
+
+    #[test]
+    fn an_unparseable_key_is_refused_and_names_its_action() {
+        let path = fixture("keymap-bad-key.toml", "[keymap]\n'global.quit' = 'Mod-Q'\n");
+        let file = load_from(&path).expect("the file parses");
+        let err = Keymap::new(&file.keymap.unwrap()).expect_err("a bad spelling must be refused");
+
+        let message = err.to_string();
+        assert!(message.contains("Mod-Q"), "{message}");
+        assert!(message.contains("global.quit"), "{message}");
     }
 }

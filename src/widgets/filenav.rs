@@ -2508,7 +2508,8 @@ mod tests {
     // own helper rather than colliding with it.
     fn press_mod(nav: &mut FileNav<'_>, code: KeyCode, modifiers: KeyModifiers) -> Option<Action> {
         let pressed = crate::keymap::normalise(KeyEvent::new(code, modifiers));
-        let action = crate::keymap::resolve(crate::keymap::Scope::Nav, pressed)?;
+        let action =
+            crate::keymap::Keymap::default().resolve(crate::keymap::Scope::Nav, pressed)?;
         nav.perform(action)
     }
 

@@ -465,73 +465,196 @@ pub(crate) const DEFAULT: &[(Scope, &str, ActionId)] = &[
     (Scope::Picker, "Esc", ActionId::PickerCancel),
 ];
 
-/// The action a key names in a scope, or `None` when the scope does not bind
-/// it.
-///
-/// A linear scan on purpose: the table is under 130 entries and this runs once
-/// per keypress, which is an event a human produced. A map would be faster and
-/// would have to be built, held and kept in step for no measurable gain.
-pub(crate) fn resolve(scope: Scope, key: Key) -> Option<ActionId> {
+/// The action `name` spells, or `None` when no action does.
+fn action_named(name: &str) -> Option<ActionId> {
     DEFAULT
         .iter()
-        .find(|(entry_scope, label, _)| {
-            *entry_scope == scope && crate::help::label_matches(label, key)
-        })
         .map(|(_, _, action)| *action)
+        .find(|action| action.name() == name)
 }
 
-/// The key label `DEFAULT` binds to `action`.
-///
-/// An action bound to more than one key (`nav.parent` also binds `Left`)
-/// takes its first `DEFAULT` row: that is the canonical spelling, listed
-/// first, and the one a hint should show.
-///
-/// `pub(crate)` rather than private (task 8 fix round 1, #199): the "nothing
-/// selected" hint in `selection.rs` names only a key, with no verb of its
-/// own to attach to it — `hint_for` would say too much — so it calls this
-/// directly instead of going through `hint_for`.
-pub(crate) fn label_for(action: ActionId) -> &'static str {
-    DEFAULT
-        .iter()
-        .find(|(_, _, a)| *a == action)
-        .map(|(_, label, _)| *label)
-        .expect("every action passed to a hint has a DEFAULT row")
+/// Every action name, in table order, each once — the list an unknown name's
+/// error offers as the fix.
+fn known_action_names() -> Vec<String> {
+    let mut names: Vec<&'static str> = Vec::new();
+    for (_, _, action) in DEFAULT {
+        if !names.contains(&action.name()) {
+            names.push(action.name());
+        }
+    }
+    names.into_iter().map(str::to_string).collect()
 }
 
-/// Build a key hint: the key that reaches `action`, the verb describing what
-/// it does, and the key that reaches `opener`.
+/// Every binding in force: the defaults, with the user's changes folded in.
 ///
-/// Task 8 (#199): the callers used to spell the key inside their own hint
-/// text, so a rebind that changed which key reached `action` left the hint
-/// naming the wrong one. Looking the key up here instead means the hint
-/// tracks a rebind for free.
+/// Built once at startup and then only read. A `Vec` scanned linearly, for the
+/// reason the `DEFAULT` scan gave: about 130 entries, consulted once per
+/// keypress, which is an event a human produced. A map would be faster and
+/// would have to be built, held and kept in step for no measurable gain.
 ///
-/// The verb is not looked up here: `DEFAULT` holds no prose, and
-/// `help::KEYMAP`'s `action` text is both the wrong register for a
-/// status-line sentence (imperative and capitalised, for a command list —
-/// not third-person lowercase, for a sentence) and, for `nav.open`,
-/// ambiguous — it names two different rows. So a caller supplies its own
-/// verb, and only the key and the opener are generated.
-pub(crate) fn hint_for(action: ActionId, verb: &str, opener: ActionId) -> String {
-    hint_for_trailing(action, verb, opener, action)
+/// The label is a `String` where `DEFAULT`'s is a `&'static str`: half of them
+/// can now come from `config.toml`, which is read at run time (#61).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Keymap {
+    entries: Vec<(Scope, String, ActionId)>,
 }
 
-/// `hint_for`, widened for the one hint whose trailing key names a different
-/// action than the one the hint explains (task 8 fix round 1, #199): `y`'s
-/// hint reads "then press v", not "then press y", because copying needs a
-/// selection first, and a selection is started with `v` (`GlobalVisualChar`),
-/// not `y` (`GlobalYank`). `hint_for` is this with `trailing` pinned to
-/// `action`, which is what every other hint wants.
-pub(crate) fn hint_for_trailing(
-    action: ActionId,
-    verb: &str,
-    opener: ActionId,
-    trailing: ActionId,
-) -> String {
-    let key = label_for(action);
-    let opener_key = label_for(opener);
-    let trailing_key = label_for(trailing);
-    format!("{key} {verb} · {opener_key} {trailing_key}")
+/// `DEFAULT`, and nothing else: what recon binds when the file says nothing.
+impl Default for Keymap {
+    fn default() -> Self {
+        Self {
+            entries: DEFAULT
+                .iter()
+                .map(|(scope, label, action)| (*scope, (*label).to_string(), *action))
+                .collect(),
+        }
+    }
+}
+
+impl Keymap {
+    /// The defaults with a `[keymap]` table folded in (#61).
+    ///
+    /// Every action the table names is rebound; anything it does not mention
+    /// keeps what it had. A name no action spells is
+    /// [`crate::config::ConfigError::UnknownAction`], and a key spelling the
+    /// label grammar cannot read is
+    /// [`crate::config::ConfigError::BadKeyLabel`] — `Config::check_keymap`
+    /// runs this before the terminal comes up, so a typo is refused on a
+    /// screen the message can still reach rather than bound to nothing.
+    pub(crate) fn new(
+        overlay: &crate::config::KeymapConfig,
+    ) -> Result<Self, crate::config::ConfigError> {
+        let mut keymap = Self::default();
+        for (name, labels) in &overlay.bindings {
+            let action =
+                action_named(name).ok_or_else(|| crate::config::ConfigError::UnknownAction {
+                    name: name.clone(),
+                    known: known_action_names(),
+                })?;
+            // Checked before the rebind rather than left to `resolve`: a
+            // spelling nothing can parse would otherwise bind the action to
+            // no key at all, silently, which is the state a typo produces.
+            if let Some(bad) = labels
+                .iter()
+                .find(|label| !crate::help::label_is_readable(label))
+            {
+                return Err(crate::config::ConfigError::BadKeyLabel {
+                    action: name.clone(),
+                    label: bad.clone(),
+                });
+            }
+            keymap.rebind(action, labels);
+        }
+        Ok(keymap)
+    }
+
+    /// Put `labels` in place of every key `action` currently holds.
+    ///
+    /// The replacement lands **once per scope the action already appeared
+    /// in**, at the position of its first row there. Two things turn on that
+    /// (#61). `hit.next` and `hit.prev` each hold a row in `Scope::View` and
+    /// another in `Scope::Filters`, and a config line names an action, not a
+    /// scope — putting the new key back in only one of them would take `n`
+    /// away from the other pane, which is not what a rebind was asked to do.
+    /// And leaving each action where it sat is what makes a round trip
+    /// through `--print-keymap` rebuild the table it printed, rather than the
+    /// same bindings in a different order.
+    ///
+    /// Every `ActionId` holds at least one `DEFAULT` row, so there is always
+    /// a position to replace.
+    fn rebind(&mut self, action: ActionId, labels: &[String]) {
+        let mut replaced: Vec<Scope> = Vec::new();
+        let mut entries = Vec::with_capacity(self.entries.len());
+        for (scope, label, entry_action) in self.entries.drain(..) {
+            if entry_action != action {
+                entries.push((scope, label, entry_action));
+            } else if !replaced.contains(&scope) {
+                replaced.push(scope);
+                entries.extend(labels.iter().map(|label| (scope, label.clone(), action)));
+            }
+        }
+        self.entries = entries;
+    }
+
+    /// The action a key names in a scope, or `None` when the scope does not
+    /// bind it.
+    pub(crate) fn resolve(&self, scope: Scope, key: Key) -> Option<ActionId> {
+        self.entries
+            .iter()
+            .find(|(entry_scope, label, _)| {
+                *entry_scope == scope && crate::help::label_matches(label, key)
+            })
+            .map(|(_, _, action)| *action)
+    }
+
+    /// The key label bound to `action`, or `None` when nothing is.
+    ///
+    /// An action bound to more than one key (`nav.parent` also binds `Left`)
+    /// takes its first row: that is the canonical spelling, listed first, and
+    /// the one a hint should show. Under an overlay that is the first key the
+    /// user listed, which is what makes a hint track a rebind.
+    ///
+    /// `Option` rather than the `expect` this replaced (#61): a `[keymap]`
+    /// line can leave an action with no key at all, so an absent label is a
+    /// config file's doing and must not crash the TUI — the same rule
+    /// `App::perform`'s `debug_assert!` arms record.
+    ///
+    /// `pub(crate)` rather than private (task 8 fix round 1, #199): the
+    /// "nothing selected" hint in `selection.rs` names only a key, with no
+    /// verb of its own to attach to it — `hint_for` would say too much — so
+    /// it calls this directly instead of going through `hint_for`.
+    pub(crate) fn label_for(&self, action: ActionId) -> Option<&str> {
+        self.entries
+            .iter()
+            .find(|(_, _, a)| *a == action)
+            .map(|(_, label, _)| label.as_str())
+    }
+
+    /// Build a key hint: the key that reaches `action`, the verb describing
+    /// what it does, and the key that reaches `opener`.
+    ///
+    /// Task 8 (#199): the callers used to spell the key inside their own hint
+    /// text, so a rebind that changed which key reached `action` left the hint
+    /// naming the wrong one. Looking the key up here instead means the hint
+    /// tracks a rebind for free.
+    ///
+    /// The verb is not looked up here: the table holds no prose, and
+    /// `help::KEYMAP`'s `action` text is both the wrong register for a
+    /// status-line sentence (imperative and capitalised, for a command list —
+    /// not third-person lowercase, for a sentence) and, for `nav.open`,
+    /// ambiguous — it names two different rows. So a caller supplies its own
+    /// verb, and only the key and the opener are generated.
+    ///
+    /// `None` when any key the sentence needs is unbound: a hint with a hole
+    /// where a key should be ("· t " with nothing after it) tells the user
+    /// less than no hint at all (#61).
+    pub(crate) fn hint_for(
+        &self,
+        action: ActionId,
+        verb: &str,
+        opener: ActionId,
+    ) -> Option<String> {
+        self.hint_for_trailing(action, verb, opener, action)
+    }
+
+    /// `hint_for`, widened for the one hint whose trailing key names a
+    /// different action than the one the hint explains (task 8 fix round 1,
+    /// #199): `y`'s hint reads "then press v", not "then press y", because
+    /// copying needs a selection first, and a selection is started with `v`
+    /// (`GlobalVisualChar`), not `y` (`GlobalYank`). `hint_for` is this with
+    /// `trailing` pinned to `action`, which is what every other hint wants.
+    pub(crate) fn hint_for_trailing(
+        &self,
+        action: ActionId,
+        verb: &str,
+        opener: ActionId,
+        trailing: ActionId,
+    ) -> Option<String> {
+        let key = self.label_for(action)?;
+        let opener_key = self.label_for(opener)?;
+        let trailing_key = self.label_for(trailing)?;
+        Some(format!("{key} {verb} · {opener_key} {trailing_key}"))
+    }
 }
 
 /// Render the whole default keymap as a `[keymap]` stanza.
@@ -761,7 +884,7 @@ mod tests {
     fn a_real_terminals_capital_g_resolves_in_the_view() {
         let event = KeyEvent::new(KeyCode::Char('G'), KeyModifiers::SHIFT);
         assert_eq!(
-            resolve(Scope::View, normalise(event)),
+            Keymap::default().resolve(Scope::View, normalise(event)),
             Some(ActionId::ViewGotoEnd),
             "this is #250: G carries SHIFT on a real terminal"
         );
@@ -770,7 +893,10 @@ mod tests {
     #[test]
     fn an_unbound_key_resolves_to_nothing() {
         let event = KeyEvent::new(KeyCode::Char('~'), KeyModifiers::empty());
-        assert_eq!(resolve(Scope::Global, normalise(event)), None);
+        assert_eq!(
+            Keymap::default().resolve(Scope::Global, normalise(event)),
+            None
+        );
     }
 
     #[test]
@@ -855,5 +981,152 @@ mod tests {
                 "{name}'s printed keys must match DEFAULT, in order and deduplicated"
             );
         }
+    }
+
+    #[test]
+    fn the_printed_keymap_parses_back_as_the_same_bindings() {
+        // The whole point of printing in the accepted syntax: a user pastes a
+        // line and it means what it meant.
+        let printed = print_keymap();
+        let parsed: crate::config::FileConfig =
+            toml::from_str(&printed).expect("recon must print what it accepts");
+        let overlay = parsed.keymap.expect("a [keymap] table");
+
+        let built = Keymap::new(&overlay).expect("the defaults must be valid");
+        assert_eq!(
+            built,
+            Keymap::default(),
+            "printing then parsing changed a binding"
+        );
+    }
+
+    // ---- the overlay (#61) ----------------------------------------------
+
+    /// The shape one `[keymap]` line parses to.
+    fn overlay(action: &str, keys: &[&str]) -> crate::config::KeymapConfig {
+        let mut bindings = std::collections::BTreeMap::new();
+        bindings.insert(
+            action.to_string(),
+            keys.iter().map(|key| (*key).to_string()).collect(),
+        );
+        crate::config::KeymapConfig { bindings }
+    }
+
+    #[test]
+    fn an_override_moves_an_action_and_frees_the_old_key() {
+        let mut bindings = std::collections::BTreeMap::new();
+        bindings.insert("global.quit".to_string(), vec!["Ctrl-q".to_string()]);
+        let overlay = crate::config::KeymapConfig { bindings };
+
+        let keymap = Keymap::new(&overlay).expect("valid");
+        let ctrl_q = normalise(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL));
+        let plain_q = normalise(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::empty()));
+
+        assert_eq!(
+            keymap.resolve(Scope::Global, ctrl_q),
+            Some(ActionId::GlobalQuit)
+        );
+        assert_eq!(
+            keymap.resolve(Scope::Global, plain_q),
+            None,
+            "rebinding an action must take its default key away, or q would do two things"
+        );
+    }
+
+    #[test]
+    fn an_untouched_action_keeps_its_default() {
+        let mut bindings = std::collections::BTreeMap::new();
+        bindings.insert("global.quit".to_string(), vec!["Ctrl-q".to_string()]);
+        let overlay = crate::config::KeymapConfig { bindings };
+
+        let keymap = Keymap::new(&overlay).expect("valid");
+        let help = normalise(KeyEvent::new(KeyCode::Char('?'), KeyModifiers::empty()));
+
+        assert_eq!(
+            keymap.resolve(Scope::Global, help),
+            Some(ActionId::GlobalHelp)
+        );
+    }
+
+    /// `hit.next` and `hit.prev` are the only two actions bound in more than
+    /// one scope, and a config line names an action, not a scope: rebinding
+    /// one must move it in *both* panes, or `n` would quietly stop working in
+    /// one of them (#61).
+    #[test]
+    fn rebinding_a_two_scope_action_keeps_both_scopes() {
+        let keymap = Keymap::new(&overlay("hit.next", &["Ctrl-n"])).expect("valid");
+        let ctrl_n = normalise(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL));
+        let plain_n = normalise(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::empty()));
+
+        for scope in [Scope::View, Scope::Filters] {
+            assert_eq!(
+                keymap.resolve(scope, ctrl_n),
+                Some(ActionId::HitNext),
+                "the new key must reach the action in {scope:?}"
+            );
+            assert_eq!(
+                keymap.resolve(scope, plain_n),
+                None,
+                "the old key must be free in {scope:?} too"
+            );
+        }
+    }
+
+    /// The hint mechanism's reason for existing (#199, #61): the key a hint
+    /// names is looked up rather than written out, so a rebind moves it.
+    #[test]
+    fn a_hint_names_the_rebound_keys() {
+        let mut bindings = std::collections::BTreeMap::new();
+        bindings.insert("global.visual.char".to_string(), vec!["s".to_string()]);
+        bindings.insert("global.focus.view".to_string(), vec!["T".to_string()]);
+        let keymap = Keymap::new(&crate::config::KeymapConfig { bindings }).expect("valid");
+
+        assert_eq!(
+            keymap.hint_for(
+                ActionId::GlobalVisualChar,
+                "selects text in the file view",
+                ActionId::GlobalFocusView,
+            ),
+            Some("s selects text in the file view · T s".to_string()),
+            "the hint must name the user's keys, not v and t"
+        );
+    }
+
+    /// An overlay may leave an action with no key at all, which is a config
+    /// file's doing and must not crash the TUI (#61). The hint is dropped
+    /// rather than rendered with a hole where its key would be.
+    #[test]
+    fn an_action_left_unbound_has_no_label_and_no_hint() {
+        let keymap = Keymap::new(&overlay("global.reload", &[])).expect("valid");
+
+        assert_eq!(keymap.label_for(ActionId::GlobalReload), None);
+        assert_eq!(
+            keymap.hint_for(
+                ActionId::GlobalReload,
+                "reloads the file",
+                ActionId::GlobalFocusView,
+            ),
+            None
+        );
+    }
+
+    /// An action bound to several keys hints with the first one the user
+    /// listed — the same rule `label_for` keeps for `DEFAULT`.
+    #[test]
+    fn several_keys_hint_with_the_first() {
+        let keymap = Keymap::new(&overlay("global.reload", &["F5", "r"])).expect("valid");
+
+        assert_eq!(keymap.label_for(ActionId::GlobalReload), Some("F5"));
+        let f5 = normalise(KeyEvent::new(KeyCode::F(5), KeyModifiers::empty()));
+        let r = normalise(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::empty()));
+        assert_eq!(
+            keymap.resolve(Scope::Global, f5),
+            Some(ActionId::GlobalReload)
+        );
+        assert_eq!(
+            keymap.resolve(Scope::Global, r),
+            Some(ActionId::GlobalReload),
+            "every key the user listed must reach the action"
+        );
     }
 }

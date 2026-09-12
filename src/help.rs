@@ -180,6 +180,17 @@ fn keys_for_label(label: &str) -> Vec<Key> {
     }
 }
 
+/// Whether the label grammar can read this spelling at all.
+///
+/// `label_matches` answers "does this label name that key", and a label the
+/// grammar cannot read answers `false` for every key — indistinguishable
+/// there from a key that simply does not match. A `[keymap]` line spelled
+/// `Mod-Q` has to be refused rather than bound to nothing at all (#61), so
+/// whether the grammar reads it is asked separately, here.
+pub(crate) fn label_is_readable(label: &str) -> bool {
+    !keys_for_label(label).is_empty()
+}
+
 /// Whether a `KEYMAP` label names this key.
 ///
 /// The label grammar is the one `Binding::codes` already parses, so the

@@ -48,6 +48,11 @@ fn main() -> Result<ExitCode> {
     // with `check_flags`. Still before any terminal setup: the message must
     // reach a screen that is not about to be replaced (#143).
     config.check_sets(&config.filter_sets)?;
+    // The `[keymap]` table, for the same reason and at the same moment: a
+    // typo in an action name or a key spelling refuses to start, while a
+    // message can still be read (#61). After `--print-keymap` above, which is
+    // how a user finds the name they meant.
+    config.check_keymap()?;
 
     // Headless (#143): `--emit` with no terminal on stdin. A TUI needs stdin
     // for its keys, so a pipe or `/dev/null` there is not a session that

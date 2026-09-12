@@ -521,7 +521,8 @@ impl FilterList {
     /// #199).
     fn handle_key(&mut self, key: KeyEvent, rows: &[Row]) -> Option<FilterCommand> {
         let pressed = crate::keymap::normalise(key);
-        let action = crate::keymap::resolve(crate::keymap::Scope::Filters, pressed)?;
+        let action =
+            crate::keymap::Keymap::default().resolve(crate::keymap::Scope::Filters, pressed)?;
         self.perform(action, rows)
     }
 }
@@ -1321,7 +1322,8 @@ mod tests {
 
     fn press(list: &mut FilterList, code: KeyCode, modifiers: KeyModifiers, rows: &[Row]) {
         let pressed = crate::keymap::normalise(KeyEvent::new(code, modifiers));
-        let command = crate::keymap::resolve(crate::keymap::Scope::Filters, pressed)
+        let command = crate::keymap::Keymap::default()
+            .resolve(crate::keymap::Scope::Filters, pressed)
             .and_then(|action| list.perform(action, rows));
         assert_eq!(command, None, "a motion is not a command");
     }

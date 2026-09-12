@@ -60,11 +60,14 @@ const HIDE_BADGE_STYLE: Style = Style::new()
 /// included — see `badges` in `Widget::render`, which pads each badge with
 /// exactly the same column of separation regardless of where its text came
 /// from.
-fn stale_badge_text() -> String {
-    format!(
-        " changed on disk · {} ",
-        crate::keymap::label_for(crate::keymap::ActionId::GlobalReload)
-    )
+///
+/// `None` when a `[keymap]` line has left `global.reload` with no key at all
+/// (#61): the badge exists to name the key that resolves the inconsistency,
+/// and " changed on disk · " with nothing after it names none — a badge the
+/// user cannot act on is worse than no badge.
+fn stale_badge_text(keymap: &crate::keymap::Keymap) -> Option<String> {
+    let key = keymap.label_for(crate::keymap::ActionId::GlobalReload)?;
+    Some(format!(" changed on disk · {key} "))
 }
 
 /// The badge saying the include filters are combined with AND (#39). Same style
@@ -412,6 +415,14 @@ pub struct App<'a> {
     /// is reported by the key that uses it rather than refusing to start a log
     /// viewer over a setting most sessions never touch.
     editor: editor::Templates,
+    /// Every key binding in force: the defaults, with `config.toml`'s
+    /// `[keymap]` folded in (#61).
+    ///
+    /// State rather than the `const` table it replaced, because it now has two
+    /// sources. Resolved once, here, so that every key lookup and every
+    /// generated hint reads the same table — a hint that still consulted the
+    /// defaults would name a key the user had moved.
+    keymap: crate::keymap::Keymap,
     /// Whether a jump to a line off screen centres it — `[view]
     /// center_jumps`, resolved by `Config::center_jumps`.
     center_jumps: bool,
@@ -678,6 +689,22 @@ impl App<'_> {
             }
         }
 
+        // `main` has already refused a `[keymap]` table this cannot be built
+        // from (`Config::check_keymap`), before the terminal came up, so a
+        // failure here is a hand-built `Config` in a test. The defaults are a
+        // better answer than bringing a log viewer down over a rebind — the
+        // same trade `--set` makes above.
+        let keymap =
+            config
+                .keymap
+                .as_ref()
+                .map_or_else(crate::keymap::Keymap::default, |overlay| {
+                    crate::keymap::Keymap::new(overlay).unwrap_or_else(|err| {
+                        log::warn!("[keymap]: {err}");
+                        crate::keymap::Keymap::default()
+                    })
+                });
+
         let mut app = Self {
             state: AppState::Running,
             nav,
@@ -702,6 +729,7 @@ impl App<'_> {
             last_window: None,
             zoom: None,
             editor: config.editor_templates(),
+            keymap,
             center_jumps: config.center_jumps(),
             emit: config.emit,
             line_numbers: config.line_numbers,
@@ -744,7 +772,7 @@ impl App<'_> {
     /// are typed into the pattern rather than acted on.
     fn handle_search_key(&mut self, key: event::KeyEvent) {
         let pressed = crate::keymap::normalise(key);
-        if let Some(action) = crate::keymap::resolve(crate::keymap::Scope::Prompt, pressed) {
+        if let Some(action) = self.keymap.resolve(crate::keymap::Scope::Prompt, pressed) {
             use crate::keymap::ActionId as A;
             match action {
                 A::PromptCancel => {
@@ -1348,8 +1376,7 @@ impl App<'_> {
         if let Some(picker) = self.picker.as_mut() {
             if let event::Event::Key(key) = event {
                 let pressed = crate::keymap::normalise(key);
-                if let Some(action) = crate::keymap::resolve(crate::keymap::Scope::Picker, pressed)
-                {
+                if let Some(action) = self.keymap.resolve(crate::keymap::Scope::Picker, pressed) {
                     match picker.perform(action) {
                         widgets::picker::PickerOutcome::Open => {}
                         widgets::picker::PickerOutcome::Closed => self.picker = None,
@@ -1385,7 +1412,7 @@ impl App<'_> {
         // body its key arm held here.
         if let event::Event::Key(key) = event {
             let pressed = crate::keymap::normalise(key);
-            if let Some(action) = crate::keymap::resolve(crate::keymap::Scope::Global, pressed) {
+            if let Some(action) = self.keymap.resolve(crate::keymap::Scope::Global, pressed) {
                 self.perform(action, pressed);
                 return;
             }
@@ -1417,8 +1444,9 @@ impl App<'_> {
                         'a' => (A::FiltersProfile, "picks a profile for the set"),
                         _ => (A::FiltersSolo, "solos the set"),
                     };
-                    let hint = crate::keymap::hint_for(action, verb, A::GlobalFocusFilters);
-                    self.report(&hint, false);
+                    if let Some(hint) = self.keymap.hint_for(action, verb, A::GlobalFocusFilters) {
+                        self.report(&hint, false);
+                    }
                     return;
                 }
                 _ => {}
@@ -1482,7 +1510,7 @@ impl App<'_> {
             && self.focus == Focus::View
         {
             let pressed = crate::keymap::normalise(key);
-            if let Some(action) = crate::keymap::resolve(crate::keymap::Scope::View, pressed) {
+            if let Some(action) = self.keymap.resolve(crate::keymap::Scope::View, pressed) {
                 self.perform(action, pressed);
                 return;
             }
@@ -1501,7 +1529,8 @@ impl App<'_> {
                 let resolved = match event {
                     event::Event::Key(key) => {
                         let pressed = crate::keymap::normalise(key);
-                        crate::keymap::resolve(crate::keymap::Scope::for_focus(self.focus), pressed)
+                        self.keymap
+                            .resolve(crate::keymap::Scope::for_focus(self.focus), pressed)
                     }
                     _ => None,
                 };
@@ -1616,12 +1645,13 @@ impl App<'_> {
             }
             A::GlobalSearchWord => {
                 if self.focus == Focus::Nav {
-                    let hint = crate::keymap::hint_for(
+                    if let Some(hint) = self.keymap.hint_for(
                         A::GlobalSearchWord,
                         "searches the word under the cursor",
                         A::GlobalFocusView,
-                    );
-                    self.report(&hint, false);
+                    ) {
+                        self.report(&hint, false);
+                    }
                     return;
                 }
                 match self.word_under_cursor() {
@@ -1738,12 +1768,13 @@ impl App<'_> {
                     // shared by both `v` and `V`, and it deliberately always
                     // names lowercase `v` (task 8 fix round 1, #199) — using
                     // `action` here would have `V` describe itself.
-                    let hint = crate::keymap::hint_for(
+                    if let Some(hint) = self.keymap.hint_for(
                         A::GlobalVisualChar,
                         "selects text in the file view",
                         A::GlobalFocusView,
-                    );
-                    self.report(&hint, false);
+                    ) {
+                        self.report(&hint, false);
+                    }
                 }
             }
             // `y`'s `DEFAULT` row carries no modifier, so Ctrl-y is left
@@ -1757,13 +1788,14 @@ impl App<'_> {
                     // copying needs a selection first, made with `v`, so the
                     // hint says "focus the view, then press v" rather than
                     // "then press y" (task 8 fix round 1, #199).
-                    let hint = crate::keymap::hint_for_trailing(
+                    if let Some(hint) = self.keymap.hint_for_trailing(
                         A::GlobalYank,
                         "copies a selection in the file view",
                         A::GlobalFocusView,
                         A::GlobalVisualChar,
-                    );
-                    self.report(&hint, false);
+                    ) {
+                        self.report(&hint, false);
+                    }
                 }
             }
             // `[`/`]` are bound only in `Scope::Global` — there is no
@@ -2611,18 +2643,21 @@ impl App<'_> {
         if key.modifiers.is_empty() {
             match key.code {
                 KeyCode::Char('h') => {
-                    let hint = crate::keymap::hint_for(
-                        A::NavParent,
-                        "goes up a directory",
-                        A::GlobalFocusNav,
-                    );
-                    self.report(&hint, false);
+                    if let Some(hint) =
+                        self.keymap
+                            .hint_for(A::NavParent, "goes up a directory", A::GlobalFocusNav)
+                    {
+                        self.report(&hint, false);
+                    }
                     return;
                 }
                 KeyCode::Char('l') => {
-                    let hint =
-                        crate::keymap::hint_for(A::NavOpen, "opens the entry", A::GlobalFocusNav);
-                    self.report(&hint, false);
+                    if let Some(hint) =
+                        self.keymap
+                            .hint_for(A::NavOpen, "opens the entry", A::GlobalFocusNav)
+                    {
+                        self.report(&hint, false);
+                    }
                     return;
                 }
                 _ => {}
@@ -2630,7 +2665,7 @@ impl App<'_> {
         }
 
         let pressed = crate::keymap::normalise(key);
-        let Some(action) = crate::keymap::resolve(crate::keymap::Scope::Filters, pressed) else {
+        let Some(action) = self.keymap.resolve(crate::keymap::Scope::Filters, pressed) else {
             return;
         };
 
@@ -3106,7 +3141,9 @@ impl Widget for &mut App<'_> {
                 .is_and()
                 .then_some(Cow::Borrowed(AND_BADGE_TEXT)),
             self.visual_badge().map(Cow::Borrowed),
-            self.view_stale.then(|| Cow::Owned(stale_badge_text())),
+            self.view_stale
+                .then(|| stale_badge_text(&self.keymap).map(Cow::Owned))
+                .flatten(),
         ]
         .into_iter()
         .flatten()
@@ -12916,8 +12953,7 @@ mod tests {
     /// `" changed on disk · r "` — so what this actually pins is that the
     /// badge names the reload key under the *default* keymap, which is what
     /// catches the text going back to being hard-coded. It does not catch
-    /// the badge going stale after a rebind: that needs a test that rebinds,
-    /// which arrives with plan 2b.
+    /// the badge going stale after a rebind — that is the test below.
     #[test]
     fn the_stale_badge_names_the_reload_key() {
         let mut app = app_over_logs("stale_badge_key");
@@ -12927,6 +12963,34 @@ mod tests {
             status_line(&mut app).contains(" changed on disk · r "),
             "the badge must name the key that reloads: {}",
             status_line(&mut app)
+        );
+    }
+
+    /// The rebind half of the test above (#61). The badge names a key looked
+    /// up in the table `App` holds, so moving `global.reload` in `config.toml`
+    /// moves the key the badge names.
+    ///
+    /// This is also the only test that the overlay reaches `App` at all:
+    /// `Keymap::new` is exercised directly in `keymap.rs`, but nothing there
+    /// would notice `App::new` ignoring `config.keymap` and keeping the
+    /// defaults.
+    #[test]
+    fn the_stale_badge_names_a_rebound_reload_key() {
+        let dir = fixture_dir("stale_badge_rebound");
+        fs::write(dir.join("a.log"), "x").expect("write fixture");
+        let mut bindings = std::collections::BTreeMap::new();
+        bindings.insert("global.reload".to_string(), vec!["F5".to_string()]);
+        let mut app = App::new(&Config {
+            path: dir.join("placeholder").display().to_string(),
+            keymap: Some(crate::config::KeymapConfig { bindings }),
+            ..Config::default()
+        });
+        app.view_stale = true;
+
+        let line = status_line(&mut app);
+        assert!(
+            line.contains(" changed on disk · F5 "),
+            "the badge must name the key the config file bound: {line}"
         );
     }
 
