@@ -111,6 +111,15 @@ pub struct Config {
     )]
     pub print_editor_config: Option<String>,
 
+    /// Print the default keymap as a ready-to-paste `[keymap]` stanza and exit.
+    ///
+    /// Prints to stdout and changes nothing on disk: copy the lines you want
+    /// into your `config.toml` yourself. The sibling of
+    /// `--print-editor-config`, and the other half of "recon never writes
+    /// `config.toml`" (#61).
+    #[arg(long)]
+    pub print_keymap: bool,
+
     /// The colours successive filters take, or `None` to use the compiled-in
     /// palette. See [`FiltersConfig::palette`].
     ///
@@ -232,6 +241,7 @@ impl Default for Config {
             file_editor: None,
             clipboard: None,
             print_editor_config: None,
+            print_keymap: false,
             filter_palette: None,
             background: None,
             filter_sets: Vec::new(),

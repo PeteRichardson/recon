@@ -35,6 +35,14 @@ fn main() -> Result<ExitCode> {
         return Ok(ExitCode::SUCCESS);
     }
 
+    // Same reasoning as `--print-editor-config` above: this command reads
+    // nothing from `filters.toml` either, so it must not have to survive one
+    // to run (#191).
+    if config.print_keymap {
+        print!("{}", recon::keymap::print_keymap());
+        return Ok(ExitCode::SUCCESS);
+    }
+
     config.filter_sets = recon::filtersets::load_file()?;
     // Needs the loaded sets, which is why it is not inside `Config::load`
     // with `check_flags`. Still before any terminal setup: the message must

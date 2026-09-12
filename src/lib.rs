@@ -294,7 +294,7 @@ pub mod filtersets;
 pub(crate) mod fixtures;
 pub mod headless;
 pub mod help;
-mod keymap;
+pub mod keymap;
 mod layout;
 mod mouse;
 mod path;

@@ -222,6 +222,9 @@ Options:
           Print a ready-to-paste `[editor]` stanza and exit. Takes a flavour —
           `zed`, `vscode`, `wezterm-nvim`, … — or `auto` to guess from
           `$TERM_PROGRAM`
+      --print-keymap
+          Print the default keymap as a ready-to-paste `[keymap]` stanza and
+          exit
       --background <BACKGROUND>
           Whether the terminal background is dark or light: picks the built-in
           filter palette and the grey of dimmed lines. Falls back to a top-level

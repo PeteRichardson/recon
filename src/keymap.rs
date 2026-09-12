@@ -5,7 +5,9 @@
 //! three different modifier idioms disagreed at the edges — which is what
 //! #250 was.
 
+use crate::toml_fmt::toml_string;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use std::fmt::Write as _;
 
 /// A key as the table stores it: the code, and the two modifiers that carry
 /// meaning.
@@ -211,10 +213,9 @@ pub(crate) enum ActionId {
 impl ActionId {
     /// The name a user writes, and the name the documentation shows.
     ///
-    /// No caller outside `the_table_and_the_documentation_agree` below as of
-    /// task 4 (#199): plan 2b's `--print-keymap` is its production caller,
-    /// via `action.name()`.
-    #[allow(dead_code)]
+    /// `print_keymap`'s production caller (#61): every row's action is
+    /// rendered under this name, which is also the name `config.toml` must
+    /// use to rebind it.
     pub(crate) fn name(self) -> &'static str {
         match self {
             Self::GlobalQuit => "global.quit",
@@ -533,6 +534,84 @@ pub(crate) fn hint_for_trailing(
     format!("{key} {verb} · {opener_key} {trailing_key}")
 }
 
+/// Render the whole default keymap as a `[keymap]` stanza.
+///
+/// A `String` returned to the caller to print, and nothing else — the same
+/// contract `print_editor_config` has, and for the same reason: recon does not
+/// write `config.toml`, so what it can do is hand you the text.
+///
+/// Printed in the syntax the file accepts, so copying one line and changing
+/// the key is the whole of rebinding (#61).
+///
+/// One line **per action**, not per `DEFAULT` row: TOML has no duplicate
+/// keys, and 26 of the table's 93 actions bind more than one key in the same
+/// scope (`GlobalToggleHide` alone has three: `u`, `H`, `Ctrl-h`). A row per
+/// binding would print `'global.toggle.hide'` three times and the file the
+/// parser rejects would be recon's own advice. An action's several keys
+/// become a TOML array instead, in `DEFAULT`'s order.
+///
+/// Labels are deduplicated before printing. `HitNext`/`HitPrev` are the one
+/// case that needs it: each name is shared by a `View` row and a `Filters`
+/// row, and both rows carry the identical label (`n`/`N`) — without
+/// deduplication that is a valid but false `['n', 'n']`.
+///
+/// Grouped by the scope of an action's first `DEFAULT` row, in table order,
+/// which is the order the help overlay shows — the same reason
+/// `print_editor_config`'s FLAVOURS stays in a fixed, deliberate order.
+#[must_use]
+pub fn print_keymap() -> String {
+    let mut out = String::from(
+        "# recon's default keymap\n\
+         # Paste into ~/.config/recon/config.toml — recon never writes it for you.\n\
+         # Keep only the lines you want to change; anything absent keeps its default.\n\
+         [keymap]\n",
+    );
+
+    // One row per action, each holding every label `DEFAULT` binds it to —
+    // deduplicated, in the order those labels first appear — and the scope of
+    // its first `DEFAULT` row, purely for the blank-line grouping below.
+    // `index` maps an action already seen to its slot in `rows`, so a later
+    // `DEFAULT` entry for the same action extends that slot rather than
+    // starting a new one.
+    let mut rows: Vec<(Scope, ActionId, Vec<&str>)> = Vec::new();
+    let mut index: std::collections::HashMap<ActionId, usize> = std::collections::HashMap::new();
+    for (scope, label, action) in DEFAULT {
+        let slot = *index.entry(*action).or_insert_with(|| {
+            rows.push((*scope, *action, Vec::new()));
+            rows.len() - 1
+        });
+        let labels = &mut rows[slot].2;
+        if !labels.contains(label) {
+            labels.push(label);
+        }
+    }
+
+    let mut last_scope = None;
+    for (scope, action, labels) in &rows {
+        if last_scope != Some(*scope) {
+            out.push('\n');
+            last_scope = Some(*scope);
+        }
+        let value = if let [only] = labels.as_slice() {
+            toml_string(only)
+        } else {
+            format!(
+                "[{}]",
+                labels
+                    .iter()
+                    .map(|label| toml_string(label))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
+        };
+        // `writeln!` rather than `push_str(&format!(...))`: writing into the
+        // `String` directly avoids allocating a throwaway one per row.
+        // Infallible — `String`'s `Write` impl never errs.
+        let _ = writeln!(out, "{} = {value}", toml_string(action.name()));
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -692,5 +771,89 @@ mod tests {
     fn an_unbound_key_resolves_to_nothing() {
         let event = KeyEvent::new(KeyCode::Char('~'), KeyModifiers::empty());
         assert_eq!(resolve(Scope::Global, normalise(event)), None);
+    }
+
+    #[test]
+    fn the_printed_keymap_is_a_keymap_stanza() {
+        let printed = print_keymap();
+
+        assert!(printed.contains("[keymap]"), "{printed}");
+        assert!(
+            printed.contains("recon never writes it for you"),
+            "the header must say recon will not write the file: {printed}"
+        );
+        assert!(
+            printed.contains("'q'"),
+            "a key is quoted as a TOML literal string: {printed}"
+        );
+        assert!(printed.contains("global.quit"), "{printed}");
+    }
+
+    /// One `[keymap]` value, either a bare string or an array of them — the
+    /// two shapes `print_keymap` emits depending on how many keys an action
+    /// has.
+    #[derive(serde::Deserialize)]
+    #[serde(untagged)]
+    enum Keys {
+        One(String),
+        Many(Vec<String>),
+    }
+
+    impl Keys {
+        fn as_vec(&self) -> Vec<String> {
+            match self {
+                Self::One(key) => vec![key.clone()],
+                Self::Many(keys) => keys.clone(),
+            }
+        }
+    }
+
+    /// A local, test-only mirror of the `[keymap]` table rather than
+    /// `crate::config::FileConfig` — Task 3 has not added `FileConfig::keymap`
+    /// yet, and this needs only `serde`, which the pinned `toml` build always
+    /// carries (`display`, the serializer, is the one feature dropped).
+    #[derive(serde::Deserialize)]
+    struct Parsed {
+        keymap: std::collections::BTreeMap<String, Keys>,
+    }
+
+    /// Parses as TOML (Task 2 fix round 1, #61 review) — a `contains` check
+    /// cannot prove this and previously let a syntax the parser rejects ship
+    /// as "printed" — and every printed action's keys match `DEFAULT`
+    /// exactly: same set of names, same labels in the same order,
+    /// deduplicated. A plain substring check on the action name cannot tell
+    /// `global.quit` from `global.quit.silent`, so this compares the parsed
+    /// structure instead.
+    #[test]
+    fn every_default_binding_is_printed_exactly_once() {
+        let printed = print_keymap();
+        let parsed: Parsed = toml::from_str(&printed).unwrap_or_else(|err| {
+            panic!("the printed keymap must parse as TOML: {err}\n{printed}")
+        });
+
+        let mut expected: std::collections::BTreeMap<&str, Vec<&str>> =
+            std::collections::BTreeMap::new();
+        for (_, label, action) in DEFAULT {
+            let labels = expected.entry(action.name()).or_default();
+            if !labels.contains(label) {
+                labels.push(label);
+            }
+        }
+
+        let parsed_names: std::collections::BTreeSet<&str> =
+            parsed.keymap.keys().map(String::as_str).collect();
+        let expected_names: std::collections::BTreeSet<&str> = expected.keys().copied().collect();
+        assert_eq!(
+            parsed_names, expected_names,
+            "the printed action names must match DEFAULT's distinct actions exactly"
+        );
+
+        for (name, labels) in &expected {
+            let actual = parsed.keymap[*name].as_vec();
+            assert_eq!(
+                &actual, labels,
+                "{name}'s printed keys must match DEFAULT, in order and deduplicated"
+            );
+        }
     }
 }
