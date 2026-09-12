@@ -465,6 +465,15 @@ pub(crate) const DEFAULT: &[(Scope, &str, ActionId)] = &[
     (Scope::Picker, "Esc", ActionId::PickerCancel),
 ];
 
+/// Keys 1.0 promises to 1.1, bound to nothing.
+///
+/// The keymap reconciliation in #120 left six keys free, and two of them are
+/// spoken for. Recording them here and in the help overlay is what makes the
+/// promise real: a key 1.1 adds has to be a key 1.0 already said was taken,
+/// or a user who bound it loses it in an upgrade.
+pub(crate) const RESERVED: &[(&str, &str)] =
+    &[("-", "the hex view (#242)"), (":", "a command palette")];
+
 /// The action `name` spells, or `None` when no action does.
 fn action_named(name: &str) -> Option<ActionId> {
     DEFAULT
@@ -549,6 +558,25 @@ impl Keymap {
                     label: bad.clone(),
                 });
             }
+            // Once per reserved key this config line names, not once per
+            // scope `rebind` below puts it back in: `hit.next`/`hit.prev`
+            // hold two scopes each, and a user who bound one key should read
+            // one warning, not one per scope the action happens to occupy.
+            // Reached only from `Config::build_keymap`, called by `main`
+            // before `init_terminal` — the same reason `check_sets` is
+            // called there rather than from `Config::load` — so this still
+            // reaches stderr rather than being dropped by `Muted` (#246).
+            for label in labels {
+                if let Some((_, claim)) = RESERVED
+                    .iter()
+                    .find(|(reserved, _)| *reserved == label.as_str())
+                {
+                    log::warn!(
+                        "{name} binds '{label}', which is reserved for {claim}; \
+                         a later release will want it back, but recon binds it anyway"
+                    );
+                }
+            }
             keymap.rebind(action, labels);
         }
         Ok(keymap)
@@ -565,6 +593,17 @@ impl Keymap {
     /// And leaving each action where it sat is what makes a round trip
     /// through `--print-keymap` rebuild the table it printed, rather than the
     /// same bindings in a different order.
+    ///
+    /// That round trip relies on `HitNext`/`HitPrev` carrying identical
+    /// labels in both of their scopes: `print_keymap` deduplicates a printed
+    /// action's labels *across* scopes, while this puts the whole `labels`
+    /// list back in *every* scope the action held. If an action ever bound
+    /// different keys per scope, printing it would lose which scope had
+    /// which key, and parsing the result back in would hand every scope the
+    /// union — a `--print-keymap` round trip that quietly widens the map.
+    /// `the_printed_keymap_parses_back_as_the_same_bindings` would catch it
+    /// loudly, so no guard lives here — this comment is the warning for
+    /// whoever binds an action to different keys per scope next.
     ///
     /// Every `ActionId` holds at least one `DEFAULT` row, so there is always
     /// a position to replace.
@@ -841,6 +880,10 @@ mod tests {
     /// contains that label has to name that exact action (#59 review: this
     /// is what would have caught `n`/`N` being bound in both `Global` and
     /// `Nav` — the set comparison alone did not).
+    ///
+    /// A `RESERVED` row (`-`, `:`) is documented on purpose while binding
+    /// nothing: its `names` is empty, so it contributes nothing to either
+    /// set and needs no exception here (#242).
     #[test]
     fn the_table_and_the_documentation_agree() {
         let documented: std::collections::BTreeSet<&str> = crate::help::KEYMAP
@@ -1114,6 +1157,41 @@ mod tests {
             ),
             None
         );
+    }
+
+    // ---- reserved keys (#242, #61) --------------------------------------
+
+    #[test]
+    fn binding_a_reserved_key_warns_and_obeys() {
+        let mut bindings = std::collections::BTreeMap::new();
+        bindings.insert("global.quit".to_string(), vec!["-".to_string()]);
+        let overlay = crate::config::KeymapConfig { bindings };
+
+        // A warning, not a refusal: it is the user's keyboard, and 1.0 only
+        // promises that 1.1 will want the key back.
+        let keymap = Keymap::new(&overlay).expect("a reserved key is allowed");
+        let dash = normalise(KeyEvent::new(KeyCode::Char('-'), KeyModifiers::empty()));
+
+        assert_eq!(
+            keymap.resolve(Scope::Global, dash),
+            Some(ActionId::GlobalQuit)
+        );
+    }
+
+    #[test]
+    fn the_reserved_keys_are_bound_to_nothing_by_default() {
+        let keymap = Keymap::default();
+        for (label, _) in RESERVED {
+            for scope in [Scope::Global, Scope::View, Scope::Nav, Scope::Filters] {
+                assert!(
+                    !keymap
+                        .entries
+                        .iter()
+                        .any(|(s, l, _)| s == &scope && l.as_str() == *label),
+                    "{label} is reserved and must bind nothing"
+                );
+            }
+        }
     }
 
     /// An action bound to several keys hints with the first one the user

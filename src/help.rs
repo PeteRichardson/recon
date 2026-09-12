@@ -368,6 +368,18 @@ pub const KEYMAP: &[Section] = &[
                 action: "Refresh from disk — rescan the listing, reload the file",
                 names: &["global.reload"],
             },
+            // `names: &[]`: reserved for 1.1 (#242), bound to nothing, so
+            // there is no action to name — see `keymap::RESERVED`.
+            Binding {
+                keys: &["-"],
+                action: "Reserved — the hex view, in a later release",
+                names: &[],
+            },
+            Binding {
+                keys: &[":"],
+                action: "Reserved — a command palette, in a later release",
+                names: &[],
+            },
         ],
     },
     Section {
@@ -1044,9 +1056,9 @@ mod tests {
         }
     }
 
-    /// The case the whole layout exists for. 150 and 43 are inner columns and
-    /// rows — the area handed to `layout`, already inside the border, so 43
-    /// inner rows is a 45-row terminal. A 150x43 terminal is unremarkable, and
+    /// The case the whole layout exists for. 150 and 44 are inner columns and
+    /// rows — the area handed to `layout`, already inside the border, so 44
+    /// inner rows is a 46-row terminal. A 150x44 terminal is unremarkable, and
     /// the keymap is the one screen where "most of it" is not good enough —
     /// the row you cannot see is exactly the one you opened it to find.
     ///
@@ -1064,16 +1076,16 @@ mod tests {
     /// any further has nowhere left to go without this area's width growing
     /// past 151 — which would stop the second test here from failing on the
     /// regression it exists to catch — and a row that adds to *either* total
-    /// has to be re-measured against both. The height, 43, is likewise the
-    /// exact number of rows two columns hold at the current row count (86);
-    /// adding a row without raising the height would drop it off the bottom,
-    /// which is a `shown(&columns) == rows.len()` failure below, not a width
-    /// one.
+    /// has to be re-measured against both. The height, 44, is likewise the
+    /// exact number of rows two columns hold at the current row count (88,
+    /// after the two reserved-key rows of #242 raised it from 86); adding a
+    /// row without raising the height would drop it off the bottom, which is
+    /// a `shown(&columns) == rows.len()` failure below, not a width one.
     #[test]
     fn a_normal_terminal_shows_the_whole_keymap() {
         let rows = rows();
 
-        let columns = layout(&rows, inner(150, 43));
+        let columns = layout(&rows, inner(150, 44));
 
         assert_eq!(shown(&columns), rows.len(), "the keymap did not fit");
         assert!(
