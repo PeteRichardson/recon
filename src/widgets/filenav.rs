@@ -4,7 +4,8 @@ use super::listmotion::ListMotion;
 use crate::document::Mode;
 use crate::filter::Background;
 use crate::widgets::Action;
-use crossterm::event::{Event, KeyCode, KeyModifiers};
+#[cfg(test)]
+use crossterm::event::KeyCode;
 use ratatui::prelude::{Buffer, Color, Modifier, Rect, Style, Widget};
 use ratatui::widgets::{List, ListItem, StatefulWidget};
 use regex::Regex;
@@ -482,69 +483,70 @@ impl FileNav<'_> {
         self.preview_selection()
     }
 
-    /// Returns what the keypress asked `App` to do, if anything.
+    /// Carry out a `Scope::Nav` action, returning what it asked `App` to do,
+    /// if anything.
+    ///
+    /// One arm per action, each holding the body its key arm held before the
+    /// table resolved which action a key named (#199). `App`'s per-focus
+    /// dispatch is the only caller: it resolves the key against
+    /// `Scope::for_focus` and hands the result straight here.
     ///
     /// Not a `Result`: nothing in here can fail. It used to return one for
     /// symmetry with the rest of the chain, which is exactly what clippy's
     /// `unnecessary_wraps` was flagging (#80).
-    pub(crate) fn handle_events(&mut self, event: Event) -> Option<Action> {
-        if let Event::Key(key) = event {
-            match key.code {
-                KeyCode::Up | KeyCode::Char('k') => {
-                    self.select_previous();
-                    return self.preview_selection();
-                }
-                KeyCode::Down | KeyCode::Char('j') => {
-                    self.select_next();
-                    return self.preview_selection();
-                }
-                // `h`/`l` act on the pane, mirroring the movement they mean
-                // in a file manager. `l` is `Enter` in every case, including
-                // on a file: a key that works on some rows and silently does
-                // nothing on others is worse than one that always does the
-                // obvious thing.
-                KeyCode::Left | KeyCode::Char('h') => return self.go_to_parent(),
-                KeyCode::Enter | KeyCode::Right | KeyCode::Char('l') => {
-                    return self.activate_selection();
-                }
-                KeyCode::Char('n') => return self.repeat_search(false),
-                KeyCode::Char('N') => return self.repeat_search(true),
-                // Shared list motions (#120 §3): the same keys, with the same
-                // meaning, as the file view. `g`/`G` and the Ctrl pair are
-                // deliberately not intercepted by `App` for this pane — only
-                // the file view holds a *window* of its document; the
-                // navigator holds all its rows, so it can answer itself.
-                KeyCode::Char('g') | KeyCode::Home => {
-                    self.select_first();
-                    return self.preview_selection();
-                }
-                KeyCode::Char('G') | KeyCode::End => {
-                    self.select_last();
-                    return self.preview_selection();
-                }
-                KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    let half = (self.page_rows() / 2).max(1);
-                    self.move_by(isize::try_from(half).unwrap_or(isize::MAX));
-                    return self.preview_selection();
-                }
-                KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    let half = (self.page_rows() / 2).max(1);
-                    self.move_by(-isize::try_from(half).unwrap_or(isize::MAX));
-                    return self.preview_selection();
-                }
-                KeyCode::PageDown => {
-                    self.move_by(isize::try_from(self.page_rows()).unwrap_or(isize::MAX));
-                    return self.preview_selection();
-                }
-                KeyCode::PageUp => {
-                    self.move_by(-isize::try_from(self.page_rows()).unwrap_or(isize::MAX));
-                    return self.preview_selection();
-                }
-                _ => {}
+    pub(crate) fn perform(&mut self, action: crate::keymap::ActionId) -> Option<Action> {
+        use crate::keymap::ActionId as A;
+        match action {
+            A::NavUp => {
+                self.select_previous();
+                self.preview_selection()
             }
+            A::NavDown => {
+                self.select_next();
+                self.preview_selection()
+            }
+            // `h`/`l` act on the pane, mirroring the movement they mean in a
+            // file manager. `l` is `Enter` in every case, including on a
+            // file: a key that works on some rows and silently does nothing
+            // on others is worse than one that always does the obvious
+            // thing.
+            A::NavParent => self.go_to_parent(),
+            A::NavOpen => self.activate_selection(),
+            A::NavHitNext => self.repeat_search(false),
+            A::NavHitPrev => self.repeat_search(true),
+            // Shared list motions (#120 §3): the same keys, with the same
+            // meaning, as the file view. `g`/`G` and the Ctrl pair are
+            // deliberately not intercepted by `App` for this pane — only the
+            // file view holds a *window* of its document; the navigator
+            // holds all its rows, so it can answer itself.
+            A::NavGotoStart => {
+                self.select_first();
+                self.preview_selection()
+            }
+            A::NavGotoEnd => {
+                self.select_last();
+                self.preview_selection()
+            }
+            A::NavHalfPageDown => {
+                let half = (self.page_rows() / 2).max(1);
+                self.move_by(isize::try_from(half).unwrap_or(isize::MAX));
+                self.preview_selection()
+            }
+            A::NavHalfPageUp => {
+                let half = (self.page_rows() / 2).max(1);
+                self.move_by(-isize::try_from(half).unwrap_or(isize::MAX));
+                self.preview_selection()
+            }
+            A::NavPageDown => {
+                self.move_by(isize::try_from(self.page_rows()).unwrap_or(isize::MAX));
+                self.preview_selection()
+            }
+            A::NavPageUp => {
+                self.move_by(-isize::try_from(self.page_rows()).unwrap_or(isize::MAX));
+                self.preview_selection()
+            }
+            _ => None,
         }
-
-        None
     }
 
     /// Act on a click `line` rows below the pane's top border (#58).
@@ -1053,7 +1055,11 @@ mod tests {
     use crossterm::event::{KeyEvent, KeyModifiers};
 
     fn press(nav: &mut FileNav<'_>, code: KeyCode) -> Option<Action> {
-        nav.handle_events(Event::Key(KeyEvent::from(code)))
+        let modifiers = match code {
+            KeyCode::Char(c) if c.is_uppercase() => KeyModifiers::SHIFT,
+            _ => KeyModifiers::empty(),
+        };
+        press_mod(nav, code, modifiers)
     }
 
     fn enter(nav: &mut FileNav<'_>) -> Option<Action> {
@@ -2123,7 +2129,7 @@ mod tests {
         nav.restyle();
         nav.select_entry(a);
 
-        let action = nav.handle_events(Event::Key(KeyEvent::from(KeyCode::Char('n'))));
+        let action = press(&mut nav, KeyCode::Char('n'));
 
         assert_eq!(nav.selected_entry(), Some(c));
         assert!(
@@ -2131,10 +2137,10 @@ mod tests {
             "the step previews, like a search step"
         );
 
-        nav.handle_events(Event::Key(KeyEvent::from(KeyCode::Char('n'))));
+        press(&mut nav, KeyCode::Char('n'));
         assert_eq!(nav.selected_entry(), Some(a), "wraps");
 
-        nav.handle_events(Event::Key(KeyEvent::from(KeyCode::Char('N'))));
+        press(&mut nav, KeyCode::Char('N'));
         assert_eq!(nav.selected_entry(), Some(c), "N reverses");
     }
 
@@ -2193,7 +2199,7 @@ mod tests {
         nav.search("b", false).expect("valid pattern");
         nav.select_entry(nav.files()[0].0);
 
-        nav.handle_events(Event::Key(KeyEvent::from(KeyCode::Char('n'))));
+        press(&mut nav, KeyCode::Char('n'));
 
         assert_eq!(nav.selected_path().unwrap().file_name().unwrap(), "b.log");
     }
@@ -2204,10 +2210,7 @@ mod tests {
         let a = nav.files()[0].0;
         nav.select_entry(a);
 
-        assert!(
-            nav.handle_events(Event::Key(KeyEvent::from(KeyCode::Char('n'))))
-                .is_none()
-        );
+        assert!(press(&mut nav, KeyCode::Char('n')).is_none());
         assert_eq!(nav.selected_entry(), Some(a));
     }
 
@@ -2504,7 +2507,9 @@ mod tests {
     // predate this one; these motions need Ctrl and Shift, so they get their
     // own helper rather than colliding with it.
     fn press_mod(nav: &mut FileNav<'_>, code: KeyCode, modifiers: KeyModifiers) -> Option<Action> {
-        nav.handle_events(Event::Key(KeyEvent::new(code, modifiers)))
+        let pressed = crate::keymap::normalise(KeyEvent::new(code, modifiers));
+        let action = crate::keymap::resolve(crate::keymap::Scope::Nav, pressed)?;
+        nav.perform(action)
     }
 
     #[test]
@@ -2689,15 +2694,13 @@ mod tests {
 
     #[test]
     fn j_and_k_move_in_vim_directions() {
-        use crossterm::event::{KeyCode, KeyEvent};
-
         let dir = repo_like("j_and_k");
         let mut nav = FileNav::new(dir.join("Cargo.toml").display().to_string());
         nav.select(0);
-        nav.handle_events(Event::Key(KeyEvent::from(KeyCode::Char('j'))));
+        press(&mut nav, KeyCode::Char('j'));
         assert_eq!(nav.selected(), Some(1), "j should move down");
 
-        nav.handle_events(Event::Key(KeyEvent::from(KeyCode::Char('k'))));
+        press(&mut nav, KeyCode::Char('k'));
         assert_eq!(nav.selected(), Some(0), "k should move back up");
     }
 
@@ -2979,7 +2982,7 @@ mod tests {
         nav.set_mode(Mode::FilteredOnly);
         nav.select_entry(nav.files()[0].0);
 
-        nav.handle_events(Event::Key(KeyEvent::from(KeyCode::Char('j'))));
+        press(&mut nav, KeyCode::Char('j'));
         assert_eq!(
             nav.selected_path().unwrap().file_name().unwrap(),
             "z.log",

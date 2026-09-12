@@ -1387,29 +1387,6 @@ impl App<'_> {
                     self.report(&format!("{c} {verb} · f {c}"), false);
                     return;
                 }
-                // Scoped away from the navigator rather than global: `n` in
-                // the navigator is the navigator's key (next filename-search
-                // hit, else next matching file) and stays that way. The
-                // filter pane forwards it to the view — the pane has no
-                // "next" of its own, and the user wants to see the effect of
-                // the filter they just touched (#120 §2).
-                //
-                // Not resolved through the table (#199 review): `n`/`N` bind
-                // identically in the file view and the filter pane —
-                // `ActionId::HitNext`/`HitPrev`, bare because the binding
-                // isn't scope-specific — but never in `Scope::Global`: this
-                // arm's own focus guard is what keeps the navigator's own
-                // `n` binding, in `Scope::Nav`, from being shadowed here.
-                // Task 6 moves this arm onto the table.
-                KeyCode::Char(c @ ('n' | 'N'))
-                    if !key
-                        .modifiers
-                        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
-                        && self.focus != Focus::Nav =>
-                {
-                    self.step_interesting(c == 'N');
-                    return;
-                }
                 _ => {}
             }
         }
@@ -1471,17 +1448,28 @@ impl App<'_> {
         let was_truncated = self.file_view_truncated();
         let action = match self.focus {
             Focus::Nav => {
+                // The only call site `Scope::for_focus` has (#199): the
+                // navigator's key resolves in its own scope here, then
+                // `FileNav::perform` carries out whatever it named.
+                let resolved = match event {
+                    event::Event::Key(key) => {
+                        let pressed = crate::keymap::normalise(key);
+                        crate::keymap::resolve(crate::keymap::Scope::for_focus(self.focus), pressed)
+                    }
+                    _ => None,
+                };
                 // `n`/`N` land here whether they came from the user or from
                 // `return_to_chain_origin`'s synthetic `n`; either way, a
                 // `None` back means there was nothing to step to, and the
                 // status row is the only way that reaches the user — the
                 // key otherwise does nothing at all. `j`/`k` and every other
                 // key that can also return `None` say nothing, so this is
-                // gated on the key rather than on the result.
-                let is_step_key = matches!(&event, event::Event::Key(key)
-                    if matches!(key.code, KeyCode::Char('n' | 'N'))
-                        && !key.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT));
-                let action = self.nav.handle_events(event);
+                // gated on the action rather than on the result.
+                let is_step_key = matches!(
+                    resolved,
+                    Some(crate::keymap::ActionId::NavHitNext | crate::keymap::ActionId::NavHitPrev)
+                );
+                let action = resolved.and_then(|action| self.nav.perform(action));
                 if action.is_none() && is_step_key {
                     // "No matching file" is a claim about every file, and
                     // it is false while the worker is still out (#158):
@@ -1530,11 +1518,12 @@ impl App<'_> {
     /// Before this, the same behaviour was reachable from up to four `match`
     /// arms in different files, which is the drift #199 describes.
     ///
-    /// Only `Scope::Global` resolves into this so far: tasks 5-7 add the
-    /// `Nav`/`View`/`Filters`/`Prompt`/`Picker` arms as each scope moves onto
-    /// the table. Until then those variants are listed explicitly as no-ops,
-    /// grouped by the task that wires them, rather than caught by a
-    /// wildcard — see the comment on that block.
+    /// `Scope::Global` and `Scope::View` resolve into this. `Nav` and
+    /// `Filters` never do — each resolves at its own call site and is
+    /// carried out there or by its widget's own `perform`, never through
+    /// here — and `Prompt`/`Picker` are Task 7's. Until each of the
+    /// remaining scopes is wired, its variants are listed explicitly rather
+    /// than caught by a wildcard — see the comment on that block.
     ///
     /// Takes the resolved `Key` alongside the `ActionId`, even though most
     /// arms ignore it: `GlobalFiltersToggle` needs the digit that fired it,
@@ -1779,7 +1768,14 @@ impl App<'_> {
             // task that gives it a real arm, so a variant left behind after
             // that task lands is a build error rather than a silent no-op.
             //
-            // The navigator and filter-pane scopes — Task 6.
+            // Task 6 gave the navigator and filter-pane scopes their real
+            // arms, but neither lives here: `Scope::Nav` resolves at the
+            // per-focus dispatch and is carried out by `FileNav::perform`,
+            // and `Scope::Filters` resolves inside `handle_filter_key` and
+            // is carried out there or by `FilterList::perform`. Neither call
+            // site routes its result through this function, so this
+            // dispatcher never receives one of these variants — if it ever
+            // does, a scope resolved somewhere it should not have.
             A::NavUp
             | A::NavDown
             | A::NavParent
@@ -1809,7 +1805,9 @@ impl App<'_> {
             | A::FiltersProfile
             | A::FiltersSolo
             | A::FiltersReset
-            | A::FiltersSaveSet => (),
+            | A::FiltersSaveSet => {
+                unreachable!("{action:?} resolves against its own widget, never through `perform`")
+            }
             // The modal scopes — Task 7. The help overlay dismisses on any
             // key and has no `ActionId` of its own, so it has no group here.
             A::PromptCommit
@@ -2495,35 +2493,20 @@ impl App<'_> {
     /// until it commits — at which point `replace_filter` or `apply_search`
     /// does the re-evaluating instead.
     ///
-    /// Takes the whole `KeyEvent`, not just its `KeyCode`: `FilterList::handle_key`
-    /// needs the modifiers to guard `space`/`d`/`j`/`k` against CONTROL and
-    /// ALT, the same way every other global binding is guarded — see its
-    /// doc comment.
+    /// `Scope::Filters` resolves here rather than through `perform`: `i`,
+    /// `x` and `S` open a prompt, which only `App` owns, so they are carried
+    /// out directly below; everything else is delegated to
+    /// `FilterList::perform`, which only reports a command — only `App` can
+    /// mutate the `ActiveFilters` the command names.
     fn handle_filter_key(&mut self, key: event::KeyEvent) {
-        // `i` and `x` are handled here rather than in `FilterList::handle_key`
-        // because they open a prompt, and `self.search` is `App`'s. They are
-        // deliberately not `FilterCommand` variants: that enum describes
-        // mutations of the `ActiveFilters`, and opening a prompt is not one — see
-        // its doc comment in `widgets/mod.rs`.
-        //
-        // `e` would read better than `x` for "exclude" and cannot be used: the
-        // global match above runs first and returns, so a bare `e` never
-        // reaches this function. Guarding the global arm on focus would cost
-        // `e`-to-explorer from this pane, which is the one thing these focus
-        // keys exist to provide.
-        // Two guards, not one. The lowercase keys want an empty modifier
-        // set. `S` cannot have one: a real terminal reports the Shift that
-        // makes it uppercase, so guarding it on `is_empty` left it firing
-        // only in tests, where `KeyEvent::from(code)` sets no modifiers
-        // (#146) — the trap `?`, `N`, `H`, `O`, `G` and `*` document. It
-        // takes the guard those arms use instead.
-        let plain = key.modifiers.is_empty();
-        let unmodified = !key
-            .modifiers
-            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
-        if plain {
-            // The navigator's `h`/`l` in this pane: a hint, not a redirect,
-            // for the same reason as the filter verbs elsewhere (#120 §9).
+        use crate::keymap::ActionId as A;
+
+        // The navigator's `h`/`l` in this pane: a hint, not a redirect, for
+        // the same reason as the filter verbs elsewhere (#120 §9). Neither
+        // has an `ActionId` or a table row — `FilterList` cannot report,
+        // since the status row is `App`'s — so this stays a pre-resolution
+        // special case, guarded on an empty modifier set as before.
+        if key.modifiers.is_empty() {
             match key.code {
                 KeyCode::Char('h') => {
                     self.report("h goes up a directory · e h", false);
@@ -2537,31 +2520,41 @@ impl App<'_> {
             }
         }
 
-        let kind = match key.code {
-            KeyCode::Char('i') if plain => Some(PromptKind::Filter),
-            KeyCode::Char('x') if plain => Some(PromptKind::Exclude),
+        let pressed = crate::keymap::normalise(key);
+        let Some(action) = crate::keymap::resolve(crate::keymap::Scope::Filters, pressed) else {
+            return;
+        };
+
+        match action {
+            // `i` and `x` open a prompt, and `self.search` is `App`'s —
+            // `FilterList` cannot carry these out itself. Deliberately not
+            // `FilterCommand` variants: that enum describes mutations of the
+            // `ActiveFilters`, and opening a prompt is not one — see its doc
+            // comment in `widgets/mod.rs`.
+            A::FiltersInclude => self.search = Some(SearchPrompt::new(PromptKind::Filter)),
+            A::FiltersExclude => self.search = Some(SearchPrompt::new(PromptKind::Exclude)),
             // `S` saves the scratch set (#131). Refused before the prompt
-            // opens when there is nothing to save: a prompt for a name
-            // that can go nowhere is worse than a message.
-            KeyCode::Char('S') if unmodified => {
+            // opens when there is nothing to save: a prompt for a name that
+            // can go nowhere is worse than a message.
+            A::FiltersSaveSet => {
                 if self.filters.filters_in(0).next().is_none() {
                     self.report("nothing to save: the scratch set is empty", false);
                     return;
                 }
-                Some(PromptKind::SaveSet)
+                self.search = Some(SearchPrompt::new(PromptKind::SaveSet));
             }
-            _ => None,
-        };
-        if let Some(kind) = kind {
-            self.search = Some(SearchPrompt::new(kind));
-            return;
+            // Bound the same way in the file view (`Scope::View`); only
+            // `App` can see the document, so this makes the same call the
+            // view's arm in `perform` makes, rather than delegating to
+            // `FilterList`, which has no "next" of its own.
+            A::HitNext | A::HitPrev => self.perform(action, pressed),
+            _ => {
+                let rows = widgets::filterlist::rows(&self.filters);
+                if let Some(command) = self.filters_pane.perform(action, &rows) {
+                    self.apply_filter_command(command);
+                }
+            }
         }
-
-        let rows = widgets::filterlist::rows(&self.filters);
-        let Some(command) = self.filters_pane.handle_key(key, &rows) else {
-            return;
-        };
-        self.apply_filter_command(command);
     }
 
     /// Carry out a command the filter pane reported, from a key or a click
@@ -8886,6 +8879,75 @@ mod tests {
 
         key(&mut app, KeyCode::Char('n'));
         assert_eq!(cursor_source(&app), 3, "did not reach the search match");
+    }
+
+    /// Task 6 review (RULING 27): before the table, a global arm guarded
+    /// only on `focus != Focus::Nav` ran ahead of both scopes' own
+    /// `HitNext`/`HitPrev` rows and called `step_interesting` itself, so
+    /// neither arm had ever executed in production. Pins that the file
+    /// view's own arm — `Scope::View`'s bare `n`/`N` rows in `keymap.rs` —
+    /// is what a real `n`/`N` in the view now reaches.
+    #[test]
+    fn n_and_capital_n_resolve_through_the_view_scope() {
+        let mut app = app_over_file("n_view_scope", "hit a\nplain\nhit b\nplain\nhit c\n");
+        focus_file_view(&mut app);
+        key(&mut app, KeyCode::Char('j'));
+        key(&mut app, KeyCode::Char('j'));
+        app.filters.set_search("hit").expect("valid pattern");
+        app.refresh_view();
+        assert_eq!(
+            cursor_source(&app),
+            2,
+            "sanity: cursor starts on the middle hit"
+        );
+
+        key(&mut app, KeyCode::Char('n'));
+        assert_eq!(
+            cursor_source(&app),
+            4,
+            "n did not resolve through Scope::View to HitNext"
+        );
+
+        key(&mut app, KeyCode::Char('N'));
+        assert_eq!(
+            cursor_source(&app),
+            2,
+            "N did not resolve through Scope::View to HitPrev"
+        );
+    }
+
+    /// Same pin, for `Scope::Filters`: the filter pane has no "next" of its
+    /// own, so `n`/`N` there must reach the same `HitNext`/`HitPrev` action —
+    /// resolved inside `handle_filter_key` rather than at the view's own
+    /// call site — and make the same `step_interesting` call.
+    #[test]
+    fn n_and_capital_n_resolve_through_the_filters_scope() {
+        let mut app = app_over_file("n_filters_scope", "hit a\nplain\nhit b\nplain\nhit c\n");
+        focus_file_view(&mut app);
+        key(&mut app, KeyCode::Char('j'));
+        key(&mut app, KeyCode::Char('j'));
+        app.filters.set_search("hit").expect("valid pattern");
+        app.refresh_view();
+        assert_eq!(
+            cursor_source(&app),
+            2,
+            "sanity: cursor starts on the middle hit"
+        );
+        focus_filter_pane(&mut app);
+
+        key(&mut app, KeyCode::Char('n'));
+        assert_eq!(
+            cursor_source(&app),
+            4,
+            "n did not resolve through Scope::Filters to HitNext"
+        );
+
+        key(&mut app, KeyCode::Char('N'));
+        assert_eq!(
+            cursor_source(&app),
+            2,
+            "N did not resolve through Scope::Filters to HitPrev"
+        );
     }
 
     // ---- where a jump lands --------------------------------------

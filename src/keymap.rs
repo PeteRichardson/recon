@@ -73,9 +73,9 @@ pub(crate) enum Scope {
 impl Scope {
     /// The pane scope for the focused pane.
     ///
-    /// No caller outside the test below as of task 4 (#199); task 6 gives it
-    /// one, wiring the navigator and filter-pane scopes.
-    #[allow(dead_code)]
+    /// `App`'s per-focus dispatch derives `Scope::Nav` from this at the
+    /// navigator's key site (task 6, #199): the focus is the thing that
+    /// decides, so reading it from the focus is the honest spelling.
     pub(crate) fn for_focus(focus: crate::widgets::Focus) -> Self {
         match focus {
             crate::widgets::Focus::Nav => Self::Nav,
@@ -421,6 +421,12 @@ pub(crate) const DEFAULT: &[(Scope, &str, ActionId)] = &[
     (Scope::Filters, "Home", ActionId::FiltersGotoStart),
     (Scope::Filters, "G", ActionId::FiltersGotoEnd),
     (Scope::Filters, "End", ActionId::FiltersGotoEnd),
+    // `Ctrl-d` used to read as plain `d` and delete the selected filter,
+    // which is the whole reason `FilterList` once dropped every CONTROL key
+    // outright before looking at its code. Exact matching retires that
+    // guard: `Ctrl-d` and `d` are distinct rows here, so the half-page
+    // motion below claims the modified key and `FiltersDelete`'s plain `d`
+    // row (below) never sees it.
     (Scope::Filters, "Ctrl-d", ActionId::FiltersHalfPageDown),
     (Scope::Filters, "Ctrl-u", ActionId::FiltersHalfPageUp),
     (Scope::Filters, "PageDown", ActionId::FiltersPageDown),

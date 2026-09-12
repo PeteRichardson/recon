@@ -12,6 +12,7 @@
 use super::FilterCommand;
 use super::listmotion::ListMotion;
 use crate::filter::{ActiveFilters, SEARCH_STYLE, Sense};
+#[cfg(test)]
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::prelude::{Buffer, Color, Modifier, Rect, Style};
 use ratatui::widgets::{List, ListItem, StatefulWidget};
@@ -184,72 +185,79 @@ impl FilterList {
         self.list.clamp(len);
     }
 
-    /// Handle a key, reporting any change `App` must make to the filter set.
+    /// Carry out `action`, reporting any change `App` must make to the
+    /// filter set.
     ///
     /// Selection movement is handled here because it is the pane's own
     /// state; mutations are only reported, never applied, because the
     /// `ActiveFilters` they act on belongs to `App` — this pane only borrows one
     /// to render it. `rows` is what the pane is showing, from [`rows`], so
-    /// the key and the label agree on which filter or set a row addresses.
+    /// the action and the label agree on which filter or set a row
+    /// addresses.
     ///
-    /// Guarded against CONTROL and ALT the same way every global binding in
-    /// `App::handle_event` is: without this, `Ctrl-D` — half-page-down in the
-    /// file view, and exactly the muscle memory a vim user arrives with —
-    /// silently deleted the selected filter instead, since the routing that
-    /// reaches this pane discarded modifiers entirely. Ctrl-d now pages
-    /// instead of being dropped; see the CONTROL arm below.
-    pub(crate) fn handle_key(&mut self, key: KeyEvent, rows: &[Row]) -> Option<FilterCommand> {
-        // The two Ctrl motions are the only modified keys this pane answers.
-        // Every other modified key is dropped here — `Ctrl-D` used to read as
-        // `d` and delete the selected filter, which is the whole reason this
-        // guard exists.
-        if key.modifiers.contains(KeyModifiers::CONTROL) {
-            let half = isize::try_from((self.page_rows() / 2).max(1)).unwrap_or(isize::MAX);
-            match key.code {
-                KeyCode::Char('d') => self.move_by(half, rows.len()),
-                KeyCode::Char('u') => self.move_by(-half, rows.len()),
-                _ => {}
-            }
-            return None;
-        }
-        if key.modifiers.contains(KeyModifiers::ALT) {
-            return None;
-        }
+    /// The same action means something different depending on the row it
+    /// lands on — `FiltersDelete` is `Delete` on a filter, `DeleteSearch` on
+    /// the search row, and read-only on a built-in or a header — so the verb
+    /// half of this match is on `(action, row)`, not `action` alone. The
+    /// motion arms sit above the row lookup and run with no selection at
+    /// all; the verb arms sit below it, since a verb with nothing selected
+    /// has nothing to act on.
+    pub(crate) fn perform(
+        &mut self,
+        action: crate::keymap::ActionId,
+        rows: &[Row],
+    ) -> Option<FilterCommand> {
+        use crate::keymap::ActionId as A;
         let page = isize::try_from(self.page_rows()).unwrap_or(isize::MAX);
-        match key.code {
-            KeyCode::Char('j') | KeyCode::Down => {
+        let half = isize::try_from((self.page_rows() / 2).max(1)).unwrap_or(isize::MAX);
+        match action {
+            A::FiltersDown => {
                 self.select_next(rows.len());
                 return None;
             }
-            KeyCode::Char('k') | KeyCode::Up => {
+            A::FiltersUp => {
                 self.select_previous(rows.len());
                 return None;
             }
             // Shared list motions (#120 §3), same meaning as the other panes.
-            KeyCode::Char('g') | KeyCode::Home => {
+            A::FiltersGotoStart => {
                 self.select_first(rows.len());
                 return None;
             }
-            KeyCode::Char('G') | KeyCode::End => {
+            A::FiltersGotoEnd => {
                 self.select_last(rows.len());
                 return None;
             }
-            KeyCode::PageDown => {
+            // `Ctrl-d` used to read as plain `d` and delete the selected
+            // filter, which is why this pane once dropped every CONTROL key
+            // outright before looking at its code. The table's exact
+            // matching retires that guard: `Ctrl-d` is its own action here,
+            // distinct from `FiltersDelete`'s plain `d`, so the half-page
+            // motion runs and the delete arm below never sees it.
+            A::FiltersHalfPageDown => {
+                self.move_by(half, rows.len());
+                return None;
+            }
+            A::FiltersHalfPageUp => {
+                self.move_by(-half, rows.len());
+                return None;
+            }
+            A::FiltersPageDown => {
                 self.move_by(page, rows.len());
                 return None;
             }
-            KeyCode::PageUp => {
+            A::FiltersPageUp => {
                 self.move_by(-page, rows.len());
                 return None;
             }
             _ => {}
         }
         let row = rows.get(self.selected()?).copied()?;
-        match (key.code, row) {
-            // `Enter`, not `space`: #48 made `space` the global peek, because
-            // a key that toggles a filter in this pane and flips hide mode
-            // everywhere else is the pane-dependent meaning that change exists
-            // to remove.
+        match (action, row) {
+            // Not `space`: #48 made `space` the global peek, because a key
+            // that toggles a filter in this pane and flips hide mode
+            // everywhere else is the pane-dependent meaning that change
+            // exists to remove.
             //
             // `Enter` is also the key that *commits* the prompt `c`, `i` and
             // `x` open, which is why it was left unbound here until now — a
@@ -257,32 +265,36 @@ impl FilterList {
             // filter off. `App` swallows exactly one `Enter` immediately after
             // a commit; see `swallow_next_enter` in `lib.rs`. The guard lives
             // there rather than here because only `App` knows a prompt closed.
-            (KeyCode::Enter, row) => Self::toggle_command(row),
-            (KeyCode::Char('d'), Row::Filter(index)) => Some(FilterCommand::Delete(index)),
-            (KeyCode::Char('d'), Row::Search) => Some(FilterCommand::DeleteSearch),
+            (A::FiltersToggle, row) => Self::toggle_command(row),
+            (A::FiltersDelete, Row::Filter(index)) => Some(FilterCommand::Delete(index)),
+            (A::FiltersDelete, Row::Search) => Some(FilterCommand::DeleteSearch),
             // `c` for change, as in vim.
-            (KeyCode::Char('c'), Row::Filter(index)) => Some(FilterCommand::Edit(index)),
-            (KeyCode::Char('c'), Row::Search) => Some(FilterCommand::EditSearch),
+            (A::FiltersEdit, Row::Filter(index)) => Some(FilterCommand::Edit(index)),
+            (A::FiltersEdit, Row::Search) => Some(FilterCommand::EditSearch),
             // `m` as in *metadata*: the filter keeps showing its lines but
             // stops choosing files in the navigator (#119). The search has no
             // context form.
-            (KeyCode::Char('m'), Row::Filter(index) | Row::BuiltIn(index)) => {
+            (A::FiltersContext, Row::Filter(index) | Row::BuiltIn(index)) => {
                 Some(FilterCommand::ToggleContext(index))
             }
             // A built-in filter is recon's: switch it, but do not delete or
             // rewrite it (#127).
-            (KeyCode::Char('d' | 'c'), Row::BuiltIn(_)) => Some(FilterCommand::BuiltInIsReadOnly),
+            (A::FiltersDelete | A::FiltersEdit, Row::BuiltIn(_)) => {
+                Some(FilterCommand::BuiltInIsReadOnly)
+            }
             // A set is defined by the file, and the pane says so rather than
             // doing nothing (#120's "no silent keys").
-            (KeyCode::Char('d' | 'c' | 'm'), Row::Header(_)) => Some(FilterCommand::SetIsReadOnly),
+            (A::FiltersDelete | A::FiltersEdit | A::FiltersContext, Row::Header(_)) => {
+                Some(FilterCommand::SetIsReadOnly)
+            }
             // `a` as in *apply*: a profile is a set verb, so on a filter row
             // it is nothing.
-            (KeyCode::Char('a'), Row::Header(set)) => Some(FilterCommand::PickProfile(set)),
+            (A::FiltersProfile, Row::Header(set)) => Some(FilterCommand::PickProfile(set)),
             // `s` as in *solo*, a set verb too. `R` is uppercase because `r`
             // is the global refresh-from-disk; it acts on every set, so the
             // row does not matter.
-            (KeyCode::Char('s'), Row::Header(set)) => Some(FilterCommand::Solo(set)),
-            (KeyCode::Char('R'), _) => Some(FilterCommand::Reset),
+            (A::FiltersSolo, Row::Header(set)) => Some(FilterCommand::Solo(set)),
+            (A::FiltersReset, _) => Some(FilterCommand::Reset),
             _ => None,
         }
     }
@@ -497,6 +509,20 @@ fn sense_word(sense: Sense) -> &'static str {
         Sense::Include => "inc",
         Sense::Context => "ctx",
         Sense::Exclude => "exc",
+    }
+}
+
+#[cfg(test)]
+impl FilterList {
+    /// `perform`'s predecessor: it took the raw key and resolved it itself,
+    /// against exactly the scope `App::handle_filter_key` resolves against
+    /// in production now. Kept test-only so the dozens of tests already
+    /// written against a key, rather than an action, need no change (task 6,
+    /// #199).
+    fn handle_key(&mut self, key: KeyEvent, rows: &[Row]) -> Option<FilterCommand> {
+        let pressed = crate::keymap::normalise(key);
+        let action = crate::keymap::resolve(crate::keymap::Scope::Filters, pressed)?;
+        self.perform(action, rows)
     }
 }
 
@@ -1294,7 +1320,9 @@ mod tests {
     }
 
     fn press(list: &mut FilterList, code: KeyCode, modifiers: KeyModifiers, rows: &[Row]) {
-        let command = list.handle_key(KeyEvent::new(code, modifiers), rows);
+        let pressed = crate::keymap::normalise(KeyEvent::new(code, modifiers));
+        let command = crate::keymap::resolve(crate::keymap::Scope::Filters, pressed)
+            .and_then(|action| list.perform(action, rows));
         assert_eq!(command, None, "a motion is not a command");
     }
 
