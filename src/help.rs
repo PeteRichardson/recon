@@ -871,11 +871,12 @@ mod tests {
     /// the half-truth #25 is about.
     const SOURCES: &[(&str, &str)] = &[
         ("src/lib.rs", include_str!("lib.rs")),
-        // `long_range_target`'s `g`/`G`/`{`/`}` table, which moved here out of
-        // `impl App` when the viewport was split off. Keys bound in it are
-        // intercepted before the file view sees them — a third source, and one
-        // this list did not follow (#95).
-        ("src/viewport.rs", include_str!("viewport.rs")),
+        // `src/viewport.rs` is deliberately absent: `long_range_target` used
+        // to hold a `g`/`G`/`{`/`}` table of its own (#95), but task 5 (#250)
+        // turned it into a lookup keyed by `ActionId` instead, so the keys
+        // themselves no longer appear there as literal `KeyCode::…` patterns
+        // — they live only in `keymap::DEFAULT` now, same as `q` and
+        // `BackTab` below.
         ("src/widgets/filenav.rs", include_str!("widgets/filenav.rs")),
         (
             "src/widgets/fileview.rs",
@@ -976,29 +977,23 @@ mod tests {
         );
     }
 
-    /// The long-range table is a *third* place a key can be bound, and the
-    /// scan has to reach it.
-    ///
-    /// `g`, `G`, `{` and `}` are intercepted in `App::handle_event` before the
-    /// file view sees them, and resolved by `long_range_target` — which moved
-    /// out of `impl App` and into `src/viewport.rs` when the viewport was split
-    /// off. `SOURCES` did not follow it, so a fifth long-range key added there
-    /// would be bound and undocumented with nothing to say so (#95).
+    /// `g`, `G`, `{` and `}` used to be bound in `src/viewport.rs`'s own
+    /// `long_range_target` table (#95), which is why that file used to be a
+    /// third `SOURCES` entry. Task 5 (#250) moved the key-to-action binding
+    /// into `keymap::DEFAULT` and left `long_range_target` resolving an
+    /// already-decided `ActionId` — so there is no longer a table in
+    /// `viewport.rs` for a scan to miss, and `keymap.rs`'s own
+    /// `DEFAULT`-against-`KEYMAP` test (see `src/keymap.rs`) is what now
+    /// catches an undocumented row there.
     #[test]
-    fn the_long_range_table_is_scanned_too() {
+    fn viewport_no_longer_binds_keys_of_its_own() {
         let bound = bound_keys(include_str!("viewport.rs"));
 
         assert!(
-            ['g', 'G', '{', '}']
-                .iter()
-                .all(|c| bound.contains(&Key::Char(*c))),
-            "src/viewport.rs no longer holds the long-range table; \
-             this test and SOURCES both need to follow it: {bound:?}"
-        );
-        assert!(
-            SOURCES.iter().any(|(path, _)| *path == "src/viewport.rs"),
-            "src/viewport.rs binds keys, but every_bound_key_is_documented \
-             does not scan it"
+            bound.is_empty(),
+            "src/viewport.rs binds a key again ({bound:?}); either it needs a \
+             SOURCES entry restored, or it should route through keymap::DEFAULT \
+             like everything else"
         );
     }
 

@@ -1440,26 +1440,28 @@ impl App<'_> {
             return;
         }
 
-        // Four file-view keys move the cursor further than a page and so
-        // cannot be left to the widget: `TextArea` holds a window of the
-        // visible set, and each of these means "the *document's* top" or "the
-        // next paragraph anywhere", not "the top of the buffer that happens to
-        // be loaded" (#7). Intercepted here, resolved against the whole visible
-        // set, and applied through `place_cursor_on_visible_row`, which brings
-        // the window with it.
+        // Every `Scope::View` key resolves here rather than in the widget's
+        // own `handle_events`: a few of these mean "the *document's* top" or
+        // "the next paragraph anywhere", not "the top of the buffer that
+        // happens to be loaded" (#7), and only `App` can see the document to
+        // answer that. The rest could be left to the widget, but routing them
+        // here too means the table — not a scattered arm — is the one place
+        // plan 2b's rebinding has to reach.
         //
-        // Same shape as `n`/`N` above, and for the same reason: only `App` can
-        // see the document. The cost is that the file view's bindings now live
-        // in two places, which is the drift #25 is about — hence one table,
-        // here, rather than four scattered arms.
+        // The old form of this intercept required `key.modifiers.is_empty()`,
+        // and that guard *was* #250: a real terminal sets `SHIFT` on every
+        // uppercase letter, so `G` carried it, failed the guard, and fell
+        // through to the file view's own `G` arm, which only ever saw the
+        // loaded buffer. The table normalises the key instead, so the scope
+        // decides what a key means and the modifier cannot.
         if let event::Event::Key(key) = event
-            && key.modifiers.is_empty()
             && self.focus == Focus::View
-            && let Some(target) = self.long_range_target(key.code)
         {
-            self.promote_truncated_preview();
-            self.jump_to_visible_row(target);
-            return;
+            let pressed = crate::keymap::normalise(key);
+            if let Some(action) = crate::keymap::resolve(crate::keymap::Scope::View, pressed) {
+                self.perform(action, pressed);
+                return;
+            }
         }
 
         // The file view upgrades its own truncated preview to a full load on
@@ -1711,6 +1713,64 @@ impl App<'_> {
             // no key of its own to forward.
             A::GlobalPageDown => self.forward_to_view(event::Event::Key(KeyCode::Char(']').into())),
             A::GlobalPageUp => self.forward_to_view(event::Event::Key(KeyCode::Char('[').into())),
+            // The four long-range motions: only `App` can see the whole
+            // document, so `long_range_target` answers "which visible row"
+            // and this places the cursor there, promoting a truncated
+            // preview first exactly as the old intercept did (#7, #250).
+            A::ViewGotoStart | A::ViewGotoEnd | A::ViewParagraphNext | A::ViewParagraphPrev => {
+                if let Some(target) = self.long_range_target(action) {
+                    self.promote_truncated_preview();
+                    self.jump_to_visible_row(target);
+                }
+            }
+            // Bound the same way in the view and the filter pane; only `App`
+            // can see the document, so `n`/`N` land here rather than in
+            // either widget.
+            A::HitNext => self.step_interesting(false),
+            A::HitPrev => self.step_interesting(true),
+            // Everything else in the view scope has a live `FileView` arm
+            // already, so this rebuilds the canonical key for that binding
+            // and forwards it — same shape as `GlobalPageDown`/`GlobalPageUp`
+            // above, and for the same reason: an `ActionId` carries no key of
+            // its own. Forwarding the canonical key rather than `pressed`
+            // matters once plan 2b lets a user rebind these — a rebound key
+            // would otherwise reach `FileView` with no arm that matches it.
+            A::ViewLeft => self.forward_to_view(event::Event::Key(KeyCode::Char('h').into())),
+            A::ViewRight => self.forward_to_view(event::Event::Key(KeyCode::Char('l').into())),
+            A::ViewUp => self.forward_to_view(event::Event::Key(KeyCode::Char('k').into())),
+            A::ViewDown => self.forward_to_view(event::Event::Key(KeyCode::Char('j').into())),
+            A::ViewWordForward => {
+                self.forward_to_view(event::Event::Key(KeyCode::Char('w').into()));
+            }
+            A::ViewLineStart => self.forward_to_view(event::Event::Key(KeyCode::Char('0').into())),
+            A::ViewLineEnd => self.forward_to_view(event::Event::Key(KeyCode::Char('$').into())),
+            A::ViewToggleLineNumbers => {
+                self.forward_to_view(event::Event::Key(KeyCode::Char('#').into()));
+            }
+            A::ViewScrollDown => self.forward_to_view(event::Event::Key(event::KeyEvent::new(
+                KeyCode::Char('e'),
+                KeyModifiers::CONTROL,
+            ))),
+            A::ViewScrollUp => self.forward_to_view(event::Event::Key(event::KeyEvent::new(
+                KeyCode::Char('y'),
+                KeyModifiers::CONTROL,
+            ))),
+            A::ViewHalfPageDown => self.forward_to_view(event::Event::Key(event::KeyEvent::new(
+                KeyCode::Char('d'),
+                KeyModifiers::CONTROL,
+            ))),
+            A::ViewHalfPageUp => self.forward_to_view(event::Event::Key(event::KeyEvent::new(
+                KeyCode::Char('u'),
+                KeyModifiers::CONTROL,
+            ))),
+            A::ViewPageDown => self.forward_to_view(event::Event::Key(event::KeyEvent::new(
+                KeyCode::Char('f'),
+                KeyModifiers::CONTROL,
+            ))),
+            A::ViewPageUp => self.forward_to_view(event::Event::Key(event::KeyEvent::new(
+                KeyCode::Char('b'),
+                KeyModifiers::CONTROL,
+            ))),
             // Not yet wired, listed rather than caught by a wildcard (#199):
             // a wildcard here would strip the exhaustiveness check this
             // match exists to keep, and plan 2b's rebinding can reach a
@@ -1719,28 +1779,6 @@ impl App<'_> {
             // task that gives it a real arm, so a variant left behind after
             // that task lands is a build error rather than a silent no-op.
             //
-            // The view scope's own actions, and the hit-stepping actions
-            // bound the same way in the view and the filter pane — Task 5.
-            A::HitNext
-            | A::HitPrev
-            | A::ViewLeft
-            | A::ViewRight
-            | A::ViewUp
-            | A::ViewDown
-            | A::ViewWordForward
-            | A::ViewLineStart
-            | A::ViewLineEnd
-            | A::ViewGotoStart
-            | A::ViewGotoEnd
-            | A::ViewParagraphNext
-            | A::ViewParagraphPrev
-            | A::ViewToggleLineNumbers
-            | A::ViewScrollDown
-            | A::ViewScrollUp
-            | A::ViewHalfPageDown
-            | A::ViewHalfPageUp
-            | A::ViewPageDown
-            | A::ViewPageUp => (),
             // The navigator and filter-pane scopes — Task 6.
             A::NavUp
             | A::NavDown
@@ -3671,8 +3709,17 @@ mod tests {
         assert_eq!(app.filter_height, FilterHeight::Auto);
     }
 
+    /// Press a key, as a real terminal would report it.
+    ///
+    /// `SHIFT` on an uppercase letter is not decoration: crossterm attaches it
+    /// in legacy mode, and a helper that omitted it hid #250 for the life of
+    /// the test suite.
     fn key(app: &mut App, code: KeyCode) {
-        app.handle_event(event::Event::Key(code.into()));
+        let modifiers = match code {
+            KeyCode::Char(c) if c.is_uppercase() => KeyModifiers::SHIFT,
+            _ => KeyModifiers::empty(),
+        };
+        app.handle_event(event::Event::Key(KeyEvent::new(code, modifiers)));
     }
 
     /// `key`, with Control held.
@@ -5301,6 +5348,26 @@ mod tests {
         key(&mut app, KeyCode::Char('G'));
 
         assert_eq!(cursor_source(&app), LONG_FILE_LINES - 1);
+    }
+
+    #[test]
+    fn capital_g_goes_to_the_end_of_the_document_not_the_buffer() {
+        // The file is longer than one window, so "the end of what is loaded"
+        // and "the end of the document" are different rows.
+        let body = (0..500).fold(String::new(), |mut body, i| {
+            writeln!(body, "line {i}").unwrap();
+            body
+        });
+        let (mut app, _root) = app_over_project("goto_end", &body);
+        app.focus = Focus::View;
+
+        key(&mut app, KeyCode::Char('G'));
+
+        assert_eq!(
+            cursor_source(&app),
+            499,
+            "G must reach the document's last line, not the buffer's (#250)"
+        );
     }
 
     /// A paragraph move can travel further than the window. Resolved against

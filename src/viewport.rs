@@ -23,8 +23,8 @@
 
 use crate::App;
 use crate::filter::Verdict;
+use crate::keymap::ActionId;
 use crate::widgets;
-use crossterm::event::KeyCode;
 
 /// The one definition of an interesting line, shared by every query that
 /// steps or lands on one.
@@ -33,21 +33,26 @@ pub(crate) fn is_interesting(verdict: &Verdict) -> bool {
 }
 
 impl App<'_> {
-    /// The visible-set row a long-range file-view key asks for, or `None` if
-    /// this key is not one of them.
+    /// The visible-set row a long-range view action asks for, or `None` if
+    /// this action is not one of them.
     ///
-    /// | Key | Means |
+    /// | Action | Means |
     /// |---|---|
-    /// | `g` / `Home` | the first visible row |
-    /// | `G` / `End` | the last visible row |
-    /// | `}` | the next blank line below, or the last row |
-    /// | `{` | the previous blank line above, or the first row |
+    /// | `ViewGotoStart` | the first visible row |
+    /// | `ViewGotoEnd` | the last visible row |
+    /// | `ViewParagraphNext` | the next blank line below, or the last row |
+    /// | `ViewParagraphPrev` | the previous blank line above, or the first row |
+    ///
+    /// Takes the resolved action rather than the key that named it (Task 5):
+    /// the table can bind more than one key to the same action (`g`/`Home`,
+    /// `G`/`End`), and a rebind in plan 2b changes the key without changing
+    /// what it means here.
     ///
     /// Paragraph moves read `document.lines()`, which costs nothing extra:
     /// this issue removes `TextArea`'s duplicate of the text, not `Document`'s.
     /// Half B (#51) is what makes the text unavailable, and it will have to
     /// answer this differently.
-    pub(crate) fn long_range_target(&self, code: KeyCode) -> Option<usize> {
+    pub(crate) fn long_range_target(&self, action: ActionId) -> Option<usize> {
         let visible = self.document.visible();
         if visible.is_empty() {
             return None;
@@ -63,11 +68,15 @@ impl App<'_> {
                 .get(visible[row])
                 .is_some_and(|line| line.trim().is_empty())
         };
-        match code {
-            KeyCode::Char('g') | KeyCode::Home => Some(0),
-            KeyCode::Char('G') | KeyCode::End => Some(last),
-            KeyCode::Char('}') => Some(((from + 1)..=last).find(|&row| blank(row)).unwrap_or(last)),
-            KeyCode::Char('{') => Some((0..from).rev().find(|&row| blank(row)).unwrap_or(0)),
+        match action {
+            ActionId::ViewGotoStart => Some(0),
+            ActionId::ViewGotoEnd => Some(last),
+            ActionId::ViewParagraphNext => {
+                Some(((from + 1)..=last).find(|&row| blank(row)).unwrap_or(last))
+            }
+            ActionId::ViewParagraphPrev => {
+                Some((0..from).rev().find(|&row| blank(row)).unwrap_or(0))
+            }
             _ => None,
         }
     }

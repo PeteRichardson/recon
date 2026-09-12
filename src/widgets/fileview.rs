@@ -1042,29 +1042,9 @@ impl FileView<'_> {
                 ..
             } => self.hide_line_numbers = !self.hide_line_numbers,
             Input {
-                key: Key::Char('}'),
-                ..
-            } => self.textarea.move_cursor(CursorMove::ParagraphForward),
-            Input {
-                key: Key::Char('{'),
-                ..
-            } => self.textarea.move_cursor(CursorMove::ParagraphBack),
-            Input {
                 key: Key::Char('$'),
                 ..
             } => self.textarea.move_cursor(CursorMove::End),
-            Input {
-                key: Key::Char('g'),
-                ctrl: false,
-                ..
-            }
-            | Input { key: Key::Home, .. } => self.textarea.move_cursor(CursorMove::Top),
-            Input {
-                key: Key::Char('G'),
-                ctrl: false,
-                ..
-            }
-            | Input { key: Key::End, .. } => self.textarea.move_cursor(CursorMove::Bottom),
             Input {
                 key: Key::Char('e'),
                 ctrl: true,
@@ -2035,22 +2015,6 @@ mod tests {
         assert_eq!(view.textarea.cursor(), (0, 6));
     }
 
-    #[test]
-    fn braces_move_by_paragraph() {
-        let mut view = view_of("motions_para.txt", "one\ntwo\n\nthree\nfour\n\nfive\n");
-
-        send(&mut view, Key::Char('}'));
-        let after_forward = view.textarea.cursor().0;
-        assert!(after_forward > 0, "}} did not move forward");
-
-        send(&mut view, Key::Char('{'));
-
-        assert!(
-            view.textarea.cursor().0 < after_forward,
-            "{{ did not move back"
-        );
-    }
-
     /// The cap is injected rather than taken from `PREVIEW_LINES`, so the
     /// fixture is 30 lines instead of 150,000. The behaviour under test is the
     /// cap, not its value.
@@ -3008,26 +2972,39 @@ mod tests {
     /// The bottom margin is waived at the end of the file: the last line is
     /// selectable and sits on the pane's last row, with no blank rows
     /// scrolled in below it to make room for a margin that has nothing in it.
+    ///
+    /// Landed on via `set_cursor_row` rather than `Key::End`: task 5 (#250)
+    /// moved `End`/`G` to `App`, resolved through the keymap table against
+    /// the whole document, so the widget never sees them anymore. What this
+    /// test is actually pinning — the margin waiver on render once the
+    /// cursor sits on the buffer's last row — is unchanged, and
+    /// `set_cursor_row` is the same primitive `App` lands on through
+    /// `place_cursor_on_visible_row`.
     #[test]
     fn the_last_line_reaches_the_bottom_row_without_scrolling_past_the_end() {
         let mut view = view_of("margin_end.txt", &numbered_lines(200));
         render_at(&mut view, MARGIN_PANE);
 
-        press(&mut view, Key::End);
+        view.set_cursor_row(199);
+        render_at(&mut view, MARGIN_PANE);
 
         assert_eq!(view.textarea.cursor().0, 199);
         assert_eq!(view.cursor_screen_row() as usize, MARGIN_INNER - 1);
         assert_eq!(view.textarea.scroll_top().0 as usize, 200 - MARGIN_INNER);
     }
 
-    /// And the top margin at the start of it.
+    /// And the top margin at the start of it. See the note on
+    /// `the_last_line_reaches_the_bottom_row_without_scrolling_past_the_end`:
+    /// `Home`/`g` are resolved by `App` since task 5 (#250), so this lands on
+    /// row 0 through `set_cursor_row` rather than pressing `Home`.
     #[test]
     fn the_first_line_reaches_the_top_row() {
         let mut view = view_of("margin_start.txt", &numbered_lines(200));
         render_at(&mut view, MARGIN_PANE);
         press(&mut view, Key::Char(']'));
 
-        press(&mut view, Key::Home);
+        view.set_cursor_row(0);
+        render_at(&mut view, MARGIN_PANE);
 
         assert_eq!(view.textarea.cursor().0, 0);
         assert_eq!(view.cursor_screen_row(), 0);
