@@ -40,6 +40,18 @@ pub struct Binding {
     /// the class of problem this module exists to remove.
     pub keys: &'static [&'static str],
     pub action: &'static str,
+    /// The actions this row documents. Empty for a row that documents no
+    /// single action — a chain, a reserved key, `printable` in a prompt.
+    ///
+    /// A list, not one name, because a row can bind more than one action at
+    /// once: "Shared motions" documents `j`/`k` once for three panes, and
+    /// that one row names `nav.up`, `view.up` and `filters.up` together
+    /// rather than splitting into three rows and losing the "documented
+    /// once" shape the module is built around.
+    ///
+    /// The same strings the config file will use, so the help overlay, the
+    /// README and a user's `[keymap]` all spell an action one way.
+    pub names: &'static [&'static str],
 }
 
 /// A key as the drift test sees it: what a `KeyCode::…` / `Key::…` arm binds
@@ -50,7 +62,9 @@ pub struct Binding {
 /// `Esc` — which is the spelling both the source and the labels have to
 /// agree on. `F` stands for every function key: `KeyCode::F(n)` is one arm
 /// whichever `n` it matches.
-#[cfg(test)]
+///
+/// No longer test-only (#59): `label_matches` needs it too, to answer whether
+/// a `DEFAULT` label names the key that was pressed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Key {
     Char(char),
@@ -60,7 +74,6 @@ enum Key {
 /// The `KeyCode` variants a label may name, spelled as the variants are.
 /// `Shift-Tab` is the one label that maps elsewhere: crossterm reports it as
 /// `BackTab`, not `Tab` with a modifier.
-#[cfg(test)]
 const NAMED_KEYS: &[&str] = &[
     "Backspace",
     "Enter",
@@ -91,41 +104,98 @@ impl Binding {
     /// one `F(_)` arm. Everything else — `printable`, a chain such as `f i` —
     /// names no single key and yields nothing.
     ///
-    /// Test-only for now: nothing in the running app needs to know which keys
-    /// a row covers. Generating the README's tables from `KEYMAP` would, and
-    /// this is the piece that would make it possible.
-    #[cfg(test)]
+    /// Was test-only until `label_matches` needed it too (#59): the same
+    /// label grammar now drives both the drift test and key resolution, so
+    /// there is exactly one parser for it to disagree with.
+    ///
+    /// Still only called from `#[cfg(test)]` code (the drift test and its own
+    /// unit tests) — `label_matches` calls `keys_for_label` directly — so
+    /// `cargo clippy --all-targets`'s bare `lib` target sees no caller.
+    #[allow(dead_code)]
     fn codes(&self) -> impl Iterator<Item = Key> + '_ {
-        self.keys.iter().flat_map(|label| {
-            if *label == "space" {
-                return vec![Key::Char(' ')];
-            }
-            if *label == "Shift-Tab" {
-                return vec![Key::Named("BackTab")];
-            }
-            let bare = label
-                .strip_prefix("Ctrl-")
-                .or_else(|| label.strip_prefix("Alt-"))
-                .unwrap_or(label);
-            if let Some(named) = NAMED_KEYS.iter().find(|named| **named == bare) {
-                return vec![Key::Named(named)];
-            }
-            if bare.len() > 1
-                && bare.starts_with('F')
-                && bare[1..].chars().all(|c| c.is_ascii_digit())
-            {
-                return vec![Key::Named("F")];
-            }
-            let chars: Vec<char> = bare.chars().collect();
-            match chars.as_slice() {
-                [c] => vec![Key::Char(*c)],
-                // `1-9`: one label, nine keys. Only for a bare range — a
-                // `Ctrl-` prefix was stripped above, so `Ctrl-d` is `d`.
-                [a, '-', b] if a < b => (*a..=*b).map(Key::Char).collect(),
-                _ => Vec::new(),
-            }
-        })
+        self.keys.iter().flat_map(|label| keys_for_label(label))
     }
+}
+
+/// The keys one label documents, by the grammar `Binding::codes` and
+/// `label_matches` both need.
+///
+/// Pulled out of `Binding::codes` (#59) so `label_matches` can parse a single
+/// label without a `Binding` to hang it on — a label handed to `resolve` at
+/// runtime has no `'static` home to put it in, and this needs none.
+fn keys_for_label(label: &str) -> Vec<Key> {
+    if label == "space" {
+        return vec![Key::Char(' ')];
+    }
+    if label == "Shift-Tab" {
+        return vec![Key::Named("BackTab")];
+    }
+    let bare = label
+        .strip_prefix("Ctrl-")
+        .or_else(|| label.strip_prefix("Alt-"))
+        .unwrap_or(label);
+    if let Some(named) = NAMED_KEYS.iter().find(|named| **named == bare) {
+        return vec![Key::Named(named)];
+    }
+    if bare.len() > 1 && bare.starts_with('F') && bare[1..].chars().all(|c| c.is_ascii_digit()) {
+        return vec![Key::Named("F")];
+    }
+    let chars: Vec<char> = bare.chars().collect();
+    match chars.as_slice() {
+        [c] => vec![Key::Char(*c)],
+        // `1-9`: one label, nine keys. Only for a bare range — a `Ctrl-`
+        // prefix was stripped above, so `Ctrl-d` is `d`.
+        [a, '-', b] if a < b => (*a..=*b).map(Key::Char).collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// Whether a `KEYMAP` label names this key.
+///
+/// The label grammar is the one `Binding::codes` already parses, so the
+/// documentation, the table and a user's config file all spell a key the same
+/// way. `Ctrl-` and `Alt-` prefixes set the two modifiers the table keeps;
+/// everything else is the bare key.
+pub(crate) fn label_matches(label: &str, key: crate::keymap::Key) -> bool {
+    let ctrl = label.starts_with("Ctrl-");
+    let alt = label.starts_with("Alt-");
+    if ctrl != key.ctrl || alt != key.alt {
+        return false;
+    }
+    keys_for_label(label)
+        .into_iter()
+        .any(|documented| match (documented, key.code) {
+            (Key::Char(c), crossterm::event::KeyCode::Char(pressed)) => c == pressed,
+            (Key::Named(name), code) => named_matches(name, code),
+            _ => false,
+        })
+}
+
+/// Whether `code` is the `KeyCode` variant `NAMED_KEYS` spells as `name`.
+///
+/// Mechanical: one arm per `NAMED_KEYS` entry, plus `F` for every `F(_)`
+/// function key regardless of which number.
+fn named_matches(name: &str, code: crossterm::event::KeyCode) -> bool {
+    use crossterm::event::KeyCode;
+    matches!(
+        (name, code),
+        ("Backspace", KeyCode::Backspace)
+            | ("Enter", KeyCode::Enter)
+            | ("Left", KeyCode::Left)
+            | ("Right", KeyCode::Right)
+            | ("Up", KeyCode::Up)
+            | ("Down", KeyCode::Down)
+            | ("Home", KeyCode::Home)
+            | ("End", KeyCode::End)
+            | ("PageUp", KeyCode::PageUp)
+            | ("PageDown", KeyCode::PageDown)
+            | ("Tab", KeyCode::Tab)
+            | ("BackTab", KeyCode::BackTab)
+            | ("Delete", KeyCode::Delete)
+            | ("Insert", KeyCode::Insert)
+            | ("Esc", KeyCode::Esc)
+            | ("F", KeyCode::F(_))
+    )
 }
 
 /// A headed group of bindings — one per pane, plus the global set.
@@ -150,90 +220,112 @@ pub const KEYMAP: &[Section] = &[
             Binding {
                 keys: &["?"],
                 action: "This help — any key closes it",
+                names: &["global.help"],
             },
             Binding {
                 keys: &["q"],
                 action: "Quit",
+                names: &["global.quit"],
             },
             Binding {
                 keys: &["Q"],
                 action: "Quit, emitting nothing",
+                names: &["global.quit.silent"],
             },
             Binding {
                 keys: &["Tab", "Shift-Tab"],
                 action: "Focus the next / previous pane",
+                names: &["global.focus.next", "global.focus.prev"],
             },
             Binding {
                 keys: &["e"],
                 action: "Focus the navigator",
+                names: &["global.focus.nav"],
             },
             Binding {
                 keys: &["t"],
                 action: "Focus the file view",
+                names: &["global.focus.view"],
             },
             Binding {
                 keys: &["f"],
                 action: "Focus the filter pane; f i / f x / f c return on commit",
+                names: &["global.focus.filters"],
             },
             Binding {
                 keys: &["/"],
                 action: "Search — filenames, or file contents",
+                names: &["global.search"],
             },
             Binding {
                 keys: &["p"],
                 action: "Promote the live search into the filter set",
+                names: &["global.search.promote"],
             },
             Binding {
                 keys: &["Esc"],
                 action: "Clear the pane's search, else the live search",
+                names: &["global.escape"],
             },
             Binding {
                 keys: &["space"],
                 action: "Peek at the plain file; press again to restore",
+                names: &["global.peek"],
             },
             Binding {
                 keys: &[".", ","],
                 action: "Next / previous file the filters match",
+                names: &["global.file.next", "global.file.prev"],
             },
             Binding {
                 keys: &["[", "]"],
                 action: "Page the file view up / down, from any pane",
+                names: &["global.view.page.up", "global.view.page.down"],
             },
             Binding {
                 keys: &["1-9"],
                 action: "Toggle the filter with that number",
+                names: &["global.filter.toggle.numbered"],
             },
             Binding {
                 keys: &["u", "Ctrl-h", "H"],
                 action: "Dim unmatched lines, or hide them",
+                names: &["global.hide.toggle"],
             },
             Binding {
                 keys: &["!"],
                 action: "Disable every filter, or put them back",
+                names: &["global.filters.disable"],
             },
             Binding {
                 keys: &["&"],
                 action: "AND the include filters instead of OR, or back",
+                names: &["global.filters.and"],
             },
             Binding {
                 keys: &["b"],
                 action: "Hide the left column, and focus the file view",
+                names: &["global.zoom.view"],
             },
             Binding {
                 keys: &["z"],
                 action: "Maximise the focused pane, or restore the split",
+                names: &["global.zoom.focused"],
             },
             Binding {
                 keys: &["o"],
                 action: "Open the file's project in your editor",
+                names: &["global.editor.project"],
             },
             Binding {
                 keys: &["O"],
                 action: "Open the file alone in your editor",
+                names: &["global.editor.file"],
             },
             Binding {
                 keys: &["r"],
                 action: "Refresh from disk — rescan the listing, reload the file",
+                names: &["global.reload"],
             },
         ],
     },
@@ -243,26 +335,32 @@ pub const KEYMAP: &[Section] = &[
             Binding {
                 keys: &["f i", "f x"],
                 action: "Add an including / excluding filter; returns on commit",
+                names: &[],
             },
             Binding {
                 keys: &["f c"],
                 action: "Change the selected filter — returns on commit",
+                names: &[],
             },
             Binding {
                 keys: &["f d", "f Enter"],
                 action: "Delete / toggle the selected filter — focus stays",
+                names: &[],
             },
             Binding {
                 keys: &["f f"],
                 action: "Stay in the filter pane",
+                names: &[],
             },
             Binding {
                 keys: &["e n"],
                 action: "Navigator's n — search hit, else next matching file",
+                names: &[],
             },
             Binding {
                 keys: &["t *"],
                 action: "Search the word under the view's cursor",
+                names: &[],
             },
         ],
     },
@@ -275,26 +373,65 @@ pub const KEYMAP: &[Section] = &[
             Binding {
                 keys: &["j", "k", "Down", "Up"],
                 action: "Down / up a row",
+                names: &[
+                    "nav.up",
+                    "nav.down",
+                    "view.up",
+                    "view.down",
+                    "filters.up",
+                    "filters.down",
+                ],
             },
             Binding {
                 keys: &["g", "G"],
                 action: "First / last row (also Home / End)",
+                names: &[
+                    "nav.goto.start",
+                    "nav.goto.end",
+                    "view.goto.start",
+                    "view.goto.end",
+                    "filters.goto.start",
+                    "filters.goto.end",
+                ],
             },
             Binding {
                 keys: &["Ctrl-d", "Ctrl-u"],
                 action: "Half a page down / up",
+                names: &[
+                    "nav.halfpage.down",
+                    "nav.halfpage.up",
+                    "view.halfpage.down",
+                    "view.halfpage.up",
+                    "filters.halfpage.down",
+                    "filters.halfpage.up",
+                ],
             },
             Binding {
                 keys: &["PageDown", "PageUp"],
                 action: "A page down / up",
+                names: &[
+                    "nav.page.down",
+                    "nav.page.up",
+                    "view.page.down",
+                    "view.page.up",
+                    "filters.page.down",
+                    "filters.page.up",
+                ],
             },
             Binding {
                 keys: &["n", "N"],
                 action: "Next / previous hit, or matching file in the navigator",
+                names: &[
+                    "global.hit.next",
+                    "global.hit.prev",
+                    "nav.hit.next",
+                    "nav.hit.prev",
+                ],
             },
             Binding {
                 keys: &["Enter"],
                 action: "Open entry; toggle filter, set or search; not the view",
+                names: &["nav.open", "filters.toggle"],
             },
         ],
     },
@@ -304,10 +441,12 @@ pub const KEYMAP: &[Section] = &[
             Binding {
                 keys: &["h", "Left"],
                 action: "Up to the parent directory",
+                names: &["nav.parent"],
             },
             Binding {
                 keys: &["l", "Right"],
                 action: "Open the entry",
+                names: &["nav.open"],
             },
         ],
     },
@@ -317,54 +456,67 @@ pub const KEYMAP: &[Section] = &[
             Binding {
                 keys: &["h", "Left"],
                 action: "Cursor back",
+                names: &["view.left"],
             },
             Binding {
                 keys: &["l", "Right"],
                 action: "Cursor forward",
+                names: &["view.right"],
             },
             Binding {
                 keys: &["w"],
                 action: "Next word",
+                names: &["view.word.forward"],
             },
             Binding {
                 keys: &["0", "^"],
                 action: "Start of the line",
+                names: &["view.line.start"],
             },
             Binding {
                 keys: &["$"],
                 action: "End of the line",
+                names: &["view.line.end"],
             },
             Binding {
                 keys: &["{", "}"],
                 action: "Previous / next paragraph",
+                names: &["view.paragraph.prev", "view.paragraph.next"],
             },
             Binding {
                 keys: &["#"],
                 action: "Toggle the line-number gutter",
+                names: &["view.linenumbers.toggle"],
             },
             Binding {
                 keys: &["*"],
                 action: "Search for the word under the cursor",
+                names: &["global.search.word"],
             },
             Binding {
                 keys: &["v", "V"],
                 action: "Select by character / by line; again to end",
+                names: &["global.visual.char", "global.visual.line"],
             },
             Binding {
                 keys: &["y"],
                 action: "Copy the selection to the clipboard",
+                names: &["global.yank"],
             },
             Binding {
                 keys: &["Esc"],
                 action: "End the selection",
+                names: &["global.escape"],
             },
             Binding {
                 keys: &["Ctrl-e", "Ctrl-y"],
                 action: "Scroll one line down / up",
+                names: &["view.scroll.down", "view.scroll.up"],
             },
             Binding {
                 keys: &["Ctrl-f", "Ctrl-b"],
                 action: "A page down / up (aliases)",
+                names: &["view.page.down", "view.page.up"],
             },
         ],
     },
@@ -374,38 +526,71 @@ pub const KEYMAP: &[Section] = &[
             Binding {
                 keys: &["i"],
                 action: "Add an including filter",
+                names: &["filters.include"],
             },
             Binding {
                 keys: &["x"],
                 action: "Add an excluding filter",
+                names: &["filters.exclude"],
             },
             Binding {
                 keys: &["c"],
                 action: "Change the selected filter's pattern",
+                names: &["filters.edit"],
             },
             Binding {
                 keys: &["d"],
                 action: "Delete the selected filter",
+                names: &["filters.delete"],
             },
             Binding {
                 keys: &["m"],
                 action: "Toggle the selected filter between include and context",
+                names: &["filters.context"],
             },
             Binding {
                 keys: &["a"],
                 action: "Pick a profile for the selected set",
+                names: &["filters.profile"],
             },
             Binding {
                 keys: &["s"],
                 action: "Solo the selected set — or un-solo it",
+                names: &["filters.solo"],
             },
             Binding {
                 keys: &["R"],
                 action: "Reset every set to its startup state",
+                names: &["filters.reset"],
             },
             Binding {
                 keys: &["S"],
                 action: "Save the scratch filters as a named set",
+                names: &["filters.saveset"],
+            },
+        ],
+    },
+    Section {
+        // The picker's own j/k/Up/Down/Enter/Esc were bound but undocumented
+        // until the table's per-action agreement test (#59) caught it — the
+        // old drift test only compared keys, and those same keys already
+        // appeared in rows for other panes, so nothing looked missing.
+        title: "Profile picker",
+        bindings: &[
+            Binding {
+                keys: &["j", "k", "Down", "Up"],
+                action: "Down / up a row",
+                names: &["picker.up", "picker.down"],
+            },
+            Binding {
+                keys: &["Enter"],
+                action: "Choose the profile set",
+                names: &["picker.choose"],
+            },
+            Binding {
+                keys: &["Esc"],
+                action: "Cancel",
+                names: &["picker.cancel"],
             },
         ],
     },
@@ -415,42 +600,52 @@ pub const KEYMAP: &[Section] = &[
             Binding {
                 keys: &["printable"],
                 action: "Insert at the cursor",
+                names: &[],
             },
             Binding {
                 keys: &["Left", "Right"],
                 action: "Move the cursor",
+                names: &["prompt.left", "prompt.right"],
             },
             Binding {
                 keys: &["Home", "Ctrl-a"],
                 action: "Start of the pattern",
+                names: &["prompt.start"],
             },
             Binding {
                 keys: &["End", "Ctrl-e"],
                 action: "End of the pattern",
+                names: &["prompt.end"],
             },
             Binding {
                 keys: &["Backspace"],
                 action: "Delete before the cursor; cancel when empty",
+                names: &["prompt.delete.back"],
             },
             Binding {
                 keys: &["Delete"],
                 action: "Delete under the cursor",
+                names: &["prompt.delete.forward"],
             },
             Binding {
                 keys: &["Ctrl-w"],
                 action: "Delete the word before the cursor",
+                names: &["prompt.delete.word"],
             },
             Binding {
                 keys: &["Ctrl-u"],
                 action: "Delete everything before the cursor",
+                names: &["prompt.delete.tostart"],
             },
             Binding {
                 keys: &["Enter"],
                 action: "Run the search, or add the filter",
+                names: &["prompt.commit"],
             },
             Binding {
                 keys: &["Esc"],
                 action: "Cancel",
+                names: &["prompt.cancel"],
             },
         ],
     },
@@ -912,6 +1107,7 @@ mod tests {
                 "printable",
             ],
             action: "irrelevant",
+            names: &[],
         };
 
         assert_eq!(
@@ -933,6 +1129,7 @@ mod tests {
         let binding = Binding {
             keys: &["1-9"],
             action: "",
+            names: &[],
         };
         let codes: Vec<Key> = binding.codes().collect();
         assert_eq!(codes, ('1'..='9').map(Key::Char).collect::<Vec<_>>());
@@ -941,6 +1138,7 @@ mod tests {
         let binding = Binding {
             keys: &["Ctrl-d"],
             action: "",
+            names: &[],
         };
         assert_eq!(binding.codes().collect::<Vec<_>>(), vec![Key::Char('d')]);
     }
@@ -960,6 +1158,7 @@ mod tests {
                 "Navigator",
                 "File view",
                 "Filter pane",
+                "Profile picker",
                 "While a prompt is open",
             ]
         );
@@ -972,13 +1171,23 @@ mod tests {
         // out in its action text ("also Home / End") rather than the `keys`
         // array, to keep the joined key label short enough for the 150-column
         // layout budget, so `contains(&"Home")` would find nothing.
+        //
+        // "Profile picker" is excluded along with "Global" and the prompt: it
+        // is a modal scope like the prompt, not a layered pane, and its own
+        // j/k/Enter happen to reuse these labels for unrelated actions
+        // (#59's agreement test is what surfaced that the picker needed a
+        // section here at all).
         let shared = [
             "j", "k", "g", "G", "Ctrl-d", "Ctrl-u", "PageDown", "PageUp", "n", "N", "Enter",
         ];
         for key in shared {
             let sections: Vec<&str> = KEYMAP
                 .iter()
-                .filter(|s| s.title != "Global" && s.title != "While a prompt is open")
+                .filter(|s| {
+                    s.title != "Global"
+                        && s.title != "While a prompt is open"
+                        && s.title != "Profile picker"
+                })
                 .filter(|s| s.bindings.iter().any(|b| b.keys.contains(&key)))
                 .map(|s| s.title)
                 .collect();
@@ -1018,28 +1227,36 @@ mod tests {
         }
     }
 
-    /// The case the whole layout exists for. 150 and 42 are inner columns and
-    /// rows — the area handed to `layout`, already inside the border, so 42
-    /// inner rows is a 44-row terminal. A 150x42 terminal is unremarkable, and
+    /// The case the whole layout exists for. 150 and 43 are inner columns and
+    /// rows — the area handed to `layout`, already inside the border, so 43
+    /// inner rows is a 45-row terminal. A 150x43 terminal is unremarkable, and
     /// the keymap is the one screen where "most of it" is not good enough —
     /// the row you cannot see is exactly the one you opened it to find.
     ///
     /// It fails when the columns are sized against the *widest* row in the
     /// whole table rather than the widest in each column: two columns of the
     /// global maximum need 151 columns, while correct per-column sizing needs
-    /// only 148. This area's width sits between them so the test fails on the
+    /// only 150. This area's width sits between them so the test fails on the
     /// regression but passes on the correct layout.
     ///
-    /// The margin is exactly two columns: 148 is what the correct layout fills
-    /// the 150-column area with, exactly. So a `KEYMAP` row that widens a
-    /// column further has to be re-measured against these two totals, and this
-    /// area's width must never be raised past 151 — doing so would stop the
-    /// second test here from failing on the regression it exists to catch.
+    /// There is no margin left below: 150 is what the correct layout fills
+    /// the 150-column area with, exactly — the "Profile picker" section (#59)
+    /// used up the two columns of slack this area used to have below the
+    /// correct fill (it was 148). The one column of slack above, before the
+    /// regression's 151, is unchanged. So a `KEYMAP` row that widens a column
+    /// any further has nowhere left to go without this area's width growing
+    /// past 151 — which would stop the second test here from failing on the
+    /// regression it exists to catch — and a row that adds to *either* total
+    /// has to be re-measured against both. The height, 43, is likewise the
+    /// exact number of rows two columns hold at the current row count (86);
+    /// adding a row without raising the height would drop it off the bottom,
+    /// which is a `shown(&columns) == rows.len()` failure below, not a width
+    /// one.
     #[test]
     fn a_normal_terminal_shows_the_whole_keymap() {
         let rows = rows();
 
-        let columns = layout(&rows, inner(150, 42));
+        let columns = layout(&rows, inner(150, 43));
 
         assert_eq!(shown(&columns), rows.len(), "the keymap did not fit");
         assert!(
@@ -1054,7 +1271,7 @@ mod tests {
     fn a_column_is_sized_to_its_own_widest_row() {
         let rows = rows();
 
-        let columns = layout(&rows, inner(150, 42));
+        let columns = layout(&rows, inner(150, 43));
 
         assert!(columns.len() > 1, "the table was not split into columns");
         assert!(
