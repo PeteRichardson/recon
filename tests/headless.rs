@@ -272,3 +272,23 @@ fn print_editor_config_survives_a_malformed_filters_toml() {
     assert_eq!(out.status.code(), Some(0), "stderr: {}", text(&out.stderr));
     assert!(!out.stdout.is_empty(), "nothing was printed");
 }
+
+/// `--print-keymap` prints a pasteable `[keymap]` stanza to stdout and exits,
+/// with nothing on stderr.
+#[test]
+fn print_keymap_emits_a_pasteable_stanza() {
+    let dir = fixture("print-keymap");
+    let home = config_home(&dir);
+
+    let out = recon(&home, &["--print-keymap"], b"");
+
+    assert!(out.status.success());
+    assert!(
+        out.stderr.is_empty(),
+        "nothing belongs on stderr: {}",
+        text(&out.stderr)
+    );
+    let printed = String::from_utf8(out.stdout).expect("utf-8");
+    assert!(printed.contains("[keymap]"), "{printed}");
+    assert!(printed.contains("global.quit"), "{printed}");
+}

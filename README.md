@@ -310,9 +310,11 @@ What gets recorded:
 
 Press `?` in the app for this list on screen — with your own keys in it, since
 the overlay reads the keymap in force while this section lists the defaults
-(`--print-keymap` prints those too). The authoritative source is
-the code, and it now lives in one place: `keymap::DEFAULT` in `src/keymap.rs`,
-a table of `(Scope, key, action)` rows. Every key starts at `App::handle_event`
+(`--print-keymap` prints those too). The defaults live in one place,
+`keymap::DEFAULT` in `src/keymap.rs`, a table of `(Scope, key, action)` rows —
+but the table in force for a given run is that base layer with a
+`[keymap]` from `config.toml` folded in, see
+[Configuring the keymap](#configuring-the-keymap). Every key starts at `App::handle_event`
 in `src/lib.rs`, which resolves it against the scope ladder in precedence
 order — an open prompt or picker first, then the global keys, then whichever
 pane has focus — and hands whatever action it found to `perform`, one match
@@ -440,6 +442,52 @@ Dragging it *up* makes the pane taller, since the pane is anchored to the
 bottom of the column and what moves is where it begins. Double-click it to go
 back to automatic sizing. Neither drag can squeeze the navigator out of
 existence: it keeps three rows whatever you ask for.
+
+### Configuring the keymap
+
+Any key in the tables above can be rebound. A `[keymap]` stanza in
+`config.toml` takes an action's name — the tables' **Name(s)** column — and
+one key or, for an action several keys reach today, a list:
+
+```toml
+[keymap]
+'global.quit' = 'q'
+'nav.up' = ['k', 'Up']
+```
+
+An entry replaces that action's keys entirely; any action the stanza does not
+mention keeps its default. `--print-keymap` prints recon's whole default set
+in exactly this syntax, ready to copy from and edit — it prints the
+**defaults**, not whatever `[keymap]` you already have, and runs before
+`config.toml` is even read, so it still works when that file is the thing
+that's broken:
+
+```console
+$ recon --print-keymap
+# recon's default keymap
+# Paste into ~/.config/recon/config.toml — recon never writes it for you.
+# Keep only the lines you want to change; anything absent keeps its default.
+[keymap]
+
+'global.quit' = 'q'
+'global.quit.silent' = 'Q'
+'global.focus.next' = 'Tab'
+'global.focus.prev' = 'Shift-Tab'
+…
+```
+
+recon never writes `config.toml` — paste the line yourself, the same as
+`[editor]` and `[clipboard]`.
+
+A name the tables don't list, or a key spelling recon can't parse, refuses to
+start and names the offender, rather than surfacing the first time you press
+the key.
+
+Two keys, `-` and `:`, are reserved rather than bound: 1.0 promises them to
+1.1 (a hex view and a command palette), so whichever key a later release
+wants has to be one this release already said was taken. Binding a reserved
+key anyway is allowed — it's your keyboard — recon just warns once, on
+startup, and then obeys.
 
 Filters colour the lines they match and dim the rest; they are regular
 expressions, like search. A filter set describes a log format rather than one
