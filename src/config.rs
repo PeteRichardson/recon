@@ -151,6 +151,13 @@ pub struct Config {
     #[arg(skip)]
     pub filter_sets: Vec<crate::filter::LoadedSet>,
 
+    /// The `[keymap]` table, parsed but not yet resolved against `DEFAULT` —
+    /// that is `Keymap::new`'s job (task 4), run once by `App::new`.
+    /// `#[arg(skip)]` because no flag names a whole table; rebinding is a
+    /// config-file-only preference, the same as `filter_sets`.
+    #[arg(skip)]
+    pub keymap: Option<KeymapConfig>,
+
     /// Whether a jump to a line the pane is not showing — `n`, `N`, `G` —
     /// puts that line in the middle of the pane. Off, it scrolls in by the
     /// minimum and lands on the scroll margin's edge. `None` is unset:
@@ -245,6 +252,7 @@ impl Default for Config {
             filter_palette: None,
             background: None,
             filter_sets: Vec::new(),
+            keymap: None,
             center_jumps: None,
             theme: None,
             emit: None,
@@ -279,6 +287,11 @@ pub struct FileConfig {
     pub syntax: Option<SyntaxConfig>,
     /// `[view]`. Same again.
     pub view: Option<ViewConfig>,
+    /// `[keymap]`. Same again. Handed to `Keymap::new` (task 4) rather than
+    /// merged key by key here: a rebind either names a real action and a
+    /// parseable key, or the whole file is refused — there is no per-key
+    /// "hole" for a lower layer to fill, unlike `editor` or `syntax`.
+    pub keymap: Option<KeymapConfig>,
 }
 
 /// The `[view]` table: how the file view moves.
@@ -315,6 +328,71 @@ where
         return Ok(None);
     };
     spelling.parse().map(Some).map_err(D::Error::custom)
+}
+
+/// The `[keymap]` table: which keys reach which action.
+///
+/// Action to key, and not the other way round, for two reasons. It is the
+/// direction `--print-keymap` prints, so a pasted line reads as it was
+/// printed. And an action may hold several keys, which a key cannot.
+///
+/// A `BTreeMap` rather than named fields: the keys are action names, there are
+/// about ninety of them, and `deny_unknown_fields` cannot help here — an
+/// unknown action is caught by `Keymap::new`, which can say which names exist.
+///
+/// `Deserialize` is hand-written, not derived: serde does not support
+/// `deny_unknown_fields` together with `#[serde(flatten)]`, and does not
+/// support `deserialize_with` on a flattened field either, so the one-or-many
+/// shape (`'q'` or `['u', 'H']`) is collapsed by hand, below, once the raw
+/// table is in.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct KeymapConfig {
+    pub bindings: std::collections::BTreeMap<String, Vec<String>>,
+}
+
+/// One `[keymap]` value, either a bare string or an array of them — the same
+/// shape `keymap::print_keymap`'s own tests parse with (see that module's
+/// `Keys`).
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum Keys {
+    One(String),
+    Many(Vec<String>),
+}
+
+impl Keys {
+    fn into_vec(self) -> Vec<String> {
+        match self {
+            Self::One(key) => vec![key],
+            Self::Many(keys) => keys,
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for KeymapConfig {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        // A private shim rather than deriving straight onto `KeymapConfig`:
+        // this is where `#[serde(flatten)]` can live, since `KeymapConfig`
+        // itself has to keep the `Vec<String>` shape the Interfaces section
+        // and `Keymap::new` (task 4) both expect.
+        #[derive(Deserialize)]
+        struct Raw {
+            #[serde(flatten)]
+            bindings: std::collections::BTreeMap<String, Keys>,
+        }
+
+        let raw = Raw::deserialize(deserializer)?;
+        Ok(KeymapConfig {
+            bindings: raw
+                .bindings
+                .into_iter()
+                .map(|(name, keys)| (name, keys.into_vec()))
+                .collect(),
+        })
+    }
 }
 
 /// The `[filters]` table.
@@ -464,6 +542,13 @@ pub enum ConfigError {
         name: String,
         known: Vec<String>,
     },
+    /// `[keymap]` naming an action that does not exist. `known` is every name
+    /// that does, for the message — a typo is the common case and the list is
+    /// the fix.
+    UnknownAction { name: String, known: Vec<String> },
+    /// `[keymap]` giving a key spelling that cannot be parsed. Carries the
+    /// action so the message names the line, not just the spelling.
+    BadKeyLabel { action: String, label: String },
 }
 
 impl fmt::Display for ConfigError {
@@ -501,6 +586,15 @@ impl fmt::Display for ConfigError {
                 f,
                 "unknown profile {name:?}; set {set:?} defines: {}",
                 known_list(known)
+            ),
+            Self::UnknownAction { name, known } => write!(
+                f,
+                "unknown action {name:?} in [keymap]; recon defines: {}",
+                known_list(known)
+            ),
+            Self::BadKeyLabel { action, label } => write!(
+                f,
+                "cannot read the key {label:?} bound to {action:?} in [keymap]"
             ),
         }
     }
@@ -704,6 +798,7 @@ impl Config {
             filters,
             syntax,
             view,
+            keymap,
         } = file;
 
         if let Some(background) = background {
@@ -741,6 +836,10 @@ impl Config {
             && let Some(center_jumps) = center_jumps
         {
             self.center_jumps.get_or_insert(*center_jumps);
+        }
+
+        if let Some(keymap) = keymap {
+            self.keymap.get_or_insert_with(|| keymap.clone());
         }
     }
 
@@ -1874,5 +1973,30 @@ mod tests {
         config.apply(&FileConfig::default());
         assert_eq!(config.theme, None);
         assert_eq!(config.syntax_theme(), syntax::Theme::builtin());
+    }
+
+    // ---- [keymap] --------------------------------------------------------
+    //
+    // Only this one test: `an_unknown_action_is_refused_and_the_known_ones_listed`
+    // and `an_unparseable_key_is_refused_and_names_its_action` both call
+    // `Keymap::new`, which task 4 adds. Task 4 writes both, alongside a third
+    // deferred from task 2.
+
+    #[test]
+    fn a_keymap_entry_takes_one_key_or_several() {
+        let path = fixture(
+            "keymap-one-and-many.toml",
+            "[keymap]\n\
+             'global.quit' = 'Ctrl-q'\n\
+             'global.hide.toggle' = ['u', 'H']\n",
+        );
+        let file = load_from(&path).expect("a valid file");
+        let keymap = file.keymap.expect("a [keymap] table");
+
+        assert_eq!(keymap.bindings["global.quit"], vec!["Ctrl-q".to_string()]);
+        assert_eq!(
+            keymap.bindings["global.hide.toggle"],
+            vec!["u".to_string(), "H".to_string()]
+        );
     }
 }
