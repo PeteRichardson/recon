@@ -104,14 +104,11 @@ impl Binding {
     /// one `F(_)` arm. Everything else — `printable`, a chain such as `f i` —
     /// names no single key and yields nothing.
     ///
-    /// Was test-only until `label_matches` needed it too (#59): the same
-    /// label grammar now drives both the drift test and key resolution, so
-    /// there is exactly one parser for it to disagree with.
-    ///
-    /// Still only called from `#[cfg(test)]` code (the drift test and its own
-    /// unit tests) — `label_matches` calls `keys_for_label` directly — so
-    /// `cargo clippy --all-targets`'s bare `lib` target sees no caller.
-    #[allow(dead_code)]
+    /// Still test-only (#59 review): `label_matches` calls `keys_for_label`
+    /// directly rather than through a `Binding`, so this stays exactly what
+    /// it was — the drift test's own parser, now shared with `label_matches`
+    /// only at the `keys_for_label` level.
+    #[cfg(test)]
     fn codes(&self) -> impl Iterator<Item = Key> + '_ {
         self.keys.iter().flat_map(|label| keys_for_label(label))
     }
@@ -280,17 +277,17 @@ pub const KEYMAP: &[Section] = &[
             Binding {
                 keys: &["[", "]"],
                 action: "Page the file view up / down, from any pane",
-                names: &["global.view.page.up", "global.view.page.down"],
+                names: &["global.page.up", "global.page.down"],
             },
             Binding {
                 keys: &["1-9"],
                 action: "Toggle the filter with that number",
-                names: &["global.filter.toggle.numbered"],
+                names: &["global.filters.toggle"],
             },
             Binding {
                 keys: &["u", "Ctrl-h", "H"],
                 action: "Dim unmatched lines, or hide them",
-                names: &["global.hide.toggle"],
+                names: &["global.toggle.hide"],
             },
             Binding {
                 keys: &["!"],
@@ -421,12 +418,7 @@ pub const KEYMAP: &[Section] = &[
             Binding {
                 keys: &["n", "N"],
                 action: "Next / previous hit, or matching file in the navigator",
-                names: &[
-                    "global.hit.next",
-                    "global.hit.prev",
-                    "nav.hit.next",
-                    "nav.hit.prev",
-                ],
+                names: &["hit.next", "hit.prev", "nav.hit.next", "nav.hit.prev"],
             },
             Binding {
                 keys: &["Enter"],
@@ -486,7 +478,7 @@ pub const KEYMAP: &[Section] = &[
             Binding {
                 keys: &["#"],
                 action: "Toggle the line-number gutter",
-                names: &["view.linenumbers.toggle"],
+                names: &["view.toggle.linenumbers"],
             },
             Binding {
                 keys: &["*"],
@@ -566,7 +558,7 @@ pub const KEYMAP: &[Section] = &[
             Binding {
                 keys: &["S"],
                 action: "Save the scratch filters as a named set",
-                names: &["filters.saveset"],
+                names: &["filters.save.set"],
             },
         ],
     },
@@ -635,7 +627,7 @@ pub const KEYMAP: &[Section] = &[
             Binding {
                 keys: &["Ctrl-u"],
                 action: "Delete everything before the cursor",
-                names: &["prompt.delete.tostart"],
+                names: &["prompt.delete.start"],
             },
             Binding {
                 keys: &["Enter"],

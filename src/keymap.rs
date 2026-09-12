@@ -84,9 +84,19 @@ impl Scope {
 /// The string form is what a user writes in `config.toml` and what the help
 /// overlay shows, so the two cannot drift: a test compares this table against
 /// `help::KEYMAP` by name.
-#[allow(dead_code)]
-// Unused until task 4 resolves through the table; the allow goes with it.
+///
+/// The grammar: `scope.verb[.object]` for a command (`global.quit`,
+/// `filters.include`, `prompt.delete.word`), `scope.target[.direction]` for a
+/// motion (`nav.goto.start`, `view.halfpage.down`). A multi-word token never
+/// gets a dot of its own — `halfpage` and `linenumbers` are one token each,
+/// so `nav.halfpage.down` and `view.toggle.linenumbers` are exactly three
+/// segments, not four. A **bare** `verb.object` with no scope prefix —
+/// `hit.next`, `hit.prev` — means the action is bound the same way in more
+/// than one pane scope, so there is no single scope to prefix it with (#59
+/// review: `n`/`N` bind identically in the file view and the filter pane).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+// Unused until task 4 resolves through the table; the allow goes with it.
+#[allow(dead_code)]
 pub(crate) enum ActionId {
     // Global
     GlobalQuit,
@@ -104,12 +114,10 @@ pub(crate) enum ActionId {
     GlobalPeek,
     GlobalFiltersAnd,
     GlobalFiltersDisable,
-    GlobalFilterToggleNumbered,
+    GlobalFiltersToggle,
     GlobalFileNext,
     GlobalFilePrev,
-    GlobalHitNext,
-    GlobalHitPrev,
-    GlobalHideToggle,
+    GlobalToggleHide,
     GlobalZoomView,
     GlobalZoomFocused,
     GlobalEditorProject,
@@ -118,8 +126,12 @@ pub(crate) enum ActionId {
     GlobalVisualChar,
     GlobalVisualLine,
     GlobalYank,
-    GlobalViewPageDown,
-    GlobalViewPageUp,
+    GlobalPageDown,
+    GlobalPageUp,
+    // Bound the same way in more than one pane scope — see the bare-name
+    // rule in the doc comment above.
+    HitNext,
+    HitPrev,
     // Navigator
     NavUp,
     NavDown,
@@ -145,7 +157,7 @@ pub(crate) enum ActionId {
     ViewGotoEnd,
     ViewParagraphNext,
     ViewParagraphPrev,
-    ViewLineNumbers,
+    ViewToggleLineNumbers,
     ViewScrollDown,
     ViewScrollUp,
     ViewHalfPageDown,
@@ -181,7 +193,7 @@ pub(crate) enum ActionId {
     PromptDeleteBack,
     PromptDeleteForward,
     PromptDeleteWord,
-    PromptDeleteToStart,
+    PromptDeleteStart,
     // Picker
     PickerUp,
     PickerDown,
@@ -194,8 +206,8 @@ pub(crate) enum ActionId {
 
 impl ActionId {
     /// The name a user writes, and the name the documentation shows.
-    #[allow(dead_code)]
     // Unused until task 4 resolves through the table; the allow goes with it.
+    #[allow(dead_code)]
     pub(crate) fn name(self) -> &'static str {
         match self {
             Self::GlobalQuit => "global.quit",
@@ -213,12 +225,10 @@ impl ActionId {
             Self::GlobalPeek => "global.peek",
             Self::GlobalFiltersAnd => "global.filters.and",
             Self::GlobalFiltersDisable => "global.filters.disable",
-            Self::GlobalFilterToggleNumbered => "global.filter.toggle.numbered",
+            Self::GlobalFiltersToggle => "global.filters.toggle",
             Self::GlobalFileNext => "global.file.next",
             Self::GlobalFilePrev => "global.file.prev",
-            Self::GlobalHitNext => "global.hit.next",
-            Self::GlobalHitPrev => "global.hit.prev",
-            Self::GlobalHideToggle => "global.hide.toggle",
+            Self::GlobalToggleHide => "global.toggle.hide",
             Self::GlobalZoomView => "global.zoom.view",
             Self::GlobalZoomFocused => "global.zoom.focused",
             Self::GlobalEditorProject => "global.editor.project",
@@ -227,8 +237,10 @@ impl ActionId {
             Self::GlobalVisualChar => "global.visual.char",
             Self::GlobalVisualLine => "global.visual.line",
             Self::GlobalYank => "global.yank",
-            Self::GlobalViewPageDown => "global.view.page.down",
-            Self::GlobalViewPageUp => "global.view.page.up",
+            Self::GlobalPageDown => "global.page.down",
+            Self::GlobalPageUp => "global.page.up",
+            Self::HitNext => "hit.next",
+            Self::HitPrev => "hit.prev",
             Self::NavUp => "nav.up",
             Self::NavDown => "nav.down",
             Self::NavParent => "nav.parent",
@@ -252,7 +264,7 @@ impl ActionId {
             Self::ViewGotoEnd => "view.goto.end",
             Self::ViewParagraphNext => "view.paragraph.next",
             Self::ViewParagraphPrev => "view.paragraph.prev",
-            Self::ViewLineNumbers => "view.linenumbers.toggle",
+            Self::ViewToggleLineNumbers => "view.toggle.linenumbers",
             Self::ViewScrollDown => "view.scroll.down",
             Self::ViewScrollUp => "view.scroll.up",
             Self::ViewHalfPageDown => "view.halfpage.down",
@@ -276,7 +288,7 @@ impl ActionId {
             Self::FiltersProfile => "filters.profile",
             Self::FiltersSolo => "filters.solo",
             Self::FiltersReset => "filters.reset",
-            Self::FiltersSaveSet => "filters.saveset",
+            Self::FiltersSaveSet => "filters.save.set",
             Self::PromptCommit => "prompt.commit",
             Self::PromptCancel => "prompt.cancel",
             Self::PromptLeft => "prompt.left",
@@ -286,7 +298,7 @@ impl ActionId {
             Self::PromptDeleteBack => "prompt.delete.back",
             Self::PromptDeleteForward => "prompt.delete.forward",
             Self::PromptDeleteWord => "prompt.delete.word",
-            Self::PromptDeleteToStart => "prompt.delete.tostart",
+            Self::PromptDeleteStart => "prompt.delete.start",
             Self::PickerUp => "picker.up",
             Self::PickerDown => "picker.down",
             Self::PickerChoose => "picker.choose",
@@ -300,8 +312,8 @@ impl ActionId {
 /// The label grammar is `help::Binding`'s — `q`, `G`, `Ctrl-d`, `space`,
 /// `Shift-Tab`, `PageDown`, `Home`. `Binding::codes` parses it, and plan 2b
 /// lets a user write the same spellings in `config.toml`.
-#[allow(dead_code)]
 // Unused until task 4 resolves through the table; the allow goes with it.
+#[allow(dead_code)]
 pub(crate) const DEFAULT: &[(Scope, &str, ActionId)] = &[
     (Scope::Global, "q", ActionId::GlobalQuit),
     (Scope::Global, "Q", ActionId::GlobalQuitSilent),
@@ -318,14 +330,17 @@ pub(crate) const DEFAULT: &[(Scope, &str, ActionId)] = &[
     (Scope::Global, "space", ActionId::GlobalPeek),
     (Scope::Global, "&", ActionId::GlobalFiltersAnd),
     (Scope::Global, "!", ActionId::GlobalFiltersDisable),
-    (Scope::Global, "1-9", ActionId::GlobalFilterToggleNumbered),
+    (Scope::Global, "1-9", ActionId::GlobalFiltersToggle),
     (Scope::Global, ".", ActionId::GlobalFileNext),
     (Scope::Global, ",", ActionId::GlobalFilePrev),
-    (Scope::Global, "n", ActionId::GlobalHitNext),
-    (Scope::Global, "N", ActionId::GlobalHitPrev),
-    (Scope::Global, "u", ActionId::GlobalHideToggle),
-    (Scope::Global, "H", ActionId::GlobalHideToggle),
-    (Scope::Global, "Ctrl-h", ActionId::GlobalHideToggle),
+    // `i`/`x`/`c`/`d`/`m`/`a`/`s` outside the filter pane, and `h`/`l`
+    // inside it, are deliberately not entries here: they are not bindings,
+    // only the second key of a chain (`f i`, `f x`, …) or, inside the
+    // filter pane, keys the pane simply doesn't rebind. Task 8 replaces the
+    // help text that currently spells this out by hand with generated text.
+    (Scope::Global, "u", ActionId::GlobalToggleHide),
+    (Scope::Global, "H", ActionId::GlobalToggleHide),
+    (Scope::Global, "Ctrl-h", ActionId::GlobalToggleHide),
     (Scope::Global, "b", ActionId::GlobalZoomView),
     (Scope::Global, "z", ActionId::GlobalZoomFocused),
     (Scope::Global, "o", ActionId::GlobalEditorProject),
@@ -334,8 +349,16 @@ pub(crate) const DEFAULT: &[(Scope, &str, ActionId)] = &[
     (Scope::Global, "v", ActionId::GlobalVisualChar),
     (Scope::Global, "V", ActionId::GlobalVisualLine),
     (Scope::Global, "y", ActionId::GlobalYank),
-    (Scope::Global, "]", ActionId::GlobalViewPageDown),
-    (Scope::Global, "[", ActionId::GlobalViewPageUp),
+    (Scope::Global, "]", ActionId::GlobalPageDown),
+    (Scope::Global, "[", ActionId::GlobalPageUp),
+    // `n`/`N` are scoped away from Global (#59 review): `src/lib.rs`'s
+    // global arm is guarded `self.focus != Focus::Nav`, so in the navigator
+    // it never fires and the key falls through to `filenav.rs`'s own
+    // `repeat_search`. Binding it here unconditionally would let this table
+    // resolve the navigator's `n` to the wrong action. It binds identically
+    // in the file view and the filter pane instead (see those sections
+    // below), hence the bare `hit.next` / `hit.prev` name — see the grammar
+    // note on `ActionId`.
     (Scope::Nav, "k", ActionId::NavUp),
     (Scope::Nav, "Up", ActionId::NavUp),
     (Scope::Nav, "j", ActionId::NavDown),
@@ -373,7 +396,7 @@ pub(crate) const DEFAULT: &[(Scope, &str, ActionId)] = &[
     (Scope::View, "End", ActionId::ViewGotoEnd),
     (Scope::View, "}", ActionId::ViewParagraphNext),
     (Scope::View, "{", ActionId::ViewParagraphPrev),
-    (Scope::View, "#", ActionId::ViewLineNumbers),
+    (Scope::View, "#", ActionId::ViewToggleLineNumbers),
     (Scope::View, "Ctrl-e", ActionId::ViewScrollDown),
     (Scope::View, "Ctrl-y", ActionId::ViewScrollUp),
     (Scope::View, "Ctrl-d", ActionId::ViewHalfPageDown),
@@ -382,6 +405,10 @@ pub(crate) const DEFAULT: &[(Scope, &str, ActionId)] = &[
     (Scope::View, "PageDown", ActionId::ViewPageDown),
     (Scope::View, "Ctrl-b", ActionId::ViewPageUp),
     (Scope::View, "PageUp", ActionId::ViewPageUp),
+    // See the Global section above: `n`/`N` fall through to here (and to
+    // the filter pane below) rather than being bound in Global.
+    (Scope::View, "n", ActionId::HitNext),
+    (Scope::View, "N", ActionId::HitPrev),
     (Scope::Filters, "k", ActionId::FiltersUp),
     (Scope::Filters, "Up", ActionId::FiltersUp),
     (Scope::Filters, "j", ActionId::FiltersDown),
@@ -404,6 +431,8 @@ pub(crate) const DEFAULT: &[(Scope, &str, ActionId)] = &[
     (Scope::Filters, "s", ActionId::FiltersSolo),
     (Scope::Filters, "R", ActionId::FiltersReset),
     (Scope::Filters, "S", ActionId::FiltersSaveSet),
+    (Scope::Filters, "n", ActionId::HitNext),
+    (Scope::Filters, "N", ActionId::HitPrev),
     (Scope::Prompt, "Enter", ActionId::PromptCommit),
     (Scope::Prompt, "Esc", ActionId::PromptCancel),
     (Scope::Prompt, "Left", ActionId::PromptLeft),
@@ -415,7 +444,7 @@ pub(crate) const DEFAULT: &[(Scope, &str, ActionId)] = &[
     (Scope::Prompt, "Backspace", ActionId::PromptDeleteBack),
     (Scope::Prompt, "Delete", ActionId::PromptDeleteForward),
     (Scope::Prompt, "Ctrl-w", ActionId::PromptDeleteWord),
-    (Scope::Prompt, "Ctrl-u", ActionId::PromptDeleteToStart),
+    (Scope::Prompt, "Ctrl-u", ActionId::PromptDeleteStart),
     (Scope::Picker, "k", ActionId::PickerUp),
     (Scope::Picker, "Up", ActionId::PickerUp),
     (Scope::Picker, "j", ActionId::PickerDown),
@@ -430,8 +459,8 @@ pub(crate) const DEFAULT: &[(Scope, &str, ActionId)] = &[
 /// A linear scan on purpose: the table is under 130 entries and this runs once
 /// per keypress, which is an event a human produced. A map would be faster and
 /// would have to be built, held and kept in step for no measurable gain.
-#[allow(dead_code)]
 // Unused until task 4 resolves through the table; the allow goes with it.
+#[allow(dead_code)]
 pub(crate) fn resolve(scope: Scope, key: Key) -> Option<ActionId> {
     DEFAULT
         .iter()
@@ -511,11 +540,36 @@ mod tests {
         );
     }
 
+    /// Labels a row documents in its action text rather than its `keys`
+    /// array.
+    ///
+    /// `Home`/`End` alias `g`/`G` in all three panes, but adding them to the
+    /// shared row's `keys` would lengthen the joined label past what the
+    /// 150-column layout can afford — see
+    /// `help::tests::a_normal_terminal_shows_the_whole_keymap`, which has no
+    /// width slack left. The row says "also Home / End" in prose instead, so
+    /// the binding is discoverable without costing a column.
+    ///
+    /// This is a deliberate, narrow exception for the layout budget, not a
+    /// judgment that these aliases are unimportant. Anything added here has
+    /// to earn its place the same way: every label outside this list still
+    /// has to be named on a row whose `keys` actually list it.
+    const DOCUMENTED_IN_PROSE: &[&str] = &["Home", "End"];
+
     /// Every documented binding resolves, and every entry in the table is
-    /// documented. This replaces the two text-scraping drift tests in
-    /// `help.rs`, which compared labels against `Char('x')` literals grepped
-    /// out of seven source files (#162 records how that scan silently stopped
-    /// working once). Comparing the table against the documentation is exact.
+    /// documented. Will replace the two text-scraping drift tests in
+    /// `help.rs` (task 9 removes them), which compared labels against
+    /// `Char('x')` literals grepped out of seven source files (#162 records
+    /// how that scan silently stopped working once).
+    ///
+    /// The set comparison alone cannot see a `names` entry sitting on the
+    /// *wrong* row — two sets can agree while a name is attached to a key
+    /// that never binds it. The per-entry loop below is what makes "every
+    /// documented binding resolves" true rather than aspirational: for each
+    /// row `DEFAULT` actually has, some `KEYMAP` binding whose `keys`
+    /// contains that label has to name that exact action (#59 review: this
+    /// is what would have caught `n`/`N` being bound in both `Global` and
+    /// `Nav` — the set comparison alone did not).
     #[test]
     fn the_table_and_the_documentation_agree() {
         let documented: std::collections::BTreeSet<&str> = crate::help::KEYMAP
@@ -537,6 +591,27 @@ mod tests {
         assert!(
             unbound.is_empty(),
             "in KEYMAP but not in the table: {unbound:?}"
+        );
+
+        let mut mismatched = Vec::new();
+        for (scope, label, action) in DEFAULT {
+            if DOCUMENTED_IN_PROSE.contains(label) {
+                continue;
+            }
+            let named_on_that_row = crate::help::KEYMAP
+                .iter()
+                .flat_map(|section| section.bindings)
+                .any(|binding| {
+                    binding.keys.contains(label) && binding.names.contains(&action.name())
+                });
+            if !named_on_that_row {
+                mismatched.push(format!("{scope:?} {label:?} -> {}", action.name()));
+            }
+        }
+        assert!(
+            mismatched.is_empty(),
+            "not named on any KEYMAP row whose keys include the label:\n  {}",
+            mismatched.join("\n  ")
         );
     }
 
