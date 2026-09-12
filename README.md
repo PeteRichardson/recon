@@ -306,28 +306,28 @@ What gets recorded:
 ## Keybindings
 
 Press `?` in the app for the same list on screen. The authoritative source is
-the code, in three places rather than two:
+the code, and it now lives in one place: `keymap::DEFAULT` in `src/keymap.rs`,
+a table of `(Scope, key, action)` rows. Every key starts at `App::handle_event`
+in `src/lib.rs`, which resolves it against the scope ladder in precedence
+order — an open prompt or picker first, then the global keys, then whichever
+pane has focus — and hands whatever action it found to `perform`, one match
+arm per action.
 
-- **`App::handle_event`** in `src/lib.rs`, for the global keys.
-- **Each widget's `handle_events`**, for the keys its own pane answers.
-- **`long_range_target`** in `src/viewport.rs`, for `g`, `G`, `{` and `}`.
-  These are *intercepted* — `App::handle_event` resolves them against the whole
-  visible set and returns before the file view sees the key, so they are bound
-  in two places and the interception wins. They have to be: the file view holds
-  a window of the visible set, and each of these means "the document's top" or
-  "the next paragraph anywhere", not "the top of whatever is loaded" (#7).
+`g`, `G`, `{` and `}` still answer to the *whole* document rather than only
+the window the file view has loaded, because only `App` can see it: the arm
+for those four actions in `perform` calls `long_range_target`
+(`src/viewport.rs`) to find the target row before moving the cursor there.
+That is a call one arm makes, not a second place the four keys are bound (#7).
 
-This section and the in-app overlay both describe that code.
-
-The four would drift silently, so they don't have to be checked by hand:
-`KEYMAP` in `src/help.rs` is the table the overlay draws, and
-`every_bound_key_is_documented` reads the source files back at test time —
-`lib.rs`, `viewport.rs` and every widget, the profile picker included — and
-fails when a key is bound in a `KeyCode::…` / `Key::…` arm and named by no row:
-a character in `Char(..)`, or a named key such as `PageDown`, `Home` or
-`Shift-Tab`. Adding a binding without documenting it breaks the build. The
-test says nothing about *this* section, which is still hand-maintained — so a
-new key needs a row here too.
+This section and the in-app overlay both describe that table. They would
+drift silently from it otherwise, so they don't have to be checked by hand:
+`the_table_and_the_documentation_agree` (`src/keymap.rs`) compares `DEFAULT`
+against `KEYMAP` in `src/help.rs` — the table the overlay draws — by action
+name, in both directions, and checks that each name sits on a row whose keys
+actually contain that label. Adding a binding without documenting it, or
+documenting one that no longer exists, breaks the build. The test says
+nothing about *this* section, which is still hand-maintained — so a new key
+needs a row here too.
 
 Every key lives in one of four layers, checked in this order, and the tables
 below follow them. A **prompt**, while open, takes every key. **Global** keys
