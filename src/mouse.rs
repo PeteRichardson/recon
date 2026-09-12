@@ -109,7 +109,7 @@ impl App<'_> {
         // level every 400ms.
         self.last_nav_click = (!double).then_some((row, now));
         if let Some(action) = self.nav.click(line, double) {
-            self.perform(action);
+            self.perform_widget_action(action);
         }
         self.ensure_window();
     }
@@ -142,7 +142,7 @@ impl App<'_> {
             };
             let dir = self.view.filename().to_path_buf();
             if let Some(action) = self.nav.open_listed(&dir, index) {
-                self.perform(action);
+                self.perform_widget_action(action);
             }
             self.ensure_window();
             return;

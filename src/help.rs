@@ -1066,8 +1066,15 @@ mod tests {
     #[test]
     fn the_global_keys_and_the_picker_are_scanned() {
         let bound = bound_keys(include_str!("lib.rs"));
+        // `q` and `BackTab` were this probe's canaries before task 4 (#199):
+        // both now resolve through `keymap::DEFAULT` instead of a literal
+        // `KeyCode::…` pattern in `lib.rs`, so the scan legitimately no
+        // longer finds them here. `n` and `Esc` are still bound by a literal
+        // pattern past the fixtures module — the hint arm `n`/`N` stays a
+        // fallthrough until task 6, and the prompt's `Esc` until task 7 — so
+        // they still prove the scan reaches this file's real bindings.
         assert!(
-            bound.contains(&Key::Char('q')) && bound.contains(&Key::Named("BackTab")),
+            bound.contains(&Key::Char('n')) && bound.contains(&Key::Named("Esc")),
             "src/lib.rs's global keys are not reached by the scan: {bound:?}"
         );
         let bound = bound_keys(include_str!("widgets/picker.rs"));

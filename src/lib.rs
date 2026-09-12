@@ -879,7 +879,7 @@ impl App<'_> {
         };
 
         if let Some(action) = action {
-            self.perform(action);
+            self.perform_widget_action(action);
         }
         if view_search {
             self.apply_search(pattern)?;
@@ -1350,202 +1350,27 @@ impl App<'_> {
             return;
         }
 
+        // The 400-line match this replaced (#199) is now a lookup plus a
+        // match over actions, in `perform`: each arm there holds exactly the
+        // body its key arm held here.
         if let event::Event::Key(key) = event {
-            match key.code {
-                // Guarded to an empty modifier set so a modified key — e.g.
-                // Ctrl-f, which the file view uses for page-down — falls
-                // through to the focused widget instead of being swallowed
-                // here.
-                KeyCode::Char('q') if key.modifiers.is_empty() => {
-                    self.state = AppState::Quit { emit: true };
-                    return;
-                }
-                // `Q` quits without emitting (#143). Without `--emit` it is
-                // `q`. Not guarded on an empty modifier set: a terminal
-                // reports the Shift that makes it uppercase — the same trap
-                // `?`, `N` and `S` document.
-                KeyCode::Char('Q')
-                    if !key
-                        .modifiers
-                        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+            let pressed = crate::keymap::normalise(key);
+            if let Some(action) = crate::keymap::resolve(crate::keymap::Scope::Global, pressed) {
+                // `GlobalFiltersToggle` is the one Global action whose
+                // behaviour depends on which key fired it — the digit picks
+                // the filter, and an `ActionId` carries no digit to carry it
+                // with. Carried out here, where the key is still in scope,
+                // rather than forcing every other action through `perform`
+                // with a key it never uses.
+                if let (crate::keymap::ActionId::GlobalFiltersToggle, KeyCode::Char(c)) =
+                    (action, key.code)
                 {
-                    self.state = AppState::Quit { emit: false };
-                    return;
-                }
-                KeyCode::Tab => {
-                    self.focus_next();
-                    return;
-                }
-                KeyCode::BackTab => {
-                    self.focus_prev();
-                    return;
-                }
-                // `?` and not `F1`: it is the conventional help key in every
-                // pager and file manager this app borrows from, and it is free
-                // — it used to run a backward search, which `n`/`N` cover from
-                // both directions now.
-                //
-                // Not guarded on `.is_empty()`: `?` is Shift-`/` on most
-                // layouts, and crossterm reports the modifier, so that guard
-                // would make the key unreachable outside a test harness. This
-                // is the same trap `O` and `n`/`N` document.
-                KeyCode::Char('?')
-                    if !key
-                        .modifiers
-                        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
-                {
-                    self.help = true;
-                    return;
-                }
-                // Global (#120 §7): from the filter pane too. The pane used to
-                // refuse `/` so that a swallowed `Enter` would not look like
-                // a toggle; the prompt now takes every key while open, and
-                // `swallow_next_enter` already guards the commit, so the
-                // reason is gone. `/` here is "new search"; `c` on the search
-                // row is "edit search".
-                KeyCode::Char('/') if key.modifiers.is_empty() => {
-                    self.search = Some(SearchPrompt::default());
-                    return;
-                }
-                // Global, like `!`: the search is app state, not the file
-                // view's, and having to focus a particular pane to switch it
-                // off would make it easy to leave one running by accident.
-                //
-                // This departs from vim, where Esc leaves the pattern alone.
-                // Here the search is a filter, and a filter that cannot be
-                // turned off is a leak — one typed ten minutes ago would keep
-                // changing what is on screen with nothing to stop it.
-                //
-                // An open prompt already took this key: `handle_event` returns
-                // early while `self.search` is `Some`, so Esc there cancels the
-                // prompt rather than reaching past it.
-                //
-                // Guarded on `.is_empty()`, unlike `n`/`N` below: that guard was
-                // wrong for them because crossterm attaches SHIFT to every
-                // uppercase letter a real terminal sends. Esc isn't a
-                // printable character, so there is no case to attach SHIFT to;
-                // in the legacy key-reporting mode this app runs in (no
-                // keyboard-enhancement flags — see `main.rs`), a bare Esc byte
-                // carries no modifiers at all, so `is_empty()` is simply
-                // correct here rather than a trap.
-                // Visual mode takes `Esc` before the search layers below
-                // (#67): `v` changes what `Esc` means in the view, and a
-                // stray press should end the selection without also
-                // dropping the live search the selection was made under.
-                KeyCode::Esc
-                    if key.modifiers.is_empty()
-                        && self.focus == Focus::View
-                        && self.visual.is_some() =>
-                {
-                    self.end_visual();
-                    return;
-                }
-                KeyCode::Esc if key.modifiers.is_empty() => {
-                    // Layered (#120 §8): the focused pane's own search first,
-                    // then the live search. The navigator's filename search
-                    // is separate state, and until now nothing but a new
-                    // search replaced it — `n` kept repeating a search the
-                    // user thought they had dismissed.
-                    if self.focus == Focus::Nav && self.nav.clear_search() {
-                        return;
-                    }
-                    // `clear_search` reports whether there was one to drop, the
-                    // same shape `p`'s `promote_search` guard uses just below:
-                    // `refresh_view` is not free — `evaluate` is
-                    // O(lines × filters) — and Esc is a key people tap out of
-                    // habit, so it should not pay for a re-evaluate when there
-                    // was nothing to clear.
-                    if self.filters.clear_search() {
-                        self.refresh_view();
-                    }
-                    return;
-                }
-                // Global rather than pane-scoped: the user has just searched
-                // and should not have to go and find the filter pane to keep
-                // the result.
-                //
-                // Guarded on `.is_empty()`, same reasoning as `q`/`f`/`!`
-                // above rather than `n`/`N`/`H`: `p` is lowercase, and
-                // crossterm only attaches SHIFT to uppercase characters, so
-                // there is no real-terminal case this guard would make
-                // unreachable. Leaving Ctrl-P and Alt-P unclaimed here lets
-                // them fall through to the focused widget, matching every
-                // other plain-letter global binding on this branch.
-                KeyCode::Char('p') if key.modifiers.is_empty() => {
-                    // `promote_search` pays nothing when the slot is empty;
-                    // `refresh_view` is not free — `evaluate` is
-                    // O(lines × filters) — so it is only paid for when the
-                    // set actually changed. `p` will be pressed speculatively.
-                    if self.filters.promote_search() {
-                        self.refresh_view();
-                    }
-                    return;
-                }
-                // `f` moves focus; creating a filter is `i` / `x` once the
-                // pane has it. That costs a keystroke from outside the pane
-                // and none from inside, in exchange for one focus key per
-                // pane — see `handle_filter_key`, which owns `i` and `x`
-                // because opening a prompt is `App`'s to do.
-                KeyCode::Char('f') if key.modifiers.is_empty() => {
-                    // A second `f` while the pane has focus is the sticky
-                    // gesture: the user is staying, so no chain to return.
-                    let origin = (self.focus != Focus::Filters).then_some(self.focus);
-                    self.reveal_and_focus(Focus::Filters);
-                    self.chain_origin = origin;
-                    return;
-                }
-                // Global, and claimed above every pane rather than in any of
-                // them (#48). The whole point of the key is that it means one
-                // thing everywhere: a `<space>` that toggled hide mode in two
-                // panes and a filter in the third is the pane-dependent meaning
-                // this replaced, and recovering from the wrong one cost seconds
-                // every time.
-                //
-                // That is also why the filter pane gave `space` up for `Enter`
-                // rather than keeping both — see `FilterList::handle_key`.
-                KeyCode::Char(' ') if key.modifiers.is_empty() => {
-                    self.toggle_peek();
-                    return;
-                }
-                // Global, like `!`: the mode belongs to the set, not to a
-                // pane, and the badge on the status row is where it shows.
-                KeyCode::Char('&') if key.modifiers.is_empty() => {
-                    self.filters.toggle_and();
-                    self.refresh_view();
-                    return;
-                }
-                KeyCode::Char('!') if key.modifiers.is_empty() => {
-                    // Three states, because "nothing is enabled" and "nothing
-                    // was captured" are different situations. Branching on the
-                    // capture alone makes ! inert once every filter has been
-                    // disabled by hand: it would capture all-disabled and then
-                    // faithfully restore it, forever.
-                    if self.filters.any_enabled() {
-                        self.filters.disable_all_remembering();
-                    } else if self.filters.has_remembered() {
-                        self.filters.restore_remembered();
-                    } else {
-                        self.filters.set_all_enabled(true);
-                    }
-                    self.refresh_view();
-                    return;
-                }
-                // Global: the file view is what gets read during the review
-                // loop, and paging it should not require focusing it. The
-                // view's own `[`/`]` arms stay; this reaches them from the
-                // other two panes (#120 §3).
-                KeyCode::Char('[' | ']')
-                    if key.modifiers.is_empty() && self.focus != Focus::View =>
-                {
-                    self.forward_to_view(event);
-                    return;
-                }
-                // Toggle a numbered filter from anywhere (#120 §14). The
-                // number is the one the pane draws in its gutter, and
-                // `numbered` is the walk that draws it, so key and label
-                // cannot disagree. Set headers, the search row and built-in
-                // filters have no number and no key: `f Enter` covers them.
-                KeyCode::Char(c @ '1'..='9') if key.modifiers.is_empty() => {
+                    // Toggle a numbered filter from anywhere (#120 §14). The
+                    // number is the one the pane draws in its gutter, and
+                    // `numbered` is the walk that draws it, so key and label
+                    // cannot disagree. Set headers, the search row and
+                    // built-in filters have no number and no key: `f Enter`
+                    // covers them.
                     let n = usize::from(c as u8 - b'0');
                     match widgets::filterlist::numbered(&self.filters).get(n - 1) {
                         Some(&index) => {
@@ -1556,14 +1381,10 @@ impl App<'_> {
                     }
                     return;
                 }
-                // Global, unlike `n`: skipping a file is the outer loop of
-                // the review workflow, and it should not matter which pane
-                // the inner loop left focus in. The keycaps carry the
-                // mnemonic — `<` and `>` (#120 §2).
-                KeyCode::Char(c @ ('.' | ',')) if key.modifiers.is_empty() => {
-                    self.skip_file(c == ',');
-                    return;
-                }
+                self.perform(action);
+                return;
+            }
+            match key.code {
                 // A filter-pane verb pressed anywhere else says so, for one
                 // keypress, instead of doing nothing (#120 §9). Not a
                 // redirect: making `i` global would collapse `f i` and `i`,
@@ -1571,6 +1392,11 @@ impl App<'_> {
                 // key. The chain stays the answer; the hint teaches it.
                 // These seven letters are unbound in the navigator and the
                 // file view, so this arm shadows nothing.
+                //
+                // Not resolved through the table (#199): these are guidance,
+                // not a binding, and deliberately have no `ActionId` — see
+                // the doc comment on `keymap::ActionId`. Task 8 replaces this
+                // hand-written text with text generated from the table.
                 KeyCode::Char(c @ ('i' | 'x' | 'c' | 'd' | 'm' | 'a' | 's'))
                     if key.modifiers.is_empty() && self.focus != Focus::Filters =>
                 {
@@ -1586,70 +1412,6 @@ impl App<'_> {
                     self.report(&format!("{c} {verb} · f {c}"), false);
                     return;
                 }
-                // `v`/`V` start, switch or end a selection; `y` copies it
-                // (#67). View keys rather than global ones, since a
-                // selection is a place in the view's text, but claimed here
-                // rather than in the widget because the yank reads the
-                // document and the anchor is a source line. From either
-                // other pane they hint, as `*` does from the navigator (#120
-                // §9) — there is no cursor column there to anchor to. `V`
-                // is Shift-v and crossterm reports the Shift, so the
-                // CONTROL/ALT guard rather than `is_empty()`, the same trap
-                // `?` and `N` document; `y` keeps `is_empty()` so `Ctrl-y`
-                // still scrolls.
-                KeyCode::Char(c @ ('v' | 'V'))
-                    if !key
-                        .modifiers
-                        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
-                {
-                    if self.focus == Focus::View {
-                        self.promote_truncated_preview();
-                        self.toggle_visual(c == 'V');
-                    } else {
-                        self.report("v selects text in the file view · t v", false);
-                    }
-                    return;
-                }
-                KeyCode::Char('y') if key.modifiers.is_empty() => {
-                    if self.focus == Focus::View {
-                        self.yank();
-                    } else {
-                        self.report("y copies a selection in the file view · t v", false);
-                    }
-                    return;
-                }
-                // `*` — the live search becomes the word under the cursor,
-                // literally, then step as `/` does (#120 §13). Vim's two-key
-                // answer to "where else does this symbol appear?", which is
-                // #67's first use case, without a selection. `regex::escape`
-                // keeps the contract literal whatever the word class becomes.
-                // Scoped away from the navigator, where a cursor column
-                // exists only in the view: the filter pane forwards it to
-                // the view's cursor, like `n`/`N`, `/`, and `[`/`]` (#120
-                // §11); the navigator gets a hint (#120 §9). Not guarded on
-                // an empty modifier set: `*` is Shift-8 and crossterm
-                // reports the Shift, the same trap `?` and `N` document.
-                KeyCode::Char('*')
-                    if !key
-                        .modifiers
-                        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
-                {
-                    if self.focus == Focus::Nav {
-                        self.report("* searches the word under the cursor · t *", false);
-                        return;
-                    }
-                    match self.word_under_cursor() {
-                        Some(word) => {
-                            // An escaped literal always compiles; a failure
-                            // here would be a regex-crate bug, not user input.
-                            if self.apply_search(&regex::escape(&word)).is_err() {
-                                self.report("could not search for that word", true);
-                            }
-                        }
-                        None => self.report("no word under the cursor", false),
-                    }
-                    return;
-                }
                 // Scoped away from the navigator rather than global: `n` in
                 // the navigator is the navigator's key (next filename-search
                 // hit, else next matching file) and stays that way. The
@@ -1657,11 +1419,13 @@ impl App<'_> {
                 // "next" of its own, and the user wants to see the effect of
                 // the filter they just touched (#120 §2).
                 //
-                // Not guarded with `.is_empty()`, unlike `/` above: crossterm
-                // attaches SHIFT to every uppercase character a real terminal
-                // sends, so an `is_empty()` guard would make `N` unreachable
-                // outside a test harness that never sets it. CONTROL/ALT is
-                // the same tolerance `H` uses just below, for the same reason.
+                // Not resolved through the table (#199 review): `n`/`N` bind
+                // identically in the file view and the filter pane —
+                // `ActionId::HitNext`/`HitPrev`, bare because the binding
+                // isn't scope-specific — but never in `Scope::Global`: this
+                // arm's own focus guard is what keeps the navigator's own
+                // `n` binding, in `Scope::Nav`, from being shadowed here.
+                // Task 6 moves this arm onto the table.
                 KeyCode::Char(c @ ('n' | 'N'))
                     if !key
                         .modifiers
@@ -1669,90 +1433,6 @@ impl App<'_> {
                         && self.focus != Focus::Nav =>
                 {
                     self.step_interesting(c == 'N');
-                    return;
-                }
-                // The primary hide key (#120 §10). `H` needs Shift, and many
-                // terminals deliver `Ctrl-H` as Backspace; both stay as
-                // aliases, but the key pressed most often in the review loop
-                // should not be the one that breaks the flow. `u` as in
-                // "toggle unmatched lines", which is what the mode does; vim's
-                // `u` is undo and recon has no undo, so no habit collides.
-                KeyCode::Char('u') if key.modifiers.is_empty() => {
-                    self.toggle_hiding();
-                    return;
-                }
-                KeyCode::Char('H')
-                    if !key
-                        .modifiers
-                        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
-                {
-                    self.toggle_hiding();
-                    return;
-                }
-                KeyCode::Char('h') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                    self.toggle_hiding();
-                    return;
-                }
-                KeyCode::Char('b') if key.modifiers.is_empty() => {
-                    self.zoom_file_view();
-                    return;
-                }
-                KeyCode::Char('e') if key.modifiers.is_empty() => {
-                    self.reveal_and_focus(Focus::Nav);
-                    return;
-                }
-                KeyCode::Char('t') if key.modifiers.is_empty() => {
-                    self.reveal_and_focus(Focus::View);
-                    return;
-                }
-                KeyCode::Char('z') if key.modifiers.is_empty() => {
-                    self.zoom_focused();
-                    return;
-                }
-                // Global rather than pane-scoped, like `!` and `p`: the file
-                // the user means is whatever the file view is showing, and
-                // that follows the navigator's selection already. Having to
-                // focus a particular pane first would make `o` fail in the one
-                // place it is most natural to press — while browsing the
-                // navigator.
-                //
-                // Guarded on `.is_empty()`, same reasoning as `q`/`f`/`p`: `o`
-                // is lowercase, so crossterm never attaches SHIFT to it, and
-                // leaving Ctrl-O and Alt-O unclaimed lets them fall through to
-                // the focused widget.
-                KeyCode::Char('o') if key.modifiers.is_empty() => {
-                    let template = self.editor.project.clone();
-                    self.open_in_editor(&template, EditorScope::Project);
-                    return;
-                }
-                // `O` (#41): the same method, the other template, no walk-up.
-                // Everything that makes the key work — resolution, splitting,
-                // substitution, spawning, error reporting — is already shared,
-                // so the sibling really does cost one arm.
-                //
-                // Not guarded on `.is_empty()`, unlike `o` directly above:
-                // crossterm attaches SHIFT to every uppercase character a real
-                // terminal sends, so that guard would make `O` unreachable
-                // outside a test harness. Excluding CONTROL/ALT instead is the
-                // convention `H` and `n`/`N` already follow, and it keeps
-                // Ctrl-O and Alt-O falling through exactly as before.
-                KeyCode::Char('O')
-                    if !key
-                        .modifiers
-                        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
-                {
-                    let template = self.editor.file.clone();
-                    self.open_in_editor(&template, EditorScope::File);
-                    return;
-                }
-                // Refresh from disk: re-list the directory, rescan it, and
-                // reload the file, keeping the reader's place. The one key
-                // that resolves the navigator and the view disagreeing about
-                // a file that changed underneath them (#119).
-                KeyCode::Char('r') if key.modifiers.is_empty() => {
-                    self.nav.reload();
-                    self.refresh_scan(true);
-                    self.reload_active_file();
                     return;
                 }
                 _ => {}
@@ -1857,7 +1537,7 @@ impl App<'_> {
             Focus::Filters => None,
         };
         if let Some(action) = action {
-            self.perform(action);
+            self.perform_widget_action(action);
         } else if was_truncated && !self.file_view_truncated() {
             self.sync_document();
             self.refresh_view();
@@ -1865,6 +1545,155 @@ impl App<'_> {
         // Ordinary movement stays inside the window by design, but a page at
         // the edge of the middle third does not — see `window_holds`.
         self.ensure_window();
+    }
+
+    /// Run a named action.
+    ///
+    /// One arm per action, and the only place an action's behaviour lives.
+    /// Before this, the same behaviour was reachable from up to four `match`
+    /// arms in different files, which is the drift #199 describes.
+    ///
+    /// Only `Scope::Global` resolves into this so far: tasks 5-7 add the
+    /// `Nav`/`View`/`Filters` arms as each scope moves onto the table, so the
+    /// wildcard below is unreached rather than unreachable — nothing yet
+    /// resolves to one of those variants.
+    ///
+    /// `GlobalFiltersToggle` is the one Global action missing from here: it
+    /// needs the digit that fired it, which an `ActionId` cannot carry, so
+    /// the caller in `dispatch_event` carries it out directly rather than
+    /// routing a key nobody else's arm needs through every one of these.
+    fn perform(&mut self, action: crate::keymap::ActionId) {
+        use crate::keymap::ActionId as A;
+        match action {
+            A::GlobalQuit => self.state = AppState::Quit { emit: true },
+            // `Q` quits without emitting (#143).
+            A::GlobalQuitSilent => self.state = AppState::Quit { emit: false },
+            A::GlobalFocusNext => self.focus_next(),
+            A::GlobalFocusPrev => self.focus_prev(),
+            A::GlobalFocusNav => self.reveal_and_focus(Focus::Nav),
+            A::GlobalFocusView => self.reveal_and_focus(Focus::View),
+            // A second `f` while the pane already has focus is the sticky
+            // gesture: the user is staying, so no chain to return to.
+            A::GlobalFocusFilters => {
+                let origin = (self.focus != Focus::Filters).then_some(self.focus);
+                self.reveal_and_focus(Focus::Filters);
+                self.chain_origin = origin;
+            }
+            A::GlobalHelp => self.help = true,
+            A::GlobalSearch => self.search = Some(SearchPrompt::default()),
+            // `promote_search` pays nothing when the slot is empty;
+            // `refresh_view` is not free — `evaluate` is O(lines × filters) —
+            // so it is only paid for when the set actually changed.
+            A::GlobalSearchPromote => {
+                if self.filters.promote_search() {
+                    self.refresh_view();
+                }
+            }
+            A::GlobalSearchWord => {
+                if self.focus == Focus::Nav {
+                    self.report("* searches the word under the cursor · t *", false);
+                    return;
+                }
+                match self.word_under_cursor() {
+                    Some(word) => {
+                        // An escaped literal always compiles; a failure here
+                        // would be a regex-crate bug, not user input.
+                        if self.apply_search(&regex::escape(&word)).is_err() {
+                            self.report("could not search for that word", true);
+                        }
+                    }
+                    None => self.report("no word under the cursor", false),
+                }
+            }
+            // Visual mode's `Esc` takes precedence over the search layers
+            // below (#67): a stray press should end the selection without
+            // also dropping the live search the selection was made under.
+            A::GlobalEscape => {
+                if self.focus == Focus::View && self.visual.is_some() {
+                    self.end_visual();
+                    return;
+                }
+                // Layered (#120 §8): the focused pane's own search first,
+                // then the live search. `clear_search` reports whether there
+                // was one to drop, so Esc pressed out of habit does not pay
+                // for a `refresh_view` when there was nothing to clear.
+                if self.focus == Focus::Nav && self.nav.clear_search() {
+                    return;
+                }
+                if self.filters.clear_search() {
+                    self.refresh_view();
+                }
+            }
+            A::GlobalPeek => self.toggle_peek(),
+            A::GlobalFiltersAnd => {
+                self.filters.toggle_and();
+                self.refresh_view();
+            }
+            // Three states, because "nothing is enabled" and "nothing was
+            // captured" are different situations. Branching on the capture
+            // alone makes `!` inert once every filter has been disabled by
+            // hand: it would capture all-disabled and then faithfully
+            // restore it, forever.
+            A::GlobalFiltersDisable => {
+                if self.filters.any_enabled() {
+                    self.filters.disable_all_remembering();
+                } else if self.filters.has_remembered() {
+                    self.filters.restore_remembered();
+                } else {
+                    self.filters.set_all_enabled(true);
+                }
+                self.refresh_view();
+            }
+            // Global, unlike `n`: skipping a file is the outer loop of the
+            // review workflow, and it should not matter which pane the inner
+            // loop left focus in (#120 §2).
+            A::GlobalFileNext => self.skip_file(false),
+            A::GlobalFilePrev => self.skip_file(true),
+            A::GlobalToggleHide => self.toggle_hiding(),
+            A::GlobalZoomView => self.zoom_file_view(),
+            A::GlobalZoomFocused => self.zoom_focused(),
+            A::GlobalEditorProject => {
+                let template = self.editor.project.clone();
+                self.open_in_editor(&template, EditorScope::Project);
+            }
+            A::GlobalEditorFile => {
+                let template = self.editor.file.clone();
+                self.open_in_editor(&template, EditorScope::File);
+            }
+            A::GlobalReload => {
+                self.nav.reload();
+                self.refresh_scan(true);
+                self.reload_active_file();
+            }
+            // `v`/`V` start, switch or end a selection; from any pane but the
+            // view they hint instead, as `*` does from the navigator (#67,
+            // #120 §9) — there is no cursor column there to anchor to.
+            A::GlobalVisualChar | A::GlobalVisualLine => {
+                if self.focus == Focus::View {
+                    self.promote_truncated_preview();
+                    self.toggle_visual(matches!(action, A::GlobalVisualLine));
+                } else {
+                    self.report("v selects text in the file view · t v", false);
+                }
+            }
+            A::GlobalYank => {
+                if self.focus == Focus::View {
+                    self.yank();
+                } else {
+                    self.report("y copies a selection in the file view · t v", false);
+                }
+            }
+            // Reached from any pane (#120 §3): the view's own `[`/`]` bind
+            // the same two actions directly, in `Scope::View`, so this only
+            // ever fires when the view is not what has focus. Rebuilt as a
+            // plain key rather than forwarded, because an `ActionId` carries
+            // no key of its own to forward.
+            A::GlobalPageDown => self.forward_to_view(event::Event::Key(KeyCode::Char(']').into())),
+            A::GlobalPageUp => self.forward_to_view(event::Event::Key(KeyCode::Char('[').into())),
+            _ => unreachable!(
+                "only Scope::Global resolves into perform so far (#199); tasks 5-7 add the rest"
+            ),
+        }
     }
 
     /// Force the file view's truncated preview to a full load, the same
@@ -1988,7 +1817,7 @@ impl App<'_> {
         if self.nav.selected_entry() == before {
             return false;
         }
-        self.perform(action);
+        self.perform_widget_action(action);
         self.promote_truncated_preview();
         if let Some(target) = self.first_interesting(backwards) {
             self.land_on(target);
@@ -2445,7 +2274,11 @@ impl App<'_> {
     }
 
     /// Carry out an action on behalf of the widget that raised it.
-    fn perform(&mut self, action: Action) {
+    ///
+    /// Named for the widget rather than plain `perform` (#199): that name now
+    /// belongs to the keymap table's own dispatcher below, which runs a
+    /// `keymap::ActionId` rather than one of these.
+    fn perform_widget_action(&mut self, action: Action) {
         match &action {
             Action::Load(path) => self.view.load(path),
             Action::Preview(path) => self.view.preview(path),
@@ -3286,7 +3119,7 @@ mod tests {
     fn open_file(app: &mut App, row: usize) {
         let (index, path) = app.nav.files()[row].clone();
         app.nav.select_entry(index);
-        app.perform(Action::Load(path));
+        app.perform_widget_action(Action::Load(path));
     }
 
     /// Mark the `row`th file as matching (`yes`) or not, through the scan
@@ -4534,7 +4367,7 @@ mod tests {
 
         let dir = fixture_dir_path("restyle_reload");
         fs::write(dir.join("other.txt"), "beta again\nnothing\n").expect("write");
-        app.perform(Action::Load(dir.join("other.txt")));
+        app.perform_widget_action(Action::Load(dir.join("other.txt")));
 
         let styles = view_line_styles(&app);
         assert_eq!(styles.len(), 2, "styles not re-applied to the new file");
@@ -4560,7 +4393,7 @@ mod tests {
 
         let dir = fixture_dir_path("hide_mode_load");
         fs::write(dir.join("other.txt"), "beta again\nnothing\n").expect("write");
-        app.perform(Action::Load(dir.join("other.txt")));
+        app.perform_widget_action(Action::Load(dir.join("other.txt")));
 
         assert_eq!(
             app.document.mode(),
@@ -4589,7 +4422,7 @@ mod tests {
 
         let dir = fixture_dir_path("hide_mode_preview");
         fs::write(dir.join("other.txt"), "beta again\nnothing\n").expect("write");
-        app.perform(Action::Preview(dir.join("other.txt")));
+        app.perform_widget_action(Action::Preview(dir.join("other.txt")));
 
         assert_eq!(
             app.document.mode(),
@@ -4614,7 +4447,7 @@ mod tests {
 
         let dir = fixture_dir_path("hide_mode_no_match");
         fs::write(dir.join("quiet.txt"), "nothing\nhere\n").expect("write");
-        app.perform(Action::Preview(dir.join("quiet.txt")));
+        app.perform_widget_action(Action::Preview(dir.join("quiet.txt")));
 
         assert_eq!(app.document.mode(), Mode::FilteredOnly);
         assert!(
@@ -4653,7 +4486,7 @@ mod tests {
 
         let dir = fixture_dir_path("exclude_all_load");
         fs::write(dir.join("other.txt"), "noise three\nnoise four\n").expect("write");
-        app.perform(Action::Load(dir.join("other.txt")));
+        app.perform_widget_action(Action::Load(dir.join("other.txt")));
 
         assert_eq!(
             app.document.mode(),
@@ -4681,7 +4514,7 @@ mod tests {
 
         let dir = fixture_dir_path("hide_mode_untoggle");
         fs::write(dir.join("other.txt"), "beta again\nnothing\n").expect("write");
-        app.perform(Action::Load(dir.join("other.txt")));
+        app.perform_widget_action(Action::Load(dir.join("other.txt")));
         key(&mut app, KeyCode::Char('H'));
 
         assert_eq!(app.document.mode(), Mode::Dimmed);
@@ -4716,7 +4549,7 @@ mod tests {
             "sanity: the excluding filter hid a line"
         );
 
-        app.perform(Action::Load(path));
+        app.perform_widget_action(Action::Load(path));
 
         assert_eq!(
             view_lines(&app),
@@ -4955,7 +4788,7 @@ mod tests {
         let body = numbered_lines(crate::widgets::fileview::PREVIEW_LINES + 100);
         let dir = fixture_dir_path("status_preview");
         fs::write(dir.join("big.txt"), &body).expect("write");
-        app.perform(Action::Preview(dir.join("big.txt")));
+        app.perform_widget_action(Action::Preview(dir.join("big.txt")));
 
         let bottom = status_line(&mut app);
 
@@ -11188,7 +11021,7 @@ mod tests {
 
         let dir = fixture_dir_path("hl_reload");
         fs::write(dir.join("other.txt"), "beta again\nnothing\n").expect("write");
-        app.perform(Action::Load(dir.join("other.txt")));
+        app.perform_widget_action(Action::Load(dir.join("other.txt")));
 
         assert!(
             app.file_view_highlight().is_some(),
@@ -13292,7 +13125,7 @@ mod tests {
 
         let dir = fixture_dir_path("yank_load");
         fs::write(dir.join("other.txt"), "gamma\n").expect("write");
-        app.perform(Action::Load(dir.join("other.txt")));
+        app.perform_widget_action(Action::Load(dir.join("other.txt")));
 
         assert!(app.visual.is_none(), "the load left the selection live");
     }
@@ -13527,7 +13360,7 @@ mod tests {
         record_copies(&mut app);
         // Point the view at the directory so it shows the listing.
         let dir = fixture_dir_path("click_listing");
-        app.perform(Action::Preview(dir));
+        app.perform_widget_action(Action::Preview(dir));
         assert!(app.view.showing_directory(), "sanity: a listing");
         draw(&mut app);
 

@@ -22,7 +22,6 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 /// spellings a terminal would send. That guess is what #250 was: `G` arrived
 /// carrying `SHIFT`, failed an `is_empty()` guard written for keys that never
 /// carry it, and fell through to a handler that answered the wrong question.
-#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct Key {
     pub(crate) code: KeyCode,
@@ -31,7 +30,6 @@ pub(crate) struct Key {
 }
 
 /// Put a keypress in the table's currency.
-#[allow(dead_code)]
 pub(crate) fn normalise(event: KeyEvent) -> Key {
     Key {
         code: event.code,
@@ -49,13 +47,18 @@ pub(crate) fn normalise(event: KeyEvent) -> Key {
 /// `Ord` is derived and load-bearing: the discriminant order *is* the
 /// precedence, and a test asserts it, so a variant reordered for tidiness
 /// cannot silently change which handler sees a key first.
-#[allow(dead_code)]
-// Unused until task 4 resolves through the table; the allow goes with it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) enum Scope {
     /// A search or filter prompt is open. `handle_search_key` owns every key.
     Prompt,
     /// The help overlay is up, and any key closes it.
+    ///
+    /// Never constructed (#199): the overlay's dismissal has no `ActionId` —
+    /// see the note on `ActionId` below — so nothing ever resolves a key
+    /// *against* this scope, only past it. It holds Help's place in the
+    /// precedence `Ord` gives the enum, which `the_modal_scopes_come_before_the_pane`
+    /// checks; that is a real job for a variant with no value ever read.
+    #[allow(dead_code)]
     Help,
     /// The profile picker is open.
     Picker,
@@ -68,8 +71,16 @@ pub(crate) enum Scope {
 
 impl Scope {
     /// The pane scope for the focused pane.
+    ///
+    /// No caller outside the test below as of task 4 (#199): every scope
+    /// added so far names its `Scope` constant directly rather than deriving
+    /// it from `Focus`, because each call site already knows which pane it
+    /// is (the view's own intercept, `handle_filter_key`, …). Kept rather
+    /// than deleted — a generic mapping from focus to scope is exactly the
+    /// kind of thing a later scope wiring reaches for — but flagged here
+    /// rather than silently re-scaffolded, since no task from 5 onward is
+    /// currently written to call it either.
     #[allow(dead_code)]
-    // Unused until task 4 resolves through the table; the allow goes with it.
     pub(crate) fn for_focus(focus: crate::widgets::Focus) -> Self {
         match focus {
             crate::widgets::Focus::Nav => Self::Nav,
@@ -95,8 +106,6 @@ impl Scope {
 /// than one pane scope, so there is no single scope to prefix it with (#59
 /// review: `n`/`N` bind identically in the file view and the filter pane).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-// Unused until task 4 resolves through the table; the allow goes with it.
-#[allow(dead_code)]
 pub(crate) enum ActionId {
     // Global
     GlobalQuit,
@@ -206,7 +215,9 @@ pub(crate) enum ActionId {
 
 impl ActionId {
     /// The name a user writes, and the name the documentation shows.
-    // Unused until task 4 resolves through the table; the allow goes with it.
+    ///
+    /// No caller outside `the_table_and_the_documentation_agree` below as of
+    /// task 4 (#199): task 8's generated hints are its production caller.
     #[allow(dead_code)]
     pub(crate) fn name(self) -> &'static str {
         match self {
@@ -312,8 +323,6 @@ impl ActionId {
 /// The label grammar is `help::Binding`'s — `q`, `G`, `Ctrl-d`, `space`,
 /// `Shift-Tab`, `PageDown`, `Home`. `Binding::codes` parses it, and plan 2b
 /// lets a user write the same spellings in `config.toml`.
-// Unused until task 4 resolves through the table; the allow goes with it.
-#[allow(dead_code)]
 pub(crate) const DEFAULT: &[(Scope, &str, ActionId)] = &[
     (Scope::Global, "q", ActionId::GlobalQuit),
     (Scope::Global, "Q", ActionId::GlobalQuitSilent),
@@ -459,8 +468,6 @@ pub(crate) const DEFAULT: &[(Scope, &str, ActionId)] = &[
 /// A linear scan on purpose: the table is under 130 entries and this runs once
 /// per keypress, which is an event a human produced. A map would be faster and
 /// would have to be built, held and kept in step for no measurable gain.
-// Unused until task 4 resolves through the table; the allow goes with it.
-#[allow(dead_code)]
 pub(crate) fn resolve(scope: Scope, key: Key) -> Option<ActionId> {
     DEFAULT
         .iter()
