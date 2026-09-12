@@ -6766,6 +6766,21 @@ mod tests {
         assert_eq!(app.exit(), emit::Exit::Silent);
     }
 
+    /// Characterises the precedence `dispatch_event` already has, before the
+    /// refactor that resolves it through the table (#199): `q` is a global
+    /// binding and the navigator does not bind it, so the pane must never get
+    /// a chance to swallow it first.
+    #[test]
+    fn the_global_scope_is_consulted_before_the_pane() {
+        let (mut app, _root) = app_over_project("resolve_global", "alpha\n");
+        app.focus = Focus::Nav;
+
+        // `q` is a global binding and the navigator does not bind it.
+        key(&mut app, KeyCode::Char('q'));
+
+        assert!(matches!(app.state, AppState::Quit { .. }));
+    }
+
     // ---- --set and --hide at startup (#143, headless) ----------------------
 
     /// `recon --set Bugs:only_hit --hide app.log` opens the TUI with the set
