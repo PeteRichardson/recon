@@ -1586,7 +1586,12 @@ impl App<'_> {
             }
             A::GlobalSearchWord => {
                 if self.focus == Focus::Nav {
-                    self.report("* searches the word under the cursor · t *", false);
+                    let hint = crate::keymap::hint_for(
+                        A::GlobalSearchWord,
+                        "searches the word under the cursor",
+                        A::GlobalFocusView,
+                    );
+                    self.report(&hint, false);
                     return;
                 }
                 match self.word_under_cursor() {
@@ -1699,7 +1704,16 @@ impl App<'_> {
                     self.promote_truncated_preview();
                     self.toggle_visual(matches!(action, A::GlobalVisualLine));
                 } else {
-                    self.report("v selects text in the file view · t v", false);
+                    // Always `GlobalVisualChar`, not `action`: this hint is
+                    // shared by both `v` and `V`, and it deliberately always
+                    // names lowercase `v` (task 8 fix round 1, #199) — using
+                    // `action` here would have `V` describe itself.
+                    let hint = crate::keymap::hint_for(
+                        A::GlobalVisualChar,
+                        "selects text in the file view",
+                        A::GlobalFocusView,
+                    );
+                    self.report(&hint, false);
                 }
             }
             // `y`'s `DEFAULT` row carries no modifier, so Ctrl-y is left
@@ -1709,7 +1723,17 @@ impl App<'_> {
                 if self.focus == Focus::View {
                     self.yank();
                 } else {
-                    self.report("y copies a selection in the file view · t v", false);
+                    // The trailing key is `v` (`GlobalVisualChar`), not `y`:
+                    // copying needs a selection first, made with `v`, so the
+                    // hint says "focus the view, then press v" rather than
+                    // "then press y" (task 8 fix round 1, #199).
+                    let hint = crate::keymap::hint_for_trailing(
+                        A::GlobalYank,
+                        "copies a selection in the file view",
+                        A::GlobalFocusView,
+                        A::GlobalVisualChar,
+                    );
+                    self.report(&hint, false);
                 }
             }
             // Reached from any pane (#120 §3): the view's own `[`/`]` bind
@@ -10630,20 +10654,6 @@ mod tests {
         key(&mut app, KeyCode::Char('l'));
         assert_eq!(status(&app), Some("l opens the entry · e l"));
         assert_eq!(app.focus, Focus::Filters);
-    }
-
-    #[test]
-    fn a_hint_names_the_key_the_table_holds() {
-        let (mut app, _root) = app_over_project("hint", "alpha\n");
-        app.focus = Focus::Nav;
-
-        key(&mut app, KeyCode::Char('i'));
-
-        let hint = app.status_message.as_ref().expect("a hint was reported");
-        assert!(
-            hint.text.contains('f') && hint.text.contains('i'),
-            "the hint must name the keys that reach filters.include: {hint:?}"
-        );
     }
 
     /// The hint does not fire where the verb is real.

@@ -193,7 +193,14 @@ impl App<'_> {
     /// nothing is the class of thing #120 §9 removed.
     pub(crate) fn yank(&mut self) {
         let Some(visual) = self.visual.take() else {
-            self.report("nothing selected · v starts a selection", false);
+            // Only the key is generated, not a full `hint_for` — this line
+            // has no verb of its own before "starts a selection", so it
+            // calls `label_for` directly (task 8 fix round 1, #199).
+            let key = crate::keymap::label_for(crate::keymap::ActionId::GlobalVisualChar);
+            self.report(
+                &format!("nothing selected · {key} starts a selection"),
+                false,
+            );
             return;
         };
         let cursor = self.cursor_end();

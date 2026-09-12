@@ -483,12 +483,17 @@ pub(crate) fn resolve(scope: Scope, key: Key) -> Option<ActionId> {
 /// An action bound to more than one key (`nav.parent` also binds `Left`)
 /// takes its first `DEFAULT` row: that is the canonical spelling, listed
 /// first, and the one a hint should show.
-fn label_for(action: ActionId) -> &'static str {
+///
+/// `pub(crate)` rather than private (task 8 fix round 1, #199): the "nothing
+/// selected" hint in `selection.rs` names only a key, with no verb of its
+/// own to attach to it — `hint_for` would say too much — so it calls this
+/// directly instead of going through `hint_for`.
+pub(crate) fn label_for(action: ActionId) -> &'static str {
     DEFAULT
         .iter()
         .find(|(_, _, a)| *a == action)
         .map(|(_, label, _)| *label)
-        .expect("every action passed to hint_for has a DEFAULT row")
+        .expect("every action passed to a hint has a DEFAULT row")
 }
 
 /// Build a key hint: the key that reaches `action`, the verb describing what
@@ -506,9 +511,25 @@ fn label_for(action: ActionId) -> &'static str {
 /// ambiguous — it names two different rows. So a caller supplies its own
 /// verb, and only the key and the opener are generated.
 pub(crate) fn hint_for(action: ActionId, verb: &str, opener: ActionId) -> String {
+    hint_for_trailing(action, verb, opener, action)
+}
+
+/// `hint_for`, widened for the one hint whose trailing key names a different
+/// action than the one the hint explains (task 8 fix round 1, #199): `y`'s
+/// hint reads "then press v", not "then press y", because copying needs a
+/// selection first, and a selection is started with `v` (`GlobalVisualChar`),
+/// not `y` (`GlobalYank`). `hint_for` is this with `trailing` pinned to
+/// `action`, which is what every other hint wants.
+pub(crate) fn hint_for_trailing(
+    action: ActionId,
+    verb: &str,
+    opener: ActionId,
+    trailing: ActionId,
+) -> String {
     let key = label_for(action);
     let opener_key = label_for(opener);
-    format!("{key} {verb} · {opener_key} {key}")
+    let trailing_key = label_for(trailing);
+    format!("{key} {verb} · {opener_key} {trailing_key}")
 }
 
 #[cfg(test)]
