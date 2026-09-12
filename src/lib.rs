@@ -1529,9 +1529,10 @@ impl App<'_> {
     /// arms in different files, which is the drift #199 describes.
     ///
     /// Only `Scope::Global` resolves into this so far: tasks 5-7 add the
-    /// `Nav`/`View`/`Filters` arms as each scope moves onto the table, so the
-    /// wildcard below is unreached rather than unreachable — nothing yet
-    /// resolves to one of those variants.
+    /// `Nav`/`View`/`Filters`/`Prompt`/`Picker` arms as each scope moves onto
+    /// the table. Until then those variants are listed explicitly as no-ops,
+    /// grouped by the task that wires them, rather than caught by a
+    /// wildcard — see the comment on that block.
     ///
     /// Takes the resolved `Key` alongside the `ActionId`, even though most
     /// arms ignore it: `GlobalFiltersToggle` needs the digit that fired it,
@@ -1543,6 +1544,10 @@ impl App<'_> {
     fn perform(&mut self, action: crate::keymap::ActionId, pressed: crate::keymap::Key) {
         use crate::keymap::ActionId as A;
         match action {
+            // `q`'s `DEFAULT` row carries no modifier (see `label_matches`),
+            // so a modified key — e.g. Ctrl-f, which the file view uses for
+            // page-down — never resolves to this action and reaches the
+            // focused widget instead.
             A::GlobalQuit => self.state = AppState::Quit { emit: true },
             // `Q` quits without emitting (#143).
             A::GlobalQuitSilent => self.state = AppState::Quit { emit: false },
@@ -1562,6 +1567,10 @@ impl App<'_> {
             // `promote_search` pays nothing when the slot is empty;
             // `refresh_view` is not free — `evaluate` is O(lines × filters) —
             // so it is only paid for when the set actually changed.
+            //
+            // `p`'s `DEFAULT` row carries no modifier, so Ctrl-P and Alt-P
+            // are left unclaimed here and fall through to the focused
+            // widget, like every other plain-letter global binding.
             A::GlobalSearchPromote => {
                 if self.filters.promote_search() {
                     self.refresh_view();
@@ -1632,14 +1641,19 @@ impl App<'_> {
             // `'1'..='9'` to this one action (see `DEFAULT`'s "1-9" row), so
             // the digit itself has to come from the key that fired it.
             A::GlobalFiltersToggle => {
+                // `to_digit` (rather than `c as u8 - b'0'`) rejects a
+                // non-digit outright instead of underflowing: `resolve`
+                // today only ever matches this to a `Char('1'..='9')`, but
+                // plan 2b lets a `config.toml` bind this action to any key —
+                // `!`, say — and `'!' as u8 - b'0'` wraps to a huge `usize`
+                // rather than failing loudly.
                 let KeyCode::Char(c) = pressed.code else {
-                    // Unreachable in practice: `resolve` only ever matches
-                    // this action to a `Char('1'..='9')`. A `return` rather
-                    // than a panic keeps a rebind that changed the shape a
-                    // silent no-op instead of a crash.
                     return;
                 };
-                let n = usize::from(c as u8 - b'0');
+                let Some(n) = c.to_digit(10).filter(|n| (1..=9).contains(n)) else {
+                    return;
+                };
+                let n = n as usize;
                 match widgets::filterlist::numbered(&self.filters).get(n - 1) {
                     Some(&index) => {
                         self.filters.toggle_enabled(index);
@@ -1680,6 +1694,9 @@ impl App<'_> {
                     self.report("v selects text in the file view · t v", false);
                 }
             }
+            // `y`'s `DEFAULT` row carries no modifier, so Ctrl-y is left
+            // unclaimed here and still reaches the file view's own
+            // scroll-up binding.
             A::GlobalYank => {
                 if self.focus == Focus::View {
                     self.yank();
@@ -1694,9 +1711,83 @@ impl App<'_> {
             // no key of its own to forward.
             A::GlobalPageDown => self.forward_to_view(event::Event::Key(KeyCode::Char(']').into())),
             A::GlobalPageUp => self.forward_to_view(event::Event::Key(KeyCode::Char('[').into())),
-            _ => unreachable!(
-                "only Scope::Global resolves into perform so far (#199); tasks 5-7 add the rest"
-            ),
+            // Not yet wired, listed rather than caught by a wildcard (#199):
+            // a wildcard here would strip the exhaustiveness check this
+            // match exists to keep, and plan 2b's rebinding can reach a
+            // stray variant from a user's `config.toml`, not just from a
+            // future arm nobody wrote. Each group below is deleted by the
+            // task that gives it a real arm, so a variant left behind after
+            // that task lands is a build error rather than a silent no-op.
+            //
+            // The view scope's own actions, and the hit-stepping actions
+            // bound the same way in the view and the filter pane — Task 5.
+            A::HitNext
+            | A::HitPrev
+            | A::ViewLeft
+            | A::ViewRight
+            | A::ViewUp
+            | A::ViewDown
+            | A::ViewWordForward
+            | A::ViewLineStart
+            | A::ViewLineEnd
+            | A::ViewGotoStart
+            | A::ViewGotoEnd
+            | A::ViewParagraphNext
+            | A::ViewParagraphPrev
+            | A::ViewToggleLineNumbers
+            | A::ViewScrollDown
+            | A::ViewScrollUp
+            | A::ViewHalfPageDown
+            | A::ViewHalfPageUp
+            | A::ViewPageDown
+            | A::ViewPageUp => (),
+            // The navigator and filter-pane scopes — Task 6.
+            A::NavUp
+            | A::NavDown
+            | A::NavParent
+            | A::NavOpen
+            | A::NavGotoStart
+            | A::NavGotoEnd
+            | A::NavHalfPageDown
+            | A::NavHalfPageUp
+            | A::NavPageDown
+            | A::NavPageUp
+            | A::NavHitNext
+            | A::NavHitPrev
+            | A::FiltersUp
+            | A::FiltersDown
+            | A::FiltersGotoStart
+            | A::FiltersGotoEnd
+            | A::FiltersHalfPageDown
+            | A::FiltersHalfPageUp
+            | A::FiltersPageDown
+            | A::FiltersPageUp
+            | A::FiltersToggle
+            | A::FiltersInclude
+            | A::FiltersExclude
+            | A::FiltersEdit
+            | A::FiltersDelete
+            | A::FiltersContext
+            | A::FiltersProfile
+            | A::FiltersSolo
+            | A::FiltersReset
+            | A::FiltersSaveSet => (),
+            // The modal scopes — Task 7. The help overlay dismisses on any
+            // key and has no `ActionId` of its own, so it has no group here.
+            A::PromptCommit
+            | A::PromptCancel
+            | A::PromptLeft
+            | A::PromptRight
+            | A::PromptStart
+            | A::PromptEnd
+            | A::PromptDeleteBack
+            | A::PromptDeleteForward
+            | A::PromptDeleteWord
+            | A::PromptDeleteStart
+            | A::PickerUp
+            | A::PickerDown
+            | A::PickerChoose
+            | A::PickerCancel => (),
         }
     }
 
@@ -6615,7 +6706,9 @@ mod tests {
         // `q` is a global binding and the navigator does not bind it.
         key(&mut app, KeyCode::Char('q'));
 
-        assert!(matches!(app.state, AppState::Quit { .. }));
+        // `emit: true` pins the action, not just the scope: `Quit { .. }`
+        // alone would also pass if `q` had resolved to `GlobalQuitSilent`.
+        assert_eq!(app.state, AppState::Quit { emit: true });
     }
 
     // ---- --set and --hide at startup (#143, headless) ----------------------
