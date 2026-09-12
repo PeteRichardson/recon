@@ -8,18 +8,44 @@
 //! from a third hand-maintained list would have made that three, and the drift
 //! between them is silent: nothing fails, the help just quietly starts lying.
 //!
-//! So `KEYMAP` below is the one list this crate keeps, and
-//! `every_bound_key_is_documented` reads the *source files* back at test time
-//! and fails when a key bound in a `KeyCode::…` / `Key::…` arm — a character
-//! in `Char(..)`, or a named key such as `PageDown` or `BackTab` — is not
-//! named by any row here. That is the cheapest of the three options #25
-//! weighed, and it catches the common case: a new binding added without being
-//! documented.
+//! So `KEYMAP` below is the one list this crate keeps.
 //!
-//! It does not catch the reverse (a row describing a key that no longer
-//! exists), and it deliberately says nothing about the README — that stays
-//! hand-maintained. Generating the README section from `KEYMAP` is the obvious
-//! next step and is not taken here.
+//! # The drift test used to scrape source text; now it compares tables
+//!
+//! Earlier phases of #25 had a test, `every_bound_key_is_documented`, that
+//! read the *source files* back at test time and failed when a key bound in
+//! a `KeyCode::…` / `Key::…` arm — a character in `Char(..)`, or a named key
+//! such as `PageDown` or `BackTab` — was not named by any row here. That
+//! scan could only see a key spelled as a literal `match` arm, which is
+//! exactly what this phase (moving every binding into `keymap::DEFAULT`)
+//! stopped doing: after the match arms were replaced there was nothing left
+//! for the scrape to find, so task 9 deleted it along with the tests that
+//! only existed to prove the scrape itself worked.
+//!
+//! `keymap::the_table_and_the_documentation_agree` (`src/keymap.rs`) is what
+//! replaces it: it compares `keymap::DEFAULT` against `KEYMAP` directly,
+//! entry by entry, rather than grepping source text. That is a stronger
+//! check in one respect the scrape never covered — it also verifies a name
+//! sits on the *right* row (#59's `n`/`N`-in-two-scopes bug is what proved
+//! that gap) — but it gives up something the scrape could see: a key bound
+//! in code but missing from the table entirely, since a table-to-table
+//! comparison cannot notice an absence that never became a row on either
+//! side.
+//!
+//! Losing that is accepted, not overlooked, for three reasons. After the
+//! keymap-table phase no key is bound in a `match` arm any more, so the case
+//! the scrape existed to catch cannot occur by construction. The few
+//! remaining non-table arms — the filter pane's `h`/`l` hints, the prompt's
+//! three non-binding arms, the help overlay's any-key dismissal, the bounce
+//! guard — are deliberate and documented, not undocumented bindings waiting
+//! to be missed. And #162 already records this exact scan silently finding
+//! nothing once before, so its guarantee was weaker in practice than it
+//! looked on paper.
+//!
+//! It still does not catch the reverse (a row describing a key that no
+//! longer exists), and it deliberately says nothing about the README — that
+//! stays hand-maintained. Generating the README section from `KEYMAP` is the
+//! obvious next step and is not taken here.
 
 use ratatui::prelude::{Buffer, Color, Modifier, Rect, Style};
 use ratatui::widgets::{Block, Clear, Widget};
@@ -863,244 +889,6 @@ fn pack(rows: &[Row<'_>], count: usize, height: usize) -> Vec<Column> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::BTreeSet;
-
-    /// Every source file that binds a key, paired with its path for the failure
-    /// message. `App::handle_event` is the big one, but the panes bind their
-    /// own keys too, and a table that only covered the globals would be exactly
-    /// the half-truth #25 is about.
-    const SOURCES: &[(&str, &str)] = &[
-        ("src/lib.rs", include_str!("lib.rs")),
-        // `src/viewport.rs` is deliberately absent: `long_range_target` used
-        // to hold a `g`/`G`/`{`/`}` table of its own (#95), but task 5 (#250)
-        // turned it into a lookup keyed by `ActionId` instead, so the keys
-        // themselves no longer appear there as literal `KeyCode::…` patterns
-        // — they live only in `keymap::DEFAULT` now, same as `q` and
-        // `BackTab` below.
-        ("src/widgets/filenav.rs", include_str!("widgets/filenav.rs")),
-        (
-            "src/widgets/fileview.rs",
-            include_str!("widgets/fileview.rs"),
-        ),
-        (
-            "src/widgets/filterlist.rs",
-            include_str!("widgets/filterlist.rs"),
-        ),
-        // `src/widgets/picker.rs` is deliberately absent too, and for the
-        // same reason as `viewport.rs` above: it used to hold the profile
-        // picker's own `j`/`k`/`Up`/`Down`/`Enter`/`Esc` as literal
-        // `KeyCode::…` patterns (#162), but task 7 (#199) turned
-        // `ProfilePicker::handle_key` into `ProfilePicker::perform`, which
-        // matches `ActionId`, not a key. The keys themselves live only in
-        // `keymap::DEFAULT` now.
-    ];
-
-    /// Where a source file's own test module begins. Everything after it is
-    /// fixtures pressing keys by the hundred, and a `KeyCode::Char('z')` in
-    /// an assertion is not a binding.
-    ///
-    /// The marker is the module header, not the bare attribute: `lib.rs`
-    /// carries `#[cfg(test)] pub(crate) mod fixtures;` at line 263 of twelve
-    /// thousand and `fileview.rs` opens with a `#[cfg(test)] use`, so a split
-    /// on the attribute alone stopped the scan before either file's first
-    /// binding. Every global key went unchecked, and the test kept passing
-    /// because nothing happened to be undocumented (#162).
-    const TEST_MODULE: &str = "\n#[cfg(test)]\nmod tests";
-
-    /// The keys bound in `source`: every character in a `Char(..)` pattern,
-    /// and every named `KeyCode::…` / `Key::…` variant — `Enter`, `PageDown`,
-    /// `BackTab`, with `F(_)` read as `F`.
-    ///
-    /// Deliberately a scan rather than a regex, so `Char(c @ ('n' | 'N'))` —
-    /// the shape `n`/`N` are actually written in — yields both characters
-    /// instead of neither.
-    fn bound_keys(source: &str) -> BTreeSet<Key> {
-        let code = source.split(TEST_MODULE).next().unwrap_or(source);
-        let mut found = BTreeSet::new();
-        for prefix in ["KeyCode::", "Key::"] {
-            for (start, matched) in code.match_indices(prefix) {
-                let rest = &code[start + matched.len()..];
-                let ident: &str = rest
-                    .split(|c: char| !c.is_ascii_alphanumeric() && c != '_')
-                    .next()
-                    .unwrap_or("");
-                if !ident.starts_with(|c: char| c.is_ascii_uppercase()) {
-                    continue;
-                }
-                if ident != "Char" {
-                    if let Some(named) = NAMED_KEYS.iter().find(|named| **named == ident) {
-                        found.insert(Key::Named(named));
-                    } else if ident == "F" {
-                        found.insert(Key::Named("F"));
-                    }
-                    continue;
-                }
-                let Some(rest) = rest[ident.len()..].strip_prefix('(') else {
-                    continue;
-                };
-                // The first `)` closes either the pattern itself (`Char('q')`)
-                // or the or-pattern inside it (`Char(c @ ('n' | 'N'))`). Both
-                // hold every character the arm binds.
-                let end = rest.find(')').unwrap_or(rest.len());
-                let mut chars = rest[..end].chars();
-                while let Some(c) = chars.next() {
-                    if c == '\'' {
-                        if let Some(bound) = chars.next() {
-                            found.insert(Key::Char(bound));
-                        }
-                        // Skip the closing quote so `'''` cannot be misread.
-                        chars.next();
-                    }
-                }
-            }
-        }
-        found
-    }
-
-    #[test]
-    fn every_bound_key_is_documented() {
-        let documented: BTreeSet<Key> = KEYMAP
-            .iter()
-            .flat_map(|section| section.bindings)
-            .flat_map(Binding::codes)
-            .collect();
-
-        let mut missing = Vec::new();
-        for (path, source) in SOURCES {
-            for key in bound_keys(source) {
-                if !documented.contains(&key) {
-                    missing.push(format!("{key:?} bound in {path}"));
-                }
-            }
-        }
-
-        assert!(
-            missing.is_empty(),
-            "these keys are bound but missing from KEYMAP in src/help.rs — \
-             add a row for each, and the README's Keybindings section too:\n  {}",
-            missing.join("\n  ")
-        );
-    }
-
-    /// `g`, `G`, `{` and `}` used to be bound in `src/viewport.rs`'s own
-    /// `long_range_target` table (#95), which is why that file used to be a
-    /// third `SOURCES` entry. Task 5 (#250) moved the key-to-action binding
-    /// into `keymap::DEFAULT` and left `long_range_target` resolving an
-    /// already-decided `ActionId` — so there is no longer a table in
-    /// `viewport.rs` for a scan to miss, and `keymap.rs`'s own
-    /// `DEFAULT`-against-`KEYMAP` test (see `src/keymap.rs`) is what now
-    /// catches an undocumented row there.
-    #[test]
-    fn viewport_no_longer_binds_keys_of_its_own() {
-        let bound = bound_keys(include_str!("viewport.rs"));
-
-        assert!(
-            bound.is_empty(),
-            "src/viewport.rs binds a key again ({bound:?}); either it needs a \
-             SOURCES entry restored, or it should route through keymap::DEFAULT \
-             like everything else"
-        );
-    }
-
-    /// `j`, `k`, `Up`, `Down`, `Enter` and `Esc` used to be bound in
-    /// `ProfilePicker::handle_key`'s own `match`, which is why that file used
-    /// to be a `SOURCES` entry (#162). Task 7 (#199) turned it into
-    /// `ProfilePicker::perform`, which matches an already-resolved
-    /// `ActionId` — so there is no longer a `KeyCode::…` pattern in
-    /// `picker.rs` for a scan to miss, and `keymap.rs`'s own
-    /// `DEFAULT`-against-`KEYMAP` test is what now catches an undocumented
-    /// row there, the same as `viewport.rs` above.
-    #[test]
-    fn picker_no_longer_binds_keys_of_its_own() {
-        let bound = bound_keys(include_str!("widgets/picker.rs"));
-
-        assert!(
-            bound.is_empty(),
-            "src/widgets/picker.rs binds a key again ({bound:?}); either it needs a \
-             SOURCES entry restored, or it should route through keymap::DEFAULT \
-             like everything else"
-        );
-    }
-
-    /// The scan is the whole test's foundation, so it gets its own coverage:
-    /// a `bound_chars` that silently found nothing would make
-    /// `every_bound_key_is_documented` pass forever.
-    #[test]
-    fn the_scan_reads_both_binding_shapes() {
-        let source = "KeyCode::Char('q') KeyCode::Char(c @ ('n' | 'N'))";
-
-        assert_eq!(
-            bound_keys(source),
-            BTreeSet::from([Key::Char('q'), Key::Char('n'), Key::Char('N')]),
-            "an or-pattern binding was not read"
-        );
-    }
-
-    /// Named keys are bindings too (#162): `Home`, `PageDown` and `BackTab`
-    /// used to be outside the test's reach, along with every F-key. The
-    /// textarea's `Key::…` spelling counts the same as crossterm's, and a
-    /// `KeyModifiers::…` or a non-key variant such as `Null` does not.
-    #[test]
-    fn the_scan_reads_named_keys() {
-        let source = "KeyCode::PageDown | Key::Home => x, KeyCode::BackTab, KeyCode::F(5), \
-                      KeyModifiers::CONTROL, KeyCode::Null";
-
-        assert_eq!(
-            bound_keys(source),
-            BTreeSet::from([
-                Key::Named("PageDown"),
-                Key::Named("Home"),
-                Key::Named("BackTab"),
-                Key::Named("F"),
-            ]),
-            "a named key was not read, or a non-key identifier was"
-        );
-    }
-
-    /// Keys pressed in a file's own tests are not bindings.
-    #[test]
-    fn the_scan_stops_at_the_test_module() {
-        let source = "KeyCode::Char('q')\n#[cfg(test)]\nmod tests {\nKeyCode::Char('\u{263a}')";
-
-        assert_eq!(bound_keys(source), BTreeSet::from([Key::Char('q')]));
-    }
-
-    /// A `#[cfg(test)]` on a `use` or a fixtures module is not the test
-    /// module, and must not end the scan (#162): `lib.rs` has one at line 263
-    /// of twelve thousand, and the old split there left every global key
-    /// unchecked.
-    #[test]
-    fn the_scan_does_not_stop_at_an_early_cfg_test_attribute() {
-        let source = "#[cfg(test)]\nuse x;\nKeyCode::Char('q')\n#[cfg(test)]\npub(crate) mod fixtures;\n\
-                      KeyCode::Enter\n#[cfg(test)]\nmod tests {\nKeyCode::Char('z')";
-
-        assert_eq!(
-            bound_keys(source),
-            BTreeSet::from([Key::Char('q'), Key::Named("Enter")])
-        );
-    }
-
-    /// The scan reaches the global keys at all — the regression #162 found
-    /// that every `lib.rs` binding sits past the fixtures module's
-    /// attribute.
-    #[test]
-    fn the_global_keys_are_scanned() {
-        let bound = bound_keys(include_str!("lib.rs"));
-        // `q` and `BackTab` were this probe's canaries before task 4 (#199),
-        // and the prompt's `Esc` before task 7; each in turn now resolves
-        // through `keymap::DEFAULT` instead of a literal `KeyCode::…`
-        // pattern in `lib.rs`, so the scan legitimately no longer finds them
-        // here. `n` (the chain's synthetic replay in
-        // `return_to_chain_origin`) and `i` (the filter-pane hint arm) are
-        // still bound by a literal pattern past the fixtures module — task 8
-        // regenerates the hint's *text* from the table, not its `KeyCode`
-        // match — so they still prove the scan reaches this file's real
-        // bindings.
-        assert!(
-            bound.contains(&Key::Char('n')) && bound.contains(&Key::Char('i')),
-            "src/lib.rs's global keys are not reached by the scan: {bound:?}"
-        );
-    }
 
     /// `codes` derives from the labels that get drawn, so a label shape it
     /// cannot read would quietly shrink the documented set.
