@@ -494,8 +494,13 @@ fn known_action_names() -> Vec<String> {
 ///
 /// The label is a `String` where `DEFAULT`'s is a `&'static str`: half of them
 /// can now come from `config.toml`, which is read at run time (#61).
+/// `pub` rather than `pub(crate)` only so that `Config` can carry one, the
+/// same reason `filter::LoadedSet` is public: `main` resolves the table
+/// before the terminal comes up and hands it to `App` through the config.
+/// Every method on it stays `pub(crate)` — the type is carried across the
+/// crate boundary, not operated on there.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Keymap {
+pub struct Keymap {
     entries: Vec<(Scope, String, ActionId)>,
 }
 
@@ -518,9 +523,10 @@ impl Keymap {
     /// keeps what it had. A name no action spells is
     /// [`crate::config::ConfigError::UnknownAction`], and a key spelling the
     /// label grammar cannot read is
-    /// [`crate::config::ConfigError::BadKeyLabel`] — `Config::check_keymap`
-    /// runs this before the terminal comes up, so a typo is refused on a
-    /// screen the message can still reach rather than bound to nothing.
+    /// [`crate::config::ConfigError::BadKeyLabel`] — `Config::build_keymap`
+    /// runs this in `main`, before the terminal comes up, so a typo is
+    /// refused on a screen the message can still reach rather than bound to
+    /// nothing.
     pub(crate) fn new(
         overlay: &crate::config::KeymapConfig,
     ) -> Result<Self, crate::config::ConfigError> {

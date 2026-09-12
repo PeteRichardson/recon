@@ -50,9 +50,12 @@ fn main() -> Result<ExitCode> {
     config.check_sets(&config.filter_sets)?;
     // The `[keymap]` table, for the same reason and at the same moment: a
     // typo in an action name or a key spelling refuses to start, while a
-    // message can still be read (#61). After `--print-keymap` above, which is
-    // how a user finds the name they meant.
-    config.check_keymap()?;
+    // message can still be read (#61), and anything the build logs is logged
+    // before `Muted` starts dropping records. Resolved here rather than in
+    // `App::new`, which returns `Self` and can carry neither the error nor
+    // the warning. After `--print-keymap` above, which is how a user finds
+    // the name they meant.
+    config.bindings = config.build_keymap()?;
 
     // Headless (#143): `--emit` with no terminal on stdin. A TUI needs stdin
     // for its keys, so a pipe or `/dev/null` there is not a session that

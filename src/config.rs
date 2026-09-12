@@ -151,12 +151,24 @@ pub struct Config {
     #[arg(skip)]
     pub filter_sets: Vec<crate::filter::LoadedSet>,
 
-    /// The `[keymap]` table, parsed but not yet resolved against `DEFAULT` —
-    /// that is `Keymap::new`'s job (task 4), run once by `App::new`.
+    /// The `[keymap]` table as the file spelled it, parsed but not yet
+    /// resolved against `DEFAULT` — that is `build_keymap`'s job, run by
+    /// `main`, whose answer lands in `bindings` below. Nothing else reads it.
     /// `#[arg(skip)]` because no flag names a whole table; rebinding is a
     /// config-file-only preference, the same as `filter_sets`.
     #[arg(skip)]
     pub keymap: Option<KeymapConfig>,
+
+    /// Every binding in force: the defaults with `keymap` folded in (#61).
+    ///
+    /// Filled by `main` before any terminal setup, exactly as `filter_sets`
+    /// is and for the same reason — an unknown action or an unreadable key
+    /// has to refuse to start while a message can still be read, and
+    /// `App::new` returns `Self`, so it can carry neither an error nor a
+    /// warning. Left at the defaults when nothing filled it, which is every
+    /// `Config` a test builds by hand.
+    #[arg(skip)]
+    pub bindings: crate::keymap::Keymap,
 
     /// Whether a jump to a line the pane is not showing — `n`, `N`, `G` —
     /// puts that line in the middle of the pane. Off, it scrolls in by the
@@ -253,6 +265,7 @@ impl Default for Config {
             background: None,
             filter_sets: Vec::new(),
             keymap: None,
+            bindings: crate::keymap::Keymap::default(),
             center_jumps: None,
             theme: None,
             emit: None,
@@ -875,24 +888,27 @@ impl Config {
         Ok(())
     }
 
-    /// Refuse a `[keymap]` table naming an action recon does not have, or a
-    /// key spelling it cannot read.
+    /// The keymap this config asks for: the defaults with `[keymap]` folded
+    /// in, or the defaults alone when the file said nothing about keys.
     ///
-    /// Runs in `main` for the reason `check_sets` does, and at the same
-    /// moment: the message has to reach a screen that is not about to be
-    /// replaced by the alternate one (#61). `App::new` builds the table again
-    /// from the same input — one wasted pass over 121 rows at startup, in
-    /// exchange for a check that cannot be skipped by a caller that forgets
-    /// it, exactly as the `--set` check is arranged.
+    /// Called once by `main` and assigned to `bindings`, before
+    /// `init_terminal` — the same shape `filter_sets` is filled in, and it
+    /// has to happen there rather than in `App::new` for two reasons that
+    /// `App::new`'s signature cannot satisfy (#61). A refusal has to reach a
+    /// screen that is not about to be replaced by the alternate one, and
+    /// `App::new` returns `Self`, so an error there could only panic behind a
+    /// raised screen or be swallowed. And a `log::warn!` raised while
+    /// building has to be logged before the TUI owns the screen, or `Muted`
+    /// drops it (#246) — which is what a reserved-key warning will need.
     ///
     /// # Errors
     ///
     /// [`ConfigError::UnknownAction`] or [`ConfigError::BadKeyLabel`].
-    pub fn check_keymap(&self) -> Result<(), ConfigError> {
-        if let Some(overlay) = &self.keymap {
-            crate::keymap::Keymap::new(overlay)?;
+    pub fn build_keymap(&self) -> Result<crate::keymap::Keymap, ConfigError> {
+        match &self.keymap {
+            Some(overlay) => crate::keymap::Keymap::new(overlay),
+            None => Ok(crate::keymap::Keymap::default()),
         }
-        Ok(())
     }
 
     /// Run the whole precedence chain: parse the CLI (which `clap` has already
@@ -2178,6 +2194,49 @@ mod tests {
         assert!(
             message.contains("global.quit"),
             "the message must list what is valid: {message}"
+        );
+    }
+
+    /// `main` resolves the table through this, so these three pin the path a
+    /// real `config.toml` takes — `Keymap::new` is proven in `keymap.rs`, but
+    /// nothing there would notice `build_keymap` dropping the stanza on the
+    /// floor or swallowing the error `main` propagates with `?`.
+    #[test]
+    fn build_keymap_folds_the_stanza_in() {
+        let path = fixture("keymap-build.toml", "[keymap]\n'global.quit' = 'Ctrl-q'\n");
+        let config = Config {
+            keymap: load_from(&path).expect("the file parses").keymap,
+            ..Config::default()
+        };
+
+        assert_ne!(
+            config.build_keymap().expect("a valid stanza"),
+            Keymap::default(),
+            "the overlay never reached the table"
+        );
+    }
+
+    #[test]
+    fn build_keymap_refuses_what_keymap_new_refuses() {
+        let path = fixture("keymap-build-bad.toml", "[keymap]\n'global.qiut' = 'q'\n");
+        let config = Config {
+            keymap: load_from(&path).expect("the file parses").keymap,
+            ..Config::default()
+        };
+
+        let err = config
+            .build_keymap()
+            .expect_err("a typo must refuse to start");
+        assert!(err.to_string().contains("global.qiut"), "{err}");
+    }
+
+    #[test]
+    fn build_keymap_without_a_stanza_is_the_defaults() {
+        assert_eq!(
+            Config::default()
+                .build_keymap()
+                .expect("saying nothing is valid"),
+            Keymap::default()
         );
     }
 

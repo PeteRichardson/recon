@@ -689,22 +689,6 @@ impl App<'_> {
             }
         }
 
-        // `main` has already refused a `[keymap]` table this cannot be built
-        // from (`Config::check_keymap`), before the terminal came up, so a
-        // failure here is a hand-built `Config` in a test. The defaults are a
-        // better answer than bringing a log viewer down over a rebind — the
-        // same trade `--set` makes above.
-        let keymap =
-            config
-                .keymap
-                .as_ref()
-                .map_or_else(crate::keymap::Keymap::default, |overlay| {
-                    crate::keymap::Keymap::new(overlay).unwrap_or_else(|err| {
-                        log::warn!("[keymap]: {err}");
-                        crate::keymap::Keymap::default()
-                    })
-                });
-
         let mut app = Self {
             state: AppState::Running,
             nav,
@@ -729,7 +713,11 @@ impl App<'_> {
             last_window: None,
             zoom: None,
             editor: config.editor_templates(),
-            keymap,
+            // Resolved by `main` before the terminal came up
+            // (`Config::build_keymap`), so nothing fallible happens here —
+            // this function returns `Self` and has nowhere to put an error.
+            // A `Config` built by hand in a test carries the defaults.
+            keymap: config.bindings.clone(),
             center_jumps: config.center_jumps(),
             emit: config.emit,
             line_numbers: config.line_numbers,
@@ -12970,20 +12958,26 @@ mod tests {
     /// up in the table `App` holds, so moving `global.reload` in `config.toml`
     /// moves the key the badge names.
     ///
-    /// This is also the only test that the overlay reaches `App` at all:
-    /// `Keymap::new` is exercised directly in `keymap.rs`, but nothing there
-    /// would notice `App::new` ignoring `config.keymap` and keeping the
-    /// defaults.
+    /// This is also the only test that the resolved table reaches `App` at
+    /// all: `Keymap::new` is exercised directly in `keymap.rs`, but nothing
+    /// there would notice `App::new` ignoring `config.bindings` and keeping
+    /// the defaults.
     #[test]
     fn the_stale_badge_names_a_rebound_reload_key() {
         let dir = fixture_dir("stale_badge_rebound");
         fs::write(dir.join("a.log"), "x").expect("write fixture");
         let mut bindings = std::collections::BTreeMap::new();
         bindings.insert("global.reload".to_string(), vec!["F5".to_string()]);
-        let mut app = App::new(&Config {
+        // Through `build_keymap`, which is what `main` calls, so this covers
+        // the whole path a `config.toml` line takes to the screen.
+        let config = Config {
             path: dir.join("placeholder").display().to_string(),
             keymap: Some(crate::config::KeymapConfig { bindings }),
             ..Config::default()
+        };
+        let mut app = App::new(&Config {
+            bindings: config.build_keymap().expect("valid"),
+            ..config
         });
         app.view_stale = true;
 

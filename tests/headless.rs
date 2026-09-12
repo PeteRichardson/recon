@@ -206,6 +206,34 @@ fn an_unknown_set_is_refused_before_anything_is_read() {
     assert_eq!(out.status.code(), Some(1));
 }
 
+/// A `[keymap]` line naming an action that does not exist refuses to start,
+/// before any terminal setup, exactly as an unknown `--set` does (#61).
+///
+/// The one place the whole path runs together: the file is found, the stanza
+/// parsed, the table resolved, and the refusal reaches stderr instead of a
+/// screen that is about to be replaced by the alternate one. `App::new`
+/// cannot do any of that — it returns `Self`.
+#[test]
+fn an_unknown_action_in_the_keymap_is_refused_before_anything_is_read() {
+    let dir = fixture("unknown_action");
+    let home = config_home(&dir);
+    fs::write(
+        home.join("recon/config.toml"),
+        "[keymap]\n'global.qiut' = 'q'\n",
+    )
+    .expect("write config.toml");
+
+    let out = recon(&home, &["--emit", "files"], b"");
+
+    assert!(out.stdout.is_empty());
+    assert!(
+        text(&out.stderr).contains("unknown action \"global.qiut\" in [keymap]"),
+        "stderr: {}",
+        text(&out.stderr)
+    );
+    assert_eq!(out.status.code(), Some(1));
+}
+
 /// A refusal that happens before any terminal setup must not write terminal
 /// control codes. A script that keeps stderr in a file holds them verbatim,
 /// and the message is then not the first thing in the file (#222).
