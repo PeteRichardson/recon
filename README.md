@@ -308,7 +308,9 @@ What gets recorded:
 
 ## Keybindings
 
-Press `?` in the app for the same list on screen. The authoritative source is
+Press `?` in the app for this list on screen — with your own keys in it, since
+the overlay reads the keymap in force while this section lists the defaults
+(`--print-keymap` prints those too). The authoritative source is
 the code, and it now lives in one place: `keymap::DEFAULT` in `src/keymap.rs`,
 a table of `(Scope, key, action)` rows. Every key starts at `App::handle_event`
 in `src/lib.rs`, which resolves it against the scope ladder in precedence

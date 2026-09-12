@@ -3232,7 +3232,7 @@ impl Widget for &mut App<'_> {
             picker.render(area, buf);
         }
         if self.help {
-            help::render(area, buf);
+            help::render(area, buf, &self.keymap);
         }
 
         // An open prompt takes the rest of the row; nothing but the badge

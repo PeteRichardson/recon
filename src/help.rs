@@ -63,6 +63,15 @@ const GUTTER: usize = 3;
 /// Columns between a row's keys and its description.
 const KEY_GAP: usize = 2;
 
+/// What a row shows when nothing reaches the action it documents (#61).
+///
+/// A `[keymap]` line can leave an action with no key at all. The row stays
+/// and says so: dropping it would hide an action recon still has, and an
+/// empty keys column would read as a rendering fault rather than as a fact
+/// about the config. A word where a key label goes is a shape the table
+/// already uses — `printable` is one.
+const UNBOUND: &str = "unbound";
+
 /// One row of the overlay: the keys that do a thing, and the thing.
 pub struct Binding {
     /// One label per key that triggers this row, rendered joined by ` / `.
@@ -71,6 +80,12 @@ pub struct Binding {
     /// characters from the very same data that gets drawn. A separate
     /// machine-readable field would be a second thing to keep in step, which is
     /// the class of problem this module exists to remove.
+    ///
+    /// These are the *default* labels. What the overlay draws is each of them
+    /// replaced by whatever the keymap in force binds in its place, so a
+    /// rebound action shows the key the user has rather than this one — see
+    /// `keys_for` (#61). A row whose `names` is empty is drawn exactly as
+    /// spelled here.
     pub keys: &'static [&'static str],
     pub action: &'static str,
     /// The actions this row documents. Empty for a row that documents no
@@ -707,7 +722,12 @@ enum Row<'a> {
 }
 
 /// Flatten `KEYMAP` into the lines the overlay draws, in order.
-fn rows() -> Vec<Row<'static>> {
+fn rows(keymap: &crate::keymap::Keymap) -> Vec<Row<'static>> {
+    // The compiled-in bindings, built once for the whole pass: `keys_for`
+    // needs them to know what a literal label has been replaced by, and
+    // asking the same `labels_for` for both sides is what makes a default
+    // keymap render byte for byte as the table spells it.
+    let defaults = crate::keymap::Keymap::default();
     let mut rows = Vec::new();
     for (i, section) in KEYMAP.iter().enumerate() {
         if i > 0 {
@@ -716,12 +736,93 @@ fn rows() -> Vec<Row<'static>> {
         rows.push(Row::Heading(section.title));
         for binding in section.bindings {
             rows.push(Row::Entry {
-                keys: binding.keys.join(" / "),
+                keys: keys_for(binding, keymap, &defaults),
                 action: binding.action,
             });
         }
     }
     rows
+}
+
+/// The keys one row shows: its own labels, each replaced by whatever the
+/// keymap in force put in its place (#61).
+///
+/// Substituting label by label, rather than listing everything the row's
+/// actions are now bound to, because `keys` is a curated list and the overlay
+/// depends on it staying curated. `nav.goto.start` also binds `Home`, which
+/// the shared row deliberately spells in prose instead of in its keys to stay
+/// inside the layout budget, and `global.toggle.hide` orders its three keys
+/// differently here than `keymap::DEFAULT` does. Rebuilding a row's keys from
+/// the keymap would silently undo both.
+fn keys_for(
+    binding: &Binding,
+    keymap: &crate::keymap::Keymap,
+    defaults: &crate::keymap::Keymap,
+) -> String {
+    // A row that documents no action — a chain, `printable`, a reserved key
+    // (#242) — has nothing to look up, and its label is the whole point of
+    // the row.
+    if binding.names.is_empty() {
+        return binding.keys.join(" / ");
+    }
+
+    let mut shown: Vec<String> = Vec::new();
+    for key in binding.keys {
+        for label in replacements(key, binding.names, keymap, defaults) {
+            if !shown.contains(&label) {
+                shown.push(label);
+            }
+        }
+    }
+    if shown.is_empty() {
+        return UNBOUND.to_string();
+    }
+    shown.join(" / ")
+}
+
+/// What now reaches the actions `key` reached by default on this row.
+///
+/// One key can stand for one action per pane: the shared row's `k` is
+/// `nav.up`, `view.up` and `filters.up` at once. So every name on the row is
+/// asked, and each answers with the label sitting where `key` sits in its own
+/// default list — a config that rebinds one pane's motion leaves the row
+/// documenting two keys, and both are true.
+///
+/// An action whose new list is shorter than `key`'s position, or empty,
+/// contributes nothing: that key no longer reaches it. A key no name on the
+/// row binds by default is kept as it is — nothing claims it, so there is
+/// nothing to substitute.
+fn replacements(
+    key: &str,
+    names: &[&str],
+    keymap: &crate::keymap::Keymap,
+    defaults: &crate::keymap::Keymap,
+) -> Vec<String> {
+    let mut found = Vec::new();
+    let mut claimed = false;
+    for name in names {
+        // `None` only if a row names an action that does not exist, which
+        // `keymap::tests::the_table_and_the_documentation_agree` forbids.
+        let Some(action) = crate::keymap::action_named(name) else {
+            continue;
+        };
+        let Some(index) = defaults
+            .labels_for(action)
+            .iter()
+            .position(|label| *label == key)
+        else {
+            continue;
+        };
+        claimed = true;
+        if let Some(label) = keymap.labels_for(action).get(index) {
+            found.push((*label).to_string());
+        }
+    }
+    if claimed {
+        found
+    } else {
+        vec![key.to_string()]
+    }
 }
 
 /// Draw the keymap over `area`, hiding whatever was under it.
@@ -734,8 +835,8 @@ fn rows() -> Vec<Row<'static>> {
 /// A terminal too small even for the widest layout gets a truncated list and a
 /// count of what was cut, in the bottom border. Silently dropping rows from a
 /// reference would be the worse failure of the two.
-pub fn render(area: Rect, buf: &mut Buffer) {
-    let rows = rows();
+pub fn render(area: Rect, buf: &mut Buffer, keymap: &crate::keymap::Keymap) {
+    let rows = rows(keymap);
     // Laid out against everything available, then the panel shrunk to what the
     // layout actually used. Doing it the other way round — sizing the panel
     // first — would make the column count depend on a height chosen before the
@@ -1083,7 +1184,7 @@ mod tests {
     /// a `shown(&columns) == rows.len()` failure below, not a width one.
     #[test]
     fn a_normal_terminal_shows_the_whole_keymap() {
-        let rows = rows();
+        let rows = rows(&crate::keymap::Keymap::default());
 
         let columns = layout(&rows, inner(150, 44));
 
@@ -1098,7 +1199,7 @@ mod tests {
     /// descriptions does not pay for a long one three columns over.
     #[test]
     fn a_column_is_sized_to_its_own_widest_row() {
-        let rows = rows();
+        let rows = rows(&crate::keymap::Keymap::default());
 
         let columns = layout(&rows, inner(150, 43));
 
@@ -1136,11 +1237,12 @@ mod tests {
         // Tall enough for one column with room to spare, however many rows
         // the keymap grows to: the property under test is that the panel
         // shrinks to its content, which needs content smaller than the screen.
-        let height = u16::try_from(rows().len() + 10).expect("a keymap of sane size");
+        let height = u16::try_from(rows(&crate::keymap::Keymap::default()).len() + 10)
+            .expect("a keymap of sane size");
         let area = inner(170, height);
         let mut buf = Buffer::empty(area);
 
-        render(area, &mut buf);
+        render(area, &mut buf, &crate::keymap::Keymap::default());
 
         let panel = border_box(&buf, area);
         assert!(
@@ -1170,7 +1272,7 @@ mod tests {
         let area = inner(30, 8);
         let mut buf = Buffer::empty(area);
 
-        render(area, &mut buf);
+        render(area, &mut buf, &crate::keymap::Keymap::default());
 
         let panel = border_box(&buf, area);
         assert_eq!(panel.width, area.width);
@@ -1181,7 +1283,7 @@ mod tests {
     /// rather than squeezed. `render` reports the count in the bottom border.
     #[test]
     fn a_short_area_cannot_show_every_row() {
-        let rows = rows();
+        let rows = rows(&crate::keymap::Keymap::default());
 
         let columns = layout(&rows, inner(40, 5));
 
@@ -1191,5 +1293,149 @@ mod tests {
             5,
             "more rows were kept than there are rows"
         );
+    }
+
+    // ---- the overlay shows the keys in force (#61) -----------------------
+
+    /// The keymap a `[keymap]` stanza of these `action = keys` lines builds.
+    fn keymap(lines: &[(&str, &[&str])]) -> crate::keymap::Keymap {
+        let bindings = lines
+            .iter()
+            .map(|(action, keys)| {
+                (
+                    (*action).to_string(),
+                    keys.iter().map(|key| (*key).to_string()).collect(),
+                )
+            })
+            .collect();
+        crate::keymap::Keymap::new(&crate::config::KeymapConfig { bindings })
+            .expect("the test's own bindings are valid")
+    }
+
+    /// The keys a row shows, addressed by the description printed beside them.
+    fn keys_of(rows: &[Row<'_>], action: &str) -> String {
+        rows.iter()
+            .find_map(|row| match row {
+                Row::Entry { keys, action: text } if *text == action => Some(keys.clone()),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("no row describes {action:?}"))
+    }
+
+    /// `keys_of`, narrowed to one section: "Down / up a row" describes both
+    /// the shared motions and the profile picker, so the heading is part of
+    /// the address.
+    fn keys_under(rows: &[Row<'_>], heading: &str, action: &str) -> String {
+        let start = rows
+            .iter()
+            .position(|row| matches!(row, Row::Heading(title) if *title == heading))
+            .unwrap_or_else(|| panic!("no {heading:?} section"));
+        keys_of(&rows[start..], action)
+    }
+
+    const RELOAD: &str = "Refresh from disk — rescan the listing, reload the file";
+    const HIDE: &str = "Dim unmatched lines, or hide them";
+
+    /// Why this task exists: the overlay is the only place a user can see the
+    /// keys they actually have — the README is static text and
+    /// `--print-keymap` prints the defaults by design — so it must read the
+    /// keymap in force rather than the table it was compiled from.
+    #[test]
+    fn a_rebound_action_shows_the_key_the_user_bound() {
+        let rows = rows(&keymap(&[
+            ("global.reload", &["F5"]),
+            ("global.toggle.hide", &["U"]),
+        ]));
+
+        assert_eq!(
+            keys_of(&rows, RELOAD),
+            "F5",
+            "the overlay still showed the compiled-in key"
+        );
+        // Three default keys replaced by one: the two the config dropped are
+        // gone rather than left on the row reaching nothing.
+        assert_eq!(keys_of(&rows, HIDE), "U");
+    }
+
+    /// A row carrying several names documents several actions, and each of
+    /// its keys is substituted for itself alone: rebinding one does not
+    /// disturb the rest of the row.
+    #[test]
+    fn a_row_of_several_actions_substitutes_key_by_key() {
+        let rows = rows(&keymap(&[("global.file.prev", &["<"])]));
+
+        assert_eq!(
+            keys_of(&rows, "Next / previous file the filters match"),
+            ". / <",
+            "only the rebound half of the row may move"
+        );
+    }
+
+    /// One key can stand for one action per pane. `nav.up` alone is rebound
+    /// here, so `k` still reaches the file view and the filter pane — and the
+    /// row reports both keys, because both are true. Showing only the
+    /// navigator's `K` would tell two thirds of the row's readers to press a
+    /// key that does nothing for them.
+    #[test]
+    fn a_shared_row_shows_every_key_that_still_reaches_it() {
+        let rows = rows(&keymap(&[("nav.up", &["K"])]));
+
+        assert_eq!(
+            keys_under(&rows, "Shared motions", "Down / up a row"),
+            "j / K / k / Down / Up"
+        );
+    }
+
+    /// A `[keymap]` line may leave an action with no key at all. The row says
+    /// so in words: dropping it would hide an action recon still has, and a
+    /// blank keys column would read as a rendering fault (#61).
+    #[test]
+    fn an_action_left_unbound_says_so() {
+        let rows = rows(&keymap(&[("global.reload", &[])]));
+
+        assert_eq!(keys_of(&rows, RELOAD), "unbound");
+    }
+
+    /// A row that names no action has nothing to look up, and its label is
+    /// the whole point of the row: the reserved keys (#242) are documented as
+    /// taken and bound to nothing, and `printable` never was a key.
+    #[test]
+    fn a_row_that_names_no_action_keeps_its_literal_keys() {
+        let rows = rows(&keymap(&[("global.reload", &["F5"])]));
+
+        assert_eq!(
+            keys_of(&rows, "Reserved — the hex view, in a later release"),
+            "-"
+        );
+        assert_eq!(
+            keys_of(&rows, "Reserved — a command palette, in a later release"),
+            ":"
+        );
+        assert_eq!(keys_of(&rows, "Insert at the cursor"), "printable");
+        assert_eq!(keys_of(&rows, "Stay in the filter pane"), "f f");
+    }
+
+    /// The defaults must render as the table spells them, to the byte. The
+    /// layout tests above are calibrated against this text, and `keys` is a
+    /// curated list — `nav.goto.start` also binds `Home`, which the shared
+    /// row deliberately keeps out of its keys — so a rendering derived from
+    /// the keymap must not rewrite it.
+    #[test]
+    fn the_default_keymap_renders_the_tables_own_keys() {
+        let literal: Vec<String> = KEYMAP
+            .iter()
+            .flat_map(|section| section.bindings)
+            .map(|binding| binding.keys.join(" / "))
+            .collect();
+
+        let rendered: Vec<String> = rows(&crate::keymap::Keymap::default())
+            .into_iter()
+            .filter_map(|row| match row {
+                Row::Entry { keys, .. } => Some(keys),
+                Row::Heading(_) | Row::Blank => None,
+            })
+            .collect();
+
+        assert_eq!(rendered, literal);
     }
 }

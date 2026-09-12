@@ -498,7 +498,11 @@ fn reserved_hits(labels: &[String]) -> Vec<(&'static str, &'static str)> {
 }
 
 /// The action `name` spells, or `None` when no action does.
-fn action_named(name: &str) -> Option<ActionId> {
+///
+/// `pub(crate)` rather than private (#61): the help overlay reads a row's
+/// `names` — the same strings a `[keymap]` line uses — and needs the action
+/// each one spells before it can ask what key reaches it.
+pub(crate) fn action_named(name: &str) -> Option<ActionId> {
     DEFAULT
         .iter()
         .map(|(_, _, action)| *action)
@@ -669,6 +673,29 @@ impl Keymap {
             .iter()
             .find(|(_, _, a)| *a == action)
             .map(|(_, label, _)| label.as_str())
+    }
+
+    /// Every key bound to `action`, in table order, each once.
+    ///
+    /// `label_for` answers "which one key should a hint name"; this answers
+    /// "which keys reach this at all", which is what a help row shows — a row
+    /// lists `h / Left`, not just `h` (#61).
+    ///
+    /// Deduplicated for the reason `print_keymap` deduplicates: `hit.next`
+    /// and `hit.prev` each hold a row in `Scope::View` and another in
+    /// `Scope::Filters` carrying the identical label, and a row reading
+    /// `n / n` would be a lie told twice.
+    ///
+    /// Empty when a `[keymap]` line has left the action with no key at all —
+    /// the same state `label_for` reports as `None`.
+    pub(crate) fn labels_for(&self, action: ActionId) -> Vec<&str> {
+        let mut labels: Vec<&str> = Vec::new();
+        for (_, label, entry_action) in &self.entries {
+            if *entry_action == action && !labels.contains(&label.as_str()) {
+                labels.push(label);
+            }
+        }
+        labels
     }
 
     /// Build a key hint: the key that reaches `action`, the verb describing
