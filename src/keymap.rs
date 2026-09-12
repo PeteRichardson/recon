@@ -53,11 +53,12 @@ pub(crate) enum Scope {
     Prompt,
     /// The help overlay is up, and any key closes it.
     ///
-    /// Never constructed (#199): the overlay's dismissal has no `ActionId` —
-    /// see the note on `ActionId` below — so nothing ever resolves a key
-    /// *against* this scope, only past it. It holds Help's place in the
-    /// precedence `Ord` gives the enum, which `the_modal_scopes_come_before_the_pane`
-    /// checks; that is a real job for a variant with no value ever read.
+    /// Never constructed, and that is permanent rather than pending (#199):
+    /// the overlay's dismissal has no `ActionId` — see the note on
+    /// `ActionId` below — so nothing ever resolves a key *against* this
+    /// scope. This variant exists only so the discriminant order matches the
+    /// precedence `dispatch_event` runs: `the_modal_scopes_come_before_the_pane`
+    /// checks that order, and needs this rung present to do it.
     #[allow(dead_code)]
     Help,
     /// The profile picker is open.
@@ -72,14 +73,8 @@ pub(crate) enum Scope {
 impl Scope {
     /// The pane scope for the focused pane.
     ///
-    /// No caller outside the test below as of task 4 (#199): every scope
-    /// added so far names its `Scope` constant directly rather than deriving
-    /// it from `Focus`, because each call site already knows which pane it
-    /// is (the view's own intercept, `handle_filter_key`, …). Kept rather
-    /// than deleted — a generic mapping from focus to scope is exactly the
-    /// kind of thing a later scope wiring reaches for — but flagged here
-    /// rather than silently re-scaffolded, since no task from 5 onward is
-    /// currently written to call it either.
+    /// No caller outside the test below as of task 4 (#199); task 6 gives it
+    /// one, wiring the navigator and filter-pane scopes.
     #[allow(dead_code)]
     pub(crate) fn for_focus(focus: crate::widgets::Focus) -> Self {
         match focus {

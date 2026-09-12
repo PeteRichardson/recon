@@ -1356,32 +1356,7 @@ impl App<'_> {
         if let event::Event::Key(key) = event {
             let pressed = crate::keymap::normalise(key);
             if let Some(action) = crate::keymap::resolve(crate::keymap::Scope::Global, pressed) {
-                // `GlobalFiltersToggle` is the one Global action whose
-                // behaviour depends on which key fired it — the digit picks
-                // the filter, and an `ActionId` carries no digit to carry it
-                // with. Carried out here, where the key is still in scope,
-                // rather than forcing every other action through `perform`
-                // with a key it never uses.
-                if let (crate::keymap::ActionId::GlobalFiltersToggle, KeyCode::Char(c)) =
-                    (action, key.code)
-                {
-                    // Toggle a numbered filter from anywhere (#120 §14). The
-                    // number is the one the pane draws in its gutter, and
-                    // `numbered` is the walk that draws it, so key and label
-                    // cannot disagree. Set headers, the search row and
-                    // built-in filters have no number and no key: `f Enter`
-                    // covers them.
-                    let n = usize::from(c as u8 - b'0');
-                    match widgets::filterlist::numbered(&self.filters).get(n - 1) {
-                        Some(&index) => {
-                            self.filters.toggle_enabled(index);
-                            self.refresh_view();
-                        }
-                        None => self.report(&format!("no filter {n}"), false),
-                    }
-                    return;
-                }
-                self.perform(action);
+                self.perform(action, pressed);
                 return;
             }
             match key.code {
@@ -1558,11 +1533,14 @@ impl App<'_> {
     /// wildcard below is unreached rather than unreachable — nothing yet
     /// resolves to one of those variants.
     ///
-    /// `GlobalFiltersToggle` is the one Global action missing from here: it
-    /// needs the digit that fired it, which an `ActionId` cannot carry, so
-    /// the caller in `dispatch_event` carries it out directly rather than
-    /// routing a key nobody else's arm needs through every one of these.
-    fn perform(&mut self, action: crate::keymap::ActionId) {
+    /// Takes the resolved `Key` alongside the `ActionId`, even though most
+    /// arms ignore it: `GlobalFiltersToggle` needs the digit that fired it,
+    /// which the action alone cannot carry, and plan 2b's rebinding makes
+    /// this a general problem rather than a one-off — a future action can
+    /// just as legitimately want to know which of several keys reached it.
+    /// The key is always in hand at the call site, since resolution starts
+    /// from one, so the parameter costs nothing there.
+    fn perform(&mut self, action: crate::keymap::ActionId, pressed: crate::keymap::Key) {
         use crate::keymap::ActionId as A;
         match action {
             A::GlobalQuit => self.state = AppState::Quit { emit: true },
@@ -1643,6 +1621,32 @@ impl App<'_> {
                     self.filters.set_all_enabled(true);
                 }
                 self.refresh_view();
+            }
+            // Toggle a numbered filter from anywhere (#120 §14). The number
+            // is the one the pane draws in its gutter, and `numbered` is the
+            // walk that draws it, so key and label cannot disagree. Set
+            // headers, the search row and built-in filters have no number
+            // and no key: `f Enter` covers them.
+            //
+            // The one arm that reads `pressed`: `resolve` collapses every
+            // `'1'..='9'` to this one action (see `DEFAULT`'s "1-9" row), so
+            // the digit itself has to come from the key that fired it.
+            A::GlobalFiltersToggle => {
+                let KeyCode::Char(c) = pressed.code else {
+                    // Unreachable in practice: `resolve` only ever matches
+                    // this action to a `Char('1'..='9')`. A `return` rather
+                    // than a panic keeps a rebind that changed the shape a
+                    // silent no-op instead of a crash.
+                    return;
+                };
+                let n = usize::from(c as u8 - b'0');
+                match widgets::filterlist::numbered(&self.filters).get(n - 1) {
+                    Some(&index) => {
+                        self.filters.toggle_enabled(index);
+                        self.refresh_view();
+                    }
+                    None => self.report(&format!("no filter {n}"), false),
+                }
             }
             // Global, unlike `n`: skipping a file is the outer loop of the
             // review workflow, and it should not matter which pane the inner
