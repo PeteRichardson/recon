@@ -1773,9 +1773,16 @@ impl App<'_> {
             // per-focus dispatch and is carried out by `FileNav::perform`,
             // and `Scope::Filters` resolves inside `handle_filter_key` and
             // is carried out there or by `FilterList::perform`. Neither call
-            // site routes its result through this function, so this
-            // dispatcher never receives one of these variants — if it ever
-            // does, a scope resolved somewhere it should not have.
+            // site routes its result through this function, so no code path
+            // today produces one of these variants here.
+            //
+            // Not `unreachable!()`, though: plan 2b lets a user's
+            // `config.toml` bind a key in `Scope::Global` to one of these
+            // actions, and `resolve(Scope::Global, key)` would then hand it
+            // straight to this function — a typo in a config file, not a
+            // programmer error, so it must not crash the TUI. `debug_assert!`
+            // still catches a programmer error loudly in tests and debug
+            // builds; a release binary just does nothing.
             A::NavUp
             | A::NavDown
             | A::NavParent
@@ -1806,7 +1813,10 @@ impl App<'_> {
             | A::FiltersSolo
             | A::FiltersReset
             | A::FiltersSaveSet => {
-                unreachable!("{action:?} resolves against its own widget, never through `perform`")
+                debug_assert!(
+                    false,
+                    "{action:?} resolves against its own widget, never through `perform`"
+                );
             }
             // The modal scopes — Task 7. The help overlay dismisses on any
             // key and has no `ActionId` of its own, so it has no group here.
