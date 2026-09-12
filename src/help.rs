@@ -32,15 +32,22 @@
 //! comparison cannot notice an absence that never became a row on either
 //! side.
 //!
-//! Losing that is accepted, not overlooked, for three reasons. After the
-//! keymap-table phase no key is bound in a `match` arm any more, so the case
-//! the scrape existed to catch cannot occur by construction. The few
-//! remaining non-table arms — the filter pane's `h`/`l` hints, the prompt's
-//! three non-binding arms, the help overlay's any-key dismissal, the bounce
-//! guard — are deliberate and documented, not undocumented bindings waiting
-//! to be missed. And #162 already records this exact scan silently finding
-//! nothing once before, so its guarantee was weaker in practice than it
-//! looked on paper.
+//! Losing that is accepted, not overlooked, for three reasons. Every key a
+//! user's raw keypress can resolve to now starts at `keymap::DEFAULT`, so an
+//! undocumented binding — a keypress the table does not name, reaching a
+//! pane some other way — cannot occur by construction. That is not the same
+//! as "no `match` arm binds a key any more": `FileView::handle_events` still
+//! has roughly sixteen, but each is a forwarding target `App::perform`
+//! reaches with a canonical key it reconstructs from the table, not a second
+//! place a raw keypress can land — the one exception, an unbound *modified*
+//! key falling through to one of them directly, is a known, separately
+//! tracked gap (see the comment on the `Scope::View` intercept in
+//! `App::dispatch_event`), not a silent one. The other remaining non-table
+//! arms — the filter pane's `h`/`l` hints, the prompt's three non-binding
+//! arms, the help overlay's any-key dismissal, the bounce guard — are
+//! deliberate and documented the same way. And #162 already records this
+//! exact scan silently finding nothing once before, so its guarantee was
+//! weaker in practice than it looked on paper.
 //!
 //! It still does not catch the reverse (a row describing a key that no
 //! longer exists), and it deliberately says nothing about the README — that

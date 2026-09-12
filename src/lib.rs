@@ -1464,6 +1464,19 @@ impl App<'_> {
         // through to the file view's own `G` arm, which only ever saw the
         // loaded buffer. The table normalises the key instead, so the scope
         // decides what a key means and the modifier cannot.
+        //
+        // That guarantee holds only for keys `Scope::View` binds. An
+        // unresolved key still falls through to `Focus::View =>
+        // self.forward_to_view(event)` below, carrying its original,
+        // un-normalised event, and `FileView::handle_events` matches on the
+        // character alone (`..` on the modifier fields) — so an unbound
+        // *modified* key, `Alt-j` for instance, still reaches the file view
+        // and moves the cursor as if the modifier were never pressed. The
+        // navigator and the filter pane have no such gap: both resolve
+        // through their own scope and drop an unresolved key rather than
+        // forwarding the raw event (`Scope::for_focus` below;
+        // `handle_filter_key`). The view is the one exception, and closing
+        // it is plan 2b's, not this phase's.
         if let event::Event::Key(key) = event
             && self.focus == Focus::View
         {
@@ -1752,11 +1765,14 @@ impl App<'_> {
                     self.report(&hint, false);
                 }
             }
-            // Reached from any pane (#120 §3): the view's own `[`/`]` bind
-            // the same two actions directly, in `Scope::View`, so this only
-            // ever fires when the view is not what has focus. Rebuilt as a
-            // plain key rather than forwarded, because an `ActionId` carries
-            // no key of its own to forward.
+            // `[`/`]` are bound only in `Scope::Global` — there is no
+            // `Scope::View` row for them — and Global resolves before any
+            // focus check, so this arm fires from every pane, the file view
+            // included (#120 §3). `ActionId` carries no key of its own to
+            // forward, so this rebuilds the canonical key and hands it
+            // straight to `FileView::handle_events`, bypassing `Scope::View`
+            // entirely, where the widget's own raw `[`/`]` arms do the
+            // actual scrolling.
             A::GlobalPageDown => self.forward_to_view(event::Event::Key(KeyCode::Char(']').into())),
             A::GlobalPageUp => self.forward_to_view(event::Event::Key(KeyCode::Char('[').into())),
             // The four long-range motions: only `App` can see the whole
@@ -12895,9 +12911,12 @@ mod tests {
     }
 
     /// The stale badge is generated from `DEFAULT`, not hard-coded (task 8
-    /// fix round 2, #199), so nothing pins its default-keymap text as
-    /// `assert_eq!` on the whole row: this is what would catch it going
-    /// stale after a rebind changed the reload key.
+    /// fix round 2, #199). The assertion below is a literal —
+    /// `" changed on disk · r "` — so what this actually pins is that the
+    /// badge names the reload key under the *default* keymap, which is what
+    /// catches the text going back to being hard-coded. It does not catch
+    /// the badge going stale after a rebind: that needs a test that rebinds,
+    /// which arrives with plan 2b.
     #[test]
     fn the_stale_badge_names_the_reload_key() {
         let mut app = app_over_logs("stale_badge_key");
