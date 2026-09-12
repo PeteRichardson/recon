@@ -340,33 +340,24 @@ where
 /// about ninety of them, and `deny_unknown_fields` cannot help here — an
 /// unknown action is caught by `Keymap::new`, which can say which names exist.
 ///
-/// `Deserialize` is hand-written, not derived: serde does not support
-/// `deny_unknown_fields` together with `#[serde(flatten)]`, and does not
-/// support `deserialize_with` on a flattened field either, so the one-or-many
-/// shape (`'q'` or `['u', 'H']`) is collapsed by hand, below, once the raw
-/// table is in.
+/// `Deserialize` is hand-written, not derived, and not via `#[serde(flatten)]`
+/// either (task 3 fix round 1, #61 review). A first attempt flattened a
+/// `BTreeMap<String, Keys>` field with `Keys` an untagged one-or-many enum —
+/// the same shape `keymap::print_keymap`'s own tests parse with. That reads
+/// naturally, but `flatten` buffers the whole table into a generic value
+/// before `Keys` ever sees it, and a malformed entry (`'global.quit' = 42`)
+/// then fails with the position pinned to the `[keymap]` header rather than
+/// the offending line, and a message naming the private `Keys` type instead
+/// of the action. A sibling, unflattened field with the same bad value
+/// reports the right line and a legible message, which is what showed the
+/// buffering was the cause and not `toml` itself.
+///
+/// So this decodes the table directly, one entry at a time, with
+/// [`BindingSeed`] threading the action's name into the value's own error —
+/// see its doc comment for how.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct KeymapConfig {
     pub bindings: std::collections::BTreeMap<String, Vec<String>>,
-}
-
-/// One `[keymap]` value, either a bare string or an array of them — the same
-/// shape `keymap::print_keymap`'s own tests parse with (see that module's
-/// `Keys`).
-#[derive(Deserialize)]
-#[serde(untagged)]
-enum Keys {
-    One(String),
-    Many(Vec<String>),
-}
-
-impl Keys {
-    fn into_vec(self) -> Vec<String> {
-        match self {
-            Self::One(key) => vec![key],
-            Self::Many(keys) => keys,
-        }
-    }
 }
 
 impl<'de> Deserialize<'de> for KeymapConfig {
@@ -374,24 +365,149 @@ impl<'de> Deserialize<'de> for KeymapConfig {
     where
         D: serde::Deserializer<'de>,
     {
-        // A private shim rather than deriving straight onto `KeymapConfig`:
-        // this is where `#[serde(flatten)]` can live, since `KeymapConfig`
-        // itself has to keep the `Vec<String>` shape the Interfaces section
-        // and `Keymap::new` (task 4) both expect.
-        #[derive(Deserialize)]
-        struct Raw {
-            #[serde(flatten)]
-            bindings: std::collections::BTreeMap<String, Keys>,
+        struct KeymapVisitor;
+
+        impl<'de> serde::de::Visitor<'de> for KeymapVisitor {
+            type Value = KeymapConfig;
+
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("a table mapping each action to one key or an array of keys")
+            }
+
+            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+            where
+                A: serde::de::MapAccess<'de>,
+            {
+                let mut bindings = std::collections::BTreeMap::new();
+                while let Some(action) = map.next_key::<String>()? {
+                    let keys = map.next_value_seed(BindingSeed { action: &action })?;
+                    bindings.insert(action, keys);
+                }
+                Ok(KeymapConfig { bindings })
+            }
         }
 
-        let raw = Raw::deserialize(deserializer)?;
-        Ok(KeymapConfig {
-            bindings: raw
-                .bindings
-                .into_iter()
-                .map(|(name, keys)| (name, keys.into_vec()))
-                .collect(),
+        deserializer.deserialize_map(KeymapVisitor)
+    }
+}
+
+/// Decodes one `[keymap]` value against the action it belongs to.
+///
+/// A [`serde::de::DeserializeSeed`] rather than a plain `Deserialize` type,
+/// because the action's name has to reach the error — `Deserialize` alone
+/// carries no state, and `map_err`-ing after the fact (the alternative the
+/// review offered) would replace the position-carrying error the deserializer
+/// already built with a fresh, unpositioned one. Threading the name in here
+/// instead means the error `KeyOrKeys::expecting` writes is the one the
+/// deserializer reports natively, position and all.
+struct BindingSeed<'a> {
+    action: &'a str,
+}
+
+impl<'de> serde::de::DeserializeSeed<'de> for BindingSeed<'_> {
+    type Value = Vec<String>;
+
+    fn deserialize<D>(self, deserializer: D) -> Result<Vec<String>, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserializer.deserialize_any(KeyOrKeys {
+            action: self.action,
         })
+    }
+}
+
+/// One `[keymap]` value: a bare string for a single key, or an array for
+/// several. `expecting` names the action, so a value that is neither —
+/// `42`, a table — is refused with a message naming what was wrong and
+/// where, not a Rust type.
+struct KeyOrKeys<'a> {
+    action: &'a str,
+}
+
+impl<'de> serde::de::Visitor<'de> for KeyOrKeys<'_> {
+    type Value = Vec<String>;
+
+    fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "one key or an array of keys for {:?} in [keymap]",
+            self.action
+        )
+    }
+
+    fn visit_str<E>(self, v: &str) -> Result<Vec<String>, E>
+    where
+        E: serde::de::Error,
+    {
+        Ok(vec![v.to_string()])
+    }
+
+    fn visit_string<E>(self, v: String) -> Result<Vec<String>, E>
+    where
+        E: serde::de::Error,
+    {
+        Ok(vec![v])
+    }
+
+    fn visit_seq<A>(self, mut seq: A) -> Result<Vec<String>, A::Error>
+    where
+        A: serde::de::SeqAccess<'de>,
+    {
+        let mut keys = Vec::new();
+        while let Some(key) = seq.next_element_seed(KeyLabelSeed {
+            action: self.action,
+        })? {
+            keys.push(key);
+        }
+        Ok(keys)
+    }
+}
+
+/// Decodes one array element of a `[keymap]` value, so an array holding a
+/// non-string (`['u', 5]`) is refused naming the action too, the same as a
+/// bare malformed value is.
+struct KeyLabelSeed<'a> {
+    action: &'a str,
+}
+
+impl<'de> serde::de::DeserializeSeed<'de> for KeyLabelSeed<'_> {
+    type Value = String;
+
+    fn deserialize<D>(self, deserializer: D) -> Result<String, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        deserializer.deserialize_str(KeyLabel {
+            action: self.action,
+        })
+    }
+}
+
+/// One key spelling inside a `[keymap]` array — see [`KeyLabelSeed`].
+struct KeyLabel<'a> {
+    action: &'a str,
+}
+
+impl serde::de::Visitor<'_> for KeyLabel<'_> {
+    type Value = String;
+
+    fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "a key spelling for {:?} in [keymap]", self.action)
+    }
+
+    fn visit_str<E>(self, v: &str) -> Result<String, E>
+    where
+        E: serde::de::Error,
+    {
+        Ok(v.to_string())
+    }
+
+    fn visit_string<E>(self, v: String) -> Result<String, E>
+    where
+        E: serde::de::Error,
+    {
+        Ok(v)
     }
 }
 
@@ -1998,5 +2114,31 @@ mod tests {
             keymap.bindings["global.hide.toggle"],
             vec!["u".to_string(), "H".to_string()]
         );
+    }
+
+    /// Task 3 fix round 1 (#61 review): a malformed value used to fail with
+    /// the position pinned to the `[keymap]` header and a message naming the
+    /// private `Keys` enum instead of the action. See `KeymapConfig`'s
+    /// `Deserialize` doc comment for why.
+    #[test]
+    fn a_malformed_keymap_value_is_named_by_its_action() {
+        let path = fixture("keymap-bad-value.toml", "[keymap]\n'global.quit' = 42\n");
+        let err = load_from(&path).expect_err("a bare integer must be refused");
+        let message = err.to_string();
+        assert!(message.contains("global.quit"), "{message}");
+        assert!(!message.contains("Keys"), "{message}");
+        assert!(!message.contains("Raw"), "{message}");
+    }
+
+    #[test]
+    fn a_keymap_array_with_a_non_string_is_named_by_its_action() {
+        let path = fixture(
+            "keymap-bad-array-entry.toml",
+            "[keymap]\n'global.hide.toggle' = ['u', 5]\n",
+        );
+        let err = load_from(&path).expect_err("a non-string array entry must be refused");
+        let message = err.to_string();
+        assert!(message.contains("global.hide.toggle"), "{message}");
+        assert!(!message.contains("Keys"), "{message}");
     }
 }
