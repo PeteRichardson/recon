@@ -1201,7 +1201,7 @@ mod tests {
                 .lines()
                 .find(|line| line.starts_with(action))
                 .unwrap_or_else(|| panic!("{action} must be printed"));
-            assert!(line.contains("global.quit"), "{line}");
+            assert!(line.contains("'j' taken by global.quit"), "{line}");
         }
     }
 
@@ -1227,7 +1227,7 @@ mod tests {
             .expect("filters.down must be printed");
 
         assert!(
-            line.contains("filters.exclude"),
+            line.contains("'j' taken by filters.exclude"),
             "the real thief is in the same scope: {line}"
         );
         assert!(
@@ -1242,6 +1242,44 @@ mod tests {
         assert!(
             !nav_line.contains('#'),
             "nav.down's own 'j' is untouched and must carry no annotation: {nav_line}"
+        );
+    }
+
+    /// A second reproduction of the same fault, along the axis the first one
+    /// didn't cover: `k` has **no default `Global` row at all** (its only
+    /// rows are `Nav`, `View`, `Filters` and `Picker`), so a buggy unscoped
+    /// scan does not even need a `Global` coincidence to misfire — it walks
+    /// straight past every scope to `Nav`'s untouched `k` and blames
+    /// `nav.up`, which never lost anything.
+    #[test]
+    fn a_same_scope_contest_with_no_global_row_still_names_the_real_thief() {
+        let defaults = Keymap::default();
+        let (mut keymap, _) = Keymap::new(&overlay("view.word.forward", &["k"])).expect("valid");
+        let report = check::check(&keymap, &[ActionId::ViewWordForward]);
+        keymap.evict(&report.evict);
+
+        let printed = print_keymap(&keymap, &defaults);
+        let line = printed
+            .lines()
+            .find(|line| line.starts_with("'view.up'"))
+            .expect("view.up must be printed");
+
+        assert!(
+            line.contains("'k' taken by view.word.forward"),
+            "the real thief is in the same scope: {line}"
+        );
+        assert!(
+            !line.contains("nav.up"),
+            "nav.up never touched this key and must not be blamed: {line}"
+        );
+
+        let nav_line = printed
+            .lines()
+            .find(|line| line.starts_with("'nav.up'"))
+            .expect("nav.up must be printed");
+        assert!(
+            !nav_line.contains('#'),
+            "nav.up's own 'k' is untouched and must carry no annotation: {nav_line}"
         );
     }
 
