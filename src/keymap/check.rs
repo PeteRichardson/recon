@@ -18,6 +18,7 @@
 use std::fmt;
 
 use super::{ActionId, Keymap, Scope};
+use crate::help::Chord;
 
 /// Two different actions that claim one key.
 ///
@@ -130,6 +131,15 @@ impl fmt::Display for Problem {
 /// table's row order decides, because `Keymap::resolve` takes the first
 /// matching row and `Keymap::rebind` leaves every action at its original
 /// position.
+///
+/// Its `String` is one concrete key, rendered by `Chord::label`, which
+/// `Keymap::evict` reads back through `help::chords_for_label` — so a row
+/// holding a range loses only the key it lost, not the whole range. The one
+/// chord `Chord::label` cannot render back is a function key, and no eviction
+/// can carry one: the loser of an eviction is always an action the file did
+/// not write, so its rows are `DEFAULT`'s own, and
+/// `every_default_key_renders_back_to_a_label` pins that every one of those
+/// can be read back.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub(crate) struct Report {
     pub errors: Vec<Problem>,
@@ -138,36 +148,54 @@ pub(crate) struct Report {
 }
 
 /// One key in one scope, and every action that claims it, in table order.
-struct Claim<'a> {
+struct Claim {
     scope: Scope,
-    key: &'a str,
+    key: Chord,
     actions: Vec<ActionId>,
 }
 
-/// Group the built table's rows by scope and key, keeping table order.
+/// Group the built table's rows by scope and concrete key, keeping table
+/// order.
 ///
 /// A group of one is the ordinary case and the overwhelming majority. A group
 /// of two or more is a contest, and every rule in this module is about one.
-fn claims(built: &Keymap) -> Vec<Claim<'_>> {
-    let mut groups: Vec<Claim<'_>> = Vec::new();
+///
+/// **By key, not by label text.** `resolve` answers a keypress through
+/// `help::label_matches`, which expands a label before comparing, so `5` and
+/// `1-9` are two spellings that the same keypress reaches. Grouping by the
+/// label string could not see that, and the contest it missed is exactly the
+/// one this module exists to report: a written `'nav.up' = '5'` that the
+/// global `1-9` answers first was accepted in silence.
+///
+/// Each entry is therefore expanded to the keys it actually names and indexed
+/// by each of them. An equivalence class over labels would not do: `1-3` and
+/// `3-5` contest while `1-3` and `5-7` do not, so contesting is not
+/// transitive and cannot define a grouping.
+fn claims(built: &Keymap) -> Vec<Claim> {
+    let mut groups: Vec<Claim> = Vec::new();
     for (scope, label, action) in &built.entries {
-        match groups
-            .iter_mut()
-            .find(|claim| claim.scope == *scope && claim.key == label.as_str())
-        {
-            Some(claim) => {
-                // An action bound to one key two times in one scope cannot
-                // happen through `rebind`, but de-duplicating costs one line
-                // and keeps a group's length meaning "how many actions".
-                if !claim.actions.contains(action) {
-                    claim.actions.push(*action);
+        for key in crate::help::chords_for_label(label) {
+            match groups
+                .iter_mut()
+                .find(|claim| claim.scope == *scope && claim.key == key)
+            {
+                Some(claim) => {
+                    // An action bound to one key two times in one scope cannot
+                    // happen through `rebind`, but de-duplicating costs one
+                    // line and keeps a group's length meaning "how many
+                    // actions". Two labels of one action reaching one key —
+                    // `'global.quit' = ['1-9', '5']` — is the shape that now
+                    // arrives here, and it is not a contest with itself.
+                    if !claim.actions.contains(action) {
+                        claim.actions.push(*action);
+                    }
                 }
+                None => groups.push(Claim {
+                    scope: *scope,
+                    key,
+                    actions: vec![*action],
+                }),
             }
-            None => groups.push(Claim {
-                scope: *scope,
-                key: label.as_str(),
-                actions: vec![*action],
-            }),
         }
     }
     groups
@@ -197,7 +225,7 @@ pub(crate) fn check(built: &Keymap, written: &[ActionId]) -> Report {
         if let [first, second, ..] = mine.as_slice() {
             report.errors.push(Problem::Ambiguous {
                 scope: claim.scope,
-                key: claim.key.to_string(),
+                key: claim.key.label(),
                 first: *first,
                 second: *second,
             });
@@ -210,12 +238,10 @@ pub(crate) fn check(built: &Keymap, written: &[ActionId]) -> Report {
         // it — so the loop body simply does not run.
         if let [winner] = mine.as_slice() {
             for loser in claim.actions.iter().copied().filter(|a| a != winner) {
-                report
-                    .evict
-                    .push((claim.scope, claim.key.to_string(), loser));
+                report.evict.push((claim.scope, claim.key.label(), loser));
                 report.warnings.push(Problem::Displaced {
                     scope: claim.scope,
-                    key: claim.key.to_string(),
+                    key: claim.key.label(),
                     winner: *winner,
                     loser,
                     remaining: Vec::new(), // filled below, once every eviction is known
@@ -229,7 +255,7 @@ pub(crate) fn check(built: &Keymap, written: &[ActionId]) -> Report {
     // Only these four scopes can cross. `Prompt` and `Picker` take every key
     // while they are open, so a key bound in one of them and also globally is
     // the design and not a contest. `Help` binds nothing at all.
-    let winner_in = |scope: Scope, key: &str| -> Option<ActionId> {
+    let winner_in = |scope: Scope, key: Chord| -> Option<ActionId> {
         let claim = claims
             .iter()
             .find(|claim| claim.scope == scope && claim.key == key)?;
@@ -259,19 +285,17 @@ pub(crate) fn check(built: &Keymap, written: &[ActionId]) -> Report {
             // answer first. recon would ignore what the file says.
             report.errors.push(Problem::Unreachable {
                 scope: claim.scope,
-                key: claim.key.to_string(),
+                key: claim.key.label(),
                 written: pane,
                 global,
             });
         } else if written.contains(&global) {
             // The user wrote the global line and got what they asked for.
             // The pane default is what it cost.
-            report
-                .evict
-                .push((claim.scope, claim.key.to_string(), pane));
+            report.evict.push((claim.scope, claim.key.label(), pane));
             report.warnings.push(Problem::Displaced {
                 scope: claim.scope,
-                key: claim.key.to_string(),
+                key: claim.key.label(),
                 winner: global,
                 loser: pane,
                 remaining: Vec::new(),
@@ -290,8 +314,15 @@ pub(crate) fn check(built: &Keymap, written: &[ActionId]) -> Report {
 ///
 /// Done in a second pass rather than inline: an action can lose two keys in
 /// one file, and a message naming what is left must count both losses.
+///
+/// Asked of a map with the evictions already applied rather than by filtering
+/// the labels of the map without them. The two agreed while a key was a label,
+/// and stopped agreeing when it became a concrete key: an action losing one
+/// key of a range keeps the rest, which a filter comparing a lost `5` against
+/// a held `1-9` would report as having lost nothing at all.
 fn fill_remaining(built: &Keymap, report: &mut Report) {
-    let evicted = report.evict.clone();
+    let mut after = built.clone();
+    after.evict(&report.evict);
     for problem in &mut report.warnings {
         let Problem::Displaced {
             loser, remaining, ..
@@ -299,14 +330,9 @@ fn fill_remaining(built: &Keymap, report: &mut Report) {
         else {
             continue;
         };
-        *remaining = built
+        *remaining = after
             .labels_for(*loser)
             .into_iter()
-            .filter(|label| {
-                !evicted
-                    .iter()
-                    .any(|(_, key, action)| action == loser && key == label)
-            })
             .map(str::to_string)
             .collect();
     }
@@ -343,6 +369,12 @@ mod tests {
         check(&built, &written(pairs))
     }
 
+    /// A user who has written nothing must be told nothing.
+    ///
+    /// Load-bearing rather than trivial since `claims` began expanding labels
+    /// (the fix wave's item 1): `1-9` is a `DEFAULT` label, and an expansion
+    /// that manufactured a collision between it and any other default would
+    /// surface here as a report on a config file that does not exist.
     #[test]
     fn the_bare_defaults_say_nothing() {
         let report = check(&Keymap::default(), &[]);
@@ -522,5 +554,100 @@ mod tests {
 
         let report = check(&built, &written);
         assert_eq!(report, Report::default(), "{report:?}");
+    }
+
+    // ---- a key is a key, however it is spelled (fix wave, item 1) --------
+
+    /// The defect the concrete-key grouping exists to remove. `resolve`
+    /// expands a label before matching, so the global `1-9` answers `5` and
+    /// answers it first; a written `nav.up = '5'` can never fire. Comparing
+    /// label strings saw `'5'` and `'1-9'` as unrelated and let the file
+    /// through in silence.
+    #[test]
+    fn a_pane_line_under_a_default_range_is_an_error() {
+        let report = report(&[("nav.up", &["5"])]);
+
+        assert_eq!(report.warnings, vec![]);
+        assert_eq!(report.evict, vec![]);
+        assert_eq!(
+            report.errors,
+            vec![Problem::Unreachable {
+                scope: Scope::Nav,
+                key: "5".to_string(),
+                written: ActionId::NavUp,
+                global: ActionId::GlobalFiltersToggle,
+            }],
+            "'5' and '1-9' are one key however differently they are spelled"
+        );
+    }
+
+    /// Two written ranges that overlap on one key. The message must name the
+    /// key they collide on and not the range either was written as: `1-3`
+    /// against `3-5` is a fault about `3`, and telling the user about `1-3`
+    /// would name two keys that are not in contest.
+    #[test]
+    fn two_written_ranges_are_ambiguous_on_the_key_they_share() {
+        let report = report(&[("global.quit", &["1-3"]), ("global.reload", &["3-5"])]);
+
+        assert_eq!(
+            report.errors,
+            vec![Problem::Ambiguous {
+                scope: Scope::Global,
+                key: "3".to_string(),
+                first: ActionId::GlobalQuit,
+                second: ActionId::GlobalReload,
+            }],
+            "1 and 2 are quit's alone, 4 and 5 are reload's: only 3 is contested"
+        );
+    }
+
+    /// `help::label_matches` tests the two modifiers separately from the
+    /// expansion, so `Ctrl-q` and `q` are two keys that share a character and
+    /// contest nothing. An expansion-based identity would lose that, because
+    /// `keys_for_label` strips the prefix before expanding — which is why
+    /// `Chord` carries the flags alongside the key.
+    #[test]
+    fn a_modified_key_does_not_contest_with_the_plain_one() {
+        let report = report(&[("global.quit", &["Ctrl-q"]), ("global.reload", &["q"])]);
+
+        assert_eq!(
+            report,
+            Report::default(),
+            "Ctrl-q and q must not be read as one key: {report:?}"
+        );
+    }
+
+    /// A written line takes one key of a default range, and the range keeps
+    /// the rest. What `global.filters.toggle` still answers to has to be the
+    /// eight digits it kept — a message naming `1-9` would tell the user that
+    /// `5` still toggles a filter, which is the thing that just stopped being
+    /// true.
+    #[test]
+    fn taking_one_key_of_a_range_leaves_the_rest_of_it() {
+        let report = report(&[("global.editor.project", &["5"])]);
+
+        assert_eq!(report.errors, vec![]);
+        assert_eq!(
+            report.warnings,
+            vec![Problem::Displaced {
+                scope: Scope::Global,
+                key: "5".to_string(),
+                winner: ActionId::GlobalEditorProject,
+                loser: ActionId::GlobalFiltersToggle,
+                remaining: ["1", "2", "3", "4", "6", "7", "8", "9"]
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect(),
+            }]
+        );
+        assert_eq!(
+            report.evict,
+            vec![(
+                Scope::Global,
+                "5".to_string(),
+                ActionId::GlobalFiltersToggle
+            )],
+            "one key of the row goes, not the row"
+        );
     }
 }

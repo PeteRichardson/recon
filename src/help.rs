@@ -196,6 +196,77 @@ fn keys_for_label(label: &str) -> Vec<Key> {
     }
 }
 
+/// One concrete key: the two modifiers the table keeps, and the key held with
+/// them.
+///
+/// A label and a key are not the same thing, and three of the label grammar's
+/// shapes prove it. `1-9` is one label naming nine keys. `F5` and `F6` are two
+/// labels naming one key, because `named_matches` answers `F(_)` whichever
+/// number it is asked about. `Ctrl-q` and `q` are one character spelling two
+/// keys. So anything asking whether two bindings contest has to ask it of keys
+/// rather than of label text: `keymap::check` compared labels as strings and
+/// could not see any of these three, which is what this type exists to fix.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct Chord {
+    ctrl: bool,
+    alt: bool,
+    key: Key,
+}
+
+/// Every concrete key a label names.
+///
+/// The modifiers are read from the label's prefix here and the rest of the
+/// key from `keys_for_label`, which is how `label_matches` reads them too —
+/// and it has to be, because `keys_for_label` strips the prefix before
+/// expanding. The expansion alone is therefore not an identity: `Ctrl-q` and
+/// `q` expand alike and are different keys.
+///
+/// Empty for a spelling the grammar cannot read, which is the same answer
+/// `label_is_readable` gives as `false`.
+pub(crate) fn chords_for_label(label: &str) -> Vec<Chord> {
+    let ctrl = label.starts_with("Ctrl-");
+    let alt = label.starts_with("Alt-");
+    keys_for_label(label)
+        .into_iter()
+        .map(|key| Chord { ctrl, alt, key })
+        .collect()
+}
+
+impl Chord {
+    /// A label naming this one key, with the modifier prefix restored.
+    ///
+    /// The inverse of `chords_for_label` wherever one exists, so a message can
+    /// name the exact key that two bindings contested rather than the range
+    /// one of them was spelled with: `1-3` against `3-5` collides on `3`, and
+    /// `3` is what the message has to say.
+    ///
+    /// A function key has no inverse. Every `F` label names the same key here,
+    /// so no `Fn` spelling identifies it, and a phrase says so rather than
+    /// naming a number the user did not write. That phrase is not a label the
+    /// grammar reads back — see the note on `Report::evict` in
+    /// `keymap::check`, which is why no eviction can ever carry one.
+    pub(crate) fn label(self) -> String {
+        let prefix = if self.ctrl {
+            "Ctrl-"
+        } else if self.alt {
+            "Alt-"
+        } else {
+            ""
+        };
+        match self.key {
+            // `space` and `Shift-Tab` are read as whole words, so a modified
+            // one has no spelling in the grammar at all — and no label the
+            // grammar reads can produce one, so none can need rendering.
+            Key::Char(' ') => "space".to_string(),
+            Key::Named("BackTab") if prefix.is_empty() => "Shift-Tab".to_string(),
+            Key::Named("F") if prefix.is_empty() => "any function key".to_string(),
+            Key::Named("F") => format!("any {}-held function key", prefix.trim_end_matches('-')),
+            Key::Named(name) => format!("{prefix}{name}"),
+            Key::Char(c) => format!("{prefix}{c}"),
+        }
+    }
+}
+
 /// Whether the label grammar can read this spelling at all.
 ///
 /// `label_matches` answers "does this label name that key", and a label the

@@ -694,12 +694,37 @@ impl Keymap {
     /// It also keeps `labels_for` honest, and through it the `?` overlay:
     /// a row removed here stops being offered as a key that reaches its
     /// action, because it no longer does.
+    ///
+    /// A row loses **the keys named**, not the label spelling them. One label
+    /// can name several keys, and only `1-9` in `DEFAULT` does today: a line
+    /// taking `5` from `global.filters.toggle` must leave the other eight
+    /// digits toggling filters, so that row is re-spelled as the keys it keeps
+    /// rather than dropped whole. A row naming one key — every other row — is
+    /// dropped exactly as it was before, since the keys it keeps are none.
     pub(crate) fn evict(&mut self, rows: &[(Scope, String, ActionId)]) {
-        self.entries.retain(|(scope, label, action)| {
-            !rows
+        let mut entries = Vec::with_capacity(self.entries.len());
+        for (scope, label, action) in self.entries.drain(..) {
+            let lost: Vec<crate::help::Chord> = rows
                 .iter()
-                .any(|(s, key, a)| s == scope && key == label && a == action)
-        });
+                .filter(|(row_scope, _, row_action)| *row_scope == scope && *row_action == action)
+                .flat_map(|(_, key, _)| crate::help::chords_for_label(key))
+                .collect();
+            let held = crate::help::chords_for_label(&label);
+            let kept: Vec<crate::help::Chord> = held
+                .iter()
+                .copied()
+                .filter(|chord| !lost.contains(chord))
+                .collect();
+            if kept.len() == held.len() {
+                // Nothing of this row was taken. Pushed back exactly as it
+                // was, label and all, so a row that keeps every key it had
+                // keeps the spelling the table or the user gave it.
+                entries.push((scope, label, action));
+            } else {
+                entries.extend(kept.into_iter().map(|chord| (scope, chord.label(), action)));
+            }
+        }
+        self.entries = entries;
     }
 
     /// The action a key names in a scope, or `None` when the scope does not
@@ -1582,15 +1607,44 @@ mod tests {
     /// `check`'s same-scope pass assumes a contested key always has a written
     /// claimant, because a group of two defaults cannot happen. That is a fact
     /// about `DEFAULT`, so it is pinned here rather than trusted.
+    ///
+    /// By concrete key, not by label text, since `check` groups by key: two
+    /// labels that expand onto one key — a `1-9` beside a `5`, an `F5` beside
+    /// an `F6` — are a duplicate that a comparison of strings cannot see, and
+    /// would reach `check` as a contest between two defaults.
     #[test]
     fn the_defaults_hold_no_duplicate_key() {
-        let mut seen: Vec<(Scope, &str)> = Vec::new();
+        let mut seen: Vec<(Scope, crate::help::Chord)> = Vec::new();
         for (scope, label, _) in DEFAULT {
-            assert!(
-                !seen.contains(&(*scope, *label)),
-                "{label:?} is bound two times in {scope:?}"
-            );
-            seen.push((*scope, *label));
+            for chord in crate::help::chords_for_label(label) {
+                assert!(
+                    !seen.contains(&(*scope, chord)),
+                    "{} is bound two times in {scope:?}",
+                    chord.label()
+                );
+                seen.push((*scope, chord));
+            }
+        }
+    }
+
+    /// Every key `DEFAULT` binds renders back to a label naming that same key.
+    ///
+    /// `check` hands `Keymap::evict` a concrete key spelled by `Chord::label`,
+    /// and `evict` reads it back with `chords_for_label`. The one key with no
+    /// spelling is a function key, because every `Fn` label names it; this is
+    /// what keeps an eviction from ever carrying one, since the row that loses
+    /// a key is always a row the config file did not write and so always one
+    /// of these.
+    #[test]
+    fn every_default_key_renders_back_to_a_label() {
+        for (scope, label, _) in DEFAULT {
+            for chord in crate::help::chords_for_label(label) {
+                assert_eq!(
+                    crate::help::chords_for_label(&chord.label()),
+                    vec![chord],
+                    "{scope:?} {label:?} names a key that no label reads back"
+                );
+            }
         }
     }
 
@@ -1644,6 +1698,35 @@ mod tests {
         );
     }
 
+    /// A written line takes one key out of a default range, and the other
+    /// eight keys of that range go on working.
+    ///
+    /// Both halves were broken before the checker compared concrete keys:
+    /// nothing saw the contest, so `5` went on toggling a filter however
+    /// plainly the file asked for the editor — and an eviction that dropped
+    /// the whole `1-9` row would have been the opposite fault, costing eight
+    /// keys nobody contested.
+    #[test]
+    fn a_written_line_takes_one_key_out_of_a_default_range() {
+        let (mut keymap, _) =
+            Keymap::new(&overlay("global.editor.project", &["5"])).expect("valid");
+        let report = check::check(&keymap, &[ActionId::GlobalEditorProject]);
+        keymap.evict(&report.evict);
+
+        let five = normalise(KeyEvent::new(KeyCode::Char('5'), KeyModifiers::empty()));
+        let four = normalise(KeyEvent::new(KeyCode::Char('4'), KeyModifiers::empty()));
+        assert_eq!(
+            keymap.resolve(Scope::Global, five),
+            Some(ActionId::GlobalEditorProject),
+            "the file said the editor, so '5' must open it"
+        );
+        assert_eq!(
+            keymap.resolve(Scope::Global, four),
+            Some(ActionId::GlobalFiltersToggle),
+            "the eight digits nobody asked for must still toggle their filters"
+        );
+    }
+
     /// The overlay defect the same eviction removes, with no change to
     /// `help.rs`: `labels_for` fed the `?` overlay a key that now quits.
     #[test]
@@ -1667,17 +1750,23 @@ mod tests {
     /// "neither written" case cannot occur. That is a fact about `DEFAULT`.
     #[test]
     fn no_default_key_is_in_both_global_and_a_pane() {
-        let global: Vec<&str> = DEFAULT
+        // By concrete key, for the reason `the_defaults_hold_no_duplicate_key`
+        // gives: the global `1-9` shadows a pane's `5` while sharing no
+        // character with the label that spells it.
+        let global: Vec<crate::help::Chord> = DEFAULT
             .iter()
             .filter(|(scope, _, _)| *scope == Scope::Global)
-            .map(|(_, label, _)| *label)
+            .flat_map(|(_, label, _)| crate::help::chords_for_label(label))
             .collect();
         for (scope, label, _) in DEFAULT {
             if matches!(scope, Scope::Nav | Scope::View | Scope::Filters) {
-                assert!(
-                    !global.contains(label),
-                    "{label:?} is bound both globally and in {scope:?}"
-                );
+                for chord in crate::help::chords_for_label(label) {
+                    assert!(
+                        !global.contains(&chord),
+                        "{} is bound both globally and in {scope:?}",
+                        chord.label()
+                    );
+                }
             }
         }
     }
