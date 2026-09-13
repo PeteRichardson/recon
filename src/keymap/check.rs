@@ -272,11 +272,20 @@ impl fmt::Display for Problem {
 /// `check`, `widen_evictions` and `fill_scopes`, which is precisely where
 /// passes live and precisely where privacy does nothing.
 ///
-/// What carries the invariant is `displace`, the only thing that creates a
-/// `Displaced` warning, together with the `debug_assert!` in `fill_scopes`
-/// that catches a pass raising one without its eviction. That assert is
-/// debug-only, which is why the emptiness test in `Display` matters: it is a
-/// release build's whole protection against the malformed sentence.
+/// What carries the invariant is `displace`, the only place in **non-test**
+/// code that creates a `Displaced` warning, together with the `debug_assert!`
+/// in `fill_scopes` that catches a pass raising one without its eviction. That
+/// assert is debug-only, which is why the emptiness test in `Display` matters:
+/// it is a release build's whole protection against the malformed sentence.
+///
+/// The qualifier is load-bearing, and an earlier version of this sentence left
+/// it out — contradicting the paragraph above, which says this module's tests
+/// reach these fields directly. They do, and they build `Displaced` values by
+/// struct literal on purpose: that is the only way to hand `Display` a state
+/// the passes cannot produce, which is exactly what
+/// `an_empty_taken_in_prints_no_scope_phrase` and
+/// `an_empty_lost_in_prints_no_second_clause` exist to pin. The exception is
+/// the mechanism, not a hole in it.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub(crate) struct Report {
     errors: Vec<Problem>,
