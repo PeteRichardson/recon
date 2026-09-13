@@ -253,7 +253,14 @@ pub struct Config {
     pub warnings: Option<bool>,
 
     /// Hide the keymap warnings for this run. The opposite of `--warnings`.
-    #[arg(long = "no-warnings", conflicts_with = "warnings")]
+    ///
+    /// Wins over `--warnings` and over `RECON_WARNINGS` when both are given.
+    //
+    // Not `conflicts_with = "warnings"`: clap counts a value from
+    // `RECON_WARNINGS` as `--warnings` being present, so that conflict would
+    // make `--no-warnings` refuse to start recon for anyone who exported the
+    // variable in their shell profile.
+    #[arg(long = "no-warnings")]
     pub no_warnings: bool,
 }
 
@@ -1105,8 +1112,9 @@ impl Config {
     /// reason: the default belongs with the rest of the ladder.
     ///
     /// `--no-warnings` is checked first because it is the plain spelling of
-    /// "off for this run", and clap has already refused it together with
-    /// `--warnings`.
+    /// "off for this run" and must win over `--warnings`/`RECON_WARNINGS`
+    /// when both are given — clap does not refuse the combination, since a
+    /// value from `RECON_WARNINGS` counts as `--warnings` being present.
     #[must_use]
     pub fn warnings(&self) -> bool {
         if self.no_warnings {
@@ -1674,12 +1682,15 @@ mod tests {
         assert!(!config.warnings());
     }
 
+    /// Giving both is not an error: `--no-warnings` wins. The conflict this
+    /// replaces also fired on a value from `RECON_WARNINGS`, so exporting the
+    /// variable made `--no-warnings` refuse to start recon at all.
     #[test]
-    fn asking_for_warnings_and_no_warnings_at_one_time_is_refused() {
+    fn no_warnings_wins_when_both_flags_are_given() {
         use clap::Parser;
-        let err = Config::try_parse_from(["recon", "--warnings", "--no-warnings"])
-            .expect_err("clap must refuse both");
-        assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
+        let config = Config::try_parse_from(["recon", "--warnings", "--no-warnings"])
+            .expect("both flags together must parse");
+        assert!(!config.warnings());
     }
 
     #[test]
