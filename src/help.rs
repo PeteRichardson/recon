@@ -190,11 +190,16 @@ fn keys_for_label(label: &str) -> Vec<Key> {
     let chars: Vec<char> = bare.chars().collect();
     let keys = match chars.as_slice() {
         [c] => vec![Key::Char(*c)],
-        // `1-9`: one label, nine keys. A **prefixed** range is read too —
-        // `Ctrl-*-/` is `Ctrl-!` through `Ctrl-/`, and those all work. This
-        // comment used to say ranges were bare-only, which the code had never
-        // obeyed; the one key a prefixed range cannot yield is the space bar,
-        // and that carve-out is below rather than here.
+        // `1-9`: one label, nine keys. A **prefixed** range is read too:
+        // `Ctrl-*-/` is `Ctrl-*` through `Ctrl-/` — that is `*` `+` `,` `-`
+        // `.` `/`, six keys, and the `-` among them is a `RESERVED` key. `!`
+        // is 0x21 and sits below `*` at 0x2A, so it is *not* in this range; it
+        // belongs to the `Ctrl- -!` example below, and an earlier version of
+        // this comment confused the two.
+        //
+        // This comment also used to say ranges were bare-only, which the code
+        // had never obeyed. The one key a prefixed range cannot yield is the
+        // space bar, carved out below rather than here.
         [a, '-', b] if a < b => (*a..=*b).map(Key::Char).collect(),
         _ => Vec::new(),
     };
@@ -1198,6 +1203,73 @@ mod tests {
             names: &[],
         };
         assert_eq!(binding.codes().collect::<Vec<_>>(), vec![Key::Char('d')]);
+    }
+
+    /// `Ctrl- ` — a prefix and a literal space — is not a readable label, so
+    /// the line is refused by name rather than bound to a key recon cannot
+    /// report.
+    ///
+    /// The carve-out below the range arm is what makes this true, and nothing
+    /// else pins it. The injectivity test in `keymap::check` would still pass
+    /// if a future change made `Chord::label` render `Ctrl-space` instead —
+    /// that is injective — while breaking the `Keymap::evict` round trip,
+    /// because `Ctrl-space` is a spelling the grammar cannot read back.
+    #[test]
+    fn a_prefixed_lone_space_is_not_a_readable_label() {
+        assert!(!label_is_readable("Ctrl- "), "Ctrl- must not parse");
+        assert!(!label_is_readable("Alt- "), "Alt- must not parse either");
+        assert!(chords_for_label("Ctrl- ").is_empty());
+
+        // The bare one is a key, and still reads.
+        assert!(label_is_readable("space"));
+    }
+
+    /// A prefixed range loses the space bar and keeps everything else.
+    ///
+    /// `Ctrl- -!` is the range `' '..='!'`. Before the carve-out it yielded a
+    /// ctrl-held space, which `Chord::label` rendered as plain `space` —
+    /// colliding with the real space chord and reporting a contest on a key
+    /// the user never wrote. What survives is `Ctrl-!` alone.
+    #[test]
+    fn a_prefixed_range_drops_the_space_and_keeps_the_rest() {
+        assert_eq!(
+            chords_for_label("Ctrl- -!"),
+            vec![Chord {
+                ctrl: true,
+                alt: false,
+                key: Key::Char('!'),
+            }],
+        );
+
+        // A bare range keeps its space: that chord renders `space` correctly
+        // and reads back, so there is nothing to carve out.
+        assert_eq!(
+            chords_for_label(" -!"),
+            vec![
+                Chord {
+                    ctrl: false,
+                    alt: false,
+                    key: Key::Char(' '),
+                },
+                Chord {
+                    ctrl: false,
+                    alt: false,
+                    key: Key::Char('!'),
+                },
+            ],
+        );
+
+        // A prefixed range clear of the space bar is untouched. Asserted by
+        // rendering rather than described in prose, because the comment on the
+        // range arm twice stated this set wrongly — `!` is 0x21 and is not in
+        // it. `-` at 0x2D is, and is a `RESERVED` key.
+        assert_eq!(
+            chords_for_label("Ctrl-*-/")
+                .into_iter()
+                .map(Chord::label)
+                .collect::<Vec<_>>(),
+            vec!["Ctrl-*", "Ctrl-+", "Ctrl-,", "Ctrl--", "Ctrl-.", "Ctrl-/"],
+        );
     }
 
     /// The overlay is the model (#120 §15): one section per layer, in the
