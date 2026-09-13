@@ -513,6 +513,38 @@ wants has to be one this release already said was taken. Binding a reserved
 key anyway is allowed — it's your keyboard — recon just warns once, on
 startup, and then obeys.
 
+An entry replaces that action's keys entirely, so giving an action a key can
+take that key away from a different action. recon works out what your file
+costs before it starts, and it either refuses or tells you.
+
+`config.toml` is a layer over the built-in defaults, and the later layer wins.
+A line you write beats a default you did not touch. Two lines in your own file
+are in the same layer, and nothing puts them in an order, so recon refuses the
+file rather than pick one.
+
+recon **refuses to start** when a key you wrote could never be reached:
+
+- two of your lines claim one key in one scope, so nothing chooses between
+  them;
+- one of your pane lines claims a key the global scope also binds. The global
+  scope is read first, so that line would never fire. Give the global action
+  another key, or take its key away with `[]`.
+
+Every fault is reported together, so one run tells you everything to correct.
+
+recon **warns and carries on** when your line is obeyed and a default you never
+mentioned pays for it — say `'global.quit' = 'j'`, which costs `nav.down`,
+`view.down` and `filters.down` their `j`. The warnings appear in a panel when
+recon starts, and any key closes it. Each one names the action that lost a key
+and says what it still answers to. Write a line for that action, with another
+key or `[]`, and the warning goes.
+
+Turn the panel off with `--no-warnings`, `RECON_WARNINGS=false`, or
+`warnings = false` at the top level of `config.toml`; `--warnings` turns it
+back on for one run. None of these hides an error: a keymap recon cannot obey
+always stops it. `--quiet` is a different switch — it suppresses the `--emit`
+summary line and leaves warnings alone.
+
 Filters colour the lines they match and dim the rest; they are regular
 expressions, like search. A filter set describes a log format rather than one
 file, so it survives loading another file — `!` is the single keystroke back to
