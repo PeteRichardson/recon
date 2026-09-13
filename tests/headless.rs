@@ -309,6 +309,85 @@ fn print_keymap_defaults_survives_a_keymap_recon_refuses() {
     );
 }
 
+/// Headless has no warning panel, so the keymap warnings that would have
+/// filled one must reach stderr instead.
+///
+/// They did not: `Displaced` warnings were collected onto the `Config` and
+/// handed to `App::new`, which the headless path never reaches, while the
+/// reserved-key warning was logged inside `build_keymap` and so came through.
+/// Two classes of keymap warning, one switch governing both, and one of them
+/// vanishing is what made it a defect rather than a choice.
+#[test]
+fn headless_puts_keymap_warnings_on_stderr() {
+    let dir = fixture("headless_keymap_warnings");
+    let home = config_home(&dir);
+    // 'j' is nav.down, view.down and filters.down by default, so one line
+    // costs three panes their key and raises three warnings.
+    fs::write(
+        home.join("recon/config.toml"),
+        "[keymap]\n'global.quit' = 'j'\n",
+    )
+    .expect("write config.toml");
+    let log = dir.join("a.log");
+    fs::write(&log, "hit\n").expect("write");
+    let list = format!("{}\n", log.display());
+
+    let out = recon(&home, &["--emit", "files"], list.as_bytes());
+
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", text(&out.stderr));
+    let stderr = text(&out.stderr);
+    for loser in ["nav.down", "view.down", "filters.down"] {
+        assert!(
+            stderr.contains(loser),
+            "{loser}'s warning never reached stderr: {stderr}"
+        );
+    }
+    assert!(
+        stderr.contains("takes 'j' from"),
+        "the warning text itself must be there: {stderr}"
+    );
+
+    // The summary still goes out, after the warnings rather than instead of
+    // them.
+    assert!(
+        stderr.contains("recon: emitted"),
+        "the summary must survive: {stderr}"
+    );
+}
+
+/// The same switch that hides the panel hides these, since they are the same
+/// warnings by another route.
+#[test]
+fn headless_keymap_warnings_obey_no_warnings() {
+    let dir = fixture("headless_keymap_warnings_off");
+    let home = config_home(&dir);
+    fs::write(
+        home.join("recon/config.toml"),
+        "[keymap]\n'global.quit' = 'j'\n",
+    )
+    .expect("write config.toml");
+    let log = dir.join("a.log");
+    fs::write(&log, "hit\n").expect("write");
+    let list = format!("{}\n", log.display());
+
+    let out = recon(
+        &home,
+        &["--emit", "files", "--no-warnings"],
+        list.as_bytes(),
+    );
+
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", text(&out.stderr));
+    let stderr = text(&out.stderr);
+    assert!(
+        !stderr.contains("takes 'j' from"),
+        "--no-warnings must silence these too: {stderr}"
+    );
+    assert!(
+        stderr.contains("recon: emitted"),
+        "but not the summary, which is a different switch: {stderr}"
+    );
+}
+
 /// `--print-keymap` prints a pasteable `[keymap]` stanza to stdout and exits,
 /// with nothing on stderr.
 #[test]

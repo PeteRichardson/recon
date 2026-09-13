@@ -90,6 +90,21 @@ fn main() -> Result<ExitCode> {
     // TUI, and `< /dev/null` forces headless from one.
     let headless = config.emit.is_some() && !io::stdin().is_terminal();
     let exit = if headless {
+        // Headless has no panel, so the keymap warnings that would have filled
+        // one go to stderr instead — the channel and the gate the reserved-key
+        // notice in `build_keymap` already uses. Without this they were
+        // collected, handed to `App::new`, and dropped on a path that never
+        // builds an `App`: two classes of keymap warning under one switch,
+        // one of which silently disappeared.
+        //
+        // Inside this branch and not above it, because in TUI mode they belong
+        // to the panel. A copy on stderr would be drawn over by the alternate
+        // screen moments later anyway.
+        if config.warnings() {
+            for warning in &config.keymap_warnings {
+                log::warn!("{warning}");
+            }
+        }
         recon::headless::run(&config)?
     } else {
         let terminal = init_terminal()?;
