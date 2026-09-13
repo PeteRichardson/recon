@@ -233,8 +233,28 @@ pub struct Config {
     pub hide: bool,
 
     /// Suppress the summary line on stderr; warnings still print.
+    ///
+    /// `--no-warnings` is the switch that hides those. The two are
+    /// independent and may be given together.
     #[arg(short = 'q', long)]
     pub quiet: bool,
+
+    /// Show keymap warnings at startup. On unless something turns them off.
+    ///
+    /// A warning says that recon did what your `config.toml` asked and
+    /// something else paid for it — an action lost a key you did not mention.
+    /// Every one of them can be answered by a `[keymap]` line, which is why
+    /// they keep asking until you write it. This never hides an *error*: a
+    /// `[keymap]` recon cannot obey always stops it.
+    ///
+    /// Distinct from `--quiet`, which suppresses the `--emit` summary line
+    /// and leaves warnings alone.
+    #[arg(long, env = "RECON_WARNINGS", num_args = 0..=1, default_missing_value = "true")]
+    pub warnings: Option<bool>,
+
+    /// Hide the keymap warnings for this run. The opposite of `--warnings`.
+    #[arg(long = "no-warnings", conflicts_with = "warnings")]
+    pub no_warnings: bool,
 }
 
 /// The `--theme` long help: the short help's two sentences, then the bundled
@@ -281,6 +301,8 @@ impl Default for Config {
             set: Vec::new(),
             hide: false,
             quiet: false,
+            warnings: None,
+            no_warnings: false,
         }
     }
 }
@@ -313,6 +335,10 @@ pub struct FileConfig {
     /// parseable key, or the whole file is refused — there is no per-key
     /// "hole" for a lower layer to fill, unlike `editor` or `syntax`.
     pub keymap: Option<KeymapConfig>,
+    /// Top-level `warnings = true | false`. Beside `background` and not under
+    /// `[keymap]`: that table's keys are action names, so a setting there
+    /// would be read as an action called "warnings" and refused.
+    pub warnings: Option<bool>,
 }
 
 /// The `[view]` table: how the file view moves.
@@ -937,8 +963,10 @@ impl Config {
         // Still on stderr and not in the panel: binding `-` or `:` is a
         // deliberate choice that no keymap edit answers, so a panel meaning
         // "correct this" would ask again at every start.
-        for warning in reserved {
-            log::warn!("{warning}");
+        if self.warnings() {
+            for warning in reserved {
+                log::warn!("{warning}");
+            }
         }
 
         let written: Vec<crate::keymap::ActionId> = overlay
@@ -1005,6 +1033,7 @@ impl Config {
             syntax,
             view,
             keymap,
+            warnings,
         } = file;
 
         if let Some(background) = background {
@@ -1047,6 +1076,10 @@ impl Config {
         if let Some(keymap) = keymap {
             self.keymap.get_or_insert_with(|| keymap.clone());
         }
+
+        if let Some(warnings) = warnings {
+            self.warnings.get_or_insert(*warnings);
+        }
     }
 
     /// The clipboard command, once the chain has run: the flag, the
@@ -1065,6 +1098,21 @@ impl Config {
     #[must_use]
     pub fn center_jumps(&self) -> bool {
         self.center_jumps.unwrap_or(true)
+    }
+
+    /// Whether a keymap warning is shown — on unless a flag, the environment
+    /// or the file says otherwise. Here beside `center_jumps` for the same
+    /// reason: the default belongs with the rest of the ladder.
+    ///
+    /// `--no-warnings` is checked first because it is the plain spelling of
+    /// "off for this run", and clap has already refused it together with
+    /// `--warnings`.
+    #[must_use]
+    pub fn warnings(&self) -> bool {
+        if self.no_warnings {
+            return false;
+        }
+        self.warnings.unwrap_or(true)
     }
 
     /// The terminal background, once the chain has run: dark unless said
@@ -1116,6 +1164,7 @@ impl Config {
 mod tests {
     use super::*;
     use crate::keymap::Keymap;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use std::fs;
     use std::sync::Mutex;
 
@@ -1579,6 +1628,85 @@ mod tests {
         assert!(!Config::default().hide);
         assert!(!Config::default().quiet);
         assert!(Config::default().set.is_empty());
+    }
+
+    #[test]
+    fn warnings_are_on_when_nothing_says_otherwise() {
+        assert!(Config::default().warnings());
+    }
+
+    #[test]
+    fn the_file_can_turn_warnings_off() {
+        let mut config = Config::default();
+        config.apply(&FileConfig {
+            warnings: Some(false),
+            ..FileConfig::default()
+        });
+        assert!(!config.warnings());
+    }
+
+    #[test]
+    fn a_flag_beats_the_file() {
+        let mut config = Config {
+            warnings: Some(true),
+            ..Config::default()
+        };
+        config.apply(&FileConfig {
+            warnings: Some(false),
+            ..FileConfig::default()
+        });
+        assert!(
+            config.warnings(),
+            "the file may only fill a hole the flag left"
+        );
+    }
+
+    #[test]
+    fn no_warnings_turns_them_off_whatever_the_file_says() {
+        let mut config = Config {
+            no_warnings: true,
+            ..Config::default()
+        };
+        config.apply(&FileConfig {
+            warnings: Some(true),
+            ..FileConfig::default()
+        });
+        assert!(!config.warnings());
+    }
+
+    #[test]
+    fn asking_for_warnings_and_no_warnings_at_one_time_is_refused() {
+        use clap::Parser;
+        let err = Config::try_parse_from(["recon", "--warnings", "--no-warnings"])
+            .expect_err("clap must refuse both");
+        assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
+    }
+
+    #[test]
+    fn no_warnings_silences_the_reserved_key_warning() {
+        let mut bindings = std::collections::BTreeMap::new();
+        bindings.insert("global.reload".to_string(), vec!["-".to_string()]);
+        let config = Config {
+            keymap: Some(KeymapConfig { bindings }),
+            no_warnings: true,
+            ..Config::default()
+        };
+
+        // The map still builds and still binds the reserved key: the switch
+        // hides the warning, it does not change what recon does.
+        let (keymap, warnings) = config.build_keymap().expect("a reserved key is allowed");
+        assert_eq!(
+            warnings,
+            Vec::<String>::new(),
+            "the panel gets nothing either way"
+        );
+        let dash =
+            crate::keymap::normalise(KeyEvent::new(KeyCode::Char('-'), KeyModifiers::empty()));
+        assert_eq!(
+            keymap.resolve(crate::keymap::Scope::Global, dash),
+            Some(crate::keymap::ActionId::GlobalReload),
+            "recon must still obey the user"
+        );
     }
 
     /// A loaded set named `name` with one filter `x` and one profile.
@@ -2286,12 +2414,13 @@ mod tests {
 
     #[test]
     fn build_keymap_without_a_stanza_is_the_defaults() {
-        assert_eq!(
-            Config::default()
-                .build_keymap()
-                .expect("saying nothing is valid")
-                .0,
-            Keymap::default()
+        let built = Config::default()
+            .build_keymap()
+            .expect("saying nothing is valid");
+        assert_eq!(built.0, Keymap::default());
+        assert!(
+            built.1.is_empty(),
+            "a config with no [keymap] stanza must warn about nothing"
         );
     }
 

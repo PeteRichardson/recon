@@ -246,6 +246,11 @@ Options:
           Start in hide mode: only matching lines and files
   -q, --quiet
           Suppress the summary line on stderr; warnings still print
+      --warnings [<WARNINGS>]
+          Show keymap warnings at startup. On unless something turns them off
+          [env: RECON_WARNINGS=] [possible values: true, false]
+      --no-warnings
+          Hide the keymap warnings for this run. The opposite of `--warnings`
   -h, --help
           Print help (see more with '--help')
   -V, --version
