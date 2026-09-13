@@ -912,27 +912,70 @@ fn first_scope_of(defaults: &Keymap, action: ActionId) -> Scope {
         .map_or(Scope::Global, |(scope, _, _)| *scope)
 }
 
-/// Where `action` could have lost `label` to another action: the default
-/// scope(s) it held that exact label in, plus `Scope::Global` when one of
-/// those is a pane — because `Scope::Global` is the only scope that ever
-/// shadows a pane's own default (`check::check`'s pass two). A peer pane
-/// bound to the identical label by sheer coincidence — `j` also defaults
-/// `nav.down`, `view.down`, `filters.down` and `picker.down` — never crosses
-/// with any of the others, so it must never be searched here.
-fn scopes_for_lost_key(defaults: &Keymap, action: ActionId, label: &str) -> Vec<Scope> {
-    let mut scopes: Vec<Scope> = defaults
+/// Every key `action` no longer answers to, and what holds each one now.
+///
+/// Asked scope by scope, and in concrete keys. `Keymap::evict` removes one
+/// `(scope, key, action)` row, and that is what first lets an action holding
+/// a row in two scopes lose a key in one of them: before eviction existed,
+/// only `rebind` could remove a row, and `rebind` replaces an action's list
+/// in every scope it holds at once, so an action's scopes could never fall
+/// out of step.
+///
+/// `labels_for` merges an action's scopes into one list, so comparing merged
+/// lists cannot see any of this. It reports a key as still held when only one
+/// scope still holds it, and a single search for the thief names whichever
+/// comes first in the table when two scopes lost one key to two different
+/// actions. Both are answered by asking per scope instead.
+///
+/// A key the user simply rebound away is not a loss and yields nothing here:
+/// nobody else holds it, so there is no thief to name, and `annotation` says
+/// "yours" instead.
+fn losses(keymap: &Keymap, defaults: &Keymap, action: ActionId) -> Vec<String> {
+    let mut taken: Vec<String> = Vec::new();
+    for (scope, label, entry_action) in &defaults.entries {
+        if *entry_action != action {
+            continue;
+        }
+        for key in crate::help::chords_for_label(label) {
+            if reaches(keymap, *scope, action, key) {
+                continue;
+            }
+            // Only `Scope::Global` shadows a pane, which is `check`'s pass
+            // two. A peer pane holding the same key by coincidence — `j`
+            // defaults `nav.down`, `view.down` and `filters.down` — never
+            // crosses with this one, so it must not be searched.
+            let mut scopes = vec![*scope];
+            if matches!(scope, Scope::Nav | Scope::View | Scope::Filters) {
+                scopes.push(Scope::Global);
+            }
+            let Some((_, _, thief)) = keymap.entries.iter().find(|(entry_scope, entry, a)| {
+                scopes.contains(entry_scope)
+                    && *a != action
+                    && crate::help::chords_for_label(entry).contains(&key)
+            }) else {
+                continue;
+            };
+            // Deduplicated: an action that lost one key in both of its scopes
+            // to the same thief lost it once as far as a reader is concerned.
+            let said = format!("'{}' taken by {}", key.label(), thief.name());
+            if !taken.contains(&said) {
+                taken.push(said);
+            }
+        }
+    }
+    taken
+}
+
+/// Whether `action` still answers `key` in `scope`.
+fn reaches(keymap: &Keymap, scope: Scope, action: ActionId, key: crate::help::Chord) -> bool {
+    keymap
         .entries
         .iter()
-        .filter(|(_, entry, a)| *a == action && entry == label)
-        .map(|(scope, _, _)| *scope)
-        .collect();
-    if scopes
-        .iter()
-        .any(|scope| matches!(scope, Scope::Nav | Scope::View | Scope::Filters))
-    {
-        scopes.push(Scope::Global);
-    }
-    scopes
+        .any(|(entry_scope, label, entry_action)| {
+            *entry_scope == scope
+                && *entry_action == action
+                && crate::help::chords_for_label(label).contains(&key)
+        })
 }
 
 /// What to say about a line that is no longer its default, or nothing at all.
@@ -941,42 +984,33 @@ fn scopes_for_lost_key(defaults: &Keymap, action: ActionId, label: &str) -> Vec<
 /// the user set says what it replaced. An action that merely *lost* a key
 /// says which action took it, because that is the part a user cannot work
 /// out from the line in front of them.
+///
+/// The losses are counted first, before the two label lists are compared at
+/// all: a key lost in one scope of a two-scope action leaves the merged lists
+/// equal, so a comparison of those lists returns with nothing said about a
+/// key that has gone.
 fn annotation(keymap: &Keymap, defaults: &Keymap, action: ActionId) -> String {
+    let taken = losses(keymap, defaults, action);
+    if !taken.is_empty() {
+        return format!("   # {}", taken.join(", "));
+    }
+
     let now = keymap.labels_for(action);
     let was = defaults.labels_for(action);
     if now == was {
         return String::new();
     }
-
-    let taken: Vec<String> = was
-        .iter()
-        .filter(|label| !now.contains(*label))
-        .filter_map(|label| {
-            let scopes = scopes_for_lost_key(defaults, action, label);
-            let thief = keymap
-                .entries
-                .iter()
-                .find(|(scope, entry, a)| scopes.contains(scope) && entry == label && *a != action)
-                .map(|(_, _, a)| *a)?;
-            Some(format!("'{label}' taken by {}", thief.name()))
-        })
-        .collect();
-
-    if taken.is_empty() {
-        format!(
-            "   # yours; default {}",
-            if was.is_empty() {
-                "none".to_string()
-            } else {
-                was.iter()
-                    .map(|label| format!("'{label}'"))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            }
-        )
-    } else {
-        format!("   # {}", taken.join(", "))
-    }
+    format!(
+        "   # yours; default {}",
+        if was.is_empty() {
+            "none".to_string()
+        } else {
+            was.iter()
+                .map(|label| format!("'{label}'"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        }
+    )
 }
 
 #[cfg(test)]
@@ -1402,14 +1436,46 @@ mod tests {
         let printed = print_keymap(&Keymap::default(), &Keymap::default());
         let parsed: crate::config::FileConfig =
             toml::from_str(&printed).expect("recon must print what it accepts");
-        let overlay = parsed.keymap.expect("a [keymap] table");
+        // Not named `overlay`: the loop below calls the helper of that name.
+        let table = parsed.keymap.expect("a [keymap] table");
 
-        let (built, _) = Keymap::new(&overlay).expect("the defaults must be valid");
+        let (built, _) = Keymap::new(&table).expect("the defaults must be valid");
         assert_eq!(
             built,
             Keymap::default(),
             "printing then parsing changed a binding"
         );
+
+        // And a map that has been **evicted**, which is what `rebind`'s
+        // comment above names this test as the guard for. The defaults alone
+        // cannot catch that class: eviction is the only thing that removes a
+        // single row, so it is the only way the printed stanza can come to
+        // describe a map it cannot rebuild.
+        for (action, keys) in [
+            // A two-scope action robbed in one of its scopes.
+            ("view.line.end", &["n"][..]),
+            // One key taken out of a default range.
+            ("global.editor.project", &["5"][..]),
+            // A global line shadowing the same key in three panes at once.
+            ("global.quit", &["j"][..]),
+        ] {
+            let (mut keymap, _) = Keymap::new(&overlay(action, keys)).expect("valid");
+            let written = vec![action_named(action).expect("a real action")];
+            let report = check::check(&keymap, &written);
+            assert_eq!(report.errors, vec![], "{action}: {report:?}");
+            keymap.evict(&report.evict);
+
+            let printed = print_keymap(&keymap, &Keymap::default());
+            let parsed: crate::config::FileConfig = toml::from_str(&printed)
+                .unwrap_or_else(|err| panic!("{action}: must print what it accepts: {err}"));
+            let pasted = parsed.keymap.expect("a [keymap] table");
+            let (rebuilt, _) = Keymap::new(&pasted).expect("valid");
+
+            assert_eq!(
+                rebuilt, keymap,
+                "{action}: the printed stanza rebuilt a different map\n{printed}"
+            );
+        }
     }
 
     // ---- the overlay (#61) ----------------------------------------------
