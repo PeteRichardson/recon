@@ -9,6 +9,8 @@ use crate::toml_fmt::toml_string;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::fmt::Write as _;
 
+pub(crate) mod check;
+
 /// A key as the table stores it: the code, and the two modifiers that carry
 /// meaning.
 ///
@@ -83,6 +85,27 @@ impl Scope {
             crate::widgets::Focus::Nav => Self::Nav,
             crate::widgets::Focus::View => Self::View,
             crate::widgets::Focus::Filters => Self::Filters,
+        }
+    }
+
+    /// The scope's name, for a message that must say where a key was bound.
+    ///
+    /// An action's own name usually carries its scope — `nav.up`, `global.quit`
+    /// — so a message can read the scope off the name. `hit.next` and
+    /// `hit.prev` cannot: they are bare names living in both `View` and
+    /// `Filters`, so a collision involving one has no scope to read and needs
+    /// this instead.
+    #[allow(dead_code)] // Called only by check::Problem's Display, which is itself
+    // unreachable until the checker is wired in. Removed then.
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Self::Prompt => "prompt",
+            Self::Help => "help",
+            Self::Picker => "picker",
+            Self::Global => "global",
+            Self::Nav => "nav",
+            Self::View => "view",
+            Self::Filters => "filters",
         }
     }
 }
@@ -1273,6 +1296,32 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// `check`'s same-scope pass assumes a contested key always has a written
+    /// claimant, because a group of two defaults cannot happen. That is a fact
+    /// about `DEFAULT`, so it is pinned here rather than trusted.
+    #[test]
+    fn the_defaults_hold_no_duplicate_key() {
+        let mut seen: Vec<(Scope, &str)> = Vec::new();
+        for (scope, label, _) in DEFAULT {
+            assert!(
+                !seen.contains(&(*scope, *label)),
+                "{label:?} is bound two times in {scope:?}"
+            );
+            seen.push((*scope, *label));
+        }
+    }
+
+    #[test]
+    fn every_scope_has_a_name_for_a_message() {
+        assert_eq!(Scope::Global.name(), "global");
+        assert_eq!(Scope::Nav.name(), "nav");
+        assert_eq!(Scope::View.name(), "view");
+        assert_eq!(Scope::Filters.name(), "filters");
+        assert_eq!(Scope::Prompt.name(), "prompt");
+        assert_eq!(Scope::Picker.name(), "picker");
+        assert_eq!(Scope::Help.name(), "help");
     }
 
     /// An action bound to several keys hints with the first one the user
