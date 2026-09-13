@@ -83,6 +83,27 @@ fn scope_noun(count: usize) -> &'static str {
     if count == 1 { "scope" } else { "scopes" }
 }
 
+/// The scopes in `Scope`'s own order, each once.
+///
+/// A list of scopes is a **set**. Which order the rows happened to be evicted
+/// in says nothing about the keymap, so it must not reach the sentence:
+/// `'filters.solo' = 'n'` evicted the filter pane first and the file view
+/// second and said "the filters and view scopes", while `'view.line.end' =
+/// 'n'` reported the identical loss the other way round.
+///
+/// Sorting into the discriminant order is what makes it canonical, and that
+/// order is already the precedence this whole module reasons in. Comparing two
+/// sorted lists is then the set comparison the second clause actually wants —
+/// which also makes the sentence safe against anything that ever sorts
+/// `evict`, where a `Vec` comparison would start printing a clause that merely
+/// restates the first.
+fn in_order(scopes: &[Scope]) -> Vec<Scope> {
+    let mut ordered = scopes.to_vec();
+    ordered.sort_unstable();
+    ordered.dedup();
+    ordered
+}
+
 /// `'a'`, `'b'` and `'c'` — a list a sentence can hold.
 fn join_and(names: &[String]) -> String {
     match names {
@@ -149,10 +170,12 @@ impl fmt::Display for Problem {
                 remaining,
                 lost_in,
             } => {
-                let names: Vec<String> = taken_in
-                    .iter()
-                    .map(|scope| scope.name().to_string())
-                    .collect();
+                // Canonical before a word is said about either, so the
+                // sentence cannot depend on which line provoked the loss.
+                let taken = in_order(taken_in);
+                let lost = in_order(lost_in);
+                let names: Vec<String> =
+                    taken.iter().map(|scope| scope.name().to_string()).collect();
                 write!(
                     f,
                     "'{}' takes '{key}' from '{}' in the {} {}",
@@ -162,14 +185,14 @@ impl fmt::Display for Problem {
                     scope_noun(names.len()),
                 )?;
                 // Only when the loser lost the key somewhere this winner did
-                // not take it. Equal lists are the overwhelmingly common case
-                // — one winner, one scope — and they read as they always did,
-                // with nothing appended.
-                if lost_in != taken_in {
-                    let all: Vec<String> = lost_in
-                        .iter()
-                        .map(|scope| scope.name().to_string())
-                        .collect();
+                // not take it. A set comparison, not a `Vec` one: the same
+                // scopes in another order are not a second fact, and saying
+                // them again would only restate the clause above. Equal sets
+                // are the overwhelmingly common case — one winner, one scope
+                // — and read as they always did, with nothing appended.
+                if lost != taken {
+                    let all: Vec<String> =
+                        lost.iter().map(|scope| scope.name().to_string()).collect();
                     write!(
                         f,
                         "; '{}' loses '{key}' in the {} {}",
@@ -1045,6 +1068,77 @@ mod tests {
             2,
             "the row goes from both scopes, though one warning says so: {:?}",
             pane.evict
+        );
+    }
+
+    /// One loss, provoked three ways, said the same way each time.
+    ///
+    /// `hit.next` loses `n` in both scopes under every one of these, but the
+    /// order the rows were evicted in differed: `'filters.solo' = 'n'` took
+    /// the filter pane first and the file view second, and the sentence said
+    /// "the filters and view scopes" while the other two said "the view and
+    /// filters scopes". Same loss, same set, different words — the order rows
+    /// happened to go in is not information about the keymap.
+    #[test]
+    fn the_sentence_does_not_depend_on_the_order_rows_were_evicted_in() {
+        let sentences = |report: &Report| -> Vec<String> {
+            report
+                .warnings
+                .iter()
+                .filter(|problem| {
+                    matches!(problem, Problem::Displaced { loser, .. } if *loser == ActionId::HitNext)
+                })
+                .map(ToString::to_string)
+                .collect()
+        };
+
+        let filters = report(&[("filters.solo", &["n"])]);
+        let view = report(&[("view.line.end", &["n"])]);
+        let both = report(&[("view.line.end", &["n"]), ("filters.solo", &["n"])]);
+
+        for report in [&filters, &view, &both] {
+            let said = sentences(report);
+            assert!(!said.is_empty(), "hit.next must be reported: {report:?}");
+            for sentence in said {
+                assert!(
+                    sentence.contains("loses 'n' in the view and filters scopes"),
+                    "one canonical order, whichever line provoked it: {sentence}"
+                );
+                assert!(
+                    !sentence.contains("filters and view"),
+                    "the eviction order leaked into the sentence: {sentence}"
+                );
+            }
+        }
+    }
+
+    /// The same scopes in another order are one fact, not two.
+    ///
+    /// The second clause exists to add what the first did not say. Comparing
+    /// the two lists as `Vec`s rather than as sets made that depend on their
+    /// order, which is safe only while `evict` is built in one particular way:
+    /// anything that later sorted it — a canonical scope order for
+    /// `--print-keymap`, say — would produce a set-equal, order-different pair
+    /// and the clause would print as a restatement of the one before it.
+    #[test]
+    fn equal_scope_sets_in_another_order_are_not_said_twice() {
+        let problem = Problem::Displaced {
+            taken_in: vec![Scope::View, Scope::Filters],
+            key: "n".to_string(),
+            winner: ActionId::ViewLineEnd,
+            loser: ActionId::HitNext,
+            remaining: vec![],
+            lost_in: vec![Scope::Filters, Scope::View],
+        };
+
+        let said = problem.to_string();
+        assert!(
+            !said.contains("loses 'n'"),
+            "the same set reordered is not a second fact: {said}"
+        );
+        assert!(
+            said.contains("takes 'n' from 'hit.next' in the view and filters scopes"),
+            "and the one clause it does print is canonical: {said}"
         );
     }
 
