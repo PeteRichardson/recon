@@ -532,6 +532,26 @@ pub(crate) fn action_named(name: &str) -> Option<ActionId> {
         .find(|action| action.name() == name)
 }
 
+/// Every action, once each, in `DEFAULT`'s order.
+///
+/// `DEFAULT` holds 121 rows for 93 actions, because 24 actions carry a second
+/// key and `hit.next`/`hit.prev` each hold a row in two scopes. This yields
+/// each action one time, which is the unit `--print-keymap` prints and the
+/// unit a `[keymap]` line names.
+#[allow(dead_code)] // Called only by check.rs's tests until Task 7's printer
+// calls it too. Removed once that call site lands.
+pub(crate) fn every_action() -> impl Iterator<Item = ActionId> {
+    let mut seen: Vec<ActionId> = Vec::new();
+    DEFAULT.iter().filter_map(move |(_, _, action)| {
+        if seen.contains(action) {
+            None
+        } else {
+            seen.push(*action);
+            Some(*action)
+        }
+    })
+}
+
 /// Every action name, in table order, each once — the list an unknown name's
 /// error offers as the fix.
 fn known_action_names() -> Vec<String> {
@@ -1342,5 +1362,24 @@ mod tests {
             Some(ActionId::GlobalReload),
             "every key the user listed must reach the action"
         );
+    }
+
+    /// `check`'s cross-scope pass assumes two *defaults* never cross, so the
+    /// "neither written" case cannot occur. That is a fact about `DEFAULT`.
+    #[test]
+    fn no_default_key_is_in_both_global_and_a_pane() {
+        let global: Vec<&str> = DEFAULT
+            .iter()
+            .filter(|(scope, _, _)| *scope == Scope::Global)
+            .map(|(_, label, _)| *label)
+            .collect();
+        for (scope, label, _) in DEFAULT {
+            if matches!(scope, Scope::Nav | Scope::View | Scope::Filters) {
+                assert!(
+                    !global.contains(label),
+                    "{label:?} is bound both globally and in {scope:?}"
+                );
+            }
+        }
     }
 }

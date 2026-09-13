@@ -239,6 +239,63 @@ pub(crate) fn check(built: &Keymap, written: &[ActionId]) -> Report {
         }
     }
 
+    // Pass two: the global scope against each pane.
+    //
+    // Only these four scopes can cross. `Prompt` and `Picker` take every key
+    // while they are open, so a key bound in one of them and also globally is
+    // the design and not a contest. `Help` binds nothing at all.
+    let winner_in = |scope: Scope, key: &str| -> Option<ActionId> {
+        let claim = claims
+            .iter()
+            .find(|claim| claim.scope == scope && claim.key == key)?;
+        // The same rule pass one applied: a written claim wins, and otherwise
+        // the single default claim does.
+        claim
+            .actions
+            .iter()
+            .copied()
+            .find(|action| written.contains(action))
+            .or_else(|| claim.actions.first().copied())
+    };
+
+    for claim in &claims {
+        if !matches!(claim.scope, Scope::Nav | Scope::View | Scope::Filters) {
+            continue;
+        }
+        let Some(global) = winner_in(Scope::Global, claim.key) else {
+            continue;
+        };
+        let Some(pane) = winner_in(claim.scope, claim.key) else {
+            continue;
+        };
+
+        if written.contains(&pane) {
+            // The user wrote a pane line that the global scope will always
+            // answer first. recon would ignore what the file says.
+            report.errors.push(Problem::Unreachable {
+                scope: claim.scope,
+                key: claim.key.to_string(),
+                written: pane,
+                global,
+            });
+        } else if written.contains(&global) {
+            // The user wrote the global line and got what they asked for.
+            // The pane default is what it cost.
+            report
+                .evict
+                .push((claim.scope, claim.key.to_string(), pane));
+            report.warnings.push(Problem::Displaced {
+                scope: claim.scope,
+                key: claim.key.to_string(),
+                winner: global,
+                loser: pane,
+                remaining: Vec::new(),
+            });
+        }
+        // Neither written: two defaults crossing, which `DEFAULT` does not do
+        // and `no_default_key_is_in_both_global_and_a_pane` pins.
+    }
+
     fill_remaining(built, &mut report);
     report
 }
@@ -366,5 +423,120 @@ mod tests {
             )],
             "the default's row must go, or the written line does not win"
         );
+    }
+
+    #[test]
+    fn a_global_line_over_pane_defaults_warns_once_for_each_pane() {
+        // 'j' is nav.down, view.down and filters.down by default.
+        let report = report(&[("global.quit", &["j"])]);
+
+        assert_eq!(report.errors, vec![]);
+        assert_eq!(
+            report.warnings,
+            vec![
+                Problem::Displaced {
+                    scope: Scope::Nav,
+                    key: "j".to_string(),
+                    winner: ActionId::GlobalQuit,
+                    loser: ActionId::NavDown,
+                    remaining: vec!["Down".to_string()],
+                },
+                Problem::Displaced {
+                    scope: Scope::View,
+                    key: "j".to_string(),
+                    winner: ActionId::GlobalQuit,
+                    loser: ActionId::ViewDown,
+                    remaining: vec!["Down".to_string()],
+                },
+                Problem::Displaced {
+                    scope: Scope::Filters,
+                    key: "j".to_string(),
+                    winner: ActionId::GlobalQuit,
+                    loser: ActionId::FiltersDown,
+                    remaining: vec!["Down".to_string()],
+                },
+            ],
+            "each pane loses 'j' and keeps 'Down'"
+        );
+        assert_eq!(report.evict.len(), 3);
+    }
+
+    #[test]
+    fn a_pane_line_under_a_default_global_binding_is_an_error() {
+        // 'q' is global.quit's default. nav.up can never get it.
+        let report = report(&[("nav.up", &["q"])]);
+
+        assert_eq!(report.warnings, vec![]);
+        assert_eq!(report.evict, vec![]);
+        assert_eq!(
+            report.errors,
+            vec![Problem::Unreachable {
+                scope: Scope::Nav,
+                key: "q".to_string(),
+                written: ActionId::NavUp,
+                global: ActionId::GlobalQuit,
+            }]
+        );
+    }
+
+    #[test]
+    fn a_pane_line_under_a_written_global_binding_is_also_an_error() {
+        // '=' is bound nowhere by default, so the only two claims on it are
+        // the two this config writes.
+        let report = report(&[("global.reload", &["="]), ("nav.up", &["="])]);
+
+        assert_eq!(
+            report.errors,
+            vec![Problem::Unreachable {
+                scope: Scope::Nav,
+                key: "=".to_string(),
+                written: ActionId::NavUp,
+                global: ActionId::GlobalReload,
+            }],
+            "who holds the global key does not change the verdict"
+        );
+    }
+
+    #[test]
+    fn a_modal_scope_never_crosses_with_global() {
+        // 'Ctrl-a' is prompt.start, and the prompt scope is the only scope
+        // that binds it. A global line claiming it is not a collision: while
+        // a prompt is open it owns the whole keyboard, so the two never meet.
+        // (`Enter` would be the wrong key to test with — it is bound in Nav
+        // and Filters as well, so it genuinely does cross.)
+        let report = report(&[("global.reload", &["Ctrl-a"])]);
+        assert_eq!(report.errors, vec![], "{report:?}");
+        assert_eq!(report.warnings, vec![], "{report:?}");
+    }
+
+    #[test]
+    fn a_pasted_effective_dump_says_nothing() {
+        // Every action written explicitly, each with the keys it already has.
+        // This is what `--print-keymap` emits, so pasting it back must be a
+        // silent no-op or the flag's whole purpose fails.
+        let defaults = Keymap::default();
+        let pairs: Vec<(String, Vec<String>)> = crate::keymap::every_action()
+            .map(|action| {
+                (
+                    action.name().to_string(),
+                    defaults
+                        .labels_for(action)
+                        .into_iter()
+                        .map(str::to_string)
+                        .collect(),
+                )
+            })
+            .collect();
+        let mut bindings = std::collections::BTreeMap::new();
+        for (name, keys) in &pairs {
+            bindings.insert(name.clone(), keys.clone());
+        }
+        let overlay = crate::config::KeymapConfig { bindings };
+        let built = Keymap::new(&overlay).expect("valid");
+        let written: Vec<ActionId> = crate::keymap::every_action().collect();
+
+        let report = check(&built, &written);
+        assert!(report.is_silent(), "{report:?}");
+        assert_eq!(report.evict, vec![]);
     }
 }
