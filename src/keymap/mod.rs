@@ -1342,6 +1342,41 @@ mod tests {
         );
     }
 
+    /// A key taken out of a *range* was the third place the label-vs-key
+    /// confusion hid, and the one a user was most likely to read.
+    /// `global.filters.toggle` holds `1-9`, so losing `5` left no label
+    /// *string* missing from its list: the comparison of label text saw
+    /// nothing taken, fell through to the "yours" branch, and told the user
+    /// they had written a line they never wrote — while never naming what had
+    /// taken the digit.
+    #[test]
+    fn a_key_taken_out_of_a_range_names_the_thief_and_is_not_called_yours() {
+        let defaults = Keymap::default();
+        let (mut keymap, _) =
+            Keymap::new(&overlay("global.editor.project", &["5"])).expect("valid");
+        let report = check::check(&keymap, &[ActionId::GlobalEditorProject]);
+        keymap.evict(&report.evict);
+
+        let printed = print_keymap(&keymap, &defaults);
+        let line = printed
+            .lines()
+            .find(|line| line.starts_with("'global.filters.toggle'"))
+            .expect("global.filters.toggle must be printed");
+
+        assert!(
+            line.contains("'5' taken by global.editor.project"),
+            "the annotation must name the key lost and what took it: {line}"
+        );
+        assert!(
+            !line.contains("yours"),
+            "nobody wrote this line, so it must not be called yours: {line}"
+        );
+        assert!(
+            line.contains("'4'") && line.contains("'6'"),
+            "the eight digits it kept must still be on the line: {line}"
+        );
+    }
+
     /// Annotations are comments, so the output is still a `[keymap]` table
     /// and still parses. Without this the flag stops being paste-able, which
     /// is its whole purpose.
