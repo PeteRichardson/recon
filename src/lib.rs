@@ -3108,25 +3108,38 @@ impl App<'_> {
         }
         let inner_width = usize::from(width - 4);
 
-        // How many whole warnings fit, each measured at the width it will wrap
-        // to. Counting lines rather than warnings is what keeps a long one
-        // from overflowing the box it was measured for.
+        // How many whole warnings fit, each measured at the rendered rows it
+        // will wrap to — not at the count of warnings admitted, which is a
+        // different number from the rows they cost once `Wrap` runs.
         let budget = usize::from(area.height.min(20)) - 4;
         let mut lines: Vec<String> = Vec::new();
+        // Rendered rows consumed, not warnings admitted. The two are not the
+        // same number, and conflating them is what let content overflow a box
+        // sized for it.
+        let mut rows = 0usize;
         let mut shown = 0;
         for warning in &self.keymap_warnings {
-            let wrapped = warning.len().div_ceil(inner_width.max(1)) + 1;
-            if !lines.is_empty() && lines.len() + wrapped > budget {
+            let text = format!("• {warning}");
+            let wrapped = text.len().div_ceil(inner_width.max(1));
+            // Every entry after the first also costs the blank row between it
+            // and the one before.
+            let cost = if lines.is_empty() {
+                wrapped
+            } else {
+                wrapped + 1
+            };
+            if !lines.is_empty() && rows + cost > budget {
                 break;
             }
-            lines.push(format!("• {warning}"));
+            rows += cost;
+            lines.push(text);
             shown += 1;
         }
         let cut = self.keymap_warnings.len() - shown;
 
-        let height = u16::try_from(lines.len().min(budget) + 4)
-            .unwrap_or(u16::MAX)
-            .min(area.height);
+        // Two rows for the closing hint and the blank row above it, two for
+        // the borders.
+        let height = u16::try_from(rows + 4).unwrap_or(u16::MAX).min(area.height);
         let rect = Rect {
             x: area.x + (area.width - width) / 2,
             y: area.y + (area.height - height) / 2,
@@ -3566,6 +3579,39 @@ mod tests {
 
         let screen = screen(&mut app);
         assert!(!screen.contains("Keymap warnings"), "{screen}");
+    }
+
+    /// A regression guard for a defect where the row budget was checked
+    /// against the *count of warnings admitted* rather than the *rows they
+    /// render to*. `app_with_warnings` produces three warnings (152, 156 and
+    /// 168 bytes); on a box this cramped they need more rows than fit, so an
+    /// honest panel must say it cut one. The broken arithmetic admitted all
+    /// three and reported nothing cut, silently truncating the last one
+    /// under `Wrap` instead.
+    #[test]
+    fn a_cramped_panel_reports_what_it_could_not_show() {
+        let mut app = app_with_warnings("warning_panel_cramped", &["a.rs"]);
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 80,
+            height: 12,
+        };
+        let mut buf = Buffer::empty(area);
+        app.render(area, &mut buf);
+        let screen = (0..area.height)
+            .map(|y| {
+                (0..area.width)
+                    .map(|x| buf[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(
+            screen.contains("more — run recon --print-keymap"),
+            "a box too short for all three warnings claimed to have cut none:\n{screen}"
+        );
     }
 
     /// The argument is held the way the navigator holds it, absolute. Two
