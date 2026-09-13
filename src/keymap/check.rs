@@ -52,9 +52,10 @@ pub(crate) enum Problem {
     /// what the user asked for, and `loser` is what it cost. `remaining` is
     /// what `loser` still answers to, which is empty when it now has no key.
     ///
-    /// Two different facts, kept apart rather than apportioned. `scopes` is
-    /// where **this winner** took the key. `lost_in` is every scope the loser
-    /// lost it in, whoever took it there.
+    /// Two different facts, kept apart rather than apportioned, and each field
+    /// named for the one it holds. `taken_in` is where **this winner** took
+    /// the key. `lost_in` is every scope the loser lost it in, whoever took it
+    /// there.
     ///
     /// They differ whenever eviction is widened: `hit.next` losing `n` to a
     /// file-view line loses it in the filter pane too, which nothing
@@ -64,10 +65,11 @@ pub(crate) enum Problem {
     /// key the *other* line took. A user who then deleted one line would
     /// expect `n` back in a pane that never gets it.
     ///
-    /// Merging them into one list is what produced that, so the fix is not
-    /// cleverer attribution but reporting the two facts separately.
+    /// One list serving both is what produced that, and a field called
+    /// `scopes` holding the loser's losses is what made the wrong sentence
+    /// feel right. Two fields, two names, two facts.
     Displaced {
-        scopes: Vec<Scope>,
+        taken_in: Vec<Scope>,
         key: String,
         winner: ActionId,
         loser: ActionId,
@@ -140,14 +142,14 @@ impl fmt::Display for Problem {
                 global.name(),
             ),
             Self::Displaced {
-                scopes,
+                taken_in,
                 key,
                 winner,
                 loser,
                 remaining,
                 lost_in,
             } => {
-                let names: Vec<String> = scopes
+                let names: Vec<String> = taken_in
                     .iter()
                     .map(|scope| scope.name().to_string())
                     .collect();
@@ -163,7 +165,7 @@ impl fmt::Display for Problem {
                 // not take it. Equal lists are the overwhelmingly common case
                 // — one winner, one scope — and they read as they always did,
                 // with nothing appended.
-                if lost_in != scopes {
+                if lost_in != taken_in {
                     let all: Vec<String> = lost_in
                         .iter()
                         .map(|scope| scope.name().to_string())
@@ -235,7 +237,7 @@ impl Report {
     fn displace(&mut self, scope: Scope, key: String, winner: ActionId, loser: ActionId) {
         self.evict.push((scope, key.clone(), loser));
         self.warnings.push(Problem::Displaced {
-            scopes: vec![scope],
+            taken_in: vec![scope],
             key,
             winner,
             loser,
@@ -395,18 +397,24 @@ pub(crate) fn check(built: &Keymap, written: &[ActionId]) -> Report {
     report
 }
 
-/// Gather each winner's scopes onto one warning, then say what the loser lost
+/// Gather what each winner took onto one warning, then say what the loser lost
 /// altogether.
 ///
 /// Two steps, because the two facts come from different places.
 ///
-/// **The winner's scopes are gathered from the warnings themselves.** Each
+/// **What a winner took is gathered from the warnings themselves.** Each
 /// raising recorded the one scope where it saw that winner beat that loser, so
 /// merging the raisings that share a key, a **winner** and a loser rebuilds
-/// exactly the set of scopes that winner took the key in. A global `n` is met
-/// against each pane separately and merges into one warning naming both; two
-/// different lines taking `n` from `hit.next` do not merge, and neither is
-/// credited with the scope the other took.
+/// exactly the set of scopes that winner took the key in.
+///
+/// Merging on the winner as well as the key and the loser is what keeps both
+/// properties at once. Two raisings of one loss still collapse, by either
+/// route — pass two meeting a global line against each pane, or pass one
+/// meeting a two-scope action's own groups — so a panel that truncates never
+/// spends two rows on one loss. Two *different* lines taking one key from one
+/// two-scope action do not collapse, and neither is credited with the scope
+/// the other took. Merging on the key and loser alone gave the first property
+/// by giving both warnings the same union, and paid for it with the second.
 ///
 /// **The loser's total loss comes from the evictions**, which is the one place
 /// that knows every row that went: `widen_evictions` removes rows that no pass
@@ -415,7 +423,7 @@ fn fill_scopes(report: &mut Report) {
     let mut merged: Vec<Problem> = Vec::new();
     for problem in report.warnings.drain(..) {
         let Problem::Displaced {
-            scopes,
+            taken_in,
             key,
             winner,
             loser,
@@ -426,7 +434,7 @@ fn fill_scopes(report: &mut Report) {
             continue;
         };
         let (key, winner, loser) = (key.clone(), *winner, *loser);
-        let raised_in = scopes.clone();
+        let raised_in = taken_in.clone();
 
         let same = merged.iter_mut().find(|seen| {
             matches!(
@@ -435,10 +443,10 @@ fn fill_scopes(report: &mut Report) {
                     if *k == key && *w == winner && *l == loser
             )
         });
-        if let Some(Problem::Displaced { scopes, .. }) = same {
+        if let Some(Problem::Displaced { taken_in, .. }) = same {
             for scope in raised_in {
-                if !scopes.contains(&scope) {
-                    scopes.push(scope);
+                if !taken_in.contains(&scope) {
+                    taken_in.push(scope);
                 }
             }
         } else {
@@ -629,7 +637,7 @@ mod tests {
         assert_eq!(
             report.warnings,
             vec![Problem::Displaced {
-                scopes: vec![Scope::Global],
+                taken_in: vec![Scope::Global],
                 key: "o".to_string(),
                 winner: ActionId::GlobalQuit,
                 loser: ActionId::GlobalEditorProject,
@@ -659,7 +667,7 @@ mod tests {
             report.warnings,
             vec![
                 Problem::Displaced {
-                    scopes: vec![Scope::Nav],
+                    taken_in: vec![Scope::Nav],
                     key: "j".to_string(),
                     winner: ActionId::GlobalQuit,
                     loser: ActionId::NavDown,
@@ -667,7 +675,7 @@ mod tests {
                     lost_in: vec![Scope::Nav],
                 },
                 Problem::Displaced {
-                    scopes: vec![Scope::View],
+                    taken_in: vec![Scope::View],
                     key: "j".to_string(),
                     winner: ActionId::GlobalQuit,
                     loser: ActionId::ViewDown,
@@ -675,7 +683,7 @@ mod tests {
                     lost_in: vec![Scope::View],
                 },
                 Problem::Displaced {
-                    scopes: vec![Scope::Filters],
+                    taken_in: vec![Scope::Filters],
                     key: "j".to_string(),
                     winner: ActionId::GlobalQuit,
                     loser: ActionId::FiltersDown,
@@ -839,7 +847,7 @@ mod tests {
         assert_eq!(
             report.warnings,
             vec![Problem::Displaced {
-                scopes: vec![Scope::Global],
+                taken_in: vec![Scope::Global],
                 key: "5".to_string(),
                 winner: ActionId::GlobalEditorProject,
                 loser: ActionId::GlobalFiltersToggle,
@@ -879,7 +887,7 @@ mod tests {
         assert_eq!(
             report.warnings,
             vec![Problem::Displaced {
-                scopes: vec![Scope::View],
+                taken_in: vec![Scope::View],
                 key: "n".to_string(),
                 winner: ActionId::ViewLineEnd,
                 loser: ActionId::HitNext,
@@ -918,7 +926,7 @@ mod tests {
             report.warnings,
             vec![
                 Problem::Displaced {
-                    scopes: vec![Scope::View],
+                    taken_in: vec![Scope::View],
                     key: "n".to_string(),
                     winner: ActionId::ViewLineEnd,
                     loser: ActionId::HitNext,
@@ -926,7 +934,7 @@ mod tests {
                     lost_in: vec![Scope::View, Scope::Filters],
                 },
                 Problem::Displaced {
-                    scopes: vec![Scope::Filters],
+                    taken_in: vec![Scope::Filters],
                     key: "n".to_string(),
                     winner: ActionId::FiltersSolo,
                     loser: ActionId::HitNext,
@@ -962,33 +970,43 @@ mod tests {
         }
     }
 
-    /// One loss met in two scopes is one warning, not two.
+    /// One loss met in two scopes is one warning, not two — by both of the
+    /// routes that reach the collapse.
     ///
-    /// Pass two meets a global line against each pane separately, so
+    /// A panel that truncates must not spend two rows on one loss, so the
+    /// merge matters; and it is reached by two different pieces of code, only
+    /// one of which used to be guarded.
+    ///
+    /// **Pass two** meets a global line against each pane separately, so
     /// `'global.quit' = 'n'` raises `hit.next` once in the file view and again
-    /// in the filter pane. Both describe the same loss — same key, same
-    /// winner, same loser — so once each carries both scopes they are one
-    /// warning said twice, and a panel that truncates must not spend two rows
-    /// saying it. This is the case that exercises the collapse in
-    /// `fill_scopes`; the two-scope test above raises only one warning to
+    /// in the filter pane. **Pass one** gets there another way: `'hit.next' =
+    /// 'N'` puts one winner and one loser in the View group and again in the
+    /// Filters group. Both describe a single loss — same key, same winner,
+    /// same loser — and merge into one warning carrying both scopes.
+    ///
+    /// The two-scope test above reaches neither: it raises only one warning to
     /// begin with.
     #[test]
     fn one_loss_met_in_two_scopes_is_one_warning() {
-        let report = report(&[("global.quit", &["n"])]);
+        // Named rather than shadowing the `report` helper, since this test
+        // builds two reports.
+        let displaced = |report: &Report, against: ActionId| -> Vec<Problem> {
+            report
+                .warnings
+                .iter()
+                .filter(|problem| {
+                    matches!(problem, Problem::Displaced { loser, .. } if *loser == against)
+                })
+                .cloned()
+                .collect()
+        };
 
-        let hit_next: Vec<Problem> = report
-            .warnings
-            .iter()
-            .filter(|problem| {
-                matches!(problem, Problem::Displaced { loser, .. } if *loser == ActionId::HitNext)
-            })
-            .cloned()
-            .collect();
-
+        // Pass two's route.
+        let global = report(&[("global.quit", &["n"])]);
         assert_eq!(
-            hit_next,
+            displaced(&global, ActionId::HitNext),
             vec![Problem::Displaced {
-                scopes: vec![Scope::View, Scope::Filters],
+                taken_in: vec![Scope::View, Scope::Filters],
                 key: "n".to_string(),
                 winner: ActionId::GlobalQuit,
                 loser: ActionId::HitNext,
@@ -996,17 +1014,37 @@ mod tests {
                 lost_in: vec![Scope::View, Scope::Filters],
             }],
             "one loss, one warning, naming both scopes: {:?}",
-            report.warnings
+            global.warnings
         );
 
         // The navigator's `n` is a different action losing its own key, so it
         // stays a warning in its own right — collapsing must not swallow it.
         assert!(
-            report.warnings.iter().any(|problem| {
-                matches!(problem, Problem::Displaced { loser, .. } if *loser == ActionId::NavHitNext)
-            }),
+            !displaced(&global, ActionId::NavHitNext).is_empty(),
             "nav.hit.next lost 'n' too and must still be reported: {:?}",
-            report.warnings
+            global.warnings
+        );
+
+        // Pass one's route, which is different code reaching the same merge.
+        let pane = report(&[("hit.next", &["N"])]);
+        assert_eq!(
+            displaced(&pane, ActionId::HitPrev),
+            vec![Problem::Displaced {
+                taken_in: vec![Scope::View, Scope::Filters],
+                key: "N".to_string(),
+                winner: ActionId::HitNext,
+                loser: ActionId::HitPrev,
+                remaining: vec![],
+                lost_in: vec![Scope::View, Scope::Filters],
+            }],
+            "pass one reaches the collapse too: {:?}",
+            pane.warnings
+        );
+        assert_eq!(
+            pane.evict.len(),
+            2,
+            "the row goes from both scopes, though one warning says so: {:?}",
+            pane.evict
         );
     }
 
