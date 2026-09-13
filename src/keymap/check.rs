@@ -250,12 +250,22 @@ impl fmt::Display for Problem {
 /// `every_default_key_renders_back_to_a_label` pins that every one of those
 /// can be read back.
 ///
-/// The three fields are **private**, and `displace` below is the only thing
-/// that writes a warning and its eviction. That is what makes the pairing an
-/// invariant rather than a convention: while they were `pub`, "by
-/// construction" held only inside this module, because any caller in the crate
-/// could push to one without the other. Everything outside reads, through the
-/// accessors.
+/// The three fields are **private**, which constrains the rest of the crate:
+/// three `pub` fields become read-only accessors, and a `Report` can no longer
+/// be built by struct literal outside this module.
+///
+/// That is defence in depth, and not what makes the pairing true — an earlier
+/// version of this comment claimed it was. Privacy is only module-deep: the
+/// `tests` child module below still reaches these fields directly, and the
+/// writer most likely to break the pairing is a new checking pass added beside
+/// `check`, `widen_evictions` and `fill_scopes`, which is precisely where
+/// passes live and precisely where privacy does nothing.
+///
+/// What carries the invariant is `displace`, the only thing that creates a
+/// `Displaced` warning, together with the `debug_assert!` in `fill_scopes`
+/// that catches a pass raising one without its eviction. That assert is
+/// debug-only, which is why the emptiness test in `Display` matters: it is a
+/// release build's whole protection against the malformed sentence.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub(crate) struct Report {
     errors: Vec<Problem>,
@@ -1260,6 +1270,99 @@ mod tests {
             vec![Scope::View, Scope::Filters],
             "stored in Scope order, not the order the rows were evicted in"
         );
+    }
+
+    /// No two distinct chords render the same label.
+    ///
+    /// This is what makes `fill_scopes` safe to merge warnings on the label
+    /// string rather than on the chord itself: two chords sharing a label would
+    /// fuse two warnings about genuinely different keys.
+    ///
+    /// The property holds by an argument that lives in `help.rs` and is easy to
+    /// lose, which is why it is pinned here, beside the code that relies on it.
+    /// Two collisions exist inside `Chord::label` and both are unconstructible.
+    /// `Char(' ')` renders `"space"` ignoring its prefix, so `Ctrl-space` would
+    /// collide with `space` — but `keys_for_label` matches `"space"` as a whole
+    /// word before stripping any prefix, leaving `"Ctrl-space"` to fall through
+    /// to the range arm and expand to nothing. And a chord carrying both
+    /// modifiers would render only its `Ctrl-` prefix — but `chords_for_label`
+    /// reads both flags with `starts_with`, and no string starts with `Ctrl-`
+    /// and `Alt-` at once, so that chord cannot be built.
+    ///
+    /// **Injectivity, not a round trip.** A round trip is too strong and would
+    /// fail: `'F5'` is a readable label whose chord renders `"any function
+    /// key"`, which reads back as nothing.
+    /// `every_default_key_renders_back_to_a_label` passes only because no
+    /// `DEFAULT` label is a function key, so it does not generalise to the
+    /// labels a user writes. Every function key collapsing to one chord is
+    /// `named_matches`'s doing and predates this branch; it costs no
+    /// injectivity, because the three F-chords still render apart.
+    #[test]
+    fn a_chord_renders_to_a_label_no_other_chord_shares() {
+        // The whole built-in table, plus every other shape the grammar reads.
+        let mut labels: Vec<String> = crate::keymap::DEFAULT
+            .iter()
+            .map(|(_, label, _)| (*label).to_string())
+            .collect();
+        for extra in [
+            "q",
+            "Q",
+            "Ctrl-q",
+            "Alt-q",
+            "space",
+            "Shift-Tab",
+            "BackTab",
+            "Ctrl-BackTab",
+            "Alt-BackTab",
+            "Enter",
+            "Ctrl-Enter",
+            "Alt-Enter",
+            "F1",
+            "F12",
+            "Ctrl-F1",
+            "Alt-F5",
+            "1-9",
+            "a-f",
+            "*-/",
+            "5-<",
+        ] {
+            labels.push(extra.to_string());
+        }
+
+        let mut chords: Vec<Chord> = labels
+            .iter()
+            .flat_map(|label| crate::help::chords_for_label(label))
+            .collect();
+        chords.sort_unstable();
+        chords.dedup();
+
+        // Named rather than counted: a count tells you injectivity broke, and
+        // the two chords tell you what to do about it — which is the whole
+        // value of the test on the day it fails.
+        let mut seen: Vec<(String, Chord)> = Vec::new();
+        for chord in &chords {
+            let label = chord.label();
+            assert!(
+                !seen.iter().any(|(taken, _)| *taken == label),
+                "two distinct chords render {label:?}: {:?} and {chord:?} — \
+                 `fill_scopes` merges on the label, so it would fuse warnings \
+                 about different keys",
+                seen.iter()
+                    .find(|(taken, _)| *taken == label)
+                    .map(|(_, other)| *other),
+            );
+            seen.push((label, *chord));
+        }
+
+        // The spellings the argument above turns on being unreadable. If any
+        // of these ever parses, `Char(' ')` or `Named(\"BackTab\")` gains a
+        // prefix it cannot render, and the collision becomes reachable.
+        for unreadable in ["Ctrl-space", "Alt-space", "Ctrl-Shift-Tab"] {
+            assert!(
+                crate::help::chords_for_label(unreadable).is_empty(),
+                "{unreadable} must stay unreadable"
+            );
+        }
     }
 
     /// Three written lines on one key name all three.
