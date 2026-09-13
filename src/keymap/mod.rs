@@ -1394,6 +1394,22 @@ mod tests {
             line.contains("'4'") && line.contains("'6'"),
             "the eight digits it kept must still be on the line: {line}"
         );
+
+        // And the value list must not still offer the key the comment says it
+        // lost. `losses` asks `reaches` first today, so the two halves of the
+        // line cannot disagree — but a change that separated them could
+        // satisfy every assertion above while printing '5' in both, a line
+        // claiming the action still holds the key it has just announced
+        // losing. Split on the annotation's own delimiter, because '5'
+        // belongs in the comment by design.
+        let value = line
+            .split("   #")
+            .next()
+            .expect("the value comes before the comment");
+        assert!(
+            !value.contains("'5'"),
+            "the key it lost must be gone from the value list: {line}"
+        );
     }
 
     /// Annotations are comments, so the output is still a `[keymap]` table
@@ -1506,6 +1522,10 @@ mod tests {
         // single row, so it is the only way the printed stanza can come to
         // describe a map it cannot rebuild.
         for (action, keys) in [
+            // A two-scope action as the **winner**, taking one key into both
+            // of its scopes at once. Nothing held this shape, and it is the
+            // one all-or-nothing eviction makes interesting.
+            ("hit.next", &["j"][..]),
             // A two-scope action robbed in one of its scopes.
             ("view.line.end", &["n"][..]),
             // One key taken out of a default range.
