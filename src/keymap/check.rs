@@ -26,13 +26,19 @@ use crate::help::Chord;
 /// the ordinary operation a `[keymap]` line performs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Problem {
-    /// Two written lines claim one key in one scope. An error: they are one
-    /// layer, so nothing chooses between them.
+    /// Two or more written lines claim one key in one scope. An error: they
+    /// are one layer, so nothing chooses between them.
+    ///
+    /// Every claimant, not the first two. "Every fault is reported together,
+    /// so one run tells you everything to correct" is what the README
+    /// promises, and reporting every error at once rather than one at a time
+    /// is the answer the project owner gave when asked directly. An error
+    /// naming two of three claimants would send a user back to the file a
+    /// second time for a fault recon had already seen.
     Ambiguous {
         scope: Scope,
         key: String,
-        first: ActionId,
-        second: ActionId,
+        actions: Vec<ActionId>,
     },
     /// A written pane line sits under a global binding. An error: the global
     /// scope is read first, so the line could never be reached.
@@ -54,22 +60,47 @@ pub(crate) enum Problem {
     },
 }
 
+/// `'a'`, `'b'` and `'c'` — a list a sentence can hold.
+fn join_and(names: &[String]) -> String {
+    match names {
+        [] => String::new(),
+        [only] => only.clone(),
+        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
+    }
+}
+
 impl fmt::Display for Problem {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Ambiguous {
                 scope,
                 key,
-                first,
-                second,
-            } => write!(
-                f,
-                "'{}' and '{}' both bind '{key}' in the {} scope. \
-                 Nothing chooses between them: give one of them another key.",
-                first.name(),
-                second.name(),
-                scope.name(),
-            ),
+                actions,
+            } => {
+                let names: Vec<String> = actions
+                    .iter()
+                    .map(|action| format!("'{}'", action.name()))
+                    .collect();
+                // Two read as a pair. Three or more need different advice:
+                // "give one of them another key" would leave the file still
+                // ambiguous between the two that remain.
+                if let [first, second] = names.as_slice() {
+                    write!(
+                        f,
+                        "{first} and {second} both bind '{key}' in the {} scope. \
+                         Nothing chooses between them: give one of them another key.",
+                        scope.name(),
+                    )
+                } else {
+                    write!(
+                        f,
+                        "{} all bind '{key}' in the {} scope. Nothing chooses between \
+                         them: leave the key to one of them and give the rest another key.",
+                        join_and(&names),
+                        scope.name(),
+                    )
+                }
+            }
             Self::Unreachable {
                 scope,
                 key,
@@ -222,12 +253,11 @@ pub(crate) fn check(built: &Keymap, written: &[ActionId]) -> Report {
             .filter(|action| written.contains(action))
             .collect();
 
-        if let [first, second, ..] = mine.as_slice() {
+        if mine.len() >= 2 {
             report.errors.push(Problem::Ambiguous {
                 scope: claim.scope,
                 key: claim.key.label(),
-                first: *first,
-                second: *second,
+                actions: mine.clone(),
             });
             continue;
         }
@@ -447,8 +477,7 @@ mod tests {
             vec![Problem::Ambiguous {
                 scope: Scope::Global,
                 key: "=".to_string(),
-                first: ActionId::GlobalQuit,
-                second: ActionId::GlobalReload,
+                actions: vec![ActionId::GlobalQuit, ActionId::GlobalReload],
             }],
             "one layer gives no order, so recon must refuse"
         );
@@ -635,8 +664,7 @@ mod tests {
             vec![Problem::Ambiguous {
                 scope: Scope::Global,
                 key: "3".to_string(),
-                first: ActionId::GlobalQuit,
-                second: ActionId::GlobalReload,
+                actions: vec![ActionId::GlobalQuit, ActionId::GlobalReload],
             }],
             "1 and 2 are quit's alone, 4 and 5 are reload's: only 3 is contested"
         );
@@ -690,5 +718,48 @@ mod tests {
             )],
             "one key of the row goes, not the row"
         );
+    }
+
+    /// Three written lines on one key name all three.
+    ///
+    /// The README promises that one run tells you everything to correct, and
+    /// an error naming two of three claimants breaks that promise: the user
+    /// corrects the file, runs recon again and is told about the third. It
+    /// matters more after the grouping became concrete, since one range can
+    /// now put several written lines in one group.
+    #[test]
+    fn three_written_lines_on_one_key_name_every_one_of_them() {
+        let report = report(&[
+            ("global.quit", &["="]),
+            ("global.reload", &["="]),
+            ("global.peek", &["="]),
+        ]);
+
+        assert_eq!(report.errors.len(), 1, "{report:?}");
+        let Problem::Ambiguous {
+            scope,
+            key,
+            actions,
+        } = &report.errors[0]
+        else {
+            panic!("a contested key is Ambiguous: {report:?}");
+        };
+        assert_eq!(*scope, Scope::Global);
+        assert_eq!(key, "=");
+        assert_eq!(actions.len(), 3, "{actions:?}");
+        for claimant in [
+            ActionId::GlobalQuit,
+            ActionId::GlobalReload,
+            ActionId::GlobalPeek,
+        ] {
+            assert!(actions.contains(&claimant), "{actions:?}");
+        }
+
+        // The message is what a user actually sees, so it has to name them
+        // all as well.
+        let said = report.errors[0].to_string();
+        for name in ["global.quit", "global.reload", "global.peek"] {
+            assert!(said.contains(name), "{name} is missing from: {said}");
+        }
     }
 }
