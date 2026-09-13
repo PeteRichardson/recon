@@ -176,6 +176,7 @@ fn keys_for_label(label: &str) -> Vec<Key> {
     if label == "Shift-Tab" {
         return vec![Key::Named("BackTab")];
     }
+    let prefixed = label.starts_with("Ctrl-") || label.starts_with("Alt-");
     let bare = label
         .strip_prefix("Ctrl-")
         .or_else(|| label.strip_prefix("Alt-"))
@@ -187,12 +188,33 @@ fn keys_for_label(label: &str) -> Vec<Key> {
         return vec![Key::Named("F")];
     }
     let chars: Vec<char> = bare.chars().collect();
-    match chars.as_slice() {
+    let keys = match chars.as_slice() {
         [c] => vec![Key::Char(*c)],
-        // `1-9`: one label, nine keys. Only for a bare range — a `Ctrl-`
-        // prefix was stripped above, so `Ctrl-d` is `d`.
+        // `1-9`: one label, nine keys. A **prefixed** range is read too —
+        // `Ctrl-*-/` is `Ctrl-!` through `Ctrl-/`, and those all work. This
+        // comment used to say ranges were bare-only, which the code had never
+        // obeyed; the one key a prefixed range cannot yield is the space bar,
+        // and that carve-out is below rather than here.
         [a, '-', b] if a < b => (*a..=*b).map(Key::Char).collect(),
         _ => Vec::new(),
+    };
+    // A modifier and the space bar together have no spelling in this grammar.
+    // `Chord::label` renders `Char(' ')` as `space` whatever the modifiers
+    // are, so a prefixed label reaching it produced a chord that rendered as
+    // the *plain* space chord and collided with it: recon reported a contest
+    // on `space`, a key the user never wrote and which `global.peek` really
+    // holds, and `Keymap::evict` could not read the label back to find the row.
+    //
+    // Two arms above reach it — the range arm via `Ctrl- -!`, and the single
+    // character arm via `Ctrl- ` with a literal space — so the carve-out sits
+    // here, past both, rather than inside either. A bare range keeps its space:
+    // that chord renders `space` correctly and reads back.
+    if prefixed {
+        keys.into_iter()
+            .filter(|key| *key != Key::Char(' '))
+            .collect()
+    } else {
+        keys
     }
 }
 
@@ -255,8 +277,15 @@ impl Chord {
         };
         match self.key {
             // `space` and `Shift-Tab` are read as whole words, so a modified
-            // one has no spelling in the grammar at all — and no label the
-            // grammar reads can produce one, so none can need rendering.
+            // one has no spelling in the grammar, and this arm drops the
+            // prefix because it has nowhere to put it.
+            //
+            // That is safe only because `keys_for_label` refuses to hand a
+            // prefixed label a `Char(' ')` at all. An earlier version of this
+            // comment claimed no readable label could produce one, which was
+            // false: `Ctrl- -!` and `Ctrl- ` both did, and both rendered as
+            // the plain space chord. The claim is true now because the
+            // carve-out makes it true, not on its own.
             Key::Char(' ') => "space".to_string(),
             Key::Named("BackTab") if prefix.is_empty() => "Shift-Tab".to_string(),
             Key::Named("F") if prefix.is_empty() => "any function key".to_string(),

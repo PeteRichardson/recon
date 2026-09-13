@@ -178,12 +178,23 @@ impl fmt::Display for Problem {
                     taken.iter().map(|scope| scope.name().to_string()).collect();
                 write!(
                     f,
-                    "'{}' takes '{key}' from '{}' in the {} {}",
+                    "'{}' takes '{key}' from '{}'",
                     winner.name(),
                     loser.name(),
-                    join_and(&names),
-                    scope_noun(names.len()),
                 )?;
+                // The same guard the second clause carries, for the same
+                // reason: `taken_in` is unreachable-empty by construction, and
+                // `Display` is a release build's only protection if that ever
+                // stops being true. Without it an empty list renders "in the
+                // scopes" with a doubled space, exactly as `lost_in` did.
+                if !names.is_empty() {
+                    write!(
+                        f,
+                        " in the {} {}",
+                        join_and(&names),
+                        scope_noun(names.len()),
+                    )?;
+                }
                 // Only when the loser lost the key somewhere this winner did
                 // not take it. A set comparison, not a `Vec` one: the same
                 // scopes in another order are not a second fact, and saying
@@ -1272,6 +1283,39 @@ mod tests {
         );
     }
 
+    /// The first clause guards its scope list exactly as the second does.
+    ///
+    /// `taken_in` is unreachable-empty by construction, the same as `lost_in`,
+    /// and is protected in a release build only here. Without the guard it
+    /// renders `takes 'n' from 'hit.next' in the  scopes` — the identical
+    /// doubled-space render that was removed from the second clause, left in
+    /// place on the first only because nobody looked at the adjacent line.
+    #[test]
+    fn an_empty_taken_in_prints_no_scope_phrase() {
+        let problem = Problem::Displaced {
+            taken_in: vec![],
+            key: "n".to_string(),
+            winner: ActionId::ViewLineEnd,
+            loser: ActionId::HitNext,
+            remaining: vec![],
+            lost_in: vec![Scope::View, Scope::Filters],
+        };
+
+        let said = problem.to_string();
+        assert!(
+            !said.contains("in the  "),
+            "the doubled space is the malformed render this guards: {said}"
+        );
+        assert!(
+            said.starts_with("'view.line.end' takes 'n' from 'hit.next';"),
+            "the clause drops its scope phrase and stays a sentence: {said}"
+        );
+        assert!(
+            said.contains("'hit.next' loses 'n' in the view and filters scopes"),
+            "and what is known is still said: {said}"
+        );
+    }
+
     /// No two distinct chords render the same label.
     ///
     /// This is what makes `fill_scopes` safe to merge warnings on the label
@@ -1280,14 +1324,22 @@ mod tests {
     ///
     /// The property holds by an argument that lives in `help.rs` and is easy to
     /// lose, which is why it is pinned here, beside the code that relies on it.
-    /// Two collisions exist inside `Chord::label` and both are unconstructible.
-    /// `Char(' ')` renders `"space"` ignoring its prefix, so `Ctrl-space` would
-    /// collide with `space` — but `keys_for_label` matches `"space"` as a whole
-    /// word before stripping any prefix, leaving `"Ctrl-space"` to fall through
-    /// to the range arm and expand to nothing. And a chord carrying both
-    /// modifiers would render only its `Ctrl-` prefix — but `chords_for_label`
-    /// reads both flags with `starts_with`, and no string starts with `Ctrl-`
-    /// and `Alt-` at once, so that chord cannot be built.
+    ///
+    /// An earlier version of this comment said two collisions existed inside
+    /// `Chord::label` and both were unconstructible. **There was a third and it
+    /// was constructible**, which is why the corpus below now carries the
+    /// labels that reach it rather than only the shapes the argument had
+    /// already considered. `Char(' ')` renders `"space"` whatever its prefix,
+    /// and a prefixed label could reach that arm two ways: `Ctrl- -!` through
+    /// the range arm, and `Ctrl- ` through the single character arm.
+    /// `keys_for_label` now refuses `Char(' ')` to any prefixed label, so the
+    /// collision is gone — by a carve-out, not by luck.
+    ///
+    /// The two that really were unconstructible: `Ctrl-space` is unreadable,
+    /// because `"space"` is matched as a whole word before any prefix is
+    /// stripped; and a chord with both modifiers cannot be built, because
+    /// `chords_for_label` reads both flags with `starts_with` and no string
+    /// starts with `Ctrl-` and `Alt-` at once.
     ///
     /// **Injectivity, not a round trip.** A round trip is too strong and would
     /// fail: `'F5'` is a readable label whose chord renders `"any function
@@ -1325,6 +1377,14 @@ mod tests {
             "a-f",
             "*-/",
             "5-<",
+            // The three that broke injectivity, or would have. The first two
+            // reach `Char(' ')` through a prefix — the range arm and the
+            // single character arm — and both rendered as the plain space
+            // chord until `keys_for_label` carved it out. The third is the
+            // bare range that must keep its space.
+            "Ctrl- -!",
+            "Ctrl- ",
+            " -!",
         ] {
             labels.push(extra.to_string());
         }
