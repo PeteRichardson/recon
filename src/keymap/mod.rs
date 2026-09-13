@@ -495,7 +495,15 @@ pub(crate) const DEFAULT: &[(Scope, &str, ActionId)] = &[
 pub(crate) const RESERVED: &[(&str, &str)] =
     &[("-", "the hex view (#242)"), (":", "a command palette")];
 
-/// Which of `labels` are reserved, each paired with what claims it.
+/// Which reserved keys `labels` binds, each paired with what claims it.
+///
+/// Compared as **keys**, not as label text. One label can name many keys, and
+/// no range is spelled `-` or `:`: `'*-/'` covers `-` and `'5-<'` covers `:`,
+/// so a string comparison against `RESERVED` matched neither and the warning
+/// this constant exists to raise never fired. The promise is that a key 1.1
+/// takes is one 1.0 already said was taken, and a user who bound a reserved
+/// key inside a range would have lost it at the upgrade without ever being
+/// told.
 ///
 /// A pure function of the label list one `[keymap]` line supplies for one
 /// action — never of the action's scopes — which is what makes "one
@@ -506,14 +514,22 @@ pub(crate) const RESERVED: &[(&str, &str)] =
 /// a two-scope action cannot make it report a key twice. Extracted from
 /// `Keymap::new`'s loop so a test can call it with the same list `Keymap::new`
 /// would build for `hit.next`, without a logging harness.
+///
+/// Walking `RESERVED` on the outside keeps that same "once each" true of the
+/// labels as well: a line naming one reserved key twice, as `['-', '*-/']`
+/// does, is one warning and not two.
 fn reserved_hits(labels: &[String]) -> Vec<(&'static str, &'static str)> {
-    labels
+    let bound: Vec<crate::help::Chord> = labels
         .iter()
-        .filter_map(|label| {
-            RESERVED
+        .flat_map(|label| crate::help::chords_for_label(label))
+        .collect();
+    RESERVED
+        .iter()
+        .copied()
+        .filter(|(reserved, _)| {
+            crate::help::chords_for_label(reserved)
                 .iter()
-                .copied()
-                .find(|(reserved, _)| *reserved == label.as_str())
+                .any(|key| bound.contains(key))
         })
         .collect()
 }
@@ -634,9 +650,12 @@ impl Keymap {
             // reason `check_sets` is called there rather than from
             // `Config::load` — so a warning still reaches stderr rather than
             // being dropped by `Muted` (#246).
-            for (label, claim) in reserved_hits(labels) {
+            // The reserved key that was found, not the label the line was
+            // written with: a range names many keys and only one of them is
+            // reserved, so `'*-/'` has to be reported as `-`.
+            for (key, claim) in reserved_hits(labels) {
                 reserved.push(format!(
-                    "{name} binds '{label}', which is reserved for {claim}; \
+                    "{name} binds '{key}', which is reserved for {claim}; \
                      a later release will want it back, but recon binds it anyway"
                 ));
             }
@@ -1675,6 +1694,45 @@ mod tests {
             vec![("-", "the hex view (#242)")],
             "hit.next holds two scopes, but one config line must warn once"
         );
+    }
+
+    /// A range that covers a reserved key binds it, so it has to warn about
+    /// it.
+    ///
+    /// `reserved_hits` compared label text, and no range is spelled `-` or
+    /// `:`, so `'*-/'` took the hex view's key in silence — the one failure
+    /// `RESERVED` exists to prevent. The warning names the reserved key that
+    /// was found rather than the label written, because `'*-/'` is not a key.
+    #[test]
+    fn a_range_covering_a_reserved_key_warns_about_that_key() {
+        // '*' through '/' covers '-'; '5' through '<' covers ':'.
+        assert_eq!(
+            reserved_hits(&["*-/".to_string()]),
+            vec![("-", "the hex view (#242)")],
+            "a range covering '-' binds it, so it must be reported as '-'"
+        );
+        assert_eq!(
+            reserved_hits(&["5-<".to_string()]),
+            vec![(":", "a command palette")]
+        );
+        // And a line reaching one reserved key two ways is still one warning.
+        assert_eq!(
+            reserved_hits(&["-".to_string(), "*-/".to_string()]),
+            vec![("-", "the hex view (#242)")]
+        );
+    }
+
+    /// The guard against over-warning. `1-9` is `global.filters.toggle`'s own
+    /// default, so a check that fired here would warn about the built-in
+    /// table on a config that says nothing.
+    #[test]
+    fn a_range_covering_no_reserved_key_stays_silent() {
+        for range in ["1-9", "a-f", "A-Z"] {
+            assert!(
+                reserved_hits(&[range.to_string()]).is_empty(),
+                "{range} covers neither reserved key"
+            );
+        }
     }
 
     #[test]
