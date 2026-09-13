@@ -999,15 +999,15 @@ impl Config {
         // itself is E0446 — a private type in a public interface — and will
         // not compile. Rendering also keeps `Problem`'s `Display` the single
         // place any of this is worded.
-        if !report.errors.is_empty() {
+        if !report.errors().is_empty() {
             return Err(ConfigError::Inconsistent {
-                problems: report.errors.iter().map(ToString::to_string).collect(),
+                problems: report.errors().iter().map(ToString::to_string).collect(),
             });
         }
-        keymap.evict(&report.evict);
+        keymap.evict(report.evict());
         Ok((
             keymap,
-            report.warnings.iter().map(ToString::to_string).collect(),
+            report.warnings().iter().map(ToString::to_string).collect(),
         ))
     }
 

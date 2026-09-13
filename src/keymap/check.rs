@@ -241,14 +241,36 @@ impl fmt::Display for Problem {
 /// not write, so its rows are `DEFAULT`'s own, and
 /// `every_default_key_renders_back_to_a_label` pins that every one of those
 /// can be read back.
+///
+/// The three fields are **private**, and `displace` below is the only thing
+/// that writes a warning and its eviction. That is what makes the pairing an
+/// invariant rather than a convention: while they were `pub`, "by
+/// construction" held only inside this module, because any caller in the crate
+/// could push to one without the other. Everything outside reads, through the
+/// accessors.
 #[derive(Debug, Default, PartialEq, Eq)]
 pub(crate) struct Report {
-    pub errors: Vec<Problem>,
-    pub warnings: Vec<Problem>,
-    pub evict: Vec<(Scope, String, ActionId)>,
+    errors: Vec<Problem>,
+    warnings: Vec<Problem>,
+    evict: Vec<(Scope, String, ActionId)>,
 }
 
 impl Report {
+    /// The faults that stop recon starting.
+    pub(crate) fn errors(&self) -> &[Problem] {
+        &self.errors
+    }
+
+    /// What the file cost, which recon reports and then carries on.
+    pub(crate) fn warnings(&self) -> &[Problem] {
+        &self.warnings
+    }
+
+    /// The rows `Keymap::evict` has to remove for a written line to win.
+    pub(crate) fn evict(&self) -> &[(Scope, String, ActionId)] {
+        &self.evict
+    }
+
     /// Record a default losing a key: the row that must go, and the warning
     /// that says so.
     ///
@@ -503,7 +525,13 @@ fn fill_scopes(report: &mut Report) {
             !lost.is_empty(),
             "a displaced warning with no eviction behind it: {lost_by:?} lost {lost_key:?}"
         );
-        *lost_in = lost;
+        // Belt as well as braces. The assert documents a fact; this keeps a
+        // release build from printing "loses 'n' in the  scopes" — a doubled
+        // space, `join_and(&[])` empty and `scope_noun(0)` pluralised — if the
+        // fact ever stops being true.
+        if !lost.is_empty() {
+            *lost_in = lost;
+        }
     }
 }
 

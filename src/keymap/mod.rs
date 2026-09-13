@@ -1241,7 +1241,7 @@ mod tests {
         let defaults = Keymap::default();
         let (mut keymap, _) = Keymap::new(&overlay("global.reload", &["F5"])).expect("valid");
         let report = check::check(&keymap, &[ActionId::GlobalReload]);
-        keymap.evict(&report.evict);
+        keymap.evict(report.evict());
 
         let printed = print_keymap(&keymap, &defaults);
         let line = printed
@@ -1271,7 +1271,7 @@ mod tests {
         let defaults = Keymap::default();
         let (mut keymap, _) = Keymap::new(&overlay("global.quit", &["j"])).expect("valid");
         let report = check::check(&keymap, &[ActionId::GlobalQuit]);
-        keymap.evict(&report.evict);
+        keymap.evict(report.evict());
 
         let printed = print_keymap(&keymap, &defaults);
         for action in ["'nav.down'", "'view.down'", "'filters.down'"] {
@@ -1296,7 +1296,7 @@ mod tests {
         let defaults = Keymap::default();
         let (mut keymap, _) = Keymap::new(&overlay("filters.exclude", &["j"])).expect("valid");
         let report = check::check(&keymap, &[ActionId::FiltersExclude]);
-        keymap.evict(&report.evict);
+        keymap.evict(report.evict());
 
         let printed = print_keymap(&keymap, &defaults);
         let line = printed
@@ -1334,7 +1334,7 @@ mod tests {
         let defaults = Keymap::default();
         let (mut keymap, _) = Keymap::new(&overlay("view.word.forward", &["k"])).expect("valid");
         let report = check::check(&keymap, &[ActionId::ViewWordForward]);
-        keymap.evict(&report.evict);
+        keymap.evict(report.evict());
 
         let printed = print_keymap(&keymap, &defaults);
         let line = printed
@@ -1374,7 +1374,7 @@ mod tests {
         let (mut keymap, _) =
             Keymap::new(&overlay("global.editor.project", &["5"])).expect("valid");
         let report = check::check(&keymap, &[ActionId::GlobalEditorProject]);
-        keymap.evict(&report.evict);
+        keymap.evict(report.evict());
 
         let printed = print_keymap(&keymap, &defaults);
         let line = printed
@@ -1420,7 +1420,7 @@ mod tests {
         let defaults = Keymap::default();
         let (mut keymap, _) = Keymap::new(&overlay("global.reload", &["F5"])).expect("valid");
         let report = check::check(&keymap, &[ActionId::GlobalReload]);
-        keymap.evict(&report.evict);
+        keymap.evict(report.evict());
 
         let printed = print_keymap(&keymap, &defaults);
         let parsed: crate::config::FileConfig =
@@ -1536,8 +1536,8 @@ mod tests {
             let (mut keymap, _) = Keymap::new(&overlay(action, keys)).expect("valid");
             let written = vec![action_named(action).expect("a real action")];
             let report = check::check(&keymap, &written);
-            assert_eq!(report.errors, vec![], "{action}: {report:?}");
-            keymap.evict(&report.evict);
+            assert!(report.errors().is_empty(), "{action}: {report:?}");
+            keymap.evict(report.evict());
 
             let printed = print_keymap(&keymap, &Keymap::default());
             let parsed: crate::config::FileConfig = toml::from_str(&printed)
@@ -1867,7 +1867,7 @@ mod tests {
     fn a_written_line_beats_a_default_on_the_same_key() {
         let (mut keymap, _) = Keymap::new(&overlay("global.reload", &["q"])).expect("valid");
         let report = check::check(&keymap, &[ActionId::GlobalReload]);
-        keymap.evict(&report.evict);
+        keymap.evict(report.evict());
 
         let q = normalise(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::empty()));
         assert_eq!(
@@ -1890,7 +1890,7 @@ mod tests {
         let (mut keymap, _) =
             Keymap::new(&overlay("global.editor.project", &["5"])).expect("valid");
         let report = check::check(&keymap, &[ActionId::GlobalEditorProject]);
-        keymap.evict(&report.evict);
+        keymap.evict(report.evict());
 
         let five = normalise(KeyEvent::new(KeyCode::Char('5'), KeyModifiers::empty()));
         let four = normalise(KeyEvent::new(KeyCode::Char('4'), KeyModifiers::empty()));
@@ -1920,7 +1920,7 @@ mod tests {
         let defaults = Keymap::default();
         let (mut keymap, _) = Keymap::new(&overlay("view.line.end", &["n"])).expect("valid");
         let report = check::check(&keymap, &[ActionId::ViewLineEnd]);
-        keymap.evict(&report.evict);
+        keymap.evict(report.evict());
 
         let n = normalise(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::empty()));
         assert_eq!(
@@ -1976,7 +1976,7 @@ mod tests {
     fn a_shadowed_pane_key_leaves_the_actions_label_list() {
         let (mut keymap, _) = Keymap::new(&overlay("global.quit", &["j"])).expect("valid");
         let report = check::check(&keymap, &[ActionId::GlobalQuit]);
-        keymap.evict(&report.evict);
+        keymap.evict(report.evict());
 
         assert!(
             !keymap.labels_for(ActionId::NavDown).contains(&"j"),
