@@ -170,6 +170,13 @@ pub struct Config {
     #[arg(skip)]
     pub bindings: crate::keymap::Keymap,
 
+    /// What the `[keymap]` table cost, for the panel `App` draws on its first
+    /// frame. Filled by `main` beside `bindings`, and for the same reason:
+    /// `App::new` returns `Self`, so it can carry neither an error nor a
+    /// warning. Empty for every `Config` a test builds by hand.
+    #[arg(skip)]
+    pub keymap_warnings: Vec<String>,
+
     /// Whether a jump to a line the pane is not showing — `n`, `N`, `G` —
     /// puts that line in the middle of the pane. Off, it scrolls in by the
     /// minimum and lands on the scroll margin's edge. `None` is unset:
@@ -266,6 +273,7 @@ impl Default for Config {
             filter_sets: Vec::new(),
             keymap: None,
             bindings: crate::keymap::Keymap::default(),
+            keymap_warnings: Vec::new(),
             center_jumps: None,
             theme: None,
             emit: None,
@@ -678,6 +686,11 @@ pub enum ConfigError {
     /// `[keymap]` giving a key spelling that cannot be parsed. Carries the
     /// action so the message names the line, not just the spelling.
     BadKeyLabel { action: String, label: String },
+    /// `[keymap]` asking for something recon cannot do: two lines claiming one
+    /// key, or a pane line the global scope would always answer first. Carries
+    /// every fault rather than the first, so one run is enough to correct the
+    /// file.
+    Inconsistent { problems: Vec<String> },
 }
 
 impl fmt::Display for ConfigError {
@@ -725,6 +738,16 @@ impl fmt::Display for ConfigError {
                 f,
                 "cannot read the key {label:?} bound to {action:?} in [keymap]"
             ),
+            // Each fault on its own line, for the reason `Parse` renders
+            // multi-line: a list jammed after a colon is unreadable, and this
+            // is deliberately a list.
+            Self::Inconsistent { problems } => {
+                writeln!(f, "[keymap] cannot be used as written:")?;
+                for problem in problems {
+                    writeln!(f, "  {problem}")?;
+                }
+                write!(f, "Correct config.toml and start recon again.")
+            }
         }
     }
 }
@@ -888,27 +911,58 @@ impl Config {
         Ok(())
     }
 
-    /// The keymap this config asks for: the defaults with `[keymap]` folded
-    /// in, or the defaults alone when the file said nothing about keys.
+    /// Every binding in force, and whatever the file cost that is worth
+    /// saying out loud.
     ///
-    /// Called once by `main` and assigned to `bindings`, before
-    /// `init_terminal` — the same shape `filter_sets` is filled in, and it
-    /// has to happen there rather than in `App::new` for two reasons that
-    /// `App::new`'s signature cannot satisfy (#61). A refusal has to reach a
-    /// screen that is not about to be replaced by the alternate one, and
-    /// `App::new` returns `Self`, so an error there could only panic behind a
-    /// raised screen or be swallowed. And a `log::warn!` raised while
-    /// building has to be logged before the TUI owns the screen, or `Muted`
-    /// drops it (#246) — which is what a reserved-key warning will need.
+    /// Three steps, in this order. `Keymap::new` folds `[keymap]` over the
+    /// defaults, leaving a contested key claimed by two actions. `check`
+    /// reads that and says which claims are faults, which are costs, and
+    /// which rows must go. Then the rows go, which is what makes a written
+    /// line win — see `Keymap::evict`.
+    ///
+    /// `main` calls this before the terminal comes up, so an error still
+    /// reaches a screen that a user can read, and the warnings are in hand
+    /// before `Muted` starts dropping records (#246).
     ///
     /// # Errors
     ///
-    /// [`ConfigError::UnknownAction`] or [`ConfigError::BadKeyLabel`].
-    pub fn build_keymap(&self) -> Result<crate::keymap::Keymap, ConfigError> {
-        match &self.keymap {
-            Some(overlay) => crate::keymap::Keymap::new(overlay),
-            None => Ok(crate::keymap::Keymap::default()),
+    /// [`ConfigError::UnknownAction`], [`ConfigError::BadKeyLabel`] or
+    /// [`ConfigError::Inconsistent`].
+    pub fn build_keymap(&self) -> Result<(crate::keymap::Keymap, Vec<String>), ConfigError> {
+        let overlay = self.keymap.clone().unwrap_or_default();
+        let (mut keymap, reserved) = crate::keymap::Keymap::new(&overlay)?;
+
+        // Logged here rather than inside `Keymap::new`, which cannot read a
+        // `Config` and so cannot know whether the user asked for silence.
+        // Still on stderr and not in the panel: binding `-` or `:` is a
+        // deliberate choice that no keymap edit answers, so a panel meaning
+        // "correct this" would ask again at every start.
+        for warning in reserved {
+            log::warn!("{warning}");
         }
+
+        let written: Vec<crate::keymap::ActionId> = overlay
+            .bindings
+            .keys()
+            .filter_map(|name| crate::keymap::action_named(name))
+            .collect();
+        let report = crate::keymap::check::check(&keymap, &written);
+
+        // Rendered here, at the boundary. `ConfigError` is public API and
+        // `check::Problem` is `pub(crate)`, so a variant carrying the type
+        // itself is E0446 — a private type in a public interface — and will
+        // not compile. Rendering also keeps `Problem`'s `Display` the single
+        // place any of this is worded.
+        if !report.errors.is_empty() {
+            return Err(ConfigError::Inconsistent {
+                problems: report.errors.iter().map(ToString::to_string).collect(),
+            });
+        }
+        keymap.evict(&report.evict);
+        Ok((
+            keymap,
+            report.warnings.iter().map(ToString::to_string).collect(),
+        ))
     }
 
     /// Run the whole precedence chain: parse the CLI (which `clap` has already
@@ -2210,7 +2264,7 @@ mod tests {
         };
 
         assert_ne!(
-            config.build_keymap().expect("a valid stanza"),
+            config.build_keymap().expect("a valid stanza").0,
             Keymap::default(),
             "the overlay never reached the table"
         );
@@ -2235,8 +2289,40 @@ mod tests {
         assert_eq!(
             Config::default()
                 .build_keymap()
-                .expect("saying nothing is valid"),
+                .expect("saying nothing is valid")
+                .0,
             Keymap::default()
+        );
+    }
+
+    /// Pete's decision: one run must tell you everything to correct, because a
+    /// file with four faults would otherwise need four runs.
+    #[test]
+    fn every_consistency_error_is_reported_at_one_time() {
+        let mut bindings = std::collections::BTreeMap::new();
+        // Two written lines on one key.
+        bindings.insert("global.quit".to_string(), vec!["x".to_string()]);
+        bindings.insert("global.reload".to_string(), vec!["x".to_string()]);
+        // A pane line under a default global binding.
+        bindings.insert("nav.up".to_string(), vec!["?".to_string()]);
+        let config = Config {
+            keymap: Some(KeymapConfig { bindings }),
+            ..Config::default()
+        };
+
+        let err = config.build_keymap().expect_err("must refuse");
+        let rendered = err.to_string();
+
+        assert!(rendered.contains("global.quit"), "{rendered}");
+        assert!(rendered.contains("global.reload"), "{rendered}");
+        assert!(rendered.contains("nav.up"), "{rendered}");
+        assert_eq!(
+            rendered
+                .lines()
+                .filter(|line| line.contains("bind"))
+                .count(),
+            2,
+            "both faults must be on the report, not just the first:\n{rendered}"
         );
     }
 

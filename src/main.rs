@@ -55,7 +55,9 @@ fn main() -> Result<ExitCode> {
     // `App::new`, which returns `Self` and can carry neither the error nor
     // the warning. After `--print-keymap` above, which is how a user finds
     // the name they meant.
-    config.bindings = config.build_keymap()?;
+    let (bindings, keymap_warnings) = config.build_keymap()?;
+    config.bindings = bindings;
+    config.keymap_warnings = keymap_warnings;
 
     // Headless (#143): `--emit` with no terminal on stdin. A TUI needs stdin
     // for its keys, so a pipe or `/dev/null` there is not a session that

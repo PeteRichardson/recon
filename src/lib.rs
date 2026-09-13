@@ -13087,7 +13087,7 @@ mod tests {
             ..Config::default()
         };
         let mut app = App::new(&Config {
-            bindings: config.build_keymap().expect("valid"),
+            bindings: config.build_keymap().expect("valid").0,
             ..config
         });
         app.view_stale = true;

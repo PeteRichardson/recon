@@ -15,14 +15,6 @@
 //! file named, and it returns findings. It opens no file, touches no terminal
 //! and logs nothing, which is what makes every rule directly testable.
 
-// Every item here is `pub(crate)` and nothing outside this module's own tests
-// calls the checker until `Config::build_keymap` does. rustc's dead-code
-// analysis has no root to reach them from, so the lib target reports all of
-// them — and `Problem::Unreachable` is unconstructed even by this module's
-// tests until the cross-scope rules arrive. Removed once the checker is wired
-// in; leaving it would hide a checker that had stopped being called.
-#![allow(dead_code)]
-
 use std::fmt;
 
 use super::{ActionId, Keymap, Scope};
@@ -143,13 +135,6 @@ pub(crate) struct Report {
     pub errors: Vec<Problem>,
     pub warnings: Vec<Problem>,
     pub evict: Vec<(Scope, String, ActionId)>,
-}
-
-impl Report {
-    /// Nothing to say: the keymap is consistent.
-    pub(crate) fn is_silent(&self) -> bool {
-        self.errors.is_empty() && self.warnings.is_empty()
-    }
 }
 
 /// One key in one scope, and every action that claims it, in table order.
@@ -354,7 +339,7 @@ mod tests {
     }
 
     fn report(pairs: &[(&str, &[&str])]) -> Report {
-        let built = Keymap::new(&overlay(pairs)).expect("valid");
+        let (built, _) = Keymap::new(&overlay(pairs)).expect("valid");
         check(&built, &written(pairs))
     }
 
@@ -532,11 +517,10 @@ mod tests {
             bindings.insert(name.clone(), keys.clone());
         }
         let overlay = crate::config::KeymapConfig { bindings };
-        let built = Keymap::new(&overlay).expect("valid");
+        let (built, _) = Keymap::new(&overlay).expect("valid");
         let written: Vec<ActionId> = crate::keymap::every_action().collect();
 
         let report = check(&built, &written);
-        assert!(report.is_silent(), "{report:?}");
-        assert_eq!(report.evict, vec![]);
+        assert_eq!(report, Report::default(), "{report:?}");
     }
 }

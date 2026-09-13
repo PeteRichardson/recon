@@ -95,8 +95,6 @@ impl Scope {
     /// `hit.prev` cannot: they are bare names living in both `View` and
     /// `Filters`, so a collision involving one has no scope to read and needs
     /// this instead.
-    #[allow(dead_code)] // Called only by check::Problem's Display, which is itself
-    // unreachable until the checker is wired in. Removed then.
     pub(crate) fn name(self) -> &'static str {
         match self {
             Self::Prompt => "prompt",
@@ -608,8 +606,9 @@ impl Keymap {
     /// nothing.
     pub(crate) fn new(
         overlay: &crate::config::KeymapConfig,
-    ) -> Result<Self, crate::config::ConfigError> {
+    ) -> Result<(Self, Vec<String>), crate::config::ConfigError> {
         let mut keymap = Self::default();
+        let mut reserved = Vec::new();
         for (name, labels) in &overlay.bindings {
             let action =
                 action_named(name).ok_or_else(|| crate::config::ConfigError::UnknownAction {
@@ -629,20 +628,23 @@ impl Keymap {
                 });
             }
             // `reserved_hits` above is what keeps this to one warning per
-            // reserved key rather than one per scope. Reached only from
-            // `Config::build_keymap`, called by `main` before
-            // `init_terminal` — the same reason `check_sets` is called there
-            // rather than from `Config::load` — so this still reaches
-            // stderr rather than being dropped by `Muted` (#246).
+            // reserved key rather than one per scope. Collected rather than
+            // logged here: `Keymap::new` cannot read a `Config`, so it cannot
+            // know whether the user asked for silence. `Config::build_keymap`
+            // is the caller that can, and logs each of these with
+            // `log::warn!` before `main` brings up the terminal — the same
+            // reason `check_sets` is called there rather than from
+            // `Config::load` — so a warning still reaches stderr rather than
+            // being dropped by `Muted` (#246).
             for (label, claim) in reserved_hits(labels) {
-                log::warn!(
+                reserved.push(format!(
                     "{name} binds '{label}', which is reserved for {claim}; \
                      a later release will want it back, but recon binds it anyway"
-                );
+                ));
             }
             keymap.rebind(action, labels);
         }
-        Ok(keymap)
+        Ok((keymap, reserved))
     }
 
     /// Put `labels` in place of every key `action` currently holds.
@@ -682,6 +684,24 @@ impl Keymap {
             }
         }
         self.entries = entries;
+    }
+
+    /// Drop the rows a `check::Report` named as losing their key.
+    ///
+    /// This is what makes a written line win. `resolve` takes the first
+    /// matching row and `rebind` keeps every action at its original position,
+    /// so without this the built-in table's row order decides a contested key
+    /// — an order the user cannot see and no test holds still.
+    ///
+    /// It also keeps `labels_for` honest, and through it the `?` overlay:
+    /// a row removed here stops being offered as a key that reaches its
+    /// action, because it no longer does.
+    pub(crate) fn evict(&mut self, rows: &[(Scope, String, ActionId)]) {
+        self.entries.retain(|(scope, label, action)| {
+            !rows
+                .iter()
+                .any(|(s, key, a)| s == scope && key == label && a == action)
+        });
     }
 
     /// The action a key names in a scope, or `None` when the scope does not
@@ -1127,7 +1147,7 @@ mod tests {
             toml::from_str(&printed).expect("recon must print what it accepts");
         let overlay = parsed.keymap.expect("a [keymap] table");
 
-        let built = Keymap::new(&overlay).expect("the defaults must be valid");
+        let (built, _) = Keymap::new(&overlay).expect("the defaults must be valid");
         assert_eq!(
             built,
             Keymap::default(),
@@ -1153,7 +1173,7 @@ mod tests {
         bindings.insert("global.quit".to_string(), vec!["Ctrl-q".to_string()]);
         let overlay = crate::config::KeymapConfig { bindings };
 
-        let keymap = Keymap::new(&overlay).expect("valid");
+        let (keymap, _) = Keymap::new(&overlay).expect("valid");
         let ctrl_q = normalise(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL));
         let plain_q = normalise(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::empty()));
 
@@ -1174,7 +1194,7 @@ mod tests {
         bindings.insert("global.quit".to_string(), vec!["Ctrl-q".to_string()]);
         let overlay = crate::config::KeymapConfig { bindings };
 
-        let keymap = Keymap::new(&overlay).expect("valid");
+        let (keymap, _) = Keymap::new(&overlay).expect("valid");
         let help = normalise(KeyEvent::new(KeyCode::Char('?'), KeyModifiers::empty()));
 
         assert_eq!(
@@ -1189,7 +1209,7 @@ mod tests {
     /// one of them (#61).
     #[test]
     fn rebinding_a_two_scope_action_keeps_both_scopes() {
-        let keymap = Keymap::new(&overlay("hit.next", &["Ctrl-n"])).expect("valid");
+        let (keymap, _) = Keymap::new(&overlay("hit.next", &["Ctrl-n"])).expect("valid");
         let ctrl_n = normalise(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL));
         let plain_n = normalise(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::empty()));
 
@@ -1214,7 +1234,7 @@ mod tests {
         let mut bindings = std::collections::BTreeMap::new();
         bindings.insert("global.visual.char".to_string(), vec!["s".to_string()]);
         bindings.insert("global.focus.view".to_string(), vec!["T".to_string()]);
-        let keymap = Keymap::new(&crate::config::KeymapConfig { bindings }).expect("valid");
+        let (keymap, _) = Keymap::new(&crate::config::KeymapConfig { bindings }).expect("valid");
 
         assert_eq!(
             keymap.hint_for(
@@ -1232,7 +1252,7 @@ mod tests {
     /// rather than rendered with a hole where its key would be.
     #[test]
     fn an_action_left_unbound_has_no_label_and_no_hint() {
-        let keymap = Keymap::new(&overlay("global.reload", &[])).expect("valid");
+        let (keymap, _) = Keymap::new(&overlay("global.reload", &[])).expect("valid");
 
         assert_eq!(keymap.label_for(ActionId::GlobalReload), None);
         assert_eq!(
@@ -1255,12 +1275,21 @@ mod tests {
 
         // A warning, not a refusal: it is the user's keyboard, and 1.0 only
         // promises that 1.1 will want the key back.
-        let keymap = Keymap::new(&overlay).expect("a reserved key is allowed");
+        let (keymap, warnings) = Keymap::new(&overlay).expect("a reserved key is allowed");
         let dash = normalise(KeyEvent::new(KeyCode::Char('-'), KeyModifiers::empty()));
 
         assert_eq!(
             keymap.resolve(Scope::Global, dash),
             Some(ActionId::GlobalQuit)
+        );
+        assert_eq!(
+            warnings,
+            vec![
+                "global.quit binds '-', which is reserved for the hex view (#242); \
+                 a later release will want it back, but recon binds it anyway"
+                    .to_string()
+            ],
+            "the reserved-key warning must come back for the caller to log"
         );
     }
 
@@ -1348,7 +1377,7 @@ mod tests {
     /// listed — the same rule `label_for` keeps for `DEFAULT`.
     #[test]
     fn several_keys_hint_with_the_first() {
-        let keymap = Keymap::new(&overlay("global.reload", &["F5", "r"])).expect("valid");
+        let (keymap, _) = Keymap::new(&overlay("global.reload", &["F5", "r"])).expect("valid");
 
         assert_eq!(keymap.label_for(ActionId::GlobalReload), Some("F5"));
         let f5 = normalise(KeyEvent::new(KeyCode::F(5), KeyModifiers::empty()));
@@ -1361,6 +1390,44 @@ mod tests {
             keymap.resolve(Scope::Global, r),
             Some(ActionId::GlobalReload),
             "every key the user listed must reach the action"
+        );
+    }
+
+    /// The heart of phase 2c. Before this, `resolve` took the first matching
+    /// row and `rebind` left every action at its original position, so 'q'
+    /// went to `global.quit` — the earlier row — however plainly the file
+    /// asked for `global.reload`. Driving the real binary confirmed it: recon
+    /// quit.
+    #[test]
+    fn a_written_line_beats_a_default_on_the_same_key() {
+        let (mut keymap, _) = Keymap::new(&overlay("global.reload", &["q"])).expect("valid");
+        let report = check::check(&keymap, &[ActionId::GlobalReload]);
+        keymap.evict(&report.evict);
+
+        let q = normalise(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::empty()));
+        assert_eq!(
+            keymap.resolve(Scope::Global, q),
+            Some(ActionId::GlobalReload),
+            "the file said reload, so 'q' must reload and not quit"
+        );
+    }
+
+    /// The overlay defect the same eviction removes, with no change to
+    /// `help.rs`: `labels_for` fed the `?` overlay a key that now quits.
+    #[test]
+    fn a_shadowed_pane_key_leaves_the_actions_label_list() {
+        let (mut keymap, _) = Keymap::new(&overlay("global.quit", &["j"])).expect("valid");
+        let report = check::check(&keymap, &[ActionId::GlobalQuit]);
+        keymap.evict(&report.evict);
+
+        assert!(
+            !keymap.labels_for(ActionId::NavDown).contains(&"j"),
+            "the overlay must stop offering a key that quits"
+        );
+        assert_eq!(
+            keymap.labels_for(ActionId::NavDown),
+            vec!["Down"],
+            "and must still offer the key that works"
         );
     }
 

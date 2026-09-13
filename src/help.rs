@@ -1337,6 +1337,7 @@ mod tests {
             .collect();
         crate::keymap::Keymap::new(&crate::config::KeymapConfig { bindings })
             .expect("the test's own bindings are valid")
+            .0
     }
 
     /// The keys a row shows, addressed by the description printed beside them.
