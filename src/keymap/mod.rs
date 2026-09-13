@@ -887,6 +887,29 @@ fn first_scope_of(defaults: &Keymap, action: ActionId) -> Scope {
         .map_or(Scope::Global, |(scope, _, _)| *scope)
 }
 
+/// Where `action` could have lost `label` to another action: the default
+/// scope(s) it held that exact label in, plus `Scope::Global` when one of
+/// those is a pane — because `Scope::Global` is the only scope that ever
+/// shadows a pane's own default (`check::check`'s pass two). A peer pane
+/// bound to the identical label by sheer coincidence — `j` also defaults
+/// `nav.down`, `view.down`, `filters.down` and `picker.down` — never crosses
+/// with any of the others, so it must never be searched here.
+fn scopes_for_lost_key(defaults: &Keymap, action: ActionId, label: &str) -> Vec<Scope> {
+    let mut scopes: Vec<Scope> = defaults
+        .entries
+        .iter()
+        .filter(|(_, entry, a)| *a == action && entry == label)
+        .map(|(scope, _, _)| *scope)
+        .collect();
+    if scopes
+        .iter()
+        .any(|scope| matches!(scope, Scope::Nav | Scope::View | Scope::Filters))
+    {
+        scopes.push(Scope::Global);
+    }
+    scopes
+}
+
 /// What to say about a line that is no longer its default, or nothing at all.
 ///
 /// Two things are worth saying, and they are different. An action whose keys
@@ -904,10 +927,11 @@ fn annotation(keymap: &Keymap, defaults: &Keymap, action: ActionId) -> String {
         .iter()
         .filter(|label| !now.contains(*label))
         .filter_map(|label| {
+            let scopes = scopes_for_lost_key(defaults, action, label);
             let thief = keymap
                 .entries
                 .iter()
-                .find(|(_, entry, a)| entry == label && *a != action)
+                .find(|(scope, entry, a)| scopes.contains(scope) && entry == label && *a != action)
                 .map(|(_, _, a)| *a)?;
             Some(format!("'{label}' taken by {}", thief.name()))
         })
@@ -1160,6 +1184,10 @@ mod tests {
 
     /// A key a *different* action took must be said so, because that is the
     /// case a user cannot work out from the line alone.
+    ///
+    /// Cross-scope: `global.quit` is in `Scope::Global`, which shadows every
+    /// pane, so all three panes that defaulted `j` to their own `down` action
+    /// lose it to `global.quit` — not to each other.
     #[test]
     fn a_taken_key_names_what_took_it() {
         let defaults = Keymap::default();
@@ -1168,12 +1196,53 @@ mod tests {
         keymap.evict(&report.evict);
 
         let printed = print_keymap(&keymap, &defaults);
+        for action in ["'nav.down'", "'view.down'", "'filters.down'"] {
+            let line = printed
+                .lines()
+                .find(|line| line.starts_with(action))
+                .unwrap_or_else(|| panic!("{action} must be printed"));
+            assert!(line.contains("global.quit"), "{line}");
+        }
+    }
+
+    /// Task 7 fix round 1: the thief lookup used to scan every scope for the
+    /// lost label and take the first action that was not the one
+    /// being annotated. `j` is also `nav.down`'s, `view.down`'s and
+    /// `picker.down`'s default key, so a same-scope eviction — one write in
+    /// `Scope::Filters` taking `Scope::Filters`'s own `j` — was misreported
+    /// as `nav.down`'s doing, purely because `Scope::Nav` sorts first in the
+    /// table. The thief must be searched for in the scope the key was lost
+    /// in (and `Scope::Global`, which can shadow it), never a peer pane.
+    #[test]
+    fn a_same_scope_taken_key_names_the_real_thief() {
+        let defaults = Keymap::default();
+        let (mut keymap, _) = Keymap::new(&overlay("filters.exclude", &["j"])).expect("valid");
+        let report = check::check(&keymap, &[ActionId::FiltersExclude]);
+        keymap.evict(&report.evict);
+
+        let printed = print_keymap(&keymap, &defaults);
         let line = printed
+            .lines()
+            .find(|line| line.starts_with("'filters.down'"))
+            .expect("filters.down must be printed");
+
+        assert!(
+            line.contains("filters.exclude"),
+            "the real thief is in the same scope: {line}"
+        );
+        assert!(
+            !line.contains("nav.down"),
+            "nav.down never touched this key and must not be blamed: {line}"
+        );
+
+        let nav_line = printed
             .lines()
             .find(|line| line.starts_with("'nav.down'"))
             .expect("nav.down must be printed");
-
-        assert!(line.contains("global.quit"), "{line}");
+        assert!(
+            !nav_line.contains('#'),
+            "nav.down's own 'j' is untouched and must carry no annotation: {nav_line}"
+        );
     }
 
     /// Annotations are comments, so the output is still a `[keymap]` table
