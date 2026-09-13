@@ -311,7 +311,7 @@ What gets recorded:
 Press `?` in the app for this list on screen — with your own keys in it, since
 the overlay reads the keymap in force while this section lists the defaults
 (`--print-keymap` prints those too). The defaults live in one place,
-`keymap::DEFAULT` in `src/keymap.rs`, a table of `(Scope, key, action)` rows —
+`keymap::DEFAULT` in `src/keymap/mod.rs`, a table of `(Scope, key, action)` rows —
 but the table in force for a given run is that base layer with a
 `[keymap]` from `config.toml` folded in, see
 [Configuring the keymap](#configuring-the-keymap). Every key starts at `App::handle_event`
@@ -328,7 +328,7 @@ That is a call one arm makes, not a second place the four keys are bound (#7).
 
 This section and the in-app overlay both describe that table. They would
 drift silently from it otherwise, so they don't have to be checked by hand:
-`the_table_and_the_documentation_agree` (`src/keymap.rs`) compares `DEFAULT`
+`the_table_and_the_documentation_agree` (`src/keymap/mod.rs`) compares `DEFAULT`
 against `KEYMAP` in `src/help.rs` — the table the overlay draws — by action
 name, in both directions, and checks that each name sits on a row whose keys
 actually contain that label. Adding a binding without documenting it, or

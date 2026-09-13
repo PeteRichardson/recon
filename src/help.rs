@@ -22,7 +22,7 @@
 //! for the scrape to find, so task 9 deleted it along with the tests that
 //! only existed to prove the scrape itself worked.
 //!
-//! `keymap::the_table_and_the_documentation_agree` (`src/keymap.rs`) is what
+//! `keymap::the_table_and_the_documentation_agree` (`src/keymap/mod.rs`) is what
 //! replaces it: it compares `keymap::DEFAULT` against `KEYMAP` directly,
 //! entry by entry, rather than grepping source text. That is a stronger
 //! check in one respect the scrape never covered — it also verifies a name
