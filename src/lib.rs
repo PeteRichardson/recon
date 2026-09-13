@@ -3581,6 +3581,51 @@ mod tests {
         assert!(!screen.contains("Keymap warnings"), "{screen}");
     }
 
+    /// Two or more warnings, each long enough to wrap onto more than one
+    /// row, sized generously enough that nothing needs to be cut.
+    ///
+    /// The broken comparison (`lines.len() + wrapped > budget`) is skipped
+    /// entirely for a single warning — the guard is `!lines.is_empty()`, so
+    /// the first entry is always admitted unconditionally — which is why a
+    /// fixture of one warning could never exercise it. `app_with_warnings`'s
+    /// three ~150-byte warnings both admit a second comparison and wrap to
+    /// more than one row each, so the two units (rows consumed vs. warnings
+    /// admitted) can actually disagree. Under the broken arithmetic the box
+    /// was sized from the *count* (3, plus a margin) regardless of how much
+    /// room the terminal offered, so the third warning — `filters.down` —
+    /// never appeared even though the panel had ample space and the title
+    /// claimed nothing was cut.
+    #[test]
+    fn two_wrapping_warnings_both_render_in_full() {
+        let mut app = app_with_warnings("warning_panel_roomy", &["a.rs"]);
+        let area = Rect {
+            x: 0,
+            y: 0,
+            width: 80,
+            height: 20,
+        };
+        let mut buf = Buffer::empty(area);
+        app.render(area, &mut buf);
+        let screen = (0..area.height)
+            .map(|y| {
+                (0..area.width)
+                    .map(|x| buf[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(screen.contains("nav.down"), "{screen}");
+        assert!(
+            screen.contains("filters.down"),
+            "the third warning was cut though the box had room for it:\n{screen}"
+        );
+        assert!(
+            !screen.contains("more — run recon --print-keymap"),
+            "the box reported a cut though everything fit:\n{screen}"
+        );
+    }
+
     /// A regression guard for a defect where the row budget was checked
     /// against the *count of warnings admitted* rather than the *rows they
     /// render to*. `app_with_warnings` produces three warnings (152, 156 and
