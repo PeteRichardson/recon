@@ -190,7 +190,15 @@ impl fmt::Display for Problem {
                 // them again would only restate the clause above. Equal sets
                 // are the overwhelmingly common case — one winner, one scope
                 // — and read as they always did, with nothing appended.
-                if lost != taken {
+                //
+                // The emptiness test belongs here, where the text is produced,
+                // and not beside the assignment that fills `lost_in`. An empty
+                // list there is indistinguishable from the empty list the
+                // warning was built with, so a guard at that end cannot tell
+                // the two apart; here it is the difference between saying
+                // nothing and printing "in the  scopes" with a doubled space,
+                // an empty `join_and` and a pluralised `scope_noun`.
+                if !lost.is_empty() && lost != taken {
                     let all: Vec<String> =
                         lost.iter().map(|scope| scope.name().to_string()).collect();
                     write!(
@@ -503,6 +511,7 @@ fn fill_scopes(report: &mut Report) {
     let evicted = report.evict.clone();
     for problem in &mut report.warnings {
         let Problem::Displaced {
+            taken_in,
             key,
             loser,
             lost_in,
@@ -520,18 +529,29 @@ fn fill_scopes(report: &mut Report) {
         // `Report::displace` pushes the eviction and the warning together, so
         // a warning always has at least the row it was raised for. Asserted
         // rather than guarded: a future path that raised one without the other
-        // should fail here, not quietly print a loss with no scope in it.
+        // should fail here in a debug build. What protects a release build is
+        // the emptiness test in `Display`, which is where the malformed
+        // sentence would otherwise be written — a guard at this end could not
+        // do it, because skipping the assignment leaves `lost_in` at the very
+        // same empty value `Report::displace` built it with.
         debug_assert!(
             !lost.is_empty(),
             "a displaced warning with no eviction behind it: {lost_by:?} lost {lost_key:?}"
         );
-        // Belt as well as braces. The assert documents a fact; this keeps a
-        // release build from printing "loses 'n' in the  scopes" — a doubled
-        // space, `join_and(&[])` empty and `scope_noun(0)` pluralised — if the
-        // fact ever stops being true.
-        if !lost.is_empty() {
-            *lost_in = lost;
-        }
+        // Stored in `Scope` order, not only rendered in it. `Problem` derives
+        // `PartialEq`, so two reports describing one keymap have to compare
+        // equal; leaving the lists in the order the rows happened to go would
+        // revive the order bug inside any later dedup, snapshot or cache keyed
+        // on that equality.
+        //
+        // `Display` keeps its own `in_order` calls regardless, and they are
+        // not redundant: they make the comparison set-based for **any**
+        // `Problem`, including one built by hand that never passes through
+        // here — which is exactly what
+        // `equal_scope_sets_in_another_order_are_not_said_twice` constructs.
+        let ordered = in_order(taken_in);
+        *taken_in = ordered;
+        *lost_in = in_order(&lost);
     }
 }
 
@@ -1167,6 +1187,78 @@ mod tests {
         assert!(
             said.contains("takes 'n' from 'hit.next' in the view and filters scopes"),
             "and the one clause it does print is canonical: {said}"
+        );
+    }
+
+    /// A warning with no scopes on its loser says nothing about them.
+    ///
+    /// The state is unreachable — `Report::displace` gives every warning its
+    /// eviction — and the `debug_assert!` in `fill_scopes` records that. This
+    /// pins what a **release** build does if the fact ever stops being true,
+    /// which is the half that was wrong: the guard originally sat beside the
+    /// assignment, where skipping it left `lost_in` at the very same empty
+    /// value `displace` had built it with, so both branches ended identical
+    /// and the malformed sentence printed anyway.
+    #[test]
+    fn an_empty_lost_in_prints_no_second_clause() {
+        let problem = Problem::Displaced {
+            taken_in: vec![Scope::View],
+            key: "n".to_string(),
+            winner: ActionId::ViewLineEnd,
+            loser: ActionId::HitNext,
+            remaining: vec![],
+            lost_in: vec![],
+        };
+
+        let said = problem.to_string();
+        assert!(
+            !said.contains("loses 'n'"),
+            "there is nothing to say about scopes that are not there: {said}"
+        );
+        assert!(
+            !said.contains("in the  scopes"),
+            "the doubled space is the malformed render this guards: {said}"
+        );
+        assert!(
+            said.contains("'view.line.end' takes 'n' from 'hit.next' in the view scope."),
+            "and the clause it can say is unharmed: {said}"
+        );
+    }
+
+    /// The scope lists are stored in `Scope` order, not the order the rows
+    /// happened to be evicted in.
+    ///
+    /// `in_order` runs inside `fmt`, so printing has been canonical since the
+    /// order first leaked into a sentence — but the stored lists were left as
+    /// they were built, and `Problem` derives `PartialEq`. Two reports
+    /// describing one keymap would compare unequal, which is invisible today
+    /// and would revive the order bug inside any later dedup, snapshot or
+    /// cache keyed on that equality.
+    ///
+    /// `'filters.solo' = 'n'` is the case that shows it: pass one evicts the
+    /// filter pane, and `widen_evictions` adds the file view afterwards, so
+    /// the list is built in the opposite order to the one `Scope` defines.
+    #[test]
+    fn the_stored_scope_lists_are_canonical() {
+        let report = report(&[("filters.solo", &["n"])]);
+
+        let Some(Problem::Displaced {
+            taken_in, lost_in, ..
+        }) = report.warnings().iter().find(|problem| {
+            matches!(problem, Problem::Displaced { loser, .. } if *loser == ActionId::HitNext)
+        }) else {
+            panic!("hit.next must be reported: {report:?}");
+        };
+
+        assert_eq!(
+            *taken_in,
+            vec![Scope::Filters],
+            "filters.solo took the key in the filter pane alone"
+        );
+        assert_eq!(
+            *lost_in,
+            vec![Scope::View, Scope::Filters],
+            "stored in Scope order, not the order the rows were evicted in"
         );
     }
 
