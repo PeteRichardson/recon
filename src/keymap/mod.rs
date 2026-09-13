@@ -536,8 +536,6 @@ pub(crate) fn action_named(name: &str) -> Option<ActionId> {
 /// key and `hit.next`/`hit.prev` each hold a row in two scopes. This yields
 /// each action one time, which is the unit `--print-keymap` prints and the
 /// unit a `[keymap]` line names.
-#[allow(dead_code)] // Called only by check.rs's tests until Task 7's printer
-// calls it too. Removed once that call site lands.
 pub(crate) fn every_action() -> impl Iterator<Item = ActionId> {
     let mut seen: Vec<ActionId> = Vec::new();
     DEFAULT.iter().filter_map(move |(_, _, action)| {
@@ -808,21 +806,23 @@ impl Keymap {
     }
 }
 
-/// Render the whole default keymap as a `[keymap]` stanza.
+/// The keymap as a `[keymap]` stanza a user can paste.
 ///
-/// A `String` returned to the caller to print, and nothing else — the same
-/// contract `print_editor_config` has, and for the same reason: recon does not
-/// write `config.toml`, so what it can do is hand you the text.
+/// Prints the map **in force**, not the defaults. Once a file can change the
+/// map, the defaults describe a map the user does not have — and after
+/// `Keymap::evict` the map can differ from a plain reading of their own file
+/// too, which is exactly what the comments explain.
 ///
-/// Printed in the syntax the file accepts, so copying one line and changing
-/// the key is the whole of rebinding (#61).
+/// A line matching its default carries no comment, so a user who has changed
+/// nothing sees what they have always seen. A comment is not data, so the
+/// output still parses and still pastes.
 ///
-/// One line **per action**, not per `DEFAULT` row: TOML has no duplicate
-/// keys, and 26 of the table's 93 actions bind more than one key in the same
-/// scope (`GlobalToggleHide` alone has three: `u`, `H`, `Ctrl-h`). A row per
+/// One line **per action**, not per row: TOML has no duplicate keys, and 26
+/// of the table's 93 actions bind more than one key in the same scope
+/// (`GlobalToggleHide` alone has three: `u`, `H`, `Ctrl-h`). A row per
 /// binding would print `'global.toggle.hide'` three times and the file the
 /// parser rejects would be recon's own advice. An action's several keys
-/// become a TOML array instead, in `DEFAULT`'s order.
+/// become a TOML array instead, in table order.
 ///
 /// Labels are deduplicated before printing. `HitNext`/`HitPrev` are the one
 /// case that needs it: each name is shared by a `View` row and a `Filters`
@@ -833,39 +833,24 @@ impl Keymap {
 /// which is the order the help overlay shows — the same reason
 /// `print_editor_config`'s FLAVOURS stays in a fixed, deliberate order.
 #[must_use]
-pub fn print_keymap() -> String {
+pub fn print_keymap(keymap: &Keymap, defaults: &Keymap) -> String {
     let mut out = String::from(
-        "# recon's default keymap\n\
+        "# recon's keymap in effect\n\
          # Paste into ~/.config/recon/config.toml — recon never writes it for you.\n\
          # Keep only the lines you want to change; anything absent keeps its default.\n\
+         # A line with no comment matches recon's built-in default.\n\
          [keymap]\n",
     );
 
-    // One row per action, each holding every label `DEFAULT` binds it to —
-    // deduplicated, in the order those labels first appear — and the scope of
-    // its first `DEFAULT` row, purely for the blank-line grouping below.
-    // `index` maps an action already seen to its slot in `rows`, so a later
-    // `DEFAULT` entry for the same action extends that slot rather than
-    // starting a new one.
-    let mut rows: Vec<(Scope, ActionId, Vec<&str>)> = Vec::new();
-    let mut index: std::collections::HashMap<ActionId, usize> = std::collections::HashMap::new();
-    for (scope, label, action) in DEFAULT {
-        let slot = *index.entry(*action).or_insert_with(|| {
-            rows.push((*scope, *action, Vec::new()));
-            rows.len() - 1
-        });
-        let labels = &mut rows[slot].2;
-        if !labels.contains(label) {
-            labels.push(label);
-        }
-    }
-
     let mut last_scope = None;
-    for (scope, action, labels) in &rows {
-        if last_scope != Some(*scope) {
+    for action in every_action() {
+        let labels = keymap.labels_for(action);
+        let scope = first_scope_of(defaults, action);
+        if last_scope != Some(scope) {
             out.push('\n');
-            last_scope = Some(*scope);
+            last_scope = Some(scope);
         }
+
         let value = if let [only] = labels.as_slice() {
             toml_string(only)
         } else {
@@ -881,9 +866,68 @@ pub fn print_keymap() -> String {
         // `writeln!` rather than `push_str(&format!(...))`: writing into the
         // `String` directly avoids allocating a throwaway one per row.
         // Infallible — `String`'s `Write` impl never errs.
-        let _ = writeln!(out, "{} = {value}", toml_string(action.name()));
+        let _ = writeln!(
+            out,
+            "{} = {value}{}",
+            toml_string(action.name()),
+            annotation(keymap, defaults, action),
+        );
     }
     out
+}
+
+/// The scope an action's first `DEFAULT` row sits in, for the blank-line
+/// grouping. Read from the defaults rather than the live map: grouping must
+/// not move about because a user rebound something.
+fn first_scope_of(defaults: &Keymap, action: ActionId) -> Scope {
+    defaults
+        .entries
+        .iter()
+        .find(|(_, _, a)| *a == action)
+        .map_or(Scope::Global, |(scope, _, _)| *scope)
+}
+
+/// What to say about a line that is no longer its default, or nothing at all.
+///
+/// Two things are worth saying, and they are different. An action whose keys
+/// the user set says what it replaced. An action that merely *lost* a key
+/// says which action took it, because that is the part a user cannot work
+/// out from the line in front of them.
+fn annotation(keymap: &Keymap, defaults: &Keymap, action: ActionId) -> String {
+    let now = keymap.labels_for(action);
+    let was = defaults.labels_for(action);
+    if now == was {
+        return String::new();
+    }
+
+    let taken: Vec<String> = was
+        .iter()
+        .filter(|label| !now.contains(*label))
+        .filter_map(|label| {
+            let thief = keymap
+                .entries
+                .iter()
+                .find(|(_, entry, a)| entry == label && *a != action)
+                .map(|(_, _, a)| *a)?;
+            Some(format!("'{label}' taken by {}", thief.name()))
+        })
+        .collect();
+
+    if taken.is_empty() {
+        format!(
+            "   # yours; default {}",
+            if was.is_empty() {
+                "none".to_string()
+            } else {
+                was.iter()
+                    .map(|label| format!("'{label}'"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            }
+        )
+    } else {
+        format!("   # {}", taken.join(", "))
+    }
 }
 
 #[cfg(test)]
@@ -1056,18 +1100,99 @@ mod tests {
 
     #[test]
     fn the_printed_keymap_is_a_keymap_stanza() {
-        let printed = print_keymap();
+        let defaults = Keymap::default();
+        let printed = print_keymap(&defaults, &defaults);
 
         assert!(printed.contains("[keymap]"), "{printed}");
         assert!(
             printed.contains("recon never writes it for you"),
             "the header must say recon will not write the file: {printed}"
         );
-        assert!(
-            printed.contains("'q'"),
-            "a key is quoted as a TOML literal string: {printed}"
-        );
+        assert!(printed.contains("'q'"), "{printed}");
         assert!(printed.contains("global.quit"), "{printed}");
+    }
+
+    /// A map equal to the defaults must print with no annotation at all, so a
+    /// user who has changed nothing sees exactly what they saw before.
+    ///
+    /// Checks for `annotation`'s own delimiter (three spaces then `#`) rather
+    /// than a bare `#`: `view.toggle.linenumbers` binds the literal key `'#'`
+    /// by default, so a naive `contains('#')` would flag that unannotated
+    /// line as if it carried a comment.
+    #[test]
+    fn an_unchanged_keymap_prints_without_comments() {
+        let defaults = Keymap::default();
+        let printed = print_keymap(&defaults, &defaults);
+
+        for line in printed.lines().filter(|line| line.contains(" = ")) {
+            assert!(
+                !line.contains("   #"),
+                "an unchanged line was annotated: {line}"
+            );
+        }
+    }
+
+    /// The point of printing the map in effect: the line tells you what it is
+    /// now *and* what it was, so you can see what your file did.
+    #[test]
+    fn a_changed_line_says_what_it_replaced() {
+        let defaults = Keymap::default();
+        let (mut keymap, _) = Keymap::new(&overlay("global.reload", &["F5"])).expect("valid");
+        let report = check::check(&keymap, &[ActionId::GlobalReload]);
+        keymap.evict(&report.evict);
+
+        let printed = print_keymap(&keymap, &defaults);
+        let line = printed
+            .lines()
+            .find(|line| line.starts_with("'global.reload'"))
+            .expect("global.reload must be printed");
+
+        assert!(line.contains("'F5'"), "{line}");
+        assert!(
+            line.contains('#'),
+            "a changed line must be annotated: {line}"
+        );
+        assert!(
+            line.contains("'r'"),
+            "the comment must name the old key: {line}"
+        );
+    }
+
+    /// A key a *different* action took must be said so, because that is the
+    /// case a user cannot work out from the line alone.
+    #[test]
+    fn a_taken_key_names_what_took_it() {
+        let defaults = Keymap::default();
+        let (mut keymap, _) = Keymap::new(&overlay("global.quit", &["j"])).expect("valid");
+        let report = check::check(&keymap, &[ActionId::GlobalQuit]);
+        keymap.evict(&report.evict);
+
+        let printed = print_keymap(&keymap, &defaults);
+        let line = printed
+            .lines()
+            .find(|line| line.starts_with("'nav.down'"))
+            .expect("nav.down must be printed");
+
+        assert!(line.contains("global.quit"), "{line}");
+    }
+
+    /// Annotations are comments, so the output is still a `[keymap]` table
+    /// and still parses. Without this the flag stops being paste-able, which
+    /// is its whole purpose.
+    #[test]
+    fn an_annotated_keymap_still_parses_back_as_itself() {
+        let defaults = Keymap::default();
+        let (mut keymap, _) = Keymap::new(&overlay("global.reload", &["F5"])).expect("valid");
+        let report = check::check(&keymap, &[ActionId::GlobalReload]);
+        keymap.evict(&report.evict);
+
+        let printed = print_keymap(&keymap, &defaults);
+        let parsed: crate::config::FileConfig =
+            toml::from_str(&printed).expect("recon must print what it accepts");
+        let overlay = parsed.keymap.expect("a [keymap] table");
+
+        let (rebuilt, _) = Keymap::new(&overlay).expect("valid");
+        assert_eq!(rebuilt, keymap, "printing then parsing changed a binding");
     }
 
     /// One `[keymap]` value, either a bare string or an array of them — the
@@ -1107,7 +1232,7 @@ mod tests {
     /// structure instead.
     #[test]
     fn every_default_binding_is_printed_exactly_once() {
-        let printed = print_keymap();
+        let printed = print_keymap(&Keymap::default(), &Keymap::default());
         let parsed: Parsed = toml::from_str(&printed).unwrap_or_else(|err| {
             panic!("the printed keymap must parse as TOML: {err}\n{printed}")
         });
@@ -1142,7 +1267,7 @@ mod tests {
     fn the_printed_keymap_parses_back_as_the_same_bindings() {
         // The whole point of printing in the accepted syntax: a user pastes a
         // line and it means what it meant.
-        let printed = print_keymap();
+        let printed = print_keymap(&Keymap::default(), &Keymap::default());
         let parsed: crate::config::FileConfig =
             toml::from_str(&printed).expect("recon must print what it accepts");
         let overlay = parsed.keymap.expect("a [keymap] table");

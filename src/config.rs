@@ -111,14 +111,25 @@ pub struct Config {
     )]
     pub print_editor_config: Option<String>,
 
-    /// Print the default keymap as a ready-to-paste `[keymap]` stanza and exit.
+    /// Print the keymap as a ready-to-paste `[keymap]` stanza and exit.
+    ///
+    /// Prints the keymap **in force** — your `config.toml` folded in — with a
+    /// comment on every line that is no longer its default, naming what
+    /// changed and what took a key. `--print-keymap defaults` prints recon's
+    /// built-in table instead, which is how you find what a binding was before
+    /// you changed it.
     ///
     /// Prints to stdout and changes nothing on disk: copy the lines you want
     /// into your `config.toml` yourself. The sibling of
     /// `--print-editor-config`, and the other half of "recon never writes
     /// `config.toml`" (#61).
-    #[arg(long)]
-    pub print_keymap: bool,
+    #[arg(
+        long,
+        value_name = "WHICH",
+        num_args = 0..=1,
+        default_missing_value = "effective",
+    )]
+    pub print_keymap: Option<String>,
 
     /// The colours successive filters take, or `None` to use the compiled-in
     /// palette. See [`FiltersConfig::palette`].
@@ -294,7 +305,7 @@ impl Default for Config {
             file_editor: None,
             clipboard: None,
             print_editor_config: None,
-            print_keymap: false,
+            print_keymap: None,
             filter_palette: None,
             background: None,
             filter_sets: Vec::new(),

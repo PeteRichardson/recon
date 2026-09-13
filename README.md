@@ -222,9 +222,8 @@ Options:
           Print a ready-to-paste `[editor]` stanza and exit. Takes a flavour —
           `zed`, `vscode`, `wezterm-nvim`, … — or `auto` to guess from
           `$TERM_PROGRAM`
-      --print-keymap
-          Print the default keymap as a ready-to-paste `[keymap]` stanza and
-          exit
+      --print-keymap [<WHICH>]
+          Print the keymap as a ready-to-paste `[keymap]` stanza and exit
       --background <BACKGROUND>
           Whether the terminal background is dark or light: picks the built-in
           filter palette and the grey of dimmed lines. Falls back to a top-level
@@ -315,7 +314,8 @@ What gets recorded:
 
 Press `?` in the app for this list on screen — with your own keys in it, since
 the overlay reads the keymap in force while this section lists the defaults
-(`--print-keymap` prints those too). The defaults live in one place,
+(`--print-keymap defaults` prints those too; plain `--print-keymap` prints
+the keymap in force). The defaults live in one place,
 `keymap::DEFAULT` in `src/keymap/mod.rs`, a table of `(Scope, key, action)` rows —
 but the table in force for a given run is that base layer with a
 `[keymap]` from `config.toml` folded in, see
@@ -463,15 +463,17 @@ one key or, for an action several keys reach today, a list:
 An entry replaces that action's keys entirely; any action the stanza does not
 mention keeps its default. An empty list, `'global.quit' = []`, unbinds the
 action: no key reaches it, and the `?` overlay shows it as `unbound`.
-`--print-keymap` prints recon's whole default set in exactly this syntax,
-ready to copy from and edit — it prints the **defaults**, not whatever
-`[keymap]` you already have:
+`--print-keymap` prints the keymap **in force** — your `config.toml` folded
+in, and any key an override took away from another action — in exactly this
+syntax, ready to copy from and edit. A line that still matches its default
+carries no comment; a line that doesn't says what changed:
 
 ```console
 $ recon --print-keymap
-# recon's default keymap
+# recon's keymap in effect
 # Paste into ~/.config/recon/config.toml — recon never writes it for you.
 # Keep only the lines you want to change; anything absent keeps its default.
+# A line with no comment matches recon's built-in default.
 [keymap]
 
 'global.quit' = 'q'
@@ -480,6 +482,9 @@ $ recon --print-keymap
 'global.focus.prev' = 'Shift-Tab'
 …
 ```
+
+`--print-keymap defaults` prints recon's built-in table instead, ignoring any
+`config.toml` — the way to see what a binding was before you changed it.
 
 recon never writes `config.toml` — paste the line yourself, the same as
 `[editor]` and `[clipboard]`.

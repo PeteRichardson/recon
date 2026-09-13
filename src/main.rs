@@ -35,11 +35,27 @@ fn main() -> Result<ExitCode> {
         return Ok(ExitCode::SUCCESS);
     }
 
+    // The `[keymap]` table, before `--print-keymap` below, which prints the
+    // answer. An unknown action name, an unreadable key spelling or a keymap
+    // recon cannot obey refuses to start while a message can still be read
+    // (#61), and anything logged here is logged before `Muted` starts
+    // dropping records (#246). Above the filter sets for the same reason the
+    // two print commands are: this reads nothing from `filters.toml`.
+    let (bindings, keymap_warnings) = config.build_keymap()?;
+    config.bindings = bindings;
+    config.keymap_warnings = keymap_warnings;
+
     // Same reasoning as `--print-editor-config` above: this command reads
-    // nothing from `filters.toml` either, so it must not have to survive one
-    // to run (#191).
-    if config.print_keymap {
-        print!("{}", recon::keymap::print_keymap());
+    // nothing from `filters.toml`, so it must not have to survive one to run
+    // (#191). It must stay above `load_file` for that reason, which is why
+    // `build_keymap` moved up rather than this moving down.
+    if let Some(which) = &config.print_keymap {
+        let defaults = recon::keymap::Keymap::default();
+        let printed = match which.as_str() {
+            "defaults" => recon::keymap::print_keymap(&defaults, &defaults),
+            _ => recon::keymap::print_keymap(&config.bindings, &defaults),
+        };
+        print!("{printed}");
         return Ok(ExitCode::SUCCESS);
     }
 
@@ -48,16 +64,6 @@ fn main() -> Result<ExitCode> {
     // with `check_flags`. Still before any terminal setup: the message must
     // reach a screen that is not about to be replaced (#143).
     config.check_sets(&config.filter_sets)?;
-    // The `[keymap]` table, for the same reason and at the same moment: a
-    // typo in an action name or a key spelling refuses to start, while a
-    // message can still be read (#61), and anything the build logs is logged
-    // before `Muted` starts dropping records. Resolved here rather than in
-    // `App::new`, which returns `Self` and can carry neither the error nor
-    // the warning. After `--print-keymap` above, which is how a user finds
-    // the name they meant.
-    let (bindings, keymap_warnings) = config.build_keymap()?;
-    config.bindings = bindings;
-    config.keymap_warnings = keymap_warnings;
 
     // Headless (#143): `--emit` with no terminal on stdin. A TUI needs stdin
     // for its keys, so a pipe or `/dev/null` there is not a session that
