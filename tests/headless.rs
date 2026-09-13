@@ -273,6 +273,42 @@ fn print_editor_config_survives_a_malformed_filters_toml() {
     assert!(!out.stdout.is_empty(), "nothing was printed");
 }
 
+/// `--print-keymap defaults` prints recon's built-in table, which no
+/// `config.toml` can change — so no `config.toml` may stop it printing. A
+/// `[keymap]` recon refuses is precisely when a user needs this command, and
+/// being refused by the file it diagnoses is #191's shape moved onto
+/// `config.toml`.
+///
+/// Plain `--print-keymap` is asserted to still fail on the same file, which is
+/// the boundary: it prints the map **in force**, and this file leaves none.
+#[test]
+fn print_keymap_defaults_survives_a_keymap_recon_refuses() {
+    let dir = fixture("bad_keymap_print_defaults");
+    let home = config_home(&dir);
+    fs::write(
+        home.join("recon/config.toml"),
+        "[keymap]\n'global.quit' = 'x'\n'global.reload' = 'x'\n",
+    )
+    .expect("write config.toml");
+
+    let out = recon(&home, &["--print-keymap", "defaults"], b"");
+
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", text(&out.stderr));
+    let printed = text(&out.stdout);
+    assert!(printed.contains("[keymap]"), "{printed}");
+    assert!(
+        printed.contains("'global.quit' = 'q'"),
+        "the built-in table is what must be printed: {printed}"
+    );
+
+    let in_force = recon(&home, &["--print-keymap"], b"");
+    assert_eq!(
+        in_force.status.code(),
+        Some(1),
+        "there is no map in force to print, so this one must still refuse"
+    );
+}
+
 /// `--print-keymap` prints a pasteable `[keymap]` stanza to stdout and exits,
 /// with nothing on stderr.
 #[test]

@@ -35,6 +35,21 @@ fn main() -> Result<ExitCode> {
         return Ok(ExitCode::SUCCESS);
     }
 
+    // `--print-keymap defaults` prints the built-in table, which no
+    // `config.toml` can change — so no `config.toml` may stop it. Above
+    // `build_keymap` for that reason: this is the command a user reaches for
+    // when recon refuses their keymap, and it was being refused by the very
+    // file it exists to diagnose. That is #191's shape, moved off
+    // `filters.toml` and onto `config.toml`.
+    //
+    // Plain `--print-keymap` deliberately stays below: it prints the map **in
+    // force**, and a file recon cannot obey leaves no map in force to print.
+    if config.print_keymap.as_deref() == Some("defaults") {
+        let defaults = recon::keymap::Keymap::default();
+        print!("{}", recon::keymap::print_keymap(&defaults, &defaults));
+        return Ok(ExitCode::SUCCESS);
+    }
+
     // The `[keymap]` table, before `--print-keymap` below, which prints the
     // answer. An unknown action name, an unreadable key spelling or a keymap
     // recon cannot obey refuses to start while a message can still be read
@@ -49,13 +64,16 @@ fn main() -> Result<ExitCode> {
     // nothing from `filters.toml`, so it must not have to survive one to run
     // (#191). It must stay above `load_file` for that reason, which is why
     // `build_keymap` moved up rather than this moving down.
-    if let Some(which) = &config.print_keymap {
+    //
+    // `defaults` never arrives here — it is answered above `build_keymap`, so
+    // what is left is the map in force, which is what `config.bindings` now
+    // holds.
+    if config.print_keymap.is_some() {
         let defaults = recon::keymap::Keymap::default();
-        let printed = match which.as_str() {
-            "defaults" => recon::keymap::print_keymap(&defaults, &defaults),
-            _ => recon::keymap::print_keymap(&config.bindings, &defaults),
-        };
-        print!("{printed}");
+        print!(
+            "{}",
+            recon::keymap::print_keymap(&config.bindings, &defaults)
+        );
         return Ok(ExitCode::SUCCESS);
     }
 
