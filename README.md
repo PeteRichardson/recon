@@ -513,9 +513,9 @@ wants has to be one this release already said was taken. Binding a reserved
 key anyway is allowed — it's your keyboard — recon just warns once, on
 startup, and then obeys.
 
-An entry replaces that action's keys entirely, so giving an action a key can
-take that key away from a different action. recon works out what your file
-costs before it starts, and it either refuses or tells you.
+Giving an action a key can therefore take that key away from a different
+action. recon works out what your file costs before it starts, and it either
+refuses or tells you.
 
 `config.toml` is a layer over the built-in defaults, and the later layer wins.
 A line you write beats a default you did not touch. Two lines in your own file
@@ -541,9 +541,10 @@ key or `[]`, and the warning goes.
 
 Turn the panel off with `--no-warnings`, `RECON_WARNINGS=false`, or
 `warnings = false` at the top level of `config.toml`; `--warnings` turns it
-back on for one run. None of these hides an error: a keymap recon cannot obey
-always stops it. `--quiet` is a different switch — it suppresses the `--emit`
-summary line and leaves warnings alone.
+back on for one run. The same three switches also silence the reserved-key
+notice above. None of these hides an error: a keymap recon cannot obey always
+stops it. `--quiet` is a different switch — it suppresses the `--emit` summary
+line and leaves warnings alone.
 
 Filters colour the lines they match and dim the rest; they are regular
 expressions, like search. A filter set describes a log format rather than one
