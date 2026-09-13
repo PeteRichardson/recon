@@ -502,6 +502,14 @@ pub struct App<'a> {
     /// next key. Joining that cycle would mean tabbing past help forever after
     /// using it once.
     help: bool,
+    /// Whether the startup keymap-warning panel is still up.
+    ///
+    /// Set in `App::new` when the config carried warnings and the switch
+    /// leaves them on, and cleared by the first key. Like `help`, it is not a
+    /// focus and joins no `Tab` cycle: it is a notice you read and put away.
+    keymap_warnings_open: bool,
+    /// The warning text, rendered once in `App::new` rather than per frame.
+    keymap_warnings: Vec<String>,
     /// The profile picker, while one is open (#130). Takes every key, as a
     /// prompt does.
     picker: Option<widgets::picker::ProfilePicker>,
@@ -735,6 +743,8 @@ impl App<'_> {
             swallow_next_enter: false,
             chain_origin: None,
             help: false,
+            keymap_warnings: config.keymap_warnings.clone(),
+            keymap_warnings_open: config.warnings() && !config.keymap_warnings.is_empty(),
             picker: None,
             save_path: filtersets::path(),
             scanner: Box::new(scan::Scanner::new(scan_tx)),
@@ -1316,6 +1326,21 @@ impl App<'_> {
     /// where `Config::load`, `editor_command` and `set_highlight` genuinely can
     /// fail (#80).
     fn dispatch_event(&mut self, event: event::Event) {
+        // First of all the guards. The panel is up before any key is read, so
+        // it can never meet an open prompt, and taking the key here is what
+        // stops the dismissing key from also quitting, moving a cursor or
+        // opening an editor.
+        //
+        // Only a *key* closes it, for the reason the help overlay gives: mouse
+        // capture is on, and a mouse crossing the terminal would wipe a notice
+        // the user is still reading.
+        if self.keymap_warnings_open {
+            if matches!(event, event::Event::Key(_)) {
+                self.keymap_warnings_open = false;
+            }
+            return;
+        }
+
         // The status message lasts until the next *keypress*, and deliberately
         // not until the next event: mouse capture is on, so a mouse moving
         // across the terminal would wipe "zed: No such file or directory" off
@@ -3060,6 +3085,71 @@ impl App<'_> {
             .block(Block::bordered().border_style(Style::default().fg(Color::Yellow)))
             .render(area, buf);
     }
+
+    /// The keymap warnings, over everything, until the first key.
+    ///
+    /// Modelled on `render_crossing`: cleared underneath, bordered, and
+    /// silent when the area cannot hold it. Not on the help overlay's column
+    /// flow — that exists to fit ninety short key rows into columns, and
+    /// these are a few long sentences.
+    ///
+    /// Nothing scrolls. "Any key closes it" and a scroll key cannot both be
+    /// true, which is the rule the help overlay already keeps. When the
+    /// warnings outrun the space, the border says how many were cut and names
+    /// `--print-keymap`, which prints every one of them in full.
+    fn render_keymap_warnings(&self, area: Rect, buf: &mut Buffer) {
+        use ratatui::widgets::{Block, Clear, Paragraph, Wrap};
+        if !self.keymap_warnings_open || self.keymap_warnings.is_empty() {
+            return;
+        }
+        let width = area.width.min(76);
+        if width < 20 || area.height < 5 {
+            return;
+        }
+        let inner_width = usize::from(width - 4);
+
+        // How many whole warnings fit, each measured at the width it will wrap
+        // to. Counting lines rather than warnings is what keeps a long one
+        // from overflowing the box it was measured for.
+        let budget = usize::from(area.height.min(20)) - 4;
+        let mut lines: Vec<String> = Vec::new();
+        let mut shown = 0;
+        for warning in &self.keymap_warnings {
+            let wrapped = warning.len().div_ceil(inner_width.max(1)) + 1;
+            if !lines.is_empty() && lines.len() + wrapped > budget {
+                break;
+            }
+            lines.push(format!("• {warning}"));
+            shown += 1;
+        }
+        let cut = self.keymap_warnings.len() - shown;
+
+        let height = u16::try_from(lines.len().min(budget) + 4)
+            .unwrap_or(u16::MAX)
+            .min(area.height);
+        let rect = Rect {
+            x: area.x + (area.width - width) / 2,
+            y: area.y + (area.height - height) / 2,
+            width,
+            height,
+        };
+
+        let title = if cut == 0 {
+            " Keymap warnings ".to_string()
+        } else {
+            format!(" Keymap warnings ({cut} more — run recon --print-keymap) ")
+        };
+
+        Clear.render(rect, buf);
+        Paragraph::new(format!("{}\n\nAny key closes this.", lines.join("\n\n")))
+            .wrap(Wrap { trim: false })
+            .block(
+                Block::bordered()
+                    .title(title)
+                    .border_style(Style::default().fg(Color::Yellow)),
+            )
+            .render(rect, buf);
+    }
 }
 
 /// Shorten `text` to `width` columns by dropping characters from the *left*,
@@ -3242,6 +3332,7 @@ impl Widget for &mut App<'_> {
         if self.help {
             help::render(area, buf, &self.keymap);
         }
+        self.render_keymap_warnings(area, buf);
 
         // An open prompt takes the rest of the row; nothing but the badge
         // competes with it. The badge stays because the mode it reports is
@@ -3364,6 +3455,117 @@ mod tests {
             path: dir.join("placeholder").display().to_string(),
             ..Config::default()
         })
+    }
+
+    /// `app_over`, with a `[keymap]` that costs `nav.down` its `j` — the
+    /// smallest config that produces a warning.
+    fn app_with_warnings(name: &str, files: &[&str]) -> App<'static> {
+        app_over_keymap(name, files, false)
+    }
+
+    /// `app_with_warnings`, with the warnings switched off.
+    fn app_with_warnings_silenced(name: &str, files: &[&str]) -> App<'static> {
+        app_over_keymap(name, files, true)
+    }
+
+    /// A sibling of `app_over` and `app_over_files`, not a refactor of either.
+    /// `app_over` has 58 callers, and `app_over_files` beside it already
+    /// repeats this shape rather than sharing a body — so repeating it once
+    /// more is the convention here, and rewriting `app_over` would be 58 call
+    /// sites of churn for nothing.
+    fn app_over_keymap(name: &str, files: &[&str], no_warnings: bool) -> App<'static> {
+        let dir = fixture_dir(name);
+        for file in files {
+            fs::write(dir.join(file), "x").expect("write fixture");
+        }
+        let mut bindings = std::collections::BTreeMap::new();
+        bindings.insert("global.quit".to_string(), vec!["j".to_string()]);
+        let mut config = Config {
+            path: dir.join("placeholder").display().to_string(),
+            keymap: Some(crate::config::KeymapConfig { bindings }),
+            no_warnings,
+            ..Config::default()
+        };
+        let (map, warnings) = config.build_keymap().expect("valid");
+        config.bindings = map;
+        config.keymap_warnings = warnings;
+        App::new(&config)
+    }
+
+    /// A config that costs a key must say so where the user is looking, not
+    /// on a stderr line the alternate screen covers a moment later.
+    #[test]
+    fn a_keymap_warning_opens_a_panel() {
+        let mut app = app_with_warnings("warning_panel_opens", &["a.rs"]);
+
+        let screen = screen(&mut app);
+        assert!(
+            screen.contains("Keymap warnings"),
+            "the panel did not draw:\n{screen}"
+        );
+        assert!(screen.contains("nav.down"), "{screen}");
+    }
+
+    #[test]
+    fn any_key_dismisses_the_panel() {
+        let mut app = app_with_warnings("warning_panel_any_key", &["a.rs"]);
+
+        key(&mut app, KeyCode::Char('k'));
+
+        let screen = screen(&mut app);
+        assert!(
+            !screen.contains("Keymap warnings"),
+            "the panel outlived its key:\n{screen}"
+        );
+    }
+
+    /// The dismissing key must not also do its usual job, or the panel costs
+    /// the user a keystroke they did not mean to spend. `q` is the sharpest
+    /// case.
+    #[test]
+    fn the_dismissing_key_does_not_also_act() {
+        let mut app = app_with_warnings("warning_panel_not_acted", &["a.rs"]);
+
+        key(&mut app, KeyCode::Char('q'));
+
+        assert_eq!(
+            app.state,
+            AppState::Running,
+            "'q' dismissed the panel and also quit"
+        );
+    }
+
+    /// Mouse capture is on, so a mouse crossing the terminal must not wipe a
+    /// panel mid-read. The help overlay makes the same distinction.
+    #[test]
+    fn a_mouse_event_does_not_dismiss_the_panel() {
+        let mut app = app_with_warnings("warning_panel_mouse", &["a.rs"]);
+
+        app.handle_event(event::Event::Mouse(event::MouseEvent {
+            kind: event::MouseEventKind::Moved,
+            column: 1,
+            row: 1,
+            modifiers: KeyModifiers::empty(),
+        }));
+
+        let screen = screen(&mut app);
+        assert!(screen.contains("Keymap warnings"), "{screen}");
+    }
+
+    #[test]
+    fn a_clean_config_opens_no_panel() {
+        let mut app = app_over("no_warnings_clean", &["a.rs"]);
+
+        let screen = screen(&mut app);
+        assert!(!screen.contains("Keymap warnings"), "{screen}");
+    }
+
+    #[test]
+    fn no_warnings_opens_no_panel() {
+        let mut app = app_with_warnings_silenced("warning_panel_silenced", &["a.rs"]);
+
+        let screen = screen(&mut app);
+        assert!(!screen.contains("Keymap warnings"), "{screen}");
     }
 
     /// The argument is held the way the navigator holds it, absolute. Two
