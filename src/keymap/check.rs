@@ -305,8 +305,49 @@ pub(crate) fn check(built: &Keymap, written: &[ActionId]) -> Report {
         // and `no_default_key_is_in_both_global_and_a_pane` pins.
     }
 
+    widen_evictions(built, &mut report);
     fill_remaining(built, &mut report);
     report
+}
+
+/// Take a key from every scope an action holds it in, once it is taken from
+/// one of them.
+///
+/// `hit.next` and `hit.prev` are the only actions with a row in two scopes,
+/// and a `[keymap]` line names an action with no scope in it. So "n reaches
+/// `hit.next` in the filter pane but not in the file view" is a state the
+/// config file has no way to write down — and evicting one scope at a time
+/// built exactly that state. `'view.line.end' = ['n']` left `hit.next`
+/// holding the filter pane's `n`; `--print-keymap` then printed
+/// `'hit.next' = 'n'` with no comment, because `labels_for` deduplicates
+/// across scopes, and pasting that line back bound `n` in both scopes again
+/// and was refused as ambiguous. The README calls that output ready to copy
+/// from, so the map it prints has to be a map a user can write down.
+///
+/// The eviction is therefore all or nothing. It costs the action a key in a
+/// pane that contested nothing, which is a real cost and is not hidden: the
+/// warning names what the action still answers to, and `fill_remaining` runs
+/// after this, so it counts both scopes.
+fn widen_evictions(built: &Keymap, report: &mut Report) {
+    // Over a snapshot: a row added here is the widened one, in another scope
+    // of the same action for the same key, so one pass reaches every scope.
+    for (scope, key, action) in report.evict.clone() {
+        let lost = crate::help::chords_for_label(&key);
+        for (entry_scope, label, entry_action) in &built.entries {
+            if *entry_action != action || *entry_scope == scope {
+                continue;
+            }
+            if crate::help::chords_for_label(label)
+                .iter()
+                .any(|chord| lost.contains(chord))
+            {
+                let row = (*entry_scope, key.clone(), action);
+                if !report.evict.contains(&row) {
+                    report.evict.push(row);
+                }
+            }
+        }
+    }
 }
 
 /// Say what each displaced action still answers to, once every eviction is

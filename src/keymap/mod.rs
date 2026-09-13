@@ -1727,6 +1727,70 @@ mod tests {
         );
     }
 
+    /// A two-scope action that loses a key loses it in both scopes, so what
+    /// `--print-keymap` prints is a stanza that pastes back.
+    ///
+    /// `hit.next` and `hit.prev` are the only actions holding a row in two
+    /// scopes, and a `[keymap]` line names an action with no scope in it — so
+    /// "n reaches `hit.next` in the filter pane but not in the file view" is a
+    /// state the file format cannot express. Evicting one scope at a time
+    /// built that state and printed `'hit.next' = 'n'` with no comment, and
+    /// recon then refused that line when it was pasted back.
+    #[test]
+    fn a_two_scope_action_loses_a_key_in_both_scopes_and_still_pastes_back() {
+        let defaults = Keymap::default();
+        let (mut keymap, _) = Keymap::new(&overlay("view.line.end", &["n"])).expect("valid");
+        let report = check::check(&keymap, &[ActionId::ViewLineEnd]);
+        keymap.evict(&report.evict);
+
+        let n = normalise(KeyEvent::new(KeyCode::Char('n'), KeyModifiers::empty()));
+        assert_eq!(
+            keymap.resolve(Scope::View, n),
+            Some(ActionId::ViewLineEnd),
+            "the file asked for 'n' in the file view"
+        );
+        assert!(
+            keymap.labels_for(ActionId::HitNext).is_empty(),
+            "the key goes from every scope the action held it in, or the
+             printed line cannot say which scope kept it"
+        );
+        assert_eq!(
+            keymap.resolve(Scope::Filters, n),
+            None,
+            "the filter pane's 'n' goes with it"
+        );
+
+        let printed = print_keymap(&keymap, &defaults);
+        let line = printed
+            .lines()
+            .find(|line| line.starts_with("'hit.next'"))
+            .expect("hit.next must be printed");
+        assert!(
+            line.contains("[]"),
+            "an action with no key prints as []: {line}"
+        );
+        assert!(line.contains("'n' taken by view.line.end"), "{line}");
+
+        // The round trip the README promises: the dump, read back and checked
+        // again, is refused by nothing.
+        let parsed: crate::config::FileConfig =
+            toml::from_str(&printed).expect("recon must print what it accepts");
+        let pasted = parsed.keymap.expect("a [keymap] table");
+        let written: Vec<ActionId> = pasted
+            .bindings
+            .keys()
+            .filter_map(|name| action_named(name))
+            .collect();
+        let (rebuilt, _) = Keymap::new(&pasted).expect("valid");
+
+        let again = check::check(&rebuilt, &written);
+        assert_eq!(
+            again,
+            check::Report::default(),
+            "pasting recon's own output back must say nothing at all: {again:?}"
+        );
+    }
+
     /// The overlay defect the same eviction removes, with no change to
     /// `help.rs`: `labels_for` fed the `?` overlay a key that now quits.
     #[test]
