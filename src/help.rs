@@ -198,8 +198,9 @@ fn keys_for_label(label: &str) -> Vec<Key> {
         // this comment confused the two.
         //
         // This comment also used to say ranges were bare-only, which the code
-        // had never obeyed. The one key a prefixed range cannot yield is the
-        // space bar, carved out below rather than here.
+        // had never obeyed. A prefixed range that would yield the space bar is
+        // refused outright — the whole label, not just that key — below rather
+        // than here.
         [a, '-', b] if a < b => (*a..=*b).map(Key::Char).collect(),
         _ => Vec::new(),
     };
@@ -211,13 +212,21 @@ fn keys_for_label(label: &str) -> Vec<Key> {
     // holds, and `Keymap::evict` could not read the label back to find the row.
     //
     // Two arms above reach it — the range arm via `Ctrl- -!`, and the single
-    // character arm via `Ctrl- ` with a literal space — so the carve-out sits
-    // here, past both, rather than inside either. A bare range keeps its space:
-    // that chord renders `space` correctly and reads back.
-    if prefixed {
-        keys.into_iter()
-            .filter(|key| *key != Key::Char(' '))
-            .collect()
+    // character arm via `Ctrl- ` with a literal space — so this sits here, past
+    // both, rather than inside either.
+    //
+    // The whole label is refused, not merely that one key. Dropping the space
+    // and keeping the rest left `Ctrl- -!` binding `Ctrl-!` alone: one key
+    // narrower than written, with no diagnostic, while `--print-keymap` echoed
+    // the wider spelling back into output the README calls ready to copy from.
+    // Returning nothing makes `label_is_readable` false, so the existing path
+    // stops recon and names the offending line, exactly as it already did for
+    // `Ctrl- `.
+    //
+    // A bare range keeps its space: that chord renders `space` correctly and
+    // reads back, so there is nothing to refuse.
+    if prefixed && keys.contains(&Key::Char(' ')) {
+        Vec::new()
     } else {
         keys
     }
@@ -1224,22 +1233,27 @@ mod tests {
         assert!(label_is_readable("space"));
     }
 
-    /// A prefixed range loses the space bar and keeps everything else.
+    /// A prefixed range that touches the space bar is refused by name.
     ///
-    /// `Ctrl- -!` is the range `' '..='!'`. Before the carve-out it yielded a
-    /// ctrl-held space, which `Chord::label` rendered as plain `space` —
-    /// colliding with the real space chord and reporting a contest on a key
-    /// the user never wrote. What survives is `Ctrl-!` alone.
+    /// `Ctrl- -!` is the range `' '..='!'`, and it has been wrong twice. It
+    /// first yielded a ctrl-held space, which `Chord::label` renders as plain
+    /// `space` — colliding with the real space chord and reporting a contest on
+    /// a key the user never wrote. Carving out that one key then left it
+    /// binding `Ctrl-!` alone: one key narrower than written, with no
+    /// diagnostic, while `--print-keymap` echoed the wider spelling back into
+    /// output the README calls ready to copy from.
+    ///
+    /// Pete's decision: refuse the whole label, as `Ctrl- ` already was. A
+    /// spelling recon cannot honour in full stops it by name instead of
+    /// binding a subset in silence.
     #[test]
-    fn a_prefixed_range_drops_the_space_and_keeps_the_rest() {
-        assert_eq!(
-            chords_for_label("Ctrl- -!"),
-            vec![Chord {
-                ctrl: true,
-                alt: false,
-                key: Key::Char('!'),
-            }],
+    fn a_prefixed_range_touching_the_space_bar_is_refused() {
+        assert!(
+            !label_is_readable("Ctrl- -!"),
+            "a prefixed range over the space bar must not parse"
         );
+        assert!(chords_for_label("Ctrl- -!").is_empty());
+        assert!(!label_is_readable("Alt- -!"), "the same for Alt-");
 
         // A bare range keeps its space: that chord renders `space` correctly
         // and reads back, so there is nothing to carve out.
