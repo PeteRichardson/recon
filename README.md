@@ -503,9 +503,11 @@ A key is spelled as one of:
   `Insert`, `Esc` — optionally with a `Ctrl-` or `Alt-` prefix
 - `F` followed by digits, `F1` through `F12`, optionally with a `Ctrl-` or
   `Alt-` prefix
-- a bare character range such as `1-9`, which binds every key in it — bare
-  only, since a `Ctrl-` prefix is stripped before a range is read, so
-  `Ctrl-d` means `d`, not a range
+- a character range such as `1-9`, which binds every key in it. A `Ctrl-` or
+  `Alt-` prefix covers the whole range, so `Ctrl-1-9` is `Ctrl-1` through
+  `Ctrl-9`. A prefixed range that would reach the space bar is refused by
+  name, because recon has no spelling for a modified space bar and so could
+  not name that key back to you
 
 Two keys, `-` and `:`, are reserved rather than bound: 1.0 promises them to
 1.1 (a hex view and a command palette), so whichever key a later release
