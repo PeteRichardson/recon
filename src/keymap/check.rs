@@ -1386,13 +1386,12 @@ mod tests {
             "a-f",
             "*-/",
             "5-<",
-            // The three that broke injectivity, or would have. The first two
-            // reach `Char(' ')` through a prefix — the range arm and the
-            // single character arm — and both rendered as the plain space
-            // chord until `keys_for_label` carved it out. The third is the
-            // bare range that must keep its space.
-            "Ctrl- -!",
-            "Ctrl- ",
+            // The bare range that must keep its space. The two prefixed
+            // spellings that once broke injectivity are no longer here:
+            // `keys_for_label` now refuses them outright, so they expand to no
+            // chords at all and this loop would never compare them. They moved
+            // to the `unreadable` list below, which is the assertion that still
+            // bites if either ever parses again.
             " -!",
         ] {
             labels.push(extra.to_string());
@@ -1426,7 +1425,17 @@ mod tests {
         // The spellings the argument above turns on being unreadable. If any
         // of these ever parses, `Char(' ')` or `Named(\"BackTab\")` gains a
         // prefix it cannot render, and the collision becomes reachable.
-        for unreadable in ["Ctrl-space", "Alt-space", "Ctrl-Shift-Tab"] {
+        // `Ctrl- -!` and `Ctrl- ` reach `Char(' ')` through a prefix — the
+        // range arm and the single character arm — and each rendered as the
+        // plain space chord until they were refused by name.
+        for unreadable in [
+            "Ctrl-space",
+            "Alt-space",
+            "Ctrl-Shift-Tab",
+            "Ctrl- -!",
+            "Alt- -!",
+            "Ctrl- ",
+        ] {
             assert!(
                 crate::help::chords_for_label(unreadable).is_empty(),
                 "{unreadable} must stay unreadable"
