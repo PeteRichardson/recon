@@ -623,7 +623,7 @@ pub const KEYMAP: &[Section] = &[
             },
             Binding {
                 keys: &["l", "Right"],
-                action: "Open the entry",
+                action: "Open the entry; a file takes the focus",
                 names: &["nav.open"],
             },
         ],

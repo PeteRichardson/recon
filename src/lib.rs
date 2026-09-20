@@ -2565,6 +2565,14 @@ impl App<'_> {
     fn perform_widget_action(&mut self, action: Action) {
         match &action {
             Action::Load(path) => self.view.load(path),
+            Action::LoadAndFocus(path) => {
+                self.view.load(path);
+                // `reveal_and_focus`, not `self.focus = ...`: `b` and `z` can
+                // leave the file view off screen, and opening a file into a
+                // pane the user cannot see would be worse than not moving at
+                // all. This is the same reason the focus keys route here.
+                self.reveal_and_focus(Focus::View);
+            }
             Action::Preview(path) => self.view.preview(path),
         }
         self.sync_document();
@@ -8209,6 +8217,113 @@ mod tests {
         assert_ne!(app.focus, Focus::View);
 
         key(&mut app, KeyCode::Char('t'));
+
+        assert_eq!(app.focus, Focus::View);
+    }
+
+    // ---- #263: opening a file sends the focus after it -------------------
+
+    /// `l`, `Right` and `Enter` on a *file* land the cursor in the view.
+    ///
+    /// All three in one loop because they share `nav.open`: a change that
+    /// reached only the arm one of them took would still pass a test that
+    /// pressed only that one.
+    ///
+    /// Without this, `l` on a file changed almost nothing on screen — the
+    /// navigator already previews every row the cursor passes over — and
+    /// reading the file needed a second, differently-shaped keystroke.
+    #[test]
+    fn opening_a_file_moves_the_focus_to_the_file_view() {
+        // One fixture, three apps: the registry refuses a name claimed twice,
+        // and each key needs a navigator that has not already moved.
+        let dir = fixture_dir("nav_open_focus");
+        fs::write(dir.join("a.log"), "alpha\n").expect("write fixture");
+
+        for code in [KeyCode::Char('l'), KeyCode::Right, KeyCode::Enter] {
+            let mut app = App::new(&Config {
+                path: dir.join("placeholder").display().to_string(),
+                ..Config::default()
+            });
+            draw(&mut app);
+            assert_eq!(app.focus, Focus::Nav, "{code:?}");
+
+            // Rows: `..`, `a.log`. The cursor opens on the first real entry,
+            // not on `..`, so `a.log` is already under it.
+            assert_eq!(app.nav.selected(), Some(1), "{code:?}");
+            key(&mut app, code);
+
+            assert_eq!(app.focus, Focus::View, "{code:?}");
+            assert_eq!(shown(&app), "a.log", "{code:?}");
+        }
+    }
+
+    /// A directory is the other half of "one level deeper", and the work is
+    /// still in the navigator once you are inside it — so the focus stays.
+    #[test]
+    fn opening_a_directory_keeps_the_focus_in_the_navigator() {
+        let (mut app, dir) = app_over_nested("nav_open_focus_dir");
+        draw(&mut app);
+
+        // Rows: `..`, `sub/`, `z.log`, and the cursor opens on `sub/`.
+        assert_eq!(app.nav.selected(), Some(1));
+        key(&mut app, KeyCode::Char('l'));
+
+        assert!(
+            app.nav.dir().ends_with(dir.join("sub")),
+            "did not descend, got {}",
+            app.nav.dir().display()
+        );
+        assert_eq!(app.focus, Focus::Nav);
+    }
+
+    /// `..` climbs out, which is a directory move like any other.
+    #[test]
+    fn opening_the_parent_entry_keeps_the_focus_in_the_navigator() {
+        let (mut app, _dir) = app_over_nested("nav_open_focus_parent");
+        draw(&mut app);
+        let before = app.nav.dir().to_path_buf();
+
+        // The cursor opens on `sub/`; `Up` backs it onto `..`.
+        key(&mut app, KeyCode::Up);
+        assert_eq!(app.nav.selected(), Some(0));
+        key(&mut app, KeyCode::Char('l'));
+
+        assert_eq!(
+            app.nav.dir(),
+            before.parent().expect("the fixture has a parent"),
+            "did not climb out"
+        );
+        assert_eq!(app.focus, Focus::Nav);
+    }
+
+    /// The focus goes through `reveal_and_focus`, not a bare assignment, so
+    /// `z` on the navigator cannot leave the cursor on a pane that is not
+    /// drawn. Same reason the focus *keys* do not just set the field.
+    #[test]
+    fn opening_a_file_reveals_a_hidden_file_view() {
+        let mut app = app_over_files("nav_open_focus_zoom", &[("a.log", "alpha\n")]);
+        draw(&mut app);
+        key(&mut app, KeyCode::Char('z'));
+        assert!(app.zoom.is_some(), "the navigator should be zoomed");
+
+        key(&mut app, KeyCode::Char('l'));
+
+        assert_eq!(app.zoom, None, "the file view is still hidden");
+        assert_eq!(app.focus, Focus::View);
+    }
+
+    /// The two directions are deliberately not symmetrical (#263). The view
+    /// needs `h` for horizontal scroll of long lines, and a key whose job
+    /// changes at column 0 is both hard to learn and easy to trip. `Tab`,
+    /// `Shift-Tab` and `e` are the documented ways back.
+    #[test]
+    fn h_in_the_file_view_does_not_send_the_focus_back() {
+        let mut app = app_over_files("nav_open_focus_h", &[("a.log", "alpha\n")]);
+        draw(&mut app);
+        key(&mut app, KeyCode::Char('l'));
+        assert_eq!(app.focus, Focus::View);
+
+        key(&mut app, KeyCode::Char('h'));
 
         assert_eq!(app.focus, Focus::View);
     }

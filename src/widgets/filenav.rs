@@ -511,7 +511,7 @@ impl FileNav<'_> {
             // on others is worse than one that always does the obvious
             // thing.
             A::NavParent => self.go_to_parent(),
-            A::NavOpen => self.activate_selection(),
+            A::NavOpen => self.open_selection(),
             A::NavHitNext => self.repeat_search(false),
             A::NavHitPrev => self.repeat_search(true),
             // Shared list motions (#120 §3): the same keys, with the same
@@ -804,6 +804,29 @@ impl FileNav<'_> {
     /// what is actually selected.
     fn preview_selection(&self) -> Option<Action> {
         Some(Action::Preview(self.selected_path()?))
+    }
+
+    /// `activate_selection` for a key press, where opening a file also sends
+    /// the focus after it (#263).
+    ///
+    /// `l` then means one thing in this pane: go one level deeper. For a
+    /// directory, deeper is its contents; for a file, deeper is the file's
+    /// own contents, and those are drawn in the sibling pane. Without the
+    /// focus moving, `l` on a file changed almost nothing on screen — the
+    /// navigator already previews each row as the cursor passes over it —
+    /// so reading the file needed a second keystroke of a different shape.
+    ///
+    /// Only the key path. `click` and `open_listed` go to
+    /// `activate_selection` directly: a click already moves the focus to the
+    /// pane it landed in, so a click that then threw the focus out again
+    /// would be a click that lands somewhere else.
+    fn open_selection(&mut self) -> Option<Action> {
+        match self.activate_selection()? {
+            Action::Load(path) => Some(Action::LoadAndFocus(path)),
+            // A descent or a climb, which previews. The navigator is still
+            // where the work is, so it keeps the focus.
+            other => Some(other),
+        }
     }
 
     /// Open the highlighted entry: descend into a directory in place, or ask
@@ -1391,17 +1414,49 @@ mod tests {
     /// `l` is `Enter`, in every case — including on a file, where both load
     /// it. A key that works on some rows and silently does nothing on others
     /// is worse than one that always does the obvious thing.
+    ///
+    /// `Right` is in the loop for the same reason `l_and_right_descend_…`
+    /// runs both: the three keys share one `ActionId`, and a table that bound
+    /// only two of them would still pass a test that pressed only one.
     #[test]
-    fn l_on_a_file_loads_it_like_enter() {
+    fn l_and_right_on_a_file_load_it_and_ask_for_the_focus() {
         let dir = nested_fixture("keys_l_file");
-        let mut nav = FileNav::new(dir.join("alpha.txt").display().to_string());
-        select(&mut nav, "gamma.txt");
+        for code in [KeyCode::Char('l'), KeyCode::Right] {
+            let mut nav = FileNav::new(dir.join("alpha.txt").display().to_string());
+            select(&mut nav, "gamma.txt");
 
-        let action = press(&mut nav, KeyCode::Char('l'));
+            let action = press(&mut nav, code);
+
+            assert!(
+                matches!(&action, Some(Action::LoadAndFocus(path)) if path.ends_with("gamma.txt")),
+                "{code:?}: expected a load that takes the focus, got {action:?}"
+            );
+        }
+    }
+
+    /// The mouse carve-out (#263). A click already moves the focus to the
+    /// pane it landed in, so a click on a file that then threw the focus
+    /// *out* of that pane would be a click that lands somewhere else — and
+    /// `click` is documented as the pointing-at version of a cursor motion
+    /// and `Enter`, never a new verb.
+    #[test]
+    fn a_click_on_a_file_loads_it_without_asking_for_the_focus() {
+        let dir = nested_fixture("click_l_file");
+        let mut nav = FileNav::new(dir.join("alpha.txt").display().to_string());
+        // The drawn row, not the entry index: `click` reads `visible`, which
+        // a filter can make shorter than `entries`. Nothing has rendered, so
+        // the list is unscrolled and the row is also the line clicked.
+        let row = nav
+            .visible
+            .iter()
+            .position(|&i| nav.entries[i].name == "gamma.txt")
+            .expect("gamma.txt is in the fixture");
+
+        let action = nav.click(u16::try_from(row).expect("small fixture"), false);
 
         assert!(
             matches!(&action, Some(Action::Load(path)) if path.ends_with("gamma.txt")),
-            "expected a load, got {action:?}"
+            "expected a plain load, got {action:?}"
         );
     }
 
@@ -2395,11 +2450,11 @@ mod tests {
         let action = enter(&mut nav);
 
         match action {
-            Some(Action::Load(path)) => {
+            Some(Action::LoadAndFocus(path)) => {
                 assert!(path.is_file(), "{path:?} is not a file");
                 assert_eq!(path.file_name().unwrap(), "Cargo.toml");
             }
-            other => panic!("expected a Load action, got {other:?}"),
+            other => panic!("expected a LoadAndFocus action, got {other:?}"),
         }
     }
 
