@@ -40,6 +40,16 @@ pub(crate) fn pane_block<'a>(title: impl Into<ratatui::text::Line<'a>>, active: 
 pub(crate) enum Action {
     /// Show this file in the file view, reading all of it.
     Load(PathBuf),
+    /// `Load`, and put the cursor in the file view afterwards (#263).
+    ///
+    /// A second variant rather than a `focus: bool` on `Load`, because the
+    /// two are raised for different reasons and each reads as a whole
+    /// sentence at the call site. Only the navigator's *keys* raise this
+    /// one. Its two mouse paths — `FileNav::click` and `open_listed` — keep
+    /// `Load`, because a click has already put the focus on the pane it
+    /// landed in, and a bool there would have been a bare `false` with no
+    /// room to say why.
+    LoadAndFocus(PathBuf),
     /// Show enough of this file to fill the pane, as the selection passes over
     /// it. Bounded so that holding a cursor key stays responsive.
     Preview(PathBuf),

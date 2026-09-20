@@ -418,20 +418,21 @@ exists:
 | `Ctrl-d` / `Ctrl-u` | half a page | scroll half a page | half a page | `nav.halfpage.down` / `nav.halfpage.up` / `view.halfpage.down` / `view.halfpage.up` / `filters.halfpage.down` / `filters.halfpage.up` |
 | `PageDown` / `PageUp` | a page | scroll a page (also `Ctrl-f` / `Ctrl-b`) | a page | `nav.page.down` / `nav.page.up` / `view.page.down` / `view.page.up` / `filters.page.down` / `filters.page.up` |
 | `n` / `N` | next / previous filename-search match, or file the filters match | next / previous interesting line, crossing files | acts on the file view | `hit.next` / `hit.prev` / `nav.hit.next` / `nav.hit.prev` |
-| `Enter` | open the entry | — | toggle the filter, the set, or the live search | `nav.open` / `filters.toggle` |
+| `Enter` | open the entry — a file also takes the focus | — | toggle the filter, the set, or the live search | `nav.open` / `filters.toggle` |
 
 `[` and `]` page the file view from every pane and so live in the Global table.
 
 Mouse: a click does what the cursor keys and `Enter` would do to the row under
-it, and focuses the pane it lands in. In the navigator, one click on a file
-opens it and one click on a directory looks inside it; a second click on the
-same directory (or on `..`) enters it, the way `Enter` does. In the filter pane
-a click toggles the filter, the set header, or the live search on that row. In
-the file view, a click on a row of a directory's look-ahead listing takes the
-navigator into that directory and opens the entry clicked — one click instead
-of `l`, a cursor motion and `Enter`. A click on a *file's* text puts the cursor
-on the character under the pointer; dragging from there selects, and
-double-clicking selects the word, both ready for `y` — see
+it, and focuses the pane it lands in — which is why a click on a file in the
+navigator, unlike `Enter`, leaves the focus there. In the navigator, one click
+on a file opens it and one click on a directory looks inside it; a second click
+on the same directory (or on `..`) enters it, the way `Enter` does. In the
+filter pane a click toggles the filter, the set header, or the live search on
+that row. In the file view, a click on a row of a directory's look-ahead
+listing takes the navigator into that directory and opens the entry clicked —
+one click instead of `l`, a cursor motion and `Enter`. A click on a *file's*
+text puts the cursor on the character under the pointer; dragging from there
+selects, and double-clicking selects the word, both ready for `y` — see
 [Copying text](#copying-text). A click on the status row opens the
 include prompt, exactly as `f i` does, and committing it returns focus to the
 pane you clicked from. The wheel scrolls the file view while it has focus, as
@@ -1003,13 +1004,30 @@ Navigator pane (`src/widgets/filenav.rs`) — its own verbs; the shared motions 
 | Key(s) | Action | Name(s) |
 | --- | --- | --- |
 | `h` / `Left` | Go to the parent directory, landing on the directory just left | `nav.parent` |
-| `l` / `Right` | Open the selected entry — descend into a directory, or load a file (`Enter` does the same) | `nav.open` |
+| `l` / `Right` | Open the selected entry — descend into a directory, or load a file and move the focus to the file view (`Enter` does the same) | `nav.open` |
 
 `h` and `l` act on the pane rather than on the row: `h` climbs out whatever is
 selected, and `l` is `Enter` in every case, including on a file. They mean
 here what they mean in a file manager, which is why they differ from the file
 view, where they are vim character motions — the same deliberate trade as `b`
 and `e`.
+
+`l` on a file also moves the focus to the file view. `l` thus keeps one meaning
+in this pane: go one level deeper. For a directory, deeper is its contents; for
+a file, deeper is the file's own contents, which the file view draws. You can
+therefore find a file and read it with `h`, `j`, `k` and `l` alone. The
+navigator previews each entry as the cursor passes over it, so without the
+focus moving, `l` on a file changed almost nothing on the screen.
+
+The two directions are not symmetrical. `h` in the file view scrolls the text
+left; it does not send the focus back. The file view needs `h` and `l` for long
+lines, and a key whose job changes at column 0 is both hard to learn and easy to
+trip. `Tab`, `Shift-Tab` and `e` are the ways back to the navigator.
+
+A **mouse** click is the exception: one click on a file loads it and leaves the
+focus in the navigator. A click already moves the focus to the pane it lands in,
+so a click that then threw the focus out again would be a click that lands
+somewhere else.
 
 The cursor lands somewhere useful rather than on `..`. Entering a directory
 selects its first entry and previews it, since you went in to get at something
