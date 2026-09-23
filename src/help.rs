@@ -425,7 +425,7 @@ pub const KEYMAP: &[Section] = &[
             },
             Binding {
                 keys: &["/"],
-                action: "Search — filenames, or the visible lines",
+                action: "Search: filenames, or the visible lines as you type",
                 names: &["global.search"],
             },
             Binding {
@@ -822,7 +822,7 @@ pub const KEYMAP: &[Section] = &[
             },
             Binding {
                 keys: &["Esc"],
-                action: "Cancel",
+                action: "Cancel; a search returns to its origin",
                 names: &["prompt.cancel"],
             },
         ],

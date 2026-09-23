@@ -164,6 +164,26 @@ impl Search {
     }
 }
 
+/// Where the user was when `/` opened (glossary: *origin*): the file view's
+/// cursor and scroll, and the search that was set at the time.
+///
+/// While the prompt is open every edit re-runs the scan from here, never
+/// from the position the last keystroke reached, so a pattern narrowed by
+/// one more character cannot walk away from the line the user started on.
+/// Esc puts all of it back, so a bad probe costs nothing; Enter drops it.
+#[derive(Debug, Clone)]
+struct Origin {
+    /// The cursor's row in the visible set, and its column.
+    row: usize,
+    col: usize,
+    /// The pane row the cursor was drawn on, so a restore puts the scroll
+    /// back as well as the cursor.
+    screen_row: u16,
+    /// The search set before `/` opened, if any. Esc restores it with the
+    /// cursor: the probe replaced it on screen, not in fact.
+    search: Option<Search>,
+}
+
 /// A search pattern being typed at the bottom of the screen.
 #[derive(Debug, Default)]
 struct SearchPrompt {
@@ -171,6 +191,10 @@ struct SearchPrompt {
     error: Option<String>,
     kind: PromptKind,
     cursor: usize,
+    /// Set for a `/` opened over the file view or the filter pane, where
+    /// the search moves as it is typed. `None` for the navigator's filename
+    /// search and for every filter prompt, which commit on Enter only.
+    origin: Option<Origin>,
 }
 
 impl SearchPrompt {
@@ -818,15 +842,20 @@ impl App<'_> {
         if let Some(action) = self.keymap.resolve(crate::keymap::Scope::Prompt, pressed) {
             use crate::keymap::ActionId as A;
             match action {
-                A::PromptCancel => {
-                    self.prompt = None;
-                    self.chain_origin = None;
-                }
+                A::PromptCancel => self.cancel_prompt(),
                 A::PromptCommit => {
                     let Some(prompt) = self.prompt.as_ref() else {
                         return;
                     };
                     let (pattern, kind) = (prompt.pattern.clone(), prompt.kind);
+
+                    // Enter on an empty search is a cancel, not a search
+                    // for the empty pattern (which matches every line): the
+                    // user is back at the origin, as if Esc.
+                    if kind == PromptKind::Search && pattern.is_empty() && prompt.origin.is_some() {
+                        self.cancel_prompt();
+                        return;
+                    }
 
                     // `SaveSet` is not a pattern: its failures are messages,
                     // shown in the prompt in place of `INVALID_PATTERN`.
@@ -852,7 +881,17 @@ impl App<'_> {
                         PromptKind::Edit { index, .. } => self.replace_filter(index, &pattern),
                     };
                     if outcome.is_ok() {
-                        self.prompt = None;
+                        let origin = self.prompt.take().and_then(|prompt| prompt.origin);
+                        // Enter keeps the position the search reached. The
+                        // wrap it reported while typing went with the
+                        // keystroke, so say it again if the hit is above
+                        // where `/` opened: the jump upward was real.
+                        if let Some(origin) = origin
+                            && self.search.is_some()
+                            && self.view.cursor_visible_row() < origin.row
+                        {
+                            self.report(WRAPPED_TO_TOP, false);
+                        }
                         // Arm the bounce guard (#48). Only on the branch that
                         // actually closes the prompt: a rejected pattern leaves it
                         // open, so the next `Enter` is another commit attempt and
@@ -877,10 +916,11 @@ impl App<'_> {
                         // nothing to abandon: the text is what the user is
                         // keeping (#206).
                         if !prompt.delete_before() && prompt.pattern.is_empty() {
-                            self.prompt = None;
-                            self.chain_origin = None;
+                            self.cancel_prompt();
+                            return;
                         }
                     }
+                    self.rescan_from_origin();
                 }
                 // The cursor keys (#206): vim's command-line set, plus the
                 // readline pair for the ends, which the same hands type at a
@@ -890,9 +930,9 @@ impl App<'_> {
                 A::PromptRight => self.edit_prompt(SearchPrompt::move_right),
                 A::PromptStart => self.edit_prompt(SearchPrompt::move_to_start),
                 A::PromptEnd => self.edit_prompt(SearchPrompt::move_to_end),
-                A::PromptDeleteForward => self.edit_prompt(SearchPrompt::delete_at),
-                A::PromptDeleteWord => self.edit_prompt(SearchPrompt::delete_word_before),
-                A::PromptDeleteStart => self.edit_prompt(SearchPrompt::delete_to_start),
+                A::PromptDeleteForward => self.edit_pattern(SearchPrompt::delete_at),
+                A::PromptDeleteWord => self.edit_pattern(SearchPrompt::delete_word_before),
+                A::PromptDeleteStart => self.edit_pattern(SearchPrompt::delete_to_start),
                 // `resolve(Scope::Prompt, ..)` only ever answers with one of
                 // the arms above — see `DEFAULT`'s `Scope::Prompt` rows — so
                 // this is unreached today. Not a wildcard omitted by
@@ -921,7 +961,7 @@ impl App<'_> {
             KeyCode::Char(c) if c == '\n' || c == '\r' => {}
             // Every character that is not bound is not a binding, and cannot
             // be rebound: it types itself, which is what a prompt is for.
-            KeyCode::Char(c) => self.edit_prompt(|prompt| prompt.insert(c)),
+            KeyCode::Char(c) => self.edit_pattern(|prompt| prompt.insert(c)),
             _ => {}
         }
     }
@@ -933,6 +973,95 @@ impl App<'_> {
         if let Some(prompt) = self.prompt.as_mut() {
             prompt.error = None;
             edit(prompt);
+        }
+    }
+
+    /// `edit_prompt` for an edit that can change the pattern's text, which
+    /// a search prompt answers by moving. The cursor keys go through
+    /// `edit_prompt` directly: they change where the next character lands,
+    /// not what the pattern says, and a scan per arrow key would be paid
+    /// for nothing.
+    fn edit_pattern(&mut self, edit: impl FnOnce(&mut SearchPrompt)) {
+        self.edit_prompt(edit);
+        self.rescan_from_origin();
+    }
+
+    /// Close the prompt without committing, and put back the origin if the
+    /// prompt had one: the cursor, the scroll, and the search that was set
+    /// before `/` opened — so the highlight the probe painted goes with it.
+    fn cancel_prompt(&mut self) {
+        let origin = self.prompt.take().and_then(|prompt| prompt.origin);
+        self.chain_origin = None;
+        if let Some(origin) = origin {
+            self.search.clone_from(&origin.search);
+            self.restore_origin(&origin);
+        }
+    }
+
+    /// Put the cursor and the scroll back where `/` found them.
+    ///
+    /// The landing row is requested first: `place_cursor_on_visible_row`
+    /// keeps an earlier request when it rebuilds the buffer, and the render
+    /// applies it whether or not a rebuild happened, so the cursor is drawn
+    /// on the pane row it was on and the scroll follows.
+    fn restore_origin(&mut self, origin: &Origin) {
+        self.view.land_cursor_on_row(origin.screen_row);
+        self.place_cursor_on_visible_row(origin.row);
+        self.view.set_cursor_col(origin.col);
+    }
+
+    /// The origin for a `/` opened now: where the file view's cursor is,
+    /// and the search that is set.
+    fn capture_origin(&self) -> Origin {
+        Origin {
+            row: self.view.cursor_visible_row(),
+            col: self.view.cursor_col(),
+            screen_row: self.view.cursor_screen_row(),
+            search: self.search.clone(),
+        }
+    }
+
+    /// The search moves as it is typed: run the scan from the origin for
+    /// the pattern the prompt holds now, and move to the first hit at or
+    /// after the origin line, with the window's hits highlighted.
+    ///
+    /// Always from the origin, never from where the last keystroke landed:
+    /// `foo` then `food` must not find the next `food` *after* the `foo` the
+    /// shorter pattern reached. The scan stops at the first hit, and no
+    /// count is kept, so a keystroke costs one walk that ends early.
+    ///
+    /// A pattern that does not compile yet (`foo(`) is silent: the highlight
+    /// clears and the cursor sits at the origin. Only Enter reports it. The
+    /// same for an empty pattern, and for one with no hit, which sits at
+    /// the origin without a highlight to show.
+    fn rescan_from_origin(&mut self) {
+        let Some(prompt) = self.prompt.as_ref() else {
+            return;
+        };
+        let (Some(origin), PromptKind::Search) = (prompt.origin.clone(), prompt.kind) else {
+            return;
+        };
+        let pattern = prompt.pattern.clone();
+        let search = if pattern.is_empty() {
+            None
+        } else {
+            Search::new(&pattern).ok()
+        };
+        let Some(search) = search else {
+            self.search = None;
+            self.restore_origin(&origin);
+            return;
+        };
+        self.search = Some(search);
+        self.promote_truncated_preview();
+        let Some((row, column, wrapped)) = self.hit_from(origin.row) else {
+            self.restore_origin(&origin);
+            return;
+        };
+        self.jump_to_visible_row(row);
+        self.view.set_cursor_col(column);
+        if wrapped {
+            self.report(WRAPPED_TO_TOP, false);
         }
     }
 
@@ -998,7 +1127,8 @@ impl App<'_> {
         let search = Search::new(pattern)?;
         self.search = Some(search);
         self.promote_truncated_preview();
-        let Some((row, column, wrapped)) = self.hit_from_cursor() else {
+        let from = self.view.cursor_visible_row();
+        let Some((row, column, wrapped)) = self.hit_from(from) else {
             self.report_no_hit();
             self.repaint_highlight();
             return Ok(());
@@ -1085,20 +1215,21 @@ impl App<'_> {
         self.report(&text, false);
     }
 
-    /// The first hit at or after the cursor line among the visible lines,
-    /// wrapping once: its visible row, the column of the first occurrence,
-    /// and whether the walk passed the end of the file to reach it.
+    /// The first hit at or after visible row `from`, wrapping once: its
+    /// visible row, the column of the first occurrence, and whether the
+    /// walk passed the end of the file to reach it.
     ///
-    /// The cursor's own line is considered first, so a hit on it is found
-    /// without a wrap — the difference from `n`, which considers it last.
-    fn hit_from_cursor(&self) -> Option<(usize, usize, bool)> {
+    /// Row `from` itself is considered first, so a hit on it is found
+    /// without a wrap — the difference from `n`, which considers the
+    /// cursor's row last.
+    fn hit_from(&self, from: usize) -> Option<(usize, usize, bool)> {
         let search = self.search.as_ref()?;
         let visible = self.document.visible();
         let len = visible.len();
         if len == 0 {
             return None;
         }
-        let from = self.view.cursor_visible_row().min(len - 1);
+        let from = from.min(len - 1);
         (0..len).find_map(|step| {
             let row = (from + step) % len;
             let line = self.document.lines().get(visible[row])?;
@@ -1799,7 +1930,15 @@ impl App<'_> {
                 self.chain_origin = origin;
             }
             A::GlobalHelp => self.help = true,
-            A::GlobalSearch => self.prompt = Some(SearchPrompt::default()),
+            // The origin is captured for the file search only: the
+            // navigator's filename search commits on Enter, as before.
+            A::GlobalSearch => {
+                let origin = (self.focus != Focus::Nav).then(|| self.capture_origin());
+                self.prompt = Some(SearchPrompt {
+                    origin,
+                    ..SearchPrompt::default()
+                });
+            }
             // `p` is the bridge from search to filter (ADR 0001): the pattern
             // becomes a numbered include filter in the scratch set, and the
             // search is cleared — the filter's colour replaces the highlight.
@@ -3533,11 +3672,20 @@ impl Widget for &mut App<'_> {
         // text: it is more urgent than a filter count (it reports something
         // that just happened, and only lives until the next keypress) and less
         // urgent than a prompt (which the user is actively typing into).
+        //
+        // A message that arrives while a prompt is open — the wrap a search
+        // reports as it is typed — is drawn after the prompt's text rather
+        // than dropped: the prompt row is the only row there is, and the
+        // message is about what the last keystroke just did.
         let (text, style) = match (self.prompt.as_ref(), self.status_message.as_ref()) {
             (Some(prompt), _) if prompt.error.is_some() => {
                 (prompt.line(), Style::default().fg(Color::Red))
             }
-            (Some(prompt), _) => (prompt.line(), Style::default()),
+            (Some(prompt), Some(message)) => (
+                format!("{}   {}", prompt.line(), message.text),
+                Style::default(),
+            ),
+            (Some(prompt), None) => (prompt.line(), Style::default()),
             (None, Some(message)) if message.error => {
                 (message.text.clone(), Style::default().fg(Color::Red))
             }
@@ -10726,8 +10874,8 @@ mod tests {
         assert_eq!(status(&app), None, "nothing wrapped");
     }
 
-    /// Past the last hit the search wraps to the top, once, and the status
-    /// row says so.
+    /// Past the last hit the search wraps to the top, once, and says so:
+    /// beside the prompt while typing, on the status row after Enter.
     #[test]
     fn the_search_wraps_to_the_top_and_says_so() {
         let mut app = app_over_file("slash_wrap", "alpha\nbeta\ngamma\n");
@@ -10736,10 +10884,266 @@ mod tests {
 
         key(&mut app, KeyCode::Char('/'));
         typed(&mut app, "alpha");
+        assert_eq!(cursor_source(&app), 0, "did not move while typing");
+        let row = status_line(&mut app);
+        assert!(
+            row.contains("/alpha") && row.contains(WRAPPED_TO_TOP),
+            "the wrap is not shown beside the prompt: {row}"
+        );
+
         key(&mut app, KeyCode::Enter);
 
         assert_eq!(cursor_source(&app), 0);
         assert_eq!(status(&app), Some(WRAPPED_TO_TOP));
+    }
+
+    // ---- the search moves as you type (#271) -----------------------------
+
+    /// Each keystroke moves the cursor before Enter, and each re-scans from
+    /// the origin rather than from the hit the last keystroke reached: a
+    /// pattern edited back to one that hits the origin's own line lands
+    /// there without a wrap.
+    #[test]
+    fn typing_a_pattern_moves_before_enter_and_rescans_from_the_origin() {
+        let mut app = app_over_file("type_moves", "x1\nx2\nx3\n");
+        key(&mut app, KeyCode::Char('t'));
+
+        key(&mut app, KeyCode::Char('/'));
+        typed(&mut app, "x2");
+        assert!(app.prompt.is_some(), "sanity: the prompt is open");
+        assert_eq!(cursor_source(&app), 1, "did not move before Enter");
+        assert_eq!(
+            search_text(&app),
+            "x2",
+            "the highlight is not set while typing"
+        );
+
+        key(&mut app, KeyCode::Backspace);
+        typed(&mut app, "1");
+        assert_eq!(cursor_source(&app), 0, "did not re-scan from the origin");
+        assert_eq!(
+            status(&app),
+            None,
+            "a scan from the last hit would have wrapped"
+        );
+
+        key(&mut app, KeyCode::Enter);
+        assert_eq!(cursor_source(&app), 0, "Enter moved the cursor");
+        assert!(app.prompt.is_none());
+    }
+
+    /// Esc puts the cursor and the scroll back where `/` opened; Enter keeps
+    /// the position the search reached.
+    #[test]
+    fn esc_restores_the_origin_and_enter_keeps_the_position() {
+        for commit in [false, true] {
+            let mut app = app_over_file(&format!("type_origin_{commit}"), &numbered_lines(400));
+            draw_tall(&mut app);
+            key(&mut app, KeyCode::Char('t'));
+            for _ in 0..40 {
+                key(&mut app, KeyCode::Char('j'));
+            }
+            draw_tall(&mut app);
+            let (row, screen_row) = (cursor_source(&app), cursor_screen_row(&app));
+            assert!(screen_row > 0, "sanity: the cursor is off the top row");
+
+            key(&mut app, KeyCode::Char('/'));
+            typed(&mut app, "line 300$");
+            draw_tall(&mut app);
+            assert_eq!(cursor_source(&app), 300, "sanity: moved while typing");
+
+            key(&mut app, if commit { KeyCode::Enter } else { KeyCode::Esc });
+            draw_tall(&mut app);
+
+            if commit {
+                assert_eq!(cursor_source(&app), 300, "Enter did not keep the position");
+                assert_eq!(search_text(&app), "line 300$");
+            } else {
+                assert_eq!(cursor_source(&app), row, "Esc did not restore the cursor");
+                assert_eq!(
+                    cursor_screen_row(&app),
+                    screen_row,
+                    "Esc did not restore the scroll"
+                );
+                assert!(app.search.is_none(), "Esc left the search set");
+                assert!(
+                    app.file_view_highlight().is_none(),
+                    "Esc left the highlight"
+                );
+            }
+            assert!(app.prompt.is_none(), "the prompt is still open");
+        }
+    }
+
+    /// A half-typed regex is silent: the highlight clears and the cursor
+    /// sits at the origin, with no error shown. Enter on it reports `E486`
+    /// and keeps the prompt open, with the cursor still at the origin.
+    #[test]
+    fn a_half_typed_invalid_regex_is_silent_and_sits_at_the_origin() {
+        let mut app = app_over_file("type_invalid", "alpha\nfoo(x\n");
+        key(&mut app, KeyCode::Char('t'));
+
+        key(&mut app, KeyCode::Char('/'));
+        typed(&mut app, "foo");
+        assert_eq!(cursor_source(&app), 1, "sanity: moved to the hit");
+        typed(&mut app, "(");
+
+        assert_eq!(
+            cursor_source(&app),
+            0,
+            "an invalid pattern did not return to the origin"
+        );
+        assert!(
+            app.search.is_none(),
+            "an invalid pattern kept the highlight"
+        );
+        assert!(app.file_view_highlight().is_none());
+        assert_eq!(
+            prompt_line(&mut app),
+            "/foo(",
+            "an error is shown while typing"
+        );
+
+        key(&mut app, KeyCode::Enter);
+        assert_eq!(prompt_line(&mut app), INVALID_PATTERN);
+        assert!(
+            app.prompt.is_some(),
+            "Enter closed the prompt on an invalid pattern"
+        );
+        assert_eq!(cursor_source(&app), 0);
+    }
+
+    /// Enter on an empty prompt, and Backspace past the first character,
+    /// both cancel and return to the origin.
+    #[test]
+    fn enter_on_an_empty_prompt_and_backspace_past_empty_cancel_to_the_origin() {
+        for backspace in [false, true] {
+            let mut app = app_over_file(&format!("type_cancel_{backspace}"), "alpha\nx\nbeta\n");
+            key(&mut app, KeyCode::Char('t'));
+            key(&mut app, KeyCode::Char('j'));
+
+            key(&mut app, KeyCode::Char('/'));
+            typed(&mut app, "beta");
+            assert_eq!(cursor_source(&app), 2, "sanity: moved to the hit");
+            for _ in 0..4 {
+                key(&mut app, KeyCode::Backspace);
+            }
+            assert!(app.prompt.is_some(), "an empty pattern closed the prompt");
+            assert_eq!(
+                cursor_source(&app),
+                1,
+                "an empty pattern did not return to the origin"
+            );
+            assert!(app.search.is_none(), "an empty pattern kept a search");
+
+            key(
+                &mut app,
+                if backspace {
+                    KeyCode::Backspace
+                } else {
+                    KeyCode::Enter
+                },
+            );
+
+            assert!(
+                app.prompt.is_none(),
+                "backspace {backspace}: the prompt did not close"
+            );
+            assert_eq!(
+                cursor_source(&app),
+                1,
+                "backspace {backspace}: not at the origin"
+            );
+            assert!(
+                app.search.is_none(),
+                "backspace {backspace}: a search was set"
+            );
+        }
+    }
+
+    /// While typing, the scan covers the visible lines only: in hide mode a
+    /// pattern that matches only hidden lines leaves the cursor at the
+    /// origin and the visible lines as they were.
+    #[test]
+    fn typing_searches_the_visible_lines_only() {
+        let mut app = app_over_file("type_hidden", "alpha\nbeta\ngamma\n");
+        key(&mut app, KeyCode::Char('t'));
+        app.filters.add("alpha|gamma").expect("valid pattern");
+        app.refresh_view();
+        key(&mut app, KeyCode::Char('u'));
+        assert_eq!(app.document.visible(), &[0, 2], "sanity: hiding");
+
+        key(&mut app, KeyCode::Char('/'));
+        typed(&mut app, "bet");
+
+        assert_eq!(app.document.visible(), &[0, 2], "typing widened the view");
+        assert_eq!(cursor_source(&app), 0, "typing moved to a hidden line");
+
+        typed(&mut app, "");
+        key(&mut app, KeyCode::Backspace);
+        key(&mut app, KeyCode::Backspace);
+        key(&mut app, KeyCode::Backspace);
+        typed(&mut app, "gam");
+        assert_eq!(cursor_source(&app), 2, "a visible hit was not found");
+    }
+
+    /// A probe costs nothing: Esc in the prompt puts back the search that
+    /// was set before `/` opened, highlight and all.
+    #[test]
+    fn esc_in_the_prompt_restores_the_previous_search() {
+        let mut app = app_over_file("type_previous", "alpha\nbeta\ngamma\n");
+        key(&mut app, KeyCode::Char('t'));
+        key(&mut app, KeyCode::Char('/'));
+        typed(&mut app, "beta");
+        key(&mut app, KeyCode::Enter);
+        assert_eq!(cursor_source(&app), 1, "sanity");
+
+        key(&mut app, KeyCode::Char('/'));
+        typed(&mut app, "gam");
+        assert_eq!(
+            search_text(&app),
+            "gam",
+            "sanity: the probe replaced the search"
+        );
+        assert_eq!(cursor_source(&app), 2);
+
+        key(&mut app, KeyCode::Esc);
+
+        assert_eq!(
+            search_text(&app),
+            "beta",
+            "the previous search did not come back"
+        );
+        assert_eq!(cursor_source(&app), 1);
+        assert_eq!(app.file_view_highlight().as_deref(), Some("beta"));
+    }
+
+    /// The navigator's `/` still commits on Enter: nothing moves while a
+    /// filename is typed.
+    #[test]
+    fn the_navigator_search_does_not_move_while_typing() {
+        let mut app = app_over("type_nav", &["alpha.log", "zebra.log"]);
+        key(&mut app, KeyCode::Char('e'));
+        let before = app.nav.selected_entry();
+
+        key(&mut app, KeyCode::Char('/'));
+        typed(&mut app, "zebra");
+        assert_eq!(
+            app.nav.selected_entry(),
+            before,
+            "the selection moved while typing"
+        );
+        assert!(
+            app.search.is_none(),
+            "a filename probe became the file search"
+        );
+
+        key(&mut app, KeyCode::Enter);
+        assert_ne!(
+            app.nav.selected_entry(),
+            before,
+            "Enter did not move the selection"
+        );
     }
 
     /// The cursor lands on the column of the first occurrence, so a long
