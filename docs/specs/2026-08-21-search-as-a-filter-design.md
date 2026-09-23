@@ -1,6 +1,6 @@
 # Search as a filter — design
 
-**Status:** implemented
+**Status:** superseded by [ADR 0001](../adr/0001-search-is-a-motion-not-a-filter.md) on 2026-09-23
 **Date:** 2026-08-21
 
 ## Motivation
