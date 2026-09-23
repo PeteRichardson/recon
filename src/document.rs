@@ -27,7 +27,7 @@ pub enum Mode {
 /// documented as read by the status line every frame — it was not: the status
 /// row reports lines *shown*, counted from `visible`, and the two comments in
 /// `lib.rs` that mention `match_count` both say why it is the wrong number
-/// (it counts `Included` and `Searched` verdicts, so it read "0 matched" with
+/// (it counts `Included` verdicts, so it read "0 matched" with
 /// only excluding filters active). Nothing outside this file ever called the
 /// getter (#77).
 #[derive(Debug, Default)]
@@ -37,8 +37,8 @@ pub struct Document {
     /// being a third copy of every large file.
     lines: Arc<Vec<String>>,
     verdicts: Vec<Verdict>,
-    /// Whether anything was marking lines at the last `evaluate` — a numbered
-    /// including filter, or the live search.
+    /// Whether anything was marking lines at the last `evaluate` — an
+    /// including filter.
     ///
     /// Cached rather than asked of the `ActiveFilters` inside
     /// `recompute_visible`, so that method keeps taking no arguments and stays
@@ -162,7 +162,7 @@ impl Document {
     /// Built into `scratch` and swapped in only when it differs from the
     /// current set, so `generation` moves exactly when the rows on screen
     /// do. A filter change that leaves the same rows visible — an including
-    /// filter swapped for another in dimmed mode, a search with no hits —
+    /// filter swapped for another in dimmed mode —
     /// therefore keeps the viewport's buffer, cursor column and scroll
     /// exactly where they were, which is what the old whole-vector compare
     /// in `apply_view` bought and what the `u64` key keeps (#159). The
@@ -183,10 +183,7 @@ impl Document {
                     (Mode::Dimmed, _) => true,
                     // A context line stays in hide mode: that is what the sense
                     // is for. Only `n` treats it differently from an include.
-                    (
-                        Mode::FilteredOnly,
-                        Verdict::Included(_) | Verdict::Context(_) | Verdict::Searched,
-                    ) => true,
+                    (Mode::FilteredOnly, Verdict::Included(_) | Verdict::Context(_)) => true,
                     // Issue #36: with nothing including, there is nothing to hide
                     // *against*, so hiding shows the file rather than blanking the
                     // pane. Dimming has always had this guard in `style_for`;
@@ -617,12 +614,6 @@ mod tests {
         set
     }
 
-    fn set_searching(pattern: &str) -> ActiveFilters {
-        let mut set = ActiveFilters::new();
-        set.set_search(pattern).expect("valid pattern");
-        set
-    }
-
     #[test]
     fn a_new_document_has_a_verdict_for_every_line() {
         let document = doc(&["one", "two", "three"]);
@@ -907,17 +898,6 @@ mod tests {
         document.evaluate(&set_excluding(&["noise"]));
 
         assert_eq!(document.visible(), &[0, 2]);
-    }
-
-    /// A bare search counts as something to hide against, which is what makes
-    /// `/foo` followed by `Ctrl-H` an instant grep.
-    #[test]
-    fn hiding_with_only_a_search_collapses_to_its_matches() {
-        let mut document = doc(&["alpha", "beta", "gamma"]);
-        document.set_mode(Mode::FilteredOnly);
-        document.evaluate(&set_searching("beta"));
-
-        assert_eq!(document.visible(), &[1]);
     }
 
     /// The guard must not soften a real filter set: a file with no hits still

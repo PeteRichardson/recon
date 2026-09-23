@@ -122,14 +122,8 @@ pub(crate) enum FilterCommand {
     /// in place. The one variant `App` answers by opening a prompt rather than
     /// by changing the set — nothing is mutated until that prompt commits.
     Edit(usize),
-    /// Flip the selected numbered filter between `Include` and `Context`. No
-    /// search variant: the search always selects, so it has no context form.
+    /// Flip the selected numbered filter between `Include` and `Context`.
     ToggleContext(usize),
-    /// The search row, which carries no index: the live search lives in its
-    /// own slot on the `ActiveFilters`, not at a position in `filters`.
-    ToggleSearch,
-    DeleteSearch,
-    EditSearch,
     /// Enable or disable a named set as a unit (#129). Never set 0.
     ToggleSet(usize),
     /// `d`, `c` or `m` on a set's header row: sets are defined in

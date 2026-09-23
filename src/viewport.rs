@@ -30,7 +30,7 @@ use crate::widgets;
 /// The one definition of an interesting line, shared by every query that
 /// steps or lands on one.
 pub(crate) fn is_interesting(verdict: &Verdict) -> bool {
-    matches!(verdict, Verdict::Included(_) | Verdict::Searched)
+    matches!(verdict, Verdict::Included(_))
 }
 
 /// What `App::step_visible` did, so the caller can say so.
@@ -206,21 +206,15 @@ impl App<'_> {
         } else {
             Vec::new()
         };
-        // Computed here, alongside `styles`, rather than inside the `view`
-        // block below: both read `self.filters`, and grouping them keeps
-        // every access to that field on the `&self` side of the borrow.
-        // Re-applied on every pass rather than only when the pattern
-        // changes: `load`/`preview` replace the textarea outright, dropping
-        // whatever pattern it had (see `FileView::set_highlight`), and
-        // switching files funnels through `refresh_view` → `apply_view` the
-        // same as every filter mutation does. The pattern also tracks the
-        // filter's *enabled* flag, so `!` and `space` have to reach it here
-        // too, not just `/` and Esc.
-        let highlight = self
-            .filters
-            .search()
-            .filter(|search| search.enabled)
-            .map(|search| search.predicate.display());
+        // The search's pattern, for the span highlight. Re-applied on every
+        // pass rather than only when the pattern changes: `load`/`preview`
+        // replace the textarea outright, dropping whatever pattern it had
+        // (see `FileView::set_highlight`), and switching files funnels
+        // through `refresh_view` → `apply_view` the same as every filter
+        // mutation does. The search is the app's own state, not a filter
+        // (ADR 0001), so `!` and `space` leave it alone and the highlight
+        // stays through them.
+        let highlight = self.search.as_ref().map(|search| search.text.clone());
 
         // `CursorMove::Jump` takes a `u16`, which silently truncates past
         // 65,535 lines and lands the cursor 65,536 lines from its target on a
@@ -256,9 +250,9 @@ impl App<'_> {
         view.set_group_ends(group_ends);
         view.set_line_styles(styles);
         view.set_gutter_blank(nothing_visible);
-        // `highlight`, when `Some`, was `Regex::as_str()` on a pattern that
-        // `ActiveFilters::set_search` already compiled once; re-parsing the same
-        // string here is deterministic and cannot fail today. Even so, this
+        // `highlight`, when `Some`, is a pattern that `Search::new` already
+        // compiled once; re-parsing the same string here is deterministic
+        // and cannot fail today. Even so, this
         // is the hottest path in the app — every filter mutation and every
         // navigator preview reaches it — so a future regression here should
         // cost a stale highlight, not a panic that takes the whole TUI down.

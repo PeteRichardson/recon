@@ -86,7 +86,7 @@ impl Record {
             .seen
             .iter()
             .filter_map(|&bits| m.owner(bits))
-            .min_by_key(|owner| owner.rank())
+            .min()
     }
 }
 
@@ -590,17 +590,13 @@ mod tests {
         let mut set = ActiveFilters::new();
         set.add("alpha").expect("valid pattern");
         set.add("beta").expect("valid pattern");
-        set.set_search("gamma").expect("valid pattern");
         let m = set.matcher().expect("selects");
 
         assert_eq!(
             record(&[m.bits("beta"), m.bits("alpha")], false).owner(&m),
-            Some(Owner::Filter(0))
+            Some(0)
         );
-        assert_eq!(
-            record(&[m.bits("beta"), m.bits("gamma")], false).owner(&m),
-            Some(Owner::Search)
-        );
+        assert_eq!(record(&[m.bits("beta")], false).owner(&m), Some(1));
         assert_eq!(record(&[0], true).owner(&m), None);
     }
 

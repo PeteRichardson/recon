@@ -75,6 +75,18 @@ fn stale_badge_text(keymap: &crate::keymap::Keymap) -> Option<String> {
 /// and is easy to forget while moving fast.
 const AND_BADGE_TEXT: &str = " AND ";
 
+/// What the status row says when `/` or `n` passed the end of the file to
+/// find its hit, and when `N` passed the start. One message for the search
+/// and for `n` over interesting lines, since both step through
+/// `step_visible`.
+const WRAPPED_TO_TOP: &str = "wrapped to the top";
+const WRAPPED_TO_BOTTOM: &str = "wrapped to the bottom";
+
+/// The longest pattern the search badge shows before eliding the tail. The
+/// badge shares the status row with the filter summary and the path; a
+/// regex this long is still recognisable from its head.
+const SEARCH_BADGE_MAX: usize = 32;
+
 /// The badges saying a selection is in progress (#67), character-wise and
 /// line-wise. Same style as `HIDE`, and for the same reason: the mode
 /// changes what the next keys do — `y` copies, `Esc` ends it — and is easy
@@ -117,12 +129,39 @@ enum PromptKind {
         index: usize,
         sense: filter::Sense,
     },
-    /// Replace the live search's pattern.
-    ///
-    /// Carries no index because the search does not have one — it lives in its
-    /// own slot on the `ActiveFilters`, which is the whole reason `/` does not
-    /// renumber the filters the user built.
-    EditSearch,
+}
+
+/// The search: a regular expression the user typed after `/`, or took from
+/// the word under the cursor with `*`.
+///
+/// A search is a motion, not a filter (ADR 0001). It lives here, on the
+/// `App`, and not in the `ActiveFilters`: it never changes which lines are
+/// visible, does not dim, marks no file in the navigator, does not answer to
+/// `!` or `u`, and is not saved with a filter set. What it does is move the
+/// cursor to its next hit among the visible lines and highlight the hits in
+/// the window.
+#[derive(Debug, Clone)]
+struct Search {
+    /// The pattern as typed, for the status row and for `p`.
+    text: String,
+    regex: regex::Regex,
+}
+
+impl Search {
+    fn new(text: &str) -> Result<Self, regex::Error> {
+        Ok(Self {
+            text: text.to_owned(),
+            regex: regex::Regex::new(text)?,
+        })
+    }
+
+    /// The character column of the first occurrence in `line`, if the line
+    /// is a hit. The cursor lands there: on a long line the hit may be far
+    /// off the left edge.
+    fn first_column(&self, line: &str) -> Option<usize> {
+        let found = self.regex.find(line)?;
+        Some(line[..found.start()].chars().count())
+    }
 }
 
 /// A search pattern being typed at the bottom of the screen.
@@ -144,7 +183,7 @@ impl SearchPrompt {
     /// something, and one that opens empty is making something new.
     fn sigil(&self) -> &'static str {
         match self.kind {
-            PromptKind::Search | PromptKind::EditSearch => "/",
+            PromptKind::Search => "/",
             PromptKind::Filter
             | PromptKind::Edit {
                 sense: filter::Sense::Include | filter::Sense::Context,
@@ -377,8 +416,12 @@ pub struct App<'a> {
     /// same row inside `DOUBLE_CLICK` open a directory; the row is part of
     /// the record for the same reason the divider's axis is above.
     last_nav_click: Option<(usize, Instant)>,
-    /// Open while a search pattern is being typed.
-    search: Option<SearchPrompt>,
+    /// Open while a search pattern, a filter pattern or a set name is being
+    /// typed.
+    prompt: Option<SearchPrompt>,
+    /// The search, while one is set. `/` and `*` set it, `Esc` clears it,
+    /// `p` turns it into a filter. It outlives a file load.
+    search: Option<Search>,
     filters: ActiveFilters,
     document: Document,
     /// The `Document::generation` the file view's buffer was last rebuilt
@@ -715,6 +758,7 @@ impl App<'_> {
             dragging: None,
             last_divider_click: None,
             last_nav_click: None,
+            prompt: None,
             search: None,
             filters,
             document: Document::default(),
@@ -775,11 +819,11 @@ impl App<'_> {
             use crate::keymap::ActionId as A;
             match action {
                 A::PromptCancel => {
-                    self.search = None;
+                    self.prompt = None;
                     self.chain_origin = None;
                 }
                 A::PromptCommit => {
-                    let Some(prompt) = self.search.as_ref() else {
+                    let Some(prompt) = self.prompt.as_ref() else {
                         return;
                     };
                     let (pattern, kind) = (prompt.pattern.clone(), prompt.kind);
@@ -789,11 +833,11 @@ impl App<'_> {
                     if kind == PromptKind::SaveSet {
                         match self.save_scratch_as(&pattern) {
                             Ok(()) => {
-                                self.search = None;
+                                self.prompt = None;
                                 self.swallow_next_enter = true;
                             }
                             Err(message) => {
-                                if let Some(prompt) = self.search.as_mut() {
+                                if let Some(prompt) = self.prompt.as_mut() {
                                     prompt.error = Some(message);
                                 }
                             }
@@ -806,15 +850,9 @@ impl App<'_> {
                         PromptKind::Filter => self.add_filter(&pattern),
                         PromptKind::Exclude => self.add_excluding_filter(&pattern),
                         PromptKind::Edit { index, .. } => self.replace_filter(index, &pattern),
-                        // Straight to `apply_search`, not through `run_search`:
-                        // the search-row prompt can only be opened from the
-                        // filter pane, so dispatching on focus through
-                        // `run_search` would be needless indirection. `apply_search`
-                        // is the direct call.
-                        PromptKind::EditSearch => self.apply_search(&pattern),
                     };
                     if outcome.is_ok() {
-                        self.search = None;
+                        self.prompt = None;
                         // Arm the bounce guard (#48). Only on the branch that
                         // actually closes the prompt: a rejected pattern leaves it
                         // open, so the next `Enter` is another commit attempt and
@@ -826,12 +864,12 @@ impl App<'_> {
                         ) {
                             self.return_to_chain_origin();
                         }
-                    } else if let Some(prompt) = self.search.as_mut() {
+                    } else if let Some(prompt) = self.prompt.as_mut() {
                         prompt.error = Some(INVALID_PATTERN.to_string());
                     }
                 }
                 A::PromptDeleteBack => {
-                    if let Some(prompt) = self.search.as_mut() {
+                    if let Some(prompt) = self.prompt.as_mut() {
                         prompt.error = None;
                         // Backspacing past the start of an *empty* prompt
                         // abandons it, as in vim. At the start of a pattern with
@@ -839,7 +877,7 @@ impl App<'_> {
                         // nothing to abandon: the text is what the user is
                         // keeping (#206).
                         if !prompt.delete_before() && prompt.pattern.is_empty() {
-                            self.search = None;
+                            self.prompt = None;
                             self.chain_origin = None;
                         }
                     }
@@ -892,7 +930,7 @@ impl App<'_> {
     /// error: the row goes back to showing the pattern, which is what the
     /// user is now correcting.
     fn edit_prompt(&mut self, edit: impl FnOnce(&mut SearchPrompt)) {
-        if let Some(prompt) = self.search.as_mut() {
+        if let Some(prompt) = self.prompt.as_mut() {
             prompt.error = None;
             edit(prompt);
         }
@@ -901,8 +939,8 @@ impl App<'_> {
     /// Run a committed `/` pattern against whichever pane has focus.
     ///
     /// The navigator has its own search over filenames and keeps it. In the
-    /// file view, `/` now sets the live search *filter* — the pane has no
-    /// search of its own any more.
+    /// file view and the filter pane, `/` sets the search and moves to its
+    /// first hit.
     fn run_search(&mut self, pattern: &str) -> Result<(), regex::Error> {
         let mut view_search = false;
         let action = match self.focus {
@@ -918,10 +956,9 @@ impl App<'_> {
                 action
             }
             // The filter pane forwards view-shaped keys to the view (#120):
-            // a search started there is the same live search. Deferred
-            // rather than done here: setting the filter needs `&mut self`
-            // for `refresh_view`, and the borrow taken to reach the pane is
-            // still live.
+            // a search started there is the same search. Deferred rather
+            // than done here: the borrow taken to reach the pane is still
+            // live.
             Focus::View | Focus::Filters => {
                 view_search = true;
                 None
@@ -937,27 +974,137 @@ impl App<'_> {
         Ok(())
     }
 
-    /// Set the live search filter and move to its first hit.
+    /// Set the search and move to its first hit: the first visible line the
+    /// pattern matches, from the cursor line — that line included — wrapping
+    /// once to the top and saying so. The cursor lands on the column of the
+    /// first occurrence. With no hit in the file, the status row says so and
+    /// nothing moves.
     ///
-    /// Defined as "set it, then do exactly what `n` does" — which includes
-    /// the truncated-preview promotion `n` performs before stepping (see
-    /// `promote_truncated_preview`). Without that, a pattern that only
-    /// matches beyond a large preview's cap would evaluate against the
-    /// preview alone: the cursor would not move, and the status line would
-    /// read as "no matches" over a file that in fact has one.
+    /// The search looks only at the visible lines, so in hide mode it finds
+    /// nothing among the lines the filters removed, and it changes none of
+    /// them: the visible set, the gutter numbers and the gaps are exactly
+    /// what they were. Only the highlight is new, and `apply_view` paints
+    /// that from `self.search` on every pass.
     ///
-    /// One movement path rather than two, and the buffer rebuild that adding
-    /// a filter triggers in `Mode::FilteredOnly` is completed by
-    /// `refresh_view` before anything moves a cursor through it.
+    /// The truncated-preview promotion comes first, as it does for `n` (see
+    /// `promote_truncated_preview`). Without it a pattern that only occurs
+    /// beyond a large preview's cap would be reported as having no hit. A
+    /// peek is left alone: the user is searching the plain file they asked
+    /// to see, and unlike a cross-file `n` the search never leaves it.
     ///
-    /// A pattern that will not compile is reported and changes nothing, so the
-    /// prompt can stay open over an intact previous search.
+    /// A pattern that will not compile is reported and changes nothing, so
+    /// the prompt can stay open over an intact previous search.
     fn apply_search(&mut self, pattern: &str) -> Result<(), regex::Error> {
-        self.filters.set_search(pattern)?;
+        let search = Search::new(pattern)?;
+        self.search = Some(search);
         self.promote_truncated_preview();
-        self.refresh_view();
-        self.step_to_interesting(false);
+        let Some((row, column, wrapped)) = self.hit_from_cursor() else {
+            self.report_no_hit();
+            self.repaint_highlight();
+            return Ok(());
+        };
+        self.jump_to_visible_row(row);
+        self.view.set_cursor_col(column);
+        if wrapped {
+            self.report(WRAPPED_TO_TOP, false);
+        }
         Ok(())
+    }
+
+    /// Paint the search's highlight (or its absence) without moving anything.
+    ///
+    /// `apply_view` re-applies the highlight from `self.search` on every
+    /// pass, and a jump runs through it, so this is only for the paths that
+    /// set or clear the search and jump nowhere. Never after a jump: a jump
+    /// queues a landing row, and a second `apply_view` on top of it moves
+    /// the cursor. Cheap: nothing is re-evaluated, and the buffer is not
+    /// rebuilt.
+    fn repaint_highlight(&mut self) {
+        self.apply_view(self.cursor_source());
+    }
+
+    /// `n`/`N` while a search is set: the next (previous) hit line among the
+    /// visible lines, wrapping within this file and saying so. One stop per
+    /// line, on the first occurrence's column. Never crosses files: a search
+    /// is a motion within the file it was made in, and `n` with no search is
+    /// the key that walks the filters' files. So, unlike that `n`, it has no
+    /// reason to end a peek first.
+    fn step_hit(&mut self, backwards: bool) {
+        self.promote_truncated_preview();
+        let Some(search) = self.search.clone() else {
+            return;
+        };
+        let is_hit = |document: &Document, row: usize| {
+            document
+                .source_at(row)
+                .and_then(|source| document.lines().get(source))
+                .is_some_and(|line| search.regex.is_match(line))
+        };
+        match self.step_visible(backwards, is_hit) {
+            Step::Nothing => {
+                self.report_no_hit();
+                self.repaint_highlight();
+            }
+            step => {
+                self.land_on_first_occurrence(&search);
+                if step == Step::Wrapped {
+                    self.report(
+                        if backwards {
+                            WRAPPED_TO_BOTTOM
+                        } else {
+                            WRAPPED_TO_TOP
+                        },
+                        false,
+                    );
+                }
+            }
+        }
+    }
+
+    /// Put the cursor on the first occurrence of `search` in the line it is
+    /// on. A no-op when the line is not a hit, which the stepping above rules
+    /// out.
+    fn land_on_first_occurrence(&mut self, search: &Search) {
+        let row = self.view.cursor_visible_row();
+        let column = self
+            .document
+            .source_at(row)
+            .and_then(|source| self.document.lines().get(source))
+            .and_then(|line| search.first_column(line));
+        if let Some(column) = column {
+            self.view.set_cursor_col(column);
+        }
+    }
+
+    /// `no hit for /pattern`: what `/` and `n` say when the file has none.
+    fn report_no_hit(&mut self) {
+        let text = self
+            .search
+            .as_ref()
+            .map_or_else(String::new, |search| format!("no hit for /{}", search.text));
+        self.report(&text, false);
+    }
+
+    /// The first hit at or after the cursor line among the visible lines,
+    /// wrapping once: its visible row, the column of the first occurrence,
+    /// and whether the walk passed the end of the file to reach it.
+    ///
+    /// The cursor's own line is considered first, so a hit on it is found
+    /// without a wrap — the difference from `n`, which considers it last.
+    fn hit_from_cursor(&self) -> Option<(usize, usize, bool)> {
+        let search = self.search.as_ref()?;
+        let visible = self.document.visible();
+        let len = visible.len();
+        if len == 0 {
+            return None;
+        }
+        let from = self.view.cursor_visible_row().min(len - 1);
+        (0..len).find_map(|step| {
+            let row = (from + step) % len;
+            let line = self.document.lines().get(visible[row])?;
+            let column = search.first_column(line)?;
+            Some((row, column, from + step >= len))
+        })
     }
 
     /// Add an including filter, colouring it distinctly from its predecessors.
@@ -1355,7 +1502,7 @@ impl App<'_> {
         }
 
         // An open prompt takes precedence over every other binding.
-        if self.search.is_some() {
+        if self.prompt.is_some() {
             if let event::Event::Key(key) = event {
                 self.handle_search_key(key);
             }
@@ -1652,17 +1799,24 @@ impl App<'_> {
                 self.chain_origin = origin;
             }
             A::GlobalHelp => self.help = true,
-            A::GlobalSearch => self.search = Some(SearchPrompt::default()),
-            // `promote_search` pays nothing when the slot is empty;
-            // `refresh_view` is not free — `evaluate` is O(lines × filters) —
-            // so it is only paid for when the set actually changed.
+            A::GlobalSearch => self.prompt = Some(SearchPrompt::default()),
+            // `p` is the bridge from search to filter (ADR 0001): the pattern
+            // becomes a numbered include filter in the scratch set, and the
+            // search is cleared — the filter's colour replaces the highlight.
+            // Nothing happens with no search set; `refresh_view` is not free
+            // (`evaluate` is O(lines × filters)), so it is only paid for
+            // when the set actually changed.
             //
             // `p`'s `DEFAULT` row carries no modifier, so Ctrl-P and Alt-P
             // are left unclaimed here and fall through to the focused
             // widget, like every other plain-letter global binding.
             A::GlobalSearchPromote => {
-                if self.filters.promote_search() {
-                    self.refresh_view();
+                if let Some(search) = self.search.take() {
+                    // The pattern compiled as a search, so it compiles as a
+                    // filter: the same regex crate, the same syntax.
+                    if let Err(err) = self.add_filter(&search.text) {
+                        log::warn!("cannot promote the search {:?}: {err}", search.text);
+                    }
                 }
             }
             A::GlobalSearchWord => {
@@ -1677,33 +1831,39 @@ impl App<'_> {
                     return;
                 }
                 match self.word_under_cursor() {
-                    Some(word) => {
-                        // An escaped literal always compiles; a failure here
-                        // would be a regex-crate bug, not user input.
-                        if self.apply_search(&regex::escape(&word)).is_err() {
-                            self.report("could not search for that word", true);
+                    // `/` with the typing done, then `n`: the word is on the
+                    // cursor's own line by definition, so the scan `/` runs
+                    // from that line would find it there and go nowhere.
+                    // An escaped literal always compiles; a failure here
+                    // would be a regex-crate bug, not user input.
+                    Some(word) => match Search::new(&regex::escape(&word)) {
+                        Ok(search) => {
+                            self.search = Some(search);
+                            self.step_hit(false);
                         }
-                    }
+                        Err(_) => self.report("could not search for that word", true),
+                    },
                     None => self.report("no word under the cursor", false),
                 }
             }
             // Visual mode's `Esc` takes precedence over the search layers
             // below (#67): a stray press should end the selection without
-            // also dropping the live search the selection was made under.
+            // also dropping the search the selection was made under.
             A::GlobalEscape => {
                 if self.focus == Focus::View && self.visual.is_some() {
                     self.end_visual();
                     return;
                 }
                 // Layered (#120 §8): the focused pane's own search first,
-                // then the live search. `clear_search` reports whether there
-                // was one to drop, so Esc pressed out of habit does not pay
-                // for a `refresh_view` when there was nothing to clear.
+                // then the file search. Clearing the search clears the
+                // highlight with it, which `apply_view` paints from
+                // `self.search`; nothing is re-evaluated, since a search
+                // never changed a verdict.
                 if self.focus == Focus::Nav && self.nav.clear_search() {
                     return;
                 }
-                if self.filters.clear_search() {
-                    self.refresh_view();
+                if self.search.take().is_some() {
+                    self.repaint_highlight();
                 }
             }
             A::GlobalPeek => self.toggle_peek(),
@@ -1729,7 +1889,7 @@ impl App<'_> {
             // Toggle a numbered filter from anywhere (#120 §14). The number
             // is the one the pane draws in its gutter, and `numbered` is the
             // walk that draws it, so key and label cannot disagree. Set
-            // headers, the search row and built-in filters have no number
+            // headers and built-in filters have no number
             // and no key: `f Enter` covers them.
             //
             // The one arm that reads `pressed`: `resolve` collapses every
@@ -2052,14 +2212,20 @@ impl App<'_> {
         self.ensure_window();
     }
 
-    /// `n`/`N` in the file view: the next interesting line in this file, else
-    /// the first interesting line of the next file the filters selected, else
-    /// (when this is the only such file) wrap within it as `n` always has.
+    /// `n`/`N` in the file view. With a search set, the next hit line in this
+    /// file — see `step_hit`. Otherwise the next interesting line in this
+    /// file, else the first interesting line of the next file the filters
+    /// selected, else (when this is the only such file) wrap within it as
+    /// `n` always has.
     ///
     /// The in-file step comes first so the loop the key drives — every hit in
     /// every file — never skips a hit. The cross-file step is what makes it a
     /// single loop rather than one per file (#120 §1).
     fn step_interesting(&mut self, backwards: bool) {
+        if self.search.is_some() {
+            self.step_hit(backwards);
+            return;
+        }
         // A jump that leaves the peeked context has nothing to come back to,
         // and with every filter disabled by the peek the step would find no
         // interesting line and cross files at once. Restore first (#120 §4).
@@ -2074,11 +2240,20 @@ impl App<'_> {
             return;
         }
         if !self.cross_file(backwards) {
-            // `step_to_interesting` is quiet when there is nothing to wrap
-            // to — right for `/`, which lands where it lands, wrong for a key
-            // whose whole job is finding a hit. Report the dead end instead.
-            if self.step_to_interesting(backwards) == Step::Nothing {
-                self.report("no interesting line", false);
+            // `step_to_interesting` is quiet about what it did, and a key
+            // whose whole job is finding a hit should not be: say when the
+            // walk passed the file's edge, and say when there was nothing.
+            match self.step_to_interesting(backwards) {
+                Step::Nothing => self.report("no interesting line", false),
+                Step::Wrapped => self.report(
+                    if backwards {
+                        WRAPPED_TO_BOTTOM
+                    } else {
+                        WRAPPED_TO_TOP
+                    },
+                    false,
+                ),
+                Step::Landed => {}
             }
         }
     }
@@ -2546,14 +2721,9 @@ impl App<'_> {
     /// navigator draws the file's name in it, so the two panes agree at a
     /// glance and the colour says *which* filter picked the file.
     fn match_style(&self, owner: Option<filter::Owner>) -> Style {
-        match owner {
-            Some(filter::Owner::Search) => filter::SEARCH_STYLE,
-            Some(filter::Owner::Filter(index)) => self
-                .filters
-                .style_for(filter::Verdict::Included(index))
-                .unwrap_or_default(),
-            None => Style::default(),
-        }
+        owner
+            .and_then(|index| self.filters.style_for(filter::Verdict::Included(index)))
+            .unwrap_or_default()
     }
 
     /// Carry out an action on behalf of the widget that raised it.
@@ -2648,10 +2818,10 @@ impl App<'_> {
     /// here: every cached `Verdict::Included` is a positional index that a
     /// patch would leave stale.
     ///
-    /// The two `Edit` commands are the exception and return before that
-    /// re-evaluate: they only open a prompt, and nothing about the set changes
-    /// until it commits — at which point `replace_filter` or `apply_search`
-    /// does the re-evaluating instead.
+    /// The `Edit` command is the exception and returns before that
+    /// re-evaluate: it only opens a prompt, and nothing about the set changes
+    /// until it commits — at which point `replace_filter` does the
+    /// re-evaluating instead.
     ///
     /// `Scope::Filters` resolves here rather than through `perform`: `i`,
     /// `x` and `S` open a prompt, which only `App` owns, so they are carried
@@ -2698,13 +2868,13 @@ impl App<'_> {
         };
 
         match action {
-            // `i` and `x` open a prompt, and `self.search` is `App`'s —
+            // `i` and `x` open a prompt, and `self.prompt` is `App`'s —
             // `FilterList` cannot carry these out itself. Deliberately not
             // `FilterCommand` variants: that enum describes mutations of the
             // `ActiveFilters`, and opening a prompt is not one — see its doc
             // comment in `widgets/mod.rs`.
-            A::FiltersInclude => self.search = Some(SearchPrompt::new(PromptKind::Filter)),
-            A::FiltersExclude => self.search = Some(SearchPrompt::new(PromptKind::Exclude)),
+            A::FiltersInclude => self.prompt = Some(SearchPrompt::new(PromptKind::Filter)),
+            A::FiltersExclude => self.prompt = Some(SearchPrompt::new(PromptKind::Exclude)),
             // `S` saves the scratch set (#131). Refused before the prompt
             // opens when there is nothing to save: a prompt for a name that
             // can go nowhere is worse than a message.
@@ -2713,7 +2883,7 @@ impl App<'_> {
                     self.report("nothing to save: the scratch set is empty", false);
                     return;
                 }
-                self.search = Some(SearchPrompt::new(PromptKind::SaveSet));
+                self.prompt = Some(SearchPrompt::new(PromptKind::SaveSet));
             }
             // Bound the same way in the file view (`Scope::View`); only
             // `App` can see the document, so this makes the same call the
@@ -2742,13 +2912,6 @@ impl App<'_> {
             }
             FilterCommand::ToggleContext(index) => {
                 self.filters.toggle_context(index);
-            }
-            FilterCommand::ToggleSearch => {
-                let enabled = self.filters.search().is_some_and(|search| search.enabled);
-                self.filters.search_set_enabled(!enabled);
-            }
-            FilterCommand::DeleteSearch => {
-                self.filters.clear_search();
             }
             FilterCommand::ToggleSet(set) => {
                 self.filters.toggle_set(set);
@@ -2786,8 +2949,8 @@ impl App<'_> {
                 );
                 return;
             }
-            // The two commands that change nothing yet — they open a prompt,
-            // and the set is only touched if it commits. Both return early
+            // The one command that changes nothing yet — it opens a prompt,
+            // and the set is only touched if it commits. It returns early
             // rather than falling through to the `refresh_view` below: there
             // is nothing to re-evaluate, and `evaluate` is O(lines × filters).
             FilterCommand::Edit(index) => {
@@ -2796,21 +2959,12 @@ impl App<'_> {
                 // a property of the pane's own bounds, not a promise this
                 // function has to make.
                 if let Some(filter) = self.filters.filters().get(index) {
-                    self.search = Some(SearchPrompt::editing(
+                    self.prompt = Some(SearchPrompt::editing(
                         filter.predicate.display(),
                         PromptKind::Edit {
                             index,
                             sense: filter.sense,
                         },
-                    ));
-                }
-                return;
-            }
-            FilterCommand::EditSearch => {
-                if let Some(search) = self.filters.search() {
-                    self.search = Some(SearchPrompt::editing(
-                        search.predicate.display(),
-                        PromptKind::EditSearch,
                     ));
                 }
                 return;
@@ -2831,8 +2985,8 @@ impl App<'_> {
         // including: issue #36's guard in `Document::recompute_visible`
         // shows the whole file instead once nothing is, so `any_including`
         // has to gate the funnel here too — otherwise a filter that exists
-        // but is disabled (or a disabled search) would claim lines are
-        // hidden while the guard is already showing everything.
+        // but is disabled would claim lines are hidden while the guard is
+        // already showing everything.
         //
         // An excluding filter (`x`) is counted on its own, regardless of
         // mode: it removes its matches in `Dimmed` mode too, which is the
@@ -2841,8 +2995,8 @@ impl App<'_> {
         let hiding = (self.document.mode() == Mode::FilteredOnly && self.filters.any_including())
             || self.filters.any_excluding();
         let funnel = if hiding { "▼ " } else { "" };
-        if self.filters.is_empty() && self.filters.search().is_none() {
-            // With no filters and no search at all, `any_including` and
+        if self.filters.is_empty() {
+            // With no filters at all, `any_including` and
             // `any_excluding` are both trivially false, so `hiding` above is
             // always false too — there is nothing this early return could be
             // discarding. Filters that exist but are all disabled are a
@@ -2852,11 +3006,8 @@ impl App<'_> {
             // stays off there as well.
             return String::new();
         }
-        // `row_count`, not `len`: a live search with no numbered filters is
-        // still one filter as far as this row is concerned — `len` alone
-        // would report "0 filters" while a search was visibly active. See
-        // `ActiveFilters::row_count`, which the filter pane counts rows by for
-        // exactly this reason.
+        // `row_count`, not `len`: the user-authored filters, which is what
+        // the pane numbers. See `ActiveFilters::row_count`.
         let count = self.filters.row_count();
         let noun = if count == 1 { "filter" } else { "filters" };
         if !self.filters.any_enabled() {
@@ -3206,6 +3357,18 @@ fn elide_left(text: &str, width: usize) -> String {
     format!("…{}", &text[start..])
 }
 
+/// The search badge: `/pattern`, padded like the other badges, with the
+/// tail elided past `SEARCH_BADGE_MAX` characters.
+fn search_badge_text(pattern: &str) -> String {
+    let shown: String = pattern.chars().take(SEARCH_BADGE_MAX).collect();
+    let ellipsis = if pattern.chars().count() > SEARCH_BADGE_MAX {
+        "…"
+    } else {
+        ""
+    };
+    format!(" /{shown}{ellipsis} ")
+}
+
 impl Widget for &mut App<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         use Constraint::{Length, Min};
@@ -3234,18 +3397,25 @@ impl Widget for &mut App<'_> {
         //
         // Painting the badge here rather than inside `status_text` is what
         // makes that unconditional structurally: `status_text` returns early
-        // with an empty string when there are no filters and no search, which
-        // is exactly the state the issue was reported from. A badge threaded
+        // with an empty string when there are no filters, which is exactly
+        // the state the issue was reported from. A badge threaded
         // through that function would need a second conditional to dodge the
         // early return, and a conditional can go stale.
         // `Cow` rather than `&str` (task 8 fix round 2, #199): every other
         // badge is a fixed string, but the stale badge names a key generated
-        // from the table, so it owns a freshly-built `String` when present.
+        // from the table, and the search badge carries the pattern, so those
+        // own a freshly-built `String` when present.
+        //
+        // The search badge is what says a search is set and what `n` will
+        // step by, now that the filter pane has no row for it (ADR 0001).
         let badges: Vec<Cow<'static, str>> = [
             (self.document.mode() == Mode::FilteredOnly).then_some(Cow::Borrowed(HIDE_BADGE_TEXT)),
             self.filters
                 .is_and()
                 .then_some(Cow::Borrowed(AND_BADGE_TEXT)),
+            self.search
+                .as_ref()
+                .map(|search| Cow::Owned(search_badge_text(&search.text))),
             self.visual_badge().map(Cow::Borrowed),
             self.view_stale
                 .then(|| stale_badge_text(&self.keymap).map(Cow::Owned))
@@ -3363,7 +3533,7 @@ impl Widget for &mut App<'_> {
         // text: it is more urgent than a filter count (it reports something
         // that just happened, and only lives until the next keypress) and less
         // urgent than a prompt (which the user is actively typing into).
-        let (text, style) = match (self.search.as_ref(), self.status_message.as_ref()) {
+        let (text, style) = match (self.prompt.as_ref(), self.status_message.as_ref()) {
             (Some(prompt), _) if prompt.error.is_some() => {
                 (prompt.line(), Style::default().fg(Color::Red))
             }
@@ -3402,7 +3572,7 @@ impl Widget for &mut App<'_> {
         // whole session, so without this an edit in the middle of a pattern
         // (#206) would have nothing on screen to say where the middle is.
         // One blank past the text when the cursor is at the end.
-        if let Some(column) = self.search.as_ref().and_then(SearchPrompt::cursor_column)
+        if let Some(column) = self.prompt.as_ref().and_then(SearchPrompt::cursor_column)
             && column < room
         {
             let x = prompt_area.x + badge_width as u16 + column as u16;
@@ -4241,7 +4411,7 @@ mod tests {
     // ---- editing inside the prompt (#206) --------------------------------
 
     fn prompt<'a>(app: &'a App) -> &'a SearchPrompt {
-        app.search.as_ref().expect("the prompt should be open")
+        app.prompt.as_ref().expect("the prompt should be open")
     }
 
     /// The issue's own example. A filter `load_file`, changed with `c`:
@@ -4267,7 +4437,7 @@ mod tests {
 
         key(&mut app, KeyCode::Enter);
 
-        assert!(app.search.is_none(), "committed");
+        assert!(app.prompt.is_none(), "committed");
         assert_eq!(app.filters.filters()[0].predicate.display(), "print_file");
     }
 
@@ -4357,7 +4527,7 @@ mod tests {
         key(&mut app, KeyCode::Backspace);
 
         assert_eq!(prompt(&app).pattern, "ab");
-        assert!(app.search.is_some(), "the prompt was cancelled");
+        assert!(app.prompt.is_some(), "the prompt was cancelled");
     }
 
     /// vim's command-line `Ctrl-w`: the word before the cursor goes, with any
@@ -4385,7 +4555,7 @@ mod tests {
         );
         ctrl(&mut app, KeyCode::Char('w'));
         assert_eq!(prompt(&app).pattern, "");
-        assert!(app.search.is_some(), "emptying by word does not cancel");
+        assert!(app.prompt.is_some(), "emptying by word does not cancel");
     }
 
     #[test]
@@ -4466,7 +4636,7 @@ mod tests {
         key(&mut app, KeyCode::Backspace);
         key(&mut app, KeyCode::Backspace);
 
-        assert!(app.search.is_none(), "backspace on empty did not cancel");
+        assert!(app.prompt.is_none(), "backspace on empty did not cancel");
     }
 
     #[test]
@@ -4477,7 +4647,7 @@ mod tests {
 
         key(&mut app, KeyCode::Esc);
 
-        assert!(app.search.is_none());
+        assert!(app.prompt.is_none());
     }
 
     #[test]
@@ -4489,7 +4659,7 @@ mod tests {
         typed(&mut app, "gamma");
         key(&mut app, KeyCode::Enter);
 
-        assert!(app.search.is_none(), "prompt stayed open");
+        assert!(app.prompt.is_none(), "prompt stayed open");
         let nav = &app.nav;
         assert_eq!(nav.entries()[nav.selected().unwrap()].name, "gamma.rs");
     }
@@ -4502,7 +4672,7 @@ mod tests {
         typed(&mut app, "[");
         key(&mut app, KeyCode::Enter);
 
-        assert!(app.search.is_some(), "prompt closed on an invalid pattern");
+        assert!(app.prompt.is_some(), "prompt closed on an invalid pattern");
         assert!(
             prompt_line(&mut app).contains("E486"),
             "no error shown: {}",
@@ -4608,7 +4778,7 @@ mod tests {
         typed(&mut app, "foo");
         key(&mut app, KeyCode::Enter);
 
-        assert!(app.search.is_none(), "prompt stayed open");
+        assert!(app.prompt.is_none(), "prompt stayed open");
         assert_eq!(app.filters.len(), 1);
     }
 
@@ -4621,7 +4791,7 @@ mod tests {
         typed(&mut app, "[");
         key(&mut app, KeyCode::Enter);
 
-        assert!(app.search.is_some(), "prompt closed on an invalid pattern");
+        assert!(app.prompt.is_some(), "prompt closed on an invalid pattern");
         assert!(prompt_line(&mut app).contains("E486"));
         assert_eq!(app.filters.len(), 0, "a rejected pattern must not be added");
     }
@@ -4635,7 +4805,7 @@ mod tests {
         typed(&mut app, "foo");
         key(&mut app, KeyCode::Esc);
 
-        assert!(app.search.is_none());
+        assert!(app.prompt.is_none());
         assert_eq!(app.filters.len(), 0);
     }
 
@@ -5673,7 +5843,7 @@ mod tests {
             KeyModifiers::CONTROL,
         )));
 
-        assert!(app.search.is_none(), "Ctrl-f opened a filter prompt");
+        assert!(app.prompt.is_none(), "Ctrl-f opened a filter prompt");
         assert!(
             view_cursor_row(&app) > before,
             "Ctrl-f did not scroll the file view"
@@ -6924,14 +7094,14 @@ mod tests {
         app.filters.set_enabled(1, false);
         key(&mut app, KeyCode::Char('f'));
         key(&mut app, KeyCode::Char('S'));
-        assert!(app.search.is_some(), "the prompt is open");
+        assert!(app.prompt.is_some(), "the prompt is open");
         assert_eq!(
-            app.search.as_ref().map(SearchPrompt::sigil),
+            app.prompt.as_ref().map(SearchPrompt::sigil),
             Some("save as: ")
         );
         typed(&mut app, "bug 57");
         key(&mut app, KeyCode::Enter);
-        assert!(app.search.is_none(), "committed");
+        assert!(app.prompt.is_none(), "committed");
 
         let text = fs::read_to_string(&path).expect("written");
         assert!(text.contains("[sets.\"bug 57\"]"), "{text}");
@@ -6968,7 +7138,7 @@ mod tests {
         )));
 
         assert_eq!(
-            app.search.as_ref().map(SearchPrompt::sigil),
+            app.prompt.as_ref().map(SearchPrompt::sigil),
             Some("save as: "),
             "S with Shift reported did not open the save prompt"
         );
@@ -6979,7 +7149,7 @@ mod tests {
         let mut app = app_over_file("save_empty", "alpha\n");
         key(&mut app, KeyCode::Char('f'));
         key(&mut app, KeyCode::Char('S'));
-        assert!(app.search.is_none());
+        assert!(app.prompt.is_none());
         assert!(
             app.status_message
                 .as_ref()
@@ -7001,9 +7171,9 @@ mod tests {
         key(&mut app, KeyCode::Char('S'));
         typed(&mut app, "taken");
         key(&mut app, KeyCode::Enter);
-        assert!(app.search.is_some(), "the prompt stays open");
+        assert!(app.prompt.is_some(), "the prompt stays open");
         assert!(
-            app.search
+            app.prompt
                 .as_ref()
                 .and_then(|p| p.error.as_deref())
                 .is_some_and(|e| e.contains("already exists")),
@@ -7054,9 +7224,9 @@ mod tests {
         key(&mut app, KeyCode::Char('S'));
         typed(&mut app, "bug");
         key(&mut app, KeyCode::Enter);
-        assert!(app.search.is_some(), "the prompt stays open");
+        assert!(app.prompt.is_some(), "the prompt stays open");
         let error = app
-            .search
+            .prompt
             .as_ref()
             .and_then(|p| p.error.as_deref())
             .unwrap_or_default();
@@ -7084,9 +7254,9 @@ mod tests {
         key(&mut app, KeyCode::Char('S'));
         typed(&mut app, "dup");
         key(&mut app, KeyCode::Enter);
-        assert!(app.search.is_some(), "the prompt stays open");
+        assert!(app.prompt.is_some(), "the prompt stays open");
         let error = app
-            .search
+            .prompt
             .as_ref()
             .and_then(|p| p.error.as_deref())
             .unwrap_or_default();
@@ -7119,7 +7289,7 @@ mod tests {
         key(&mut app, KeyCode::Char('S'));
         typed(&mut app, "a");
         key(&mut app, KeyCode::Enter);
-        assert!(app.search.is_none(), "committed");
+        assert!(app.prompt.is_none(), "committed");
         let text = fs::read_to_string(&path).unwrap();
         assert!(text.contains("[sets.a]"), "{text}");
         assert!(!tmp.exists(), "the temporary was renamed over the file");
@@ -7874,7 +8044,7 @@ mod tests {
         key(&mut app, KeyCode::Char('/'));
         typed(&mut app, "a&b");
         assert!(!app.filters.is_and());
-        assert_eq!(app.search.as_ref().map(|p| p.pattern.as_str()), Some("a&b"));
+        assert_eq!(app.prompt.as_ref().map(|p| p.pattern.as_str()), Some("a&b"));
     }
 
     /// Issue #36's remaining half. `▼` answers "are lines missing right now?",
@@ -8086,30 +8256,6 @@ mod tests {
         assert!(
             !status.to_lowercase().contains("nothing to show"),
             "the status line still reports a blank pane that no longer happens: {status}"
-        );
-    }
-
-    /// A live search with no numbered filters is still one filter as far as
-    /// this row is concerned. `self.filters.len()` alone counts only the
-    /// numbered set and would report "0 filters" while a search was visibly
-    /// active and changing what's on screen — the regression this pins.
-    #[test]
-    fn a_search_alone_counts_as_one_filter_on_the_status_line() {
-        let mut app = app_over_file("status_search_only", "alpha\nbeta\n");
-        key(&mut app, KeyCode::Char('t'));
-        key(&mut app, KeyCode::Char('/'));
-        typed(&mut app, "beta");
-        key(&mut app, KeyCode::Enter);
-
-        let status = status_line(&mut app);
-
-        assert!(
-            status.contains("1 filter") && !status.contains("1 filters"),
-            "a lone search is not counted, or not counted singularly: {status}"
-        );
-        assert!(
-            !status.contains("0 filters"),
-            "the search-only status line still claims there are no filters: {status}"
         );
     }
 
@@ -8340,7 +8486,7 @@ mod tests {
 
         assert_eq!(app.focus, Focus::Filters);
         assert!(
-            app.search.is_none(),
+            app.prompt.is_none(),
             "f opened a prompt instead of moving focus"
         );
     }
@@ -8375,14 +8521,14 @@ mod tests {
             // The navigator has focus at startup.
             key(&mut app, code);
             assert!(
-                app.search.is_none(),
+                app.prompt.is_none(),
                 "{code:?} opened a prompt from the navigator"
             );
 
             key(&mut app, KeyCode::Char('t'));
             key(&mut app, code);
             assert!(
-                app.search.is_none(),
+                app.prompt.is_none(),
                 "{code:?} opened a prompt from the file view"
             );
         }
@@ -8397,7 +8543,7 @@ mod tests {
 
         key(&mut app, KeyCode::Char('F'));
 
-        assert!(app.search.is_none(), "F still opens a prompt");
+        assert!(app.prompt.is_none(), "F still opens a prompt");
     }
 
     /// The navigator's own top-left corner, as symbol and style.
@@ -9102,9 +9248,9 @@ mod tests {
     /// swallowed as a bounce, and every `Enter`-driven test would be asserting
     /// against the guard rather than the binding.
     ///
-    /// `Esc` because it moves no selection and, with no live search set, is a
-    /// genuine no-op: its arm is guarded on `clear_search()` reporting that
-    /// there was something to clear.
+    /// `Esc` because it moves no selection and, with no search set, is a
+    /// genuine no-op: its arm does nothing unless there was a search to
+    /// clear.
     fn settle(app: &mut App) {
         key(app, KeyCode::Esc);
     }
@@ -9172,7 +9318,7 @@ mod tests {
 
         key(&mut app, KeyCode::Char('c'));
 
-        let prompt = app.search.as_ref().expect("the prompt should be open");
+        let prompt = app.prompt.as_ref().expect("the prompt should be open");
         assert_eq!(prompt.pattern, "beta");
         assert_eq!(
             prompt.line(),
@@ -9202,7 +9348,7 @@ mod tests {
             "the filter lost its colour, so it moved"
         );
         assert_eq!(app.filters.filters()[1].predicate.display(), "beta");
-        assert!(app.search.is_none(), "the prompt should have closed");
+        assert!(app.prompt.is_none(), "the prompt should have closed");
     }
 
     /// The pattern decides which lines match, so an edit owes the document a
@@ -9243,7 +9389,7 @@ mod tests {
         typed(&mut app, "[");
         key(&mut app, KeyCode::Enter);
 
-        let prompt = app.search.as_ref().expect("the prompt should stay open");
+        let prompt = app.prompt.as_ref().expect("the prompt should stay open");
         assert_eq!(prompt.line(), INVALID_PATTERN);
         assert_eq!(
             app.filters.filters()[0].predicate.display(),
@@ -9261,7 +9407,7 @@ mod tests {
         typed(&mut app, "X");
         key(&mut app, KeyCode::Esc);
 
-        assert!(app.search.is_none());
+        assert!(app.prompt.is_none());
         assert_eq!(app.filters.filters()[0].predicate.display(), "alpha");
     }
 
@@ -9280,7 +9426,7 @@ mod tests {
             key(&mut app, KeyCode::Backspace);
         }
 
-        assert!(app.search.is_none(), "the prompt should have cancelled");
+        assert!(app.prompt.is_none(), "the prompt should have cancelled");
         assert_eq!(
             app.filters.filters()[0].predicate.display(),
             "alpha",
@@ -9315,7 +9461,7 @@ mod tests {
         key(&mut app, KeyCode::Char('f'));
         key(&mut app, KeyCode::Char('c'));
         assert_eq!(
-            app.search.as_ref().expect("prompt open").line(),
+            app.prompt.as_ref().expect("prompt open").line(),
             "exclude: alpha"
         );
         typed(&mut app, "X");
@@ -9356,7 +9502,7 @@ mod tests {
             KeyModifiers::CONTROL,
         )));
 
-        assert!(app.search.is_none(), "Ctrl-C opened the edit prompt");
+        assert!(app.prompt.is_none(), "Ctrl-C opened the edit prompt");
     }
 
     /// With no filters the pane draws its hint and has no selection, so `c` has
@@ -9369,7 +9515,7 @@ mod tests {
 
         key(&mut app, KeyCode::Char('c'));
 
-        assert!(app.search.is_none());
+        assert!(app.prompt.is_none());
     }
 
     /// Same defect, for the toggle binding.
@@ -9398,7 +9544,7 @@ mod tests {
 
         key(&mut app, KeyCode::Char('/'));
 
-        assert!(app.search.is_some(), "no search prompt opened");
+        assert!(app.prompt.is_some(), "no search prompt opened");
     }
 
     /// Deleting renumbers the filters, so every cached verdict is stale.
@@ -9566,23 +9712,6 @@ mod tests {
         );
     }
 
-    /// `n` walks the union of filter hits and search hits, in source order. This
-    /// is the whole point of the design: one notion of an interesting line.
-    #[test]
-    fn n_steps_between_filter_and_search_matches_alike() {
-        let mut app = app_over_file("n_union", "alpha\nERROR one\nbeta\ntimeout two\ngamma\n");
-        key(&mut app, KeyCode::Char('t'));
-        app.filters.add("ERROR").expect("valid pattern");
-        app.filters.set_search("timeout").expect("valid pattern");
-        app.refresh_view();
-
-        key(&mut app, KeyCode::Char('n'));
-        assert_eq!(cursor_source(&app), 1, "did not reach the filter match");
-
-        key(&mut app, KeyCode::Char('n'));
-        assert_eq!(cursor_source(&app), 3, "did not reach the search match");
-    }
-
     /// Task 6 review (RULING 27): before the table, a global arm guarded
     /// only on `focus != Focus::Nav` ran ahead of both scopes' own
     /// `HitNext`/`HitPrev` rows and called `step_interesting` itself, so
@@ -9595,7 +9724,7 @@ mod tests {
         focus_file_view(&mut app);
         key(&mut app, KeyCode::Char('j'));
         key(&mut app, KeyCode::Char('j'));
-        app.filters.set_search("hit").expect("valid pattern");
+        app.filters.add("hit").expect("valid pattern");
         app.refresh_view();
         assert_eq!(
             cursor_source(&app),
@@ -9628,7 +9757,7 @@ mod tests {
         focus_file_view(&mut app);
         key(&mut app, KeyCode::Char('j'));
         key(&mut app, KeyCode::Char('j'));
-        app.filters.set_search("hit").expect("valid pattern");
+        app.filters.add("hit").expect("valid pattern");
         app.refresh_view();
         assert_eq!(
             cursor_source(&app),
@@ -9670,8 +9799,8 @@ mod tests {
         app.render(TALL, &mut buf);
     }
 
-    /// `App` over `body` with the search `pattern` set and the view focused,
-    /// rendered once so the pane knows its height.
+    /// `App` over `body` with an include filter `pattern` and the view
+    /// focused, rendered once so the pane knows its height.
     fn app_searching(name: &str, body: &str, pattern: &str, config: Config) -> App<'static> {
         let file = fixture_path(name, body);
         let mut app = App::new(&Config {
@@ -9680,13 +9809,13 @@ mod tests {
         });
         draw_tall(&mut app);
         key(&mut app, KeyCode::Char('t'));
-        app.filters.set_search(pattern).expect("valid pattern");
+        app.filters.add(pattern).expect("valid pattern");
         app.refresh_view();
         draw_tall(&mut app);
         assert_eq!(
             cursor_screen_row(&app),
             0,
-            "sanity: the search alone moved the cursor"
+            "sanity: the filter alone moved the cursor"
         );
         app
     }
@@ -9815,7 +9944,7 @@ mod tests {
     fn n_stops_once_on_a_line_with_several_matches() {
         let mut app = app_over_file("n_once", "foo foo foo\nbar\nfoo\n");
         key(&mut app, KeyCode::Char('t'));
-        app.filters.set_search("foo").expect("valid pattern");
+        app.filters.add("foo").expect("valid pattern");
         app.refresh_view();
 
         key(&mut app, KeyCode::Char('n'));
@@ -9832,13 +9961,18 @@ mod tests {
         key(&mut app, KeyCode::Char('t'));
         key(&mut app, KeyCode::Char('j'));
         key(&mut app, KeyCode::Char('j'));
-        app.filters.set_search("hit").expect("valid pattern");
+        app.filters.add("hit").expect("valid pattern");
         app.refresh_view();
         assert_eq!(cursor_source(&app), 2, "sanity: cursor starts past the hit");
 
         key(&mut app, KeyCode::Char('n'));
 
         assert_eq!(cursor_source(&app), 0, "did not wrap around to the hit");
+        assert_eq!(
+            status(&app),
+            Some(WRAPPED_TO_TOP),
+            "the wrap went unreported"
+        );
     }
 
     /// `step_visible` is the one walk `n`/`N` and the search share (#269).
@@ -9901,7 +10035,7 @@ mod tests {
     fn next_interesting_strict_does_not_wrap() {
         let mut app = app_over_file("strict_no_wrap", "hit\nplain\nhit\nplain\n");
         key(&mut app, KeyCode::Char('t'));
-        app.filters.set_search("hit").expect("valid pattern");
+        app.filters.add("hit").expect("valid pattern");
         app.refresh_view();
 
         assert_eq!(
@@ -9925,7 +10059,7 @@ mod tests {
     fn first_interesting_finds_either_end() {
         let mut app = app_over_file("first_either_end", "plain\nhit\nplain\nhit\nplain\n");
         key(&mut app, KeyCode::Char('t'));
-        app.filters.set_search("hit").expect("valid pattern");
+        app.filters.add("hit").expect("valid pattern");
         app.refresh_view();
 
         assert_eq!(app.first_interesting(false), Some(1));
@@ -9936,7 +10070,7 @@ mod tests {
     fn first_interesting_is_none_without_hits() {
         let mut app = app_over_file("first_none", "plain\nplain\n");
         key(&mut app, KeyCode::Char('t'));
-        app.filters.set_search("hit").expect("valid pattern");
+        app.filters.add("hit").expect("valid pattern");
         app.refresh_view();
 
         assert_eq!(app.first_interesting(false), None);
@@ -9954,7 +10088,7 @@ mod tests {
         key(&mut app, KeyCode::Char('t'));
         key(&mut app, KeyCode::Char('j'));
         key(&mut app, KeyCode::Char('j'));
-        app.filters.set_search("hit").expect("valid pattern");
+        app.filters.add("hit").expect("valid pattern");
         app.refresh_view();
         assert_eq!(
             cursor_source(&app),
@@ -10008,7 +10142,7 @@ mod tests {
         // `n_promotes_a_truncated_preview_before_stepping` uses, for the same
         // reason.
         key(&mut app, KeyCode::Down);
-        app.filters.set_search("x").expect("valid pattern");
+        app.filters.add("x").expect("valid pattern");
         app.refresh_view();
         key(&mut app, KeyCode::Char('e'));
         let before = cursor_source(&app);
@@ -10089,7 +10223,7 @@ mod tests {
     fn n_with_nothing_to_step_through_says_so() {
         let mut app = app_over_file("n_dead_end", "plain\nplain\n");
         focus_file_view(&mut app);
-        app.filters.set_search("hit").expect("valid pattern");
+        app.filters.add("hit").expect("valid pattern");
         app.refresh_view();
         let before = cursor_source(&app);
 
@@ -10522,27 +10656,357 @@ mod tests {
         assert_eq!(app.focus, Focus::Filters);
     }
 
+    /// The pattern the search holds, for tests.
+    fn search_text(app: &App) -> String {
+        app.search
+            .as_ref()
+            .map(|search| search.text.clone())
+            .expect("a search was set")
+    }
+
+    /// The pattern the file view is highlighting on `needle`'s row: the
+    /// style of every cell `needle` occupies in a fresh frame. `None` when
+    /// no row shows it.
+    fn styles_of(app: &mut App, needle: &str) -> Option<Vec<Style>> {
+        let mut buf = Buffer::empty(AREA);
+        app.render(AREA, &mut buf);
+        (0..AREA.height).find_map(|y| {
+            let row: String = (0..AREA.width).map(|x| buf[(x, y)].symbol()).collect();
+            let start = row.find(needle)?;
+            let start = u16::try_from(row[..start].chars().count()).ok()?;
+            Some(
+                (start..start + u16::try_from(needle.chars().count()).ok()?)
+                    .map(|x| buf[(x, y)].style())
+                    .collect(),
+            )
+        })
+    }
+
+    /// `/` sets the search and moves to its first hit. The filter set is
+    /// untouched: a search is a motion, not a filter (ADR 0001).
     #[test]
-    fn slash_sets_the_search_filter_and_moves_to_its_first_hit() {
-        let mut app = app_over_file("slash_filter", "alpha\nbeta\ngamma\nbeta again\n");
+    fn slash_sets_the_search_and_moves_to_its_first_hit() {
+        let mut app = app_over_file("slash_motion", "alpha\nbeta\ngamma\nbeta again\n");
         key(&mut app, KeyCode::Char('t'));
 
         key(&mut app, KeyCode::Char('/'));
         typed(&mut app, "beta");
         key(&mut app, KeyCode::Enter);
 
-        assert!(
-            app.filters.search().is_some(),
-            "the search did not become a filter"
-        );
+        assert_eq!(search_text(&app), "beta");
         assert_eq!(cursor_source(&app), 1);
+        assert!(app.filters.is_empty(), "the search became a filter");
+        assert!(
+            app.document
+                .verdicts()
+                .iter()
+                .all(|v| *v == Verdict::Unmatched),
+            "a search changed a verdict"
+        );
     }
 
-    /// A search survives loading another file, exactly as the numbered filters
-    /// do — it is one of them now.
+    /// The search starts on the cursor line, that line included: a hit
+    /// there is found first, not after a wrap.
     #[test]
-    fn the_search_filter_survives_a_file_load() {
-        let mut app = app_over("slash_survives", &["alpha.log", "beta.log"]);
+    fn the_search_starts_on_the_cursor_line() {
+        let mut app = app_over_file("slash_own_line", "beta\nalpha\nbeta\n");
+        key(&mut app, KeyCode::Char('t'));
+        key(&mut app, KeyCode::Char('j'));
+        key(&mut app, KeyCode::Char('j'));
+
+        key(&mut app, KeyCode::Char('/'));
+        typed(&mut app, "beta");
+        key(&mut app, KeyCode::Enter);
+
+        assert_eq!(
+            cursor_source(&app),
+            2,
+            "the hit on the cursor line was skipped"
+        );
+        assert_eq!(status(&app), None, "nothing wrapped");
+    }
+
+    /// Past the last hit the search wraps to the top, once, and the status
+    /// row says so.
+    #[test]
+    fn the_search_wraps_to_the_top_and_says_so() {
+        let mut app = app_over_file("slash_wrap", "alpha\nbeta\ngamma\n");
+        key(&mut app, KeyCode::Char('t'));
+        key(&mut app, KeyCode::Char('G'));
+
+        key(&mut app, KeyCode::Char('/'));
+        typed(&mut app, "alpha");
+        key(&mut app, KeyCode::Enter);
+
+        assert_eq!(cursor_source(&app), 0);
+        assert_eq!(status(&app), Some(WRAPPED_TO_TOP));
+    }
+
+    /// The cursor lands on the column of the first occurrence, so a long
+    /// line does not hide where the hit is.
+    #[test]
+    fn the_search_lands_on_the_first_occurrence_column() {
+        let mut app = app_over_file("slash_column", "xx beta beta\n");
+        key(&mut app, KeyCode::Char('t'));
+
+        key(&mut app, KeyCode::Char('/'));
+        typed(&mut app, "beta");
+        key(&mut app, KeyCode::Enter);
+
+        assert_eq!(app.view.cursor_col(), 3);
+    }
+
+    /// A search with no hit in the file says so and moves nothing.
+    #[test]
+    fn a_search_with_no_hit_says_so_and_stays_put() {
+        let mut app = app_over_file("slash_no_hit", "alpha\nbeta\n");
+        key(&mut app, KeyCode::Char('t'));
+        key(&mut app, KeyCode::Char('j'));
+
+        key(&mut app, KeyCode::Char('/'));
+        typed(&mut app, "zzz");
+        key(&mut app, KeyCode::Enter);
+
+        assert_eq!(cursor_source(&app), 1, "the cursor moved");
+        assert_eq!(status(&app), Some("no hit for /zzz"));
+        assert_eq!(search_text(&app), "zzz", "the pattern is still set for n");
+    }
+
+    /// In hide mode the search looks only at the visible lines: a hidden
+    /// line is never a hit, and the search pulls nothing back in. The
+    /// visible lines, the gutter numbers and the gaps are what they were.
+    #[test]
+    fn in_hide_mode_a_search_finds_no_hidden_line_and_changes_nothing() {
+        let mut app = app_over_file("slash_hidden", "alpha\nbeta\ngamma\nbeta again\n");
+        key(&mut app, KeyCode::Char('t'));
+        app.filters.add("alpha|gamma").expect("valid pattern");
+        app.refresh_view();
+        key(&mut app, KeyCode::Char('u'));
+        assert_eq!(app.document.visible(), &[0, 2], "sanity: hiding");
+        // Everything but the status row, which gains the search badge.
+        let panes = |app: &mut App| {
+            let frame = screen(app);
+            frame
+                .rsplit_once('\n')
+                .map(|(panes, _)| panes.to_owned())
+                .unwrap_or(frame)
+        };
+        let before = panes(&mut app);
+
+        key(&mut app, KeyCode::Char('/'));
+        typed(&mut app, "beta");
+        key(&mut app, KeyCode::Enter);
+
+        assert_eq!(
+            app.document.visible(),
+            &[0, 2],
+            "the search widened the view"
+        );
+        assert_eq!(cursor_source(&app), 0, "the cursor moved to a hidden line");
+        assert_eq!(status(&app), Some("no hit for /beta"));
+        assert_eq!(
+            panes(&mut app),
+            before,
+            "the panes changed under the search"
+        );
+    }
+
+    /// In dim mode a dimmed line is visible, so it is a hit.
+    #[test]
+    fn in_dim_mode_a_search_finds_a_dimmed_line() {
+        let mut app = app_over_file("slash_dimmed", "alpha\nbeta\ngamma\n");
+        key(&mut app, KeyCode::Char('t'));
+        app.filters.add("alpha").expect("valid pattern");
+        app.refresh_view();
+        assert_eq!(app.document.mode(), Mode::Dimmed, "sanity: dimming");
+
+        key(&mut app, KeyCode::Char('/'));
+        typed(&mut app, "beta");
+        key(&mut app, KeyCode::Enter);
+
+        assert_eq!(cursor_source(&app), 1);
+        assert_eq!(
+            app.document.verdicts()[1],
+            Verdict::Unmatched,
+            "the hit line is still dimmed: the search is not a filter"
+        );
+    }
+
+    /// An excluded line is gone in both modes, so it is never a hit.
+    #[test]
+    fn an_excluded_line_is_never_a_hit() {
+        let mut app = app_over_file("slash_excluded", "alpha\nbeta\ngamma\n");
+        key(&mut app, KeyCode::Char('t'));
+        app.filters.add_excluding("beta").expect("valid pattern");
+        app.refresh_view();
+
+        for mode in [Mode::Dimmed, Mode::FilteredOnly] {
+            app.set_mode(mode);
+            app.refresh_view();
+            key(&mut app, KeyCode::Char('/'));
+            typed(&mut app, "beta");
+            key(&mut app, KeyCode::Enter);
+
+            assert_eq!(
+                cursor_source(&app),
+                0,
+                "{mode:?}: moved to an excluded line"
+            );
+            assert_eq!(status(&app), Some("no hit for /beta"), "{mode:?}");
+        }
+    }
+
+    /// A hit line keeps the style the filters gave it; only the hit text
+    /// is painted, black on yellow, and that stays on top of everything.
+    #[test]
+    fn a_hit_line_keeps_its_filter_colour_and_only_the_hit_is_highlighted() {
+        let mut app = app_over_file("slash_styles", "alpha beta\nplain\nother\n");
+        key(&mut app, KeyCode::Char('t'));
+        app.filters.add("alpha").expect("valid pattern");
+        app.refresh_view();
+        let colour = app
+            .filters
+            .style_for(Verdict::Included(0))
+            .expect("filter 0 has a colour")
+            .fg;
+        let dim = app.filters.dim_style().fg;
+
+        key(&mut app, KeyCode::Char('/'));
+        typed(&mut app, "beta");
+        key(&mut app, KeyCode::Enter);
+        // Off the rows under test: the cursor's cell and line have styles of
+        // their own.
+        key(&mut app, KeyCode::Char('G'));
+
+        let alpha = styles_of(&mut app, "alpha").expect("alpha on screen");
+        assert!(
+            alpha
+                .iter()
+                .all(|style| style.fg == colour && style.bg != Some(Color::Yellow)),
+            "the filter colour was lost on the hit line: {alpha:?}"
+        );
+        let beta = styles_of(&mut app, "beta").expect("beta on screen");
+        assert!(
+            beta.iter()
+                .all(|style| style.bg == Some(Color::Yellow) && style.fg == Some(Color::Black)),
+            "the hit text is not highlighted: {beta:?}"
+        );
+        let plain = styles_of(&mut app, "plain").expect("plain on screen");
+        assert!(
+            plain
+                .iter()
+                .all(|style| style.fg == dim && style.bg != Some(Color::Yellow)),
+            "a search changed how an unmatched line is drawn: {plain:?}"
+        );
+    }
+
+    /// `n` and `N` step hit lines while a search is set: one stop per line,
+    /// wrapping within the file and saying so.
+    #[test]
+    fn n_steps_hit_lines_one_stop_per_line_and_wraps_within_the_file() {
+        let mut app = app_over_file("n_hits", "hit hit\nplain\nhit\nplain\n");
+        key(&mut app, KeyCode::Char('t'));
+        key(&mut app, KeyCode::Char('/'));
+        typed(&mut app, "hit");
+        key(&mut app, KeyCode::Enter);
+        assert_eq!(cursor_source(&app), 0, "sanity");
+
+        key(&mut app, KeyCode::Char('n'));
+        assert_eq!(cursor_source(&app), 2, "stopped more than once on line 0");
+        assert_eq!(status(&app), None);
+
+        key(&mut app, KeyCode::Char('n'));
+        assert_eq!(cursor_source(&app), 0, "did not wrap");
+        assert_eq!(status(&app), Some(WRAPPED_TO_TOP));
+
+        key(&mut app, KeyCode::Char('N'));
+        assert_eq!(cursor_source(&app), 2, "N did not wrap backwards");
+        assert_eq!(status(&app), Some(WRAPPED_TO_BOTTOM));
+    }
+
+    /// With a search set, `n` steps hits and not the filters' interesting
+    /// lines: the search owns the motion the user just made.
+    #[test]
+    fn n_steps_hits_and_not_interesting_lines_while_a_search_is_set() {
+        let mut app = app_over_file(
+            "n_hits_only",
+            "alpha\nERROR one\nbeta\ntimeout two\ngamma\n",
+        );
+        key(&mut app, KeyCode::Char('t'));
+        app.filters.add("ERROR").expect("valid pattern");
+        app.refresh_view();
+        key(&mut app, KeyCode::Char('/'));
+        typed(&mut app, "timeout");
+        key(&mut app, KeyCode::Enter);
+        assert_eq!(cursor_source(&app), 3, "sanity");
+
+        key(&mut app, KeyCode::Char('n'));
+        assert_eq!(cursor_source(&app), 3, "n stepped to the filter's line");
+        assert_eq!(status(&app), Some(WRAPPED_TO_TOP));
+
+        key(&mut app, KeyCode::Esc);
+        key(&mut app, KeyCode::Char('n'));
+        assert_eq!(
+            cursor_source(&app),
+            1,
+            "with no search, n steps interesting lines"
+        );
+    }
+
+    /// `n` with a search and no hit reports it and stays put.
+    #[test]
+    fn n_with_a_search_and_no_hit_says_so_and_stays_put() {
+        let mut app = app_over_file("n_no_hit", "alpha\nbeta\n");
+        key(&mut app, KeyCode::Char('t'));
+        key(&mut app, KeyCode::Char('j'));
+        key(&mut app, KeyCode::Char('/'));
+        typed(&mut app, "zzz");
+        key(&mut app, KeyCode::Enter);
+        app.status_message = None;
+
+        key(&mut app, KeyCode::Char('n'));
+
+        assert_eq!(cursor_source(&app), 1, "n moved");
+        assert_eq!(status(&app), Some("no hit for /zzz"));
+    }
+
+    /// A search `n` wraps within the file and never crosses to another,
+    /// even when the filters would have carried `n` there.
+    #[test]
+    fn n_with_a_search_does_not_cross_files() {
+        let mut app = app_over_files(
+            "n_search_stays",
+            &[("alpha.log", "hit\nplain\n"), ("zebra.log", "hit\n")],
+        );
+        open_file(&mut app, 0);
+        key(&mut app, KeyCode::Char('t'));
+        app.filters.add("hit").expect("valid pattern");
+        app.refresh_view();
+        key(&mut app, KeyCode::Char('/'));
+        typed(&mut app, "hit");
+        key(&mut app, KeyCode::Enter);
+        let before = app.nav.selected_entry();
+
+        key(&mut app, KeyCode::Char('n'));
+
+        assert_eq!(
+            app.nav.selected_entry(),
+            before,
+            "n crossed to another file"
+        );
+        assert_eq!(cursor_source(&app), 0);
+        assert_eq!(status(&app), Some(WRAPPED_TO_TOP));
+    }
+
+    /// The pattern survives loading another file, so `n` finds its hits in
+    /// the next log; the load itself scans nothing and moves nothing.
+    #[test]
+    fn the_search_survives_a_file_load_and_the_load_moves_nothing() {
+        let mut app = app_over_files(
+            "slash_survives",
+            &[("alpha.log", "x\n"), ("beta.log", "plain\nplain\nx\n")],
+        );
+        open_file(&mut app, 0);
         key(&mut app, KeyCode::Char('t'));
         key(&mut app, KeyCode::Char('/'));
         typed(&mut app, "x");
@@ -10551,24 +11015,137 @@ mod tests {
         key(&mut app, KeyCode::Char('e'));
         key(&mut app, KeyCode::Char('j'));
 
-        assert!(
-            app.filters.search().is_some(),
+        assert_eq!(
+            search_text(&app),
+            "x",
             "the search did not outlive the load"
+        );
+        assert_eq!(cursor_source(&app), 0, "the load moved the cursor");
+        assert!(
+            app.file_view_highlight().is_some(),
+            "the highlight did not survive the load"
+        );
+
+        key(&mut app, KeyCode::Char('t'));
+        key(&mut app, KeyCode::Char('n'));
+        assert_eq!(
+            cursor_source(&app),
+            2,
+            "n did not find the hit in the next file"
         );
     }
 
-    /// With hiding on, a bare search is an instant grep — the capability the
-    /// merge unlocks.
+    /// `u` with a search and no include filter does nothing: a search alone
+    /// cannot hide the file, because it is not something to hide against.
     #[test]
-    fn a_search_with_hiding_on_collapses_the_file_to_its_matches() {
-        let mut app = app_over_file("slash_grep", "alpha\nbeta\ngamma\nbeta again\n");
+    fn u_with_a_search_and_no_include_filter_does_nothing() {
+        let mut app = app_over_file("u_search_only", "alpha\nbeta\ngamma\n");
         key(&mut app, KeyCode::Char('t'));
-        key(&mut app, KeyCode::Char('H'));
         key(&mut app, KeyCode::Char('/'));
         typed(&mut app, "beta");
         key(&mut app, KeyCode::Enter);
 
-        assert_eq!(app.document.visible(), &[1, 3]);
+        key(&mut app, KeyCode::Char('u'));
+
+        assert_eq!(
+            app.document.visible(),
+            &[0, 1, 2],
+            "a bare search hid lines"
+        );
+    }
+
+    /// `!` toggles the filters and leaves the search alone: the pattern and
+    /// its highlight stay through both presses.
+    #[test]
+    fn bang_leaves_the_search_alone() {
+        let mut app = app_over_file("bang_search", "alpha\nbeta\n");
+        key(&mut app, KeyCode::Char('t'));
+        app.filters.add("alpha").expect("valid pattern");
+        app.refresh_view();
+        key(&mut app, KeyCode::Char('/'));
+        typed(&mut app, "beta");
+        key(&mut app, KeyCode::Enter);
+
+        for press in 1..=2 {
+            key(&mut app, KeyCode::Char('!'));
+            assert_eq!(
+                search_text(&app),
+                "beta",
+                "press {press} dropped the search"
+            );
+            assert!(
+                app.file_view_highlight().is_some(),
+                "press {press} dropped the highlight"
+            );
+        }
+    }
+
+    /// The navigator marks files from filters only. With nothing but a
+    /// search there is nothing to scan for, which is what `matcher` being
+    /// `None` means to the navigator.
+    #[test]
+    fn the_navigator_marks_files_from_filters_only() {
+        let mut app = app_over_file("nav_marks_search", "alpha\nbeta\n");
+        key(&mut app, KeyCode::Char('t'));
+
+        key(&mut app, KeyCode::Char('/'));
+        typed(&mut app, "beta");
+        key(&mut app, KeyCode::Enter);
+
+        assert!(
+            app.filters.matcher().is_none(),
+            "a search started a file scan"
+        );
+    }
+
+    /// `--emit lines` is what the filters chose. A search changes none of it.
+    #[test]
+    fn emit_lines_output_is_unchanged_by_a_search() {
+        let mut app = app_over_file("emit_search", "alpha\nbeta\ngamma\n");
+        key(&mut app, KeyCode::Char('t'));
+        app.filters.add("alpha|gamma").expect("valid pattern");
+        app.refresh_view();
+        key(&mut app, KeyCode::Char('u'));
+        let before = app.collect(emit::Emit::Lines);
+
+        key(&mut app, KeyCode::Char('/'));
+        typed(&mut app, "beta");
+        key(&mut app, KeyCode::Enter);
+
+        assert_eq!(app.collect(emit::Emit::Lines), before);
+    }
+
+    /// The filter pane has no search row; the status row shows the pattern.
+    #[test]
+    fn the_filter_pane_has_no_search_row_and_the_status_row_shows_the_pattern() {
+        let mut app = app_over_file("status_search", "alpha\nbeta\n");
+        key(&mut app, KeyCode::Char('t'));
+        let rows = widgets::filterlist::rows(&app.filters);
+
+        key(&mut app, KeyCode::Char('/'));
+        typed(&mut app, "beta");
+        key(&mut app, KeyCode::Enter);
+
+        assert_eq!(
+            widgets::filterlist::rows(&app.filters),
+            rows,
+            "the pane gained a row"
+        );
+        let status = status_line(&mut app);
+        assert!(
+            status.contains("/beta"),
+            "the status row does not show the pattern: {status}"
+        );
+        assert!(
+            !status.contains("1 filter"),
+            "a search is counted as a filter: {status}"
+        );
+
+        key(&mut app, KeyCode::Esc);
+        assert!(
+            !status_line(&mut app).contains("/beta"),
+            "the badge outlived the search"
+        );
     }
 
     #[test]
@@ -10579,42 +11156,22 @@ mod tests {
         typed(&mut app, "[");
         key(&mut app, KeyCode::Enter);
 
-        assert!(app.search.is_some(), "prompt closed on an invalid pattern");
-        assert!(
-            app.filters.search().is_none(),
-            "a rejected pattern became a filter"
-        );
+        assert!(app.prompt.is_some(), "prompt closed on an invalid pattern");
+        assert!(app.search.is_none(), "a rejected pattern became the search");
     }
 
     #[test]
-    fn escape_clears_the_search_filter() {
+    fn escape_clears_the_search() {
         let mut app = app_over_file("esc_clears", "alpha\nbeta\n");
         key(&mut app, KeyCode::Char('t'));
         key(&mut app, KeyCode::Char('/'));
         typed(&mut app, "beta");
         key(&mut app, KeyCode::Enter);
-        assert!(app.filters.search().is_some(), "sanity: search set");
+        assert!(app.search.is_some(), "sanity: search set");
 
         key(&mut app, KeyCode::Esc);
 
-        assert!(app.filters.search().is_none());
-    }
-
-    /// Issue #36's guard is what makes this safe: clearing the last thing that
-    /// was including must not leave a blank pane behind.
-    #[test]
-    fn escape_while_hiding_restores_the_file_rather_than_blanking_it() {
-        let mut app = app_over_file("esc_hiding", "alpha\nbeta\ngamma\n");
-        key(&mut app, KeyCode::Char('t'));
-        key(&mut app, KeyCode::Char('H'));
-        key(&mut app, KeyCode::Char('/'));
-        typed(&mut app, "beta");
-        key(&mut app, KeyCode::Enter);
-        assert_eq!(app.document.visible(), &[1], "sanity: grepped down");
-
-        key(&mut app, KeyCode::Esc);
-
-        assert_eq!(app.document.visible(), &[0, 1, 2], "the pane went blank");
+        assert!(app.search.is_none());
     }
 
     /// An open prompt still wins: Esc there cancels the prompt, as it always has,
@@ -10631,11 +11188,8 @@ mod tests {
 
         key(&mut app, KeyCode::Esc);
 
-        assert!(app.search.is_none(), "the prompt did not close");
-        assert!(
-            app.filters.search().is_some(),
-            "Esc reached past the prompt"
-        );
+        assert!(app.prompt.is_none(), "the prompt did not close");
+        assert!(app.search.is_some(), "Esc reached past the prompt");
     }
 
     #[test]
@@ -10675,9 +11229,11 @@ mod tests {
     }
 
     /// Probe, keep, probe again — a filter set assembled without retyping a
-    /// regex that was hard to get right. Feeds #8.
+    /// regex that was hard to get right. `p` is the bridge from search to
+    /// filter (ADR 0001): the pattern crosses, the search is cleared, and
+    /// the filter's colour replaces the highlight.
     #[test]
-    fn p_promotes_the_search_and_frees_the_slot() {
+    fn p_promotes_the_search_into_a_filter_and_clears_it() {
         let mut app = app_over_file("p_promote", "alpha\nbeta\n");
         key(&mut app, KeyCode::Char('t'));
         key(&mut app, KeyCode::Char('/'));
@@ -10687,10 +11243,36 @@ mod tests {
         key(&mut app, KeyCode::Char('p'));
 
         assert_eq!(app.filters.len(), 1, "the search did not become a filter");
+        assert!(app.search.is_none(), "the search was not cleared");
         assert!(
-            app.filters.search().is_none(),
-            "the slot is not free for the next probe"
+            app.file_view_highlight().is_none(),
+            "the highlight outlived p"
         );
+        assert_eq!(app.document.verdicts()[1], Verdict::Included(0));
+        // Off the row under test: the cursor's cell has a style of its own.
+        key(&mut app, KeyCode::Char('k'));
+        let colour = app.filters.style_for(Verdict::Included(0)).unwrap().fg;
+        let beta = styles_of(&mut app, "beta").expect("beta on screen");
+        assert!(
+            beta.iter()
+                .all(|style| style.fg == colour && style.bg != Some(Color::Yellow)),
+            "the filter colour did not replace the highlight: {beta:?}"
+        );
+    }
+
+    /// `/foo` `p` `u`: the old `/foo` `u` result, one key further away.
+    #[test]
+    fn slash_p_u_collapses_to_the_pattern_lines() {
+        let mut app = app_over_file("p_then_u", "alpha\nbeta\ngamma\nbeta again\n");
+        key(&mut app, KeyCode::Char('t'));
+        key(&mut app, KeyCode::Char('/'));
+        typed(&mut app, "beta");
+        key(&mut app, KeyCode::Enter);
+
+        key(&mut app, KeyCode::Char('p'));
+        key(&mut app, KeyCode::Char('u'));
+
+        assert_eq!(app.document.visible(), &[1, 3]);
     }
 
     #[test]
@@ -10705,13 +11287,9 @@ mod tests {
         }
 
         assert_eq!(app.filters.len(), 2);
-        // Not `match_count`: it counts `Included` and `Searched` verdicts
-        // identically, and `apply_search`'s own refresh already set it to 2
-        // the moment the live search matched — before either promotion ran.
-        // Checking the verdicts themselves is what actually depends on `p`'s
-        // `refresh_view`: promoting moves a line from the search's slot to a
-        // numbered one, and only a re-evaluate updates its `Verdict` to
-        // reflect that move.
+        // The verdicts themselves are what depend on `p`'s `refresh_view`:
+        // a search changes no verdict, and only the re-evaluate after the
+        // promotion gives the line its `Verdict::Included`.
         assert_eq!(
             app.document.verdicts()[1],
             Verdict::Included(0),
@@ -10754,10 +11332,7 @@ mod tests {
             app.filters.is_empty(),
             "Ctrl-P was taken as a promote command"
         );
-        assert!(
-            app.filters.search().is_some(),
-            "Ctrl-P consumed the search slot"
-        );
+        assert!(app.search.is_some(), "Ctrl-P consumed the search");
     }
 
     /// `?` is reserved for the help view (#25). With n/N covering both
@@ -10769,7 +11344,7 @@ mod tests {
 
         key(&mut app, KeyCode::Char('?'));
 
-        assert!(app.search.is_none(), "? still opens a prompt");
+        assert!(app.prompt.is_none(), "? still opens a prompt");
     }
 
     /// `/` in the navigator still searches filenames — that pane has its own
@@ -10785,10 +11360,7 @@ mod tests {
         typed(&mut app, "zebra");
         key(&mut app, KeyCode::Enter);
 
-        assert!(
-            app.filters.search().is_none(),
-            "a nav search became a filter"
-        );
+        assert!(app.search.is_none(), "a nav search became the file search");
         let nav = &app.nav;
         assert_eq!(
             nav.entries()[nav.selected().unwrap()].name,
@@ -10798,9 +11370,9 @@ mod tests {
     }
 
     /// #120 §8: `Esc` clears whichever search the focused pane owns first,
-    /// then the live search. One key, one meaning, layered.
+    /// then the file search. One key, one meaning, layered.
     #[test]
-    fn esc_clears_the_navigator_search_before_the_live_search() {
+    fn esc_clears_the_navigator_search_before_the_file_search() {
         let mut app = app_over_files(
             "esc_layers",
             &[("alpha.log", "hit\n"), ("zebra.log", "hit\n")],
@@ -10810,7 +11382,7 @@ mod tests {
         key(&mut app, KeyCode::Char('/'));
         typed(&mut app, "hit");
         key(&mut app, KeyCode::Enter);
-        assert!(app.filters.search().is_some(), "sanity: live search set");
+        assert!(app.search.is_some(), "sanity: file search set");
 
         key(&mut app, KeyCode::Char('e'));
         key(&mut app, KeyCode::Char('/'));
@@ -10824,14 +11396,14 @@ mod tests {
             "Esc did not clear the navigator search"
         );
         assert!(
-            app.filters.search().is_some(),
-            "Esc cleared the live search on the same press"
+            app.search.is_some(),
+            "Esc cleared the file search on the same press"
         );
 
         key(&mut app, KeyCode::Esc);
         assert!(
-            app.filters.search().is_none(),
-            "second Esc did not clear the live search"
+            app.search.is_none(),
+            "second Esc did not clear the file search"
         );
     }
 
@@ -10850,11 +11422,10 @@ mod tests {
         assert!(app.nav.has_search());
     }
 
-    /// #120 §7 decision (b): the filter pane forwards `/` to the view — a
-    /// "new search", where `c` on the search row is "edit search". Focus
-    /// stays in the pane (return-focus is PR 3), and `n` works from there.
+    /// #120 §7 decision (b): the filter pane forwards `/` to the view.
+    /// Focus stays in the pane, and `n` works from there.
     #[test]
-    fn slash_from_the_filter_pane_sets_a_live_search() {
+    fn slash_from_the_filter_pane_sets_the_search() {
         let mut app = app_over_file("slash_from_pane", "plain\nhit\nplain\nhit\n");
         key(&mut app, KeyCode::Char('f'));
 
@@ -10862,7 +11433,7 @@ mod tests {
         typed(&mut app, "hit");
         key(&mut app, KeyCode::Enter);
 
-        assert!(app.filters.search().is_some(), "no live search was set");
+        assert!(app.search.is_some(), "no search was set");
         assert_eq!(app.focus, Focus::Filters, "focus moved");
         assert_eq!(cursor_source(&app), 1, "did not move to the first hit");
 
@@ -11011,7 +11582,7 @@ mod tests {
     ///
     /// Originally named `search_and_save_prompts_do_not_return` and asserted
     /// only this; the `S` and search-row `c` cases below need their own
-    /// setup (a non-empty scratch set, a selected search row) so they are
+    /// setup (a non-empty scratch set) so they are
     /// now separate tests rather than more steps bolted onto this one.
     #[test]
     fn f_slash_search_commit_does_not_return() {
@@ -11054,38 +11625,6 @@ mod tests {
         assert_eq!(app.focus, Focus::Filters, "a save-set commit returned");
     }
 
-    /// A search-row `c` commit is not a chain step either.
-    #[test]
-    fn search_row_c_commit_does_not_return() {
-        let mut app = app_over_file("chain_edit_search", "alpha\nbeta\n");
-        // A non-empty scratch set, added directly rather than through `f i`,
-        // so `Row::Hint` does not sit ahead of `Row::Search` at row 0 (#127).
-        app.filters.add("alpha").expect("valid pattern");
-        key(&mut app, KeyCode::Char('t'));
-
-        key(&mut app, KeyCode::Char('f'));
-        key(&mut app, KeyCode::Char('/'));
-        typed(&mut app, "beta");
-        key(&mut app, KeyCode::Enter);
-        assert_eq!(app.focus, Focus::Filters, "sanity: a search commit stays");
-
-        // The sticky `f` clears any chain origin left over from the one
-        // above, so the `c` commit below is judged on its own; `g` selects
-        // the search row explicitly rather than relying on it already being
-        // the default selection.
-        key(&mut app, KeyCode::Char('f'));
-        key(&mut app, KeyCode::Char('g'));
-        key(&mut app, KeyCode::Char('c'));
-        typed(&mut app, "2");
-        key(&mut app, KeyCode::Enter);
-
-        assert_eq!(
-            app.focus,
-            Focus::Filters,
-            "a search-row edit commit returned"
-        );
-    }
-
     /// Backspacing past the start of the prompt abandons it, the same as
     /// `Esc` — and, like `Esc`, ends the chain: a fresh `f i … Enter`
     /// afterwards is judged as its own chain, not a continuation.
@@ -11101,7 +11640,7 @@ mod tests {
         key(&mut app, KeyCode::Backspace);
         key(&mut app, KeyCode::Backspace);
         assert!(
-            app.search.is_none(),
+            app.prompt.is_none(),
             "sanity: backspacing past empty closed it"
         );
 
@@ -11242,7 +11781,7 @@ mod tests {
         key(&mut app, KeyCode::Char('i'));
 
         assert_eq!(status(&app), Some("i adds a filter · f i"));
-        assert!(app.search.is_none(), "a prompt opened");
+        assert!(app.prompt.is_none(), "a prompt opened");
         assert_eq!(app.focus, Focus::View, "focus moved");
     }
 
@@ -11299,7 +11838,7 @@ mod tests {
 
         key(&mut app, KeyCode::Char('i'));
 
-        assert!(app.search.is_some(), "i did not open the prompt");
+        assert!(app.prompt.is_some(), "i did not open the prompt");
         assert_eq!(status(&app), None);
     }
 
@@ -11327,8 +11866,8 @@ mod tests {
 
         key(&mut app, KeyCode::Char('*'));
 
-        let search = app.filters.search().expect("a live search was set");
-        assert_eq!(search.predicate.display(), "foo");
+        let search = app.search.as_ref().expect("a search was set");
+        assert_eq!(search.text, "foo");
         assert_eq!(
             cursor_source(&app),
             2,
@@ -11339,7 +11878,7 @@ mod tests {
         key(&mut app, KeyCode::Char('k'));
         key(&mut app, KeyCode::Char('w'));
         key(&mut app, KeyCode::Char('*'));
-        assert_eq!(app.filters.search().unwrap().predicate.display(), "bar");
+        assert_eq!(search_text(&app), "bar");
         assert_eq!(cursor_source(&app), 1);
     }
 
@@ -11353,10 +11892,7 @@ mod tests {
 
         key(&mut app, KeyCode::Char('*'));
 
-        assert_eq!(
-            app.filters.search().unwrap().predicate.display(),
-            "_ZN4core3fmt9Formatter3pad17hE"
-        );
+        assert_eq!(search_text(&app), "_ZN4core3fmt9Formatter3pad17hE");
         assert_eq!(cursor_source(&app), 2);
     }
 
@@ -11368,10 +11904,7 @@ mod tests {
 
         key(&mut app, KeyCode::Char('*'));
 
-        assert!(
-            app.filters.search().is_none(),
-            "a search was set from whitespace"
-        );
+        assert!(app.search.is_none(), "a search was set from whitespace");
         assert_eq!(status(&app), Some("no word under the cursor"));
     }
 
@@ -11385,7 +11918,7 @@ mod tests {
 
         key(&mut app, KeyCode::Char('*'));
 
-        assert_eq!(app.filters.search().unwrap().predicate.display(), "bar");
+        assert_eq!(search_text(&app), "bar");
         assert_eq!(cursor_source(&app), 1);
     }
 
@@ -11402,12 +11935,12 @@ mod tests {
         key(&mut app, KeyCode::Char('u'));
         key(&mut app, KeyCode::Char('*'));
 
-        assert!(app.filters.search().is_none());
+        assert!(app.search.is_none());
         assert_eq!(status(&app), Some("no word under the cursor"));
     }
 
     /// `*` while peeked behaves like `/`: it sets the search without first
-    /// clearing the peek.
+    /// clearing the peek, and searches the plain file the peek shows.
     #[test]
     fn star_while_peeked_behaves_like_slash() {
         let mut app = app_over_file("star_peeked", "foo\nfoo\n");
@@ -11418,8 +11951,33 @@ mod tests {
         key(&mut app, KeyCode::Char(' '));
         key(&mut app, KeyCode::Char('*'));
 
-        assert_eq!(app.filters.search().unwrap().predicate.display(), "foo");
+        assert_eq!(search_text(&app), "foo");
         assert_eq!(cursor_source(&app), 1);
+        assert!(app.peek.is_some(), "* ended the peek");
+    }
+
+    /// A search while peeked finds its hits in the plain file the peek
+    /// shows, and `n` steps them there. Neither ends the peek: a search
+    /// never leaves the file, so there is nothing to put back first.
+    #[test]
+    fn slash_and_n_while_peeked_search_the_plain_file() {
+        let mut app = app_over_file("slash_peeked", "alpha\nbeta\ngamma\nbeta\n");
+        key(&mut app, KeyCode::Char('t'));
+        app.filters.add("alpha").expect("valid pattern");
+        app.refresh_view();
+        key(&mut app, KeyCode::Char('u'));
+        assert_eq!(app.document.visible(), &[0], "sanity: hiding");
+
+        key(&mut app, KeyCode::Char(' '));
+        key(&mut app, KeyCode::Char('/'));
+        typed(&mut app, "beta");
+        key(&mut app, KeyCode::Enter);
+        assert_eq!(cursor_source(&app), 1);
+        assert!(app.peek.is_some(), "/ ended the peek");
+
+        key(&mut app, KeyCode::Char('n'));
+        assert_eq!(cursor_source(&app), 3);
+        assert!(app.peek.is_some(), "n ended the peek");
     }
 
     /// `* p`: the whole "symbol to filter" flow without a selection (#67).
@@ -11431,10 +11989,7 @@ mod tests {
         key(&mut app, KeyCode::Char('*'));
         key(&mut app, KeyCode::Char('p'));
 
-        assert!(
-            app.filters.search().is_none(),
-            "p did not consume the search"
-        );
+        assert!(app.search.is_none(), "p did not consume the search");
         assert_eq!(app.filters.len(), 1);
         let numbered = widgets::filterlist::numbered(&app.filters);
         assert_eq!(
@@ -11455,7 +12010,7 @@ mod tests {
             KeyModifiers::SHIFT,
         )));
 
-        assert!(app.filters.search().is_some());
+        assert!(app.search.is_some());
     }
 
     #[test]
@@ -11465,7 +12020,7 @@ mod tests {
 
         key(&mut app, KeyCode::Char('*'));
 
-        assert!(app.filters.search().is_none());
+        assert!(app.search.is_none());
         assert_eq!(
             status(&app),
             Some("* searches the word under the cursor · t *")
@@ -11483,7 +12038,7 @@ mod tests {
 
         key(&mut app, KeyCode::Char('*'));
 
-        assert_eq!(app.filters.search().unwrap().predicate.display(), "foo");
+        assert_eq!(search_text(&app), "foo");
         assert_eq!(cursor_source(&app), 1);
         assert_eq!(app.focus, Focus::Filters);
     }
@@ -11634,7 +12189,7 @@ mod tests {
         key(&mut app, KeyCode::Char('t'));
         key(&mut app, KeyCode::Char('j'));
         key(&mut app, KeyCode::Char('j'));
-        app.filters.set_search("hit").expect("valid pattern");
+        app.filters.add("hit").expect("valid pattern");
         app.refresh_view();
         assert_eq!(
             cursor_source(&app),
@@ -11684,7 +12239,7 @@ mod tests {
         // does — the startup argument names a file that does not exist.
         key(&mut app, KeyCode::Down);
         focus_file_view(&mut app);
-        app.filters.set_search("HIT").expect("valid pattern");
+        app.filters.add("HIT").expect("valid pattern");
         app.refresh_view();
 
         key(&mut app, KeyCode::Char('n'));
@@ -11699,7 +12254,7 @@ mod tests {
     /// `apply_search` is documented as "set it, then do exactly what `n`
     /// does" — including the truncated-preview promotion above. This drives
     /// `/` through the real key path (unlike `n_promotes_a_truncated_preview_before_stepping`,
-    /// which sets the search directly via `filters.set_search` and so never
+    /// which adds a filter directly and so never
     /// exercises `apply_search` at all) against a preview truncated the same
     /// way, with the only hit past the boundary. If `apply_search` skips the
     /// promotion, the pattern is evaluated against the preview alone: there
@@ -11738,220 +12293,6 @@ mod tests {
             cursor_source(&app),
             hit_at,
             "/ did not reach a hit beyond the truncated preview"
-        );
-    }
-
-    /// End to end through the real key path: the pane's `d` on the search row
-    /// must remove the search and nothing else.
-    #[test]
-    fn deleting_the_search_row_leaves_the_numbered_filters_alone() {
-        let mut app = app_over_file("pane_del_search", "alpha\nbeta\n");
-        key(&mut app, KeyCode::Char('t'));
-        app.filters.add("alpha").expect("valid pattern");
-        key(&mut app, KeyCode::Char('/'));
-        typed(&mut app, "beta");
-        key(&mut app, KeyCode::Enter);
-
-        key(&mut app, KeyCode::Char('f'));
-        key(&mut app, KeyCode::Char('d'));
-
-        assert!(app.filters.search().is_none());
-        assert_eq!(
-            app.filters.len(),
-            1,
-            "a numbered filter was deleted instead"
-        );
-    }
-
-    /// `handle_filter_key` passes `row_count`, not `len`, as the bound `j`/`k`
-    /// clamp movement to. Passing `len` instead is a distinct bug from the
-    /// row-to-filter translation covered above — it under-counts how far the
-    /// selection is allowed to travel rather than mistranslating where it
-    /// lands — and needs two numbered filters plus a search to show up: with
-    /// only one numbered filter, `len` and `row_count - 1` land on the same
-    /// row by coincidence.
-    #[test]
-    fn j_below_the_search_row_can_still_reach_the_last_filter() {
-        let mut app = app_over_file("pane_move_search", "alpha\nbeta\n");
-        key(&mut app, KeyCode::Char('t'));
-        app.filters.add("alpha").expect("valid pattern");
-        app.filters.add("gamma").expect("valid pattern");
-        key(&mut app, KeyCode::Char('/'));
-        typed(&mut app, "beta");
-        key(&mut app, KeyCode::Enter);
-
-        key(&mut app, KeyCode::Char('f'));
-        key(&mut app, KeyCode::Char('j'));
-        key(&mut app, KeyCode::Char('j'));
-        key(&mut app, KeyCode::Enter);
-
-        assert!(
-            !app.filters.filters()[1].enabled,
-            "two downs from the search row should have reached the second filter"
-        );
-        assert!(
-            app.filters.filters()[0].enabled,
-            "the first filter was toggled instead of the second"
-        );
-    }
-
-    /// `FilterCommand::ToggleSearch`'s dispatch is untested elsewhere: unlike
-    /// `Toggle(index)`, which routes through the already-covered
-    /// `toggle_enabled`, nothing presses `space` on the search row through
-    /// the real key path. Both directions are asserted because a mutation
-    /// that always disables the search (rather than flipping it) passes the
-    /// first press — it starts enabled, and disabling is the right move —
-    /// and only fails on the second, when the correct behaviour is to
-    /// re-enable it.
-    #[test]
-    fn enter_on_the_search_row_toggles_search_enabled_both_ways() {
-        let mut app = app_over_file("pane_toggle_search", "alpha\nbeta\n");
-        key(&mut app, KeyCode::Char('t'));
-        app.filters.add("alpha").expect("valid pattern");
-        key(&mut app, KeyCode::Char('/'));
-        typed(&mut app, "beta");
-        key(&mut app, KeyCode::Enter);
-
-        key(&mut app, KeyCode::Char('f'));
-        key(&mut app, KeyCode::Enter);
-
-        assert!(
-            !app.filters.search().expect("search still set").enabled,
-            "space on the search row should have disabled it"
-        );
-
-        key(&mut app, KeyCode::Enter);
-
-        assert!(
-            app.filters.search().expect("search still set").enabled,
-            "a second space should have re-enabled the search"
-        );
-    }
-
-    /// `c` reaches the search row exactly as `space` and `d` do. Leaving it
-    /// inert there would make the key look broken on one row of a pane where
-    /// every other binding works on all of them.
-    ///
-    /// It commits through `apply_search` rather than `run_search`: the
-    /// search-row prompt can only be opened from the filter pane, so
-    /// dispatching on focus through `run_search` would be needless
-    /// indirection. `apply_search` is the direct call.
-    #[test]
-    fn c_on_the_search_row_edits_the_search() {
-        let mut app = app_over_file("pane_edit_search", "alpha\nbeta\ngamma\n");
-        key(&mut app, KeyCode::Char('t'));
-        app.filters.add("alpha").expect("valid pattern");
-        key(&mut app, KeyCode::Char('/'));
-        typed(&mut app, "beta");
-        key(&mut app, KeyCode::Enter);
-
-        key(&mut app, KeyCode::Char('f'));
-        key(&mut app, KeyCode::Char('c'));
-
-        let prompt = app.search.as_ref().expect("the prompt should be open");
-        assert_eq!(prompt.pattern, "beta");
-        assert_eq!(prompt.line(), "/beta", "the search row edits under `/`");
-
-        // Backspace first, so this covers editing the pre-filled text rather
-        // than only appending to it.
-        key(&mut app, KeyCode::Backspace);
-        typed(&mut app, "a2");
-        key(&mut app, KeyCode::Enter);
-
-        assert_eq!(
-            app.filters
-                .search()
-                .expect("the search should still be set")
-                .predicate
-                .display(),
-            "beta2"
-        );
-        assert_eq!(
-            app.filters.len(),
-            1,
-            "editing the search touched the numbered set"
-        );
-    }
-
-    /// An edit of the search row must not renumber anything: the search lives
-    /// in its own slot precisely so that setting it cannot shift the filters
-    /// a `Verdict::Included` indexes into.
-    #[test]
-    fn editing_the_search_does_not_promote_it_into_the_numbered_set() {
-        let mut app = app_over_file("pane_edit_search_slot", "alpha\nbeta\n");
-        key(&mut app, KeyCode::Char('t'));
-        app.filters.add("alpha").expect("valid pattern");
-        key(&mut app, KeyCode::Char('/'));
-        typed(&mut app, "beta");
-        key(&mut app, KeyCode::Enter);
-
-        key(&mut app, KeyCode::Char('f'));
-        key(&mut app, KeyCode::Char('c'));
-        typed(&mut app, "2");
-        key(&mut app, KeyCode::Enter);
-
-        assert_eq!(app.filters.len(), 1);
-        assert_eq!(
-            app.filters.verdict("alpha line", syntax::KindSet::EMPTY),
-            Verdict::Included(0)
-        );
-    }
-
-    /// `filter_pane_height` must count the search row too. Reverting it to
-    /// `self.filters.len()` gives a pane one row short whenever a search
-    /// exists alongside at least one filter, clipping the last row — a
-    /// numbered filter is required alongside the search because with zero
-    /// filters `preferred_height`'s `.max(1)` floor produces the same answer
-    /// either way, masking the bug.
-    #[test]
-    fn filter_pane_height_counts_the_search_row_too() {
-        let mut app = app_over_file("pane_height_search", "alpha\nbeta\n");
-        app.filters.add("alpha").expect("valid pattern");
-        app.filters.set_search("beta").expect("valid pattern");
-
-        let height = app.filter_pane_height();
-        let expected = app
-            .filters_pane
-            .preferred_height(widgets::filterlist::rows(&app.filters).len());
-
-        assert_eq!(
-            height, expected,
-            "filter_pane_height did not count the search row"
-        );
-    }
-
-    /// Both paths that clear the search — `Esc` and the pane's `d` on the
-    /// search row — funnel through `refresh_view`, which reclamps the
-    /// pane's selection to the new `row_count`. Nothing pinned that down: a
-    /// future path that cleared the search without going through
-    /// `refresh_view` would leave the selection pointing past the end of a
-    /// now-shorter list. Selecting row 1 — the numbered filter, the last row
-    /// while the search still occupies row 0 — before clearing makes that
-    /// observable: it is out of range the moment the search row disappears.
-    #[test]
-    fn clearing_the_search_leaves_the_selection_in_range() {
-        let mut app = app_over_file("pane_clear_search_selection", "alpha\nbeta\n");
-        key(&mut app, KeyCode::Char('t'));
-        app.filters.add("alpha").expect("valid pattern");
-        key(&mut app, KeyCode::Char('/'));
-        typed(&mut app, "beta");
-        key(&mut app, KeyCode::Enter);
-
-        key(&mut app, KeyCode::Char('f'));
-        key(&mut app, KeyCode::Char('j'));
-        assert_eq!(
-            app.filters_pane.selected(),
-            Some(1),
-            "setup: selection should be on the numbered filter's row"
-        );
-
-        key(&mut app, KeyCode::Esc);
-
-        assert!(app.filters.search().is_none(), "setup: search not cleared");
-        let rows = widgets::filterlist::rows(&app.filters).len();
-        assert!(
-            app.filters_pane.selected().is_some_and(|row| row < rows),
-            "selection was left pointing past the end after the search row disappeared"
         );
     }
 
@@ -12008,29 +12349,6 @@ mod tests {
         assert!(
             app.file_view_highlight().is_some(),
             "the highlight did not survive loading another file"
-        );
-    }
-
-    /// `!` promises one keystroke back to an unfiltered view. Yellow left glowing
-    /// on an inert view breaks that promise.
-    #[test]
-    fn disabling_everything_clears_the_span_highlight() {
-        let mut app = app_over_file("hl_bang", "alpha\nbeta\n");
-        key(&mut app, KeyCode::Char('t'));
-        key(&mut app, KeyCode::Char('/'));
-        typed(&mut app, "beta");
-        key(&mut app, KeyCode::Enter);
-
-        key(&mut app, KeyCode::Char('!'));
-        assert!(
-            app.file_view_highlight().is_none(),
-            "highlights outlived '!'"
-        );
-
-        key(&mut app, KeyCode::Char('!'));
-        assert!(
-            app.file_view_highlight().is_some(),
-            "the highlight did not come back"
         );
     }
 
@@ -12564,7 +12882,7 @@ mod tests {
     /// An open prompt outranks every binding, and an uppercase global is the
     /// one most likely to break that: `O` is an ordinary character to type into
     /// a search. The guard is the early return `handle_event` already makes for
-    /// `self.search`, so this pins the behaviour rather than adding to it.
+    /// `self.prompt`, so this pins the behaviour rather than adding to it.
     #[test]
     fn shift_o_typed_into_a_prompt_is_text_not_the_open_key() {
         let (mut app, _root) = app_over_project("shift_o_prompt", "alpha\n");
@@ -12579,13 +12897,9 @@ mod tests {
 
     // ---- `<space>`: peek at the plain file (#48) -------------------------
 
-    /// Every enabled flag, filters then search — the state a peek has to put
-    /// back untouched.
-    fn enabled_flags(app: &App) -> (Vec<bool>, Option<bool>) {
-        (
-            app.filters.filters().iter().map(|f| f.enabled).collect(),
-            app.filters.search().map(|search| search.enabled),
-        )
+    /// Every enabled flag — the state a peek has to put back untouched.
+    fn enabled_flags(app: &App) -> Vec<bool> {
+        app.filters.filters().iter().map(|f| f.enabled).collect()
     }
 
     /// A two-line file with one enabled filter on `beta`, hiding unmatched
@@ -12793,7 +13107,7 @@ mod tests {
         // The pattern itself, not the rendered row: the row carries the HIDE
         // badge here, and a trailing space does not survive rendering.
         assert_eq!(
-            app.search.as_ref().map(|prompt| prompt.pattern.as_str()),
+            app.prompt.as_ref().map(|prompt| prompt.pattern.as_str()),
             Some(" "),
             "the space did not reach the pattern"
         );
@@ -13853,7 +14167,7 @@ mod tests {
         );
 
         assert!(
-            matches!(&app.search, Some(prompt) if prompt.kind == PromptKind::Filter),
+            matches!(&app.prompt, Some(prompt) if prompt.kind == PromptKind::Filter),
             "an include prompt is open"
         );
         assert_eq!(app.focus, Focus::Filters);
@@ -13936,7 +14250,7 @@ mod tests {
 
         click_pane(&mut app, Focus::Nav, 2);
 
-        assert!(app.search.is_some(), "the prompt is still open");
+        assert!(app.prompt.is_some(), "the prompt is still open");
         assert_eq!(shown(&app), showing, "nothing was opened");
     }
 
@@ -14037,29 +14351,26 @@ mod tests {
     }
 
     /// `Esc` ends the selection, and — the reason it is layered above the
-    /// search arms — leaves the live search alone.
+    /// search arms — leaves the search alone.
     #[test]
-    fn esc_ends_the_selection_and_keeps_the_live_search() {
+    fn esc_ends_the_selection_and_keeps_the_search() {
         let (mut app, _) = app_for_yank("yank_esc", "alpha\nbeta\n");
         key(&mut app, KeyCode::Char('/'));
         typed(&mut app, "beta");
         key(&mut app, KeyCode::Enter);
-        assert!(app.filters.search().is_some(), "sanity: a search is live");
+        assert!(app.search.is_some(), "sanity: a search is set");
 
         key(&mut app, KeyCode::Char('v'));
         key(&mut app, KeyCode::Esc);
         assert!(app.visual.is_none(), "Esc did not end the selection");
         assert!(
-            app.filters.search().is_some(),
-            "Esc dropped the live search as well as the selection"
+            app.search.is_some(),
+            "Esc dropped the search as well as the selection"
         );
 
         // A second Esc, with no selection, reaches the search as before.
         key(&mut app, KeyCode::Esc);
-        assert!(
-            app.filters.search().is_none(),
-            "Esc no longer clears the search"
-        );
+        assert!(app.search.is_none(), "Esc no longer clears the search");
     }
 
     /// The rule the issue settles: a yank copies the lines that are on
