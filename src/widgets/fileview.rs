@@ -698,12 +698,24 @@ impl FileView<'_> {
         self.last_height.unwrap_or(ASSUMED_PANE_HEIGHT)
     }
 
-    /// Which row of the pane the cursor is currently drawn on.
+    /// Which row of the pane the cursor is drawn on — or will be, when a
+    /// landing or a restore is queued and the render that applies it has
+    /// not happened yet.
     ///
     /// Used to hold a line in place across a rebuild: `set_lines` resets the
     /// viewport, so without this the cursor re-anchors to the pane's last row
     /// and the view lurches whenever a filter changes.
+    ///
+    /// The queued row wins because the scroll it describes is the one the
+    /// next frame shows. Measuring against the *last* frame's scroll after
+    /// a jump reads the cursor as hundreds of rows below the pane, and a
+    /// window sized from that can leave the target row out of the buffer
+    /// — which is what a second jump in the same frame, as a search that
+    /// moves while it is typed makes, used to do.
     pub(crate) fn cursor_screen_row(&self) -> u16 {
+        if let Some(pending) = self.pending_screen_row {
+            return pending;
+        }
         let (top, _) = self.textarea.scroll_top();
         // The subtraction is a screen offset, so it fits `u16` for any pane a
         // terminal can actually draw. `try_from` rather than `as` because

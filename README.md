@@ -361,9 +361,9 @@ Global (`src/lib.rs`), handled before the focused pane sees the key:
 | `q` | Quit | `global.quit` |
 | `Q` | Quit without emitting — the same as `q` unless `--emit` was given | `global.quit.silent` |
 | `Tab` / `Shift-Tab` | Move focus to the next / previous of the three panes — navigator, file view, filter pane. All three are always on screen, so the cycle never skips one | `global.focus.next` / `global.focus.prev` |
-| `/` | In the navigator, search filenames. In the file view or the filter pane, set the search: the cursor moves to the first hit at or after the cursor line, wrapping once to the top and saying so, and the hits in the window are highlighted. Only the visible lines are searched, and none of them changes | `global.search` |
+| `/` | In the navigator, search filenames. In the file view or the filter pane, set the search: as you type, the cursor moves to the first hit at or after the line you started on, wrapping once to the top and saying so, and the hits in the window are highlighted. Each keystroke re-scans from where `/` opened, so a narrowed pattern never walks away from your line. Esc puts the cursor and the scroll back there; Enter keeps the position. Only the visible lines are searched, and none of them changes | `global.search` |
 | `p` | Promote the search into a numbered include filter and clear it; the filter's colour replaces the highlight | `global.search.promote` |
-| `Esc` | In the navigator with a filename search active, clear it; otherwise clear the search and its highlight. An open prompt takes this key first and just cancels the prompt | `global.escape` |
+| `Esc` | In the navigator with a filename search active, clear it; otherwise clear the search and its highlight. An open prompt takes this key first: in a search prompt it returns you to where `/` opened, with the search you had before, and in a filter prompt it just cancels | `global.escape` |
 | `e` | Focus the navigator, revealing the left column if `b` or `z` hid it | `global.focus.nav` |
 | `t` | Focus the file view | `global.focus.view` |
 | `f` | Focus the filter pane. `f i`, `f x` and `f c` are chains: the pair works from anywhere, and when the prompt commits, focus returns to where you were and the app steps as if you had pressed `n`. `f f` stays in the pane | `global.focus.filters` |
@@ -903,7 +903,7 @@ While a search or filter prompt is open it consumes every key, so `q` and
 | `Ctrl-w` | Delete the word before the cursor — a run of letters, digits and `_`, or a run of punctuation, plus any blanks between it and the cursor | `prompt.delete.word` |
 | `Ctrl-u` | Delete everything before the cursor | `prompt.delete.start` |
 | `Enter` | Run the search, or add the filter — or, for a prompt opened with `c`, overwrite the filter being edited | `prompt.commit` |
-| `Esc` | Cancel | `prompt.cancel` |
+| `Esc` | Cancel — a search prompt also returns the cursor and the scroll to where `/` opened | `prompt.cancel` |
 
 The cursor is the reversed cell on the prompt row; the terminal's own cursor
 stays hidden. The editing keys are vim's command-line set, with `Ctrl-a` and
