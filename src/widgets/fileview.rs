@@ -594,7 +594,7 @@ impl FileView<'_> {
 
     /// Set or clear the pattern whose spans the pane highlights black-on-yellow.
     ///
-    /// The search *filter* owns the pattern; this only controls whether it is
+    /// `App` owns the search; this only controls whether its hits are
     /// painted. Passing `None` clears the highlight — `set_search_pattern`
     /// treats an empty query as "no pattern", so nothing is compiled on that
     /// path. `load`/`preview` replace the textarea outright, dropping this
@@ -989,6 +989,15 @@ impl FileView<'_> {
     /// ask the view to go there.
     pub(crate) fn set_cursor_row(&mut self, row: usize) {
         self.textarea.set_cursor_position((row, 0));
+    }
+
+    /// Put the cursor on character column `col` of the row it is on, clamped
+    /// to the line by the textarea. Where a search lands within a hit line:
+    /// the first occurrence, which on a long line may be far off the left
+    /// edge.
+    pub(crate) fn set_cursor_col(&mut self, col: usize) {
+        let (row, _) = self.textarea.cursor();
+        self.textarea.set_cursor_position((row, col));
     }
 
     /// Not a `Result`: every arm is a cursor move or a local toggle, and none

@@ -425,17 +425,17 @@ pub const KEYMAP: &[Section] = &[
             },
             Binding {
                 keys: &["/"],
-                action: "Search — filenames, or file contents",
+                action: "Search — filenames, or the visible lines",
                 names: &["global.search"],
             },
             Binding {
                 keys: &["p"],
-                action: "Promote the live search into the filter set",
+                action: "Promote the search into a numbered include filter",
                 names: &["global.search.promote"],
             },
             Binding {
                 keys: &["Esc"],
-                action: "Clear the pane's search, else the live search",
+                action: "Clear the pane's search, else the file search",
                 names: &["global.escape"],
             },
             Binding {
@@ -603,12 +603,12 @@ pub const KEYMAP: &[Section] = &[
             },
             Binding {
                 keys: &["n", "N"],
-                action: "Next / previous hit, or matching file in the navigator",
+                action: "Next / previous hit, else interesting line; nav: file",
                 names: &["hit.next", "hit.prev", "nav.hit.next", "nav.hit.prev"],
             },
             Binding {
                 keys: &["Enter"],
-                action: "Open entry; toggle filter, set or search; not the view",
+                action: "Open entry; toggle filter or set; not the view",
                 names: &["nav.open", "filters.toggle"],
             },
         ],

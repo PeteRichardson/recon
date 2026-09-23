@@ -59,16 +59,17 @@ motions throughout.
   filter, so the layout never shifts under you as the set grows and shrinks.
 - **Dim or hide, on one keystroke** — `u` toggles unmatched lines between
   dimmed-but-present and removed. Toggling back returns you to the exact line
-  you were on. Dimming marks unmatched lines whenever a numbered *including*
-  filter is enabled; a search on its own doesn't grey the file, since its
-  hits already carry a highlight — but `u` still collapses to them.
-- **Search is just a filter** — `/` defines one in a keystroke, `Esc` throws it
-  away, and `p` keeps it: it joins the numbered set with its own colour and
-  frees `/` for the next probe, so a filter set gets built by trying patterns
-  rather than by retyping them. In between it behaves like any other filter —
-  it survives loading another file, answers to `!`, loses to an exclude, and
-  feeds `u`. `n` and `N` step between *interesting* lines, whether the
-  filters or the search made them so.
+  you were on. Dimming marks unmatched lines whenever an *including* filter
+  is enabled.
+- **A search is a motion, not a filter** — `/` finds a pattern among the
+  visible lines, the way `/` works in a vim buffer: the cursor moves to the
+  first hit from the line you are on, the hits in the window are
+  highlighted, and `n`/`N` step between hit lines. A search never changes
+  which lines are visible — in hide mode it finds nothing among the lines
+  the filters removed — and does not dim, mark files in the navigator, or
+  answer to `!` or `u`. `Esc` clears it; `p` promotes it into the numbered
+  set with its own colour, so a filter set gets built by trying patterns
+  rather than by retyping them.
 - **Line numbers stay honest** — the gutter shows original file line numbers
   even while filtered, so gaps in the numbering mark what was hidden. While
   hiding, the last number of each run of consecutive lines is underlined, so
@@ -360,16 +361,16 @@ Global (`src/lib.rs`), handled before the focused pane sees the key:
 | `q` | Quit | `global.quit` |
 | `Q` | Quit without emitting — the same as `q` unless `--emit` was given | `global.quit.silent` |
 | `Tab` / `Shift-Tab` | Move focus to the next / previous of the three panes — navigator, file view, filter pane. All three are always on screen, so the cycle never skips one | `global.focus.next` / `global.focus.prev` |
-| `/` | In the navigator, search filenames. In the file view or the filter pane, set a live search — a filter of its own, which moves you to its next hit from the cursor exactly as `n` would | `global.search` |
-| `p` | Promote the live search into the numbered filter set, freeing `/` for the next one | `global.search.promote` |
-| `Esc` | In the navigator with a filename search active, clear it; otherwise clear the live search. An open prompt takes this key first and just cancels the prompt | `global.escape` |
+| `/` | In the navigator, search filenames. In the file view or the filter pane, set the search: the cursor moves to the first hit at or after the cursor line, wrapping once to the top and saying so, and the hits in the window are highlighted. Only the visible lines are searched, and none of them changes | `global.search` |
+| `p` | Promote the search into a numbered include filter and clear it; the filter's colour replaces the highlight | `global.search.promote` |
+| `Esc` | In the navigator with a filename search active, clear it; otherwise clear the search and its highlight. An open prompt takes this key first and just cancels the prompt | `global.escape` |
 | `e` | Focus the navigator, revealing the left column if `b` or `z` hid it | `global.focus.nav` |
 | `t` | Focus the file view | `global.focus.view` |
 | `f` | Focus the filter pane. `f i`, `f x` and `f c` are chains: the pair works from anywhere, and when the prompt commits, focus returns to where you were and the app steps as if you had pressed `n`. `f f` stays in the pane | `global.focus.filters` |
 | `space` | **Peek at the plain file** — drop every filter and flip the hide mode, so the code reads normally. Press again to put the filtered view back exactly as it was. See [Peeking at the plain file](#peeking-at-the-plain-file) | `global.peek` |
 | `.` / `,` | Skip to the next / previous file the filters match, landing on its first / last interesting line. Works from every pane; focus stays put. The keycaps say `>` and `<` | `global.file.next` / `global.file.prev` |
 | `[` / `]` | Page the file view up / down, whichever pane has focus — so a peeked file can be skimmed from the navigator | `global.page.up` / `global.page.down` |
-| `1` – `9` | Toggle the filter the pane numbers `1` to `9`, from any pane. Built-in filters, set headers and the search row have no number; `Enter` in the filter pane toggles those | `global.filters.toggle` |
+| `1` – `9` | Toggle the filter the pane numbers `1` to `9`, from any pane. Built-in filters and set headers have no number; `Enter` in the filter pane toggles those | `global.filters.toggle` |
 | `u` / `Ctrl-H` / `H` | Toggle between dimming unmatched lines and hiding them — `u` for **u**nmatched; the other two are aliases for terminals and habits that already use them | `global.toggle.hide` |
 | `!` | Disable every filter, remembering which were on; restores exactly that (or enables all, if none were on to remember) | `global.filters.disable` |
 | `&` | Combine the enabled include filters with **AND** instead of OR — a line must match every one of them. Press again for OR. See [Combining filters with AND](#combining-filters-with-and) | `global.filters.and` |
@@ -417,8 +418,8 @@ exists:
 | `g` / `G`, `Home` / `End` | first / last entry | top / bottom of the file | first / last row | `nav.goto.start` / `nav.goto.end` / `view.goto.start` / `view.goto.end` / `filters.goto.start` / `filters.goto.end` |
 | `Ctrl-d` / `Ctrl-u` | half a page | scroll half a page | half a page | `nav.halfpage.down` / `nav.halfpage.up` / `view.halfpage.down` / `view.halfpage.up` / `filters.halfpage.down` / `filters.halfpage.up` |
 | `PageDown` / `PageUp` | a page | scroll a page (also `Ctrl-f` / `Ctrl-b`) | a page | `nav.page.down` / `nav.page.up` / `view.page.down` / `view.page.up` / `filters.page.down` / `filters.page.up` |
-| `n` / `N` | next / previous filename-search match, or file the filters match | next / previous interesting line, crossing files | acts on the file view | `hit.next` / `hit.prev` / `nav.hit.next` / `nav.hit.prev` |
-| `Enter` | open the entry — a file also takes the focus | — | toggle the filter, the set, or the live search | `nav.open` / `filters.toggle` |
+| `n` / `N` | next / previous filename-search match, or file the filters match | with a search set, next / previous hit line, wrapping within the file; otherwise next / previous interesting line, crossing files | acts on the file view | `hit.next` / `hit.prev` / `nav.hit.next` / `nav.hit.prev` |
+| `Enter` | open the entry — a file also takes the focus | — | toggle the filter or the set | `nav.open` / `filters.toggle` |
 
 `[` and `]` page the file view from every pane and so live in the Global table.
 
@@ -427,8 +428,7 @@ it, and focuses the pane it lands in — which is why a click on a file in the
 navigator, unlike `Enter`, leaves the focus there. In the navigator, one click
 on a file opens it and one click on a directory looks inside it; a second click
 on the same directory (or on `..`) enters it, the way `Enter` does. In the
-filter pane a click toggles the filter, the set header, or the live search on
-that row. In the file view, a click on a row of a directory's look-ahead
+filter pane a click toggles the filter or the set header on that row. In the file view, a click on a row of a directory's look-ahead
 listing takes the navigator into that directory and opens the entry clicked —
 one click instead of `l`, a cursor motion and `Enter`. A click on a *file's*
 text puts the cursor on the character under the pointer; dragging from there
@@ -636,7 +636,6 @@ while the set is enabled, and a bare `[ ]` row while it is not:
 
 ```
 Filters
- /[x] inc ETIMEDOUT              ← live search, as today
  1[x] inc ERROR                  ← scratch, no header
  2[ ] exc DEBUG
 [x] WiFi_debug *                 ← a set with profiles
@@ -763,9 +762,9 @@ actual appearance your terminal theme decides, and recon cannot promise
 contrast between two colours it doesn't choose. The first six are at least
 150 apart in RGB from each other; the rest are at least 90 apart from every
 other entry, which is less distinct than the first six and far better than
-wrapping to a repeat. Every entry also keeps its distance from black, from the
-search highlight's white, and from the grey of dimmed lines, so no filter is
-ever mistaken for one of those.
+wrapping to a repeat. Every entry also keeps its distance from black, from
+white, and from the grey of dimmed lines, so no filter is ever mistaken for
+plain text or a dimmed line.
 
 **Light backgrounds.** That list is chosen for a dark terminal; on white,
 gold and cyan all but vanish, and the grey dimmed lines wear is near-black.
@@ -812,18 +811,13 @@ repeating. Four colours means the fifth filter reuses the first. Omit the key
 to keep recon's own; `palette = []` is refused at startup, and so is a value
 that isn't a colour — both errors name the file and the line.
 
-The live search's colour is deliberately outside the palette — see below.
-
-The live search set by `/` is one of these filters, not a separate mode: it
-takes its own colour, answers to `!`, and loses to an exclude the same as any
-numbered one. It differs in one place — dimming. A numbered *including*
-filter dims the rest of the file the moment it's enabled; a search on its own
-doesn't, because its hits already carry a highlight of their own and greying
-the file around them would only cost the context the search was run to see.
-
-`u` makes no such exception: it collapses to a search's matches exactly
-as it would to a filter's. `Esc` drops the search; `p` keeps it, moving it
-into the numbered set and freeing `/` for the next one.
+The search set by `/` takes no colour from the palette, because it colours
+no line: a search is a motion, not a filter. Only the hit text is painted,
+black on yellow, on top of syntax colour, and the line keeps whatever the
+filters gave it — its filter colour, dim grey, or nothing. A search dims
+nothing, and `u` has nothing to collapse to until `p` promotes the pattern
+into the numbered set, where it takes the next palette colour like any
+filter typed with `i`.
 
 Excluding filters (`x`) are different: their matches are removed from view
 outright, in both modes.
@@ -865,8 +859,8 @@ What the mode does and does not touch:
 - Excluding filters (`x`) are unchanged. They remove lines in both modes.
 - Context filters (`m`) are not terms. A line a context filter matches is still
   shown; that sense promises "also show these" and keeps its promise.
-- The live search (`/`) is not a term either. A probe never narrows the set it
-  is probing; `p` promotes it into one.
+- The search (`/`) is not a term either: it is a motion over the visible
+  lines, not a filter. `p` promotes it into one.
 - The navigator follows the same rule: a file is marked when one of its lines
   matches every enabled including filter, in that first filter's colour. The
   cached scan re-answers the folder with no I/O, as any toggle does.
@@ -939,18 +933,18 @@ File view pane (`src/widgets/fileview.rs`) — its own verbs; the shared motions
 | `$` | Move to the end of the line | `view.line.end` |
 | `{` / `}` | Move by paragraph, back / forward | `view.paragraph.prev` / `view.paragraph.next` |
 | `#` | Toggle the line-number gutter | `view.toggle.linenumbers` |
-| `*` | Set the live search to the word under the cursor — a run of letters, digits and `_`, so a mangled symbol stays whole — and move to its next occurrence. `* p` makes it a numbered filter | `global.search.word` |
+| `*` | Set the search to the word under the cursor — a run of letters, digits and `_`, so a mangled symbol stays whole — and move to its next hit, as `n` would. `* p` makes it a numbered filter | `global.search.word` |
 | `v` / `V` | Start a selection by character / by whole lines; press the same key again to end it, or the other to switch between them. The motions grow it | `global.visual.char` / `global.visual.line` |
 | `y` | Copy the selection to the clipboard and end the selection. `Ctrl-y` still scrolls | `global.yank` |
-| `Esc` | End the selection. With none, this is the global `Esc` and clears the searches instead | `global.escape` |
+| `Esc` | End the selection. With none, this is the global `Esc` and clears the search instead | `global.escape` |
 | `Ctrl-e` / `Ctrl-y` | Scroll one line down / up | `view.scroll.down` / `view.scroll.up` |
 | `Ctrl-f` / `Ctrl-b` | Page down / up — aliases for `PageDown` / `PageUp` | `view.page.down` / `view.page.up` |
 
 `*` is the two-key version of "where else does this symbol appear?": the word
 under the cursor — letters, digits and `_`, so a mangled `_ZN…E` stays whole
-and `foo::bar` stops at the colons — becomes the live search, literally, and
-the cursor moves to its next occurrence exactly as `/` would. `* p` then keeps
-it as a numbered filter. There is no backward twin: `#` is the gutter, and `N`
+and `foo::bar` stops at the colons — becomes the search, literally, and the
+cursor moves to its next hit exactly as `n` would. `* p` then keeps it as a
+numbered filter. There is no backward twin: `#` is the gutter, and `N`
 covers the direction. The prompt it fills is single-line: a pasted line feed
 is not typed into it, and a pasted carriage return commits it, exactly as
 `Enter` does.
@@ -961,11 +955,14 @@ view is exactly when you need `e`. `w` still moves forward by word.
 
 `n` and `N` are handled globally, the same as `u`, so — like that key — they
 act on the file view from the filter pane as well; the navigator keeps its
-own `n`/`N`, described in the Shared motions table above. An *interesting* line here is
-one an enabled including filter or the live search matches; stepping treats a
-line with several hits as a single stop, not one per hit, and wraps at the
-ends of the file only as the fallback taken when no other file the filters
-match exists.
+own `n`/`N`, described in the Shared motions table above. While a search is
+set, they step between its *hit* lines — the visible lines the pattern
+matches — one stop per line however many times it matches, wrapping within
+the file and saying so, and reporting `no hit for /pattern` without moving
+when the file has none. With no search set, they step between *interesting*
+lines, the ones an enabled including filter matches, and wrap at the ends of
+the file only as the fallback taken when no other file the filters match
+exists.
 
 `n` crosses file boundaries because recon's central workflow is a loop over
 every interesting line in every interesting file, and running it as two loops
@@ -1142,7 +1139,7 @@ mark files, so the two panes agree on what "interesting" means. Where an include
 a context filter both match a line, the include filter's colour wins, which is again the
 navigator's colour for the file.
 
-With at least one include filter (or a live search) enabled, the navigator marks
+With at least one include filter enabled, the navigator marks
 each file: a name drawn in a filter's colour has at least one line that filter
 selected; a dimmed name has none; a plain name has not been scanned yet. In hide
 mode (`u`), non-matching files leave the listing the way non-matching lines
@@ -1180,7 +1177,7 @@ behind Shift (`H`) or behind a key many terminals deliver as Backspace (`Ctrl-H`
 and recon has no undo, so no habit collides. The two old keys stay as aliases. The
 list motions (`g`/`G`, `Ctrl-d`/`Ctrl-u`, `PageUp`/`PageDown`) are the same in every
 list pane for the same reason `n` is: a key with one meaning is one you stop
-thinking about. `Esc` clears the focused pane's own search before the live one, so a
+thinking about. `Esc` clears the focused pane's own search before the file search, so a
 navigator search you thought you had dismissed cannot keep driving `n`. And the
 digits toggle the filter the pane numbers, from anywhere, because switching a filter
 off to see what it was hiding is a loop action, not a setup one.
@@ -1222,17 +1219,11 @@ lurching. Deleting the last filter returns the pane to its `press f i to add`
 row and leaves focus where it was — the pane is still on screen, so there is
 nothing to move focus off.
 
-A live search draws as one more row, at the top, marked `/` instead of a
-number — it has none, because it does not occupy a slot in the numbered set.
-`Enter`, `d` and `c` reach it exactly as they reach a numbered filter: `Enter`
-toggles the flag that also drives its highlight in the file view, `d` clears
-it, same as `Esc`, and `c` reopens it under `/` for editing. `p` is what moves
-it into the numbered set proper.
-
-Committing an edit of the search row behaves exactly as retyping `/` does,
-including moving to the first hit and switching the search back on if it had
-been toggled off — it is the same operation, reached from the pane instead of
-from a keystroke.
+The search has no row here: it is a motion, not a filter, and the pane lists
+only filters. While a search is set, the status row shows its pattern as
+`/pattern`, beside the `HIDE` and `AND` badges, so you can see what `n` will
+step by. `p` is what moves the pattern into the numbered set, where it gets a
+row like any other filter.
 
 The pane never widens the left column to fit its hint: the column is sized by
 the navigator's longest entry. The hint gives way instead, which is why it has
@@ -1292,8 +1283,8 @@ unfiltered file, so the badge lights up over a file where nothing is hidden.
 That is not a contradiction, because hide mode does not mean "hide every
 unmatched line". It means:
 
-> if something is including — a filter or the search — hide unmatched lines; if
-> nothing is, show everything.
+> if an including filter is enabled, hide unmatched lines; if none is, show
+> everything.
 
 So it is a standing preference, armed or not, rather than a description of what
 is currently on screen. `space` turns every filter off, which leaves hiding
@@ -1318,7 +1309,7 @@ dir="$(recon --emit cwd)" && cd "$dir"           # where you ended up
 
 | `--emit` | Prints, on `q` | Summary on stderr |
 | --- | --- | --- |
-| `lines` | the file view's visible lines, verbatim, in the current mode | `recon: emitted 812 lines of app.log, dim mode (27 match) — Ctrl-H to emit matches only` |
+| `lines` | the file view's visible lines, verbatim, in the current mode — what the filters chose; a search does not affect it | `recon: emitted 812 lines of app.log, dim mode (27 match) — Ctrl-H to emit matches only` |
 | `files` | the navigator's listed files, one absolute path per line, in navigator order | `recon: emitted 14 files from /var/log, dim mode (3 match, 2 unscanned) — Ctrl-H to emit matches only` |
 | `cwd` | the directory the navigator is showing | `recon: emitted /var/log` |
 
@@ -1420,7 +1411,7 @@ continues and exits **2**, grep's convention for an input that failed. Exit 0
 otherwise, empty output included; exit 1 for a refused flag or an unreadable
 `filters.toml`.
 
-Not in the first version: ad-hoc patterns (`-i PATTERN`) and a live search —
+Not in the first version: ad-hoc patterns (`-i PATTERN`) and a search —
 `grep` covers the one-off case, and saved sets are what headless is for.
 
 ## Opening an editor
@@ -1694,8 +1685,8 @@ needs every line's answer at once — see *Definition filters*.
 ## Known Limitations
 
 - **The navigator's file matching covers at most 64 patterns**, counted across
-  every loaded set whether or not it is enabled, plus the live search — and the
-  built-in `definitions` set's eleven are among them, so fifty-three are yours. Above
+  every loaded set whether or not it is enabled — and the built-in
+  `definitions` set's eleven are among them, so fifty-three are yours. Above
   that the navigator's marking switches off — never wrong, just absent — while
   the view keeps filtering. A `filters.toml` with many sets can reach this.
 - **Files are read entirely into memory — once, not twice.** `read_lines` in
@@ -1741,10 +1732,10 @@ needs every line's answer at once — see *Definition filters*.
 - **Nothing is persisted.** Filter sets live only for the session — there is no
   way to save or reload a filter set. Re-typing them is the only option after a
   restart.   This is github issue #8
-- `n` and `N` are line-oriented: a line matching the search three times is one
-  stop, not three. `recon` is a line-focused tool, and one rule for filter hits
-  and search hits alike beats two.
-- Only the live search highlights the matched text within a line. Numbered
+- `n` and `N` are line-oriented: a line the search matches three times is one
+  hit and one stop, not three. `recon` is a line-focused tool, and one rule
+  for hit lines and interesting lines alike beats two.
+- Only the search highlights the matched text within a line. Numbered
   filters colour the whole line — the vendored `TextArea` holds one search
   pattern, so extending spans to every filter needs more work in the fork.
 - **Bundled themes other than `ansi` and `base16` emit 24-bit colour.** recon

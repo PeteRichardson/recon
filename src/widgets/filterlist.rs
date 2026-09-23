@@ -4,14 +4,14 @@
 //! the set, and a copy here could go stale the moment a filter changed.
 //!
 //! Since #129 the pane has two levels. [`rows`] is the one description of
-//! what is on screen — the live search's row, the scratch set's filters with
-//! no header of their own, then each named set as a header row with its
+//! what is on screen — the scratch set's filters with no header of their
+//! own, then each named set as a header row with its
 //! filters beneath it while it is enabled. Labels, styles, keys and height all
 //! derive from that list, so they cannot disagree about what a row is.
 
 use super::FilterCommand;
 use super::listmotion::ListMotion;
-use crate::filter::{ActiveFilters, SEARCH_STYLE, Sense};
+use crate::filter::{ActiveFilters, Sense};
 #[cfg(test)]
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::prelude::{Buffer, Color, Modifier, Rect, Style};
@@ -52,15 +52,12 @@ const INDENT: &str = "  ";
 /// One row of the pane.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Row {
-    /// The `press f i to add` hint, shown while the user has typed no filter
-    /// and no search. A row rather than a substitute for the whole list
+    /// The `press f i to add` hint, shown while the user has typed no filter.
+    /// A row rather than a substitute for the whole list
     /// (#127): the pane is never empty now that a built-in set is always
     /// present, and the hint has to sit above that set's header. Inert to
     /// every key.
     Hint,
-    /// The live search, marked `/` rather than numbered: it occupies no
-    /// position in the known list, so `/` and `Esc` never renumber filters.
-    Search,
     /// A named set's header, by set index. Never 0: the scratch set draws no
     /// header, which is what keeps a user with no `filters.toml` looking at
     /// exactly the pane they had before sets existed.
@@ -72,8 +69,8 @@ pub(crate) enum Row {
     BuiltIn(usize),
 }
 
-/// The pane, top to bottom: the search row if there is one; the scratch
-/// set's filters; then, for each named set in pane order, a header and —
+/// The pane, top to bottom: the scratch set's filters; then, for each
+/// named set in pane order, a header and —
 /// only while the set is enabled — its filters.
 ///
 /// A disabled set is one `[ ]` row and an enabled set whose filters are all
@@ -83,9 +80,6 @@ pub(crate) fn rows(filters: &ActiveFilters) -> Vec<Row> {
     let mut out = Vec::new();
     if filters.row_count() == 0 && filters.soloed().is_none() {
         out.push(Row::Hint);
-    }
-    if filters.search().is_some() {
-        out.push(Row::Search);
     }
     // While soloed the pane is the soloed set alone: the scratch rows and
     // every other header are absent until `s` restores them. That is what
@@ -196,8 +190,8 @@ impl FilterList {
     /// addresses.
     ///
     /// The same action means something different depending on the row it
-    /// lands on — `FiltersDelete` is `Delete` on a filter, `DeleteSearch` on
-    /// the search row, and read-only on a built-in or a header — so the verb
+    /// lands on — `FiltersDelete` is `Delete` on a filter and read-only on a
+    /// built-in or a header — so the verb
     /// half of this match is on `(action, row)`, not `action` alone. The
     /// motion arms sit above the row lookup and run with no selection at
     /// all; the verb arms sit below it, since a verb with nothing selected
@@ -267,13 +261,10 @@ impl FilterList {
             // there rather than here because only `App` knows a prompt closed.
             (A::FiltersToggle, row) => Self::toggle_command(row),
             (A::FiltersDelete, Row::Filter(index)) => Some(FilterCommand::Delete(index)),
-            (A::FiltersDelete, Row::Search) => Some(FilterCommand::DeleteSearch),
             // `c` for change, as in vim.
             (A::FiltersEdit, Row::Filter(index)) => Some(FilterCommand::Edit(index)),
-            (A::FiltersEdit, Row::Search) => Some(FilterCommand::EditSearch),
             // `m` as in *metadata*: the filter keeps showing its lines but
-            // stops choosing files in the navigator (#119). The search has no
-            // context form.
+            // stops choosing files in the navigator (#119).
             (A::FiltersContext, Row::Filter(index) | Row::BuiltIn(index)) => {
                 Some(FilterCommand::ToggleContext(index))
             }
@@ -305,7 +296,6 @@ impl FilterList {
     fn toggle_command(row: Row) -> Option<FilterCommand> {
         match row {
             Row::Filter(index) | Row::BuiltIn(index) => Some(FilterCommand::Toggle(index)),
-            Row::Search => Some(FilterCommand::ToggleSearch),
             Row::Header(set) => Some(FilterCommand::ToggleSet(set)),
             Row::Hint => None,
         }
@@ -396,16 +386,6 @@ impl FilterList {
         match row {
             // The longest form; `render` swaps in the one that fits.
             Row::Hint => EMPTY_HINTS[0].to_string(),
-            Row::Search => {
-                let search = filters
-                    .search()
-                    .expect("Row::Search only when a search exists");
-                format!(
-                    "/[{}] inc {}",
-                    mark(search.enabled),
-                    search.predicate.display()
-                )
-            }
             Row::Header(set) => {
                 let meta = &filters.sets()[set];
                 let star = if meta.profiles.is_empty() { "" } else { " *" };
@@ -432,8 +412,7 @@ impl FilterList {
     /// How one row is painted.
     ///
     /// An including filter wears its own colour, so the pane and the file
-    /// view agree at a glance; the search is always `Sense::Include` and
-    /// takes `SEARCH_STYLE` the same way. Disabled rows and disabled
+    /// view agree at a glance. Disabled rows and disabled
     /// headers take `DIM_STYLE` — the file view's precedent for dimming:
     /// `Modifier::DIM` alone is silently ignored by many terminals, so an
     /// explicit grey foreground is what actually shows the difference, and
@@ -444,10 +423,6 @@ impl FilterList {
         let dim = filters.dim_style();
         match row {
             Row::Hint => dim,
-            Row::Search => match filters.search() {
-                Some(search) if search.enabled => SEARCH_STYLE,
-                _ => dim,
-            },
             Row::Header(set) if filters.sets()[set].enabled => Style::default(),
             Row::Header(_) => dim,
             Row::Filter(index) | Row::BuiltIn(index) => {
@@ -731,48 +706,13 @@ mod tests {
         );
     }
 
-    /// No other test in this file draws the pane with a search present:
-    /// `rendered`'s callers never set one, and the `lib.rs` tests that set a
-    /// search never draw. `resolve_row` is the single source of truth that
-    /// `row_text` and `render`'s styling both read the row-to-filter mapping
-    /// from (see its doc comment), which is what keeps them from drifting
-    /// apart the way two separate copies of the same mapping could. Pinning
-    /// the search row and a numbered filter row to their own distinct
-    /// styles in the same render is the regression test for that: a future
-    /// change that broke the mapping would show up here as a colour
-    /// mismatch.
+    /// `preferred_width` must size the column from every row. Putting the
+    /// longer pattern on the *last* filter, rather than the first, means a
+    /// loop bound that drops the last row is not masked by some other row
+    /// happening to already be the longest.
     #[test]
-    fn the_search_row_and_a_filter_row_are_each_styled_correctly() {
-        let mut filters = set_of(&["ERROR"], &[]);
-        filters.set_search("timeout").expect("valid pattern");
-        filters.search_set_enabled(false);
-        let mut list = FilterList::default();
-        let area = Rect::new(0, 0, 30, 8);
-        let mut buf = Buffer::empty(area);
-
-        list.render(&filters, area, &mut buf);
-
-        assert!(
-            (0..area.width).any(|x| buf[(x, 1)].style().fg == DIM_STYLE.fg),
-            "the disabled search row (row 0) should use the dim style"
-        );
-        let expected = filters.filters()[0].style.fg;
-        assert!(
-            (0..area.width).any(|x| buf[(x, 2)].style().fg == expected),
-            "the numbered filter's own colour is not shown on its row"
-        );
-    }
-
-    /// `preferred_width` must size the column from every row, search
-    /// included. Reverting its loop bound from `row_count()` to `len()`
-    /// silently drops the last row from consideration; putting the longer
-    /// pattern on the *last* filter, rather than the first or the search,
-    /// means that drop is not masked by some other row happening to already
-    /// be the longest.
-    #[test]
-    fn preferred_width_accounts_for_every_row_including_the_last_when_a_search_exists() {
-        let mut filters = set_of(&["a", "a pattern much longer than the rest"], &[]);
-        filters.set_search("x").expect("valid pattern");
+    fn preferred_width_accounts_for_every_row_including_the_last() {
+        let filters = set_of(&["a", "a pattern much longer than the rest"], &[]);
         let list = FilterList::default();
 
         let width = list.preferred_width(&filters) as usize;
@@ -968,48 +908,11 @@ mod tests {
     }
 
     #[test]
-    fn the_search_row_is_drawn_first_and_carries_a_slash() {
-        let mut set = ActiveFilters::new();
-        set.add("ERROR").expect("valid pattern");
-        set.set_search("timeout").expect("valid pattern");
-
-        assert_eq!(text_at(&set, 0), "/[x] inc timeout");
-        assert_eq!(text_at(&set, 1), "1[x] inc ERROR");
-    }
-
-    #[test]
-    fn without_a_search_the_numbered_filters_start_at_row_zero() {
+    fn the_numbered_filters_start_at_row_zero() {
         let mut set = ActiveFilters::new();
         set.add("ERROR").expect("valid pattern");
 
         assert_eq!(text_at(&set, 0), "1[x] inc ERROR");
-    }
-
-    /// The offset is the whole risk in this task: `Enter` on row 1 must toggle
-    /// filter 0, not filter 1.
-    #[test]
-    fn enter_below_the_search_row_toggles_the_right_filter() {
-        let mut set = ActiveFilters::new();
-        set.add("ERROR").expect("valid pattern");
-        set.set_search("timeout").expect("valid pattern");
-        let mut list = FilterList::default();
-        list.select(1);
-
-        let command = list.handle_key(KeyEvent::from(KeyCode::Enter), &rows(&set));
-
-        assert_eq!(command, Some(FilterCommand::Toggle(0)));
-    }
-
-    #[test]
-    fn enter_on_the_search_row_toggles_the_search() {
-        let mut set = ActiveFilters::new();
-        set.set_search("timeout").expect("valid pattern");
-        let mut list = FilterList::default();
-        list.select(0);
-
-        let command = list.handle_key(KeyEvent::from(KeyCode::Enter), &rows(&set));
-
-        assert_eq!(command, Some(FilterCommand::ToggleSearch));
     }
 
     /// `space` gave this pane up in #48: it became the global peek, and a
@@ -1030,18 +933,16 @@ mod tests {
 
     /// Cross-checks `handle_key`'s row-to-filter translation against
     /// `resolve_row`'s, the two callers `filter_index_for_row` unifies. Before
-    /// that extraction each kept its own copy of the `(has_search, row)`
-    /// match, so a future edit to one without the other — the issue #8
-    /// scenario in the review that prompted this test — would toggle or
-    /// delete a different filter than the row on screen names. Checks every
-    /// row over a set with both numbered filters and a search, so both the
-    /// search row and the off-by-one shift below it are covered.
+    /// that extraction each kept its own copy of the row match, so a future
+    /// edit to one without the other — the issue #8 scenario in the review
+    /// that prompted this test — would toggle or delete a different filter
+    /// than the row on screen names. Checks every row over a set with
+    /// numbered filters and a set header.
     #[test]
     fn handle_key_and_the_labels_agree_on_which_filter_a_row_addresses() {
         let mut set = ActiveFilters::new();
         set.add("alpha").expect("valid pattern");
         set.add("beta").expect("valid pattern");
-        set.set_search("gamma").expect("valid pattern");
         let mut list = FilterList::default();
         let rows = rows(&set);
 
@@ -1051,9 +952,6 @@ mod tests {
                 .handle_key(KeyEvent::from(KeyCode::Enter), &rows)
                 .unwrap_or_else(|| panic!("row {row}: no command"));
             match command {
-                FilterCommand::ToggleSearch => {
-                    assert!(text.starts_with('/'), "row {row}: {text:?}");
-                }
                 FilterCommand::Toggle(index) => assert!(
                     text.starts_with(&(index + 1).to_string()),
                     "row {row}: handle_key resolved filter {index}, the label is {text:?}"
@@ -1064,42 +962,6 @@ mod tests {
                 other => panic!("row {row}: unexpected command {other:?}"),
             }
         }
-    }
-
-    #[test]
-    fn d_on_the_search_row_deletes_the_search() {
-        let mut list = FilterList::default();
-        list.select(0);
-
-        let command = list.handle_key(KeyEvent::from(KeyCode::Char('d')), &[Row::Search]);
-
-        assert_eq!(command, Some(FilterCommand::DeleteSearch));
-    }
-
-    /// `c` uses the same row-to-filter translation `space` and `d` do, so it
-    /// inherits the off-by-one below the search row — and must be pinned
-    /// against it the same way.
-    #[test]
-    fn c_below_the_search_row_edits_the_right_filter() {
-        let mut list = FilterList::default();
-        list.select(1);
-
-        let command = list.handle_key(
-            KeyEvent::from(KeyCode::Char('c')),
-            &[Row::Search, Row::Filter(0)],
-        );
-
-        assert_eq!(command, Some(FilterCommand::Edit(0)));
-    }
-
-    #[test]
-    fn c_on_the_search_row_edits_the_search() {
-        let mut list = FilterList::default();
-        list.select(0);
-
-        let command = list.handle_key(KeyEvent::from(KeyCode::Char('c')), &[Row::Search]);
-
-        assert_eq!(command, Some(FilterCommand::EditSearch));
     }
 
     #[test]
@@ -1114,18 +976,6 @@ mod tests {
         );
 
         assert_eq!(command, Some(FilterCommand::ToggleContext(1)));
-    }
-
-    /// The search cannot be context: it always selects. `m` on its row is nothing.
-    #[test]
-    fn m_on_the_search_row_does_nothing() {
-        let mut list = FilterList::default();
-        list.select_next(1);
-
-        assert_eq!(
-            list.handle_key(KeyEvent::from(KeyCode::Char('m')), &[Row::Search]),
-            None
-        );
     }
 
     #[test]
@@ -1146,16 +996,14 @@ mod tests {
         filters
     }
 
-    /// Search, scratch (no header), then each set: header, and rows only
-    /// while enabled.
+    /// Scratch (no header), then each set: header, and rows only while
+    /// enabled.
     #[test]
     fn rows_follow_the_spec_order() {
-        let mut filters = two_sets(true, false);
-        filters.set_search("s").expect("valid");
+        let filters = two_sets(true, false);
         assert_eq!(
             rows(&filters),
             vec![
-                Row::Search,
                 Row::Filter(0),
                 Row::Header(1),
                 Row::Filter(1),
@@ -1391,8 +1239,7 @@ mod tests {
     /// drift: label `n` is `numbered()[n - 1]`.
     #[test]
     fn numbered_agrees_with_the_pane_labels() {
-        let mut filters = two_sets(true, true);
-        filters.set_search("s").expect("valid");
+        let filters = two_sets(true, true);
         let numbered = numbered(&filters);
 
         // The gutter has no separator between the number and the `[` that
@@ -1426,16 +1273,12 @@ mod tests {
     }
 
     #[test]
-    fn while_soloed_rows_are_the_search_and_the_soloed_set_only() {
+    fn while_soloed_rows_are_the_soloed_set_only() {
         let mut filters = two_sets(true, true);
-        filters.set_search("s").expect("valid");
         filters.solo(2);
-        assert_eq!(
-            rows(&filters),
-            vec![Row::Search, Row::Header(2), Row::Filter(3)]
-        );
+        assert_eq!(rows(&filters), vec![Row::Header(2), Row::Filter(3)]);
         filters.solo(2);
-        assert_eq!(rows(&filters).len(), 8, "un-solo brings every row back");
+        assert_eq!(rows(&filters).len(), 7, "un-solo brings every row back");
     }
 
     #[test]

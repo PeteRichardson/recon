@@ -206,6 +206,6 @@ impl App<'_> {
         let origin = (self.focus != Focus::Filters).then_some(self.focus);
         self.reveal_and_focus(Focus::Filters);
         self.chain_origin = origin;
-        self.search = Some(SearchPrompt::new(PromptKind::Filter));
+        self.prompt = Some(SearchPrompt::new(PromptKind::Filter));
     }
 }

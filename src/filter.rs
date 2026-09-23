@@ -37,9 +37,8 @@ pub const DEFAULT_PALETTE: [Color; 13] = [
     // front; these follow in the order a greedy pass chose, each the
     // candidate furthest from everything before it. Snapped from the
     // issue's list to the nearest of the 256 so no truecolor is needed, and
-    // every one at least 150 from black, from white (the search colour) and
-    // from `DIM_GREY`, so no filter reads as background, search or dimmed
-    // text. Pairwise separation falls from 170 to 95 down the tail — less
+    // every one at least 150 from black, from white and from `DIM_GREY`,
+    // so no filter reads as background or dimmed text. Pairwise separation falls from 170 to 95 down the tail — less
     // distinct than the first six, far better than wrapping to a repeat.
     Color::Indexed(120), // light green  #87ff87
     Color::Indexed(203), // salmon       #ff5f5f
@@ -139,18 +138,6 @@ pub(crate) const LIGHT_DIM_STYLE: Style = Style::new()
     .fg(Color::Indexed(LIGHT_DIM_GREY))
     .add_modifier(Modifier::DIM);
 
-/// The colour reserved for the live search.
-///
-/// Deliberately outside `DEFAULT_PALETTE`: drawing from it would make the search's
-/// colour depend on how many filters happen to exist, so it would shift as
-/// filters come and go. A fixed colour gives the user one rule — white means
-/// what you just typed.
-///
-/// White *and* bold, for the reason `pane_block` gives about focus: a single
-/// visual channel fails on a theme with weak contrast and in a terminal with
-/// no colour at all.
-pub(crate) const SEARCH_STYLE: Style = Style::new().fg(Color::White).add_modifier(Modifier::BOLD);
-
 /// Whether a filter selects lines, removes them, or shows them without
 /// counting them.
 ///
@@ -190,11 +177,6 @@ pub enum Verdict {
     /// filters out of the mask that marks a file as matching — this variant
     /// is what lets the view agree with it.
     Context(usize),
-    /// Matched the live search rather than a numbered filter.
-    ///
-    /// Carries no index: the search lives in its own slot, precisely so that
-    /// setting and clearing it cannot renumber the filters the user built.
-    Searched,
     /// Matched no including filter.
     Unmatched,
     /// Removed by an excluding filter.
@@ -210,9 +192,9 @@ pub enum Verdict {
 /// Only `Sense::Include` filters are terms. `Exclude` is AND-NOT in both
 /// modes, as it always was. `Context` stays OR-ed: its promise is "also show
 /// these lines", and a context filter that *narrowed* the view would break
-/// the one workflow it exists for. The live search is likewise an
-/// independent OR term, so a probe never silently narrows an established
-/// set — promoting it with `p` is how it opts in.
+/// the one workflow it exists for. The search is not a term at all: it is a
+/// motion over the visible lines (ADR 0001), and `p` is how a pattern
+/// crosses into the set.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Combine {
     /// A line is included when *any* enabled include filter matches it.
@@ -483,35 +465,20 @@ impl std::error::Error for EnableError {}
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EnabledFlags {
     filters: Vec<bool>,
-    search: Option<bool>,
 }
 
-/// The bitset width. Up to 64 patterns in total, the search included; past
-/// this the navigator's file matching switches off rather than shifting out
-/// of range.
+/// The bitset width. Up to 64 patterns in total; past this the navigator's
+/// file matching switches off rather than shifting out of range.
 const MAX_PATTERNS: usize = 64;
 
-/// Which filter selected a file, for its colour in the navigator.
+/// Which filter selected a file, for its colour in the navigator: the
+/// filter's index. The lowest index wins — the view's "first matching filter
+/// wins", applied per file.
 ///
-/// `Search` outranks every numbered filter, as it does per line in `verdict`.
-/// Among numbered filters the lowest index wins — the view's "first matching
-/// filter wins", applied per file.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Owner {
-    Search,
-    Filter(usize),
-}
-
-impl Owner {
-    /// Lower is higher precedence. `Search` first, then filter order.
-    #[must_use]
-    pub fn rank(self) -> usize {
-        match self {
-            Self::Search => 0,
-            Self::Filter(index) => index + 1,
-        }
-    }
-}
+/// Used to be an enum with a `Search` variant that outranked every numbered
+/// filter. A search is a motion now (ADR 0001) and marks no file, so only
+/// the index is left.
+pub type Owner = usize;
 
 /// A `Send` snapshot of the filter set, for a scan thread to match with (#119).
 ///
@@ -527,15 +494,12 @@ impl Owner {
 #[derive(Debug, Clone)]
 pub struct Matcher {
     set: RegexSet,
-    /// Bit `i` set: `filters[i]` is enabled and `Sense::Include`; plus the
-    /// search's bit when it is present and enabled.
+    /// Bit `i` set: `filters[i]` is enabled and `Sense::Include`.
     selects: u64,
     /// Bit `i` set: `filters[i]` is enabled and `Sense::Exclude`.
     exclude: u64,
-    /// The search's bit alone, or zero — so `owner` can rank it first.
-    search: u64,
     /// How the include bits combine. In `And` mode a line selects only when
-    /// every include bit in `selects` is set, or the search bit is.
+    /// every include bit in `selects` is set.
     combine: Combine,
 }
 
@@ -549,27 +513,18 @@ impl Matcher {
             .fold(0, |bits, index| bits | (1 << index))
     }
 
-    /// The include filters' bits alone: `selects` without the search.
-    fn includes(&self) -> u64 {
-        self.selects & !self.search
-    }
-
     /// Whether a line with these hits selects its file, and no enabled
     /// `Exclude` filter hits it.
     ///
-    /// `Or`: an enabled `Include` filter or the search hits it. `And`: every
-    /// enabled `Include` filter hits it — or the search does, which is an OR
-    /// term in both modes. With no include filter enabled, `And` selects
-    /// nothing but search hits, the same as `Or`.
+    /// `Or`: an enabled `Include` filter hits it. `And`: every enabled
+    /// `Include` filter hits it. With no include filter enabled, `And`
+    /// selects nothing, the same as `Or`.
     #[must_use]
     pub fn selects(&self, bits: u64) -> bool {
         if bits & self.exclude != 0 {
             return false;
         }
-        if bits & self.search != 0 {
-            return true;
-        }
-        let includes = self.includes();
+        let includes = self.selects;
         match self.combine {
             Combine::Or => bits & includes != 0,
             Combine::And => includes != 0 && bits & includes == includes,
@@ -584,12 +539,7 @@ impl Matcher {
         if !self.selects(bits) {
             return None;
         }
-        if bits & self.search != 0 {
-            return Some(Owner::Search);
-        }
-        Some(Owner::Filter(
-            (bits & self.includes()).trailing_zeros() as usize
-        ))
+        Some((bits & self.selects).trailing_zeros() as usize)
     }
 
     /// `(selects, exclude, combine)`, for the caller that wants to know
@@ -660,22 +610,12 @@ pub struct ActiveFilters {
     /// How the enabled include filters combine. `Or` by default; `&` flips it.
     combine: Combine,
     filters: Vec<Filter>,
-    /// The live search: at most one, replaced by each `/`, and never an
-    /// element of `filters`.
-    ///
-    /// `Verdict::Included(usize)` is a *position* in `filters` — see
-    /// `remove`'s doc comment. Were the search stored there, every `/` and
-    /// every `Esc` would renumber the user's filters as a side effect of
-    /// typing a search.
-    search: Option<Filter>,
     /// Enabled flags captured by `disable_all_remembering`, awaiting a restore.
     ///
     /// Held separately from the filters so that a filter removed in the
     /// meantime simply drops out of the restore rather than resurrecting.
     remembered: Option<Vec<bool>>,
-    /// The search slot's enabled flag, captured alongside `remembered`.
-    remembered_search: Option<bool>,
-    /// Every pattern in one automaton: `filters` in order, then the search.
+    /// Every pattern in one automaton: `filters` in order.
     ///
     /// `verdict` used to run one `Regex::is_match` per filter per line, so a
     /// filter change cost O(lines × filters) separate DFA walks over the same
@@ -727,24 +667,21 @@ impl ActiveFilters {
             background: Background::default(),
             combine: Combine::default(),
             filters: Vec::new(),
-            search: None,
             remembered: None,
-            remembered_search: None,
             compiled: None,
         }
     }
 
-    /// Whether there are any *numbered* filters. The live search is not one
-    /// of these — see `row_count`, which counts it and is what the pane
-    /// sizes itself against.
+    /// Whether there are any filters at all, built-in ones included. See
+    /// `row_count`, which counts only the user-authored ones and is what the
+    /// pane sizes itself against.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.user_authored_count() == 0
     }
 
-    /// How many *numbered* filters there are. The live search is not one of
-    /// these — see `row_count`, which counts it and is what the pane sizes
-    /// itself against.
+    /// How many filters there are, built-in ones included. See `row_count`,
+    /// which counts only the user-authored ones.
     #[must_use]
     pub fn len(&self) -> usize {
         // User-authored: a built-in row is not something the user built. The
@@ -816,10 +753,6 @@ impl ActiveFilters {
         Ok(())
     }
 
-    /// Set the live search, replacing any previous one.
-    ///
-    /// One search at a time, like vim's search register: a second `/` is a
-    /// new question, not another filter.
     /// Add an including filter that selects lines starting a definition of
     /// `kind` (#123), coloured and numbered like any other filter. Test-only
     /// (#167): the built-in `definitions` set (#127) is how a user gets one,
@@ -851,7 +784,7 @@ impl ActiveFilters {
     }
 
     /// Whether a line's verdict reads the compiled set: an effective regex
-    /// filter of any sense, or an enabled search. What gates the `RegexSet`
+    /// filter of any sense. What gates the `RegexSet`
     /// pass in `verdict`, the counterpart of `needs_kinds` for the grammar
     /// pass.
     ///
@@ -862,7 +795,7 @@ impl ActiveFilters {
     pub fn needs_regex(&self) -> bool {
         self.filters.iter().enumerate().any(|(index, filter)| {
             matches!(filter.predicate, Predicate::Regex(_)) && self.effective(index)
-        }) || self.search.as_ref().is_some_and(|search| search.enabled)
+        })
     }
 
     /// Build the startup set (#128): the scratch set, then `sets` in the
@@ -1213,92 +1146,23 @@ impl ActiveFilters {
         self.forget_capture();
     }
 
-    pub fn set_search(&mut self, pattern: &str) -> Result<(), regex::Error> {
-        let pattern = Regex::new(pattern)?;
-        self.search = Some(Filter {
-            predicate: Predicate::Regex(pattern),
-            sense: Sense::Include,
-            enabled: true,
-            style: SEARCH_STYLE,
-            name: None,
-            set: 0,
-        });
-        self.recompile();
-        self.forget_capture();
-        Ok(())
-    }
-
-    /// Drop the live search. A no-op when there is none.
+    /// Rows the filter pane numbers: the user-authored filters. The status
+    /// row's "N filters" is about what the user built, and a built-in row
+    /// nobody turned on is not that.
     ///
-    /// Reports whether there was a search to drop, the same shape as
-    /// `promote_search`: a caller can skip the `refresh_view` it would
-    /// otherwise pay for on every press — see the `Esc` binding.
-    pub fn clear_search(&mut self) -> bool {
-        let had_search = self.search.take().is_some();
-        self.recompile();
-        self.forget_capture();
-        had_search
-    }
-
-    #[must_use]
-    pub fn search(&self) -> Option<&Filter> {
-        self.search.as_ref()
-    }
-
-    /// Enable or disable the search, reporting whether there was one.
-    pub fn search_set_enabled(&mut self, enabled: bool) -> bool {
-        match self.search.as_mut() {
-            Some(search) => {
-                search.enabled = enabled;
-                true
-            }
-            None => false,
-        }
-    }
-
-    /// Rows the filter pane draws: one per numbered filter, plus the search
-    /// row when a search exists.
-    ///
-    /// Distinct from `len`, which counts only the numbered filters and is
-    /// what `Verdict::Included` indexes into. The pane needs the larger
-    /// number; nothing else does.
+    /// Distinct from `len`, which counts every filter and is what
+    /// `Verdict::Included` indexes into.
     #[must_use]
     pub fn row_count(&self) -> usize {
-        // User-authored only: the status row's "N filters" is about what
-        // the user built, and a built-in row nobody turned on is not that.
-        self.user_authored_count() + usize::from(self.search.is_some())
+        self.user_authored_count()
     }
 
-    /// Move the live search into the numbered set and free the slot.
-    ///
-    /// This is the probe-and-keep loop `p` exists for: `/` a pattern, look at
-    /// what it catches, `p` to keep it, `/` again — building a set worth
-    /// saving without retyping anything.
-    ///
-    /// The enabled state is carried across rather than forced to `true`, so a
-    /// search the user had toggled off is not silently switched back on.
-    /// Reports whether there was a search to promote.
-    pub fn promote_search(&mut self) -> bool {
-        let Some(mut search) = self.search.take() else {
-            return false;
-        };
-        search.style = self.next_style();
-        // The pattern moves from the search slot to the scratch set, which
-        // changes the compiled order even though the pattern list has not;
-        // `insert_scratch` recompiles.
-        self.insert_scratch(search);
-        true
-    }
-
-    /// Drop a pending `!` capture, both halves together.
+    /// Drop a pending `!` capture.
     ///
     /// A capture describes a set that no longer exists once the set changes.
-    /// Keeping it would strand it — see `add`. Both fields go, always:
-    /// dropping only one leaves the capture half-valid, which is worse than
-    /// dropping neither.
+    /// Keeping it would strand it — see `add`.
     fn forget_capture(&mut self) {
         self.remembered = None;
-        self.remembered_search = None;
     }
 
     /// Whether any enabled filter removes lines.
@@ -1321,7 +1185,7 @@ impl ActiveFilters {
         self.combine == Combine::And
     }
 
-    /// The include verdict once exclusion and the search have had their say:
+    /// The include verdict once exclusion has had its say:
     /// which include or context filter, if any, claims a line whose hits
     /// `hit` reports. Shared by the compiled and scanning paths so the two
     /// cannot disagree about the mode.
@@ -1379,9 +1243,6 @@ impl ActiveFilters {
     pub fn set_all_enabled(&mut self, enabled: bool) {
         for filter in &mut self.filters {
             filter.enabled = enabled;
-        }
-        if let Some(search) = self.search.as_mut() {
-            search.enabled = enabled;
         }
     }
 
@@ -1509,7 +1370,6 @@ impl ActiveFilters {
             return;
         }
         self.remembered = Some(self.filters.iter().map(|f| f.enabled).collect());
-        self.remembered_search = self.search.as_ref().map(|search| search.enabled);
         self.set_all_enabled(false);
     }
 
@@ -1523,12 +1383,6 @@ impl ActiveFilters {
         };
         for (filter, was_enabled) in self.filters.iter_mut().zip(remembered) {
             filter.enabled = was_enabled;
-        }
-        // Taken unconditionally, so a capture made while no search existed
-        // does not linger and get applied to an unrelated later search.
-        let remembered_search = self.remembered_search.take();
-        if let (Some(search), Some(was_enabled)) = (self.search.as_mut(), remembered_search) {
-            search.enabled = was_enabled;
         }
     }
 
@@ -1549,7 +1403,6 @@ impl ActiveFilters {
     pub fn enabled_flags(&self) -> EnabledFlags {
         EnabledFlags {
             filters: self.filters.iter().map(|filter| filter.enabled).collect(),
-            search: self.search.as_ref().map(|search| search.enabled),
         }
     }
 
@@ -1563,15 +1416,11 @@ impl ActiveFilters {
         for (filter, was_enabled) in self.filters.iter_mut().zip(&flags.filters) {
             filter.enabled = *was_enabled;
         }
-        if let (Some(search), Some(was_enabled)) = (self.search.as_mut(), flags.search) {
-            search.enabled = was_enabled;
-        }
     }
 
     #[must_use]
     pub fn any_enabled(&self) -> bool {
         self.filters.iter().any(|filter| filter.enabled)
-            || self.search.as_ref().is_some_and(|search| search.enabled)
     }
 
     /// Decide how `line` should be presented.
@@ -1616,17 +1465,6 @@ impl ActiveFilters {
             return Verdict::Excluded;
         }
 
-        // The live search outranks the numbered filters: the user's attention
-        // is on the pattern they just typed, so it wins the colour on a line
-        // that several things match. It is compiled last, so its index is the
-        // one past the numbered filters.
-        if let Some(search) = &self.search
-            && search.enabled
-            && matched(self.filters.len())
-        {
-            return Verdict::Searched;
-        }
-
         self.include_verdict(hit)
     }
 
@@ -1645,19 +1483,12 @@ impl ActiveFilters {
             return Verdict::Excluded;
         }
 
-        if let Some(search) = &self.search
-            && search.enabled
-            && holds(search)
-        {
-            return Verdict::Searched;
-        }
-
         self.include_verdict(|index| holds(&self.filters[index]))
     }
 
     /// Whether the compiled set still describes this filter set.
     fn in_step(&self, set: &RegexSet) -> bool {
-        set.len() == self.filters.len() + usize::from(self.search.is_some())
+        set.len() == self.filters.len()
     }
 
     /// Rebuild the compiled set. Called by every method that adds, removes or
@@ -1668,11 +1499,7 @@ impl ActiveFilters {
     /// slow, but `matcher` returns `None` and the navigator's marking
     /// switches off with nothing said (#187).
     fn recompile(&mut self) {
-        let patterns = self
-            .filters
-            .iter()
-            .chain(self.search.as_ref())
-            .map(|filter| filter.predicate.source());
+        let patterns = self.filters.iter().map(|filter| filter.predicate.source());
         match RegexSet::new(patterns) {
             Ok(set) => self.compiled = Some(set),
             Err(err) => {
@@ -1688,9 +1515,9 @@ impl ActiveFilters {
     /// The snapshot a scan thread matches with, or `None` when there is no
     /// scan to run.
     ///
-    /// `None` when nothing selects — no enabled `Include` and no enabled
-    /// search, which is the same "nothing to match against" guard `Document`
-    /// applies for #36 — and when the pattern count exceeds the bitset width.
+    /// `None` when nothing selects — no enabled `Include`, which is the same
+    /// "nothing to match against" guard `Document` applies for #36 — and when
+    /// the pattern count exceeds the bitset width.
     #[must_use]
     pub fn matcher(&self) -> Option<Matcher> {
         debug_assert!(
@@ -1717,11 +1544,6 @@ impl ActiveFilters {
                 Sense::Context => {}
             }
         }
-        let mut search = 0u64;
-        if self.search.as_ref().is_some_and(|search| search.enabled) {
-            search = 1 << self.filters.len();
-            selects |= search;
-        }
         if selects == 0 {
             return None;
         }
@@ -1729,12 +1551,11 @@ impl ActiveFilters {
             set: set.clone(),
             selects,
             exclude,
-            search,
             combine: self.combine,
         })
     }
 
-    /// Every pattern's source, in compiled order, search last. What a scan
+    /// Every pattern's source, in compiled order. What a scan
     /// cache is keyed on: a change here shifts bit positions, so cached
     /// bitsets mean something else. Sense and enabled are deliberately not
     /// part of it — they are masks over the same bits.
@@ -1742,35 +1563,18 @@ impl ActiveFilters {
     pub fn pattern_key(&self) -> Vec<String> {
         self.filters
             .iter()
-            .chain(self.search.as_ref())
             .map(|filter| filter.predicate.key())
             .collect()
     }
 
-    /// Whether anything at all is marking lines — a numbered including filter,
-    /// or the live search.
+    /// Whether an including filter is enabled — anything marking lines.
     ///
-    /// Drives hiding (including the `Ctrl-H` guard in `Document`) and `n`/`N`.
-    /// Public because `Document` caches it at `evaluate` time.
+    /// Drives dimming, hiding (including the `u` guard in `Document`) and
+    /// `n`/`N` with no search set. Public because `Document` caches it at
+    /// `evaluate` time. A search is not counted: it is a motion, not a filter
+    /// (ADR 0001), and never changes which lines are visible.
     #[must_use]
     pub fn any_including(&self) -> bool {
-        self.any_numbered_including() || self.search.as_ref().is_some_and(|search| search.enabled)
-    }
-
-    /// Whether a *numbered* including filter is enabled. Drives dimming alone.
-    ///
-    /// Dimming is a contrast mechanism: unmatched lines recede so that
-    /// coloured matches stand out, and its value scales with how many things
-    /// are being told apart. A search on its own is one thing, and its hits
-    /// already carry the span highlight — so dimming the rest of the file buys
-    /// nothing and costs the readability of the context the search was run in
-    /// order to reach.
-    ///
-    /// The consequence is deliberate and is the one place dimming stops being
-    /// a strict preview of hiding: after a bare `/foo`, nothing is grey and
-    /// `Ctrl-H` still hides plenty. A user pressing a key that means "hide
-    /// unmatched" is not surprised to get it.
-    fn any_numbered_including(&self) -> bool {
         self.filters
             .iter()
             .enumerate()
@@ -1779,17 +1583,14 @@ impl ActiveFilters {
 
     /// The style to render a line with, or `None` to leave it alone.
     ///
-    /// `Unmatched` dims only when a *numbered* including filter is active. The
-    /// live search does not trigger dimming on its own; see `any_numbered_including`
-    /// for why.
+    /// `Unmatched` dims only when an including filter is active.
     #[must_use]
     pub fn style_for(&self, verdict: Verdict) -> Option<Style> {
         match verdict {
             Verdict::Included(index) | Verdict::Context(index) => {
                 self.filters.get(index).map(|f| f.style)
             }
-            Verdict::Searched => Some(SEARCH_STYLE),
-            Verdict::Unmatched if self.any_numbered_including() => Some(self.dim_style()),
+            Verdict::Unmatched if self.any_including() => Some(self.dim_style()),
             Verdict::Unmatched | Verdict::Excluded => None,
         }
     }
@@ -2060,17 +1861,6 @@ mod tests {
         // The compiled set follows the new order: `typed` is index 0.
         set.set_enabled(0, true);
         assert_eq!(set.verdict("typed", KindSet::EMPTY), Verdict::Included(0));
-    }
-
-    /// A promoted search lands in the scratch set too, ahead of file filters.
-    #[test]
-    fn a_promoted_search_lands_in_the_scratch_set() {
-        let mut set = ActiveFilters::with_sets(None, &[loaded("a", 50, true, &["x"])]);
-        set.set_search("probe").expect("valid");
-        assert!(set.promote_search());
-        assert_eq!(set.filters()[0].display_name(), "probe");
-        assert_eq!(set.filters()[0].set, 0);
-        assert_eq!(set.filters()[1].set, 1);
     }
 
     /// The rule: a filter takes effect when it is enabled *and* its set is.
@@ -2536,10 +2326,10 @@ mod tests {
         assert!(set.needs_kinds());
     }
 
-    /// The regex pass is paid only once a regex filter of any sense, or a
-    /// search, takes effect. The built-in set alone never asks for it.
+    /// The regex pass is paid only once a regex filter of any sense takes
+    /// effect. The built-in set alone never asks for it.
     #[test]
-    fn needs_regex_is_false_until_a_regex_filter_or_a_search_is_effective() {
+    fn needs_regex_is_false_until_a_regex_filter_is_effective() {
         let mut set = ActiveFilters::new();
         assert!(!set.needs_regex(), "the built-in set is all definitions");
 
@@ -2553,11 +2343,6 @@ mod tests {
         set.add_excluding("noise").expect("valid pattern");
         assert!(set.needs_regex());
         set.set_all_enabled(false);
-        assert!(!set.needs_regex());
-
-        set.set_search("bar").expect("valid pattern");
-        assert!(set.needs_regex());
-        set.search_set_enabled(false);
         assert!(!set.needs_regex());
     }
 
@@ -2687,7 +2472,7 @@ mod tests {
         set.add("foo").expect("valid");
         let m = set.matcher().expect("foo selects");
         assert!(m.selects(m.bits("foo")));
-        assert_eq!(m.owner(m.bits("foo")), Some(Owner::Filter(1)));
+        assert_eq!(m.owner(m.bits("foo")), Some(1));
         assert!(
             !m.selects(m.bits("fn nothing")),
             "the definition slot never matches text"
@@ -2812,20 +2597,6 @@ mod tests {
         assert_eq!(set.verdict("foo alone", KindSet::EMPTY), Verdict::Unmatched);
     }
 
-    /// The live search is an independent OR term: a probe never narrows the
-    /// set it is probing.
-    #[test]
-    fn the_search_is_not_a_term_of_the_and() {
-        let mut set = set_with(&["foo", "bar"]);
-        set.set_search("probe").expect("valid");
-        set.toggle_and();
-        assert_eq!(
-            set.verdict("probe alone", KindSet::EMPTY),
-            Verdict::Searched
-        );
-        assert_eq!(set.verdict("foo bar", KindSet::EMPTY), Verdict::Included(0));
-    }
-
     /// The scanning fallback agrees with the compiled path.
     #[test]
     fn and_agrees_between_compiled_and_scanning_paths() {
@@ -2850,22 +2621,11 @@ mod tests {
         let m = set.matcher().expect("something selects");
         assert!(!m.selects(m.bits("foo only")));
         assert!(m.selects(m.bits("foo bar")));
-        assert_eq!(m.owner(m.bits("foo bar")), Some(Owner::Filter(0)));
+        assert_eq!(m.owner(m.bits("foo bar")), Some(0));
         set.set_enabled(0, false);
         let m = set.matcher().expect("bar still selects");
         assert!(m.selects(m.bits("bar only")));
-        assert_eq!(m.owner(m.bits("bar only")), Some(Owner::Filter(1)));
-    }
-
-    /// The search selects a file on its own in AND mode, as it does per line.
-    #[test]
-    fn the_matcher_keeps_the_search_as_an_or_term() {
-        let mut set = set_with(&["foo", "bar"]);
-        set.set_search("probe").expect("valid");
-        set.toggle_and();
-        let m = set.matcher().expect("selects");
-        assert!(m.selects(m.bits("probe")));
-        assert_eq!(m.owner(m.bits("probe")), Some(Owner::Search));
+        assert_eq!(m.owner(m.bits("bar only")), Some(1));
     }
 
     /// Flipping the mode changes what a cached bitset means, so the masks a
@@ -2882,8 +2642,8 @@ mod tests {
     // ---- the matcher snapshot --------------------------------------------
 
     /// The invariant the navigator rests on, stated the way the spec states
-    /// it: a line selects its file when an enabled `Include` filter or the
-    /// search hits it and no enabled `Exclude` does. Deliberately *not*
+    /// it: a line selects its file when an enabled `Include` filter hits it
+    /// and no enabled `Exclude` does. Deliberately *not*
     /// derived from `verdict`'s index — that is a colouring rule (first match
     /// wins), and a context filter can win the colour of a line an include
     /// filter also hit. Selecting and colouring are different questions.
@@ -2892,7 +2652,6 @@ mod tests {
         let mut set = set_with(&["alpha", "beta", "delta"]);
         set.toggle_context(1);
         set.add_excluding("noise").expect("valid pattern");
-        set.set_search("gamma").expect("valid pattern");
         let matcher = set.matcher().expect("something selects");
 
         for line in [
@@ -2914,10 +2673,7 @@ mod tests {
                     f.enabled && f.sense == sense && f.predicate.holds(line, KindSet::EMPTY)
                 })
             };
-            let searched = set
-                .search()
-                .is_some_and(|s| s.enabled && s.predicate.holds(line, KindSet::EMPTY));
-            let expected = (hit(Sense::Include) || searched) && !hit(Sense::Exclude);
+            let expected = hit(Sense::Include) && !hit(Sense::Exclude);
 
             assert_eq!(
                 matcher.selects(matcher.bits(line)),
@@ -2927,10 +2683,7 @@ mod tests {
             // A selected line is always one the view shows.
             if expected {
                 assert!(
-                    matches!(
-                        set.verdict(line, KindSet::EMPTY),
-                        Verdict::Included(_) | Verdict::Searched
-                    ),
+                    matches!(set.verdict(line, KindSet::EMPTY), Verdict::Included(_)),
                     "{line:?} selects its file but the view would not show it"
                 );
             }
@@ -2942,31 +2695,20 @@ mod tests {
     /// and include filter 2 is drawn in filter 1's colour (first wins) but the
     /// *file* is owned by filter 2: it is the one that selected it.
     #[test]
-    fn the_owner_is_the_lowest_selecting_filter_and_search_outranks_them() {
+    fn the_owner_is_the_lowest_selecting_filter() {
         let mut set = set_with(&["alpha", "beta", "delta"]);
         set.toggle_context(1);
-        set.set_search("gamma").expect("valid pattern");
         let matcher = set.matcher().expect("something selects");
 
         assert_eq!(matcher.owner(matcher.bits("beta")), None);
-        assert_eq!(
-            matcher.owner(matcher.bits("beta delta")),
-            Some(Owner::Filter(2))
-        );
+        assert_eq!(matcher.owner(matcher.bits("beta delta")), Some(2));
         assert_eq!(
             set.verdict("beta delta", KindSet::EMPTY),
             Verdict::Included(2),
             "the include filter outranks the context one, so the view's colour \
              is the navigator's"
         );
-        assert_eq!(
-            matcher.owner(matcher.bits("alpha delta")),
-            Some(Owner::Filter(0))
-        );
-        assert_eq!(
-            matcher.owner(matcher.bits("alpha gamma")),
-            Some(Owner::Search)
-        );
+        assert_eq!(matcher.owner(matcher.bits("alpha delta")), Some(0));
     }
 
     #[test]
@@ -2995,13 +2737,6 @@ mod tests {
         let mut disabled = set_with(&["alpha"]);
         disabled.set_enabled(0, false);
         assert!(disabled.matcher().is_none(), "disabled");
-
-        let mut search_only = ActiveFilters::new();
-        search_only.set_search("gamma").expect("valid pattern");
-        assert!(
-            search_only.matcher().is_some(),
-            "the search selects on its own"
-        );
     }
 
     /// 64 is the width of the bitset; the 65th pattern switches the feature off
@@ -3021,18 +2756,12 @@ mod tests {
     }
 
     #[test]
-    fn the_pattern_key_lists_every_pattern_with_the_search_last() {
+    fn the_pattern_key_lists_every_pattern_in_compiled_order() {
         let mut set = set_with(&["alpha", "beta"]);
-        set.set_search("gamma").expect("valid pattern");
         let mut expected = vec!["alpha".to_string(), "beta".to_string()];
         expected.extend(Kind::ALL.iter().map(|kind| format!("\u{1}{kind}")));
-        expected.push("gamma".to_string());
 
-        assert_eq!(
-            set.pattern_key(),
-            expected,
-            "typed, then the built-in set, then the search"
-        );
+        assert_eq!(set.pattern_key(), expected, "typed, then the built-in set");
 
         set.toggle_context(0);
         assert_eq!(set.pattern_key(), expected, "sense is not part of the key");
@@ -3101,8 +2830,8 @@ mod tests {
     /// What each built-in palette promises (#231): how far apart its first
     /// six are, how far apart every pair is, and how far every entry keeps
     /// from the three things a filter colour must never be mistaken for on
-    /// that background — the page itself, dimmed text, and the search
-    /// colour. The bars differ because the light list's source material is
+    /// that background — the page itself, dimmed text, and plain white
+    /// text. The bars differ because the light list's source material is
     /// darker and closer together; both are what the greedy pass that
     /// ordered the lists was run with, so a hand edit that breaks one is
     /// caught here.
@@ -3119,8 +2848,9 @@ mod tests {
         page_apart: f64,
         /// From the dim grey of unmatched lines.
         dim_apart: f64,
-        /// From `SEARCH_STYLE`'s white, which on a light page is the page.
-        search_apart: f64,
+        /// From white: plain text on a dark page, the page itself on a
+        /// light one.
+        white_apart: f64,
     }
 
     const PROMISES: [Promise; 2] = [
@@ -3131,7 +2861,7 @@ mod tests {
             page: (0, 0, 0),
             page_apart: 150.0,
             dim_apart: 150.0,
-            search_apart: 150.0,
+            white_apart: 150.0,
         },
         Promise {
             background: Background::Light,
@@ -3140,7 +2870,7 @@ mod tests {
             page: (255, 255, 255),
             page_apart: 150.0,
             dim_apart: 120.0,
-            search_apart: 150.0,
+            white_apart: 150.0,
         },
     ];
 
@@ -3174,20 +2904,20 @@ mod tests {
         }
     }
 
-    /// A filter colour that reads as the page, as dimmed text or as the
-    /// search highlight is worse than an indistinct one: it says the wrong
-    /// thing rather than nothing (#231).
+    /// A filter colour that reads as the page, as dimmed text or as plain
+    /// white text is worse than an indistinct one: it says the wrong thing
+    /// rather than nothing (#231).
     #[test]
-    fn no_palette_entry_is_mistakable_for_page_dim_or_search() {
+    fn no_palette_entry_is_mistakable_for_page_dim_or_plain_text() {
         for promise in &PROMISES {
             let dim = fixed(promise.background.dim_style().fg.expect("dim has a colour"));
-            let search = (255, 255, 255);
+            let white = (255, 255, 255);
             for (position, colour) in promise.background.palette().iter().enumerate() {
                 let c = fixed(*colour);
                 for (name, other, minimum) in [
                     ("the page", promise.page, promise.page_apart),
                     ("dimmed text", dim, promise.dim_apart),
-                    ("the search colour", search, promise.search_apart),
+                    ("white", white, promise.white_apart),
                 ] {
                     let apart = distance(c, other);
                     assert!(
@@ -3427,32 +3157,6 @@ mod tests {
             Verdict::Included(0),
             "a pattern that would not compile disturbed the set it was rejected from"
         );
-    }
-
-    #[test]
-    fn setting_and_clearing_the_search_is_visible_to_verdict() {
-        let mut set = set_with(&["foo"]);
-
-        set.set_search("bar").expect("valid pattern");
-        assert_eq!(set.verdict("bar", KindSet::EMPTY), Verdict::Searched);
-
-        set.set_search("baz").expect("valid pattern");
-        assert_eq!(set.verdict("bar", KindSet::EMPTY), Verdict::Unmatched);
-        assert_eq!(set.verdict("baz", KindSet::EMPTY), Verdict::Searched);
-
-        assert!(set.clear_search());
-        assert_eq!(set.verdict("baz", KindSet::EMPTY), Verdict::Unmatched);
-    }
-
-    #[test]
-    fn promoting_the_search_is_visible_to_verdict() {
-        let mut set = set_with(&["foo"]);
-        set.set_search("bar").expect("valid pattern");
-
-        assert!(set.promote_search());
-
-        // It stops being the search and becomes filter 1.
-        assert_eq!(set.verdict("bar", KindSet::EMPTY), Verdict::Included(1));
     }
 
     /// Toggling `enabled` must *not* need a recompile — it is the frequent
@@ -3892,309 +3596,6 @@ mod tests {
         set.restore_remembered();
         let flags: Vec<bool> = set.filters()[..2].iter().map(|f| f.enabled).collect();
         assert_eq!(flags, vec![true, false], "the real capture was overwritten");
-    }
-
-    #[test]
-    fn a_search_matches_like_an_including_filter() {
-        let mut set = ActiveFilters::new();
-        set.set_search("timeout").expect("valid pattern");
-
-        assert_eq!(
-            set.verdict("conn timeout", KindSet::EMPTY),
-            Verdict::Searched
-        );
-        assert_eq!(set.verdict("all fine", KindSet::EMPTY), Verdict::Unmatched);
-    }
-
-    /// The user's attention is on the pattern they just typed, so it wins the
-    /// colour on a line a numbered filter also matches.
-    #[test]
-    fn the_search_outranks_a_numbered_filter() {
-        let mut set = set_with(&["ERROR"]);
-        set.set_search("timeout").expect("valid pattern");
-
-        assert_eq!(
-            set.verdict("ERROR timeout on socket", KindSet::EMPTY),
-            Verdict::Searched
-        );
-        assert_eq!(
-            set.verdict("ERROR disk full", KindSet::EMPTY),
-            Verdict::Included(0)
-        );
-    }
-
-    /// Exclusion runs first and beats everything, so search inherits the rule
-    /// rather than needing one of its own.
-    #[test]
-    fn exclusion_beats_the_search() {
-        let mut set = ActiveFilters::new();
-        set.add_excluding("heartbeat").expect("valid pattern");
-        set.set_search("timeout").expect("valid pattern");
-
-        assert_eq!(
-            set.verdict("heartbeat timeout", KindSet::EMPTY),
-            Verdict::Excluded
-        );
-    }
-
-    /// One search at a time, like vim's search register: a second `/` replaces
-    /// the first rather than stacking another filter.
-    #[test]
-    fn setting_a_search_replaces_the_previous_one() {
-        let mut set = ActiveFilters::new();
-        set.set_search("foo").expect("valid pattern");
-        set.set_search("bar").expect("valid pattern");
-
-        assert_eq!(set.verdict("bar line", KindSet::EMPTY), Verdict::Searched);
-        assert_eq!(set.verdict("foo line", KindSet::EMPTY), Verdict::Unmatched);
-    }
-
-    /// The whole point of the separate slot: `/` and `Esc` must never renumber
-    /// the filters the user built, because `Verdict::Included` is a position.
-    #[test]
-    fn the_search_does_not_occupy_a_numbered_slot() {
-        let mut set = set_with(&["alpha", "beta"]);
-        set.set_search("gamma").expect("valid pattern");
-
-        assert_eq!(set.len(), 2, "the search must not join the numbered set");
-        assert_eq!(
-            set.verdict("beta line", KindSet::EMPTY),
-            Verdict::Included(1)
-        );
-
-        set.clear_search();
-        assert_eq!(
-            set.verdict("beta line", KindSet::EMPTY),
-            Verdict::Included(1)
-        );
-    }
-
-    #[test]
-    fn clearing_a_search_removes_it() {
-        let mut set = ActiveFilters::new();
-        set.set_search("foo").expect("valid pattern");
-        set.clear_search();
-
-        assert_eq!(set.verdict("foo line", KindSet::EMPTY), Verdict::Unmatched);
-        assert!(set.search().is_none());
-    }
-
-    #[test]
-    fn an_invalid_search_pattern_is_reported_and_changes_nothing() {
-        let mut set = ActiveFilters::new();
-        set.set_search("foo").expect("valid pattern");
-
-        assert!(set.set_search("[").is_err());
-        assert_eq!(
-            set.verdict("foo line", KindSet::EMPTY),
-            Verdict::Searched,
-            "the old search was lost"
-        );
-    }
-
-    #[test]
-    fn a_disabled_search_matches_nothing() {
-        let mut set = ActiveFilters::new();
-        set.set_search("foo").expect("valid pattern");
-        set.set_all_enabled(false);
-
-        assert_eq!(set.verdict("foo line", KindSet::EMPTY), Verdict::Unmatched);
-    }
-
-    /// The search carries a colour of its own, outside `DEFAULT_PALETTE`, so it never
-    /// shifts as filters are added and removed.
-    #[test]
-    fn the_search_style_is_reserved_rather_than_drawn_from_the_palette() {
-        assert!(
-            !DEFAULT_PALETTE
-                .iter()
-                .any(|colour| SEARCH_STYLE.fg == Some(*colour)),
-            "the search colour would move as the palette rotates"
-        );
-        let mut set = ActiveFilters::new();
-        set.set_search("foo").expect("valid pattern");
-        assert_eq!(set.style_for(Verdict::Searched), Some(SEARCH_STYLE));
-    }
-
-    /// `!` must round-trip the search slot too, or it stops meaning "back to an
-    /// unfiltered view".
-    #[test]
-    fn disabling_all_remembers_the_search_slot() {
-        let mut set = set_with(&["foo"]);
-        set.set_search("bar").expect("valid pattern");
-
-        set.disable_all_remembering();
-        assert!(!set.any_enabled(), "the search kept the set enabled");
-        assert_eq!(set.verdict("bar line", KindSet::EMPTY), Verdict::Unmatched);
-
-        set.restore_remembered();
-        assert_eq!(set.verdict("bar line", KindSet::EMPTY), Verdict::Searched);
-    }
-
-    /// A search that the user had deliberately toggled off must not come back on.
-    #[test]
-    fn restoring_does_not_switch_a_disabled_search_back_on() {
-        let mut set = ActiveFilters::new();
-        set.set_search("bar").expect("valid pattern");
-        set.search_set_enabled(false);
-
-        set.disable_all_remembering();
-        set.restore_remembered();
-
-        assert_eq!(set.verdict("bar line", KindSet::EMPTY), Verdict::Unmatched);
-    }
-
-    /// A capture describes a set that no longer exists once the search changes,
-    /// exactly as it does when a filter is added — see `add`'s comment.
-    #[test]
-    fn changing_the_search_drops_a_pending_capture() {
-        let mut set = set_with(&["foo"]);
-        set.disable_all_remembering();
-
-        set.set_search("bar").expect("valid pattern");
-        assert!(!set.has_remembered());
-
-        set.clear_search();
-        assert!(!set.has_remembered());
-    }
-
-    #[test]
-    fn row_count_includes_the_search_row() {
-        let mut set = set_with(&["foo", "bar"]);
-        assert_eq!(set.row_count(), 2);
-
-        set.set_search("baz").expect("valid pattern");
-        assert_eq!(set.row_count(), 3);
-    }
-
-    /// Dimming is a contrast mechanism, and a search on its own is one thing to
-    /// see: its hits already carry the span highlight, so greying the rest of the
-    /// file buys nothing and costs the readability of the context the user
-    /// searched in order to reach.
-    #[test]
-    fn a_search_alone_does_not_dim() {
-        let mut set = ActiveFilters::new();
-        set.set_search("foo").expect("valid pattern");
-
-        assert_eq!(set.style_for(Verdict::Unmatched), None);
-    }
-
-    /// But it still counts as something to hide against, so `Ctrl-H` works after
-    /// a bare search. This is the asymmetry the two predicates exist for.
-    #[test]
-    fn a_search_alone_still_counts_for_hiding() {
-        let mut set = ActiveFilters::new();
-        set.set_search("foo").expect("valid pattern");
-
-        assert!(
-            set.any_including(),
-            "Ctrl-H would have nothing to hide against"
-        );
-    }
-
-    /// Add a numbered filter and dimming switches on, because now there really
-    /// are two things to tell apart. If we then disable the numbered filter,
-    /// leaving only the search, dimming must stop — that's the asymmetry.
-    /// This pins the difference between the two predicates directly rather than
-    /// testing a case where they agree.
-    #[test]
-    fn a_numbered_filter_alongside_a_search_dims() {
-        let mut set = set_with(&["ERROR"]);
-        set.set_search("foo").expect("valid pattern");
-
-        assert_eq!(set.style_for(Verdict::Unmatched), Some(DIM_STYLE));
-
-        set.set_enabled(0, false);
-        assert_eq!(
-            set.style_for(Verdict::Unmatched),
-            None,
-            "search alone must not dim, even when one was present"
-        );
-    }
-
-    #[test]
-    fn a_disabled_search_counts_for_neither() {
-        let mut set = ActiveFilters::new();
-        set.set_search("foo").expect("valid pattern");
-        set.search_set_enabled(false);
-
-        assert!(!set.any_including());
-        assert_eq!(set.style_for(Verdict::Unmatched), None);
-    }
-
-    /// The probe-and-keep loop: `/` to try a pattern, `p` to keep it, `/` again.
-    /// Nothing is retyped.
-    #[test]
-    fn promoting_moves_the_search_into_the_numbered_set() {
-        let mut set = set_with(&["alpha"]);
-        set.set_search("beta").expect("valid pattern");
-
-        assert!(set.promote_search());
-
-        assert_eq!(set.len(), 2);
-        assert!(
-            set.search().is_none(),
-            "the slot should be free for the next probe"
-        );
-        assert_eq!(
-            set.verdict("beta line", KindSet::EMPTY),
-            Verdict::Included(1)
-        );
-    }
-
-    /// `next_style` reads `self.filters.len()`, so it must be called before the
-    /// push that grows `filters`, not after — call it after and it reads one
-    /// too many and returns `DEFAULT_PALETTE[2]` instead of `DEFAULT_PALETTE[1]`. A mere
-    /// inequality would not catch that swap: `DEFAULT_PALETTE[2]` is still unequal to
-    /// both filter 0's colour and to `SEARCH_STYLE`. Pinning the exact colour
-    /// is the only assertion that sees the off-by-one.
-    #[test]
-    fn a_promoted_search_takes_the_next_palette_colour() {
-        let mut set = set_with(&["alpha"]);
-        set.set_search("beta").expect("valid pattern");
-        set.promote_search();
-
-        assert_eq!(
-            set.filters()[1].style.fg,
-            Some(DEFAULT_PALETTE[1]),
-            "index 1 is where the promoted filter actually lands"
-        );
-        assert_ne!(
-            set.filters()[1].style,
-            SEARCH_STYLE,
-            "a promoted filter is a keeper, not the live probe"
-        );
-    }
-
-    /// Promoting must not silently switch on a search the user had toggled off.
-    #[test]
-    fn promoting_preserves_the_enabled_state() {
-        let mut set = ActiveFilters::new();
-        set.set_search("beta").expect("valid pattern");
-        set.search_set_enabled(false);
-
-        set.promote_search();
-
-        assert!(!set.filters()[0].enabled);
-    }
-
-    #[test]
-    fn promoting_without_a_search_reports_failure_and_changes_nothing() {
-        let mut set = set_with(&["alpha"]);
-
-        assert!(!set.promote_search());
-        assert_eq!(set.len(), 1);
-    }
-
-    #[test]
-    fn promoting_drops_a_pending_capture() {
-        let mut set = ActiveFilters::new();
-        set.set_search("beta").expect("valid pattern");
-        set.disable_all_remembering();
-
-        set.promote_search();
-
-        assert!(!set.has_remembered());
     }
 
     /// The whole point of editing in place rather than deleting and retyping:
