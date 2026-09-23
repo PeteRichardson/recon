@@ -245,9 +245,18 @@ pub enum Predicate {
     Definition(Kind),
 }
 
-/// A regex that matches nothing: a word boundary and a non-boundary at the
-/// same position. Stands in for a `Definition` predicate in the compiled set.
-const NEVER: &str = r"\b\B";
+/// A regex that matches nothing: an empty character class. Stands in for a
+/// `Definition` predicate in the compiled set.
+///
+/// Empty by construction, not by contradiction. This used to be `\b\B` — a
+/// word boundary and a non-boundary at one position — which is just as
+/// impossible but is answered by running the `\b` machinery, and the regex
+/// crate's fast DFA cannot run a Unicode `\b` over non-ASCII text: every
+/// line with so much as an arrow in it fell back to a far slower engine,
+/// eleven times over, for a question whose answer is fixed (#265). A class
+/// that contains no character compiles to a dead state and costs nothing
+/// per line.
+const NEVER: &str = r"[^\s\S]";
 
 impl Predicate {
     /// What the pane shows: the regex's source, or the kind's plural noun.
@@ -839,6 +848,21 @@ impl ActiveFilters {
         self.filters.iter().enumerate().any(|(index, filter)| {
             matches!(filter.predicate, Predicate::Definition(_)) && self.effective(index)
         })
+    }
+
+    /// Whether a line's verdict reads the compiled set: an effective regex
+    /// filter of any sense, or an enabled search. What gates the `RegexSet`
+    /// pass in `verdict`, the counterpart of `needs_kinds` for the grammar
+    /// pass.
+    ///
+    /// Not `matcher().is_some()`: that is `None` when nothing *selects*,
+    /// and an excluding filter selects nothing yet still has to run over
+    /// every line. Any sense counts here.
+    #[must_use]
+    pub fn needs_regex(&self) -> bool {
+        self.filters.iter().enumerate().any(|(index, filter)| {
+            matches!(filter.predicate, Predicate::Regex(_)) && self.effective(index)
+        }) || self.search.as_ref().is_some_and(|search| search.enabled)
     }
 
     /// Build the startup set (#128): the scratch set, then `sets` in the
@@ -1566,6 +1590,14 @@ impl ActiveFilters {
         let Some(set) = self.compiled.as_ref().filter(|set| self.in_step(set)) else {
             return self.verdict_by_scanning(line, kinds);
         };
+        // Nothing in the compiled set can take effect, so it is not asked:
+        // one pass over the line is still one regex pass too many when
+        // there is no regex to run (#265). The scan is exact here — it
+        // tests only effective filters, and every one of those is a
+        // definition, answered from `kinds`.
+        if !self.needs_regex() {
+            return self.verdict_by_scanning(line, kinds);
+        }
         let matched = set.matches(line);
         let matched = |index: usize| matched.matched(index);
         // A definition's slot in the set never matches (see `NEVER`), so it
@@ -2502,6 +2534,55 @@ mod tests {
         assert!(!set.needs_kinds());
         set.set_enabled_set(index, true);
         assert!(set.needs_kinds());
+    }
+
+    /// The regex pass is paid only once a regex filter of any sense, or a
+    /// search, takes effect. The built-in set alone never asks for it.
+    #[test]
+    fn needs_regex_is_false_until_a_regex_filter_or_a_search_is_effective() {
+        let mut set = ActiveFilters::new();
+        assert!(!set.needs_regex(), "the built-in set is all definitions");
+
+        set.add("foo").expect("valid pattern");
+        assert!(set.needs_regex());
+        set.set_all_enabled(false);
+        assert!(!set.needs_regex(), "present is not effective");
+
+        // An excluding filter selects nothing, and `matcher` says so with
+        // `None`; it still runs over every line, so it counts here.
+        set.add_excluding("noise").expect("valid pattern");
+        assert!(set.needs_regex());
+        set.set_all_enabled(false);
+        assert!(!set.needs_regex());
+
+        set.set_search("bar").expect("valid pattern");
+        assert!(set.needs_regex());
+        set.search_set_enabled(false);
+        assert!(!set.needs_regex());
+    }
+
+    /// With no regex to run, a definition filter is still answered from the
+    /// kinds, and the definition filters the user left off still say
+    /// nothing — the guard changes what is asked, not what is answered.
+    #[test]
+    fn a_definition_filter_alone_is_answered_without_the_regex_pass() {
+        let mut set = ActiveFilters::new();
+        let index = builtin_index(&set);
+        set.set_enabled(0, true); // functions
+        set.set_enabled_set(index, true);
+        assert!(!set.needs_regex());
+
+        let functions = KindSet::of(&[Kind::Function]);
+        assert_eq!(
+            set.verdict("anything at all", functions),
+            Verdict::Included(0)
+        );
+        let structs = KindSet::of(&[Kind::Struct]);
+        assert_eq!(set.verdict("a struct line", structs), Verdict::Unmatched);
+        assert_eq!(
+            set.verdict("plain text", KindSet::EMPTY),
+            Verdict::Unmatched
+        );
     }
 
     /// Solo, reset and `!` treat it as any set.
