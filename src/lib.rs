@@ -318,6 +318,7 @@ use document::{Document, Mode};
 use editor::Launcher;
 use filter::ActiveFilters;
 use layout::{Divider, FilterHeight, NavWidth};
+use viewport::Step;
 use widgets::filenav::FileNav;
 use widgets::filenav::Match;
 use widgets::fileview::FileView;
@@ -2073,13 +2074,11 @@ impl App<'_> {
             return;
         }
         if !self.cross_file(backwards) {
-            // `step_to_interesting` wraps in silence when there is nothing to
-            // wrap to — right for `j`/`k`-style motions, wrong for a key whose
-            // whole job is finding a hit. Report the dead end instead.
-            if self.next_interesting(backwards).is_none() {
+            // `step_to_interesting` is quiet when there is nothing to wrap
+            // to — right for `/`, which lands where it lands, wrong for a key
+            // whose whole job is finding a hit. Report the dead end instead.
+            if self.step_to_interesting(backwards) == Step::Nothing {
                 self.report("no interesting line", false);
-            } else {
-                self.step_to_interesting(backwards);
             }
         }
     }
@@ -9842,8 +9841,62 @@ mod tests {
         assert_eq!(cursor_source(&app), 0, "did not wrap around to the hit");
     }
 
+    /// `step_visible` is the one walk `n`/`N` and the search share (#269).
+    /// It says whether it landed, wrapped, or found nothing, so the caller
+    /// can say so; and its predicate sees rows of the *visible* set, so in
+    /// hide mode a hidden line is never offered to it.
+    #[test]
+    fn step_visible_reports_the_wrap_and_walks_only_visible_rows() {
+        let mut app = app_over_file("step_visible", "hit a\nplain\nhit b\nplain\n");
+        key(&mut app, KeyCode::Char('t'));
+        app.filters.add("hit").expect("valid pattern");
+        app.refresh_view();
+        let hit = |document: &Document, row: usize| {
+            document
+                .source_at(row)
+                .is_some_and(|source| document.lines()[source].starts_with("hit"))
+        };
+
+        assert_eq!(app.step_visible(false, hit), Step::Landed);
+        assert_eq!(cursor_source(&app), 2, "forward from 0");
+        assert_eq!(app.step_visible(false, hit), Step::Wrapped);
+        assert_eq!(cursor_source(&app), 0, "past the end, back to the top");
+        assert_eq!(app.step_visible(true, hit), Step::Wrapped);
+        assert_eq!(cursor_source(&app), 2, "before the start, back to the end");
+        assert_eq!(app.step_visible(true, hit), Step::Landed);
+        assert_eq!(cursor_source(&app), 0, "backward from 2");
+
+        assert_eq!(
+            app.step_visible(false, |_, _| false),
+            Step::Nothing,
+            "nothing accepted"
+        );
+        assert_eq!(cursor_source(&app), 0, "moved with nothing accepted");
+
+        // The only accepted row is the cursor's own: a wrap onto itself.
+        let only_a = |document: &Document, row: usize| document.source_at(row) == Some(0);
+        assert_eq!(app.step_visible(false, only_a), Step::Wrapped);
+        assert_eq!(cursor_source(&app), 0, "stays put on the only hit");
+
+        // Hide mode: the visible set is the two hits, rows 0 and 1. A
+        // predicate that accepts every row it is shown never sees `plain`.
+        key(&mut app, KeyCode::Char('u'));
+        let offered = std::cell::RefCell::new(Vec::new());
+        let _ = app.next_visible_row(false, |document, row| {
+            offered.borrow_mut().push(document.source_at(row));
+            false
+        });
+        assert_eq!(
+            offered.into_inner(),
+            vec![Some(2), Some(0)],
+            "hidden lines were offered"
+        );
+        assert_eq!(app.step_visible(false, |_, _| true), Step::Landed);
+        assert_eq!(cursor_source(&app), 2, "next visible row in hide mode");
+    }
+
     /// The strict step is what lets `n` know it has run out of hits in this
-    /// file: unlike `next_interesting` it refuses to wrap.
+    /// file: unlike `step_to_interesting` it refuses to wrap.
     #[test]
     fn next_interesting_strict_does_not_wrap() {
         let mut app = app_over_file("strict_no_wrap", "hit\nplain\nhit\nplain\n");
