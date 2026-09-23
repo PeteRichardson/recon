@@ -22,6 +22,7 @@
 //! above has somewhere to live that isn't a comment buried mid-file.
 
 use crate::App;
+use crate::document::Document;
 use crate::filter::Verdict;
 use crate::keymap::ActionId;
 use crate::widgets;
@@ -30,6 +31,18 @@ use crate::widgets;
 /// steps or lands on one.
 pub(crate) fn is_interesting(verdict: &Verdict) -> bool {
     matches!(verdict, Verdict::Included(_) | Verdict::Searched)
+}
+
+/// What `App::step_visible` did, so the caller can say so.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Step {
+    /// Landed on a row further along in the direction asked.
+    Landed,
+    /// Landed after passing the file's edge — on the cursor's own row, when
+    /// it is the only row the predicate accepts.
+    Wrapped,
+    /// No visible row is accepted. The cursor did not move.
+    Nothing,
 }
 
 impl App<'_> {
@@ -307,40 +320,84 @@ impl App<'_> {
         None
     }
 
-    /// The next source line matched by an enabled including filter or by the
-    /// live search, walking from the cursor and wrapping once.
+    /// The next visible row that `keep` accepts, walking from the cursor's
+    /// row in the direction asked and wrapping once — and whether the walk
+    /// passed the file's edge to reach it.
+    ///
+    /// The row the cursor is on is considered last: a step moves off it if
+    /// any other row is accepted, and stays put (having wrapped) if it is the
+    /// only one. `None` when no visible row is accepted at all.
+    ///
+    /// `keep` sees the document and a row of its **visible set**, never a
+    /// source line: the walk is over what the user can see, so a caller
+    /// whose test is on the source line maps through `source_at` itself,
+    /// the way `step_to_interesting` does.
+    pub(crate) fn next_visible_row(
+        &self,
+        backwards: bool,
+        keep: impl Fn(&Document, usize) -> bool,
+    ) -> Option<(usize, bool)> {
+        let len = self.document.visible().len();
+        if len == 0 {
+            return None;
+        }
+        let from = self.view.cursor_visible_row().min(len - 1);
+        (1..=len)
+            .map(|step| {
+                if backwards {
+                    let wrapped = step > from;
+                    ((from + len - step) % len, wrapped)
+                } else {
+                    let wrapped = from + step >= len;
+                    ((from + step) % len, wrapped)
+                }
+            })
+            .find(|&(row, _)| keep(&self.document, row))
+    }
+
+    /// Move the file view's cursor to the next visible row that `keep`
+    /// accepts, forwards or backwards from the cursor and wrapping once,
+    /// bringing the window with it. Quiet when no row is accepted: the
+    /// caller decides whether that is worth a word (#269).
+    ///
+    /// The one stepping routine in the file view. `n`/`N` step interesting
+    /// lines through it, and a search steps its hits through it, so the
+    /// wrap — and, when it gets one, the wrap message — is written once.
     ///
     /// Line-oriented rather than span-oriented: a line with three matches is
     /// one stop. `recon` is a line-focused tool, and the alternative — three
     /// stops on a search hit but one on a filter hit — is a distinction that
     /// cannot be explained without explaining the implementation.
+    pub(crate) fn step_visible(
+        &mut self,
+        backwards: bool,
+        keep: impl Fn(&Document, usize) -> bool,
+    ) -> Step {
+        let Some((row, wrapped)) = self.next_visible_row(backwards, keep) else {
+            return Step::Nothing;
+        };
+        self.jump_to_visible_row(row);
+        if wrapped { Step::Wrapped } else { Step::Landed }
+    }
+
+    /// Move the file view's cursor to the next interesting line, wrapping, if
+    /// there is one. `step_visible` with the interesting-line predicate.
     ///
     /// An interesting line is always visible in both modes: `Excluded` is the
     /// only verdict that hides a line in `Dimmed`, and it is never
-    /// interesting. So the caller can map through `visible_position` without
-    /// a fallback for "the target is hidden".
-    pub(crate) fn next_interesting(&self, backwards: bool) -> Option<usize> {
-        let verdicts = self.document.verdicts();
-        let len = verdicts.len();
-        if len == 0 {
-            return None;
-        }
-        let from = self.cursor_source();
-        // 1..=len, so the line the cursor is on is considered last: `n` moves
-        // off it if anything else matches, and stays put if it is the only
-        // interesting line in the file.
-        (1..=len)
-            .map(|step| {
-                if backwards {
-                    (from + len - step) % len
-                } else {
-                    (from + step) % len
-                }
-            })
-            .find(|&index| is_interesting(&verdicts[index]))
+    /// interesting. So walking the visible rows visits every interesting line
+    /// the file has, in file order, the same as walking the source lines
+    /// would.
+    pub(crate) fn step_to_interesting(&mut self, backwards: bool) -> Step {
+        self.step_visible(backwards, |document, row| {
+            document
+                .source_at(row)
+                .and_then(|source| document.verdicts().get(source))
+                .is_some_and(is_interesting)
+        })
     }
 
-    /// `next_interesting` without the wrap: `None` once the cursor is past the
+    /// `step_to_interesting` without the wrap: `None` once the cursor is past the
     /// last interesting line (or before the first, going backwards). This is
     /// how `n` learns it has finished the file and should move to the next
     /// one rather than circle back.
@@ -405,14 +462,6 @@ impl App<'_> {
             self.view.land_cursor_on_row(screen_row);
         }
         self.place_cursor_on_visible_row(row);
-    }
-
-    /// Move the file view's cursor to the next interesting line, wrapping, if
-    /// there is one. Quiet when there is not.
-    pub(crate) fn step_to_interesting(&mut self, backwards: bool) {
-        if let Some(target) = self.next_interesting(backwards) {
-            self.land_on(target);
-        }
     }
 
     /// Put the cursor on `row` of the **visible set**, bringing the window with
