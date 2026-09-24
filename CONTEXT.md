@@ -21,6 +21,31 @@ it, *context* keeps it on screen without colouring it.
 A named group of filters loaded together and toggled as one. The unnamed set
 the user builds by hand is the *scratch set*.
 
+**Known set**:
+A filter set recon found at startup, listed or not.
+_Avoid_: discovered, available
+
+**Listed / Unlisted**:
+Whether a known set has a row in the filter pane. An unlisted set has no
+effect on what the user sees. The scratch set is always listed.
+_Avoid_: loaded, unloaded, hidden, shelved
+
+**Enabled / Disabled** (of a set):
+Whether a listed set's filters show in the pane and can be toggled. A disabled
+set shows only its header row. Only a listed set can be enabled.
+_Avoid_: active, inactive, expanded, collapsed
+
+**Autoload**:
+A set's startup value of *enabled*. `listed` is its startup value of *listed*,
+and an unlisted set never autoloads. `--set` enables a set whatever its
+autoload says.
+_Avoid_: default (that is a profile name), startup set
+
+**Set picker**:
+The list that covers the whole recon window, of every known set except the
+scratch set, where the user lists and unlists sets. Its checkbox means *listed*, never *enabled*.
+_Avoid_: catalogue, set list, filter list
+
 **Interesting line**:
 A line an enabled including filter matches. `n` and `N` step between
 interesting lines when no search is set, and hide mode keeps only them.
