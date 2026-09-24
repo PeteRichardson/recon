@@ -2,6 +2,10 @@
 name = "recon"
 version = "0.1.0"
 edition = "2024"
+# Mirrors the floor in `vendor/tui-textarea-2/Cargo.toml`. Without it, an old
+# toolchain fails inside the fork with an error that names a dependency, not
+# recon. Keep the two in step.
+rust-version = "1.88.0"
 license = "MIT"
 
 # `cargo machete` reports `tui-textarea-2` as unused. It is a false positive

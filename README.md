@@ -132,7 +132,9 @@ motions throughout.
 
 - **Rust 1.88.0 or later** — required by the vendored `tui-textarea-2` fork.
   Both it and `recon` are edition 2024, which itself needs only 1.85; the
-  fork's own floor is what sets 1.88.
+  fork's own floor is what sets 1.88. `Cargo.toml` declares the same
+  `rust-version`, so an older toolchain is refused with an error that names
+  `recon` rather than one that fails inside the fork.
 - **A terminal.** `recon` enters raw mode and the alternate screen; it exits
   with `Device not configured (os error 6)` if stderr isn't a TTY. stdout may be a pipe or a capture — see [Emitting the result](#emitting-the-result).
 
@@ -1853,8 +1855,8 @@ carries its reasoning in `src/widgets/mod.rs`.
 
 **Toolchain: stable, unpinned.** There is no `rust-toolchain.toml`, so local
 builds use whatever you have and CI uses current stable. The floor that matters
-is the 1.88.0 in Prerequisites, set by the vendored fork; stable is always past
-it. The trade is that a stable release can break the build on a day nobody
+is the 1.88.0 in Prerequisites, set by the vendored fork and mirrored by the
+root `rust-version`; stable is always past it. The trade is that a stable release can break the build on a day nobody
 touched the repo — acceptable in exchange for seeing new lints as they land,
 and for not forcing a toolchain download on everyone who clones the repo.
 
