@@ -1543,7 +1543,10 @@ motion the file view has grows the selection: `j`, `k`, `w`, `$`, `G`, even `n`
 and `/`. `V` selects whole lines instead of characters, which is what a run of
 log lines wants; pressing `v` or `V` again ends the selection, and pressing the
 other switches between the two without losing where you started. The status row
-carries a ` VISUAL ` or ` V-LINE ` badge for as long as one is live.
+carries a ` VISUAL ` or ` V-LINE ` badge for as long as one is live. `/` in a
+selection grows it to the hit as you type, so "from here to the next `ERROR`"
+is one search and one `y`; `Esc` in the prompt puts the selection back as it
+was.
 
 The mouse does the same job with no keys: drag across the text to select it,
 or double-click to select the word under the pointer — by the same rule `*`
