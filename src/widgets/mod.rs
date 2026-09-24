@@ -3,6 +3,7 @@ pub(crate) mod fileview;
 pub(crate) mod filterlist;
 pub(crate) mod listmotion;
 pub(crate) mod picker;
+pub(crate) mod setpicker;
 
 use ratatui::prelude::{Color, Style};
 use ratatui::widgets::{Block, BorderType};

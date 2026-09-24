@@ -325,7 +325,7 @@ pub enum Origin {
     File(PathBuf),
     /// A set recon ships (#127): always present, its filters never in the
     /// file. A `[sets.<name>]` table may set its `priority`, `autoload`,
-    /// `listed` and `profiles` and nothing else. Its filters take no number and no palette colour.
+    /// `listed`, `description` and `profiles` and nothing else. Its filters take no number and no palette colour.
     BuiltIn,
 }
 
@@ -333,6 +333,11 @@ pub enum Origin {
 /// classes, structs, enums — answered by the grammar pass in
 /// `syntax::definitions` (#127).
 pub const DEFINITIONS_SET: &str = "definitions";
+
+/// What the set picker says about the built-in set when the file's
+/// `[sets.definitions]` table gives no `description` of its own (#284).
+pub const DEFINITIONS_DESCRIPTION: &str =
+    "Functions, types and other definitions, found by the syntax grammar";
 
 /// Whether `name` is a set recon ships, which the file may position and
 /// switch but not fill.
@@ -363,6 +368,8 @@ pub struct FilterSet {
     /// 0002); `set_listed` changes it for the session.
     pub listed: bool,
     pub enabled: bool,
+    /// One line for the set picker (#284), or `None` for a blank.
+    pub description: Option<String>,
     /// Named subsets of this set's filters, by `Filter::display_name`.
     pub profiles: BTreeMap<String, Vec<String>>,
 }
@@ -376,6 +383,7 @@ impl FilterSet {
             autoload: true,
             listed: true,
             enabled: true,
+            description: None,
             profiles: BTreeMap::new(),
         }
     }
@@ -414,6 +422,8 @@ pub struct LoadedSet {
     pub autoload: bool,
     /// The file's `listed`, `true` when absent. Wins over `autoload`.
     pub listed: bool,
+    /// The file's `description`, `None` when absent (#284).
+    pub description: Option<String>,
     pub profiles: BTreeMap<String, Vec<String>>,
     pub filters: Vec<LoadedFilter>,
     /// A `[sets.<name>]` table naming a built-in set: `priority`,
@@ -438,6 +448,7 @@ impl LoadedSet {
             priority: crate::filtersets::DEFAULT_PRIORITY,
             autoload: false,
             listed: true,
+            description: None,
             profiles: BTreeMap::new(),
             filters: Vec::new(),
             builtin: true,
@@ -849,6 +860,13 @@ impl ActiveFilters {
                     autoload: loaded.autoload,
                     listed: loaded.listed,
                     enabled: false,
+                    // Recon describes its own set; the table can override.
+                    description: Some(
+                        loaded
+                            .description
+                            .clone()
+                            .unwrap_or_else(|| DEFINITIONS_DESCRIPTION.to_string()),
+                    ),
                     profiles: loaded.profiles.clone(),
                 });
                 // No palette colour: a built-in filter wears the terminal's
@@ -872,6 +890,7 @@ impl ActiveFilters {
                 autoload: loaded.autoload,
                 listed: loaded.listed,
                 enabled: false,
+                description: loaded.description.clone(),
                 profiles: loaded.profiles.clone(),
             });
             for filter in &loaded.filters {
@@ -1153,6 +1172,8 @@ impl ActiveFilters {
                 autoload: false,
                 listed: true,
                 enabled: true,
+                // `S` writes no description (#284), so the session has none.
+                description: None,
                 profiles,
             },
         );
@@ -1703,6 +1724,7 @@ pub(crate) mod test_support {
             priority,
             autoload,
             listed: true,
+            description: None,
             profiles: BTreeMap::new(),
             filters: patterns
                 .iter()
@@ -3963,5 +3985,34 @@ mod tests {
         let mut set = ActiveFilters::new();
         assert!(set.set_listed(1, false), "and unlisted in a session");
         assert!(!set.sets()[1].listed);
+    }
+
+    // ---- descriptions (#284) -----------------------------------------------
+
+    #[test]
+    fn the_definitions_set_has_a_builtin_description_the_table_can_override() {
+        let set = ActiveFilters::new();
+        assert_eq!(
+            set.sets()[1].description.as_deref(),
+            Some(DEFINITIONS_DESCRIPTION)
+        );
+
+        let mut table = builtin_override(crate::filtersets::DEFAULT_PRIORITY, false);
+        table.description = Some("mine".into());
+        let set = ActiveFilters::with_sets(None, &[table]);
+        assert_eq!(set.sets()[1].description.as_deref(), Some("mine"));
+    }
+
+    #[test]
+    fn a_file_set_carries_its_description() {
+        let mut a = loaded("a", 50, false, &["x"]);
+        a.description = Some("logs".into());
+        let set = ActiveFilters::with_sets(None, &[a, loaded("b", 60, false, &["y"])]);
+        let described = |name: &str| {
+            let meta = set.sets().iter().find(|meta| meta.name == name);
+            meta.expect("known").description.clone()
+        };
+        assert_eq!(described("a").as_deref(), Some("logs"));
+        assert_eq!(described("b"), None);
     }
 }

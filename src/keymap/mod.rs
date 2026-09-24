@@ -67,6 +67,8 @@ pub(crate) enum Scope {
     Help,
     /// The profile picker is open.
     Picker,
+    /// The set picker is open (#284).
+    Sets,
     /// Checked for every key that no modal scope claimed.
     Global,
     Nav,
@@ -100,6 +102,7 @@ impl Scope {
             Self::Prompt => "prompt",
             Self::Help => "help",
             Self::Picker => "picker",
+            Self::Sets => "sets",
             Self::Global => "global",
             Self::Nav => "nav",
             Self::View => "view",
@@ -155,6 +158,8 @@ pub(crate) enum ActionId {
     GlobalYank,
     GlobalPageDown,
     GlobalPageUp,
+    /// Open the set picker (#284).
+    GlobalSets,
     // Bound the same way in more than one pane scope — see the bare-name
     // rule in the doc comment above.
     HitNext,
@@ -231,6 +236,12 @@ pub(crate) enum ActionId {
     PickerDown,
     PickerChoose,
     PickerCancel,
+    // Set picker (#284)
+    SetsUp,
+    SetsDown,
+    SetsToggle,
+    SetsApply,
+    SetsCancel,
     // The help overlay itself has no ActionId: any key dismisses it, so
     // there is nothing to bind or rebind, and Scope::Help carries no DEFAULT
     // rows for the same reason (#59).
@@ -273,6 +284,7 @@ impl ActionId {
             Self::GlobalYank => "global.yank",
             Self::GlobalPageDown => "global.page.down",
             Self::GlobalPageUp => "global.page.up",
+            Self::GlobalSets => "global.sets",
             Self::HitNext => "hit.next",
             Self::HitPrev => "hit.prev",
             Self::NavUp => "nav.up",
@@ -339,6 +351,11 @@ impl ActionId {
             Self::PickerDown => "picker.down",
             Self::PickerChoose => "picker.choose",
             Self::PickerCancel => "picker.cancel",
+            Self::SetsUp => "sets.up",
+            Self::SetsDown => "sets.down",
+            Self::SetsToggle => "sets.toggle",
+            Self::SetsApply => "sets.apply",
+            Self::SetsCancel => "sets.cancel",
         }
     }
 }
@@ -385,6 +402,7 @@ pub(crate) const DEFAULT: &[(Scope, &str, ActionId)] = &[
     (Scope::Global, "y", ActionId::GlobalYank),
     (Scope::Global, "]", ActionId::GlobalPageDown),
     (Scope::Global, "[", ActionId::GlobalPageUp),
+    (Scope::Global, "L", ActionId::GlobalSets),
     // `n`/`N` are scoped away from Global (#59 review): `src/lib.rs`'s
     // global arm is guarded `self.focus != Focus::Nav`, so in the navigator
     // it never fires and the key falls through to `filenav.rs`'s own
@@ -495,6 +513,13 @@ pub(crate) const DEFAULT: &[(Scope, &str, ActionId)] = &[
     (Scope::Picker, "Down", ActionId::PickerDown),
     (Scope::Picker, "Enter", ActionId::PickerChoose),
     (Scope::Picker, "Esc", ActionId::PickerCancel),
+    (Scope::Sets, "k", ActionId::SetsUp),
+    (Scope::Sets, "Up", ActionId::SetsUp),
+    (Scope::Sets, "j", ActionId::SetsDown),
+    (Scope::Sets, "Down", ActionId::SetsDown),
+    (Scope::Sets, "space", ActionId::SetsToggle),
+    (Scope::Sets, "Enter", ActionId::SetsApply),
+    (Scope::Sets, "Esc", ActionId::SetsCancel),
 ];
 
 /// Keys 1.0 promises to 1.1, bound to nothing.
@@ -1099,7 +1124,8 @@ mod tests {
         // must not be free to disagree with it.
         assert!(Scope::Prompt < Scope::Help);
         assert!(Scope::Help < Scope::Picker);
-        assert!(Scope::Picker < Scope::Global);
+        assert!(Scope::Picker < Scope::Sets);
+        assert!(Scope::Sets < Scope::Global);
         assert!(Scope::Global < Scope::Nav);
     }
 
@@ -1778,6 +1804,7 @@ mod tests {
                 Scope::Prompt,
                 Scope::Help,
                 Scope::Picker,
+                Scope::Sets,
                 Scope::Global,
                 Scope::Nav,
                 Scope::View,

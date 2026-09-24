@@ -47,6 +47,10 @@ struct SetSchema {
     /// Listed at startup (#282). `true` when absent; `false` wins over
     /// `autoload = true` rather than refusing the file (ADR 0002).
     listed: Option<bool>,
+    /// One line of plain text for the set picker (#284). No default: a set
+    /// without one shows a blank, except the built-in set, which recon
+    /// describes itself.
+    description: Option<String>,
     mode: Option<String>,
     #[serde(default)]
     profiles: BTreeMap<String, Vec<String>>,
@@ -176,6 +180,19 @@ pub fn parse(text: &str, path: &Path) -> Result<Vec<LoadedSet>, Error> {
         if name.is_empty() {
             return Err(invalid(&name, None, "a set's name cannot be empty".into()));
         }
+        // One line (#284): the picker gives each set one row, and a line
+        // break would draw over the next set's row.
+        if schema
+            .description
+            .as_deref()
+            .is_some_and(|text| text.contains(['\n', '\r']))
+        {
+            return Err(invalid(
+                &name,
+                None,
+                "`description` must be one line of text".into(),
+            ));
+        }
         if let Some(mode) = &schema.mode
             && mode != ONLY_MODE
         {
@@ -197,7 +214,7 @@ pub fn parse(text: &str, path: &Path) -> Result<Vec<LoadedSet>, Error> {
                     None,
                     format!(
                         "{name:?} is a built-in set; its table may set `priority`, \
-                         `autoload`, `listed` and `profiles` only"
+                         `autoload`, `listed`, `description` and `profiles` only"
                     ),
                 ));
             }
@@ -224,6 +241,7 @@ pub fn parse(text: &str, path: &Path) -> Result<Vec<LoadedSet>, Error> {
                 priority: schema.priority.unwrap_or(DEFAULT_PRIORITY),
                 autoload: schema.autoload.unwrap_or(false),
                 listed: schema.listed.unwrap_or(true),
+                description: schema.description,
                 profiles: schema.profiles,
                 filters: Vec::new(),
                 builtin: true,
@@ -287,6 +305,7 @@ pub fn parse(text: &str, path: &Path) -> Result<Vec<LoadedSet>, Error> {
             priority: schema.priority.unwrap_or(DEFAULT_PRIORITY),
             autoload: schema.autoload.unwrap_or(false),
             listed: schema.listed.unwrap_or(true),
+            description: schema.description,
             profiles: schema.profiles,
             filters,
             builtin: false,
@@ -853,5 +872,33 @@ sense = "context"
         let sets = parsed("[sets.definitions]\nlisted = false\n");
         assert!(sets[0].builtin);
         assert!(!sets[0].listed);
+    }
+
+    // ---- description (#284) ------------------------------------------------
+
+    #[test]
+    fn description_is_optional() {
+        let sets = parsed(&format!(
+            "{MINIMAL}[sets.b]\ndescription = 'Rust source'\n[[sets.b.filters]]\npattern = 'y'\n"
+        ));
+        let a = sets.iter().find(|set| set.name == "a").expect("a");
+        let b = sets.iter().find(|set| set.name == "b").expect("b");
+        assert_eq!(a.description, None);
+        assert_eq!(b.description.as_deref(), Some("Rust source"));
+    }
+
+    #[test]
+    fn a_builtin_set_table_accepts_description() {
+        let sets = parsed("[sets.definitions]\ndescription = 'mine'\n");
+        assert!(sets[0].builtin);
+        assert_eq!(sets[0].description.as_deref(), Some("mine"));
+    }
+
+    #[test]
+    fn a_description_of_more_than_one_line_is_refused() {
+        let message = rejected(
+            "[sets.a]\ndescription = \"\"\"one\ntwo\"\"\"\n[[sets.a.filters]]\npattern = 'x'\n",
+        );
+        assert!(message.contains("one line"), "{message}");
     }
 }
