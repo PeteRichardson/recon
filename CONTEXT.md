@@ -66,8 +66,8 @@ _Avoid_: match (used for filters)
 
 **Origin**:
 Where the user was when they pressed `/`: the cursor and scroll in the file
-view, or the selected row in the navigator. Esc in the prompt returns there;
-Enter keeps the position the search reached.
+view, or the selected row in the navigator or the set picker. Esc in the
+prompt returns there; Enter keeps the position the search reached.
 
 **Promote**:
 Turn the current search into a numbered include filter with `p`. The pattern
@@ -75,8 +75,8 @@ crosses from search to filter; the search itself is cleared.
 
 **History**:
 The patterns Enter committed in a `/` prompt, newest first, that Up and Down
-recall in the next one. The file search and the filename search each keep
-their own; a filter prompt keeps none.
+recall in the next one. The file search, the filename search and the set
+picker's search each keep their own; a filter prompt keeps none.
 _Avoid_: recent searches, last patterns
 
 ### The view

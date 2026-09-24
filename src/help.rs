@@ -791,6 +791,16 @@ pub const KEYMAP: &[Section] = &[
                 names: &["sets.toggle"],
             },
             Binding {
+                keys: &["/"],
+                action: "Search the names and the descriptions",
+                names: &["sets.search"],
+            },
+            Binding {
+                keys: &["n", "N"],
+                action: "Next / previous row the search matches",
+                names: &["sets.hit.next", "sets.hit.prev"],
+            },
+            Binding {
                 keys: &["Enter"],
                 action: "Apply the changes",
                 names: &["sets.apply"],
@@ -1432,18 +1442,19 @@ mod tests {
     /// any further has nowhere left to go without this area's width growing
     /// past 151 — which would stop the second test here from failing on the
     /// regression it exists to catch — and a row that adds to *either* total
-    /// has to be re-measured against both. The height, 49, is likewise the
-    /// exact number of rows two columns hold at the current row count (97,
+    /// has to be re-measured against both. The height, 50, is likewise the
+    /// exact number of rows two columns hold at the current row count (99,
     /// after the two reserved-key rows of #242 raised it from 86 to 88,
-    /// the two search-history rows of #274 to 90, and the `L` row and the
-    /// set picker's section of #284 to 97); adding a row without
+    /// the two search-history rows of #274 to 90, the `L` row and the
+    /// set picker's section of #284 to 97, and the picker's two search rows
+    /// of #285 to 99); adding a row without
     /// raising the height would drop it off the bottom, which is a
     /// `shown(&columns) == rows.len()` failure below, not a width one.
     #[test]
     fn a_normal_terminal_shows_the_whole_keymap() {
         let rows = rows(&crate::keymap::Keymap::default());
 
-        let columns = layout(&rows, inner(150, 49));
+        let columns = layout(&rows, inner(150, 50));
 
         assert_eq!(shown(&columns), rows.len(), "the keymap did not fit");
         assert!(

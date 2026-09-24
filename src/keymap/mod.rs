@@ -242,6 +242,10 @@ pub(crate) enum ActionId {
     SetsToggle,
     SetsApply,
     SetsCancel,
+    /// `/` in the set picker (#285).
+    SetsSearch,
+    SetsHitNext,
+    SetsHitPrev,
     // The help overlay itself has no ActionId: any key dismisses it, so
     // there is nothing to bind or rebind, and Scope::Help carries no DEFAULT
     // rows for the same reason (#59).
@@ -356,6 +360,9 @@ impl ActionId {
             Self::SetsToggle => "sets.toggle",
             Self::SetsApply => "sets.apply",
             Self::SetsCancel => "sets.cancel",
+            Self::SetsSearch => "sets.search",
+            Self::SetsHitNext => "sets.hit.next",
+            Self::SetsHitPrev => "sets.hit.prev",
         }
     }
 }
@@ -520,6 +527,9 @@ pub(crate) const DEFAULT: &[(Scope, &str, ActionId)] = &[
     (Scope::Sets, "space", ActionId::SetsToggle),
     (Scope::Sets, "Enter", ActionId::SetsApply),
     (Scope::Sets, "Esc", ActionId::SetsCancel),
+    (Scope::Sets, "/", ActionId::SetsSearch),
+    (Scope::Sets, "n", ActionId::SetsHitNext),
+    (Scope::Sets, "N", ActionId::SetsHitPrev),
 ];
 
 /// Keys 1.0 promises to 1.1, bound to nothing.
