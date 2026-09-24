@@ -389,10 +389,15 @@ impl FileNav<'_> {
         self.navlist = List::new(items);
     }
 
-    /// Start a search over the entry names, moving to the first match.
+    /// Set a search over the entry names and step to its next match: what
+    /// `/` then Enter did before the search moved as it was typed (#272).
+    /// `App` now sets the search with `set_search` and moves with `hit_from`
+    /// and `go_to_entry`; this stays as the shortest way for a test to set
+    /// up a search in a direction and exercise the step `n`/`N` still take.
     ///
     /// The pattern is a regular expression, matching how the file view
     /// searches, so `^foo` anchors to the start of a name.
+    #[cfg(test)]
     pub(crate) fn search(
         &mut self,
         pattern: &str,
@@ -402,6 +407,30 @@ impl FileNav<'_> {
         self.search_reverse = reverse;
         self.rebuild_list();
         Ok(self.step_search(reverse))
+    }
+
+    /// Set the filename search, or clear it with `None`, without moving the
+    /// selection: the names it matches are restyled, and that is all.
+    ///
+    /// This is the half of `search` that a `/` typed in the navigator wants
+    /// on every keystroke (#272): the pattern is set so the matching names
+    /// light up, and *where* to go is a separate question, answered by
+    /// `hit_from` against the origin rather than by a step from wherever
+    /// the last keystroke landed. Esc puts a previous search back through
+    /// here too.
+    ///
+    /// The direction is forward. Every `/` is; a search set by this method
+    /// is a typed one, or the restore of one.
+    pub(crate) fn set_search(&mut self, matcher: Option<Regex>) {
+        self.matcher = matcher;
+        self.search_reverse = false;
+        self.rebuild_list();
+    }
+
+    /// The filename search that is set, if any, for a prompt to keep and
+    /// put back on Esc. A `Regex` clones cheaply: it is a handle.
+    pub(crate) fn search_matcher(&self) -> Option<Regex> {
+        self.matcher.clone()
     }
 
     /// Drop the filename search, restoring the plain listing styles.
@@ -418,6 +447,45 @@ impl FileNav<'_> {
     /// Whether a filename search is active.
     pub(crate) fn has_search(&self) -> bool {
         self.matcher.is_some()
+    }
+
+    /// The first listed entry at or after entry `from`, wrapping once, whose
+    /// name the filename search matches. `None` with no search set or no
+    /// match in the listing.
+    ///
+    /// `from` itself is considered first, so a name it matches is found
+    /// without a step — the difference from `n`, which considers the
+    /// selection last. It names an `entries` index, not a row: a scan answer
+    /// that re-lists the rows while the prompt is open cannot move it. An
+    /// entry the listing has since dropped starts the walk from the
+    /// selection instead.
+    pub(crate) fn hit_from(&self, from: usize) -> Option<usize> {
+        let matcher = self.matcher.as_ref()?;
+        let count = self.visible.len();
+        if count == 0 {
+            return None;
+        }
+        let start = self
+            .visible
+            .iter()
+            .position(|&index| index == from)
+            .or_else(|| self.list.selected())
+            .unwrap_or(0);
+        (0..count)
+            .map(|step| self.visible[(start + step) % count])
+            .find(|&index| matcher.is_match(&self.entries[index].matchable()))
+    }
+
+    /// Select entry `index` and ask for its preview, exactly as `j` onto that
+    /// row would. Nothing when it is already selected, or is not listed: a
+    /// probe that stays put must not reload the pane it is looking at.
+    pub(crate) fn go_to_entry(&mut self, index: usize) -> Option<Action> {
+        if self.selected_entry() == Some(index) {
+            return None;
+        }
+        let row = self.visible.iter().position(|&v| v == index)?;
+        self.list.select(Some(row));
+        self.preview_selection()
     }
 
     /// `n`/`N`: the next filename-search match if a search is active, else
