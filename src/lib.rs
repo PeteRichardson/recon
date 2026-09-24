@@ -1038,6 +1038,10 @@ impl App<'_> {
 
     /// Put the cursor and the scroll back where `/` found them.
     ///
+    /// A selection comes back with them (#273): its anchor never moved, and
+    /// its other end *is* the view's cursor, so restoring the cursor is
+    /// restoring the selection. Nothing here touches `visual`.
+    ///
     /// The landing row is requested first: `place_cursor_on_visible_row`
     /// keeps an earlier request when it rebuilds the buffer, and the render
     /// applies it whether or not a rebuild happened, so the cursor is drawn
@@ -15267,6 +15271,183 @@ mod tests {
         };
         assert!(reversed(row_of("alpha")), "the anchor row is not painted");
         assert!(reversed(row_of("beta")), "the cursor row is not painted");
+    }
+
+    // ---- `/` grows a selection to the hit (#273) -------------------------
+
+    /// With `v` active, `/` keeps the anchor and moves the cursor with the
+    /// incremental search, so the selection reaches the hit line while the
+    /// pattern is typed. With `V`, it covers whole lines.
+    #[test]
+    fn a_search_grows_the_selection_to_the_hit_while_typing() {
+        for linewise in [false, true] {
+            let (mut app, _) = app_for_yank(
+                &format!("search_grows_{linewise}"),
+                "alpha one\nbeta two\ngamma ERROR here\ndelta\n",
+            );
+            key(&mut app, KeyCode::Char('l'));
+            key(&mut app, KeyCode::Char('l'));
+            key(&mut app, KeyCode::Char(if linewise { 'V' } else { 'v' }));
+            key(&mut app, KeyCode::Char('/'));
+            typed(&mut app, "ERR");
+            draw(&mut app);
+
+            assert!(app.prompt.is_some(), "sanity: the prompt is open");
+            assert_eq!(
+                cursor_source(&app),
+                2,
+                "the search did not move while typing"
+            );
+            assert_eq!(
+                app.visual.map(|v| (v.anchor, v.col, v.linewise)),
+                Some((0, 2, linewise)),
+                "the prompt lost or moved the anchor"
+            );
+            // `gamma ` is six characters, so the hit is at column 6 and a
+            // character-wise selection includes it: the end is exclusive.
+            let expected = if linewise {
+                ((0, 0), (2, "gamma ERROR here".len()))
+            } else {
+                ((0, 2), (2, 7))
+            };
+            assert_eq!(
+                app.painted_selection(),
+                Some(expected),
+                "the selection is not painted from the anchor to the hit"
+            );
+        }
+    }
+
+    /// Enter keeps the selection the search reached, and `y` copies the
+    /// lines it covers: "from here to the next ERROR" is one search and one
+    /// yank.
+    #[test]
+    fn enter_keeps_the_grown_selection_and_y_copies_it() {
+        let (mut app, clipboard) =
+            app_for_yank("search_grows_yank", "alpha\nbeta\ngamma ERROR\ndelta\n");
+        key(&mut app, KeyCode::Char('V'));
+        key(&mut app, KeyCode::Char('/'));
+        typed(&mut app, "ERROR");
+        key(&mut app, KeyCode::Enter);
+
+        assert!(app.prompt.is_none(), "Enter left the prompt open");
+        assert!(app.visual.is_some(), "Enter ended the selection");
+        assert_eq!(cursor_source(&app), 2, "Enter did not keep the position");
+
+        key(&mut app, KeyCode::Char('y'));
+        assert_eq!(clipboard.only_copy(), "alpha\nbeta\ngamma ERROR\n");
+        assert_eq!(message(&app), Some("yanked 3 lines"));
+    }
+
+    /// The yank rule is unchanged by how the selection grew: the search
+    /// finds the hit among the visible lines, and `y` copies the visible
+    /// lines between the anchor and it, skipping the hidden ones.
+    #[test]
+    fn a_grown_selection_yanks_only_the_visible_lines() {
+        let (mut app, clipboard) = app_for_yank(
+            "search_grows_hidden",
+            "keep a\nmiss\nkeep b\nmiss\nkeep ERROR\nkeep after\n",
+        );
+        key(&mut app, KeyCode::Char('f'));
+        key(&mut app, KeyCode::Char('i'));
+        typed(&mut app, "keep");
+        key(&mut app, KeyCode::Enter);
+        key(&mut app, KeyCode::Char('t'));
+        key(&mut app, KeyCode::Char('u'));
+        key(&mut app, KeyCode::Char('g'));
+        assert_eq!(
+            cursor_source(&app),
+            0,
+            "sanity: the cursor starts on the first line"
+        );
+
+        key(&mut app, KeyCode::Char('V'));
+        key(&mut app, KeyCode::Char('/'));
+        typed(&mut app, "ERROR");
+        key(&mut app, KeyCode::Enter);
+        key(&mut app, KeyCode::Char('y'));
+
+        assert_eq!(clipboard.only_copy(), "keep a\nkeep b\nkeep ERROR\n");
+        assert_eq!(message(&app), Some("yanked 3 lines"));
+    }
+
+    /// Esc in the prompt puts back the cursor, the scroll and the selection
+    /// exactly as they were before `/`: a bad probe does not lose the
+    /// selection, and does not leave it grown either.
+    #[test]
+    fn esc_in_the_prompt_restores_the_selection_with_the_origin() {
+        let mut app = app_over_file("search_grows_esc", &numbered_lines(400));
+        draw_tall(&mut app);
+        key(&mut app, KeyCode::Char('t'));
+        for _ in 0..40 {
+            key(&mut app, KeyCode::Char('j'));
+        }
+        key(&mut app, KeyCode::Char('l'));
+        key(&mut app, KeyCode::Char('l'));
+        draw_tall(&mut app);
+        let (row, col, screen_row) = (
+            cursor_source(&app),
+            app.view.cursor_col(),
+            cursor_screen_row(&app),
+        );
+        assert!(screen_row > 0, "sanity: the cursor is off the top row");
+
+        key(&mut app, KeyCode::Char('v'));
+        let before = app.visual;
+        assert!(before.is_some(), "sanity: a selection is active");
+
+        key(&mut app, KeyCode::Char('/'));
+        typed(&mut app, "line 300$");
+        draw_tall(&mut app);
+        assert_eq!(cursor_source(&app), 300, "sanity: moved while typing");
+
+        key(&mut app, KeyCode::Esc);
+        draw_tall(&mut app);
+
+        assert!(app.prompt.is_none(), "the prompt is still open");
+        assert_eq!(
+            app.visual, before,
+            "Esc in the prompt changed or ended the selection"
+        );
+        assert_eq!(cursor_source(&app), row, "Esc did not restore the cursor");
+        assert_eq!(app.view.cursor_col(), col, "Esc did not restore the column");
+        assert_eq!(
+            cursor_screen_row(&app),
+            screen_row,
+            "Esc did not restore the scroll"
+        );
+        // Back to a one-character selection on the origin line: the painted
+        // span starts and ends on the same row, one column wide.
+        let ((start_row, start_col), (end_row, end_col)) =
+            app.painted_selection().expect("the selection is painted");
+        assert_eq!(start_row, end_row, "the selection is still grown");
+        assert_eq!((start_col, end_col), (col, col + 1));
+    }
+
+    /// The global Esc order is unchanged by the grown selection: outside the
+    /// prompt, the first Esc ends the selection and keeps the search the
+    /// selection was grown under; the second clears the search.
+    #[test]
+    fn esc_after_a_grown_selection_ends_it_before_the_search() {
+        let (mut app, _) = app_for_yank("search_grows_esc_order", "alpha\nbeta ERROR\n");
+        key(&mut app, KeyCode::Char('v'));
+        key(&mut app, KeyCode::Char('/'));
+        typed(&mut app, "ERROR");
+        key(&mut app, KeyCode::Enter);
+        assert!(app.visual.is_some() && app.search.is_some(), "sanity");
+
+        key(&mut app, KeyCode::Esc);
+        assert!(app.visual.is_none(), "Esc did not end the selection first");
+        assert!(
+            app.search.is_some(),
+            "Esc dropped the search with the selection"
+        );
+
+        key(&mut app, KeyCode::Esc);
+        assert!(
+            app.search.is_none(),
+            "the second Esc did not clear the search"
+        );
     }
 
     // ---- the mouse selects too (#67) ------------------------------------
