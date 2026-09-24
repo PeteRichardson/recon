@@ -1076,4 +1076,34 @@ mod tests {
         let err = filters_for(&config).expect_err("unknown set");
         assert!(err.to_string().contains("unknown set \"Nope\""), "{err}");
     }
+
+    /// `--emit` follows the same rules as the pane (#282): an unlisted set
+    /// decides nothing, even with `autoload`, and `--set` lists it.
+    #[test]
+    fn filters_for_skips_an_unlisted_set_unless_it_is_named() {
+        let mut set = crate::filter::test_support::loaded("Bugs", 50, true, &["hit"]);
+        set.listed = false;
+        set.profiles
+            .insert("default".to_string(), vec!["hit".to_string()]);
+        let config = crate::config::Config {
+            filter_sets: vec![set.clone()],
+            ..crate::config::Config::default()
+        };
+        let filters = filters_for(&config).expect("loads");
+        assert!(!filters.sets()[1].enabled);
+        assert!(
+            filters.matcher().is_none(),
+            "the unlisted set selects nothing"
+        );
+
+        let config = crate::config::Config {
+            filter_sets: vec![set],
+            set: vec!["Bugs".to_string()],
+            ..crate::config::Config::default()
+        };
+        let filters = filters_for(&config).expect("known set");
+        assert!(filters.sets()[1].listed);
+        assert!(filters.sets()[1].enabled);
+        assert!(filters.matcher().is_some());
+    }
 }

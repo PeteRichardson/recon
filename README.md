@@ -610,6 +610,12 @@ recon is exactly this model with one set.
   `default` therefore starts enabled with every filter off — an enabled
   header and nothing filtering until you toggle a row or apply a profile.
   Without `autoload` a set is known and listed, but off until you enable it.
+- **`listed`** — whether the set has a row in the pane at startup; the
+  default is `true`. With `listed = false` the set is known but has no row
+  and no effect: it changes no visible line, highlight, count or `--emit`
+  output. It wins over `autoload = true` — the file is not refused, so to put
+  a set away you change one key. An unlisted set is never enabled; `--set`
+  lists it and enables it. The scratch set is always listed.
 - **Profiles** — named permutations of a set's filters. Applying one enables
   exactly those and disables the set's others. `default` is applied whenever
   the set is enabled; without a `default`, enabling a set keeps whatever
@@ -656,7 +662,8 @@ set and say so on the status row: sets are edited in `filters.toml`. `!` and
 `space` act on filter flags across every set and never on a set's own flag.
 
 Sets can also be switched on from the command line: `--set WiFi_debug`
-enables the set at startup with its `default` profile, `--set
+lists and enables the set at startup with its `default` profile, whatever its
+`listed` and `autoload` say, `--set
 WiFi_debug:WiFi_bug_32` applies that profile instead, and the flag repeats
 for several sets. `--hide` alongside it starts the session in hide mode. A
 set without a `default` profile comes on with every filter off, exactly as
@@ -677,12 +684,13 @@ suspends every other set — the scratch set included — remembering what was o
 The pane shows only the soloed set, marked `solo`; `s` on it again puts
 everything back. `s` on a different set while soloed moves the solo there and
 keeps the original memory, so un-soloing later returns to the world before the
-first `s`. A dozen sets loaded at startup, one `s`, one profile, and you are
+first `s`. Un-solo does not bring back a set that was unlisted in the
+meantime. A dozen sets loaded at startup, one `s`, one profile, and you are
 working in one set's world. Solo and `!` are independent: `!` acts on filter
 flags, solo on set flags, and each restores its own.
 
 **Reset**: `R` returns every set to its startup state — enabled if and only if
-it has `autoload`, each file filter from its set's `default` profile, or off
+it has `autoload` and is listed now (`R` does not change which sets are listed), each file filter from its set's `default` profile, or off
 when the set has no `default` (the same state an `autoload` set without one
 starts in), no solo, no `!` memory. Filters you typed are kept, flags and
 all. It touches only flags and is one key to redo, so it asks no
@@ -727,7 +735,7 @@ rows carry no number and no palette colour, so your own filters keep theirs;
 `d` and `c` refuse them, since they are recon's. Solo, reset, `!` and the peek
 treat the set as any other. Position it, start it expanded, or give it
 profiles from `filters.toml`, with a table that may carry `priority`,
-`autoload` and `profiles` — never `filters`, which are recon's:
+`autoload`, `listed` and `profiles` — never `filters`, which are recon's:
 
 ```toml
 [sets.definitions]
