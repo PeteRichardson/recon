@@ -379,6 +379,7 @@ Global (`src/lib.rs`), handled before the focused pane sees the key:
 | `u` / `Ctrl-H` / `H` | Toggle between dimming unmatched lines and hiding them — `u` for **u**nmatched; the other two are aliases for terminals and habits that already use them | `global.toggle.hide` |
 | `!` | Disable every filter, remembering which were on; restores exactly that (or enables all, if none were on to remember) | `global.filters.disable` |
 | `&` | Combine the enabled include filters with **AND** instead of OR — a line must match every one of them. Press again for OR. See [Combining filters with AND](#combining-filters-with-and) | `global.filters.and` |
+| `L` | Open the set picker — choose which filter sets the filter pane lists. See [The set picker](#the-set-picker) | `global.sets` |
 | `b` | Hide the left column — both the navigator and the filter pane — and focus the file view; press again to restore the split (focus stays in the file view; `e` returns it) | `global.zoom.view` |
 | `z` | Maximise the focused pane, or restore the split — works in the navigator too, for long filenames | `global.zoom.focused` |
 | `o` | Open the selected file's enclosing **project** in your editor, at the line the cursor is on — see [Opening an editor](#opening-an-editor) | `global.editor.project` |
@@ -572,6 +573,7 @@ holds **sets**: named groups of filters, defined once and loaded at startup.
 [sets.WiFi_debug]
 priority = 10                            # lower is nearer the top; default 50
 autoload = true                          # start with this set enabled
+description = "Wi-Fi association and roaming"  # one line, for the set picker
 
 [sets.WiFi_debug.profiles]
 default = ["assoc", "deauth"]            # applied whenever the set is enabled
@@ -619,7 +621,11 @@ recon is exactly this model with one set.
   output. It wins over `autoload = true` — the file is not refused, so to put
   a set away you change one key. An unlisted set is never enabled; `--set`
   lists it and enables it, and `--unlist` unlists a listed one for one run.
-  The scratch set is always listed.
+  The scratch set is always listed. `L` changes it during a session; see
+  [the set picker](#the-set-picker).
+- **`description`** — one line of plain text that the set picker shows
+  beside the set's name. It is optional; a set without one shows a blank. A
+  description of more than one line is refused.
 - **Profiles** — named permutations of a set's filters. Applying one enables
   exactly those and disables the set's others. `default` is applied whenever
   the set is enabled; without a `default`, enabling a set keeps whatever
@@ -715,8 +721,38 @@ refused with a message and nothing is written. "In use" means the file as it is
 now, not only what was loaded at startup: a table added by hand since is
 refused rather than replaced. The file is written beside itself as
 `filters.toml.tmp` and renamed over, so an interrupted save leaves the old file
-rather than a truncated one. Priority, `autoload` and colours are not written:
+rather than a truncated one. Priority, `autoload`, `listed`, `description`
+and colours are not written:
 each is a one-line hand edit to a file `S` has just shown you the shape of.
+
+#### The set picker
+
+`L` shows every known set on one screen, so you can choose which sets the
+filter pane lists without quitting recon. It opens from the navigator, the
+file view and the filter pane — not from inside a prompt, where `L` is typed —
+and covers the panes, because the filter pane under it would not change while
+you toggle.
+
+It has one row for each known set except the scratch set, in alphabetical
+order: `[x]` or `[ ]`, the name, and the set's `description` (blank if it has
+none, and cut with `…` when it is too long for the row). The list scrolls. The
+checkbox means **listed**, not enabled: a listed set that is disabled is also
+checked.
+
+| Key(s) | Action | Name(s) |
+| --- | --- | --- |
+| `j` / `k`, `Down` / `Up` | Move the selection | `sets.down` / `sets.up` |
+| `space` | List or unlist the selected set | `sets.toggle` |
+| `Enter` | Apply every change and close | `sets.apply` |
+| `Esc` | Discard every change and close | `sets.cancel` |
+
+Changes are staged: nothing moves until `Enter`. Then a set you unlisted loses
+its row and is disabled, so the view, the highlights and the counts change at
+once; its filter flags are kept. A set you listed again comes back disabled,
+with its flags as they were, in its `priority` position — `autoload` is a
+startup value and does not apply. After the picker closes you are where you
+were before `L`: the same pane, the same cursor, the same scroll. The picker
+takes every key while it is open, so `q` does not quit from inside it.
 
 #### Definition filters
 
@@ -739,9 +775,11 @@ with their real line numbers, and every sense works — `m` for "functions with
 context", or an excluding definition for "everything except functions". Its
 rows carry no number and no palette colour, so your own filters keep theirs;
 `d` and `c` refuse them, since they are recon's. Solo, reset, `!` and the peek
-treat the set as any other. Position it, start it expanded, or give it
+treat the set as any other. Recon gives it a description for the set
+picker. Position it, start it expanded, describe it your own way, or give it
 profiles from `filters.toml`, with a table that may carry `priority`,
-`autoload`, `listed` and `profiles` — never `filters`, which are recon's:
+`autoload`, `listed`, `description` and `profiles` — never `filters`, which
+are recon's:
 
 ```toml
 [sets.definitions]

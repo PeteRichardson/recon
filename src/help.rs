@@ -474,6 +474,11 @@ pub const KEYMAP: &[Section] = &[
                 names: &["global.filters.and"],
             },
             Binding {
+                keys: &["L"],
+                action: "Choose which filter sets the filter pane lists",
+                names: &["global.sets"],
+            },
+            Binding {
                 keys: &["b"],
                 action: "Hide the left column, and focus the file view",
                 names: &["global.zoom.view"],
@@ -769,6 +774,31 @@ pub const KEYMAP: &[Section] = &[
                 keys: &["Esc"],
                 action: "Cancel",
                 names: &["picker.cancel"],
+            },
+        ],
+    },
+    Section {
+        title: "Set picker",
+        bindings: &[
+            Binding {
+                keys: &["j", "k", "Down", "Up"],
+                action: "Down / up a row",
+                names: &["sets.up", "sets.down"],
+            },
+            Binding {
+                keys: &["space"],
+                action: "List or unlist the set",
+                names: &["sets.toggle"],
+            },
+            Binding {
+                keys: &["Enter"],
+                action: "Apply the changes",
+                names: &["sets.apply"],
+            },
+            Binding {
+                keys: &["Esc"],
+                action: "Discard the changes",
+                names: &["sets.cancel"],
             },
         ],
     },
@@ -1312,6 +1342,7 @@ mod tests {
                 "File view",
                 "Filter pane",
                 "Profile picker",
+                "Set picker",
                 "While a prompt is open",
             ]
         );
@@ -1340,6 +1371,7 @@ mod tests {
                     s.title != "Global"
                         && s.title != "While a prompt is open"
                         && s.title != "Profile picker"
+                        && s.title != "Set picker"
                 })
                 .filter(|s| s.bindings.iter().any(|b| b.keys.contains(&key)))
                 .map(|s| s.title)
@@ -1400,17 +1432,18 @@ mod tests {
     /// any further has nowhere left to go without this area's width growing
     /// past 151 — which would stop the second test here from failing on the
     /// regression it exists to catch — and a row that adds to *either* total
-    /// has to be re-measured against both. The height, 45, is likewise the
-    /// exact number of rows two columns hold at the current row count (90,
-    /// after the two reserved-key rows of #242 raised it from 86 to 88 and
-    /// the two search-history rows of #274 to 90); adding a row without
+    /// has to be re-measured against both. The height, 49, is likewise the
+    /// exact number of rows two columns hold at the current row count (97,
+    /// after the two reserved-key rows of #242 raised it from 86 to 88,
+    /// the two search-history rows of #274 to 90, and the `L` row and the
+    /// set picker's section of #284 to 97); adding a row without
     /// raising the height would drop it off the bottom, which is a
     /// `shown(&columns) == rows.len()` failure below, not a width one.
     #[test]
     fn a_normal_terminal_shows_the_whole_keymap() {
         let rows = rows(&crate::keymap::Keymap::default());
 
-        let columns = layout(&rows, inner(150, 45));
+        let columns = layout(&rows, inner(150, 49));
 
         assert_eq!(shown(&columns), rows.len(), "the keymap did not fit");
         assert!(

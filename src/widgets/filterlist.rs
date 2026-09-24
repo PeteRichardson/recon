@@ -177,6 +177,14 @@ impl FilterList {
         self.list.page_rows()
     }
 
+    /// Put the cursor back on `row` after the rows changed around it (#284),
+    /// or leave it alone when `row` is gone from `rows`.
+    pub(crate) fn follow(&mut self, row: Row, rows: &[Row]) {
+        if let Some(index) = rows.iter().position(|r| *r == row) {
+            self.list.select(Some(index));
+        }
+    }
+
     /// Pull the selection back into range after the list has shrunk, and drop
     /// it entirely when nothing is left.
     pub(crate) fn clamp_selection(&mut self, len: usize) {

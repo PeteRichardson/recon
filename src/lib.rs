@@ -660,6 +660,9 @@ pub struct App<'a> {
     /// The profile picker, while one is open (#130). Takes every key, as a
     /// prompt does.
     picker: Option<widgets::picker::ProfilePicker>,
+    /// The set picker, while it is open (#284). Takes every key, as the
+    /// profile picker does.
+    set_picker: Option<widgets::setpicker::SetPicker>,
     /// Where `S` writes (#131): `filters.toml` beside `config.toml`, or
     /// `None` when the environment names no home. A field rather than a
     /// call at save time so tests can point it at a fixture.
@@ -903,6 +906,7 @@ impl App<'_> {
             keymap_warnings: config.keymap_warnings.clone(),
             keymap_warnings_open: config.warnings() && !config.keymap_warnings.is_empty(),
             picker: None,
+            set_picker: None,
             save_path: filtersets::path(),
             scanner: Box::new(scan::Scanner::new(scan_tx)),
             scan_results: Some(scan_rx),
@@ -1891,6 +1895,25 @@ impl App<'_> {
             return;
         }
 
+        // The set picker is modal in the same way (#284), and swallows a
+        // key that resolves to nothing in `Scope::Sets` for the same reason.
+        if let Some(picker) = self.set_picker.as_mut() {
+            if let event::Event::Key(key) = event {
+                let pressed = crate::keymap::normalise(key);
+                if let Some(action) = self.keymap.resolve(crate::keymap::Scope::Sets, pressed) {
+                    match picker.perform(action) {
+                        widgets::setpicker::SetPickerOutcome::Open => {}
+                        widgets::setpicker::SetPickerOutcome::Cancelled => self.set_picker = None,
+                        widgets::setpicker::SetPickerOutcome::Applied(changes) => {
+                            self.set_picker = None;
+                            self.apply_listing(&changes);
+                        }
+                    }
+                }
+            }
+            return;
+        }
+
         // The bounce guard (#48). `Enter` both commits a prompt and toggles a
         // filter, and those are one keystroke apart, so the `Enter` that closed
         // a prompt must not fall through and switch a filter off.
@@ -2137,6 +2160,9 @@ impl App<'_> {
                 self.chain_origin = origin;
             }
             A::GlobalHelp => self.help = true,
+            A::GlobalSets => {
+                self.set_picker = Some(widgets::setpicker::SetPicker::new(self.filters.sets()));
+            }
             // Every `/` captures its origin: the search moves as it is
             // typed in every pane, and Esc goes back to where it opened.
             A::GlobalSearch => {
@@ -2479,7 +2505,12 @@ impl App<'_> {
             | A::PickerUp
             | A::PickerDown
             | A::PickerChoose
-            | A::PickerCancel => {
+            | A::PickerCancel
+            | A::SetsUp
+            | A::SetsDown
+            | A::SetsToggle
+            | A::SetsApply
+            | A::SetsCancel => {
                 debug_assert!(
                     false,
                     "{action:?} resolves in its own modal dispatch, never through `perform`"
@@ -3153,6 +3184,33 @@ impl App<'_> {
         let cursor_source = self.cursor_source();
         self.document.evaluate(&self.filters);
         self.apply_view(cursor_source);
+    }
+
+    /// List or unlist each `(set, listed)` the set picker hands back (#284),
+    /// then update the view once.
+    ///
+    /// The filter pane's cursor stays on the row it was on when that row is
+    /// still there. Its index can move — a set above it may have gained or
+    /// lost its rows — so it is followed by what it addresses, not by its
+    /// position. A row that went with its set leaves the cursor where
+    /// `refresh_view`'s clamp puts it.
+    fn apply_listing(&mut self, changes: &[(usize, bool)]) {
+        if changes.is_empty() {
+            return;
+        }
+        let before = widgets::filterlist::rows(&self.filters);
+        let selected = self
+            .filters_pane
+            .selected()
+            .and_then(|index| before.get(index).copied());
+        for &(set, listed) in changes {
+            self.filters.set_listed(set, listed);
+        }
+        if let Some(row) = selected {
+            let after = widgets::filterlist::rows(&self.filters);
+            self.filters_pane.follow(row, &after);
+        }
+        self.refresh_view();
     }
 
     /// Handle a key aimed at the filter pane.
@@ -3864,6 +3922,9 @@ impl Widget for &mut App<'_> {
         // them would mean the one screen that explains `Ctrl-H` is also the one
         // screen that stops showing whether it is on.
         if let Some(picker) = &self.picker {
+            picker.render(area, buf);
+        }
+        if let Some(picker) = self.set_picker.as_mut() {
             picker.render(area, buf);
         }
         if self.help {
@@ -16118,5 +16179,154 @@ mod tests {
             "the listing row did not open its entry"
         );
         assert!(app.visual.is_none(), "a listing row started a selection");
+    }
+
+    // ---- the set picker (#284) ---------------------------------------------
+
+    /// Rows: `a` (enabled), `b` (disabled), `c` (disabled), `definitions`.
+    /// In the picker, alphabetically: a, b, c, definitions.
+    fn set_index(app: &App, name: &str) -> usize {
+        app.filters
+            .sets()
+            .iter()
+            .position(|meta| meta.name == name)
+            .expect("known set")
+    }
+
+    #[test]
+    fn big_l_opens_the_set_picker_from_every_pane() {
+        let mut app = app_with_three_sets("set_picker_opens");
+        for focus in [Focus::Nav, Focus::View, Focus::Filters] {
+            app.reveal_and_focus(focus);
+            key(&mut app, KeyCode::Char('L'));
+            assert!(app.set_picker.is_some(), "L did not open from {focus:?}");
+            key(&mut app, KeyCode::Esc);
+            assert!(app.set_picker.is_none());
+            assert_eq!(app.focus, focus, "Esc did not return to {focus:?}");
+        }
+    }
+
+    #[test]
+    fn big_l_in_a_prompt_is_typed() {
+        let mut app = app_with_three_sets("set_picker_prompt");
+        key(&mut app, KeyCode::Char('/'));
+        key(&mut app, KeyCode::Char('L'));
+        assert!(app.set_picker.is_none());
+        assert_eq!(prompt(&app).pattern, "L");
+    }
+
+    #[test]
+    fn the_open_set_picker_covers_the_panes() {
+        let mut app = app_with_three_sets("set_picker_draw");
+        key(&mut app, KeyCode::Char('L'));
+        let screen = rendered(&mut app);
+        assert!(screen.contains("Filter sets"), "{screen}");
+        assert!(screen.contains("[x] definitions"), "{screen}");
+        assert!(
+            !screen.contains("Filters"),
+            "the filter pane shows through:\n{screen}"
+        );
+    }
+
+    /// Unlisting the enabled set `a` on Enter disables it: its line stops
+    /// matching and its header leaves the pane.
+    #[test]
+    fn enter_applies_an_unlisting_and_the_view_updates() {
+        let mut app = app_with_three_sets("set_picker_apply");
+        assert_eq!(included(&app), 3, "sanity: alpha, beta, scratch");
+        let a = set_index(&app, "a");
+        key(&mut app, KeyCode::Char('L'));
+        key(&mut app, KeyCode::Char(' '));
+        assert!(app.filters.sets()[a].listed, "staged, not applied yet");
+        key(&mut app, KeyCode::Enter);
+        assert!(app.set_picker.is_none());
+        assert!(!app.filters.sets()[a].listed);
+        assert!(!app.filters.sets()[a].enabled);
+        assert_eq!(included(&app), 2, "alpha stopped matching");
+        assert!(
+            !widgets::filterlist::rows(&app.filters).contains(&widgets::filterlist::Row::Header(a)),
+            "a still has a row"
+        );
+    }
+
+    #[test]
+    fn esc_discards_every_change() {
+        let mut app = app_with_three_sets("set_picker_esc");
+        key(&mut app, KeyCode::Char('L'));
+        key(&mut app, KeyCode::Char(' '));
+        key(&mut app, KeyCode::Char('j'));
+        key(&mut app, KeyCode::Char(' '));
+        key(&mut app, KeyCode::Esc);
+        assert!(app.filters.sets().iter().all(|meta| meta.listed));
+        assert_eq!(included(&app), 3);
+    }
+
+    /// A set listed again comes back disabled, with its filter flags kept.
+    #[test]
+    fn a_set_listed_again_comes_back_disabled_with_its_flags() {
+        let mut app = app_with_three_sets("set_picker_relist");
+        let a = set_index(&app, "a");
+        key(&mut app, KeyCode::Char('L'));
+        key(&mut app, KeyCode::Char(' '));
+        key(&mut app, KeyCode::Enter);
+        key(&mut app, KeyCode::Char('L'));
+        key(&mut app, KeyCode::Char(' '));
+        key(&mut app, KeyCode::Enter);
+        assert!(app.filters.sets()[a].listed);
+        assert!(!app.filters.sets()[a].enabled);
+        assert!(
+            app.filters.filters_in(a).all(|(_, filter)| filter.enabled),
+            "alpha's own flag survives"
+        );
+    }
+
+    #[test]
+    fn the_set_picker_takes_every_key() {
+        let mut app = app_with_three_sets("set_picker_swallow");
+        key(&mut app, KeyCode::Char('L'));
+        key(&mut app, KeyCode::Char('q'));
+        assert!(app.set_picker.is_some(), "q closed the picker");
+        assert!(
+            matches!(app.state, AppState::Running),
+            "q quit from inside the picker"
+        );
+    }
+
+    /// The filter pane's cursor stays on the row it addressed, although
+    /// unlisting `a` above it moves that row up.
+    #[test]
+    fn the_filter_pane_cursor_follows_its_row_across_an_apply() {
+        let mut app = app_with_three_sets("set_picker_cursor");
+        let b = set_index(&app, "b");
+        focus_filter_pane(&mut app);
+        let rows = widgets::filterlist::rows(&app.filters);
+        let at = rows
+            .iter()
+            .position(|row| *row == widgets::filterlist::Row::Header(b))
+            .expect("b has a header");
+        app.filters_pane.select(at);
+        key(&mut app, KeyCode::Char('L'));
+        key(&mut app, KeyCode::Char(' '));
+        key(&mut app, KeyCode::Enter);
+        let rows = widgets::filterlist::rows(&app.filters);
+        let now = app.filters_pane.selected().expect("a selection");
+        assert_eq!(rows[now], widgets::filterlist::Row::Header(b));
+        assert!(now < at, "sanity: the row moved");
+        assert_eq!(app.focus, Focus::Filters);
+    }
+
+    #[test]
+    fn the_file_view_cursor_is_where_it_was_before_big_l() {
+        let mut app = app_with_three_sets("set_picker_view_cursor");
+        focus_file_view(&mut app);
+        key(&mut app, KeyCode::Char('j'));
+        key(&mut app, KeyCode::Char('j'));
+        let before = cursor_source(&app);
+        key(&mut app, KeyCode::Char('L'));
+        key(&mut app, KeyCode::Char('j'));
+        key(&mut app, KeyCode::Char(' '));
+        key(&mut app, KeyCode::Enter);
+        assert_eq!(cursor_source(&app), before);
+        assert_eq!(app.focus, Focus::View);
     }
 }
