@@ -221,6 +221,11 @@ pub(crate) enum ActionId {
     PromptDeleteForward,
     PromptDeleteWord,
     PromptDeleteStart,
+    /// Up / Ctrl-p and Down / Ctrl-n in a `/` prompt: the earlier committed
+    /// patterns, older and newer (#274). Bound in the prompt scope like the
+    /// editing keys, and a no-op in a filter prompt, which keeps no history.
+    PromptHistoryPrev,
+    PromptHistoryNext,
     // Picker
     PickerUp,
     PickerDown,
@@ -328,6 +333,8 @@ impl ActionId {
             Self::PromptDeleteForward => "prompt.delete.forward",
             Self::PromptDeleteWord => "prompt.delete.word",
             Self::PromptDeleteStart => "prompt.delete.start",
+            Self::PromptHistoryPrev => "prompt.history.prev",
+            Self::PromptHistoryNext => "prompt.history.next",
             Self::PickerUp => "picker.up",
             Self::PickerDown => "picker.down",
             Self::PickerChoose => "picker.choose",
@@ -478,6 +485,10 @@ pub(crate) const DEFAULT: &[(Scope, &str, ActionId)] = &[
     (Scope::Prompt, "Delete", ActionId::PromptDeleteForward),
     (Scope::Prompt, "Ctrl-w", ActionId::PromptDeleteWord),
     (Scope::Prompt, "Ctrl-u", ActionId::PromptDeleteStart),
+    (Scope::Prompt, "Up", ActionId::PromptHistoryPrev),
+    (Scope::Prompt, "Ctrl-p", ActionId::PromptHistoryPrev),
+    (Scope::Prompt, "Down", ActionId::PromptHistoryNext),
+    (Scope::Prompt, "Ctrl-n", ActionId::PromptHistoryNext),
     (Scope::Picker, "k", ActionId::PickerUp),
     (Scope::Picker, "Up", ActionId::PickerUp),
     (Scope::Picker, "j", ActionId::PickerDown),

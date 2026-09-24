@@ -902,6 +902,8 @@ While a search or filter prompt is open it consumes every key, so `q` and
 | `Delete` | Delete the character under the cursor | `prompt.delete.forward` |
 | `Ctrl-w` | Delete the word before the cursor — a run of letters, digits and `_`, or a run of punctuation, plus any blanks between it and the cursor | `prompt.delete.word` |
 | `Ctrl-u` | Delete everything before the cursor | `prompt.delete.start` |
+| `Up` / `Ctrl-p` | In a `/` prompt, recall the newest committed pattern, then the one before it | `prompt.history.prev` |
+| `Down` / `Ctrl-n` | In a `/` prompt, walk back towards the newest pattern, then to an empty prompt | `prompt.history.next` |
 | `Enter` | Run the search, or add the filter — or, for a prompt opened with `c`, overwrite the filter being edited | `prompt.commit` |
 | `Esc` | Cancel — a search prompt also returns the cursor and the scroll to where `/` opened | `prompt.cancel` |
 
@@ -922,6 +924,16 @@ a filename. Both move as you type, from the row where `/` opened. A pattern
 that does not compile yet, such as `foo(`, is silent while you type: nothing
 moves and nothing is highlighted. Enter on it reports `E486: invalid pattern`
 and leaves the prompt open to correct.
+
+A `/` prompt remembers what Enter committed. `Up` brings back the last
+pattern to edit, `Up` again the one before it, and `Down` walks back towards
+the newest and then to an empty prompt; `Ctrl-p` and `Ctrl-n` do the same.
+Each recall moves as typing the pattern would, and Esc still returns to
+where `/` opened. The file search and the filename search keep separate
+histories, each of the last 50 patterns for the session, newest first — a
+pattern committed again moves to the front rather than appearing twice. A
+cancelled prompt adds nothing, and the filter prompts (`i`, `x`, `c`) keep
+no history at all.
 
 File view pane (`src/widgets/fileview.rs`) — its own verbs; the shared motions are tabled above:
 

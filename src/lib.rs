@@ -211,6 +211,47 @@ struct NavOrigin {
     search: Option<regex::Regex>,
 }
 
+/// How many committed patterns a `History` keeps before the oldest goes.
+const HISTORY_CAP: usize = 50;
+
+/// The patterns Enter committed in one kind of `/` prompt, newest first
+/// (#274), so a near-miss regex is recalled and corrected rather than
+/// retyped.
+///
+/// One per prompt kind that has one: the file search and the navigator's
+/// filename search keep separate histories, because a filename pattern
+/// offered in the file prompt is noise. In memory only, so a session starts
+/// empty. A pattern committed again moves to the front rather than appearing
+/// twice, and the `HISTORY_CAP`th pattern pushes the oldest out. Only Enter
+/// adds: a cancelled prompt leaves no trace, and `*` never goes through the
+/// prompt at all.
+#[derive(Debug, Default)]
+struct History {
+    /// Newest first: index 0 is what the first Up recalls.
+    patterns: Vec<String>,
+}
+
+impl History {
+    fn push(&mut self, pattern: &str) {
+        self.patterns.retain(|kept| kept != pattern);
+        self.patterns.insert(0, pattern.to_owned());
+        self.patterns.truncate(HISTORY_CAP);
+    }
+
+    /// The pattern `steps` back from the newest, or `None` past the oldest.
+    fn recall(&self, steps: usize) -> Option<&str> {
+        self.patterns.get(steps).map(String::as_str)
+    }
+}
+
+/// Which way Up and Down walk a `History`: Up towards the oldest pattern,
+/// Down back towards the newest and then to an empty prompt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Recall {
+    Older,
+    Newer,
+}
+
 /// A search pattern being typed at the bottom of the screen.
 #[derive(Debug, Default)]
 struct SearchPrompt {
@@ -222,6 +263,12 @@ struct SearchPrompt {
     /// as it is typed, and this is where it moves from and where Esc goes
     /// back to. `None` for every filter prompt, which commits on Enter only.
     origin: Option<Origin>,
+    /// Which history entry the pattern was recalled from, as steps back
+    /// from the newest, or `None` while the prompt shows what was typed
+    /// (#274). Up steps it further back, Down towards the newest and then
+    /// off the end to an empty prompt. Typing after a recall leaves it
+    /// where it is, so the next Up still goes to the entry before.
+    recall: Option<usize>,
 }
 
 impl SearchPrompt {
@@ -473,6 +520,11 @@ pub struct App<'a> {
     /// The search, while one is set. `/` and `*` set it, `Esc` clears it,
     /// `p` turns it into a filter. It outlives a file load.
     search: Option<Search>,
+    /// The patterns Enter committed in the file view's `/` prompt, for
+    /// Up and Down in the next one (#274). The navigator's is separate.
+    search_history: History,
+    /// The patterns Enter committed in the navigator's `/` prompt.
+    nav_search_history: History,
     filters: ActiveFilters,
     document: Document,
     /// The `Document::generation` the file view's buffer was last rebuilt
@@ -811,6 +863,8 @@ impl App<'_> {
             last_nav_click: None,
             prompt: None,
             search: None,
+            search_history: History::default(),
+            nav_search_history: History::default(),
             filters,
             document: Document::default(),
             last_generation: None,
@@ -909,6 +963,12 @@ impl App<'_> {
                     };
                     if outcome.is_ok() {
                         let origin = self.prompt.take().and_then(|prompt| prompt.origin);
+                        // Only Enter adds to a history (#274), and only a
+                        // `/` prompt has one: the origin says which pane it
+                        // opened over, and so which of the two it feeds.
+                        if let Some(origin) = &origin {
+                            self.history_for(origin).push(&pattern);
+                        }
                         // Enter keeps the position the search reached. The
                         // wrap it reported while typing went with the
                         // keystroke, so say it again if the hit is above
@@ -962,6 +1022,8 @@ impl App<'_> {
                 A::PromptDeleteForward => self.edit_pattern(SearchPrompt::delete_at),
                 A::PromptDeleteWord => self.edit_pattern(SearchPrompt::delete_word_before),
                 A::PromptDeleteStart => self.edit_pattern(SearchPrompt::delete_to_start),
+                A::PromptHistoryPrev => self.recall(Recall::Older),
+                A::PromptHistoryNext => self.recall(Recall::Newer),
                 // `resolve(Scope::Prompt, ..)` only ever answers with one of
                 // the arms above — see `DEFAULT`'s `Scope::Prompt` rows — so
                 // this is unreached today. Not a wildcard omitted by
@@ -1013,6 +1075,60 @@ impl App<'_> {
     fn edit_pattern(&mut self, edit: impl FnOnce(&mut SearchPrompt)) {
         self.edit_prompt(edit);
         self.rescan_from_origin();
+    }
+
+    /// Up or Down in a `/` prompt (#274): replace the pattern with the next
+    /// older or newer committed one, cursor at its end, and move as typing
+    /// it would — a recall is an edit, so it goes through `edit_pattern`
+    /// and re-runs the scan from the origin. Up at the oldest stays there;
+    /// Down past the newest empties the prompt, and Down on an empty prompt
+    /// that recalled nothing does nothing. A filter prompt has no origin
+    /// and so no history: both keys are inert in it, as they were unbound.
+    fn recall(&mut self, direction: Recall) {
+        let Some(prompt) = self.prompt.as_ref() else {
+            return;
+        };
+        let Some(origin) = prompt.origin.as_ref() else {
+            return;
+        };
+        let target = match direction {
+            Recall::Older => Some(prompt.recall.map_or(0, |steps| steps + 1)),
+            Recall::Newer => match prompt.recall {
+                None => return,
+                Some(steps) => steps.checked_sub(1),
+            },
+        };
+        let history = self.history_for_ref(origin);
+        let pattern = match target {
+            Some(steps) => match history.recall(steps) {
+                Some(pattern) => pattern.to_owned(),
+                None => return,
+            },
+            None => String::new(),
+        };
+        self.edit_pattern(|prompt| {
+            prompt.recall = target;
+            prompt.cursor = pattern.chars().count();
+            prompt.pattern = pattern;
+        });
+    }
+
+    /// The history a `/` prompt with this origin reads and feeds: the file
+    /// search's for the view (and the filter pane, which forwards `/` to
+    /// it), the filename search's for the navigator.
+    fn history_for(&mut self, origin: &Origin) -> &mut History {
+        match origin {
+            Origin::View(_) => &mut self.search_history,
+            Origin::Nav(_) => &mut self.nav_search_history,
+        }
+    }
+
+    /// `history_for`, read-only.
+    fn history_for_ref(&self, origin: &Origin) -> &History {
+        match origin {
+            Origin::View(_) => &self.search_history,
+            Origin::Nav(_) => &self.nav_search_history,
+        }
     }
 
     /// Close the prompt without committing, and put back the origin if the
@@ -2351,6 +2467,8 @@ impl App<'_> {
             | A::PromptDeleteForward
             | A::PromptDeleteWord
             | A::PromptDeleteStart
+            | A::PromptHistoryPrev
+            | A::PromptHistoryNext
             | A::PickerUp
             | A::PickerDown
             | A::PickerChoose
@@ -11140,6 +11258,397 @@ mod tests {
             assert!(
                 app.search.is_none(),
                 "backspace {backspace}: a search was set"
+            );
+        }
+    }
+
+    /// The pattern the open prompt holds, for tests.
+    fn prompt_pattern(app: &App) -> String {
+        app.prompt
+            .as_ref()
+            .map(|prompt| prompt.pattern.clone())
+            .expect("a prompt is open")
+    }
+
+    /// Up (or Ctrl-p) and Down (or Ctrl-n) in the prompt (#274).
+    fn recall_older(app: &mut App, with_ctrl: bool) {
+        if with_ctrl {
+            ctrl(app, KeyCode::Char('p'));
+        } else {
+            key(app, KeyCode::Up);
+        }
+    }
+
+    fn recall_newer(app: &mut App, with_ctrl: bool) {
+        if with_ctrl {
+            ctrl(app, KeyCode::Char('n'));
+        } else {
+            key(app, KeyCode::Down);
+        }
+    }
+
+    /// Commit `pattern` in a `/` prompt over whichever pane has focus.
+    fn commit_search(app: &mut App, pattern: &str) {
+        key(app, KeyCode::Char('/'));
+        typed(app, pattern);
+        key(app, KeyCode::Enter);
+        assert!(app.prompt.is_none(), "sanity: {pattern:?} was committed");
+    }
+
+    /// After two committed searches, Up recalls the newer, Up again the
+    /// older and then stays there; Down walks back to the newer and then
+    /// to an empty prompt. Each recall is an edit: the cursor moves as
+    /// typing the pattern would, the cursor sits at the pattern's end, and
+    /// Esc still returns to the origin. Ctrl-p and Ctrl-n are the same
+    /// keys under other names.
+    #[test]
+    fn up_recalls_the_newer_then_the_older_and_down_walks_back_to_an_empty_prompt() {
+        for with_ctrl in [false, true] {
+            let mut app = app_over_file(&format!("recall_{with_ctrl}"), "x1\nx2\nx3\n");
+            key(&mut app, KeyCode::Char('t'));
+            commit_search(&mut app, "x3");
+            commit_search(&mut app, "x2");
+            key(&mut app, KeyCode::Char('g'));
+            assert_eq!(cursor_source(&app), 0, "sanity: the origin");
+
+            key(&mut app, KeyCode::Char('/'));
+            assert_eq!(prompt_pattern(&app), "", "a new prompt starts empty");
+
+            recall_older(&mut app, with_ctrl);
+            assert_eq!(prompt_pattern(&app), "x2", "the first Up is the newer");
+            assert_eq!(cursor_source(&app), 1, "the recall did not move");
+            assert_eq!(search_text(&app), "x2", "the recall set no highlight");
+            assert_eq!(
+                app.prompt.as_ref().map(|prompt| prompt.cursor),
+                Some(2),
+                "the cursor is not at the end of the recalled pattern"
+            );
+
+            recall_older(&mut app, with_ctrl);
+            assert_eq!(prompt_pattern(&app), "x3", "the second Up is the older");
+            assert_eq!(cursor_source(&app), 2);
+
+            recall_older(&mut app, with_ctrl);
+            assert_eq!(prompt_pattern(&app), "x3", "Up past the oldest moved");
+            assert_eq!(cursor_source(&app), 2);
+
+            recall_newer(&mut app, with_ctrl);
+            assert_eq!(prompt_pattern(&app), "x2", "Down did not walk back");
+            assert_eq!(cursor_source(&app), 1);
+
+            recall_newer(&mut app, with_ctrl);
+            assert_eq!(
+                prompt_pattern(&app),
+                "",
+                "Down past the newest is not empty"
+            );
+            assert_eq!(cursor_source(&app), 0, "an empty prompt sits at the origin");
+            assert!(app.search.is_none(), "an empty prompt kept the highlight");
+            assert!(app.prompt.is_some(), "Down closed the prompt");
+
+            recall_newer(&mut app, with_ctrl);
+            assert_eq!(
+                prompt_pattern(&app),
+                "",
+                "Down on an empty prompt did something"
+            );
+            assert!(app.prompt.is_some());
+
+            recall_older(&mut app, with_ctrl);
+            assert_eq!(
+                prompt_pattern(&app),
+                "x2",
+                "Up after emptying did not start over"
+            );
+            assert_eq!(cursor_source(&app), 1);
+
+            key(&mut app, KeyCode::Esc);
+            assert!(app.prompt.is_none(), "Esc did not close the prompt");
+            assert_eq!(cursor_source(&app), 0, "Esc did not restore the origin");
+            assert_eq!(
+                search_text(&app),
+                "x2",
+                "Esc did not restore the search set before `/` opened"
+            );
+        }
+    }
+
+    /// A recalled pattern is a starting point: typing after it edits it,
+    /// and the edit re-runs from the origin as any keystroke does. The next
+    /// Up still steps to the entry before the one recalled.
+    #[test]
+    fn typing_after_a_recall_edits_the_recalled_pattern() {
+        let mut app = app_over_file("recall_edit", "x1\nx2\nx3\nx22\n");
+        key(&mut app, KeyCode::Char('t'));
+        commit_search(&mut app, "x3");
+        commit_search(&mut app, "x2");
+        key(&mut app, KeyCode::Char('g'));
+
+        key(&mut app, KeyCode::Char('/'));
+        key(&mut app, KeyCode::Up);
+        typed(&mut app, "2");
+        assert_eq!(prompt_pattern(&app), "x22");
+        assert_eq!(
+            cursor_source(&app),
+            3,
+            "the edit did not move to the new hit"
+        );
+
+        key(&mut app, KeyCode::Up);
+        assert_eq!(
+            prompt_pattern(&app),
+            "x3",
+            "Up after an edit did not step on"
+        );
+        assert_eq!(cursor_source(&app), 2);
+    }
+
+    /// The file search and the navigator's filename search keep separate
+    /// histories: a filename pattern never appears in the file prompt, nor
+    /// the reverse.
+    #[test]
+    fn the_file_and_filename_searches_keep_separate_histories() {
+        let mut app = app_over("recall_separate", &["a.log", "b.log"]);
+        key(&mut app, KeyCode::Char('e'));
+        assert_eq!(
+            selected_name(&app),
+            "a.log",
+            "sanity: the navigator has focus"
+        );
+        commit_search(&mut app, "b");
+        assert_eq!(
+            selected_name(&app),
+            "b.log",
+            "sanity: the filename search moved"
+        );
+
+        key(&mut app, KeyCode::Char('t'));
+        key(&mut app, KeyCode::Char('/'));
+        key(&mut app, KeyCode::Up);
+        assert_eq!(
+            prompt_pattern(&app),
+            "",
+            "the file prompt recalled a filename pattern"
+        );
+        assert!(
+            app.prompt.is_some(),
+            "Up on an empty history closed the prompt"
+        );
+        key(&mut app, KeyCode::Esc);
+        commit_search(&mut app, "x");
+
+        key(&mut app, KeyCode::Char('e'));
+        key(&mut app, KeyCode::Char('/'));
+        key(&mut app, KeyCode::Up);
+        assert_eq!(
+            prompt_pattern(&app),
+            "b",
+            "the navigator lost its own history"
+        );
+        key(&mut app, KeyCode::Up);
+        assert_eq!(
+            prompt_pattern(&app),
+            "b",
+            "the navigator prompt recalled a file pattern"
+        );
+        key(&mut app, KeyCode::Esc);
+
+        key(&mut app, KeyCode::Char('t'));
+        key(&mut app, KeyCode::Char('/'));
+        key(&mut app, KeyCode::Up);
+        assert_eq!(prompt_pattern(&app), "x");
+        key(&mut app, KeyCode::Up);
+        assert_eq!(
+            prompt_pattern(&app),
+            "x",
+            "the file prompt recalled a filename pattern"
+        );
+    }
+
+    /// A cancelled prompt adds nothing, and a pattern committed again moves
+    /// to the front rather than appearing twice.
+    #[test]
+    fn a_cancelled_prompt_adds_nothing_and_a_repeat_moves_to_the_front() {
+        let mut app = app_over_file("recall_dedup", "x1\nx2\nx3\n");
+        key(&mut app, KeyCode::Char('t'));
+        commit_search(&mut app, "x1");
+        commit_search(&mut app, "x2");
+
+        key(&mut app, KeyCode::Char('/'));
+        typed(&mut app, "x3");
+        key(&mut app, KeyCode::Esc);
+
+        commit_search(&mut app, "x1");
+
+        key(&mut app, KeyCode::Char('/'));
+        key(&mut app, KeyCode::Up);
+        assert_eq!(
+            prompt_pattern(&app),
+            "x1",
+            "the repeat did not move to the front"
+        );
+        key(&mut app, KeyCode::Up);
+        assert_eq!(prompt_pattern(&app), "x2", "the cancelled pattern was kept");
+        key(&mut app, KeyCode::Up);
+        assert_eq!(prompt_pattern(&app), "x2", "the repeat was kept twice");
+    }
+
+    /// Enter on a pattern that does not compile keeps the prompt open and
+    /// adds nothing: only a committed pattern is worth recalling.
+    #[test]
+    fn a_rejected_pattern_is_not_added_to_the_history() {
+        let mut app = app_over_file("recall_invalid", "x1\n");
+        key(&mut app, KeyCode::Char('t'));
+        commit_search(&mut app, "x1");
+
+        key(&mut app, KeyCode::Char('/'));
+        typed(&mut app, "x(");
+        key(&mut app, KeyCode::Enter);
+        assert!(app.prompt.is_some(), "sanity: the prompt stayed open");
+        key(&mut app, KeyCode::Esc);
+
+        key(&mut app, KeyCode::Char('/'));
+        key(&mut app, KeyCode::Up);
+        assert_eq!(prompt_pattern(&app), "x1", "the rejected pattern was kept");
+    }
+
+    /// The history holds fifty patterns: the fifty-first committed drops
+    /// the oldest.
+    #[test]
+    fn the_fifty_first_pattern_drops_the_oldest() {
+        let mut app = app_over_file("recall_cap", "x\n");
+        key(&mut app, KeyCode::Char('t'));
+        for n in 1..=HISTORY_CAP + 1 {
+            commit_search(&mut app, &format!("p{n}"));
+        }
+
+        key(&mut app, KeyCode::Char('/'));
+        key(&mut app, KeyCode::Up);
+        assert_eq!(prompt_pattern(&app), "p51", "the first Up is the newest");
+        for _ in 1..HISTORY_CAP {
+            key(&mut app, KeyCode::Up);
+        }
+        assert_eq!(
+            prompt_pattern(&app),
+            "p2",
+            "fifty Ups did not reach the oldest kept"
+        );
+        key(&mut app, KeyCode::Up);
+        assert_eq!(
+            prompt_pattern(&app),
+            "p2",
+            "the fifty-first pattern kept the oldest"
+        );
+    }
+
+    /// The filter prompts keep no history: Up, Down and their Ctrl twins do
+    /// nothing in them, as they did when they were unbound, even after a
+    /// `/` has committed a pattern.
+    #[test]
+    fn filter_prompts_keep_no_history() {
+        let mut app = app_over_file("recall_filter", "x1\n");
+        key(&mut app, KeyCode::Char('t'));
+        commit_search(&mut app, "x1");
+
+        key(&mut app, KeyCode::Char('f'));
+        key(&mut app, KeyCode::Char('i'));
+        assert!(
+            matches!(&app.prompt, Some(prompt) if prompt.kind == PromptKind::Filter),
+            "sanity: an include prompt is open"
+        );
+        typed(&mut app, "ab");
+        for with_ctrl in [false, true] {
+            recall_older(&mut app, with_ctrl);
+            assert_eq!(
+                prompt_pattern(&app),
+                "ab",
+                "Up recalled into a filter prompt"
+            );
+            recall_newer(&mut app, with_ctrl);
+            assert_eq!(prompt_pattern(&app), "ab", "Down changed a filter prompt");
+        }
+        assert!(
+            app.prompt.is_some(),
+            "a recall key closed the filter prompt"
+        );
+        assert!(app.filters.is_empty(), "a recall key committed a filter");
+        key(&mut app, KeyCode::Esc);
+    }
+
+    /// `prompt.history.prev` and `prompt.history.next` are keymap ids like
+    /// any other: a `[keymap]` line moves them, and the keys they left do
+    /// nothing in the prompt.
+    #[test]
+    fn the_recall_keys_can_be_rebound() {
+        let file = fixture_path("recall_rebound", "x1\nx2\n");
+        let mut bindings = std::collections::BTreeMap::new();
+        bindings.insert(
+            "prompt.history.prev".to_string(),
+            vec!["Ctrl-k".to_string()],
+        );
+        bindings.insert(
+            "prompt.history.next".to_string(),
+            vec!["Ctrl-j".to_string()],
+        );
+        let mut config = Config {
+            path: file.display().to_string(),
+            keymap: Some(crate::config::KeymapConfig { bindings }),
+            ..Config::default()
+        };
+        let (map, warnings) = config.build_keymap().expect("valid");
+        assert!(
+            warnings.is_empty(),
+            "moving the recall keys warned: {warnings:?}"
+        );
+        config.bindings = map;
+        config.keymap_warnings = warnings;
+        let mut app = App::new(&config);
+        key(&mut app, KeyCode::Char('t'));
+        commit_search(&mut app, "x2");
+        key(&mut app, KeyCode::Char('g'));
+
+        key(&mut app, KeyCode::Char('/'));
+        key(&mut app, KeyCode::Up);
+        ctrl(&mut app, KeyCode::Char('p'));
+        assert_eq!(prompt_pattern(&app), "", "the default keys still recall");
+
+        ctrl(&mut app, KeyCode::Char('k'));
+        assert_eq!(prompt_pattern(&app), "x2", "the rebound key did not recall");
+        assert_eq!(cursor_source(&app), 1);
+
+        key(&mut app, KeyCode::Down);
+        ctrl(&mut app, KeyCode::Char('n'));
+        assert_eq!(
+            prompt_pattern(&app),
+            "x2",
+            "the default keys still walk back"
+        );
+
+        ctrl(&mut app, KeyCode::Char('j'));
+        assert_eq!(
+            prompt_pattern(&app),
+            "",
+            "the rebound key did not walk back"
+        );
+        assert_eq!(cursor_source(&app), 0);
+    }
+
+    /// The help overlay and the README key table both carry the two recall
+    /// actions, under the names a `[keymap]` line uses.
+    #[test]
+    fn the_recall_actions_are_documented() {
+        for name in ["prompt.history.prev", "prompt.history.next"] {
+            assert!(
+                crate::help::KEYMAP
+                    .iter()
+                    .flat_map(|section| section.bindings)
+                    .any(|binding| binding.names.contains(&name)),
+                "{name} is not in the help overlay"
+            );
+            let readme = include_str!("../README.md");
+            assert!(
+                readme.contains(&format!("`{name}`")),
+                "{name} is not in the README key table"
             );
         }
     }
