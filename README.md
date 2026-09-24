@@ -361,9 +361,9 @@ Global (`src/lib.rs`), handled before the focused pane sees the key:
 | `q` | Quit | `global.quit` |
 | `Q` | Quit without emitting — the same as `q` unless `--emit` was given | `global.quit.silent` |
 | `Tab` / `Shift-Tab` | Move focus to the next / previous of the three panes — navigator, file view, filter pane. All three are always on screen, so the cycle never skips one | `global.focus.next` / `global.focus.prev` |
-| `/` | In the navigator, search filenames. In the file view or the filter pane, set the search: as you type, the cursor moves to the first hit at or after the line you started on, wrapping once to the top and saying so, and the hits in the window are highlighted. Each keystroke re-scans from where `/` opened, so a narrowed pattern never walks away from your line. Esc puts the cursor and the scroll back there; Enter keeps the position. Only the visible lines are searched, and none of them changes | `global.search` |
+| `/` | Search as you type. In the file view or the filter pane, set the search: the cursor moves to the first hit at or after the line you started on, wrapping once to the top and saying so, and the hits in the window are highlighted. In the navigator, search filenames: the selection moves to the first name that matches at or after the row you started on, the matching names light up, and the view pane previews the file under the selection as it would for `j`. Each keystroke re-runs from where `/` opened, so a narrowed pattern never walks away from where you started. Esc puts the cursor and the scroll, or the selected row and its preview, back there; Enter keeps the position. Only the visible lines are searched, and none of them changes | `global.search` |
 | `p` | Promote the search into a numbered include filter and clear it; the filter's colour replaces the highlight | `global.search.promote` |
-| `Esc` | In the navigator with a filename search active, clear it; otherwise clear the search and its highlight. An open prompt takes this key first: in a search prompt it returns you to where `/` opened, with the search you had before, and in a filter prompt it just cancels | `global.escape` |
+| `Esc` | In the navigator with a filename search active, clear it; otherwise clear the search and its highlight. An open prompt takes this key first: in a search prompt it returns you to where `/` opened — the cursor and the scroll, or the navigator's row and its preview — with the search you had before, and in a filter prompt it just cancels | `global.escape` |
 | `e` | Focus the navigator, revealing the left column if `b` or `z` hid it | `global.focus.nav` |
 | `t` | Focus the file view | `global.focus.view` |
 | `f` | Focus the filter pane. `f i`, `f x` and `f c` are chains: the pair works from anywhere, and when the prompt commits, focus returns to where you were and the app steps as if you had pressed `n`. `f f` stays in the pane | `global.focus.filters` |
@@ -918,8 +918,10 @@ empty prompt means you are making something new.
 
 Searching is by regular expression in both panes — the file view matches line
 contents, the navigator matches entry names, so `^foo` anchors to the start of
-a filename. An invalid pattern reports `E486: invalid pattern` and leaves the
-prompt open to correct.
+a filename. Both move as you type, from the row where `/` opened. A pattern
+that does not compile yet, such as `foo(`, is silent while you type: nothing
+moves and nothing is highlighted. Enter on it reports `E486: invalid pattern`
+and leaves the prompt open to correct.
 
 File view pane (`src/widgets/fileview.rs`) — its own verbs; the shared motions are tabled above:
 

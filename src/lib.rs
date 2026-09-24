@@ -164,15 +164,30 @@ impl Search {
     }
 }
 
-/// Where the user was when `/` opened (glossary: *origin*): the file view's
-/// cursor and scroll, and the search that was set at the time.
+/// Where the user was when `/` opened (glossary: *origin*), in whichever
+/// pane it opened over.
 ///
-/// While the prompt is open every edit re-runs the scan from here, never
+/// While the prompt is open every edit re-runs the search from here, never
 /// from the position the last keystroke reached, so a pattern narrowed by
-/// one more character cannot walk away from the line the user started on.
-/// Esc puts all of it back, so a bad probe costs nothing; Enter drops it.
+/// one more character cannot walk away from where the user started. Esc
+/// puts all of it back, so a bad probe costs nothing; Enter drops it.
+///
+/// Two variants rather than one struct with optional halves: the file
+/// search and the filename search restore different things, and a prompt
+/// is only ever over one pane — the mouse is ignored while it is open, so
+/// the focus cannot change under it.
 #[derive(Debug, Clone)]
-struct Origin {
+enum Origin {
+    /// `/` over the file view or the filter pane, which forwards it.
+    View(ViewOrigin),
+    /// `/` over the navigator (#272).
+    Nav(NavOrigin),
+}
+
+/// The file view's cursor and scroll, and the search that was set at the
+/// time.
+#[derive(Debug, Clone)]
+struct ViewOrigin {
     /// The cursor's row in the visible set, and its column.
     row: usize,
     col: usize,
@@ -184,6 +199,18 @@ struct Origin {
     search: Option<Search>,
 }
 
+/// The navigator's selected row, and the filename search that was set at
+/// the time.
+#[derive(Debug, Clone)]
+struct NavOrigin {
+    /// The selected row as an `entries` index, which a scan answer that
+    /// re-lists the rows in hide mode cannot move; the row it is on can.
+    entry: usize,
+    /// The filename search set before `/` opened, if any. Esc restores it
+    /// with the row, so `n` afterwards repeats what it repeated before.
+    search: Option<regex::Regex>,
+}
+
 /// A search pattern being typed at the bottom of the screen.
 #[derive(Debug, Default)]
 struct SearchPrompt {
@@ -191,9 +218,9 @@ struct SearchPrompt {
     error: Option<String>,
     kind: PromptKind,
     cursor: usize,
-    /// Set for a `/` opened over the file view or the filter pane, where
-    /// the search moves as it is typed. `None` for the navigator's filename
-    /// search and for every filter prompt, which commit on Enter only.
+    /// Set for every `/`, whichever pane it opened over: the search moves
+    /// as it is typed, and this is where it moves from and where Esc goes
+    /// back to. `None` for every filter prompt, which commits on Enter only.
     origin: Option<Origin>,
 }
 
@@ -885,8 +912,10 @@ impl App<'_> {
                         // Enter keeps the position the search reached. The
                         // wrap it reported while typing went with the
                         // keystroke, so say it again if the hit is above
-                        // where `/` opened: the jump upward was real.
-                        if let Some(origin) = origin
+                        // where `/` opened: the jump upward was real. The
+                        // navigator's search never reported a wrap and
+                        // still does not: its `n` is silent about one too.
+                        if let Some(Origin::View(origin)) = origin
                             && self.search.is_some()
                             && self.view.cursor_visible_row() < origin.row
                         {
@@ -989,12 +1018,21 @@ impl App<'_> {
     /// Close the prompt without committing, and put back the origin if the
     /// prompt had one: the cursor, the scroll, and the search that was set
     /// before `/` opened — so the highlight the probe painted goes with it.
+    /// In the navigator, the selected row, the preview it had, and the
+    /// filename search that was set.
     fn cancel_prompt(&mut self) {
         let origin = self.prompt.take().and_then(|prompt| prompt.origin);
         self.chain_origin = None;
-        if let Some(origin) = origin {
-            self.search.clone_from(&origin.search);
-            self.restore_origin(&origin);
+        match origin {
+            Some(Origin::View(origin)) => {
+                self.search.clone_from(&origin.search);
+                self.restore_origin(&origin);
+            }
+            Some(Origin::Nav(origin)) => {
+                self.nav.set_search(origin.search);
+                self.move_nav_to(origin.entry);
+            }
+            None => {}
         }
     }
 
@@ -1004,26 +1042,46 @@ impl App<'_> {
     /// keeps an earlier request when it rebuilds the buffer, and the render
     /// applies it whether or not a rebuild happened, so the cursor is drawn
     /// on the pane row it was on and the scroll follows.
-    fn restore_origin(&mut self, origin: &Origin) {
+    fn restore_origin(&mut self, origin: &ViewOrigin) {
         self.view.land_cursor_on_row(origin.screen_row);
         self.place_cursor_on_visible_row(origin.row);
         self.view.set_cursor_col(origin.col);
     }
 
-    /// The origin for a `/` opened now: where the file view's cursor is,
-    /// and the search that is set.
-    fn capture_origin(&self) -> Origin {
-        Origin {
-            row: self.view.cursor_visible_row(),
-            col: self.view.cursor_col(),
-            screen_row: self.view.cursor_screen_row(),
-            search: self.search.clone(),
+    /// Move the navigator's selection to `entry` and preview it, as a `j`
+    /// onto that row would — the view pane follows a filename search the
+    /// same way it follows the cursor keys. Nothing when the selection is
+    /// already there, so a probe that stays put does not reload the pane.
+    fn move_nav_to(&mut self, entry: usize) {
+        if let Some(action) = self.nav.go_to_entry(entry) {
+            self.perform_widget_action(action);
         }
     }
 
-    /// The search moves as it is typed: run the scan from the origin for
-    /// the pattern the prompt holds now, and move to the first hit at or
-    /// after the origin line, with the window's hits highlighted.
+    /// The origin for a `/` opened now, in the pane that has focus: the
+    /// navigator's selected row and its filename search, or the file view's
+    /// cursor and the search that is set. The filter pane forwards `/` to
+    /// the view, so its origin is the view's.
+    fn capture_origin(&self) -> Origin {
+        match self.focus {
+            Focus::Nav => Origin::Nav(NavOrigin {
+                entry: self.nav.selected_entry().unwrap_or(0),
+                search: self.nav.search_matcher(),
+            }),
+            Focus::View | Focus::Filters => Origin::View(ViewOrigin {
+                row: self.view.cursor_visible_row(),
+                col: self.view.cursor_col(),
+                screen_row: self.view.cursor_screen_row(),
+                search: self.search.clone(),
+            }),
+        }
+    }
+
+    /// The search moves as it is typed: run it from the origin for the
+    /// pattern the prompt holds now, and move to the first hit at or after
+    /// the origin — the cursor to a line, with the window's hits
+    /// highlighted, or the navigator's selection to an entry, with the
+    /// matching names restyled and the view pane previewing it.
     ///
     /// Always from the origin, never from where the last keystroke landed:
     /// `foo` then `food` must not find the next `food` *after* the `foo` the
@@ -1042,20 +1100,28 @@ impl App<'_> {
             return;
         };
         let pattern = prompt.pattern.clone();
+        match origin {
+            Origin::View(origin) => self.rescan_view_from(&origin, &pattern),
+            Origin::Nav(origin) => self.rescan_nav_from(&origin, &pattern),
+        }
+    }
+
+    /// `rescan_from_origin` for the file view.
+    fn rescan_view_from(&mut self, origin: &ViewOrigin, pattern: &str) {
         let search = if pattern.is_empty() {
             None
         } else {
-            Search::new(&pattern).ok()
+            Search::new(pattern).ok()
         };
         let Some(search) = search else {
             self.search = None;
-            self.restore_origin(&origin);
+            self.restore_origin(origin);
             return;
         };
         self.search = Some(search);
         self.promote_truncated_preview();
         let Some((row, column, wrapped)) = self.hit_from(origin.row) else {
-            self.restore_origin(&origin);
+            self.restore_origin(origin);
             return;
         };
         self.jump_to_visible_row(row);
@@ -1065,42 +1131,56 @@ impl App<'_> {
         }
     }
 
+    /// `rescan_from_origin` for the navigator (#272): the filename search
+    /// is set so the matching names light up, and the selection goes to
+    /// the first of them at or after the origin row, or back to the origin
+    /// row when there is none — or nothing to look for yet.
+    fn rescan_nav_from(&mut self, origin: &NavOrigin, pattern: &str) {
+        let matcher = if pattern.is_empty() {
+            None
+        } else {
+            regex::Regex::new(pattern).ok()
+        };
+        self.nav.set_search(matcher);
+        let entry = self.nav.hit_from(origin.entry).unwrap_or(origin.entry);
+        self.move_nav_to(entry);
+    }
+
     /// Run a committed `/` pattern against whichever pane has focus.
     ///
-    /// The navigator has its own search over filenames and keeps it. In the
-    /// file view and the filter pane, `/` sets the search and moves to its
-    /// first hit.
+    /// In the navigator, Enter sets the filename search and keeps the row
+    /// the typing reached, so `n`/`N` repeat it from there. In the file
+    /// view and the filter pane, `/` sets the search and moves to its first
+    /// hit.
     fn run_search(&mut self, pattern: &str) -> Result<(), regex::Error> {
-        let mut view_search = false;
-        let action = match self.focus {
+        match self.focus {
             Focus::Nav => {
-                // `step_to` answers `None` when no name matches. Dropping it
-                // closed the prompt with nothing moved and nothing said,
-                // which a user cannot tell apart from `Esc` (#243). `n`/`N`
-                // already report their dead end; so does this one.
-                let action = self.nav.search(pattern, false)?;
-                if action.is_none() {
+                // Nothing moves: the typing already did. What Enter adds is
+                // the report. A pattern no name matches used to close the
+                // prompt with nothing moved and nothing said, which a user
+                // cannot tell apart from `Esc` (#243); `n`/`N` already
+                // report their dead end, so does this one. Checked from the
+                // origin, which is where the typing looked from, or from the
+                // selection when there was no prompt.
+                let matcher = regex::Regex::new(pattern)?;
+                let from = match self
+                    .prompt
+                    .as_ref()
+                    .and_then(|prompt| prompt.origin.as_ref())
+                {
+                    Some(Origin::Nav(origin)) => origin.entry,
+                    _ => self.nav.selected_entry().unwrap_or(0),
+                };
+                self.nav.set_search(Some(matcher));
+                if self.nav.hit_from(from).is_none() {
                     self.report(&format!("no filenames match \"{pattern}\""), false);
                 }
-                action
+                Ok(())
             }
             // The filter pane forwards view-shaped keys to the view (#120):
-            // a search started there is the same search. Deferred rather
-            // than done here: the borrow taken to reach the pane is still
-            // live.
-            Focus::View | Focus::Filters => {
-                view_search = true;
-                None
-            }
-        };
-
-        if let Some(action) = action {
-            self.perform_widget_action(action);
+            // a search started there is the same search.
+            Focus::View | Focus::Filters => self.apply_search(pattern),
         }
-        if view_search {
-            self.apply_search(pattern)?;
-        }
-        Ok(())
     }
 
     /// Set the search and move to its first hit: the first visible line the
@@ -1930,12 +2010,11 @@ impl App<'_> {
                 self.chain_origin = origin;
             }
             A::GlobalHelp => self.help = true,
-            // The origin is captured for the file search only: the
-            // navigator's filename search commits on Enter, as before.
+            // Every `/` captures its origin: the search moves as it is
+            // typed in every pane, and Esc goes back to where it opened.
             A::GlobalSearch => {
-                let origin = (self.focus != Focus::Nav).then(|| self.capture_origin());
                 self.prompt = Some(SearchPrompt {
-                    origin,
+                    origin: Some(self.capture_origin()),
                     ..SearchPrompt::default()
                 });
             }
@@ -11118,32 +11197,215 @@ mod tests {
         assert_eq!(app.file_view_highlight().as_deref(), Some("beta"));
     }
 
-    /// The navigator's `/` still commits on Enter: nothing moves while a
-    /// filename is typed.
+    // ---- the navigator's filename search moves as you type (#272) --------
+
+    fn selected_name(app: &App) -> String {
+        app.nav.selected_name().expect("an entry is selected")
+    }
+
+    /// Each keystroke in the navigator's prompt moves the selection before
+    /// Enter, and each re-runs from the origin row rather than from the
+    /// entry the last keystroke reached: `b2` then Backspace lands on
+    /// `b1.log`, the first `b` after the origin, not on `b3.log`, the first
+    /// `b` after `b2.log`.
     #[test]
-    fn the_navigator_search_does_not_move_while_typing() {
-        let mut app = app_over("type_nav", &["alpha.log", "zebra.log"]);
+    fn typing_in_the_navigator_moves_the_selection_and_rescans_from_the_origin() {
+        let mut app = app_over("type_nav", &["a.log", "b1.log", "b2.log", "b3.log"]);
         key(&mut app, KeyCode::Char('e'));
-        let before = app.nav.selected_entry();
+        assert_eq!(selected_name(&app), "a.log", "sanity: the origin");
 
         key(&mut app, KeyCode::Char('/'));
-        typed(&mut app, "zebra");
-        assert_eq!(
-            app.nav.selected_entry(),
-            before,
-            "the selection moved while typing"
-        );
+        typed(&mut app, "b2");
+        assert!(app.prompt.is_some(), "sanity: the prompt is open");
+        assert_eq!(selected_name(&app), "b2.log", "did not move before Enter");
         assert!(
             app.search.is_none(),
             "a filename probe became the file search"
         );
 
-        key(&mut app, KeyCode::Enter);
-        assert_ne!(
-            app.nav.selected_entry(),
-            before,
-            "Enter did not move the selection"
+        key(&mut app, KeyCode::Backspace);
+        assert_eq!(
+            selected_name(&app),
+            "b1.log",
+            "did not re-run from the origin row"
         );
+
+        typed(&mut app, "3");
+        assert_eq!(selected_name(&app), "b3.log");
+
+        key(&mut app, KeyCode::Enter);
+        assert!(app.prompt.is_none(), "Enter did not close the prompt");
+        assert_eq!(selected_name(&app), "b3.log", "Enter moved the selection");
+        assert!(
+            app.nav.has_search(),
+            "Enter did not set the filename search"
+        );
+    }
+
+    /// The origin row's own name is considered first, as the file search
+    /// considers the origin line first: a pattern the origin matches stays
+    /// put rather than stepping to the next match.
+    #[test]
+    fn a_filename_pattern_the_origin_matches_stays_on_the_origin() {
+        let mut app = app_over("type_nav_own", &["alpha.log", "alps.log"]);
+        key(&mut app, KeyCode::Char('e'));
+        assert_eq!(selected_name(&app), "alpha.log", "sanity: the origin");
+
+        key(&mut app, KeyCode::Char('/'));
+        typed(&mut app, "al");
+
+        assert_eq!(selected_name(&app), "alpha.log", "stepped past the origin");
+    }
+
+    /// The view pane shows the file under the moving selection, as it does
+    /// for a `j` onto that row, and Esc puts back both the selected row and
+    /// the preview it had.
+    #[test]
+    fn the_view_follows_the_navigator_selection_while_typing_and_esc_restores_both() {
+        let mut app = app_over_files(
+            "type_nav_preview",
+            &[
+                ("alpha.log", "ALPHA MARKER\n"),
+                ("gamma.log", "GAMMA MARKER\n"),
+            ],
+        );
+        key(&mut app, KeyCode::Char('e'));
+        assert_eq!(selected_name(&app), "alpha.log", "sanity: the origin");
+        draw(&mut app);
+
+        key(&mut app, KeyCode::Char('/'));
+        typed(&mut app, "gamma");
+        let frame = rendered(&mut app);
+        assert!(
+            frame.contains("GAMMA MARKER"),
+            "the view did not follow the selection while typing:\n{frame}"
+        );
+
+        key(&mut app, KeyCode::Esc);
+        assert!(app.prompt.is_none(), "Esc did not close the prompt");
+        assert_eq!(
+            selected_name(&app),
+            "alpha.log",
+            "Esc did not restore the row"
+        );
+        assert!(!app.nav.has_search(), "Esc left a filename search set");
+        let frame = rendered(&mut app);
+        assert!(
+            frame.contains("ALPHA MARKER") && !frame.contains("GAMMA MARKER"),
+            "Esc did not restore the preview:\n{frame}"
+        );
+    }
+
+    /// Esc puts back the filename search that was set before `/` opened, so
+    /// `n` repeats it, and a probe that stays on the origin row does not
+    /// reload the pane on the way out.
+    #[test]
+    fn esc_in_the_navigator_prompt_restores_the_previous_filename_search() {
+        let mut app = app_over("type_nav_prev", &["a.log", "b1.log", "b2.log"]);
+        key(&mut app, KeyCode::Char('e'));
+        key(&mut app, KeyCode::Char('/'));
+        typed(&mut app, "b");
+        key(&mut app, KeyCode::Enter);
+        assert_eq!(selected_name(&app), "b1.log", "sanity: the search is set");
+
+        key(&mut app, KeyCode::Char('/'));
+        typed(&mut app, "zzz");
+        assert_eq!(selected_name(&app), "b1.log", "a dead end moved the row");
+        key(&mut app, KeyCode::Esc);
+
+        assert!(app.nav.has_search(), "Esc dropped the previous search");
+        key(&mut app, KeyCode::Char('n'));
+        assert_eq!(
+            selected_name(&app),
+            "b2.log",
+            "n did not repeat the search Esc put back"
+        );
+    }
+
+    /// Enter sets the filename search as before, so `n` and `N` repeat it
+    /// from the row it reached.
+    #[test]
+    fn n_and_big_n_repeat_a_typed_filename_search() {
+        let mut app = app_over("type_nav_repeat", &["a.log", "b1.log", "b2.log"]);
+        key(&mut app, KeyCode::Char('e'));
+
+        key(&mut app, KeyCode::Char('/'));
+        typed(&mut app, "b");
+        key(&mut app, KeyCode::Enter);
+        assert_eq!(selected_name(&app), "b1.log");
+
+        key(&mut app, KeyCode::Char('n'));
+        assert_eq!(selected_name(&app), "b2.log", "n did not step");
+        key(&mut app, KeyCode::Char('N'));
+        assert_eq!(selected_name(&app), "b1.log", "N did not step back");
+    }
+
+    /// A pattern no name matches is silent while typed, with the selection
+    /// on the origin row; Enter on it reports the dead end (#243) and leaves
+    /// the row where it is.
+    #[test]
+    fn a_filename_pattern_with_no_match_sits_at_the_origin_and_enter_says_so() {
+        let mut app = app_over("type_nav_dead_end", &["alpha.log", "beta.log"]);
+        key(&mut app, KeyCode::Char('e'));
+
+        key(&mut app, KeyCode::Char('/'));
+        typed(&mut app, "ERROR");
+        assert_eq!(selected_name(&app), "alpha.log", "a dead end moved the row");
+        assert_eq!(status(&app), None, "a dead end was reported while typing");
+
+        key(&mut app, KeyCode::Enter);
+        assert!(app.prompt.is_none(), "Enter did not close the prompt");
+        assert_eq!(selected_name(&app), "alpha.log", "Enter moved the row");
+        assert_eq!(status(&app), Some("no filenames match \"ERROR\""));
+    }
+
+    /// A half-typed regex is silent in the navigator too: no error, the
+    /// selection on the origin row. Enter on it reports `E486` and keeps the
+    /// prompt open.
+    #[test]
+    fn a_half_typed_invalid_filename_regex_is_silent_in_the_navigator() {
+        let mut app = app_over("type_nav_invalid", &["alpha.log", "beta.log"]);
+        key(&mut app, KeyCode::Char('e'));
+
+        key(&mut app, KeyCode::Char('/'));
+        typed(&mut app, "beta");
+        assert_eq!(selected_name(&app), "beta.log", "sanity: moved");
+        typed(&mut app, "[");
+        assert_eq!(
+            selected_name(&app),
+            "alpha.log",
+            "an invalid pattern did not return to the origin row"
+        );
+        assert!(
+            !prompt_line(&mut app).contains("E486"),
+            "an error showed while typing: {}",
+            prompt_line(&mut app)
+        );
+        assert_eq!(status(&app), None);
+
+        key(&mut app, KeyCode::Enter);
+        assert!(app.prompt.is_some(), "Enter closed the prompt");
+        assert!(
+            prompt_line(&mut app).contains("E486"),
+            "no error shown: {}",
+            prompt_line(&mut app)
+        );
+        assert_eq!(selected_name(&app), "alpha.log");
+    }
+
+    /// Enter on an empty navigator prompt cancels, as in the file view: it
+    /// does not step to the next entry as a search for `""` would.
+    #[test]
+    fn enter_on_an_empty_navigator_prompt_cancels() {
+        let mut app = app_over("type_nav_empty", &["alpha.log", "beta.log"]);
+        key(&mut app, KeyCode::Char('e'));
+
+        key(&mut app, KeyCode::Char('/'));
+        key(&mut app, KeyCode::Enter);
+
+        assert!(app.prompt.is_none(), "the prompt stayed open");
+        assert_eq!(selected_name(&app), "alpha.log", "an empty search moved");
+        assert!(!app.nav.has_search(), "an empty search was set");
     }
 
     /// The cursor lands on the column of the first occurrence, so a long
@@ -11880,12 +12142,11 @@ mod tests {
         key(&mut app, KeyCode::Char('/'));
         typed(&mut app, "log");
         key(&mut app, KeyCode::Enter);
-        // The navigator starts on `a.log` and its search steps forward from
-        // there, like the `n` it shares an implementation with — the first
-        // match strictly after the current selection, not the current
-        // selection itself even when it too matches. So `/log` lands on
-        // `b.log`, not `a.log`.
-        assert_eq!(app.nav.selected_name().as_deref(), Some("b.log"), "sanity");
+        // The navigator starts on `a.log`, and a typed search considers the
+        // origin row first, as the file search does (#272): `a.log` matches,
+        // so `/log` stays on it. The `n` the return presses is the step —
+        // the first match strictly after the selection.
+        assert_eq!(app.nav.selected_name().as_deref(), Some("a.log"), "sanity");
 
         key(&mut app, KeyCode::Char('f'));
         key(&mut app, KeyCode::Char('i'));
@@ -11895,7 +12156,7 @@ mod tests {
         assert_eq!(app.focus, Focus::Nav, "focus did not return");
         assert_eq!(
             app.nav.selected_name().as_deref(),
-            Some("c.log"),
+            Some("b.log"),
             "the return did not act as the navigator's n"
         );
     }

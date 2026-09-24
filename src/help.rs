@@ -425,7 +425,7 @@ pub const KEYMAP: &[Section] = &[
             },
             Binding {
                 keys: &["/"],
-                action: "Search: filenames, or the visible lines as you type",
+                action: "Search as you type: filenames, or the visible lines",
                 names: &["global.search"],
             },
             Binding {
