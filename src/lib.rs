@@ -172,8 +172,8 @@ impl Search {
 /// one more character cannot walk away from where the user started. Esc
 /// puts all of it back, so a bad probe costs nothing; Enter drops it.
 ///
-/// Two variants rather than one struct with optional halves: the file
-/// search and the filename search restore different things, and a prompt
+/// One variant per place a `/` can open, rather than one struct with
+/// optional parts: each search restores different things, and a prompt
 /// is only ever over one pane — the mouse is ignored while it is open, so
 /// the focus cannot change under it.
 #[derive(Debug, Clone)]
@@ -182,6 +182,8 @@ enum Origin {
     View(ViewOrigin),
     /// `/` over the navigator (#272).
     Nav(NavOrigin),
+    /// `/` in the set picker (#285).
+    Sets(SetsOrigin),
 }
 
 /// The file view's cursor and scroll, and the search that was set at the
@@ -211,6 +213,14 @@ struct NavOrigin {
     search: Option<regex::Regex>,
 }
 
+/// The set picker's selected row, and the search that was set in it at
+/// the time.
+#[derive(Debug, Clone)]
+struct SetsOrigin {
+    row: usize,
+    search: Option<regex::Regex>,
+}
+
 /// How many committed patterns a `History` keeps before the oldest goes.
 const HISTORY_CAP: usize = 50;
 
@@ -218,9 +228,10 @@ const HISTORY_CAP: usize = 50;
 /// (#274), so a near-miss regex is recalled and corrected rather than
 /// retyped.
 ///
-/// One per prompt kind that has one: the file search and the navigator's
-/// filename search keep separate histories, because a filename pattern
-/// offered in the file prompt is noise. In memory only, so a session starts
+/// One per prompt kind that has one: the file search, the navigator's
+/// filename search and the set picker's search (#285) keep separate
+/// histories, because a filename pattern offered in the file prompt is
+/// noise. In memory only, so a session starts
 /// empty. A pattern committed again moves to the front rather than appearing
 /// twice, and the `HISTORY_CAP`th pattern pushes the oldest out. Only Enter
 /// adds: a cancelled prompt leaves no trace, and `*` never goes through the
@@ -525,6 +536,8 @@ pub struct App<'a> {
     search_history: History,
     /// The patterns Enter committed in the navigator's `/` prompt.
     nav_search_history: History,
+    /// The patterns Enter committed in the set picker's `/` prompt (#285).
+    sets_search_history: History,
     filters: ActiveFilters,
     document: Document,
     /// The `Document::generation` the file view's buffer was last rebuilt
@@ -875,6 +888,7 @@ impl App<'_> {
             search: None,
             search_history: History::default(),
             nav_search_history: History::default(),
+            sets_search_history: History::default(),
             filters,
             document: Document::default(),
             last_generation: None,
@@ -979,6 +993,13 @@ impl App<'_> {
                         // opened over, and so which of the two it feeds.
                         if let Some(origin) = &origin {
                             self.history_for(origin).push(&pattern);
+                        }
+                        // The set picker takes the next key itself, before
+                        // the bounce guard below could ever see it, so an
+                        // armed guard would wait there and swallow an
+                        // `Enter` long after the picker closed.
+                        if matches!(origin, Some(Origin::Sets(_))) {
+                            return;
                         }
                         // Enter keeps the position the search reached. The
                         // wrap it reported while typing went with the
@@ -1131,6 +1152,7 @@ impl App<'_> {
         match origin {
             Origin::View(_) => &mut self.search_history,
             Origin::Nav(_) => &mut self.nav_search_history,
+            Origin::Sets(_) => &mut self.sets_search_history,
         }
     }
 
@@ -1139,6 +1161,7 @@ impl App<'_> {
         match origin {
             Origin::View(_) => &self.search_history,
             Origin::Nav(_) => &self.nav_search_history,
+            Origin::Sets(_) => &self.sets_search_history,
         }
     }
 
@@ -1158,6 +1181,12 @@ impl App<'_> {
             Some(Origin::Nav(origin)) => {
                 self.nav.set_search(origin.search);
                 self.move_nav_to(origin.entry);
+            }
+            Some(Origin::Sets(origin)) => {
+                if let Some(picker) = self.set_picker.as_mut() {
+                    picker.set_search(origin.search);
+                    picker.select(origin.row);
+                }
             }
             None => {}
         }
@@ -1234,6 +1263,7 @@ impl App<'_> {
         match origin {
             Origin::View(origin) => self.rescan_view_from(&origin, &pattern),
             Origin::Nav(origin) => self.rescan_nav_from(&origin, &pattern),
+            Origin::Sets(origin) => self.rescan_sets_from(&origin, &pattern),
         }
     }
 
@@ -1277,13 +1307,47 @@ impl App<'_> {
         self.move_nav_to(entry);
     }
 
-    /// Run a committed `/` pattern against whichever pane has focus.
+    /// `rescan_from_origin` for the set picker (#285): the same as the
+    /// navigator's, over the picker's rows.
+    fn rescan_sets_from(&mut self, origin: &SetsOrigin, pattern: &str) {
+        let search = if pattern.is_empty() {
+            None
+        } else {
+            regex::Regex::new(pattern).ok()
+        };
+        if let Some(picker) = self.set_picker.as_mut() {
+            picker.set_search(search);
+            picker.select(picker.hit_from(origin.row).unwrap_or(origin.row));
+        }
+    }
+
+    /// Run a committed `/` pattern against whichever pane has focus, or
+    /// against the set picker when the prompt opened over it.
     ///
     /// In the navigator, Enter sets the filename search and keeps the row
     /// the typing reached, so `n`/`N` repeat it from there. In the file
     /// view and the filter pane, `/` sets the search and moves to its first
     /// hit.
     fn run_search(&mut self, pattern: &str) -> Result<(), regex::Error> {
+        // The set picker: as the navigator, nothing moves on Enter, and a
+        // pattern no row matches is reported.
+        if let Some(Origin::Sets(origin)) = self
+            .prompt
+            .as_ref()
+            .and_then(|prompt| prompt.origin.as_ref())
+        {
+            let row = origin.row;
+            let matcher = regex::Regex::new(pattern)?;
+            let mut no_hit = false;
+            if let Some(picker) = self.set_picker.as_mut() {
+                picker.set_search(Some(matcher));
+                no_hit = picker.hit_from(row).is_none();
+            }
+            if no_hit {
+                self.report(&format!("no sets match \"{pattern}\""), false);
+            }
+            return Ok(());
+        }
         match self.focus {
             Focus::Nav => {
                 // Nothing moves: the typing already did. What Enter adds is
@@ -1908,6 +1972,19 @@ impl App<'_> {
                             self.set_picker = None;
                             self.apply_listing(&changes);
                         }
+                        widgets::setpicker::SetPickerOutcome::Search => {
+                            let origin = Origin::Sets(SetsOrigin {
+                                row: picker.selected(),
+                                search: picker.search(),
+                            });
+                            self.prompt = Some(SearchPrompt {
+                                origin: Some(origin),
+                                ..SearchPrompt::default()
+                            });
+                        }
+                        widgets::setpicker::SetPickerOutcome::NoHit => {
+                            self.report("no more matches", false);
+                        }
                     }
                 }
             }
@@ -2510,7 +2587,10 @@ impl App<'_> {
             | A::SetsDown
             | A::SetsToggle
             | A::SetsApply
-            | A::SetsCancel => {
+            | A::SetsCancel
+            | A::SetsSearch
+            | A::SetsHitNext
+            | A::SetsHitPrev => {
                 debug_assert!(
                     false,
                     "{action:?} resolves in its own modal dispatch, never through `perform`"
@@ -16328,5 +16408,144 @@ mod tests {
         key(&mut app, KeyCode::Enter);
         assert_eq!(cursor_source(&app), before);
         assert_eq!(app.focus, Focus::View);
+    }
+
+    // ---- search in the set picker (#285) -----------------------------------
+
+    /// The picker's selected row. Rows: a, b, c, definitions.
+    fn picker_row(app: &App) -> usize {
+        app.set_picker
+            .as_ref()
+            .expect("the picker is open")
+            .selected()
+    }
+
+    /// The typing moves the selection from the origin, over the name and
+    /// the description; Esc returns to the origin and the picker stays.
+    #[test]
+    fn the_set_picker_search_moves_as_it_is_typed_and_esc_returns() {
+        let mut app = app_with_three_sets("sets_search_type");
+        key(&mut app, KeyCode::Char('L'));
+        key(&mut app, KeyCode::Char('j'));
+        key(&mut app, KeyCode::Char('/'));
+        assert_eq!(prompt_line(&mut app), "/");
+        typed(&mut app, "c");
+        assert_eq!(picker_row(&app), 2, "c is the first hit at or after b");
+        typed(&mut app, "$");
+        assert_eq!(picker_row(&app), 2);
+        key(&mut app, KeyCode::Backspace);
+        key(&mut app, KeyCode::Backspace);
+        typed(&mut app, "syntax grammar");
+        assert_eq!(picker_row(&app), 3, "the description was not searched");
+        key(&mut app, KeyCode::Esc);
+        assert!(app.prompt.is_none());
+        assert!(
+            app.set_picker.is_some(),
+            "Esc in the prompt closed the picker"
+        );
+        assert_eq!(picker_row(&app), 1, "Esc did not return to the origin");
+    }
+
+    /// Enter keeps the row; the next Enter applies the picker, and is not
+    /// swallowed as a bounce.
+    #[test]
+    fn enter_keeps_the_set_picker_search_row() {
+        let mut app = app_with_three_sets("sets_search_enter");
+        let c = set_index(&app, "c");
+        key(&mut app, KeyCode::Char('L'));
+        key(&mut app, KeyCode::Char('/'));
+        typed(&mut app, "^c$");
+        key(&mut app, KeyCode::Enter);
+        assert!(app.prompt.is_none());
+        assert_eq!(picker_row(&app), 2);
+        key(&mut app, KeyCode::Char(' '));
+        key(&mut app, KeyCode::Enter);
+        assert!(
+            app.set_picker.is_none(),
+            "the Enter after the search was lost"
+        );
+        assert!(!app.filters.sets()[c].listed);
+    }
+
+    #[test]
+    fn n_and_big_n_step_through_the_set_picker_hits() {
+        let mut app = app_with_three_sets("sets_search_n");
+        key(&mut app, KeyCode::Char('L'));
+        key(&mut app, KeyCode::Char('/'));
+        typed(&mut app, "^[bd]");
+        key(&mut app, KeyCode::Enter);
+        assert_eq!(picker_row(&app), 1);
+        key(&mut app, KeyCode::Char('n'));
+        assert_eq!(picker_row(&app), 3);
+        key(&mut app, KeyCode::Char('n'));
+        assert_eq!(picker_row(&app), 1, "n did not wrap");
+        key(&mut app, KeyCode::Char('N'));
+        assert_eq!(picker_row(&app), 3, "N did not wrap");
+    }
+
+    #[test]
+    fn a_set_picker_pattern_with_no_hit_is_reported() {
+        let mut app = app_with_three_sets("sets_search_none");
+        key(&mut app, KeyCode::Char('L'));
+        key(&mut app, KeyCode::Char('/'));
+        typed(&mut app, "zzz");
+        key(&mut app, KeyCode::Enter);
+        assert_eq!(status(&app), Some("no sets match \"zzz\""));
+        key(&mut app, KeyCode::Char('n'));
+        assert_eq!(status(&app), Some("no more matches"));
+        assert_eq!(picker_row(&app), 0);
+    }
+
+    #[test]
+    fn an_invalid_set_picker_pattern_is_reported_like_the_others() {
+        let mut app = app_with_three_sets("sets_search_invalid");
+        key(&mut app, KeyCode::Char('L'));
+        key(&mut app, KeyCode::Char('j'));
+        key(&mut app, KeyCode::Char('/'));
+        typed(&mut app, "c(");
+        assert_eq!(picker_row(&app), 1, "a half-typed regex moved");
+        key(&mut app, KeyCode::Enter);
+        assert!(app.prompt.is_some(), "prompt closed on an invalid pattern");
+        assert_eq!(prompt_line(&mut app), INVALID_PATTERN);
+    }
+
+    /// The picker's history is its own: a pattern committed there is not
+    /// offered in the file search or the filename search, nor theirs there.
+    #[test]
+    fn the_set_picker_keeps_its_own_history() {
+        let mut app = app_with_three_sets("sets_search_history");
+        key(&mut app, KeyCode::Char('/'));
+        typed(&mut app, "beta");
+        key(&mut app, KeyCode::Enter);
+
+        key(&mut app, KeyCode::Char('L'));
+        key(&mut app, KeyCode::Char('/'));
+        key(&mut app, KeyCode::Up);
+        assert_eq!(
+            prompt(&app).pattern,
+            "",
+            "the file search's history leaked in"
+        );
+        typed(&mut app, "^b$");
+        key(&mut app, KeyCode::Enter);
+        key(&mut app, KeyCode::Esc);
+        assert!(app.set_picker.is_none());
+
+        key(&mut app, KeyCode::Char('/'));
+        key(&mut app, KeyCode::Up);
+        assert_eq!(prompt(&app).pattern, "beta");
+        key(&mut app, KeyCode::Up);
+        assert_eq!(
+            prompt(&app).pattern,
+            "beta",
+            "the picker's history leaked out"
+        );
+        key(&mut app, KeyCode::Esc);
+
+        key(&mut app, KeyCode::Char('L'));
+        key(&mut app, KeyCode::Char('/'));
+        key(&mut app, KeyCode::Up);
+        assert_eq!(prompt(&app).pattern, "^b$");
+        assert_eq!(picker_row(&app), 1, "a recall did not move");
     }
 }

@@ -743,6 +743,8 @@ checked.
 | --- | --- | --- |
 | `j` / `k`, `Down` / `Up` | Move the selection | `sets.down` / `sets.up` |
 | `space` | List or unlist the selected set | `sets.toggle` |
+| `/` | Search the names and the descriptions | `sets.search` |
+| `n` / `N` | Next / previous row the search matches, wrapping | `sets.hit.next` / `sets.hit.prev` |
 | `Enter` | Apply every change and close | `sets.apply` |
 | `Esc` | Discard every change and close | `sets.cancel` |
 
@@ -753,6 +755,14 @@ with its flags as they were, in its `priority` position — `autoload` is a
 startup value and does not apply. After the picker closes you are where you
 were before `L`: the same pane, the same cursor, the same scroll. The picker
 takes every key while it is open, so `q` does not quit from inside it.
+
+`/` finds a set when you remember only a word of its description. The pattern
+is a regex, as in every other `/`, and it matches the name or the description.
+As in the navigator, the search moves the selection as you type — to the first
+matching row at or after the row where `/` opened — and colours the matching
+rows; it hides no row. Esc in the prompt goes back to that row, and Enter
+keeps the row the search reached. The picker keeps its own history for `Up`
+and `Down`.
 
 #### Definition filters
 
@@ -983,8 +993,8 @@ A `/` prompt remembers what Enter committed. `Up` brings back the last
 pattern to edit, `Up` again the one before it, and `Down` walks back towards
 the newest and then to an empty prompt; `Ctrl-p` and `Ctrl-n` do the same.
 Each recall moves as typing the pattern would, and Esc still returns to
-where `/` opened. The file search and the filename search keep separate
-histories, each of the last 50 patterns for the session, newest first — a
+where `/` opened. The file search, the filename search and the set picker's
+search keep separate histories, each of the last 50 patterns for the session, newest first — a
 pattern committed again moves to the front rather than appearing twice. A
 cancelled prompt adds nothing, and the filter prompts (`i`, `x`, `c`) keep
 no history at all.
