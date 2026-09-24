@@ -44,6 +44,9 @@ struct FileSchema {
 struct SetSchema {
     priority: Option<i32>,
     autoload: Option<bool>,
+    /// Listed at startup (#282). `true` when absent; `false` wins over
+    /// `autoload = true` rather than refusing the file (ADR 0002).
+    listed: Option<bool>,
     mode: Option<String>,
     #[serde(default)]
     profiles: BTreeMap<String, Vec<String>>,
@@ -194,7 +197,7 @@ pub fn parse(text: &str, path: &Path) -> Result<Vec<LoadedSet>, Error> {
                     None,
                     format!(
                         "{name:?} is a built-in set; its table may set `priority`, \
-                         `autoload` and `profiles` only"
+                         `autoload`, `listed` and `profiles` only"
                     ),
                 ));
             }
@@ -220,6 +223,7 @@ pub fn parse(text: &str, path: &Path) -> Result<Vec<LoadedSet>, Error> {
                 path: path.to_path_buf(),
                 priority: schema.priority.unwrap_or(DEFAULT_PRIORITY),
                 autoload: schema.autoload.unwrap_or(false),
+                listed: schema.listed.unwrap_or(true),
                 profiles: schema.profiles,
                 filters: Vec::new(),
                 builtin: true,
@@ -282,6 +286,7 @@ pub fn parse(text: &str, path: &Path) -> Result<Vec<LoadedSet>, Error> {
             path: path.to_path_buf(),
             priority: schema.priority.unwrap_or(DEFAULT_PRIORITY),
             autoload: schema.autoload.unwrap_or(false),
+            listed: schema.listed.unwrap_or(true),
             profiles: schema.profiles,
             filters,
             builtin: false,
@@ -815,5 +820,38 @@ sense = "context"
         let dir = Path::new("target/test-config/filters-as-a-dir.toml");
         std::fs::create_dir_all(dir).expect("mkdir");
         assert!(matches!(load_from(dir), Err(Error::Read { .. })));
+    }
+
+    // ---- listed (#282) -----------------------------------------------------
+
+    #[test]
+    fn listed_defaults_to_true_and_can_be_false() {
+        let file = "[sets.a]\n[[sets.a.filters]]\npattern = 'x'\n";
+        let sets = parsed(file);
+        assert!(
+            sets.iter().all(|set| set.listed),
+            "a, and the default built-in"
+        );
+        let sets = parsed(&format!(
+            "{file}[sets.b]\nlisted = false\n[[sets.b.filters]]\npattern = 'y'\n"
+        ));
+        let b = sets.iter().find(|set| set.name == "b").expect("b");
+        assert!(!b.listed);
+    }
+
+    /// The one contradiction the file is not refused for (ADR 0002).
+    #[test]
+    fn listed_false_with_autoload_true_is_accepted() {
+        let sets = parsed(
+            "[sets.a]\nlisted = false\nautoload = true\n[[sets.a.filters]]\npattern = 'x'\n",
+        );
+        assert_eq!((sets[0].listed, sets[0].autoload), (false, true));
+    }
+
+    #[test]
+    fn a_builtin_set_table_accepts_listed() {
+        let sets = parsed("[sets.definitions]\nlisted = false\n");
+        assert!(sets[0].builtin);
+        assert!(!sets[0].listed);
     }
 }

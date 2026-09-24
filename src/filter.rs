@@ -324,8 +324,8 @@ pub enum Origin {
     Scratch,
     File(PathBuf),
     /// A set recon ships (#127): always present, its filters never in the
-    /// file. A `[sets.<name>]` table may set its `priority` and `autoload`
-    /// and nothing else. Its filters take no number and no palette colour.
+    /// file. A `[sets.<name>]` table may set its `priority`, `autoload`,
+    /// `listed` and `profiles` and nothing else. Its filters take no number and no palette colour.
     BuiltIn,
 }
 
@@ -354,8 +354,14 @@ pub struct FilterSet {
     pub origin: Origin,
     /// Pane position, lower first. The scratch set ignores it and is always first.
     pub priority: i32,
-    /// Enabled at startup, and what a reset returns the flag to.
+    /// Enabled at startup, and what a reset returns the flag to — for a
+    /// set that is listed.
     pub autoload: bool,
+    /// Has a row in the pane (#282). An unlisted set has none and is never
+    /// enabled: `enabled` implies `listed`, and the methods that set either
+    /// flag keep it so. The file's `listed` is the startup value only (ADR
+    /// 0002); `set_listed` changes it for the session.
+    pub listed: bool,
     pub enabled: bool,
     /// Named subsets of this set's filters, by `Filter::display_name`.
     pub profiles: BTreeMap<String, Vec<String>>,
@@ -368,6 +374,7 @@ impl FilterSet {
             origin: Origin::Scratch,
             priority: i32::MIN,
             autoload: true,
+            listed: true,
             enabled: true,
             profiles: BTreeMap::new(),
         }
@@ -405,6 +412,8 @@ pub struct LoadedSet {
     pub path: PathBuf,
     pub priority: i32,
     pub autoload: bool,
+    /// The file's `listed`, `true` when absent. Wins over `autoload`.
+    pub listed: bool,
     pub profiles: BTreeMap<String, Vec<String>>,
     pub filters: Vec<LoadedFilter>,
     /// A `[sets.<name>]` table naming a built-in set: `priority`,
@@ -428,6 +437,7 @@ impl LoadedSet {
             path: PathBuf::new(),
             priority: crate::filtersets::DEFAULT_PRIORITY,
             autoload: false,
+            listed: true,
             profiles: BTreeMap::new(),
             filters: Vec::new(),
             builtin: true,
@@ -800,8 +810,8 @@ impl ActiveFilters {
 
     /// Build the startup set (#128): the scratch set, then `sets` in the
     /// order given — the loader has already sorted them by priority and
-    /// name — every file filter disabled, then each `autoload` set enabled,
-    /// which applies its `default` profile if it has one.
+    /// name — every file filter disabled, then each `autoload` set that is
+    /// also listed enabled, which applies its `default` profile if it has one.
     ///
     /// A file filter's colour is its position in the known list, the same
     /// rule `add` uses, unless the file named one. Assigned here, once, and
@@ -837,6 +847,7 @@ impl ActiveFilters {
                     origin: Origin::BuiltIn,
                     priority: loaded.priority,
                     autoload: loaded.autoload,
+                    listed: loaded.listed,
                     enabled: false,
                     profiles: loaded.profiles.clone(),
                 });
@@ -859,6 +870,7 @@ impl ActiveFilters {
                 origin: Origin::File(loaded.path.clone()),
                 priority: loaded.priority,
                 autoload: loaded.autoload,
+                listed: loaded.listed,
                 enabled: false,
                 profiles: loaded.profiles.clone(),
             });
@@ -878,8 +890,9 @@ impl ActiveFilters {
             }
         }
         this.recompile();
+        // `listed = false` wins over `autoload = true` (ADR 0002).
         for index in 1..this.sets.len() {
-            if this.sets[index].autoload {
+            if this.sets[index].autoload && this.sets[index].listed {
                 this.set_enabled_set(index, true);
             }
         }
@@ -917,9 +930,10 @@ impl ActiveFilters {
     /// had.
     ///
     /// Returns `false` for the scratch set, which is never toggled by hand,
-    /// and for an index that names no set.
+    /// for an index that names no set, and for enabling an unlisted set —
+    /// enabled implies listed (#282), so `set_listed` comes first.
     pub fn set_enabled_set(&mut self, set: usize, enabled: bool) -> bool {
-        if set == 0 || set >= self.sets.len() {
+        if set == 0 || set >= self.sets.len() || (enabled && !self.sets[set].listed) {
             return false;
         }
         self.sets[set].enabled = enabled;
@@ -930,10 +944,43 @@ impl ActiveFilters {
     }
 
     /// Flip a named set, reporting its new state — or `None` for the
-    /// scratch set and for an index that names no set.
+    /// scratch set, for an index that names no set, and for an unlisted set.
     pub fn toggle_set(&mut self, set: usize) -> Option<bool> {
         let now = !self.sets.get(set)?.enabled;
         self.set_enabled_set(set, now).then_some(now)
+    }
+
+    /// List or unlist a named set for this session (#282).
+    ///
+    /// Unlisting also disables the set, so it stops deciding lines at once;
+    /// its filter flags are kept. Unlisting the soloed set ends the solo.
+    /// Listing gives a disabled set with the flags it had, in its `priority`
+    /// position, which it never left: `autoload` is a startup value and does
+    /// not apply here.
+    ///
+    /// Returns `false`, changing nothing, for the scratch set — which is
+    /// always listed — and for an index that names no set.
+    pub fn set_listed(&mut self, set: usize, listed: bool) -> bool {
+        if set == 0 || set >= self.sets.len() {
+            return false;
+        }
+        self.sets[set].listed = listed;
+        if !listed {
+            self.sets[set].enabled = false;
+            if let Some(solo) = self.solo.take_if(|solo| solo.set == set) {
+                self.restore(solo.snapshot);
+            }
+        }
+        true
+    }
+
+    /// Put every set's flag back from a solo's snapshot, except that an
+    /// unlisted set stays disabled: a snapshot does not bring a set back
+    /// (ADR 0002).
+    fn restore(&mut self, snapshot: Vec<bool>) {
+        for (meta, was) in self.sets.iter_mut().zip(snapshot) {
+            meta.enabled = was && meta.listed;
+        }
     }
 
     /// Enable exactly the profile's members within `set` and disable the
@@ -954,8 +1001,8 @@ impl ActiveFilters {
         true
     }
 
-    /// Enable the set called `set` — `default` profile and all, exactly as
-    /// `set_enabled_set` does — then apply `profile` when one is named
+    /// List and enable the set called `set` — `default` profile and all,
+    /// exactly as `set_enabled_set` does — then apply `profile` when one is named
     /// (#143). Both names are checked before anything moves, so a refused
     /// call changes nothing. `Config::check_sets` refuses the same names in
     /// `main` before the terminal comes up; this is the same lookup, so a
@@ -975,6 +1022,7 @@ impl ActiveFilters {
                 profile: profile.to_string(),
             });
         }
+        self.set_listed(index, true);
         self.set_enabled_set(index, true);
         if let Some(profile) = profile {
             self.apply_profile(index, profile);
@@ -993,14 +1041,12 @@ impl ActiveFilters {
     /// soloed is drift, as toggling a filter during `!` is; un-solo restores
     /// the snapshot regardless.
     pub fn solo(&mut self, set: usize) -> bool {
-        if set == 0 || set >= self.sets.len() {
+        if set == 0 || set >= self.sets.len() || !self.sets[set].listed {
             return self.solo.is_some();
         }
         if let Some(current) = self.solo.take() {
             if current.set == set {
-                for (meta, was) in self.sets.iter_mut().zip(current.snapshot) {
-                    meta.enabled = was;
-                }
+                self.restore(current.snapshot);
                 return false;
             }
             self.solo = Some(Solo {
@@ -1029,7 +1075,8 @@ impl ActiveFilters {
         self.solo.as_ref().map(|solo| solo.set)
     }
 
-    /// Every set back to its startup state (#132): enabled iff `autoload`,
+    /// Every set back to its startup state (#132): enabled iff `autoload`
+    /// and listed now — the listed state itself is left alone (#282) —
     /// each file filter from its set's `default` profile if there is one and
     /// off otherwise, no solo, no pending `!` capture.
     ///
@@ -1045,7 +1092,7 @@ impl ActiveFilters {
                 filter.enabled = false;
             }
             self.sets[set].enabled = false;
-            if self.sets[set].autoload {
+            if self.sets[set].autoload && self.sets[set].listed {
                 self.set_enabled_set(set, true);
             }
         }
@@ -1090,6 +1137,7 @@ impl ActiveFilters {
                 origin: Origin::File(path),
                 priority,
                 autoload: false,
+                listed: true,
                 enabled: true,
                 profiles,
             },
@@ -1152,9 +1200,18 @@ impl ActiveFilters {
     ///
     /// Distinct from `len`, which counts every filter and is what
     /// `Verdict::Included` indexes into.
+    ///
+    /// An unlisted set's filters are not counted: the pane has no row for
+    /// them (#282).
     #[must_use]
     pub fn row_count(&self) -> usize {
-        self.user_authored_count()
+        self.filters
+            .iter()
+            .filter(|filter| {
+                let set = &self.sets[filter.set];
+                set.origin != Origin::BuiltIn && set.listed
+            })
+            .count()
     }
 
     /// Drop a pending `!` capture.
@@ -1631,6 +1688,7 @@ pub(crate) mod test_support {
             path: PathBuf::from("test/filters.toml"),
             priority,
             autoload,
+            listed: true,
             profiles: BTreeMap::new(),
             filters: patterns
                 .iter()
@@ -3701,5 +3759,162 @@ mod tests {
             !set.filters()[1].enabled,
             "a filter the user had off came back on"
         );
+    }
+
+    // ---- listed and unlisted sets (#282) -----------------------------------
+
+    fn unlisted(mut set: LoadedSet) -> LoadedSet {
+        set.listed = false;
+        set
+    }
+
+    #[test]
+    fn a_set_is_listed_unless_the_file_says_otherwise() {
+        let set = ActiveFilters::with_sets(None, &[loaded("a", 50, true, &["x"])]);
+        assert!(
+            set.sets().iter().all(|meta| meta.listed),
+            "scratch, a, definitions"
+        );
+        assert!(set.sets()[1].enabled);
+    }
+
+    /// `listed = false` wins over `autoload = true` (ADR 0002): the set is
+    /// known, and decides nothing.
+    #[test]
+    fn an_unlisted_autoload_set_starts_unlisted_and_disabled() {
+        let set = ActiveFilters::with_sets(None, &[unlisted(loaded("a", 50, true, &["x"]))]);
+        assert!(!set.sets()[1].listed);
+        assert!(!set.sets()[1].enabled);
+        assert!(set.matcher().is_none(), "its filter selects nothing");
+        assert_eq!(set.row_count(), 0, "and has no row");
+    }
+
+    #[test]
+    fn unlisting_an_enabled_set_disables_it_and_keeps_its_flags() {
+        let mut set = ActiveFilters::with_sets(
+            None,
+            &[
+                loaded("a", 10, true, &["x", "y"]),
+                loaded("b", 20, false, &["z"]),
+            ],
+        );
+        set.set_enabled(0, true);
+        set.set_enabled(1, true);
+        assert!(set.needs_regex());
+
+        assert!(set.set_listed(1, false));
+        assert!(!set.sets()[1].listed);
+        assert!(!set.sets()[1].enabled);
+        assert!(!set.needs_regex(), "the visible lines change at once");
+        assert_eq!(flags(&set, 1), vec![true, true], "flags kept");
+
+        assert!(set.set_listed(1, true));
+        assert_eq!(set.sets()[1].name, "a", "back in its priority position");
+        assert!(set.sets()[1].listed);
+        assert!(!set.sets()[1].enabled, "listing again gives a disabled set");
+        assert_eq!(flags(&set, 1), vec![true, true], "with the flags it had");
+    }
+
+    #[test]
+    fn an_unlisted_set_cannot_be_enabled_toggled_or_soloed() {
+        let mut set = ActiveFilters::with_sets(None, &[unlisted(loaded("a", 50, false, &["x"]))]);
+        assert!(!set.set_enabled_set(1, true));
+        assert_eq!(set.toggle_set(1), None);
+        assert!(!set.solo(1));
+        assert_eq!(set.soloed(), None);
+        assert!(!set.sets()[1].enabled);
+        assert!(set.set_enabled_set(1, false), "disabling is always allowed");
+    }
+
+    #[test]
+    fn the_scratch_set_cannot_be_unlisted() {
+        let mut set = ActiveFilters::new();
+        assert!(!set.set_listed(0, false));
+        assert!(set.sets()[0].listed);
+        assert!(!set.set_listed(99, false), "no such set");
+    }
+
+    /// `--set NAME` lists the set and enables it, `default` profile and all,
+    /// whatever the file says.
+    #[test]
+    fn enable_named_lists_an_unlisted_set() {
+        let mut a = unlisted(loaded("a", 50, false, &["x", "y"]));
+        a.profiles.insert("default".into(), vec!["x".into()]);
+        let mut set = ActiveFilters::with_sets(None, &[a]);
+
+        set.enable_named("a", None).expect("known set");
+
+        assert!(set.sets()[1].listed);
+        assert!(set.sets()[1].enabled);
+        assert_eq!(enabled_names(&set), ["x"]);
+    }
+
+    #[test]
+    fn un_solo_restores_only_sets_that_are_still_listed() {
+        let mut set = ActiveFilters::with_sets(
+            None,
+            &[loaded("a", 10, true, &["x"]), loaded("b", 20, true, &["y"])],
+        );
+        set.solo(1);
+        assert!(set.set_listed(2, false));
+        assert!(!set.solo(1), "un-solo");
+        assert!(set.sets()[1].enabled);
+        assert!(!set.sets()[2].listed, "the snapshot does not list it");
+        assert!(!set.sets()[2].enabled, "and so does not enable it");
+    }
+
+    #[test]
+    fn unlisting_the_soloed_set_ends_the_solo() {
+        let mut set = ActiveFilters::with_sets(
+            None,
+            &[loaded("a", 10, true, &["x"]), loaded("b", 20, true, &["y"])],
+        );
+        set.solo(1);
+        assert!(set.set_listed(1, false));
+        assert_eq!(set.soloed(), None);
+        assert!(!set.sets()[1].enabled);
+        assert!(
+            set.sets()[2].enabled,
+            "the rest come back from the snapshot"
+        );
+    }
+
+    /// `R` does not change the listed state, and enables an autoload set
+    /// only if it is listed now.
+    #[test]
+    fn reset_keeps_the_listed_state_and_autoloads_only_listed_sets() {
+        let mut set = ActiveFilters::with_sets(
+            None,
+            &[
+                loaded("a", 10, true, &["x"]),
+                unlisted(loaded("b", 20, true, &["y"])),
+            ],
+        );
+        set.set_listed(1, false);
+        set.set_listed(2, true);
+        set.reset();
+        assert!(!set.sets()[1].listed, "still unlisted");
+        assert!(!set.sets()[1].enabled, "so autoload does not apply");
+        assert!(set.sets()[2].listed, "still listed");
+        assert!(set.sets()[2].enabled, "listed now, so autoload applies");
+    }
+
+    #[test]
+    fn the_definitions_set_can_be_unlisted() {
+        let set = ActiveFilters::with_sets(
+            None,
+            &[unlisted(builtin_override(
+                crate::filtersets::DEFAULT_PRIORITY,
+                true,
+            ))],
+        );
+        assert_eq!(set.sets()[1].origin, Origin::BuiltIn);
+        assert!(!set.sets()[1].listed);
+        assert!(!set.sets()[1].enabled);
+        assert!(!set.needs_kinds());
+
+        let mut set = ActiveFilters::new();
+        assert!(set.set_listed(1, false), "and unlisted in a session");
+        assert!(!set.sets()[1].listed);
     }
 }

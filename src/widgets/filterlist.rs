@@ -70,8 +70,9 @@ pub(crate) enum Row {
 }
 
 /// The pane, top to bottom: the scratch set's filters; then, for each
-/// named set in pane order, a header and —
-/// only while the set is enabled — its filters.
+/// listed named set in pane order, a header and —
+/// only while the set is enabled — its filters. An unlisted set has no row
+/// at all (#282), so the numbers run on across it.
 ///
 /// A disabled set is one `[ ]` row and an enabled set whose filters are all
 /// off is a `[x]` row over a column of `[ ]` rows. They mean different
@@ -98,6 +99,9 @@ pub(crate) fn rows(filters: &ActiveFilters) -> Vec<Row> {
     }
     out.extend(filters.filters_in(0).map(|(index, _)| Row::Filter(index)));
     for (set, meta) in filters.sets().iter().enumerate().skip(1) {
+        if !meta.listed {
+            continue;
+        }
         out.push(Row::Header(set));
         if meta.enabled {
             out.extend(filters.filters_in(set).map(|(index, _)| filter_row(index)));
@@ -1320,5 +1324,31 @@ mod tests {
         filters.set_enabled_set(2, false);
         list.clamp_selection(rows(&filters).len());
         assert_eq!(list.selected(), Some(rows(&filters).len() - 1));
+    }
+
+    // ---- unlisted sets (#282) -----------------------------------------------
+
+    /// An unlisted set has no header and no rows, and the numbers below it
+    /// run on without a gap.
+    #[test]
+    fn an_unlisted_set_has_no_row_and_the_numbers_stay_continuous() {
+        let mut filters = two_sets(true, true);
+        filters.set_listed(1, false);
+        assert!(
+            !rows(&filters).contains(&Row::Header(1)),
+            "{:?}",
+            rows(&filters)
+        );
+        assert_eq!(numbered(&filters), vec![0, 3], "scratch, then b's z");
+        let mut list = FilterList::default();
+        let rendered = rendered(&mut list, &filters, 30);
+        assert!(
+            rendered.iter().any(|row| row.contains("2[ ] inc z")),
+            "{rendered:?}"
+        );
+        assert!(
+            !rendered.iter().any(|row| row.contains("] a")),
+            "{rendered:?}"
+        );
     }
 }
