@@ -48,6 +48,12 @@ Enter keeps the position the search reached.
 Turn the current search into a numbered include filter with `p`. The pattern
 crosses from search to filter; the search itself is cleared.
 
+**History**:
+The patterns Enter committed in a `/` prompt, newest first, that Up and Down
+recall in the next one. The file search and the filename search each keep
+their own; a filter prompt keeps none.
+_Avoid_: recent searches, last patterns
+
 ### The view
 
 **Visible lines**:
