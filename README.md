@@ -244,6 +244,9 @@ Options:
       --set <NAME[:PROFILE]>
           Enable a saved filter set at startup, as `NAME` for its `default`
           profile or `NAME:PROFILE` for another. Repeatable
+      --unlist <NAME>
+          Unlist a saved filter set at startup: no row in the filter pane and no
+          effect on the view or on `--emit`. Repeatable
       --hide
           Start in hide mode: only matching lines and files
   -q, --quiet
@@ -615,7 +618,8 @@ recon is exactly this model with one set.
   and no effect: it changes no visible line, highlight, count or `--emit`
   output. It wins over `autoload = true` — the file is not refused, so to put
   a set away you change one key. An unlisted set is never enabled; `--set`
-  lists it and enables it. The scratch set is always listed.
+  lists it and enables it, and `--unlist` unlists a listed one for one run.
+  The scratch set is always listed.
 - **Profiles** — named permutations of a set's filters. Applying one enables
   exactly those and disables the set's others. `default` is applied whenever
   the set is enabled; without a `default`, enabling a set keeps whatever
@@ -668,8 +672,10 @@ WiFi_debug:WiFi_bug_32` applies that profile instead, and the flag repeats
 for several sets. `--hide` alongside it starts the session in hide mode. A
 set without a `default` profile comes on with every filter off, exactly as
 `Enter` on its header would leave it — give it a `default` if it is meant to
-be used this way. The same flags drive a run with no TUI at all; see
-[Headless mode](#headless-mode).
+be used this way. `--unlist WiFi_debug` does the opposite for one run: the
+set has no row and no effect, whatever its `listed` and `autoload` say. It
+repeats too, and `--set` and `--unlist` on the same set are refused. The same
+flags drive a run with no TUI at all; see [Headless mode](#headless-mode).
 
 A header carries `*` when its set has profiles. `a` on that row opens a small
 picker over the panes listing the set's profile names; `j`/`k` move, `Enter`
@@ -1403,12 +1409,15 @@ non-recursive, in the navigator's order, and a `PATH` file means itself.
 
 **Flags.** `--set NAME` enables a saved set with its `default` profile;
 `--set NAME:PROFILE` applies another profile instead. Repeat it for several
-sets. `--hide` starts in hide mode, so only matches are emitted; without it
+sets. `--unlist NAME` takes a set out of the filters that decide the output
+— your usual sets without one of them — and repeats the same way. `--hide`
+starts in hide mode, so only matches are emitted; without it
 the run is in dim mode and emits everything, with the match count in the
 summary. `-n` numbers lines as in the TUI. `-q` drops the summary; warnings
-still print. All four work in the TUI too. An unknown set or profile is
+still print. All five work in the TUI too. An unknown set or profile is
 refused before anything is read, and the error lists the names
-`filters.toml` defines, with the built-in `definitions` set named apart.
+`filters.toml` defines, with the built-in `definitions` set named apart. So is
+`--set` together with `--unlist` on the same set.
 
 **Several files.** With more than one input, `--emit lines` prefixes each
 line with its path and a tab, and `-n` puts the line number and a tab after
