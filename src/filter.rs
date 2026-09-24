@@ -1008,12 +1008,7 @@ impl ActiveFilters {
     /// `main` before the terminal comes up; this is the same lookup, so a
     /// name that passed there cannot fail here.
     pub fn enable_named(&mut self, set: &str, profile: Option<&str>) -> Result<(), EnableError> {
-        let index = self
-            .sets
-            .iter()
-            .position(|meta| meta.name == set)
-            .filter(|&index| index != 0)
-            .ok_or_else(|| EnableError::UnknownSet(set.to_string()))?;
+        let index = self.named(set)?;
         if let Some(profile) = profile
             && !self.sets[index].profiles.contains_key(profile)
         {
@@ -1028,6 +1023,25 @@ impl ActiveFilters {
             self.apply_profile(index, profile);
         }
         Ok(())
+    }
+
+    /// Unlist the set called `set`, as `set_listed` does (#283). The same
+    /// lookup as `enable_named`, so `Config::check_sets` refuses in `main`
+    /// every name that would fail here.
+    pub fn unlist_named(&mut self, set: &str) -> Result<(), EnableError> {
+        let index = self.named(set)?;
+        self.set_listed(index, false);
+        Ok(())
+    }
+
+    /// The index of the named set called `set`. The scratch set has no name
+    /// a flag can give, so it is never found.
+    fn named(&self, set: &str) -> Result<usize, EnableError> {
+        self.sets
+            .iter()
+            .position(|meta| meta.name == set)
+            .filter(|&index| index != 0)
+            .ok_or_else(|| EnableError::UnknownSet(set.to_string()))
     }
 
     /// Solo `set` (#132): snapshot every set's flag — the scratch set's
@@ -3847,6 +3861,39 @@ mod tests {
         assert!(set.sets()[1].listed);
         assert!(set.sets()[1].enabled);
         assert_eq!(enabled_names(&set), ["x"]);
+    }
+
+    /// `--unlist NAME` (#283): the set has no row and decides nothing, even
+    /// with `autoload`.
+    #[test]
+    fn unlist_named_unlists_an_autoload_set() {
+        let mut a = loaded("a", 50, true, &["x"]);
+        a.profiles.insert("default".into(), vec!["x".into()]);
+        let mut set = ActiveFilters::with_sets(None, &[a]);
+        assert!(set.matcher().is_some(), "autoload turned `x` on");
+
+        set.unlist_named("a").expect("known set");
+
+        assert!(!set.sets()[1].listed);
+        assert!(!set.sets()[1].enabled);
+        assert!(set.matcher().is_none(), "its filter selects nothing");
+        assert_eq!(set.row_count(), 0, "and has no row");
+    }
+
+    #[test]
+    fn unlist_named_refuses_an_unknown_name_and_the_scratch_set() {
+        let mut set = ActiveFilters::with_sets(None, &[loaded("a", 50, true, &["x"])]);
+        let scratch = set.sets()[0].name.clone();
+
+        assert_eq!(
+            set.unlist_named("b"),
+            Err(EnableError::UnknownSet("b".to_string()))
+        );
+        assert_eq!(
+            set.unlist_named(&scratch),
+            Err(EnableError::UnknownSet(scratch.clone()))
+        );
+        assert!(set.sets().iter().all(|meta| meta.listed), "nothing moved");
     }
 
     #[test]

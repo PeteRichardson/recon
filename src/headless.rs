@@ -63,8 +63,8 @@ pub fn run(config: &Config) -> Result<Exit> {
     ))
 }
 
-/// The startup filter set: the loaded sets, then each `--set` enabled — the
-/// same two steps `App::new` takes.
+/// The startup filter set: the loaded sets, then each `--set` enabled and
+/// each `--unlist` unlisted — the same steps `App::new` takes.
 fn filters_for(config: &Config) -> Result<ActiveFilters> {
     let mut filters = ActiveFilters::with_sets(Some(config.filter_palette()), &config.filter_sets);
     filters.set_background(config.background());
@@ -72,6 +72,11 @@ fn filters_for(config: &Config) -> Result<ActiveFilters> {
         filters
             .enable_named(&set, profile.as_deref())
             .map_err(|err| eyre!("--set {set}: {err}"))?;
+    }
+    for set in &config.unlist {
+        filters
+            .unlist_named(set)
+            .map_err(|err| eyre!("--unlist {set}: {err}"))?;
     }
     Ok(filters)
 }
@@ -1105,5 +1110,29 @@ mod tests {
         assert!(filters.sets()[1].listed);
         assert!(filters.sets()[1].enabled);
         assert!(filters.matcher().is_some());
+    }
+
+    /// `--unlist` wins over `listed = true` and `autoload = true` (#283):
+    /// the set is out of the filters that decide the output.
+    #[test]
+    fn filters_for_drops_an_unlisted_autoload_set() {
+        let mut set = crate::filter::test_support::loaded("Bugs", 50, true, &["hit"]);
+        set.profiles
+            .insert("default".to_string(), vec!["hit".to_string()]);
+        let config = crate::config::Config {
+            filter_sets: vec![set.clone()],
+            ..crate::config::Config::default()
+        };
+        assert!(filters_for(&config).expect("loads").matcher().is_some());
+
+        let config = crate::config::Config {
+            filter_sets: vec![set],
+            unlist: vec!["Bugs".to_string()],
+            ..crate::config::Config::default()
+        };
+        let filters = filters_for(&config).expect("known set");
+        assert!(!filters.sets()[1].listed);
+        assert!(!filters.sets()[1].enabled);
+        assert!(filters.matcher().is_none(), "the set selects nothing");
     }
 }

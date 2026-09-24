@@ -206,6 +206,65 @@ fn an_unknown_set_is_refused_before_anything_is_read() {
     assert_eq!(out.status.code(), Some(1));
 }
 
+/// `--unlist` takes a set out of the filters that decide the output (#283).
+/// `Bugs` here autoloads with `hit` on, so without the flag `--hide` keeps
+/// only `hit`; with it, no filter is on and every line is emitted.
+#[test]
+fn unlist_removes_an_autoload_set_from_the_output() {
+    let dir = fixture("unlist");
+    let home = config_home(&dir);
+    fs::write(
+        home.join("recon/filters.toml"),
+        "[sets.Bugs]\nautoload = true\n\n\
+         [sets.Bugs.profiles]\n\
+         default = [\"hit\"]\n\n\
+         [[sets.Bugs.filters]]\n\
+         pattern = \"hit\"\n",
+    )
+    .expect("write filters.toml");
+    let log = dir.join("a.log");
+    fs::write(&log, "hit\nmiss\n").expect("write");
+    let path = log.display().to_string();
+
+    let out = recon(&home, &["--emit", "lines", "--hide", &path], b"");
+    assert_eq!(text(&out.stdout), "hit\n");
+
+    let out = recon(
+        &home,
+        &["--emit", "lines", "--hide", "--unlist", "Bugs", &path],
+        b"",
+    );
+    assert_eq!(text(&out.stdout), "hit\nmiss\n");
+    assert_eq!(out.status.code(), Some(0));
+}
+
+#[test]
+fn set_and_unlist_of_one_set_is_refused_before_anything_is_read() {
+    let dir = fixture("set_and_unlist");
+    let home = config_home(&dir);
+
+    let out = recon(
+        &home,
+        &[
+            "--emit",
+            "files",
+            "--set",
+            "Bugs:only_hit",
+            "--unlist",
+            "Bugs",
+        ],
+        b"",
+    );
+
+    assert!(out.stdout.is_empty());
+    assert!(
+        text(&out.stderr).contains("--set and --unlist both name the set \"Bugs\""),
+        "stderr: {}",
+        text(&out.stderr)
+    );
+    assert_eq!(out.status.code(), Some(1));
+}
+
 /// A `[keymap]` line naming an action that does not exist refuses to start,
 /// before any terminal setup, exactly as an unknown `--set` does (#61).
 ///

@@ -843,6 +843,13 @@ impl App<'_> {
                 log::warn!("--set {set}: {err}");
             }
         }
+        // `check_sets` refused `--set X --unlist X`, so the order of the two
+        // loops decides nothing.
+        for set in &config.unlist {
+            if let Err(err) = filters.unlist_named(set) {
+                log::warn!("--unlist {set}: {err}");
+            }
+        }
 
         let mut app = Self {
             state: AppState::Running,
@@ -7873,6 +7880,32 @@ mod tests {
             app.document.visible_lines(),
             ["hit"],
             "hide mode is live on the loaded file"
+        );
+    }
+
+    /// `recon --unlist Bugs` opens the TUI with the autoload set unlisted:
+    /// no row, and no effect on the loaded file (#283).
+    #[test]
+    fn unlist_flag_applies_at_startup() {
+        let file = fixture_file("startup_unlist.log", b"hit\nmiss\n");
+        let mut set = filter::test_support::loaded("Bugs", 50, true, &["hit"]);
+        set.profiles
+            .insert("default".to_string(), vec!["hit".to_string()]);
+
+        let app = App::new(&Config {
+            path: file.display().to_string(),
+            filter_sets: vec![set],
+            unlist: vec!["Bugs".to_string()],
+            hide: true,
+            ..Config::default()
+        });
+
+        assert!(!app.filters.sets()[1].listed, "the set is unlisted");
+        assert!(!app.filters.sets()[1].enabled, "and so disabled");
+        assert_eq!(
+            app.document.visible_lines(),
+            ["hit", "miss"],
+            "its filter hides nothing"
         );
     }
 
