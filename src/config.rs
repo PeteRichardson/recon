@@ -155,10 +155,25 @@ pub struct Config {
     #[arg(long, env = "RECON_BACKGROUND", value_name = "BACKGROUND", value_enum)]
     pub background: Option<crate::filter::Background>,
 
-    /// Sets read from `filters.toml`, in pane order (#128). Filled by `main`
-    /// after `load`, so that a file error refuses to start the way a
-    /// `config.toml` error does. `#[arg(skip)]` because no flag names the
-    /// file — #46 would.
+    /// More directories to read filter sets from, colon-separated, e.g.
+    /// `~/team-filters:./.recon`. recon reads `filters.toml` and each
+    /// `*.filters.toml` in them.
+    ///
+    /// Your own `filters.toml` is read first, then each directory in order,
+    /// its files in name order; a set named in an earlier file hides one of
+    /// the same name in a later file. `S` always saves to your own file.
+    //
+    // No `config.toml` key (#46): the file layer names where recon's files
+    // live, and a key there naming where *more* of them live is a second
+    // indirection nobody has asked for. The flag and the variable are what
+    // a project's `.envrc` or a team's shell profile would set.
+    #[arg(long, env = "RECON_FILTER_PATH", value_name = "DIRS")]
+    pub filter_path: Option<String>,
+
+    /// Sets read from each `filters.toml`, in pane order (#128, #46). Filled
+    /// by `main` after `load`, so that a file error refuses to start the way
+    /// a `config.toml` error does. `#[arg(skip)]` because `--filter-path`
+    /// names where to look, not the sets.
     #[arg(skip)]
     pub filter_sets: Vec<crate::filter::LoadedSet>,
 
@@ -317,6 +332,7 @@ impl Default for Config {
             print_keymap: None,
             filter_palette: None,
             background: None,
+            filter_path: None,
             filter_sets: Vec::new(),
             keymap: None,
             bindings: crate::keymap::Keymap::default(),
