@@ -377,7 +377,7 @@ impl FileView<'_> {
     /// A view already showing `filename`. Test-only: `App` builds the pane
     /// with `default()` and then `load`s or `preview`s into it, and this is
     /// the one caller-free constructor the visibility sweep (#166) exposed
-    /// to `dead_code` — the rest of #167 lives in `filter.rs` and
+    /// to `dead_code` — the rest of #167 lives in `filter/mod.rs` and
     /// `document.rs`.
     #[cfg(test)]
     pub(crate) fn new(filename: String) -> Self {
