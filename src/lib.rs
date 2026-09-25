@@ -1788,7 +1788,7 @@ impl App<'_> {
             .collect();
         let dir = self.nav.dir().display();
         let count = listed.len();
-        let summary = if self.filters.matcher().is_some() {
+        let summary = if self.filters.is_scanning() {
             match self.document.mode() {
                 Mode::FilteredOnly => format!("recon: emitted {count} files from {dir}, hide mode"),
                 Mode::Dimmed => {
@@ -2165,7 +2165,7 @@ impl App<'_> {
                     // plain answer.
                     let text = if self.nav.has_search() {
                         "no more matches"
-                    } else if self.filters.matcher().is_some() && self.nav.any_unscanned() {
+                    } else if self.filters.is_scanning() && self.nav.any_unscanned() {
                         "scanning…"
                     } else {
                         "no matching file"
@@ -3115,7 +3115,7 @@ impl App<'_> {
     /// nothing, and it covers every listed file rather than only the active
     /// one.
     fn poll_stamps(&mut self) -> bool {
-        if self.filters.matcher().is_none() {
+        if !self.filters.is_scanning() {
             return false;
         }
         let now = Instant::now();
@@ -3140,7 +3140,7 @@ impl App<'_> {
     /// a file list that cancels an in-flight full scan without covering the
     /// files it had not reached yet, stranding them `Unknown` until `r`.
     fn check_stamps(&mut self) -> bool {
-        if self.filters.matcher().is_none() {
+        if !self.filters.is_scanning() {
             return false;
         }
         let active = self.view.filename().to_path_buf();
