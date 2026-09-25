@@ -9,7 +9,7 @@
 //! reads, the same policy `config.toml` follows and for the same reason.
 //!
 //! This module produces [`LoadedSet`]s; what a set *is* — the scratch set,
-//! effective-enabled, profiles as actions — belongs to `filter.rs`.
+//! effective-enabled, profiles as actions — belongs to the `filter` module.
 
 use crate::config::parse_colour;
 use crate::filter::{LoadedFilter, LoadedSet, Predicate, Sense};
