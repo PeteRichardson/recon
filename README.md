@@ -232,6 +232,10 @@ Options:
           filter palette and the grey of dimmed lines. Falls back to a top-level
           `background` in `config.toml`, then to `dark` [env: RECON_BACKGROUND=]
           [possible values: dark, light]
+      --filter-path <DIRS>
+          More directories to read filter sets from, colon-separated, e.g.
+          `~/team-filters:./.recon`. recon reads `filters.toml` and each
+          `*.filters.toml` in them [env: RECON_FILTER_PATH=]
       --theme <THEME>
           Colours for the file view's syntax colouring: a bundled theme name, a
           path to a `.tmTheme` file, or `none` to turn colouring off [env:
@@ -724,6 +728,42 @@ refused rather than replaced. The file is written beside itself as
 rather than a truncated one. Priority, `autoload`, `listed`, `description`
 and colours are not written:
 each is a one-line hand edit to a file `S` has just shown you the shape of.
+`S` writes only to your own `filters.toml`, never to a directory on the
+filter path below.
+
+#### More directories of sets
+
+`RECON_FILTER_PATH` (or `--filter-path`) names more directories to read sets
+from, colon-separated like `PATH`. In each directory, recon reads
+`filters.toml` and every `<name>.filters.toml`, all in the same format, so a
+directory can keep one file or one file for each group of sets:
+
+```sh
+export RECON_FILTER_PATH=~/work/team-filters:./.recon
+```
+
+```
+~/work/team-filters/
+├── deploylog.filters.toml
+├── errors.filters.toml
+└── triage.filters.toml
+```
+
+recon reads your own `~/.config/recon/filters.toml` first, then each directory
+in order, and the files in a directory in name order. When two files define a
+set with the same name, the earlier file wins and the later set is hidden, not
+merged, so a personal set replaces a team set of the same name. A table for
+the built-in `definitions` set follows the same rule. A directory that does not
+exist is skipped. A file
+that recon reads must be valid, even when its sets are all hidden: an error in
+any file stops recon before it starts.
+
+recon never reads `./.recon` or any other directory unless you name it. An
+empty entry does not mean the current directory, as it does in `PATH`. So a
+repository can supply filter sets for its logs, but only for a developer who
+adds its directory to the path. A leading `~` in an entry is your home
+directory. With debug logging on (see [Logging](#logging)), recon logs each
+file that it reads and each set that is hidden.
 
 #### The set picker
 

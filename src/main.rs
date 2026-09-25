@@ -77,7 +77,7 @@ fn main() -> Result<ExitCode> {
         return Ok(ExitCode::SUCCESS);
     }
 
-    config.filter_sets = recon::filtersets::load_file()?;
+    config.filter_sets = recon::filtersets::load_file(config.filter_path.as_deref())?;
     // Needs the loaded sets, which is why it is not inside `Config::load`
     // with `check_flags`. Still before any terminal setup: the message must
     // reach a screen that is not about to be replaced (#143).

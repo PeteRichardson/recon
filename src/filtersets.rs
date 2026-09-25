@@ -23,6 +23,10 @@ use std::path::{Path, PathBuf};
 /// The file, beside `config.toml`.
 const FILE: &str = "filters.toml";
 
+/// The end of a set file's name in a `RECON_FILTER_PATH` directory, beside
+/// a bare [`FILE`] (#46).
+const SUFFIX: &str = ".filters.toml";
+
 /// A set's position in the pane when the file does not say. Lower is
 /// nearer the top; the scratch set is always first regardless.
 pub const DEFAULT_PRIORITY: i32 = 50;
@@ -100,6 +104,12 @@ pub enum Error {
         path: PathBuf,
         source: std::io::Error,
     },
+    /// A `RECON_FILTER_PATH` directory exists but could not be listed. A
+    /// missing one is not an error and never reaches here.
+    ReadDir {
+        path: PathBuf,
+        source: std::io::Error,
+    },
     /// Not valid TOML, or a key the schema does not define.
     Parse {
         path: PathBuf,
@@ -122,6 +132,13 @@ impl fmt::Display for Error {
                 write!(
                     f,
                     "could not read filter sets file {}: {source}",
+                    path.display()
+                )
+            }
+            Self::ReadDir { path, source } => {
+                write!(
+                    f,
+                    "could not read filter sets directory {}: {source}",
                     path.display()
                 )
             }
@@ -164,6 +181,13 @@ impl std::error::Error for Error {}
 /// filter named, so that a user reading the message in a hurry can go
 /// straight to the line.
 pub fn parse(text: &str, path: &Path) -> Result<Vec<LoadedSet>, Error> {
+    Ok(finish(parse_sets(text, path)?))
+}
+
+/// One file's sets as the file wrote them: no built-in default added and
+/// not yet sorted, so that [`load_all`] can tell a file that names the
+/// built-in set from one that does not.
+fn parse_sets(text: &str, path: &Path) -> Result<Vec<LoadedSet>, Error> {
     let file: FileSchema = toml::from_str(text).map_err(|source| Error::Parse {
         path: path.to_path_buf(),
         source,
@@ -311,6 +335,12 @@ pub fn parse(text: &str, path: &Path) -> Result<Vec<LoadedSet>, Error> {
             builtin: false,
         });
     }
+    Ok(sets)
+}
+
+/// Make a list of loaded sets the pane's list: the built-in set present
+/// and everything in `(priority, name)` order.
+fn finish(mut sets: Vec<LoadedSet>) -> Vec<LoadedSet> {
     // The built-in set is always among the loaded sets (#220), so the
     // `--set` check in `main` and `with_sets` read one list. A file that
     // names it has already pushed it; one that does not gets the default.
@@ -322,7 +352,7 @@ pub fn parse(text: &str, path: &Path) -> Result<Vec<LoadedSet>, Error> {
             .cmp(&b.priority)
             .then_with(|| a.name.cmp(&b.name))
     });
-    Ok(sets)
+    sets
 }
 
 /// What `S` writes: the scratch set, under a name (#131).
@@ -449,8 +479,101 @@ pub fn path() -> Option<PathBuf> {
     )
 }
 
-/// Read and parse one file. A file that is not there is no sets.
-fn load_from(path: &Path) -> Result<Vec<LoadedSet>, Error> {
+/// The directories `RECON_FILTER_PATH` names, in order (#46).
+///
+/// Takes the environment as arguments, as [`path_from`] does. An empty
+/// entry is skipped rather than read as the current directory, as `PATH`
+/// would: a repository's sets are read only when the user names its
+/// directory. A leading `~` is expanded against `home`, since a shell does
+/// not reliably expand one after a colon. A directory named twice is read
+/// once, at its first position.
+#[must_use]
+pub fn search_path_from(filter_path: Option<&str>, home: Option<&str>) -> Vec<PathBuf> {
+    let home = home.filter(|home| !home.is_empty());
+    let entries = filter_path
+        .map(|list| std::env::split_paths(list).collect::<Vec<_>>())
+        .unwrap_or_default();
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    for dir in entries {
+        if dir.as_os_str().is_empty() {
+            continue;
+        }
+        let dir = match (home, dir.strip_prefix("~")) {
+            (Some(home), Ok(rest)) => Path::new(home).join(rest),
+            _ => dir,
+        };
+        let key = crate::path::lexical_absolute(&dir);
+        if dirs
+            .iter()
+            .any(|seen| crate::path::lexical_absolute(seen) == key)
+        {
+            continue;
+        }
+        dirs.push(dir);
+    }
+    dirs
+}
+
+/// Every file recon reads sets from, highest precedence first: `own`, the
+/// user's `filters.toml`, then each of `dirs`' set files (#46).
+///
+/// `own` is always first, so a personal set shadows a team set of the same
+/// name wherever the path puts the team's directory — and it is also the
+/// one file `S` writes, so a saved set is found again by the next start.
+///
+/// A set file is `filters.toml` or `<name>.filters.toml`, so a directory
+/// can hold one file, as the user's config directory does, or one per group
+/// of sets — `deploy.filters.toml`, `triage.filters.toml`. They are read in
+/// file-name order, so within a directory the name decides which set
+/// shadows which, as in a `conf.d` directory. Not `*filters.toml`, which
+/// would take `oldfilters.toml` too; and not `.filters.toml`, which has no
+/// name and is a hidden file besides. A directory
+/// that does not exist is skipped, as a missing `PATH` entry is no error to
+/// a shell; one that cannot be read is an error.
+pub fn set_files(own: Option<PathBuf>, dirs: &[PathBuf]) -> Result<Vec<PathBuf>, Error> {
+    let mut files: Vec<PathBuf> = own.into_iter().collect();
+    for dir in dirs {
+        let entries = match std::fs::read_dir(dir) {
+            Ok(entries) => entries,
+            Err(source) if source.kind() == std::io::ErrorKind::NotFound => {
+                log::debug!("no filter sets directory at {}", dir.display());
+                continue;
+            }
+            Err(source) => {
+                return Err(Error::ReadDir {
+                    path: dir.clone(),
+                    source,
+                });
+            }
+        };
+        let mut found = Vec::new();
+        for entry in entries {
+            let entry = entry.map_err(|source| Error::ReadDir {
+                path: dir.clone(),
+                source,
+            })?;
+            let name = entry.file_name();
+            let is_set_file = name.to_str().is_some_and(|name| {
+                name == FILE || (name.len() > SUFFIX.len() && name.ends_with(SUFFIX))
+            });
+            // `Path::is_file` follows a symlink, so a linked file counts;
+            // a directory that happens to carry the suffix does not.
+            if is_set_file && entry.path().is_file() {
+                found.push(entry.path());
+            }
+        }
+        found.sort();
+        if found.is_empty() {
+            log::debug!("no *{SUFFIX} files in {}", dir.display());
+        }
+        files.extend(found);
+    }
+    Ok(files)
+}
+
+/// Read and parse one file, as [`parse_sets`] leaves it. A file that is not
+/// there is no sets.
+fn read_sets(path: &Path) -> Result<Vec<LoadedSet>, Error> {
     let text = match std::fs::read_to_string(path) {
         Ok(text) => text,
         // The overwhelmingly common case, and not a failure: recon runs with
@@ -458,7 +581,8 @@ fn load_from(path: &Path) -> Result<Vec<LoadedSet>, Error> {
         // forgiven — a permission error or a directory in the file's place
         // is real.
         Err(source) if source.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(vec![LoadedSet::builtin_default()]);
+            log::debug!("no filter sets file at {}", path.display());
+            return Ok(Vec::new());
         }
         Err(source) => {
             return Err(Error::Read {
@@ -467,25 +591,57 @@ fn load_from(path: &Path) -> Result<Vec<LoadedSet>, Error> {
             });
         }
     };
-    parse(&text, path)
-}
-
-/// The file layer. Call before the terminal is initialised: an error here
-/// refuses to start, for the reason `Config::load` gives.
-pub fn load_file() -> Result<Vec<LoadedSet>, Error> {
-    let Some(path) = path() else {
-        log::debug!("no config home ($XDG_CONFIG_HOME, $HOME unset); no filters.toml read");
-        return Ok(vec![LoadedSet::builtin_default()]);
-    };
     // Which file was read is the first thing anyone asks when a set does
     // not appear; absence is logged too, since "no file" and "the wrong
     // file" look identical from the pane (#83).
-    if path.exists() {
-        log::debug!("reading filter sets from {}", path.display());
-    } else {
-        log::debug!("no filter sets file at {}", path.display());
+    log::debug!("reading filter sets from {}", path.display());
+    parse_sets(&text, path)
+}
+
+/// Read and parse one file. A file that is not there is no sets.
+#[cfg(test)]
+fn load_from(path: &Path) -> Result<Vec<LoadedSet>, Error> {
+    load_all(&[path.to_path_buf()])
+}
+
+/// Read every file in `files`, highest precedence first, into one list.
+///
+/// A set whose name an earlier file already gave is shadowed, the way a
+/// later `PATH` entry is: it is dropped whole, never merged, so what a set
+/// holds can always be read from one file (#46). The built-in set's table
+/// shadows the same way. Every file is still read and validated, shadowed
+/// sets included — an error in any of them refuses to start, for the
+/// reason `Config::load` gives, and a broken team file should not wait to
+/// be found until the personal set shadowing it is deleted.
+fn load_all(files: &[PathBuf]) -> Result<Vec<LoadedSet>, Error> {
+    let mut sets: Vec<LoadedSet> = Vec::new();
+    for file in files {
+        for set in read_sets(file)? {
+            if let Some(winner) = sets.iter().find(|seen| seen.name == set.name) {
+                log::debug!(
+                    "set {:?} in {} is shadowed by the one in {}",
+                    set.name,
+                    set.path.display(),
+                    winner.path.display()
+                );
+                continue;
+            }
+            sets.push(set);
+        }
     }
-    load_from(&path)
+    Ok(finish(sets))
+}
+
+/// The file layer. Call before the terminal is initialised: an error here
+/// refuses to start, for the reason `Config::load` gives. `filter_path` is
+/// `--filter-path` or `RECON_FILTER_PATH`, as clap resolved it.
+pub fn load_file(filter_path: Option<&str>) -> Result<Vec<LoadedSet>, Error> {
+    let own = path();
+    if own.is_none() {
+        log::debug!("no config home ($XDG_CONFIG_HOME, $HOME unset); no filters.toml read");
+    }
+    let dirs = search_path_from(filter_path, std::env::var("HOME").ok().as_deref());
+    load_all(&set_files(own, &dirs)?)
 }
 
 #[cfg(test)]
@@ -900,5 +1056,163 @@ sense = "context"
             "[sets.a]\ndescription = \"\"\"one\ntwo\"\"\"\n[[sets.a.filters]]\npattern = 'x'\n",
         );
         assert!(message.contains("one line"), "{message}");
+    }
+
+    // ---- RECON_FILTER_PATH (#46) -------------------------------------------
+
+    /// A fresh directory under `target/`, emptied first so a rerun starts
+    /// from what the test writes and nothing else.
+    fn scratch_dir(name: &str) -> PathBuf {
+        let dir = Path::new("target/test-config/filter-path").join(name);
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("mkdir");
+        dir
+    }
+
+    fn write(path: &Path, text: &str) {
+        std::fs::create_dir_all(path.parent().expect("parent")).expect("mkdir");
+        std::fs::write(path, text).expect("write");
+    }
+
+    fn set_file(name: &str, pattern: &str) -> String {
+        format!("[sets.{name}]\n[[sets.{name}.filters]]\npattern = '{pattern}'\n")
+    }
+
+    #[test]
+    fn the_path_is_each_entry_in_order() {
+        assert_eq!(
+            search_path_from(Some("/team:/proj/.recon"), Some("/h")),
+            [PathBuf::from("/team"), PathBuf::from("/proj/.recon")]
+        );
+        assert!(search_path_from(None, Some("/h")).is_empty());
+        assert!(search_path_from(Some(""), Some("/h")).is_empty());
+    }
+
+    /// An empty entry means the current directory to `PATH`. Here it means
+    /// nothing: a directory is read only when it is named.
+    #[test]
+    fn an_empty_entry_is_not_the_current_directory() {
+        assert_eq!(
+            search_path_from(Some(":/team::"), None),
+            [PathBuf::from("/team")]
+        );
+    }
+
+    /// Only a shell's first `~` in an assignment is expanded, and zsh
+    /// expands none after a colon; recon expands each entry's itself.
+    #[test]
+    fn a_leading_tilde_is_home() {
+        assert_eq!(
+            search_path_from(Some("~/team:~"), Some("/h")),
+            [PathBuf::from("/h/team"), PathBuf::from("/h")]
+        );
+        assert_eq!(
+            search_path_from(Some("~/team"), None),
+            [PathBuf::from("~/team")],
+            "with no home, the entry is left as written"
+        );
+    }
+
+    #[test]
+    fn a_directory_named_twice_is_read_once() {
+        assert_eq!(
+            search_path_from(Some("/team:/other:/team/:/team/x/.."), None),
+            [PathBuf::from("/team"), PathBuf::from("/other")]
+        );
+    }
+
+    #[test]
+    fn a_directory_gives_its_set_files_in_name_order() {
+        let root = scratch_dir("listing");
+        let team = root.join("team");
+        for name in [
+            "triage.filters.toml",
+            "deploy.filters.toml",
+            "filters.toml",
+            ".filters.toml",
+            "notes.toml",
+            "oldfilters.toml",
+            "errors.filters.toml.bak",
+        ] {
+            write(&team.join(name), "");
+        }
+        std::fs::create_dir_all(team.join("dir.filters.toml")).expect("mkdir");
+        let own = root.join("own").join(FILE);
+        let files = set_files(Some(own.clone()), std::slice::from_ref(&team)).expect("lists");
+        assert_eq!(
+            files,
+            [
+                own,
+                team.join("deploy.filters.toml"),
+                team.join("filters.toml"),
+                team.join("triage.filters.toml"),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_missing_directory_on_the_path_is_no_files() {
+        let root = scratch_dir("missing");
+        let files = set_files(None, &[root.join("nowhere")]).expect("not an error");
+        assert!(files.is_empty());
+    }
+
+    #[test]
+    fn a_file_in_a_directorys_place_is_an_error() {
+        let root = scratch_dir("not-a-dir");
+        let file = root.join("team");
+        write(&file, "");
+        let err = set_files(None, std::slice::from_ref(&file)).expect_err("refused");
+        assert!(matches!(err, Error::ReadDir { .. }));
+        assert!(err.to_string().contains("directory"), "{err}");
+    }
+
+    #[test]
+    fn an_earlier_file_shadows_a_later_one() {
+        let root = scratch_dir("shadow");
+        let own = root.join("own").join(FILE);
+        let team = root.join("team");
+        write(&own, &set_file("bug", "mine"));
+        write(
+            &team.join("a.filters.toml"),
+            &format!("{}{}", set_file("bug", "theirs"), set_file("wifi", "wlan")),
+        );
+        write(&team.join("b.filters.toml"), &set_file("wifi", "later"));
+        let files = set_files(Some(own.clone()), std::slice::from_ref(&team)).expect("lists");
+        let sets = load_all(&files).expect("loads");
+        let names: Vec<&str> = sets.iter().map(|set| set.name.as_str()).collect();
+        assert_eq!(names, ["bug", "definitions", "wifi"]);
+        assert_eq!(sets[0].filters[0].predicate.display(), "mine");
+        assert_eq!(sets[0].path, own);
+        assert_eq!(sets[2].filters[0].predicate.display(), "wlan");
+        assert_eq!(sets[2].path, team.join("a.filters.toml"));
+    }
+
+    /// The built-in set's table shadows like any other, so the first file
+    /// that names it decides it, and a file that does not name it does not
+    /// hide a later one that does.
+    #[test]
+    fn the_builtin_table_comes_from_the_first_file_that_names_it() {
+        let root = scratch_dir("builtin");
+        let (own, team) = (root.join("own.toml"), root.join("team.toml"));
+        write(&own, &set_file("a", "x"));
+        write(&team, "[sets.definitions]\npriority = 7\n");
+        let sets = load_all(&[own, team]).expect("loads");
+        let builtins: Vec<&LoadedSet> = sets.iter().filter(|set| set.builtin).collect();
+        assert_eq!(builtins.len(), 1);
+        assert_eq!(builtins[0].priority, 7);
+    }
+
+    #[test]
+    fn a_bad_file_on_the_path_refuses_with_its_own_path() {
+        let root = scratch_dir("bad");
+        let (own, team) = (root.join("own.toml"), root.join("team.toml"));
+        write(&own, &set_file("a", "x"));
+        write(&team, "[sets.b]\n");
+        let err = load_all(&[own, team.clone()]).expect_err("refused");
+        assert!(
+            err.to_string().contains(&team.display().to_string()),
+            "{err}"
+        );
     }
 }
