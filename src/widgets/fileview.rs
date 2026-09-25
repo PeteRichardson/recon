@@ -267,6 +267,23 @@ pub(crate) struct FileView<'a> {
     /// when the theme is off, when no grammar claims the file, or when
     /// `source` is not text.
     highlighter: Option<Highlighter>,
+    /// Each buffer row's syntax colour with the search matches already cut
+    /// out, as `apply_syntax` last built it — `None` for a row not built
+    /// yet (#168).
+    ///
+    /// Without it every frame ran the search over every row of the window
+    /// again, which a held `j` with a search set turns into regex work over
+    /// ~150 rows per keystroke. What a row's pieces depend on is its text,
+    /// its source line, the pattern and the highlighter; each of their
+    /// writers empties this, and `apply_syntax` rebuilds rows as it needs
+    /// them. The cursor, the filter styles and the selection only decide
+    /// which rows are *skipped*, so they are not part of it — that is what
+    /// lets the cursor move without a rebuild.
+    syntax_rows: Vec<Option<Vec<Span>>>,
+    /// How many rows `apply_syntax` has built into `syntax_rows`, for the
+    /// tests that prove a frame reuses them.
+    #[cfg(test)]
+    syntax_rows_built: usize,
     /// Showing a bounded preview rather than the whole file.
     truncated: bool,
     /// Roughly how many lines the whole file holds, while only a preview of it
@@ -459,6 +476,7 @@ impl FileView<'_> {
     /// the file. Costs a grammar lookup: nothing is parsed until a render
     /// asks for a row.
     fn rebuild_highlighter(&mut self) {
+        self.syntax_rows.clear();
         self.highlighter = self
             .text
             .then(|| Highlighter::for_file(self.theme, &self.filename, &self.source))
@@ -562,6 +580,11 @@ impl FileView<'_> {
     /// gutter still reads as positions in the original file. Cleared by
     /// `load` and `preview`, as above.
     pub(crate) fn set_line_numbers(&mut self, numbers: Vec<usize>) {
+        // `App::apply_view` calls this on every keystroke, mostly with the
+        // numbers already set; only a real change moves a row's source line.
+        if self.textarea.line_numbers() != numbers.as_slice() {
+            self.syntax_rows.clear();
+        }
         self.textarea.set_line_numbers(numbers);
     }
 
@@ -602,7 +625,18 @@ impl FileView<'_> {
     /// `App::apply_view` re-applies it on every pass rather than only when
     /// the pattern changes.
     pub(crate) fn set_highlight(&mut self, pattern: Option<&str>) -> Result<(), regex::Error> {
-        self.textarea.set_search_pattern(pattern.unwrap_or(""))
+        // Every keystroke, as above, so compare first: the cut-out matches
+        // in `syntax_rows` are only stale when the pattern really changed.
+        let pattern = pattern.unwrap_or("");
+        if self
+            .textarea
+            .search_pattern()
+            .map_or("", |current| current.as_str())
+            != pattern
+        {
+            self.syntax_rows.clear();
+        }
+        self.textarea.set_search_pattern(pattern)
     }
 
     /// The pattern currently highlighted, if any.
@@ -656,6 +690,7 @@ impl FileView<'_> {
         };
         self.window_start = window_start;
         self.textarea.set_lines(lines, (row, 0));
+        self.syntax_rows.clear();
         self.viewport_primed = false;
     }
 
@@ -1485,6 +1520,11 @@ impl FileView<'_> {
     /// which change between frames. A few thousand pushes a frame, and
     /// nothing to keep in step — the same shape `showing_directory` uses.
     ///
+    /// The pushes are re-done; the work behind them is not (#168). Each
+    /// row's pieces — its spans with the search matches cut out — are kept
+    /// in `syntax_rows` and built only for a row that has none yet, so a
+    /// frame where only the cursor moved runs no regex and parses nothing.
+    ///
     /// Three kinds of row are left alone, so what was on screen before #122
     /// is on screen unchanged:
     ///
@@ -1519,6 +1559,11 @@ impl FileView<'_> {
         let numbers = self.textarea.line_numbers();
         let styles = self.textarea.line_styles();
         let pattern = self.textarea.search_pattern();
+        // Every writer of the lines empties the cache, so a length that
+        // disagrees can only be a first frame; start it afresh either way.
+        if self.syntax_rows.len() != rows {
+            self.syntax_rows = vec![None; rows];
+        }
         let mut budget = SYNTAX_BUDGET;
         let mut pushes: Vec<(usize, Span)> = Vec::new();
         for (row, line) in self.textarea.lines().iter().enumerate() {
@@ -1528,21 +1573,37 @@ impl FileView<'_> {
             {
                 continue;
             }
-            let source = numbers.get(row).copied().unwrap_or(self.window_start + row);
-            if !highlighter.ensure(&self.source, source, &mut budget) {
-                continue;
+            let slot = &mut self.syntax_rows[row];
+            if slot.is_none() {
+                let source = numbers.get(row).copied().unwrap_or(self.window_start + row);
+                // A row the budget refuses stays unbuilt, and is asked for
+                // again next frame.
+                if !highlighter.ensure(&self.source, source, &mut budget) {
+                    continue;
+                }
+                let matches: Vec<(usize, usize)> = pattern
+                    .map(|pattern| {
+                        pattern
+                            .find_iter(line)
+                            .map(|found| (found.start(), found.end()))
+                            .filter(|(start, end)| start < end)
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                *slot = Some(
+                    highlighter
+                        .spans(source)
+                        .iter()
+                        .flat_map(|&span| around(span, &matches))
+                        .collect(),
+                );
+                #[cfg(test)]
+                {
+                    self.syntax_rows_built += 1;
+                }
             }
-            let matches: Vec<(usize, usize)> = pattern
-                .map(|pattern| {
-                    pattern
-                        .find_iter(line)
-                        .map(|found| (found.start(), found.end()))
-                        .filter(|(start, end)| start < end)
-                        .collect()
-                })
-                .unwrap_or_default();
-            for &span in highlighter.spans(source) {
-                pushes.extend(around(span, &matches).map(|piece| (row, piece)));
+            if let Some(pieces) = slot {
+                pushes.extend(pieces.iter().map(|&piece| (row, piece)));
             }
         }
         debug_assert!(pushes.iter().all(|(row, _)| *row < rows));
@@ -3591,6 +3652,123 @@ mod tests {
         view.set_line_numbers(vec![0]);
         let buf = buffer(&mut view);
         assert_eq!(fg_at(&buf, row_of(&buf, "fn a"), "n a"), Color::Reset);
+    }
+
+    // ---- the per-row colour cache (#168) -----------------------------
+
+    #[test]
+    fn a_frame_with_nothing_changed_colours_no_row_again() {
+        let mut view = coloured_view("syntax_cache_idle.rs", "fn a() {}\nfn b() {}\nfn c() {}");
+        view.set_highlight(Some("b")).unwrap();
+        buffer(&mut view);
+        let built = view.syntax_rows_built;
+        assert_eq!(built, 3, "every row, once");
+        buffer(&mut view);
+        assert_eq!(view.syntax_rows_built, built, "a second frame reuses them");
+    }
+
+    #[test]
+    fn moving_the_cursor_colours_only_the_row_it_left() {
+        let mut view = coloured_view("syntax_cache_cursor.rs", "fn a() {}\nfn b() {}\nfn c() {}");
+        view.set_active(true);
+        view.set_highlight(Some("b")).unwrap();
+        buffer(&mut view);
+        assert_eq!(view.syntax_rows_built, 2, "the cursor row is skipped");
+
+        send(&mut view, Key::Down);
+        buffer(&mut view);
+        assert_eq!(
+            view.syntax_rows_built, 3,
+            "row 0 is coloured once it is left"
+        );
+
+        send(&mut view, Key::Up);
+        buffer(&mut view);
+        let buf = buffer(&mut view);
+        assert_eq!(view.syntax_rows_built, 3, "and nothing after that");
+        assert_eq!(fg_at(&buf, row_of(&buf, "fn b"), "fn"), Color::Magenta);
+    }
+
+    #[test]
+    fn the_same_numbers_and_pattern_again_keep_the_cache() {
+        // `App::apply_view` re-applies both on every keystroke, so an
+        // unchanged value must not count as a change.
+        let mut view = coloured_view("syntax_cache_same.rs", "fn a() {}\nfn b() {}");
+        view.set_line_numbers(vec![0, 1]);
+        view.set_highlight(Some("b")).unwrap();
+        buffer(&mut view);
+        let built = view.syntax_rows_built;
+        view.set_line_numbers(vec![0, 1]);
+        view.set_highlight(Some("b")).unwrap();
+        buffer(&mut view);
+        assert_eq!(view.syntax_rows_built, built);
+    }
+
+    #[test]
+    fn a_new_pattern_moves_the_hole_in_the_colour() {
+        let mut view = coloured_view("syntax_cache_pattern.rs", "let x = 1;\nfn main() {} // hi");
+        view.set_highlight(Some("fn")).unwrap();
+        let buf = buffer(&mut view);
+        let y = row_of(&buf, "fn main");
+        assert_eq!(style_at(&buf, y, "fn").bg, Some(Color::Yellow));
+
+        view.set_highlight(Some("hi")).unwrap();
+        let buf = buffer(&mut view);
+        assert_eq!(
+            fg_at(&buf, y, "fn"),
+            Color::Magenta,
+            "the old match is coloured again"
+        );
+        let hit = style_at(&buf, y, "hi");
+        assert_eq!(hit.bg, Some(Color::Yellow), "the new match is cut out");
+        assert_eq!(hit.fg, Some(Color::Black));
+
+        view.set_highlight(None).unwrap();
+        let buf = buffer(&mut view);
+        assert_eq!(fg_at(&buf, y, "hi"), Color::Green, "no pattern, no hole");
+    }
+
+    // The two below each change one input and hold the other still. In
+    // single-row buffers the text under test is on the cursor row, so the
+    // needles skip column 0 — see the note above `syntax_colours_…`.
+
+    #[test]
+    fn a_new_window_is_coloured_afresh() {
+        let mut view = coloured_view("syntax_cache_window.rs", "// c\nfn a() {}");
+        view.show_window(vec!["fn a() {}".to_string()], 1, 0);
+        let buf = buffer(&mut view);
+        assert_eq!(fg_at(&buf, row_of(&buf, "fn a"), "n a"), Color::Magenta);
+
+        // No gutter override either time: only the window says row 0 moved.
+        view.show_window(vec!["// c".to_string()], 0, 0);
+        let buf = buffer(&mut view);
+        assert_eq!(fg_at(&buf, row_of(&buf, "// c"), "/ c"), Color::Green);
+    }
+
+    #[test]
+    fn a_new_file_of_the_same_length_is_coloured_afresh() {
+        let mut view = coloured_view("syntax_cache_first.rs", "fn a() {}\n// b");
+        buffer(&mut view);
+        view.load(&fixture("syntax_cache_second.rs", "// a\nfn b() {}"));
+        let buf = buffer(&mut view);
+        assert_eq!(fg_at(&buf, row_of(&buf, "// a"), "/ a"), Color::Green);
+        assert_eq!(fg_at(&buf, row_of(&buf, "fn b"), "fn"), Color::Magenta);
+    }
+
+    #[test]
+    fn new_gutter_numbers_alone_recolour_the_rows() {
+        let mut view = coloured_view("syntax_cache_numbers.rs", "// c\nfn a() {}");
+        view.show_window(vec!["fn a() {}".to_string()], 0, 0);
+        view.set_line_numbers(vec![1]);
+        let buf = buffer(&mut view);
+        assert_eq!(fg_at(&buf, row_of(&buf, "fn a"), "n a"), Color::Magenta);
+
+        // Same buffer, same window: the row now claims source line 0, the
+        // comment, and takes its colour — as in
+        // `a_windowed_buffer_is_coloured_by_source_line_not_buffer_row`.
+        view.set_line_numbers(vec![0]);
+        let buf = buffer(&mut view);
+        assert_eq!(fg_at(&buf, row_of(&buf, "fn a"), "n a"), Color::Green);
     }
 
     #[test]
