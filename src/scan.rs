@@ -17,7 +17,7 @@ use std::fs::File;
 use std::io::{BufRead, BufReader, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::Sender;
+use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::SystemTime;
 
@@ -93,10 +93,15 @@ impl Record {
 /// One file a [`Request`] asks for, named the way [`Scanned`] names its
 /// answer (#171): `index` is the navigator row, `progress` is how far an
 /// earlier scan got, so the worker resumes rather than restarts.
+///
+/// `stamp` is the stamp `progress` was read under. The worker stats the file
+/// anyway, so it — not the UI thread — checks that the file is still the one
+/// `progress` describes, and starts over when it is not (#156).
 #[derive(Debug, Clone)]
 pub struct FileToScan {
     pub index: usize,
     pub path: PathBuf,
+    pub stamp: Option<Stamp>,
     pub progress: Progress,
 }
 
@@ -223,10 +228,20 @@ fn worker(request: Request, tx: &Sender<Scanned>, cancel: &AtomicBool) {
     for FileToScan {
         index,
         path,
+        stamp: held,
         progress,
     } in files
     {
         let stamp = stamp(&path).ok();
+        // Resuming a file that changed since `progress` was read would add
+        // new bytes to old bitsets at an offset that may no longer be a line
+        // boundary. `refresh_scan` no longer stats to catch this (#156), so
+        // it is caught here, where the stat is already paid for.
+        let progress = if stamp == held {
+            progress
+        } else {
+            Progress::default()
+        };
         let progress = match File::open(&path) {
             Ok(mut file) => {
                 // A seek failure leaves the file positioned who-knows-where,
@@ -267,6 +282,51 @@ fn worker(request: Request, tx: &Sender<Scanned>, cancel: &AtomicBool) {
         });
         if sent.is_err() || cancel.load(Ordering::Relaxed) {
             return;
+        }
+    }
+}
+
+/// A listed file whose stamp on disk is not the one its record holds, with
+/// the stamp it has now.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Moved {
+    pub path: PathBuf,
+    pub stamp: Option<Stamp>,
+}
+
+/// Stat every `(path, held stamp)` pair and return the files that moved.
+///
+/// One `stat` per file — on a 20,000-file folder or a network mount, far too
+/// slow for the UI thread (#156). [`check_in_background`] runs it on a thread
+/// of its own; tests call it directly.
+#[must_use]
+pub fn moved(held: Vec<(PathBuf, Option<Stamp>)>) -> Vec<Moved> {
+    held.into_iter()
+        .filter_map(|(path, held)| {
+            let stamp = stamp(&path).ok();
+            (stamp != held).then_some(Moved { path, stamp })
+        })
+        .collect()
+}
+
+/// Run [`moved`] on a thread and return where its one answer will arrive.
+///
+/// `None` when the OS refuses the thread: the poll is skipped, logged, and
+/// tried again on the next interval — the same tolerance as `Scanner` (#188).
+#[must_use]
+pub fn check_in_background(held: Vec<(PathBuf, Option<Stamp>)>) -> Option<Receiver<Vec<Moved>>> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    match std::thread::Builder::new()
+        .name("recon-stamps".to_string())
+        .spawn(move || {
+            // The receiver may be gone by the time this is done — the app
+            // quit. Nothing to report then.
+            let _ = tx.send(moved(held));
+        }) {
+        Ok(_) => Some(rx),
+        Err(err) => {
+            log::warn!("cannot start the stamp thread: {err}; changes on disk go unseen");
+            None
         }
     }
 }
@@ -640,6 +700,103 @@ mod tests {
         let (_, len) = stamp(&path).expect("stat");
         assert_eq!(len, 5);
         assert!(stamp(&dir.join("missing.txt")).is_err());
+    }
+
+    /// Run the worker over one file and return what it sent.
+    fn work(path: &Path, stamp: Option<Stamp>, progress: Progress) -> Scanned {
+        let (tx, rx) = std::sync::mpsc::channel();
+        worker(
+            Request {
+                cache_id: 1,
+                matcher: matcher(&["alpha"], &[]),
+                files: vec![FileToScan {
+                    index: 0,
+                    path: path.to_path_buf(),
+                    stamp,
+                    progress,
+                }],
+            },
+            &tx,
+            &never(),
+        );
+        rx.recv().expect("one result")
+    }
+
+    /// `refresh_scan` no longer stats before a resume (#156), so the worker
+    /// must notice the file changed and read it from the top: resuming at
+    /// the old offset would skip the new first line.
+    #[test]
+    fn a_file_whose_stamp_moved_is_read_from_the_top() {
+        let dir = std::path::Path::new("target/test-scan");
+        std::fs::create_dir_all(dir).expect("fixture dir");
+        let path = dir.join("restart.txt");
+        std::fs::write(&path, "alpha\nnoise noise\n").expect("write");
+        let old = Some((SystemTime::UNIX_EPOCH, 3));
+        let partial = Progress {
+            seen: vec![0],
+            scanned_to: 6,
+            eof: false,
+        };
+
+        let result = work(&path, old, partial);
+
+        assert!(result.progress.seen.contains(&0b1), "{:?}", result.progress);
+        assert_eq!(result.progress.scanned_to, 6, "stopped at the first line");
+    }
+
+    #[test]
+    fn a_file_whose_stamp_held_is_resumed() {
+        let dir = std::path::Path::new("target/test-scan");
+        std::fs::create_dir_all(dir).expect("fixture dir");
+        let path = dir.join("resume.txt");
+        std::fs::write(&path, "alpha\nnoise\n").expect("write");
+        let partial = Progress {
+            seen: vec![0],
+            scanned_to: 6,
+            eof: false,
+        };
+
+        let result = work(&path, stamp(&path).ok(), partial);
+
+        assert_eq!(result.progress.seen, vec![0], "re-read the first line");
+        assert!(result.progress.eof);
+    }
+
+    #[test]
+    fn moved_names_only_the_files_whose_stamp_changed() {
+        let dir = std::path::Path::new("target/test-scan");
+        std::fs::create_dir_all(dir).expect("fixture dir");
+        let same = dir.join("moved-same.txt");
+        let changed = dir.join("moved-changed.txt");
+        std::fs::write(&same, "x").expect("write");
+        std::fs::write(&changed, "x").expect("write");
+
+        let result = moved(vec![
+            (same.clone(), stamp(&same).ok()),
+            (changed.clone(), Some((SystemTime::UNIX_EPOCH, 1))),
+        ]);
+
+        assert_eq!(
+            result,
+            vec![Moved {
+                stamp: stamp(&changed).ok(),
+                path: changed,
+            }]
+        );
+    }
+
+    #[test]
+    fn a_background_check_answers_once() {
+        let dir = std::path::Path::new("target/test-scan");
+        std::fs::create_dir_all(dir).expect("fixture dir");
+        let path = dir.join("background.txt");
+        std::fs::write(&path, "x").expect("write");
+
+        let rx = check_in_background(vec![(path.clone(), None)]).expect("a thread");
+
+        let answer = rx.recv().expect("an answer");
+        assert_eq!(answer.len(), 1);
+        assert_eq!(answer[0].path, path);
     }
 
     // ---- the recording double --------------------------------------------
