@@ -48,16 +48,19 @@ fn a_scanner_thread_answers_every_file_it_is_given() {
             FileToScan {
                 index: 1,
                 path: hit.clone(),
+                stamp: None,
                 progress: Progress::default(),
             },
             FileToScan {
                 index: 2,
                 path: miss.clone(),
+                stamp: None,
                 progress: Progress::default(),
             },
             FileToScan {
                 index: 3,
                 path: gone.clone(),
+                stamp: None,
                 progress: Progress::default(),
             },
         ],
@@ -112,6 +115,7 @@ fn no_workers_result_is_lost_across_a_handoff() {
         files: vec![FileToScan {
             index: 0,
             path: big.clone(),
+            stamp: None,
             progress: Progress::default(),
         }],
     };

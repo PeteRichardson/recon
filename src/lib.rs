@@ -94,7 +94,7 @@ const SEARCH_BADGE_MAX: usize = 32;
 const VISUAL_BADGE_TEXT: &str = " VISUAL ";
 const VLINE_BADGE_TEXT: &str = " V-LINE ";
 
-/// How often `poll_stamps` re-stats the listing while the feature is on.
+/// How often `poll_stamps` checks the listing's stamps while the feature is on.
 const POLL_INTERVAL: Duration = Duration::from_secs(2);
 
 /// What an open prompt will do with the pattern being typed.
@@ -693,8 +693,10 @@ pub struct App<'a> {
     /// What the last `refresh_scan` saw. Unchanged means nothing to do — the
     /// guard that keeps `j` in the file view from stat-ing the folder.
     last_scan: Option<ScanState>,
-    /// When `poll_stamps` last re-stat'd the listing.
+    /// When `poll_stamps` last started a stamp check.
     last_poll: Option<Instant>,
+    /// Where the stamp check in flight will answer, if one is (#156).
+    stamp_check: Option<std::sync::mpsc::Receiver<Vec<scan::Moved>>>,
     /// The active file's stamp moved since it was loaded. Shown as a badge,
     /// cleared by `r`.
     view_stale: bool,
@@ -927,6 +929,7 @@ impl App<'_> {
             scan_cache: ScanCache::default(),
             last_scan: None,
             last_poll: None,
+            stamp_check: None,
             view_stale: false,
         };
         // `--hide`: on the document before `sync_document`, which carries
@@ -2383,6 +2386,11 @@ impl App<'_> {
             }
             A::GlobalReload => {
                 self.nav.reload();
+                // `r` is the one place the listing is stat'd on this thread:
+                // it is asked for, and `nav.reload` has just read the
+                // directory here anyway. `refresh_scan` trusts its records
+                // (#156), so without this a change would wait for the poll.
+                self.check_stamps();
                 self.refresh_scan(true);
                 self.reload_active_file();
             }
@@ -2962,7 +2970,7 @@ impl App<'_> {
     /// Cheap-idempotent unless `force`: it compares the pattern list, the
     /// masks and the directory to what it saw last time and returns at once
     /// if nothing moved. Runs after every event, so that guard is what keeps a
-    /// keystroke in the file view from stat-ing two hundred files.
+    /// keystroke in the file view from walking the listing at all.
     ///
     /// When it proceeds, every file the navigator lists is answered from the
     /// cache if it can be — `Record::answer` — and put on a request if it
@@ -3002,17 +3010,11 @@ impl App<'_> {
             self.scan_cache = ScanCache::fresh(self.scan_cache.id + 1, key, dir);
         }
 
+        // No `stat` here (#156): a held record is trusted as it stands.
+        // `poll_stamps` finds a file that changed, off this thread, and a
+        // resumed scan re-checks its own stamp in the worker.
         let mut pending = Vec::new();
         for (index, path) in self.nav.files() {
-            let stamp = scan::stamp(&path).ok();
-            if self
-                .scan_cache
-                .records
-                .get(&path)
-                .is_some_and(|record| record.stamp != stamp)
-            {
-                self.scan_cache.records.remove(&path);
-            }
             let answer = self
                 .scan_cache
                 .records
@@ -3021,15 +3023,16 @@ impl App<'_> {
             let matched = if let Some(matched @ (Match::Yes(_) | Match::No)) = answer {
                 matched
             } else {
-                let progress = self
+                let (stamp, progress) = self
                     .scan_cache
                     .records
                     .get(&path)
-                    .map(|record| record.progress.clone())
+                    .map(|record| (record.stamp, record.progress.clone()))
                     .unwrap_or_default();
                 pending.push(scan::FileToScan {
                     index,
                     path,
+                    stamp,
                     progress,
                 });
                 Match::Unknown
@@ -3083,7 +3086,10 @@ impl App<'_> {
                 .records
                 .get(&scanned.path)
                 .is_none_or(|held| {
-                    scanned.progress.scanned_to > held.progress.scanned_to
+                    // A new stamp is a new file: the worker started it over,
+                    // so it can have read less and still be the truth (#156).
+                    scanned.stamp != held.stamp
+                        || scanned.progress.scanned_to > held.progress.scanned_to
                         || (scanned.progress.eof && !held.progress.eof)
                 });
             if !further {
@@ -3110,46 +3116,91 @@ impl App<'_> {
     /// Re-stat the listing every `POLL_INTERVAL` while the feature is on.
     /// Returns whether anything changed.
     ///
-    /// On the tick the render loop already wakes on, not a thread and not a
-    /// file-watching API: a few hundred `stat` calls every two seconds is
-    /// nothing, and it covers every listed file rather than only the active
-    /// one.
+    /// The `stat`s run on a thread of their own (#156): one per listed file
+    /// is nothing for a small local folder and a visible stall for 20,000
+    /// files or a network mount. This tick only starts a check and, on a
+    /// later tick, applies its answer. One check is in flight at a time, so
+    /// a slow mount cannot pile threads up.
     fn poll_stamps(&mut self) -> bool {
-        if !self.filters.is_scanning() {
-            return false;
+        let changed = self.drain_stamp_check();
+        if !self.filters.is_scanning() || self.stamp_check.is_some() {
+            return changed;
         }
         let now = Instant::now();
         if self
             .last_poll
             .is_some_and(|last| now.duration_since(last) < POLL_INTERVAL)
         {
-            return false;
+            return changed;
         }
         self.last_poll = Some(now);
-        self.check_stamps()
+        self.stamp_check = scan::check_in_background(self.held_stamps());
+        changed
     }
 
-    /// Compare every recorded file's stamp to the disk; drop and forget the
-    /// records that moved, then hand off to `refresh_scan(true)` to rescan
-    /// them. The active file moving also raises the badge. Split from
-    /// `poll_stamps` so tests can call it without waiting.
+    /// Apply the in-flight stamp check's answer, if it has arrived.
+    fn drain_stamp_check(&mut self) -> bool {
+        let Some(check) = self.stamp_check.as_ref() else {
+            return false;
+        };
+        match check.try_recv() {
+            Ok(moved) => {
+                self.stamp_check = None;
+                self.apply_moved(moved)
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => false,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                log::warn!("the stamp check ended without an answer");
+                self.stamp_check = None;
+                false
+            }
+        }
+    }
+
+    /// Every listed file that has a record, with the stamp the record holds —
+    /// what a stamp check compares the disk against.
+    fn held_stamps(&self) -> Vec<(std::path::PathBuf, Option<scan::Stamp>)> {
+        self.nav
+            .files()
+            .into_iter()
+            .filter_map(|(_, path)| {
+                let stamp = self.scan_cache.records.get(&path)?.stamp;
+                Some((path, stamp))
+            })
+            .collect()
+    }
+
+    /// Drop and forget the records of files that moved on disk, then hand off
+    /// to `refresh_scan(true)` to rescan them. The active file moving also
+    /// raises the badge.
+    ///
+    /// The check ran on a snapshot, so each record is compared again before
+    /// it is dropped: a scan result that arrived in the meantime may already
+    /// carry the new stamp, and that record is kept.
     ///
     /// Deliberately does not issue its own request: `refresh_scan`'s `pending`
     /// is every file without a usable answer, which already covers the files
     /// this drops. Issuing a narrower request here would hand `Scanner::start`
     /// a file list that cancels an in-flight full scan without covering the
     /// files it had not reached yet, stranding them `Unknown` until `r`.
-    fn check_stamps(&mut self) -> bool {
+    fn apply_moved(&mut self, moved: Vec<scan::Moved>) -> bool {
         if !self.filters.is_scanning() {
             return false;
         }
+        let moved: std::collections::HashMap<_, _> = moved
+            .into_iter()
+            .map(|scan::Moved { path, stamp }| (path, stamp))
+            .collect();
         let active = self.view.filename().to_path_buf();
         let mut changed = false;
         for (index, path) in self.nav.files() {
+            let Some(stamp) = moved.get(&path) else {
+                continue;
+            };
             let Some(held) = self.scan_cache.records.get(&path) else {
                 continue;
             };
-            if held.stamp == scan::stamp(&path).ok() {
+            if held.stamp == *stamp {
                 continue;
             }
             self.scan_cache.records.remove(&path);
@@ -3163,6 +3214,14 @@ impl App<'_> {
             self.refresh_scan(true);
         }
         changed
+    }
+
+    /// A stamp check run to completion on this thread — what `poll_stamps`
+    /// does over two ticks, without the thread or the wait. For `r`, which
+    /// asks for it, and for tests.
+    fn check_stamps(&mut self) -> bool {
+        let moved = scan::moved(self.held_stamps());
+        self.apply_moved(moved)
     }
 
     /// A record's answer as the navigator's `Match`, with the owning filter's
@@ -15223,6 +15282,166 @@ mod tests {
         assert!(
             line.contains(" changed on disk · F5 "),
             "the badge must name the key the config file bound: {line}"
+        );
+    }
+
+    /// A toggle walks the listing but stats none of it (#156): a record is
+    /// trusted as it stands, even when its stamp no longer matches the disk.
+    /// Finding that is the poll's job, off the UI thread.
+    #[test]
+    fn a_toggle_trusts_the_cached_stamp() {
+        let mut app = app_over_logs("scan_trust");
+        let (scanner, _tx) = record_scans(&mut app);
+        app.add_filter("alpha").expect("valid pattern");
+        app.add_filter("beta").expect("valid pattern");
+        app.refresh_scan(false);
+        for (_, path) in app.nav.files() {
+            app.scan_cache.records.insert(
+                path,
+                scan::Record {
+                    stamp: Some((std::time::SystemTime::UNIX_EPOCH, 0)),
+                    progress: scan::Progress {
+                        seen: vec![0],
+                        scanned_to: 1,
+                        eof: true,
+                    },
+                },
+            );
+        }
+        let before = scanner.requests().len();
+
+        app.filters.set_enabled(1, false);
+        app.refresh_scan(false);
+
+        assert_eq!(scanner.requests().len(), before, "a toggle re-scanned");
+        assert_eq!(app.nav.entries()[app.nav.files()[0].0].matched, Match::No);
+    }
+
+    /// A resumed scan carries the stamp its progress was read under, so the
+    /// worker can tell the file changed.
+    #[test]
+    fn a_resume_carries_the_held_stamp() {
+        let mut app = app_over_logs("scan_carry");
+        let (scanner, _tx) = record_scans(&mut app);
+        app.add_filter("alpha").expect("valid pattern");
+        app.refresh_scan(false);
+        let (_, path) = app.nav.files()[0].clone();
+        let held = Some((std::time::SystemTime::UNIX_EPOCH, 7));
+        app.scan_cache.records.insert(
+            path.clone(),
+            scan::Record {
+                stamp: held,
+                progress: scan::Progress {
+                    seen: vec![0],
+                    scanned_to: 1,
+                    eof: false,
+                },
+            },
+        );
+
+        app.refresh_scan(true);
+
+        let last = scanner.requests().last().expect("a request").clone();
+        let file = last.files.iter().find(|f| f.path == path).expect("resumed");
+        assert_eq!(file.stamp, held);
+    }
+
+    /// A restarted file reads less than the record it replaces, and is still
+    /// the truth: its stamp is new.
+    #[test]
+    fn a_result_with_a_new_stamp_replaces_one_that_read_further() {
+        let mut app = app_over_logs("drain_restamp");
+        let (_scanner, tx) = record_scans(&mut app);
+        app.add_filter("alpha").expect("valid pattern");
+        app.refresh_scan(false);
+        let mut old = scanned(&app, 0, vec![0], true);
+        old.stamp = Some((std::time::SystemTime::UNIX_EPOCH, 9));
+        old.progress.scanned_to = 50;
+        tx.send(old).expect("send");
+        app.drain_scan_results();
+
+        tx.send(scanned(&app, 0, vec![0b1], false)).expect("send");
+        app.drain_scan_results();
+
+        assert!(matches!(
+            app.nav.entries()[app.nav.files()[0].0].matched,
+            Match::Yes(_)
+        ));
+    }
+
+    /// The check ran on a snapshot. A record that already carries the new
+    /// stamp by the time its answer lands is kept, not thrown away.
+    #[test]
+    fn a_moved_file_already_rescanned_is_kept() {
+        let mut app = app_over_logs("poll_refreshed");
+        let (scanner, tx) = record_scans(&mut app);
+        app.add_filter("alpha").expect("valid pattern");
+        app.refresh_scan(false);
+        tx.send(scanned(&app, 0, vec![0], true)).expect("send");
+        app.drain_scan_results();
+        let (_, path) = app.nav.files()[0].clone();
+        let before = scanner.requests().len();
+
+        let changed = app.apply_moved(vec![scan::Moved {
+            stamp: scan::stamp(&path).ok(),
+            path,
+        }]);
+
+        assert!(!changed);
+        assert_eq!(app.nav.entries()[app.nav.files()[0].0].matched, Match::No);
+        assert_eq!(scanner.requests().len(), before);
+    }
+
+    /// The whole poll, thread included: one tick starts the check, a later
+    /// tick applies it.
+    #[test]
+    fn polling_finds_a_changed_file_off_the_ui_thread() {
+        let mut app = app_over_logs("poll_thread");
+        let (_scanner, tx) = record_scans(&mut app);
+        app.add_filter("alpha").expect("valid pattern");
+        app.refresh_scan(false);
+        tx.send(scanned(&app, 0, vec![0], true)).expect("send");
+        app.drain_scan_results();
+        let (_, path) = app.nav.files()[0].clone();
+        fs::write(&path, "now alpha is here\nand more\n").expect("rewrite");
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let mut changed = app.poll_stamps();
+        while !changed && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+            changed = app.poll_stamps();
+        }
+
+        assert!(changed, "the poll never reported the change");
+        assert_eq!(
+            app.nav.entries()[app.nav.files()[0].0].matched,
+            Match::Unknown
+        );
+        assert!(
+            app.stamp_check.is_none(),
+            "the finished check is still held"
+        );
+    }
+
+    /// `r` promises a re-stat. With `refresh_scan` trusting its records, the
+    /// key has to do it itself or a change waits for the poll.
+    #[test]
+    fn r_rescans_a_file_that_changed_on_disk() {
+        let mut app = app_over_logs("r_restat");
+        let (scanner, tx) = record_scans(&mut app);
+        app.add_filter("alpha").expect("valid pattern");
+        app.refresh_scan(false);
+        tx.send(scanned(&app, 0, vec![0], true)).expect("send");
+        app.drain_scan_results();
+        let (_, path) = app.nav.files()[0].clone();
+        fs::write(&path, "now alpha is here\nand more\n").expect("rewrite");
+
+        key(&mut app, KeyCode::Char('r'));
+
+        let last = scanner.requests().last().expect("a rescan").clone();
+        assert!(
+            last.files.iter().any(|file| file.path == path),
+            "the changed file was not rescanned: {last:?}"
         );
     }
 
