@@ -1612,6 +1612,27 @@ impl ActiveFilters {
     /// the pattern count exceeds the bitset width.
     #[must_use]
     pub fn matcher(&self) -> Option<Matcher> {
+        let (set, selects, exclude) = self.scan_masks()?;
+        Some(Matcher {
+            set: set.clone(),
+            selects,
+            exclude,
+            combine: self.combine,
+        })
+    }
+
+    /// Whether there is a scan to run: `matcher().is_some()` without
+    /// cloning the set. For the render loop, which asks sixty times a
+    /// second (#170).
+    #[must_use]
+    pub fn is_scanning(&self) -> bool {
+        self.scan_masks().is_some()
+    }
+
+    /// The compiled set and the `(selects, exclude)` masks over it, or
+    /// `None` when there is no scan to run. `matcher` and `is_scanning`
+    /// share it so they cannot disagree.
+    fn scan_masks(&self) -> Option<(&RegexSet, u64, u64)> {
         debug_assert!(
             self.compiled.as_ref().is_none_or(|set| self.in_step(set)),
             "the compiled set is out of step with the filters"
@@ -1639,12 +1660,7 @@ impl ActiveFilters {
         if selects == 0 {
             return None;
         }
-        Some(Matcher {
-            set: set.clone(),
-            selects,
-            exclude,
-            combine: self.combine,
-        })
+        Some((set, selects, exclude))
     }
 
     /// Every pattern's source, in compiled order. What a scan
@@ -2553,6 +2569,32 @@ mod tests {
             Verdict::Unmatched
         );
         assert_eq!(set.verdict("fn x()", functions), Verdict::Unmatched);
+    }
+
+    /// `is_scanning` answers `matcher().is_some()` without building one
+    /// (#170), in every state that makes `matcher` return `None`.
+    #[test]
+    fn is_scanning_agrees_with_the_matcher() {
+        let agree = |set: &ActiveFilters| {
+            assert_eq!(set.is_scanning(), set.matcher().is_some());
+            set.is_scanning()
+        };
+        let mut set = ActiveFilters::new();
+        assert!(!agree(&set), "no filters");
+        set.add_definition(Kind::Function);
+        assert!(!agree(&set), "a definition alone");
+        set.add("foo").expect("valid");
+        assert!(agree(&set), "an include");
+        set.filters[1].sense = Sense::Exclude;
+        assert!(!agree(&set), "exclude-only");
+        set.filters[1].sense = Sense::Include;
+        set.set_enabled(1, false);
+        assert!(!agree(&set), "the include disabled");
+        set.set_enabled(1, true);
+        for n in 0..MAX_PATTERNS {
+            set.add(&format!("p{n}")).expect("valid");
+        }
+        assert!(!agree(&set), "over the bitset width");
     }
 
     /// The navigator cannot evaluate a definition, so its bit is in no mask:
