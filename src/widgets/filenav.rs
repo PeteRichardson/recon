@@ -1005,9 +1005,7 @@ pub(crate) fn sorted_entries(dir: &Path) -> std::io::Result<Vec<Entry>> {
     let mut listed: Vec<Entry> = fs::read_dir(dir)?
         .filter_map(|entry| Some(describe(&entry.ok()?)))
         .collect();
-    // `sort_by_cached_key` rather than `sort_by`: the key allocates, and this
-    // computes it once per entry instead of twice per comparison.
-    listed.sort_by_cached_key(sort_key);
+    sort_listing(&mut listed);
     Ok(listed)
 }
 
@@ -1027,12 +1025,22 @@ pub(crate) fn sorted_entries(dir: &Path) -> std::io::Result<Vec<Entry>> {
 /// `Kind::Parent` never reaches here — `read_dir_entries` prepends `..` after
 /// this has run, which is what keeps it pinned to the top rather than sorted
 /// among the directories.
-fn sort_key(entry: &Entry) -> (bool, String, OsString) {
-    (
-        entry.kind != Kind::Dir,
-        entry.name.to_string_lossy().to_lowercase(),
-        entry.name.clone(),
-    )
+///
+/// Two passes, so that the raw-name tiebreak costs no allocation (#172). The
+/// first orders by raw name; the second is `sort_by_cached_key`, which is
+/// stable, so entries whose folded keys are equal keep the raw-name order the
+/// first pass gave them. The folded key allocates, so it is cached: computed
+/// once per entry instead of twice per comparison. A single key that also
+/// carried the name cloned an `OsString` for every entry to break ties that
+/// almost never occur.
+fn sort_listing(entries: &mut [Entry]) {
+    entries.sort_unstable_by(|a, b| a.name.cmp(&b.name));
+    entries.sort_by_cached_key(|entry| {
+        (
+            entry.kind != Kind::Dir,
+            entry.name.to_string_lossy().to_lowercase(),
+        )
+    });
 }
 
 /// Describe one listed entry: what it is, how big, and when it changed.
@@ -1741,7 +1749,7 @@ mod tests {
         let nav = FileNav::new(root.display().to_string());
         let rest = &nav.entries[1..];
         let mut sorted = rest.to_vec();
-        sorted.sort_by_cached_key(sort_key);
+        sort_listing(&mut sorted);
 
         assert_eq!(drawn(rest), drawn(&sorted));
     }
@@ -1932,7 +1940,7 @@ mod tests {
             entry("README.md", Kind::Plain),
         ];
 
-        entries.sort_by_cached_key(sort_key);
+        sort_listing(&mut entries);
 
         assert_eq!(drawn(&entries), ["README.md", "Readme.md"]);
     }
@@ -1946,7 +1954,7 @@ mod tests {
             entry("Readme.md", Kind::Plain),
         ];
 
-        reversed.sort_by_cached_key(sort_key);
+        sort_listing(&mut reversed);
 
         assert_eq!(drawn(&reversed), ["README.md", "Readme.md"]);
     }
