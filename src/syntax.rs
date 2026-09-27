@@ -671,6 +671,7 @@ struct KindScopes {
     /// appears several times.
     named: Vec<(Kind, Scope)>,
     storage_type: Scope,
+    meta: Scope,
     meta_block: Scope,
 }
 
@@ -683,6 +684,7 @@ impl KindScopes {
                 .flat_map(|&kind| kind.scopes().iter().map(move |text| (kind, scope(text))))
                 .collect(),
             storage_type: scope("storage.type"),
+            meta: scope("meta"),
             meta_block: scope("meta.block"),
         }
     }
@@ -707,7 +709,7 @@ impl KindScopes {
                 && stack
                     .iter()
                     .rev()
-                    .find(|open| open.build_string().starts_with("meta."))
+                    .find(|open| self.meta.is_prefix_of(**open))
                     .is_some_and(|nearest| self.meta_block.is_prefix_of(*nearest))
             {
                 continue;
