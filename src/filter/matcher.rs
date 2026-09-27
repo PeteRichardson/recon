@@ -88,7 +88,33 @@ impl Matcher {
     }
 }
 
+/// Everything about the filter set a scan depends on, in four numbers:
+/// what `refresh_scan` compares on every event (#186). The pattern key it
+/// replaces was a `Vec<String>` built each time to find that nothing moved.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScanStamp {
+    /// The set's pattern generation. Moves when a pattern does, so cached
+    /// bitsets may mean something else; a flag leaves it alone.
+    pub patterns: u64,
+    pub selects: u64,
+    pub exclude: u64,
+    pub combine: Combine,
+}
+
 impl ActiveFilters {
+    /// What a scan depends on, or `None` when there is no scan to run —
+    /// `matcher` without cloning the set.
+    #[must_use]
+    pub fn scan_stamp(&self) -> Option<ScanStamp> {
+        let (_, selects, exclude) = self.scan_masks()?;
+        Some(ScanStamp {
+            patterns: self.generation,
+            selects,
+            exclude,
+            combine: self.combine,
+        })
+    }
+
     /// The snapshot a scan thread matches with, or `None` when there is no
     /// scan to run.
     ///
@@ -293,6 +319,59 @@ mod tests {
 
         set.toggle_context(0);
         assert_eq!(set.pattern_key(), expected, "sense is not part of the key");
+    }
+
+    /// What `refresh_scan` compares instead of the pattern key (#186): the
+    /// generation moves with a pattern and stays with a flag, and the masks
+    /// carry the flags.
+    #[test]
+    fn the_scan_stamp_moves_with_the_patterns_not_the_flags() {
+        let mut set = set_with(&["alpha", "beta"]);
+        let start = set.scan_stamp().expect("something selects");
+
+        set.toggle_context(1);
+        let toggled = set.scan_stamp().expect("alpha still selects");
+        assert_eq!(toggled.patterns, start.patterns, "a flag is not a pattern");
+        assert_ne!(toggled, start, "but the masks moved");
+
+        set.set_pattern(0, "gamma").expect("valid pattern");
+        let edited = set.scan_stamp().expect("gamma selects");
+        assert_ne!(edited.patterns, toggled.patterns, "an edit");
+
+        set.add("delta").expect("valid pattern");
+        let added = set.scan_stamp().expect("still selects");
+        assert_ne!(added.patterns, edited.patterns, "an add");
+
+        set.remove(0);
+        assert_ne!(
+            set.scan_stamp().expect("still selects").patterns,
+            added.patterns,
+            "a remove"
+        );
+    }
+
+    /// Two sets built alike are still two sets: `App` can be handed a new
+    /// one, and the guard must not take it for the old (#186).
+    #[test]
+    fn two_sets_never_share_a_generation() {
+        let one = set_with(&["alpha"]).scan_stamp().expect("selects");
+        let two = set_with(&["alpha"]).scan_stamp().expect("selects");
+        assert_ne!(one.patterns, two.patterns);
+    }
+
+    /// `scan_stamp` and `matcher` share `scan_masks`, so they agree on the
+    /// masks and on when there is nothing to scan.
+    #[test]
+    fn the_scan_stamp_agrees_with_the_matcher() {
+        let mut set = set_with(&["alpha"]);
+        let stamp = set.scan_stamp().expect("selects");
+        assert_eq!(
+            set.matcher().expect("selects").masks(),
+            (stamp.selects, stamp.exclude, stamp.combine)
+        );
+
+        set.set_all_enabled(false);
+        assert!(set.scan_stamp().is_none() && set.matcher().is_none());
     }
 
     /// `is_scanning` answers `matcher().is_some()` without building one
