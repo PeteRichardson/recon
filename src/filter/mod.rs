@@ -14,7 +14,7 @@
 mod matcher;
 mod sets;
 
-pub use matcher::{Matcher, Owner};
+pub use matcher::{Matcher, Owner, ScanStamp};
 pub use sets::{
     DEFINITIONS_DESCRIPTION, DEFINITIONS_SET, EnableError, FilterSet, LoadedFilter, LoadedSet,
     Origin, is_builtin_name,
@@ -420,7 +420,16 @@ pub struct ActiveFilters {
     /// sum of the individual ones). `verdict` then falls back to the original
     /// per-filter scan: slower, never wrong.
     compiled: Option<RegexSet>,
+    /// Moves every time `recompile` runs — that is, every time a pattern is
+    /// added, removed or replaced — and never on a flag. What `refresh_scan`
+    /// compares instead of building the pattern key on every event (#186).
+    /// Drawn from `GENERATIONS`, so no two sets ever share one.
+    generation: u64,
 }
+
+/// The source of every `ActiveFilters::generation`. Process-wide rather than
+/// per set so that a set built to replace another never repeats its number.
+static GENERATIONS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 /// Hand-written rather than derived: the scratch set must exist from the
 /// start, so that every filter has a set to belong to.
@@ -457,6 +466,7 @@ impl ActiveFilters {
             filters: Vec::new(),
             remembered: None,
             compiled: None,
+            generation: 0,
         }
     }
 
@@ -939,6 +949,7 @@ impl ActiveFilters {
     /// slow, but `matcher` returns `None` and the navigator's marking
     /// switches off with nothing said (#187).
     fn recompile(&mut self) {
+        self.generation = GENERATIONS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let patterns = self.filters.iter().map(|filter| filter.predicate.source());
         match RegexSet::new(patterns) {
             Ok(set) => self.compiled = Some(set),

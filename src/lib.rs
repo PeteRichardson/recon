@@ -771,14 +771,13 @@ impl ScanCache {
 }
 
 /// Everything `refresh_scan` depends on. Equal to last time ⇒ nothing to do.
+///
+/// The stamp stands in for the pattern list, the masks and the mode (OR or
+/// AND, #39 — the same cached bitset answers differently under each), so the
+/// comparison allocates nothing (#186). Only a change builds one of these.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ScanState {
-    key: Vec<String>,
-    selects: u64,
-    exclude: u64,
-    /// OR or AND (#39): the same cached bitset answers differently under
-    /// each, so flipping the mode is a change a scan cares about.
-    combine: filter::Combine,
+    stamp: filter::ScanStamp,
     dir: std::path::PathBuf,
 }
 
@@ -821,6 +820,10 @@ impl App<'_> {
         let mut nav = FileNav::new(config.path.clone());
         nav.set_background(config.background());
         let mut view = FileView::default();
+        // Before the load, not after: `load` looks up the file's grammar, and
+        // `set_theme` after it would look it up a second time (#186). Here
+        // there is nothing shown yet, so this costs nothing.
+        view.set_theme(config.syntax_theme());
 
         match nav.selected_path() {
             // A directory argument *selects* an entry rather than being
@@ -836,10 +839,6 @@ impl App<'_> {
             // to a typo. Reporting the argument is what recon already does.
             _ => view.load(argument),
         }
-        // After the load, not before: `set_theme` recolours what is already
-        // shown, so the order does not matter for correctness — but setting
-        // it here keeps the two-way `match` above about *what* to open.
-        view.set_theme(config.syntax_theme());
 
         // Created here rather than lazily on the first `o`: the sender has to
         // outlive every launcher clone, and a channel built on demand would
@@ -2967,7 +2966,7 @@ impl App<'_> {
 
     /// Decide whether the navigator's answers need work, and start it (#119).
     ///
-    /// Cheap-idempotent unless `force`: it compares the pattern list, the
+    /// Cheap-idempotent unless `force`: it compares the pattern generation, the
     /// masks and the directory to what it saw last time and returns at once
     /// if nothing moved. Runs after every event, so that guard is what keeps a
     /// keystroke in the file view from walking the listing at all.
@@ -2978,24 +2977,25 @@ impl App<'_> {
     /// touches no thread; that is the whole point of caching bitsets rather
     /// than answers.
     fn refresh_scan(&mut self, force: bool) {
-        let matcher = self.filters.matcher();
-        let dir = self.nav.dir().to_path_buf();
-        let state = matcher.as_ref().map(|m| {
-            let (selects, exclude, combine) = m.masks();
-            ScanState {
-                key: self.filters.pattern_key(),
-                selects,
-                exclude,
-                combine,
-                dir: dir.clone(),
-            }
-        });
-        if !force && state == self.last_scan {
+        // Compared in place: this runs after every mouse move, and building
+        // the pattern key, the directory and a clone of the set only to find
+        // them unchanged was the cost of the common case (#186).
+        let stamp = self.filters.scan_stamp();
+        let unchanged = self
+            .last_scan
+            .as_ref()
+            .map(|last| (last.stamp, last.dir.as_path()))
+            == stamp.map(|stamp| (stamp, self.nav.dir()));
+        if !force && unchanged {
             return;
         }
-        self.last_scan = state;
+        let dir = self.nav.dir().to_path_buf();
+        self.last_scan = stamp.map(|stamp| ScanState {
+            stamp,
+            dir: dir.clone(),
+        });
 
-        let Some(matcher) = matcher else {
+        let Some(matcher) = self.filters.matcher() else {
             // Nothing selects: the feature is off, not "nothing matches".
             for (index, _) in self.nav.files() {
                 self.nav.set_answer(index, Match::Unknown);
@@ -14737,6 +14737,23 @@ mod tests {
     use scan::double::RecordingScanner;
     use std::sync::mpsc::Sender;
 
+    /// The file on the command line is coloured once: the theme is set
+    /// before the load, not after it, so there is no second grammar lookup
+    /// at startup (#186).
+    #[test]
+    fn startup_builds_one_highlighter() {
+        let dir = fixture_dir("startup_highlighter");
+        let file = dir.join("main.rs");
+        fs::write(&file, "fn main() {}\n").expect("write fixture");
+
+        let app = App::new(&Config {
+            path: file.display().to_string(),
+            ..Config::default()
+        });
+
+        assert_eq!(app.view.highlighters_built, 1);
+    }
+
     /// Swap in the recording double and a channel the test controls.
     fn record_scans(app: &mut App) -> (Rc<RecordingScanner>, Sender<scan::Scanned>) {
         let scanner = Rc::new(RecordingScanner::default());
@@ -14852,6 +14869,21 @@ mod tests {
             app.nav.entries()[app.nav.files()[1].0].matched,
             widgets::filenav::Match::No
         );
+    }
+
+    /// An edit keeps the pattern count, so only the pattern generation
+    /// tells the guard that the bits now mean something else (#186).
+    #[test]
+    fn editing_a_pattern_scans_again() {
+        let mut app = app_over_logs("scan_edit");
+        let (scanner, _tx) = record_scans(&mut app);
+        app.add_filter("alpha").expect("valid pattern");
+        app.refresh_scan(false);
+
+        app.filters.set_pattern(0, "beta").expect("valid pattern");
+        app.refresh_scan(false);
+
+        assert_eq!(scanner.requests().len(), 2);
     }
 
     #[test]

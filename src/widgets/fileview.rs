@@ -284,6 +284,10 @@ pub(crate) struct FileView<'a> {
     /// tests that prove a frame reuses them.
     #[cfg(test)]
     syntax_rows_built: usize,
+    /// How many grammar lookups `rebuild_highlighter` has made — one per
+    /// call on text. For the test that proves `App::new` pays for one (#186).
+    #[cfg(test)]
+    pub(crate) highlighters_built: usize,
     /// Showing a bounded preview rather than the whole file.
     truncated: bool,
     /// Roughly how many lines the whole file holds, while only a preview of it
@@ -417,8 +421,9 @@ impl FileView<'_> {
 
     /// Choose the colours syntax colouring paints with, or `Theme::Off`.
     ///
-    /// Applies to the file already on screen as well as to later ones, so
-    /// `App::new` can set it after the first `load`.
+    /// Applies to the file already on screen as well as to later ones. `App::new`
+    /// sets it before the first `load`, so that load's grammar lookup is the
+    /// only one (#186).
     pub(crate) fn set_theme(&mut self, theme: Theme) {
         self.theme = theme;
         self.rebuild_highlighter();
@@ -476,6 +481,10 @@ impl FileView<'_> {
     /// the file. Costs a grammar lookup: nothing is parsed until a render
     /// asks for a row.
     fn rebuild_highlighter(&mut self) {
+        #[cfg(test)]
+        if self.text {
+            self.highlighters_built += 1;
+        }
         self.syntax_rows.clear();
         self.highlighter = self
             .text
