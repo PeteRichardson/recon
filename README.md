@@ -160,7 +160,8 @@ cargo build --release
 To let the filter editor write patterns with Apple's on-device model
 (macOS 27 on Apple silicon, Apple Intelligence on), build with the
 `foundation-models` feature. It needs Xcode's Swift compiler. On any other
-system the feature builds and does nothing.
+system the feature builds and does nothing. `recon --version` says which
+build you have.
 
 ```sh
 cargo build --release --features foundation-models
@@ -181,7 +182,15 @@ recon --version
 ```
 ```
 recon 0.1.0
+foundation-models: off
 ```
+
+The second line says whether this build can ask Apple's on-device model
+for a pattern in the filter editor: `on` for a `--features
+foundation-models` build on Apple-silicon macOS, `off` for every other
+build. With `off`, the filter editor has no request line. With `on` and no
+request line, the model is not ready: turn on Apple Intelligence, or wait
+for the model to download. `recon -V` prints the first line only.
 
 ---
 
@@ -1093,7 +1102,8 @@ errors, but not the DEMO runs` — and press `Enter`.
 Without the feature, on Linux, or when the model is not ready (Apple
 Intelligence off, or the model still downloading), there is no request
 line, no error, and everything else in the editor works as before. recon
-asks whether the model is ready each time the editor opens.
+asks whether the model is ready each time the editor opens. `recon --version`
+says `foundation-models: on` or `off`, so you can tell the two apart.
 
 #### Definition filters
 
