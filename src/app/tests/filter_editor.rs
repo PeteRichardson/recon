@@ -398,7 +398,9 @@ fn f_big_c_enter_returns_like_f_c() {
         app.filter_editor.is_some(),
         "sanity: j selected the first filter"
     );
-    typed(&mut app, "!");
+    // Still matches the cursor line, `ERROR timeout`, which the editor
+    // marks (#314): a pattern that fails the mark is refused (#318).
+    typed(&mut app, "|timeout");
     key(&mut app, KeyCode::Enter);
 
     assert_eq!(app.focus, Focus::View);
@@ -1350,6 +1352,7 @@ fn f_big_c_shows_the_filters_fields_and_enter_changes_them() {
             name: Some("errors".into()),
             description: Some("old".into()),
             prompt: Some("error lines".into()),
+            examples: Vec::new(),
         },
     );
     select_row(&mut app, widgets::filterlist::Row::Filter(0));
@@ -1627,4 +1630,265 @@ fn big_s_writes_the_sense_from_the_editor() {
     let sets = crate::filtersets::parse(&text, &path).expect("loads again");
     let ctx = sets.iter().find(|set| set.name == "ctx").expect("ctx");
     assert_eq!(ctx.filters[0].sense, Sense::Context);
+}
+
+// ---- examples (#318) -------------------------------------------------------
+
+use crate::filter::Example;
+
+fn example(line: &str, must_match: bool) -> Example {
+    Example {
+        line: line.into(),
+        must_match,
+    }
+}
+
+/// `ERROR timeout` +, `INFO ok` -, under `ERROR`: both checks pass.
+fn app_with_two_passing_checks(name: &str) -> App<'static> {
+    let mut app = app_over_file(name, BODY);
+    open_editor_from_the_filter_pane(&mut app);
+    typed(&mut app, "ERROR");
+    key(&mut app, KeyCode::Tab);
+    key(&mut app, KeyCode::Char('+'));
+    key(&mut app, KeyCode::Down);
+    key(&mut app, KeyCode::Char('-'));
+    assert_eq!(editor(&app).failures, 0, "sanity");
+    app
+}
+
+#[test]
+fn enter_keeps_the_marks_as_the_filters_examples() {
+    let mut app = app_with_two_passing_checks("examples_new");
+    key(&mut app, KeyCode::Enter);
+
+    assert!(app.filter_editor.is_none());
+    let (_, filter) = app.filters.filters_in(0).next().expect("a scratch filter");
+    assert_eq!(
+        filter.examples,
+        [example("ERROR timeout", true), example("INFO ok", false)]
+    );
+}
+
+#[test]
+fn a_line_the_file_has_twice_is_one_example() {
+    let mut app = app_over_file("examples_twice", "ERROR x\nERROR x\nINFO\n");
+    open_editor_from_the_filter_pane(&mut app);
+    typed(&mut app, "ERROR");
+    key(&mut app, KeyCode::Tab);
+    key(&mut app, KeyCode::Char('V'));
+    key(&mut app, KeyCode::Down);
+    key(&mut app, KeyCode::Char('+'));
+    key(&mut app, KeyCode::Enter);
+
+    let (_, filter) = app.filters.filters_in(0).next().expect("a scratch filter");
+    assert_eq!(filter.examples, [example("ERROR x", true)]);
+}
+
+#[test]
+fn a_filter_without_marks_has_no_examples() {
+    let mut app = app_over_file("examples_none", BODY);
+    open_editor_from_the_filter_pane(&mut app);
+    typed(&mut app, "ERROR");
+    key(&mut app, KeyCode::Enter);
+
+    let (_, filter) = app.filters.filters_in(0).next().expect("a scratch filter");
+    assert!(filter.examples.is_empty());
+}
+
+/// Scratch filter 0 is `ERROR`, with `ERROR disk` must-match,
+/// `INFO timeout` must-not-match, and `ERROR in another file` must-match,
+/// which this file does not have.
+fn app_with_examples(name: &str) -> App<'static> {
+    let mut app = app_with_two_filters(name);
+    app.filters.set_details(
+        0,
+        crate::filter::Details {
+            examples: vec![
+                example("ERROR disk", true),
+                example("INFO timeout", false),
+                example("ERROR in another file", true),
+            ],
+            ..crate::filter::Details::default()
+        },
+    );
+    app
+}
+
+#[test]
+fn f_big_c_shows_the_examples_as_marks() {
+    let mut app = app_with_examples("examples_marks");
+    select_row(&mut app, widgets::filterlist::Row::Filter(0));
+    open_selected(&mut app);
+
+    assert_eq!(
+        marks(&app),
+        [
+            (2, Mark::MustMatch),
+            (3, Mark::MustNotMatch),
+            (4, Mark::MustMatch)
+        ],
+        "the example the file does not have is line 4, after the last"
+    );
+    assert_eq!(editor(&app).extra, ["ERROR in another file"]);
+    assert_eq!(editor(&app).failures, 0);
+    assert_eq!(
+        status_line(&mut app),
+        "2 of 4 lines match · 1 example not in the file · 0 checks fail",
+        "the file's lines are counted, not the example"
+    );
+    key(&mut app, KeyCode::Tab);
+    for _ in 0..4 {
+        key(&mut app, KeyCode::Down);
+    }
+    let screen = rendered(&mut app);
+    assert!(
+        screen.contains(">+ example, not in the file: ERROR in another file"),
+        "{screen}"
+    );
+}
+
+#[test]
+fn an_example_not_in_the_file_is_checked_and_reached_by_f() {
+    let mut app = app_with_examples("examples_extra_fails");
+    select_row(&mut app, widgets::filterlist::Row::Filter(0));
+    open_selected(&mut app);
+    typed(&mut app, " disk");
+    assert_eq!(editor(&app).failures, 1, "ERROR in another file fails");
+    assert!(
+        status_line(&mut app).ends_with("1 check fails"),
+        "{}",
+        status_line(&mut app)
+    );
+
+    key(&mut app, KeyCode::Tab);
+    key(&mut app, KeyCode::Char('f'));
+    assert_eq!(editor(&app).cursor, 4);
+}
+
+#[test]
+fn enter_refuses_a_pattern_that_fails_an_example_and_names_it() {
+    let mut app = app_with_examples("examples_gate");
+    select_row(&mut app, widgets::filterlist::Row::Filter(0));
+    open_selected(&mut app);
+    typed(&mut app, " disk");
+    key(&mut app, KeyCode::Enter);
+
+    assert!(app.filter_editor.is_some(), "Enter closed the editor");
+    assert_eq!(
+        editor(&app).error.as_deref(),
+        Some("a check fails; fix the pattern or clear the mark: \"ERROR in another file\"")
+    );
+    assert_eq!(
+        app.filters.filters()[0].predicate.display(),
+        "ERROR",
+        "the pattern changed"
+    );
+
+    // Clear the example, and Enter saves without it.
+    key(&mut app, KeyCode::Tab);
+    key(&mut app, KeyCode::Char('f'));
+    key(&mut app, KeyCode::Char('='));
+    key(&mut app, KeyCode::Enter);
+    assert!(app.filter_editor.is_none());
+    let filter = &app.filters.filters()[0];
+    assert_eq!(filter.predicate.display(), "ERROR disk");
+    assert_eq!(
+        filter.examples,
+        [example("ERROR disk", true), example("INFO timeout", false)]
+    );
+}
+
+#[test]
+fn enter_counts_every_failed_check() {
+    let mut app = app_with_four_checks("examples_gate_count");
+    let before = app.filters.len();
+    key(&mut app, KeyCode::Enter);
+    assert_eq!(
+        editor(&app).error.as_deref(),
+        Some("2 checks fail; fix the pattern or clear the marks. The first: \"ERROR disk\"")
+    );
+    assert_eq!(app.filters.len(), before, "a filter was added");
+}
+
+#[test]
+fn the_origin_line_keeps_its_examples_mark() {
+    let mut app = app_with_two_filters("examples_origin");
+    app.filters.set_details(
+        0,
+        crate::filter::Details {
+            examples: vec![example("ERROR timeout", false)],
+            ..crate::filter::Details::default()
+        },
+    );
+    key(&mut app, KeyCode::Char('t'));
+    key(&mut app, KeyCode::Char('f'));
+    key(&mut app, KeyCode::Char('C'));
+    assert_eq!(marks(&app), [(0, Mark::MustNotMatch)]);
+}
+
+#[test]
+fn esc_leaves_the_examples_as_they_were() {
+    let mut app = app_with_examples("examples_esc");
+    select_row(&mut app, widgets::filterlist::Row::Filter(0));
+    open_selected(&mut app);
+    key(&mut app, KeyCode::Tab);
+    key(&mut app, KeyCode::Char('='));
+    key(&mut app, KeyCode::Esc);
+    assert_eq!(app.filters.filters()[0].examples.len(), 3);
+}
+
+/// `f c` edits the pattern without the editor; a stored example still
+/// stops a pattern that fails it.
+#[test]
+fn f_c_refuses_a_pattern_that_fails_an_example() {
+    let mut app = app_with_examples("examples_f_c");
+    select_row(&mut app, widgets::filterlist::Row::Filter(0));
+    key(&mut app, KeyCode::Char('c'));
+    typed(&mut app, " disk");
+    key(&mut app, KeyCode::Enter);
+
+    let prompt = app.prompt.as_ref().expect("the prompt stayed open");
+    assert_eq!(
+        prompt.error.as_deref(),
+        Some("fails an example of the filter; f C shows it: \"ERROR in another file\"")
+    );
+    assert_eq!(app.filters.filters()[0].predicate.display(), "ERROR");
+
+    ctrl(&mut app, KeyCode::Char('u'));
+    typed(&mut app, "ERROR|disk");
+    key(&mut app, KeyCode::Enter);
+    assert!(app.prompt.is_none());
+    assert_eq!(app.filters.filters()[0].predicate.display(), "ERROR|disk");
+}
+
+/// `S` writes the examples; a restart loads them, and `f C` shows them as
+/// marks again.
+#[test]
+fn big_s_writes_the_examples_and_a_restart_shows_them_again() {
+    let path = save_fixture("examples_save");
+    let mut app = app_with_two_passing_checks("examples_save_file");
+    app.save_path = Some(path.clone());
+    key(&mut app, KeyCode::Enter);
+    key(&mut app, KeyCode::Char('S'));
+    typed(&mut app, "bugs");
+    key(&mut app, KeyCode::Enter);
+
+    let text = std::fs::read_to_string(&path).expect("written");
+    assert!(
+        text.contains("must_match = [\n    'ERROR timeout',\n]"),
+        "{text}"
+    );
+    let sets = crate::filtersets::parse(&text, &path).expect("loads again");
+    let mut app = app_over_file("examples_save_restart", BODY);
+    app.filters = ActiveFilters::with_sets(None, &sets);
+    app.filters.set_enabled_set(1, true);
+    app.refresh_view();
+    let (index, filter) = app.filters.filters_in(1).next().expect("the saved filter");
+    assert_eq!(
+        filter.examples,
+        [example("ERROR timeout", true), example("INFO ok", false)]
+    );
+    select_row(&mut app, widgets::filterlist::Row::Filter(index));
+    open_selected(&mut app);
+    assert_eq!(marks(&app), [(0, Mark::MustMatch), (1, Mark::MustNotMatch)]);
 }

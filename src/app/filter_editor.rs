@@ -11,7 +11,7 @@
 //! Tab moves the focus from the pattern field to the file's lines, where
 //! `+` and `-` mark a line that the pattern must match or must not match
 //! (#314). Each marked line is a check that passes or fails on each key typed
-//! in the pattern. The marks live only while the editor is open.
+//! in the pattern.
 //!
 //! On the lines, `f` and `F` go to the next and previous failed check, `n`
 //! and `N` to the next and previous unmarked match, each wrapping at the end
@@ -28,10 +28,16 @@
 //! round the ring name, description, prompt, sense, pattern, lines. Enter
 //! gives the filter what the fields hold; an empty text field is a key the
 //! filter does not have.
+//!
+//! Enter also keeps the marks on the filter as its examples (#318), and `f C`
+//! shows a filter's examples as marks again. An example that is not a line
+//! of the open file is drawn after the file's last line, so it is checked,
+//! counted and reached by `f` as any mark is. A pattern that fails a check
+//! does not go on the filter: Enter names the first failed check instead.
 
 use super::App;
 use super::prompt::SearchPrompt;
-use crate::filter::{Details, Sense};
+use crate::filter::{Details, Example, Sense};
 use crossterm::event::{self, KeyCode, KeyModifiers};
 use ratatui::prelude::Style;
 use regex::Regex;
@@ -128,6 +134,10 @@ pub(super) struct FilterEditor {
     pub(super) sense: Sense,
     /// The file's lines, shared with the file view that read them.
     pub(super) lines: Arc<Vec<String>>,
+    /// The filter's examples that are not lines of the file (#318), drawn
+    /// after its last line. Line `lines.len() + k` is `extra[k]`: every index
+    /// into the lines, in `cursor`, `marks` and the rows, counts them.
+    pub(super) extra: Vec<String>,
     /// The regex the highlight uses: the last pattern that compiled, so a
     /// half-typed `(` does not blank the screen. `None` while the pattern is
     /// empty — an empty regex matches every line, and a highlight on every
@@ -216,6 +226,7 @@ impl FilterEditor {
             prompt: SearchPrompt::default(),
             sense: Sense::Include,
             lines,
+            extra: Vec::new(),
             regex: None,
             error: None,
             matches: 0,
@@ -240,7 +251,9 @@ impl FilterEditor {
     /// An editor over `lines` on the pattern of the filter at `index`, cursor
     /// at its end as `c` puts it, with the highlight and the count already
     /// showing, and the filter's name, description and prompt in their
-    /// fields, and its sense.
+    /// fields, and its sense. Its examples are marks (#318): on each line of
+    /// the file that has an example's text, or on a line of `extra` for an
+    /// example the file does not have.
     pub(super) fn editing(
         lines: Arc<Vec<String>>,
         style: Style,
@@ -264,6 +277,7 @@ impl FilterEditor {
             target: Some(index),
             ..Self::new(lines, style)
         };
+        editor.mark_examples(details.examples);
         editor.recompile();
         // The pattern it came with is the first version: it did not come
         // from the keyboard.
@@ -271,18 +285,81 @@ impl FilterEditor {
         editor
     }
 
-    /// What the name, description and prompt fields hold, trimmed. An empty
-    /// field is `None`: the filter does not have that key.
+    /// Put a mark on each line with an example's text, and draw each
+    /// example the file does not have after its last line.
+    fn mark_examples(&mut self, examples: Vec<Example>) {
+        if examples.is_empty() {
+            return;
+        }
+        let mut found = vec![false; examples.len()];
+        for (index, line) in self.lines.iter().enumerate() {
+            for (at, example) in examples.iter().enumerate() {
+                if example.line == *line {
+                    found[at] = true;
+                    self.marks.insert(index, mark_of(example));
+                }
+            }
+        }
+        for (example, found) in examples.into_iter().zip(found) {
+            if !found {
+                let index = self.lines.len() + self.extra.len();
+                self.marks.insert(index, mark_of(&example));
+                self.extra.push(example.line);
+            }
+        }
+    }
+
+    /// The text of line `index`: a line of the file, or of `extra` past
+    /// its end.
+    pub(super) fn text(&self, index: usize) -> Option<&str> {
+        match index.checked_sub(self.lines.len()) {
+            None => self.lines.get(index).map(String::as_str),
+            Some(at) => self.extra.get(at).map(String::as_str),
+        }
+    }
+
+    /// How many lines there are: the file's and `extra`.
+    fn total(&self) -> usize {
+        self.lines.len() + self.extra.len()
+    }
+
+    /// What the name, description and prompt fields hold, trimmed, and the
+    /// marks as examples (#318). An empty field is `None`: the filter does
+    /// not have that key. A line the file has twice is one example.
     pub(super) fn details(&self) -> Details {
         let text = |field: &SearchPrompt| {
             let text = field.pattern.trim();
             (!text.is_empty()).then(|| text.to_string())
         };
+        let mut examples: Vec<Example> = Vec::new();
+        for (&index, &mark) in &self.marks {
+            let Some(line) = self.text(index) else {
+                continue;
+            };
+            if !examples.iter().any(|example| example.line == line) {
+                examples.push(Example {
+                    line: line.to_string(),
+                    must_match: mark == Mark::MustMatch,
+                });
+            }
+        }
         Details {
             name: text(&self.name),
             description: text(&self.description),
             prompt: text(&self.prompt),
+            examples,
         }
+    }
+
+    /// Why Enter refuses the pattern while a check fails (#318): how many
+    /// fail, and the text of the first. `None` when every check passes.
+    fn failed_checks(&self) -> Option<String> {
+        let first = self
+            .marks
+            .keys()
+            .find(|&&index| self.check(index).is_some_and(|check| !check.passes))?;
+        let line = self.text(*first).unwrap_or_default();
+        Some(failure_message(self.failures, line))
     }
 
     /// The field the keys go to when it is not the pattern, which is the
@@ -330,7 +407,7 @@ impl FilterEditor {
     fn matches_line(&self, index: usize) -> bool {
         self.regex
             .as_ref()
-            .zip(self.lines.get(index))
+            .zip(self.text(index))
             .is_some_and(|(regex, line)| regex.is_match(line))
     }
 
@@ -364,7 +441,7 @@ impl FilterEditor {
     fn refresh_shown(&mut self) {
         let first = self.line_at(self.top);
         self.shown = (self.matches_only && self.regex.is_some()).then(|| {
-            (0..self.lines.len())
+            (0..self.total())
                 .filter(|&index| self.marks.contains_key(&index) || self.matches_line(index))
                 .collect()
         });
@@ -378,13 +455,13 @@ impl FilterEditor {
 
     /// How many lines are drawn.
     pub(super) fn rows(&self) -> usize {
-        self.shown.as_ref().map_or(self.lines.len(), Vec::len)
+        self.shown.as_ref().map_or(self.total(), Vec::len)
     }
 
     /// The line drawn at `row`, or `None` past the last one.
     pub(super) fn line_at(&self, row: usize) -> Option<usize> {
         match &self.shown {
-            None => (row < self.lines.len()).then_some(row),
+            None => (row < self.total()).then_some(row),
             Some(shown) => shown.get(row).copied(),
         }
     }
@@ -422,6 +499,8 @@ impl FilterEditor {
         }
         self.anchor = None;
         self.refresh();
+        // A refusal of Enter may name the mark just changed (#318).
+        self.error = pattern_error(&self.field.pattern);
     }
 
     /// `u`: show only the matched and the marked lines, or every line again.
@@ -440,7 +519,7 @@ impl FilterEditor {
             Target::Failure => self.check(index).is_some_and(|check| !check.passes),
             Target::Unmarked => !self.marks.contains_key(&index) && self.matches_line(index),
         };
-        let (cursor, len) = (self.cursor, self.lines.len());
+        let (cursor, len) = (self.cursor, self.total());
         // The cursor line is looked at last, after the wrap: the only
         // target, it is where the jump lands.
         let (before, after): (Vec<usize>, Vec<usize>) = match direction {
@@ -672,6 +751,19 @@ impl FilterEditor {
         } else {
             format!("{} of {total} lines match", grouped(self.matches))
         };
+        let count = if self.extra.is_empty() {
+            count
+        } else {
+            let noun = if self.extra.len() == 1 {
+                "example"
+            } else {
+                "examples"
+            };
+            format!(
+                "{count} · {} {noun} not in the file",
+                grouped(self.extra.len())
+            )
+        };
         if self.marks.is_empty() {
             return count;
         }
@@ -708,6 +800,42 @@ fn pattern_error(pattern: &str) -> Option<String> {
     Regex::new(pattern).err().map(|error| error_line(&error))
 }
 
+/// The mark an example is shown with.
+fn mark_of(example: &Example) -> Mark {
+    if example.must_match {
+        Mark::MustMatch
+    } else {
+        Mark::MustNotMatch
+    }
+}
+
+/// What Enter says when `failures` checks fail, `line` the first (#318).
+fn failure_message(failures: usize, line: &str) -> String {
+    let line = line.trim();
+    if failures == 1 {
+        format!("a check fails; fix the pattern or clear the mark: {line:?}")
+    } else {
+        format!(
+            "{} checks fail; fix the pattern or clear the marks. The first: {line:?}",
+            grouped(failures)
+        )
+    }
+}
+
+/// What `f c` says when its pattern fails `failed`, a filter's stored
+/// examples (#318).
+pub(super) fn failed_examples_message(failed: &[&Example]) -> String {
+    let line = failed.first().map_or("", |example| example.line.trim());
+    if failed.len() == 1 {
+        format!("fails an example of the filter; f C shows it: {line:?}")
+    } else {
+        format!(
+            "fails {} examples of the filter; f C shows them. The first: {line:?}",
+            grouped(failed.len())
+        )
+    }
+}
+
 /// `n` with a comma between each group of three digits: `50,000`.
 pub(super) fn grouped(n: usize) -> String {
     let digits = n.to_string();
@@ -738,7 +866,7 @@ impl App<'_> {
     /// Opened from the file view — `f` pressed there — the file view's
     /// cursor line is what the user was looking at, so it is the first
     /// must-match line (#314). Opened from the filter pane, nothing is
-    /// marked.
+    /// marked. A line an example already marks keeps that mark (#318).
     fn mark_origin_line(&self, editor: &mut FilterEditor) {
         if self.chain_origin != Some(super::Focus::View) {
             return;
@@ -750,7 +878,7 @@ impl App<'_> {
         }
         editor.cursor = line;
         editor.reveal = true;
-        editor.marks.insert(line, Mark::MustMatch);
+        editor.marks.entry(line).or_insert(Mark::MustMatch);
         editor.refresh();
     }
 
@@ -776,6 +904,7 @@ impl App<'_> {
             name: filter.name.clone(),
             description: filter.description.clone(),
             prompt: filter.prompt.clone(),
+            examples: filter.examples.clone(),
         };
         self.promote_truncated_preview();
         let lines = self.view.source().clone();
@@ -1001,10 +1130,11 @@ impl App<'_> {
 
     /// Enter: add the pattern as `f i … Enter` would, or change the target
     /// filter's as `f c … Enter` would, give the filter the name,
-    /// description, prompt and sense in the fields (#317), and close. A new
-    /// excluding filter is added as `f x` adds one. A pattern
-    /// that is empty or does not compile, or a name another filter in the
-    /// set has, keeps the editor open with the reason in the panel.
+    /// description, prompt and sense in the fields (#317) and the marks as
+    /// its examples (#318), and close. A new excluding filter is added as
+    /// `f x` adds one. A pattern that is empty, does not compile or fails a
+    /// check, or a name another filter in the set has, keeps the editor open
+    /// with the reason in the panel.
     fn commit_filter_editor(&mut self) {
         let Some(editor) = self.filter_editor.as_mut() else {
             return;
@@ -1013,7 +1143,14 @@ impl App<'_> {
             editor.error = Some(NO_PATTERN.to_string());
             return;
         }
+        // Worked out again, not read: a refusal from an earlier Enter may
+        // still be showing after the mark it named was cleared.
+        editor.error = pattern_error(&editor.field.pattern);
         if editor.error.is_some() {
+            return;
+        }
+        if let Some(message) = editor.failed_checks() {
+            editor.error = Some(message);
             return;
         }
         let (pattern, target, details, sense) = (

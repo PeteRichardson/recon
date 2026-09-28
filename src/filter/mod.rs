@@ -318,6 +318,9 @@ pub struct Filter {
     /// What the filter's lines look like, in plain language (#317): the
     /// text a model will be given to write the pattern from.
     pub prompt: Option<String>,
+    /// Lines the pattern must match or must not match (#318): the filter
+    /// editor's checks, kept as regression tests. Empty for most filters.
+    pub examples: Vec<Example>,
     /// Index into `ActiveFilters::sets`. 0 is the scratch set.
     pub set: usize,
 }
@@ -335,13 +338,33 @@ impl Filter {
     }
 }
 
-/// What the filter editor edits beside the pattern (#317). `None` is a
-/// field left empty.
+/// A line kept with a filter as a regression test (#318): the pattern must
+/// match it, or must not.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Example {
+    /// The whole line, as the file had it.
+    pub line: String,
+    /// `true` for a line the pattern must match, `false` for one it must
+    /// not match.
+    pub must_match: bool,
+}
+
+impl Example {
+    /// Whether `regex` does what the example says.
+    #[must_use]
+    pub fn passes(&self, regex: &Regex) -> bool {
+        regex.is_match(&self.line) == self.must_match
+    }
+}
+
+/// What the filter editor edits beside the pattern (#317), and the checks
+/// it keeps as examples (#318). `None` is a field left empty.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Details {
     pub name: Option<String>,
     pub description: Option<String>,
     pub prompt: Option<String>,
+    pub examples: Vec<Example>,
 }
 
 /// Every enabled flag in an [`ActiveFilters`], captured so it can be restored.
@@ -572,6 +595,7 @@ impl ActiveFilters {
             name: None,
             description: None,
             prompt: None,
+            examples: Vec::new(),
             set: 0,
         });
         Ok(())
@@ -592,6 +616,7 @@ impl ActiveFilters {
             name: None,
             description: None,
             prompt: None,
+            examples: Vec::new(),
             set: 0,
         });
         Ok(())
@@ -612,6 +637,7 @@ impl ActiveFilters {
             name: None,
             description: None,
             prompt: None,
+            examples: Vec::new(),
             set: 0,
         });
     }
@@ -818,9 +844,24 @@ impl ActiveFilters {
         })
     }
 
+    /// The stored examples of the filter at `index` that `regex` fails
+    /// (#318), in the file's order. A new pattern that fails one does not
+    /// replace the old one: the examples are regression tests.
+    #[must_use]
+    pub fn failed_examples(&self, index: usize, regex: &Regex) -> Vec<&Example> {
+        self.filters.get(index).map_or_else(Vec::new, |filter| {
+            filter
+                .examples
+                .iter()
+                .filter(|example| !example.passes(regex))
+                .collect()
+        })
+    }
+
     /// Give the filter at `index` the filter editor's name, description and
-    /// prompt (#317), reporting whether it changed anything. A built-in
-    /// filter is recon's and is left alone, as `set_pattern` leaves it.
+    /// prompt (#317) and its examples (#318), reporting whether it changed
+    /// anything. A built-in filter is recon's and is left alone, as
+    /// `set_pattern` leaves it.
     ///
     /// A profile names its filters by `display_name`, so a new name is
     /// written into every profile of the filter's set that named the old
@@ -840,6 +881,7 @@ impl ActiveFilters {
         filter.name = details.name;
         filter.description = details.description;
         filter.prompt = details.prompt;
+        filter.examples = details.examples;
         let after = filter.display_name();
         let set = filter.set;
         if before != after {
@@ -1172,6 +1214,7 @@ pub(crate) mod test_support {
                     colour: None,
                     description: None,
                     prompt: None,
+                    examples: Vec::new(),
                 })
                 .collect(),
             builtin: false,

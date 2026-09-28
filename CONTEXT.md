@@ -56,9 +56,16 @@ _Avoid_: editor alone (that is the external editor `o` and `O` open), regex buil
 
 **Check**:
 A line marked in the filter editor as one the pattern must match (`+`) or
-must not match (`-`). It passes or fails under the pattern as typed. A check
-lasts only while the editor is open.
+must not match (`-`). It passes or fails under the pattern as typed. `Enter`
+keeps each check with the filter as an example.
 _Avoid_: example (the word for a check once it is saved with the filter), test
+
+**Example** (of a filter):
+A whole line kept with a filter that its pattern must match or must not
+match: a check that `Enter` kept. A pattern that fails an example does not
+replace the filter's pattern. The filter editor shows each example as a
+check again, also one the open file does not have.
+_Avoid_: check (that is an example while the editor is open), sample, test case
 
 **Matches only**:
 The filter editor's own hide mode: it shows only the lines the pattern

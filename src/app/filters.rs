@@ -231,6 +231,7 @@ impl App<'_> {
                     name: filter.name.clone(),
                     description: filter.description.clone(),
                     prompt: filter.prompt.clone(),
+                    examples: filter.examples.clone(),
                     ..filtersets::FilterToSave::new(filter.predicate.display(), filter.sense)
                 })
                 .collect(),

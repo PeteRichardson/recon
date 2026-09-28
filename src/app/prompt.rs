@@ -355,6 +355,20 @@ impl App<'_> {
                         }
                         return;
                     }
+                    // A filter's examples are regression tests (#318): a
+                    // pattern that fails one does not replace the old one.
+                    if let PromptKind::Edit { index, .. } = kind
+                        && let Ok(regex) = regex::Regex::new(&pattern)
+                    {
+                        let failed = self.filters.failed_examples(index, &regex);
+                        if !failed.is_empty() {
+                            let message = super::filter_editor::failed_examples_message(&failed);
+                            if let Some(prompt) = self.prompt.as_mut() {
+                                prompt.error = Some(message);
+                            }
+                            return;
+                        }
+                    }
                     let outcome = match kind {
                         PromptKind::Search => self.run_search(&pattern),
                         PromptKind::SaveSet => unreachable!("handled above"),
