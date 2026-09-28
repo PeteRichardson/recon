@@ -2,7 +2,8 @@
 //!
 //! The full reasoning is in
 //! `docs/specs/2026-09-03-saved-filter-sets-design.md`, *The file*. The
-//! short version: one file beside `config.toml`, one `[sets.<name>]` table
+//! short version: `filters.toml` beside `config.toml` (with any
+//! `<name>.filters.toml` there, #309), one `[sets.<name>]` table
 //! per set, single-quoted regexes so nothing is escaped, and every way the
 //! file can be wrong is refused **before the terminal is taken** — a warning
 //! printed and then overwritten by the alternate screen is a warning nobody
@@ -23,8 +24,8 @@ use std::path::{Path, PathBuf};
 /// The file, beside `config.toml`.
 const FILE: &str = "filters.toml";
 
-/// The end of a set file's name in a `RECON_FILTER_PATH` directory, beside
-/// a bare [`FILE`] (#46).
+/// The end of a set file's name in the config directory or a
+/// `RECON_FILTER_PATH` directory, beside a bare [`FILE`] (#46, #309).
 const SUFFIX: &str = ".filters.toml";
 
 /// A set's position in the pane when the file does not say. Lower is
@@ -515,60 +516,82 @@ pub fn search_path_from(filter_path: Option<&str>, home: Option<&str>) -> Vec<Pa
 }
 
 /// Every file recon reads sets from, highest precedence first: `own`, the
-/// user's `filters.toml`, then each of `dirs`' set files (#46).
+/// user's `filters.toml`, then the other set files beside it, then each of
+/// `dirs`' set files (#46, #309).
 ///
 /// `own` is always first, so a personal set shadows a team set of the same
 /// name wherever the path puts the team's directory — and it is also the
 /// one file `S` writes, so a saved set is found again by the next start.
+/// It is listed whether or not it exists, since a missing one is no sets
+/// and one that cannot be read must be an error, not skipped.
 ///
 /// A set file is `filters.toml` or `<name>.filters.toml`, so a directory
-/// can hold one file, as the user's config directory does, or one per group
-/// of sets — `deploy.filters.toml`, `triage.filters.toml`. They are read in
-/// file-name order, so within a directory the name decides which set
-/// shadows which, as in a `conf.d` directory. Not `*filters.toml`, which
-/// would take `oldfilters.toml` too; and not `.filters.toml`, which has no
-/// name and is a hidden file besides. A directory
-/// that does not exist is skipped, as a missing `PATH` entry is no error to
-/// a shell; one that cannot be read is an error.
+/// can hold one file or one per group of sets — `deploy.filters.toml`,
+/// `triage.filters.toml`. The config directory is read by the same rule
+/// as a directory on the path. In each directory `filters.toml` comes
+/// first, for the reason `own` does, and the rest follow in file-name
+/// order, so the name decides which set shadows which, as in a `conf.d`
+/// directory. Not `*filters.toml`, which would take `oldfilters.toml` too;
+/// and not `.filters.toml`, which has no name and is a hidden file
+/// besides. A directory that does not exist is skipped, as a missing
+/// `PATH` entry is no error to a shell; one that cannot be read is an
+/// error. A file is listed once, at its first position, so the config
+/// directory named on the path as well is not read twice.
 pub fn set_files(own: Option<PathBuf>, dirs: &[PathBuf]) -> Result<Vec<PathBuf>, Error> {
+    let own_dir = own.as_deref().and_then(Path::parent).map(Path::to_path_buf);
     let mut files: Vec<PathBuf> = own.into_iter().collect();
-    for dir in dirs {
-        let entries = match std::fs::read_dir(dir) {
-            Ok(entries) => entries,
-            Err(source) if source.kind() == std::io::ErrorKind::NotFound => {
-                log::debug!("no filter sets directory at {}", dir.display());
+    for dir in own_dir.iter().chain(dirs) {
+        for file in dir_set_files(dir)? {
+            let key = crate::path::lexical_absolute(&file);
+            if files
+                .iter()
+                .any(|seen| crate::path::lexical_absolute(seen) == key)
+            {
                 continue;
             }
-            Err(source) => {
-                return Err(Error::ReadDir {
-                    path: dir.clone(),
-                    source,
-                });
-            }
-        };
-        let mut found = Vec::new();
-        for entry in entries {
-            let entry = entry.map_err(|source| Error::ReadDir {
-                path: dir.clone(),
-                source,
-            })?;
-            let name = entry.file_name();
-            let is_set_file = name.to_str().is_some_and(|name| {
-                name == FILE || (name.len() > SUFFIX.len() && name.ends_with(SUFFIX))
-            });
-            // `Path::is_file` follows a symlink, so a linked file counts;
-            // a directory that happens to carry the suffix does not.
-            if is_set_file && entry.path().is_file() {
-                found.push(entry.path());
-            }
+            files.push(file);
         }
-        found.sort();
-        if found.is_empty() {
-            log::debug!("no *{SUFFIX} files in {}", dir.display());
-        }
-        files.extend(found);
     }
     Ok(files)
+}
+
+/// One directory's set files, `filters.toml` first and the rest in name
+/// order, as [`set_files`] describes.
+fn dir_set_files(dir: &Path) -> Result<Vec<PathBuf>, Error> {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => {
+            log::debug!("no filter sets directory at {}", dir.display());
+            return Ok(Vec::new());
+        }
+        Err(source) => {
+            return Err(Error::ReadDir {
+                path: dir.to_path_buf(),
+                source,
+            });
+        }
+    };
+    let mut found = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|source| Error::ReadDir {
+            path: dir.to_path_buf(),
+            source,
+        })?;
+        let name = entry.file_name();
+        let is_set_file = name.to_str().is_some_and(|name| {
+            name == FILE || (name.len() > SUFFIX.len() && name.ends_with(SUFFIX))
+        });
+        // `Path::is_file` follows a symlink, so a linked file counts;
+        // a directory that happens to carry the suffix does not.
+        if is_set_file && entry.path().is_file() {
+            found.push(entry.path());
+        }
+    }
+    found.sort_by_key(|path| (path.file_name() != Some(FILE.as_ref()), path.clone()));
+    if found.is_empty() {
+        log::debug!("no *{SUFFIX} files in {}", dir.display());
+    }
+    Ok(found)
 }
 
 /// Read and parse one file, as [`parse_sets`] leaves it. A file that is not
@@ -1121,8 +1144,10 @@ sense = "context"
         );
     }
 
+    /// `filters.toml` first, then the `<name>.filters.toml` files in name
+    /// order, in every directory (#309).
     #[test]
-    fn a_directory_gives_its_set_files_in_name_order() {
+    fn a_directory_gives_filters_toml_then_its_set_files_in_name_order() {
         let root = scratch_dir("listing");
         let team = root.join("team");
         for name in [
@@ -1143,11 +1168,64 @@ sense = "context"
             files,
             [
                 own,
-                team.join("deploy.filters.toml"),
                 team.join("filters.toml"),
+                team.join("deploy.filters.toml"),
                 team.join("triage.filters.toml"),
             ]
         );
+    }
+
+    /// The config directory is read the way a directory on the path is,
+    /// before the path, whether or not `filters.toml` is there (#309).
+    #[test]
+    fn the_config_directory_gives_its_set_files_too() {
+        let root = scratch_dir("own-dir");
+        let own = root.join("own").join(FILE);
+        let team = root.join("team");
+        write(&root.join("own/errors.filters.toml"), "");
+        write(&root.join("own/config.toml"), "");
+        write(&team.join("a.filters.toml"), "");
+        let files = set_files(Some(own.clone()), std::slice::from_ref(&team)).expect("lists");
+        assert_eq!(
+            files,
+            [
+                own.clone(),
+                root.join("own/errors.filters.toml"),
+                team.join("a.filters.toml"),
+            ]
+        );
+        write(&own, "");
+        let again = set_files(Some(own.clone()), std::slice::from_ref(&team)).expect("lists");
+        assert_eq!(again, files, "filters.toml is listed once, first");
+    }
+
+    /// The file `S` writes shadows its neighbours, so a saved set is the
+    /// one found again by the next start (#309).
+    #[test]
+    fn filters_toml_shadows_a_set_file_beside_it() {
+        let root = scratch_dir("own-first");
+        let own = root.join("own").join(FILE);
+        write(&own, &set_file("bug", "mine"));
+        write(&root.join("own/a.filters.toml"), &set_file("bug", "theirs"));
+        let sets = load_all(&set_files(Some(own.clone()), &[]).expect("lists")).expect("loads");
+        assert_eq!(sets[0].name, "bug");
+        assert_eq!(sets[0].filters[0].predicate.display(), "mine");
+        assert_eq!(sets[0].path, own);
+    }
+
+    /// The config directory named on the path as well is still read once.
+    #[test]
+    fn the_config_directory_on_the_path_is_read_once() {
+        let root = scratch_dir("own-on-path");
+        let own = root.join("own").join(FILE);
+        write(&own, "");
+        write(&root.join("own/x.filters.toml"), "");
+        let files = set_files(
+            Some(own.clone()),
+            &[root.join("own"), root.join("own/"), root.join("own/../own")],
+        )
+        .expect("lists");
+        assert_eq!(files, [own, root.join("own/x.filters.toml")]);
     }
 
     #[test]
