@@ -70,6 +70,10 @@ struct FilterSchema {
     name: Option<String>,
     sense: Option<SenseSchema>,
     colour: Option<String>,
+    /// Why the filter exists, for people (#317). One line.
+    description: Option<String>,
+    /// What the filter's lines look like, for a model (#317). One line.
+    prompt: Option<String>,
 }
 
 /// `sense` as the file spells it. A separate enum rather than deriving
@@ -294,6 +298,23 @@ fn parse_sets(text: &str, path: &Path) -> Result<Vec<LoadedSet>, Error> {
                 .map(parse_colour)
                 .transpose()
                 .map_err(|message| invalid(&name, Some(&display), message))?;
+            // One line each (#317), as a set's `description` is: the editor
+            // and the status row give each one row.
+            for (key, text) in [
+                ("description", &entry.description),
+                ("prompt", &entry.prompt),
+            ] {
+                if text
+                    .as_deref()
+                    .is_some_and(|text| text.contains(['\n', '\r']))
+                {
+                    return Err(invalid(
+                        &name,
+                        Some(&display),
+                        format!("`{key}` must be one line of text"),
+                    ));
+                }
+            }
             if filters.iter().any(|filter| filter.name == display) {
                 return Err(invalid(
                     &name,
@@ -306,6 +327,8 @@ fn parse_sets(text: &str, path: &Path) -> Result<Vec<LoadedSet>, Error> {
                 predicate: Predicate::Regex(regex),
                 sense: entry.sense.map_or(Sense::Include, Into::into),
                 colour,
+                description: entry.description,
+                prompt: entry.prompt,
             });
         }
 
@@ -358,19 +381,45 @@ fn finish(mut sets: Vec<LoadedSet>) -> Vec<LoadedSet> {
 
 /// What `S` writes: the scratch set, under a name (#131).
 ///
-/// Patterns and senses only. No `name` key — the pattern is the name, which
-/// is what the `default` profile refers to — and no `priority`, `autoload`
-/// or `colour`: each is a one-line hand edit to a file `S` has just shown
-/// the shape of, and a default the user did not ask for is a thing to
-/// delete later.
+/// What the user gave each filter and nothing else: its pattern and sense,
+/// and its name, description and prompt when the filter editor gave it one
+/// (#317). No `priority`, `autoload` or `colour`: each is a one-line hand
+/// edit to a file `S` has just shown the shape of, and a default the user
+/// did not ask for is a thing to delete later.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SetToSave<'a> {
     pub name: &'a str,
-    /// Each filter's pattern and sense, in pane order.
-    pub filters: Vec<(String, Sense)>,
+    /// Each filter, in pane order.
+    pub filters: Vec<FilterToSave>,
     /// The patterns of the filters enabled right now, which become the
     /// set's `default` profile so it opens the way it was saved.
     pub default: Vec<String>,
+}
+
+/// One filter of a [`SetToSave`]. A key whose value is `None` is not
+/// written: without a `name` the pattern is the name, which is what the
+/// `default` profile then refers to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FilterToSave {
+    pub pattern: String,
+    pub sense: Sense,
+    pub name: Option<String>,
+    pub description: Option<String>,
+    pub prompt: Option<String>,
+}
+
+impl FilterToSave {
+    /// A filter with only a pattern and a sense.
+    #[must_use]
+    pub fn new(pattern: impl Into<String>, sense: Sense) -> Self {
+        Self {
+            pattern: pattern.into(),
+            sense,
+            name: None,
+            description: None,
+            prompt: None,
+        }
+    }
 }
 
 /// Append `set` to the file's `text`, touching nothing else.
@@ -424,10 +473,21 @@ pub fn append_set(text: &str, set: &SetToSave<'_>) -> Result<String, String> {
         table.insert("profiles", Item::Table(profiles));
     }
     let mut filters = ArrayOfTables::new();
-    for (pattern, sense) in &set.filters {
+    for entry in &set.filters {
         let mut filter = Table::new();
-        filter.insert("pattern", literal_string(pattern)?);
-        let sense = match sense {
+        // The keys in the order a person reads a filter: what it is called
+        // and why, then what it matches.
+        if let Some(name) = &entry.name {
+            filter.insert("name", value(name.as_str()));
+        }
+        if let Some(description) = &entry.description {
+            filter.insert("description", value(description.as_str()));
+        }
+        if let Some(prompt) = &entry.prompt {
+            filter.insert("prompt", value(prompt.as_str()));
+        }
+        filter.insert("pattern", literal_string(&entry.pattern)?);
+        let sense = match entry.sense {
             Sense::Include => None,
             Sense::Context => Some("context"),
             Sense::Exclude => Some("exclude"),
@@ -897,9 +957,9 @@ sense = "context"
             &SetToSave {
                 name: "bug 57",
                 filters: vec![
-                    (r"\bERROR\b".into(), Sense::Include),
-                    ("DEBUG".into(), Sense::Exclude),
-                    ("ctx".into(), Sense::Context),
+                    FilterToSave::new(r"\bERROR\b", Sense::Include),
+                    FilterToSave::new("DEBUG", Sense::Exclude),
+                    FilterToSave::new("ctx", Sense::Context),
                 ],
                 default: vec![r"\bERROR\b".into()],
             },
@@ -938,7 +998,7 @@ sense = "context"
             "",
             &SetToSave {
                 name: "n",
-                filters: vec![("x".into(), Sense::Include)],
+                filters: vec![FilterToSave::new("x", Sense::Include)],
                 default: vec![],
             },
         )
@@ -958,7 +1018,7 @@ sense = "context"
             before,
             &SetToSave {
                 name: "bug",
-                filters: vec![("NEW".into(), Sense::Include)],
+                filters: vec![FilterToSave::new("NEW", Sense::Include)],
                 default: vec![],
             },
         )
@@ -978,7 +1038,7 @@ sense = "context"
             "",
             &SetToSave {
                 name: "q",
-                filters: vec![("it's".into(), Sense::Include)],
+                filters: vec![FilterToSave::new("it's", Sense::Include)],
                 default: vec![],
             },
         )
@@ -1079,6 +1139,94 @@ sense = "context"
             "[sets.a]\ndescription = \"\"\"one\ntwo\"\"\"\n[[sets.a.filters]]\npattern = 'x'\n",
         );
         assert!(message.contains("one line"), "{message}");
+    }
+
+    // ---- a filter's description and prompt (#317) --------------------------
+
+    #[test]
+    fn a_filter_reads_its_description_and_prompt() {
+        let sets = parsed(
+            "[sets.a]\n[[sets.a.filters]]\nname = 'bug57'\ndescription = 'Instances of bug #57'\n\
+             prompt = 'Timeouts, except in DEMO runs'\npattern = 'ERROR.*timeout'\n\
+             [[sets.a.filters]]\npattern = 'plain'\n",
+        );
+        let a = sets.iter().find(|set| set.name == "a").expect("a");
+        assert_eq!(
+            a.filters[0].description.as_deref(),
+            Some("Instances of bug #57")
+        );
+        assert_eq!(
+            a.filters[0].prompt.as_deref(),
+            Some("Timeouts, except in DEMO runs")
+        );
+        assert_eq!(a.filters[1].description, None, "both keys are optional");
+        assert_eq!(a.filters[1].prompt, None);
+    }
+
+    #[test]
+    fn a_description_or_prompt_that_is_not_a_string_is_refused() {
+        for key in ["description", "prompt"] {
+            let message = rejected(&format!(
+                "[sets.a]\n[[sets.a.filters]]\npattern = 'x'\n{key} = 3\n"
+            ));
+            assert!(message.contains("invalid filter sets file"), "{message}");
+            assert!(message.contains(key), "{message}");
+        }
+    }
+
+    #[test]
+    fn a_filter_description_or_prompt_of_more_than_one_line_is_refused() {
+        for key in ["description", "prompt"] {
+            let message = rejected(&format!(
+                "[sets.a]\n[[sets.a.filters]]\nname = 'n'\npattern = 'x'\n{key} = \"one\\ntwo\"\n"
+            ));
+            assert!(
+                message.contains(&format!("filter 'n': `{key}` must be one line")),
+                "{message}"
+            );
+        }
+    }
+
+    /// `S` writes what the editor gave a filter (#317), and the file loads
+    /// back to the same fields; the `default` profile uses the name.
+    #[test]
+    fn append_set_writes_a_filters_name_description_and_prompt() {
+        let after = append_set(
+            "",
+            &SetToSave {
+                name: "s",
+                filters: vec![
+                    FilterToSave {
+                        name: Some("bug57".into()),
+                        description: Some("Instances of bug #57".into()),
+                        prompt: Some("Timeouts, \"except\" in DEMO".into()),
+                        ..FilterToSave::new("ERROR.*timeout", Sense::Include)
+                    },
+                    FilterToSave::new("plain", Sense::Include),
+                ],
+                default: vec!["bug57".into()],
+            },
+        )
+        .expect("edits");
+        assert!(after.contains("name = \"bug57\""), "{after}");
+        assert!(
+            !after.contains("name = \"plain\""),
+            "no name key without a name:\n{after}"
+        );
+        let sets = parse(&after, Path::new("t")).expect("round-trips");
+        let s = sets.iter().find(|set| set.name == "s").expect("s");
+        assert_eq!(s.filters[0].name, "bug57");
+        assert_eq!(
+            s.filters[0].description.as_deref(),
+            Some("Instances of bug #57")
+        );
+        assert_eq!(
+            s.filters[0].prompt.as_deref(),
+            Some("Timeouts, \"except\" in DEMO")
+        );
+        assert_eq!(s.filters[1].name, "plain");
+        assert_eq!(s.filters[1].description, None);
+        assert_eq!(s.profiles["default"], vec!["bug57".to_string()]);
     }
 
     // ---- RECON_FILTER_PATH (#46) -------------------------------------------

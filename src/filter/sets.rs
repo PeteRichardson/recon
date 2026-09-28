@@ -105,6 +105,10 @@ pub struct LoadedFilter {
     pub sense: Sense,
     /// The file's `colour`, or `None` for the next palette colour.
     pub colour: Option<Color>,
+    /// The file's `description` and `prompt` (#317), carried to the
+    /// `Filter` unchanged.
+    pub description: Option<String>,
+    pub prompt: Option<String>,
 }
 
 /// One set as read from `filters.toml`.
@@ -233,6 +237,8 @@ impl ActiveFilters {
                         enabled: false,
                         style: Style::default(),
                         name: Some(kind.plural().to_string()),
+                        description: None,
+                        prompt: None,
                         set: index,
                     })
                     .collect();
@@ -265,6 +271,8 @@ impl ActiveFilters {
                     enabled: false,
                     style,
                     name: Some(filter.name.clone()),
+                    description: filter.description.clone(),
+                    prompt: filter.prompt.clone(),
                     set: index,
                 });
             }
@@ -1652,5 +1660,76 @@ mod tests {
         };
         assert_eq!(described("a").as_deref(), Some("logs"));
         assert_eq!(described("b"), None);
+    }
+
+    // ---- a filter's description and prompt (#317) --------------------------
+
+    #[test]
+    fn a_file_filter_carries_its_description_and_prompt() {
+        let mut a = loaded("a", 50, false, &["x", "y"]);
+        a.filters[0].description = Some("why".into());
+        a.filters[0].prompt = Some("what".into());
+        let set = ActiveFilters::with_sets(None, &[a]);
+        let filters: Vec<&Filter> = set.filters_in(1).map(|(_, filter)| filter).collect();
+        assert_eq!(filters[0].description.as_deref(), Some("why"));
+        assert_eq!(filters[0].prompt.as_deref(), Some("what"));
+        assert_eq!(filters[1].description, None);
+        assert_eq!(filters[1].prompt, None);
+    }
+
+    #[test]
+    fn set_details_renames_the_filter_in_its_sets_profiles() {
+        let mut set = with_default_profile();
+        let (x, _) = set.filters_in(1).next().expect("x");
+        let details = Details {
+            name: Some("ex".into()),
+            description: Some("why".into()),
+            prompt: Some("what".into()),
+        };
+        assert!(set.set_details(x, details));
+        let filter = &set.filters()[x];
+        assert_eq!(filter.display_name(), "ex");
+        assert_eq!(filter.description.as_deref(), Some("why"));
+        assert_eq!(filter.prompt.as_deref(), Some("what"));
+        let profiles = &set.sets()[1].profiles;
+        assert_eq!(profiles["default"], ["ex", "z"]);
+        assert_eq!(profiles["loud"], ["ex", "y", "z"]);
+
+        // An empty name gives the pattern back as the name.
+        assert!(set.set_details(x, Details::default()));
+        assert_eq!(set.sets()[1].profiles["default"], ["x", "z"]);
+    }
+
+    #[test]
+    fn name_taken_looks_only_in_the_filters_own_set() {
+        let mut set = ActiveFilters::with_sets(None, &[loaded("a", 50, false, &["x", "y"])]);
+        set.add("s").expect("valid");
+        let (x, _) = set.filters_in(1).next().expect("x");
+        assert!(set.name_taken(Some(x), "y"), "y is in the same set");
+        assert!(!set.name_taken(Some(x), "x"), "its own name is free");
+        assert!(!set.name_taken(Some(x), "s"), "s is in the scratch set");
+        assert!(
+            set.name_taken(None, "s"),
+            "a new filter goes in the scratch set"
+        );
+        assert!(!set.name_taken(None, "y"));
+    }
+
+    #[test]
+    fn set_details_leaves_a_built_in_filter_alone() {
+        let set_index = |set: &ActiveFilters| {
+            set.filters()
+                .iter()
+                .position(|filter| matches!(filter.predicate, Predicate::Definition(_)))
+                .expect("a built-in filter")
+        };
+        let mut set = ActiveFilters::new();
+        let index = set_index(&set);
+        let details = Details {
+            name: Some("mine".into()),
+            ..Details::default()
+        };
+        assert!(!set.set_details(index, details));
+        assert_ne!(set.filters()[index].display_name(), "mine");
     }
 }

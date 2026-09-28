@@ -116,6 +116,30 @@ pub(in crate::app) fn elide_left(text: &str, width: usize) -> String {
     format!("…{}", &text[start..])
 }
 
+/// Shorten `text` to `width` columns by dropping characters from the
+/// *right*, marking the cut with a trailing `…`: the start of a sentence is
+/// what says what it is about. Columns, not `char`s, as in `elide_left`.
+pub(in crate::app) fn elide_right(text: &str, width: usize) -> String {
+    if UnicodeWidthStr::width(text) <= width {
+        return text.to_string();
+    }
+    if width == 0 {
+        return String::new();
+    }
+    let budget = width - 1;
+    let mut taken = 0;
+    let mut end = 0;
+    for (index, ch) in text.char_indices() {
+        let w = UnicodeWidthChar::width(ch).unwrap_or(0);
+        if taken + w > budget {
+            break;
+        }
+        taken += w;
+        end = index + ch.len_utf8();
+    }
+    format!("{}…", &text[..end])
+}
+
 /// The search badge: `/pattern`, padded like the other badges, with the
 /// tail elided past `SEARCH_BADGE_MAX` characters.
 pub(in crate::app) fn search_badge_text(pattern: &str) -> String {
@@ -219,8 +243,24 @@ impl App<'_> {
         self.explorer.dir()
     }
 
+    /// The description of the filter the filter pane's selection is on, while
+    /// the pane has the focus (#317): the place outside the filter editor
+    /// where a filter's description can be read.
+    fn selected_description(&self) -> Option<&str> {
+        use crate::widgets::filterlist::{Row, rows};
+        if self.focus != Focus::Filters {
+            return None;
+        }
+        let row = self.filters_pane.selected()?;
+        let (Row::Filter(index) | Row::BuiltIn(index)) = *rows(&self.filters).get(row)? else {
+            return None;
+        };
+        self.filters.filters().get(index)?.description.as_deref()
+    }
+
     /// The whole bottom row: filter state first, then the directory in
-    /// whatever width is left.
+    /// whatever width is left — or, with the filter pane's selection on a
+    /// filter that has one, the filter's description (#317).
     ///
     /// Filter state comes first because it cannot degrade — a count with its
     /// digits cut off is wrong rather than short — whereas the path elides
@@ -228,16 +268,19 @@ impl App<'_> {
     /// needs on a narrow terminal, where all of this cannot fit at once.
     pub(in crate::app) fn status_bar_text(&self, width: usize) -> String {
         let status = self.status_text();
-        let dir = self.explorer_dir().display().to_string();
+        let tail = |room: usize| match self.selected_description() {
+            Some(description) => elide_right(description, room),
+            None => elide_left(&self.explorer_dir().display().to_string(), room),
+        };
         if status.is_empty() {
-            return elide_left(&dir, width);
+            return tail(width);
         }
         // Two spaces of separation, and the path only gets what survives the
         // status text. Too narrow for any of it and the path is dropped
         // entirely rather than rendered as a lone ellipsis.
         let spent = status.chars().count() + 2;
         match width.checked_sub(spent) {
-            Some(room) if room > 1 => format!("{status}  {}", elide_left(&dir, room)),
+            Some(room) if room > 1 => format!("{status}  {}", tail(room)),
             _ => status,
         }
     }

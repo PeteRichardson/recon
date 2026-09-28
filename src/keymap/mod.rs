@@ -268,8 +268,11 @@ pub(crate) enum ActionId {
     FilterEditorScrollDown,
     FilterEditorPageUp,
     FilterEditorPageDown,
-    /// Tab: move the focus between the pattern and the lines (#314).
+    /// Tab: move the focus to the next of the name, description, prompt,
+    /// pattern and lines (#314, #317).
     FilterEditorFocus,
+    /// Shift-Tab: move the focus to the previous one (#317).
+    FilterEditorFocusPrev,
     /// `+` on the lines: the pattern must match the line.
     FilterEditorMarkMatch,
     /// `-` on the lines: the pattern must not match the line.
@@ -395,6 +398,7 @@ impl ActionId {
             Self::FilterEditorPageUp => "filtereditor.page.up",
             Self::FilterEditorPageDown => "filtereditor.page.down",
             Self::FilterEditorFocus => "filtereditor.focus",
+            Self::FilterEditorFocusPrev => "filtereditor.focus.prev",
             Self::FilterEditorMarkMatch => "filtereditor.mark.match",
             Self::FilterEditorMarkNoMatch => "filtereditor.mark.nomatch",
             Self::FilterEditorMarkClear => "filtereditor.mark.clear",
@@ -616,6 +620,11 @@ pub(crate) const DEFAULT: &[(Scope, &str, ActionId)] = &[
         ActionId::FilterEditorPageDown,
     ),
     (Scope::FilterEditor, "Tab", ActionId::FilterEditorFocus),
+    (
+        Scope::FilterEditor,
+        "Shift-Tab",
+        ActionId::FilterEditorFocusPrev,
+    ),
     (Scope::FilterEditor, "+", ActionId::FilterEditorMarkMatch),
     // `-` is a `RESERVED` key, for the hex view in the file view. The
     // filter editor takes every key while it is open, so the two can never

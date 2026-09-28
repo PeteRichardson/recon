@@ -850,8 +850,8 @@ pub const KEYMAP: &[Section] = &[
         ],
     },
     Section {
-        // Its pattern field edits with the prompt's keys, which the section
-        // below lists; only the keys of its own are here.
+        // Its fields edit with the prompt's keys, which the section below
+        // lists; only the keys of its own are here.
         title: "Filter editor",
         bindings: &[
             Binding {
@@ -875,9 +875,9 @@ pub const KEYMAP: &[Section] = &[
                 names: &["filtereditor.cancel"],
             },
             Binding {
-                keys: &["Tab"],
-                action: "Move between the pattern and the lines",
-                names: &["filtereditor.focus"],
+                keys: &["Tab", "Shift-Tab"],
+                action: "Next / previous of the fields and the lines",
+                names: &["filtereditor.focus", "filtereditor.focus.prev"],
             },
             Binding {
                 keys: &["+", "-"],
