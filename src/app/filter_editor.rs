@@ -38,17 +38,19 @@
 //! With a language model (#319), the panel has a request line under the
 //! pattern: `Ctrl-g` moves the keys to it, and Enter there sends the request
 //! to the model on a worker thread. The reply's pattern goes in the pattern
-//! field as a new version, and its explanation under it. Each request the
-//! model answered goes to it again with every later one, with the pattern
-//! as it stands, so the pattern improves step by step. Esc cancels a
-//! request while it runs. Without a model the request line is not there,
-//! and nothing else changes. See `crate::generate` for what the model
-//! receives.
+//! field as a new version, and its explanation under it, only when it
+//! compiles and passes every mark (#320); one that does not goes back to
+//! the model with what was wrong, up to `generate::ATTEMPTS` tries. Each
+//! request the model answered goes to it again with every later one, with
+//! the pattern as it stands, so the pattern improves step by step. Esc
+//! cancels a request at any try. Without a model the request line is not
+//! there, and nothing else changes. See `crate::generate` for what the
+//! model receives.
 
 use super::App;
 use super::prompt::SearchPrompt;
 use crate::filter::{Details, Example, Sense};
-use crate::generate::{self, Candidate, Running};
+use crate::generate::{self, ATTEMPTS, Candidate, Rejection, Running};
 use crossterm::event::{self, KeyCode, KeyModifiers};
 use ratatui::prelude::Style;
 use regex::Regex;
@@ -219,9 +221,8 @@ pub(super) struct FilterEditor {
     pub(super) model: bool,
     /// The request line: what the user asks the model for next.
     pub(super) request: SearchPrompt,
-    /// The request the model is answering, and its text, if one is
-    /// running.
-    pub(super) running: Option<(Running, String)>,
+    /// The request the model is answering, if one is running.
+    pub(super) running: Option<Asking>,
     /// The requests of this session the model answered, oldest first. Each
     /// goes to the model with every later request, so the pattern improves
     /// step by step. They last only while the editor is open.
@@ -231,6 +232,25 @@ pub(super) struct FilterEditor {
     pub(super) waited: u64,
     /// What the model said about the last pattern it gave.
     pub(super) explanation: Option<String>,
+}
+
+/// A request the model is answering (#319), through each attempt of its
+/// verify loop (#320). Dropped, it cancels the attempt that runs.
+#[derive(Debug)]
+pub(super) struct Asking {
+    /// The attempt that runs now.
+    running: Running,
+    /// The request, as the request line had it.
+    request: String,
+    /// What the first attempt sent. A later attempt sends it again, with
+    /// what was wrong with each pattern before.
+    text: String,
+    /// Which attempt runs now, from 1 to `ATTEMPTS`.
+    pub(super) attempt: usize,
+    /// Each pattern the model gave that failed, oldest first, and why.
+    rejected: Vec<(String, Rejection)>,
+    /// When the first attempt started.
+    started: Instant,
 }
 
 /// What a key on the sense field asks for (#317).
@@ -665,13 +685,7 @@ impl FilterEditor {
     /// lines and the session's earlier requests. Never the description.
     pub(super) fn request_text(&self, request: &str) -> String {
         let examples = self.details().examples;
-        let lines = |must_match: bool| -> Vec<&str> {
-            examples
-                .iter()
-                .filter(|example| example.must_match == must_match)
-                .map(|example| example.line.as_str())
-                .collect()
-        };
+        let lines = |must_match| marked(&examples, must_match);
         let prompt = self.prompt.pattern.trim();
         let pattern = &self.field.pattern;
         generate::request_text(&generate::Parts {
@@ -684,6 +698,13 @@ impl FilterEditor {
             earlier: &self.requests,
             request,
         })
+    }
+
+    /// Whether `pattern` compiles and gets every mark right (#320).
+    fn verify(&self, pattern: &str) -> Result<(), Rejection> {
+        let examples = self.details().examples;
+        let lines = |must_match| marked(&examples, must_match);
+        generate::verify(pattern, &lines(true), &lines(false))
     }
 
     /// Up to `SAMPLE_LINES` lines of the file with no mark and some text,
@@ -858,11 +879,11 @@ impl FilterEditor {
         if self.matches_only {
             status.push_str(" · matches only");
         }
-        if self.running.is_some() {
+        if let Some(asking) = &self.running {
             let _ = write!(
                 status,
-                " · asking the model, {} s · Esc cancels",
-                self.waited
+                " · asking the model, try {} of {ATTEMPTS}, {} s · Esc cancels",
+                asking.attempt, self.waited
             );
         }
         status
@@ -922,6 +943,15 @@ fn pattern_error(pattern: &str) -> Option<String> {
         return None;
     }
     Regex::new(pattern).err().map(|error| error_line(&error))
+}
+
+/// The lines of `examples` with the mark `must_match` gives.
+fn marked(examples: &[Example], must_match: bool) -> Vec<&str> {
+    examples
+        .iter()
+        .filter(|example| example.must_match == must_match)
+        .map(|example| example.line.as_str())
+        .collect()
 }
 
 /// The mark an example is shown with.
@@ -1288,7 +1318,14 @@ impl App<'_> {
             return;
         }
         let text = editor.request_text(request);
-        editor.running = Some((Running::start(model, text), request.to_string()));
+        editor.running = Some(Asking {
+            running: Running::start(model, text.clone()),
+            request: request.to_string(),
+            text,
+            attempt: 1,
+            rejected: Vec::new(),
+            started: Instant::now(),
+        });
         editor.waited = 0;
         editor.explanation = None;
         editor.error = pattern_error(&editor.field.pattern);
@@ -1297,24 +1334,56 @@ impl App<'_> {
     /// Take the model's reply, if it is here, and say whether the screen
     /// changed: the reply, or one more second of waiting on the status
     /// row. Runs on the render loop, and never blocks.
+    ///
+    /// The verify loop (#320): a pattern goes in the field only when it
+    /// compiles and gets every marked line right. One that does not goes
+    /// back to the model with what was wrong, until `ATTEMPTS` attempts
+    /// have failed; then the pattern stays as it is and the error row says
+    /// why the last one failed. An error from the model itself ends the
+    /// loop at once: the model gave no pattern to correct.
     pub(super) fn drain_request(&mut self) -> bool {
+        let model = self.model.clone();
         let Some(editor) = self.filter_editor.as_mut() else {
             return false;
         };
-        let Some((running, _)) = editor.running.as_ref() else {
+        let Some(asking) = editor.running.as_ref() else {
             return false;
         };
-        let Some(reply) = running.poll() else {
-            let waited = running.started.elapsed().as_secs();
+        let Some(reply) = asking.running.poll() else {
+            let waited = asking.started.elapsed().as_secs();
             return std::mem::replace(&mut editor.waited, waited) != waited;
         };
-        let Some((_, request)) = editor.running.take() else {
+        let Some(mut asking) = editor.running.take() else {
             return false;
         };
-        match reply {
+        let candidate = match reply {
+            Ok(candidate) => candidate,
             // A request that failed is not kept: the model did not act on it.
-            Ok(candidate) => editor.take_candidate(request, candidate),
-            Err(error) => editor.error = Some(format!("the model gave no pattern: {error}")),
+            Err(error) => {
+                editor.error = Some(format!("the model gave no pattern: {error}"));
+                return true;
+            }
+        };
+        let Err(rejection) = editor.verify(&candidate.pattern) else {
+            editor.take_candidate(asking.request, candidate);
+            return true;
+        };
+        let reason = rejection.reason();
+        asking.rejected.push((candidate.pattern, rejection));
+        match model {
+            Some(model) if asking.attempt < ATTEMPTS => {
+                asking.attempt += 1;
+                let text = generate::retry_text(&asking.text, &asking.rejected);
+                asking.running = Running::start(model, text);
+                editor.running = Some(asking);
+            }
+            _ => {
+                let pattern = asking.rejected.last().map_or("", |(pattern, _)| pattern);
+                editor.error = Some(format!(
+                    "no pattern from the model passed in {} tries; the last, {pattern}, {reason}",
+                    asking.attempt
+                ));
+            }
         }
         true
     }

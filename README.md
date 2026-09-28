@@ -1081,12 +1081,20 @@ pattern and the lines. Type what you want, in plain language — `the timeout
 errors, but not the DEMO runs` — and press `Enter`.
 
 - The request runs in the background. The editor keeps working, and the
-  status row shows `asking the model, 2 s · Esc cancels`. `Esc` cancels the
-  request; a reply that comes after the cancel changes nothing.
+  status row shows `asking the model, try 1 of 3, 2 s · Esc cancels`. `Esc`
+  cancels the request at any try; a reply that comes after the cancel
+  changes nothing, and the pattern stays as it was.
 - The model receives the rules of the pattern language, the filter's
   prompt, the pattern as it is now (when it compiles), the marked lines, a
   few other lines of the file, your earlier requests and your new request.
   It never receives the description.
+- recon tests each pattern from the model before it shows it. When the
+  pattern does not compile, or fails a marked line, recon sends the error
+  or the failed lines back to the model and asks again, up to 3 tries in
+  all. You see only a pattern that compiles and passes all of your marks.
+  When all 3 tries fail, the pattern does not change, and the panel shows
+  the last pattern and why it failed. An error from the model itself stops
+  at once.
 - The model's pattern goes in the pattern field as a new version, and its
   explanation shows under the request line. `Ctrl-z` goes back to the
   pattern from before, also an empty one, and works on the request line
@@ -1096,8 +1104,6 @@ errors, but not the DEMO runs` — and press `Enter`.
   pattern in steps: `the timeout errors`, then `not the DEMO runs`. A
   request that you cancel, or that fails, is not kept. The prompt does not
   change.
-- The pattern is not checked against the marks before it is shown: look at
-  the failed checks, and change the pattern or ask again.
 
 Without the feature, on Linux, or when the model is not ready (Apple
 Intelligence off, or the model still downloading), there is no request

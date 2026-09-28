@@ -12,10 +12,16 @@
 //! marked lines, a few other lines of the file, the session's earlier
 //! requests and the latest request. The filter's description is for people
 //! only and is never a part of it.
+//!
+//! The editor checks each pattern the model gives before it shows it (#320):
+//! `verify` compiles it and tests it against the marked lines, and a pattern
+//! that fails goes back to the model with `retry_text`, up to `ATTEMPTS`
+//! times in all.
 
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::Instant;
+
+use regex::Regex;
 
 /// What the model is told before every request: the rules of the `regex`
 /// crate's dialect, and the shape of the answer.
@@ -44,6 +50,11 @@ important text over one that copies a whole line.
 Answer with exactly two lines and nothing else:
 pattern: the expression, as it is, with no quotes and no backticks
 explanation: one short sentence about what the expression matches";
+
+/// The most times one request goes to the model (#320): the first time,
+/// and again each time its pattern does not compile or fails a mark. The
+/// `?` help and the README say this number.
+pub const ATTEMPTS: usize = 3;
 
 /// The most marked lines the model receives of each kind.
 const MARKS_MAX: usize = 20;
@@ -156,7 +167,6 @@ impl Cancel {
 pub(crate) struct Running {
     reply: Receiver<Result<Candidate, String>>,
     cancel: Cancel,
-    pub(crate) started: Instant,
 }
 
 impl Running {
@@ -170,11 +180,7 @@ impl Running {
             // The editor dropped its end if the request was cancelled.
             let _ = tx.send(result);
         });
-        Self {
-            reply,
-            cancel,
-            started: Instant::now(),
-        }
+        Self { reply, cancel }
     }
 
     /// The reply, once it is here. Never blocks.
@@ -241,6 +247,119 @@ pub(crate) fn request_text(parts: &Parts) -> String {
     text.push_str(parts.request);
     text.push('\n');
     text
+}
+
+/// Why the editor did not take a pattern the model gave (#320).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Rejection {
+    /// It does not compile, and why.
+    Invalid(String),
+    /// It gets these marked lines wrong.
+    Fails {
+        must_match: Vec<String>,
+        must_not_match: Vec<String>,
+    },
+}
+
+impl Rejection {
+    /// What the model is told about it, under the pattern.
+    fn feedback(&self) -> String {
+        match self {
+            Self::Invalid(error) => format!("It does not compile: {error}\n\n"),
+            Self::Fails {
+                must_match,
+                must_not_match,
+            } => {
+                let mut text = String::new();
+                let lines = |text: &mut String, heading: &str, lines: &[String]| {
+                    let lines: Vec<&str> = lines.iter().map(String::as_str).collect();
+                    section(text, heading, &lines);
+                };
+                lines(
+                    &mut text,
+                    "It does not match these lines, which it must match:",
+                    must_match,
+                );
+                lines(
+                    &mut text,
+                    "It matches these lines, which it must not match:",
+                    must_not_match,
+                );
+                text
+            }
+        }
+    }
+
+    /// The reason in one line, for the editor's error row.
+    pub(crate) fn reason(&self) -> String {
+        match self {
+            Self::Invalid(error) => format!("does not compile: {error}"),
+            Self::Fails {
+                must_match,
+                must_not_match,
+            } => {
+                let count = must_match.len() + must_not_match.len();
+                let first = must_match.first().or(must_not_match.first());
+                let first = first.map_or("", |line| line.trim());
+                if count == 1 {
+                    format!("fails a mark: {first:?}")
+                } else {
+                    format!("fails {count} marks, the first: {first:?}")
+                }
+            }
+        }
+    }
+}
+
+/// Whether `pattern` compiles and gets every marked line right (#320).
+pub(crate) fn verify(
+    pattern: &str,
+    must_match: &[&str],
+    must_not_match: &[&str],
+) -> Result<(), Rejection> {
+    let regex = Regex::new(pattern).map_err(|error| {
+        let text = error.to_string();
+        let reason = text
+            .lines()
+            .rev()
+            .find(|line| !line.trim().is_empty())
+            .unwrap_or("invalid pattern")
+            .trim();
+        let reason = reason.strip_prefix("error:").unwrap_or(reason).trim();
+        Rejection::Invalid(reason.to_string())
+    })?;
+    let wrong = |lines: &[&str], matched: bool| -> Vec<String> {
+        lines
+            .iter()
+            .filter(|line| regex.is_match(line) != matched)
+            .map(ToString::to_string)
+            .collect()
+    };
+    let must_match = wrong(must_match, true);
+    let must_not_match = wrong(must_not_match, false);
+    if must_match.is_empty() && must_not_match.is_empty() {
+        Ok(())
+    } else {
+        Err(Rejection::Fails {
+            must_match,
+            must_not_match,
+        })
+    }
+}
+
+/// The text of a later attempt (#320): the first attempt's `text`, and
+/// each pattern the model gave for it, oldest first, with what was wrong.
+pub(crate) fn retry_text(text: &str, rejected: &[(String, Rejection)]) -> String {
+    let mut out = text.to_string();
+    out.push_str("\nYour earlier answers to this request were wrong.\n\n");
+    for (pattern, rejection) in rejected {
+        out.push_str("Pattern: ");
+        out.push_str(pattern);
+        out.push('\n');
+        out.push_str(&rejection.feedback());
+    }
+    out.push_str("Write a pattern that does not have these problems.\n");
+    out
 }
 
 /// The pattern and the explanation in the model's answer, from its
@@ -457,6 +576,63 @@ mod tests {
     fn an_answer_with_no_pattern_is_an_error() {
         assert!(parse_answer("pattern: ``").is_err());
         assert!(parse_answer("  \n").is_err());
+    }
+
+    #[test]
+    fn a_pattern_that_passes_every_mark_is_verified() {
+        assert_eq!(verify("ERROR", &["ERROR x"], &["INFO x"]), Ok(()));
+        assert_eq!(verify("x", &[], &[]), Ok(()));
+    }
+
+    #[test]
+    fn a_pattern_that_does_not_compile_is_rejected_with_the_error() {
+        let Err(Rejection::Invalid(error)) = verify("ERROR(", &[], &[]) else {
+            panic!("compiled");
+        };
+        assert_eq!(error, "unclosed group");
+        assert!(!error.contains('\n'), "{error}");
+    }
+
+    #[test]
+    fn a_pattern_that_fails_marks_is_rejected_with_the_lines() {
+        let rejection = verify("x", &["a x", "b"], &["c x", "d"]).expect_err("passed");
+        assert_eq!(
+            rejection,
+            Rejection::Fails {
+                must_match: vec!["b".to_string()],
+                must_not_match: vec!["c x".to_string()],
+            }
+        );
+        assert_eq!(rejection.reason(), "fails 2 marks, the first: \"b\"");
+        let one = verify("x", &["b"], &[]).expect_err("passed");
+        assert_eq!(one.reason(), "fails a mark: \"b\"");
+    }
+
+    #[test]
+    fn a_retry_has_the_first_text_and_each_rejected_pattern() {
+        let rejected = [
+            (
+                "a(".to_string(),
+                Rejection::Invalid("unclosed group".to_string()),
+            ),
+            (
+                "a".to_string(),
+                Rejection::Fails {
+                    must_match: vec!["b".to_string()],
+                    must_not_match: vec!["a DEMO".to_string()],
+                },
+            ),
+        ];
+        assert_eq!(
+            retry_text("Request: x\n", &rejected),
+            "Request: x\n\n\
+             Your earlier answers to this request were wrong.\n\n\
+             Pattern: a(\nIt does not compile: unclosed group\n\n\
+             Pattern: a\n\
+             It does not match these lines, which it must match:\nb\n\n\
+             It matches these lines, which it must not match:\na DEMO\n\n\
+             Write a pattern that does not have these problems.\n"
+        );
     }
 
     #[test]

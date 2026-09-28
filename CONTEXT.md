@@ -93,7 +93,9 @@ _Avoid_: query, request (that is one turn of a talk with the model)
 **Request**:
 One turn of a talk with the model in the filter editor: what the user types
 on the request line and sends with `Enter`. The model answers with a pattern
-and an explanation. The requests the model answered go to it again with
+and an explanation. recon shows the pattern only when it compiles and passes
+every mark; otherwise it sends the failure back and asks again, up to 3
+tries. The requests the model answered go to it again with
 each later request while the editor is open, so the pattern improves step
 by step. A request is not kept with the filter; the prompt is.
 _Avoid_: prompt (that is the filter's), query

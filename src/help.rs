@@ -921,7 +921,7 @@ pub const KEYMAP: &[Section] = &[
             },
             Binding {
                 keys: &["Ctrl-g"],
-                action: "With a model: ask it for a pattern",
+                action: "With a model: ask it for a pattern, 3 tries",
                 names: &["filtereditor.request"],
             },
         ],
