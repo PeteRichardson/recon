@@ -335,6 +335,9 @@ impl App<'_> {
             // comment in `widgets/mod.rs`.
             A::FiltersInclude => self.prompt = Some(SearchPrompt::new(PromptKind::Filter)),
             A::FiltersExclude => self.prompt = Some(SearchPrompt::new(PromptKind::Exclude)),
+            // `I` opens the filter editor (#312), which is `App`'s for the
+            // same reason a prompt is.
+            A::FiltersEditorNew => self.open_filter_editor(),
             // `S` saves the scratch set (#131). Refused before the prompt
             // opens when there is nothing to save: a prompt for a name that
             // can go nowhere is worse than a message.

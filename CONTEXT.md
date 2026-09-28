@@ -48,6 +48,12 @@ The list that covers the whole recon window, of every known set except the
 scratch set, where the user lists and unlists sets. Its checkbox means *listed*, never *enabled*.
 _Avoid_: catalogue, set list, filter list
 
+**Filter editor**:
+The screen that covers the whole recon window, where the user writes a
+filter's pattern against the open file and sees every line it matches while
+typing. `f I` opens it on a new filter.
+_Avoid_: editor alone (that is the external editor `o` and `O` open), regex builder
+
 **Interesting line**:
 A line an enabled including filter matches. `n` and `N` step between
 interesting lines when no search is set, and hide mode keeps only them.

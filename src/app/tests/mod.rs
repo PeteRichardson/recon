@@ -495,6 +495,7 @@ mod and_mode;
 mod chains;
 mod emit_on_quit;
 mod explorer_search;
+mod filter_editor;
 mod filters;
 mod focus;
 mod hiding;

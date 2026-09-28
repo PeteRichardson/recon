@@ -364,14 +364,16 @@ impl App<'_> {
             | A::FiltersProfile
             | A::FiltersSolo
             | A::FiltersReset
-            | A::FiltersSaveSet => {
+            | A::FiltersSaveSet
+            | A::FiltersEditorNew => {
                 debug_assert!(
                     false,
                     "{action:?} resolves against its own widget, never through `perform`"
                 );
             }
             // The modal scopes (task 7, #199): `Scope::Prompt` resolves in
-            // `handle_search_key` and `Scope::Picker` resolves in
+            // `handle_search_key`, `Scope::FilterEditor` in
+            // `handle_filter_editor_key`, and `Scope::Picker` resolves in
             // `dispatch_event`'s picker guard, and each is carried out right
             // there — neither ever reaches this function, for the reason
             // Ruling 30 gives: a modal's `None` case must swallow the key
@@ -406,7 +408,13 @@ impl App<'_> {
             | A::SetsCancel
             | A::SetsSearch
             | A::SetsHitNext
-            | A::SetsHitPrev => {
+            | A::SetsHitPrev
+            | A::FilterEditorCommit
+            | A::FilterEditorCancel
+            | A::FilterEditorScrollUp
+            | A::FilterEditorScrollDown
+            | A::FilterEditorPageUp
+            | A::FilterEditorPageDown => {
                 debug_assert!(
                     false,
                     "{action:?} resolves in its own modal dispatch, never through `perform`"

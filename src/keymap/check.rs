@@ -428,9 +428,10 @@ pub(crate) fn check(built: &Keymap, written: &[ActionId]) -> Report {
 
     // Pass two: the global scope against each pane.
     //
-    // Only these four scopes can cross. `Prompt`, `Picker` and `Sets` take
-    // every key while they are open, so a key bound in one of them and also
-    // globally is the design and not a contest. `Help` binds nothing at all.
+    // Only these four scopes can cross. `Prompt`, `Picker`, `Sets` and
+    // `FilterEditor` take every key while they are open, so a key bound in
+    // one of them and also globally is the design and not a contest. `Help`
+    // binds nothing at all.
     let winner_in = |scope: Scope, key: Chord| -> Option<ActionId> {
         let claim = claims
             .iter()

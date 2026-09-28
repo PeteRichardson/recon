@@ -8,6 +8,7 @@
 mod actions;
 mod collect;
 mod events;
+mod filter_editor;
 mod filters;
 mod focus;
 mod launch;
@@ -43,6 +44,7 @@ use widgets::explorer::Explorer;
 use widgets::fileview::FileView;
 use widgets::filterlist::FilterList;
 // The types of `App`'s fields that live beside the code that uses them.
+use filter_editor::FilterEditor;
 use filters::PeekState;
 use navigation::Crossing;
 use prompt::{History, SearchPrompt};
@@ -254,6 +256,9 @@ pub struct App<'a> {
     /// The set picker, while it is open (#284). Takes every key, as the
     /// profile picker does.
     set_picker: Option<widgets::setpicker::SetPicker>,
+    /// The filter editor, while it is open (#312). Takes every key, as the
+    /// pickers do.
+    filter_editor: Option<FilterEditor>,
     /// Where `S` writes (#131): `filters.toml` beside `config.toml`, or
     /// `None` when the environment names no home. A field rather than a
     /// call at save time so tests can point it at a fixture.
@@ -427,6 +432,7 @@ impl App<'_> {
             keymap_warnings_open: config.warnings() && !config.keymap_warnings.is_empty(),
             picker: None,
             set_picker: None,
+            filter_editor: None,
             save_path: filtersets::path(),
             scanner: Box::new(scan::Scanner::new(scan_tx)),
             scan_results: Some(scan_rx),
