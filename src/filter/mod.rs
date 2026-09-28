@@ -14,7 +14,7 @@
 mod matcher;
 mod sets;
 
-pub use matcher::{Matcher, Owner, ScanStamp};
+pub use matcher::{Bits, MAX_PATTERNS, Matcher, Owner, ScanOff, ScanStamp};
 pub use sets::{
     DEFINITIONS_DESCRIPTION, DEFINITIONS_SET, EnableError, FilterSet, LoadedFilter, LoadedSet,
     Origin, is_builtin_name,

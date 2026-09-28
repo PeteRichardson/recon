@@ -4,9 +4,43 @@
 use super::{ActiveFilters, Combine, Sense};
 use regex::RegexSet;
 
-/// The bitset width. Up to 64 patterns in total; past this the explorer's
-/// file matching switches off rather than shifting out of range.
-const MAX_PATTERNS: usize = 64;
+/// Which patterns hit a line, one bit per filter: bit `i` is `filters[i]`.
+///
+/// `u128` since #304: a collection of sets can hold more than 64 patterns,
+/// and a wider native integer costs nothing a scan can measure. Past 128 the
+/// bitset would stop being a native type, and the regex set's own costs —
+/// compile time, its size limit, scan speed — become the real limit, so the
+/// width stops here.
+pub type Bits = u128;
+
+/// The bitset width. Up to 128 patterns in total; past this the explorer's
+/// file matching switches off rather than shifting out of range, and the
+/// status line says so (#306).
+pub const MAX_PATTERNS: usize = Bits::BITS as usize;
+
+/// Why the explorer's file matching is off while an include filter asks for
+/// it (#306). Neither is "nothing selects": that is no filter to match with,
+/// not a failure, and has no reason to report.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScanOff {
+    /// More patterns than `MAX_PATTERNS` bits.
+    TooMany { patterns: usize, limit: usize },
+    /// The patterns do not compile together — the regex engine's size limit,
+    /// usually. `recompile` logs the engine's own message.
+    NotCompiled,
+}
+
+/// The words the status line and `--emit files` use for it.
+impl std::fmt::Display for ScanOff {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::TooMany { patterns, limit } => {
+                write!(f, "file matching off: {patterns} patterns, limit {limit}")
+            }
+            Self::NotCompiled => write!(f, "file matching off: patterns too large"),
+        }
+    }
+}
 
 /// Which filter selected a file, for its colour in the explorer: the
 /// filter's index. The lowest index wins — the view's "first matching filter
@@ -32,9 +66,9 @@ pub type Owner = usize;
 pub struct Matcher {
     set: RegexSet,
     /// Bit `i` set: `filters[i]` is enabled and `Sense::Include`.
-    selects: u64,
+    selects: Bits,
     /// Bit `i` set: `filters[i]` is enabled and `Sense::Exclude`.
-    exclude: u64,
+    exclude: Bits,
     /// How the include bits combine. In `And` mode a line selects only when
     /// every include bit in `selects` is set.
     combine: Combine,
@@ -43,7 +77,7 @@ pub struct Matcher {
 impl Matcher {
     /// Which patterns hit `line`, enabled or not.
     #[must_use]
-    pub fn bits(&self, line: &str) -> u64 {
+    pub fn bits(&self, line: &str) -> Bits {
         self.set
             .matches(line)
             .iter()
@@ -57,7 +91,7 @@ impl Matcher {
     /// `Include` filter hits it. With no include filter enabled, `And`
     /// selects nothing, the same as `Or`.
     #[must_use]
-    pub fn selects(&self, bits: u64) -> bool {
+    pub fn selects(&self, bits: Bits) -> bool {
         if bits & self.exclude != 0 {
             return false;
         }
@@ -72,7 +106,7 @@ impl Matcher {
     /// every include filter hit, so this is the first enabled one — the same
     /// colour `verdict` gives the line.
     #[must_use]
-    pub fn owner(&self, bits: u64) -> Option<Owner> {
+    pub fn owner(&self, bits: Bits) -> Option<Owner> {
         if !self.selects(bits) {
             return None;
         }
@@ -83,7 +117,7 @@ impl Matcher {
     /// whether a toggle changed anything a scan cares about. The mode is part
     /// of it: the same bitset answers differently under each.
     #[must_use]
-    pub fn masks(&self) -> (u64, u64, Combine) {
+    pub fn masks(&self) -> (Bits, Bits, Combine) {
         (self.selects, self.exclude, self.combine)
     }
 }
@@ -96,8 +130,8 @@ pub struct ScanStamp {
     /// The set's pattern generation. Moves when a pattern does, so cached
     /// bitsets may mean something else; a flag leaves it alone.
     pub patterns: u64,
-    pub selects: u64,
-    pub exclude: u64,
+    pub selects: Bits,
+    pub exclude: Bits,
     pub combine: Combine,
 }
 
@@ -140,10 +174,33 @@ impl ActiveFilters {
         self.scan_masks().is_some()
     }
 
+    /// Why file matching is off, when an include filter asks for it and it
+    /// is off anyway (#306). `None` when it runs, and when nothing selects —
+    /// no enabled regex `Include` — since that is not a failure.
+    #[must_use]
+    pub fn scan_off(&self) -> Option<ScanOff> {
+        let asks = self.filters.iter().enumerate().any(|(index, filter)| {
+            self.effective(index)
+                && filter.sense == Sense::Include
+                && filter.predicate.as_regex().is_some()
+        });
+        if !asks {
+            return None;
+        }
+        match self.compiled.as_ref().filter(|set| self.in_step(set)) {
+            None => Some(ScanOff::NotCompiled),
+            Some(set) if set.len() > MAX_PATTERNS => Some(ScanOff::TooMany {
+                patterns: set.len(),
+                limit: MAX_PATTERNS,
+            }),
+            Some(_) => None,
+        }
+    }
+
     /// The compiled set and the `(selects, exclude)` masks over it, or
     /// `None` when there is no scan to run. `matcher` and `is_scanning`
     /// share it so they cannot disagree.
-    fn scan_masks(&self) -> Option<(&RegexSet, u64, u64)> {
+    fn scan_masks(&self) -> Option<(&RegexSet, Bits, Bits)> {
         debug_assert!(
             self.compiled.as_ref().is_none_or(|set| self.in_step(set)),
             "the compiled set is out of step with the filters"
@@ -152,8 +209,8 @@ impl ActiveFilters {
         if set.len() > MAX_PATTERNS {
             return None;
         }
-        let mut selects = 0u64;
-        let mut exclude = 0u64;
+        let mut selects: Bits = 0;
+        let mut exclude: Bits = 0;
         for (index, filter) in self.filters.iter().enumerate() {
             // A definition predicate is not a regex over the line's text,
             // and a scan reads text it never parses: its bit stays out of
@@ -191,7 +248,7 @@ impl ActiveFilters {
 mod tests {
     use super::super::tests::set_with;
     use super::super::*;
-    use super::MAX_PATTERNS;
+    use super::{MAX_PATTERNS, ScanOff};
 
     // ---- the matcher snapshot --------------------------------------------
 
@@ -293,20 +350,71 @@ mod tests {
         assert!(disabled.matcher().is_none(), "disabled");
     }
 
-    /// 64 is the width of the bitset; the 65th pattern switches the feature off
-    /// rather than wrapping a shift.
+    /// 128 is the width of the bitset (#304); the 129th pattern switches the
+    /// feature off rather than wrapping a shift, and says why (#306).
     #[test]
-    fn no_matcher_past_sixty_four_patterns() {
+    fn no_matcher_past_128_patterns() {
+        assert_eq!(MAX_PATTERNS, 128);
         let mut set = ActiveFilters::new();
-        // The built-in definitions set holds one of the 64 slots per kind.
-        let room = 64 - Kind::ALL.len();
+        // The built-in definitions set holds one of the slots per kind.
+        let room = MAX_PATTERNS - Kind::ALL.len();
         for i in 0..room {
             set.add(&format!("p{i}")).expect("valid pattern");
         }
         assert!(set.matcher().is_some());
+        assert_eq!(set.scan_off(), None);
 
         set.add(&format!("p{room}")).expect("valid pattern");
         assert!(set.matcher().is_none());
+        assert_eq!(
+            set.scan_off(),
+            Some(ScanOff::TooMany {
+                patterns: MAX_PATTERNS + 1,
+                limit: MAX_PATTERNS
+            })
+        );
+    }
+
+    /// The top bit is a real bit: a filter at position 127 selects a line,
+    /// and owns it. A `u64` would have lost it.
+    #[test]
+    fn the_last_of_128_patterns_selects_and_owns() {
+        let mut set = ActiveFilters::new();
+        let room = MAX_PATTERNS - Kind::ALL.len();
+        for i in 0..room - 1 {
+            set.add(&format!("p{i}x")).expect("valid pattern");
+        }
+        set.add("needle").expect("valid pattern");
+        let last = set
+            .filters()
+            .iter()
+            .position(|f| f.predicate.source() == "needle");
+        let matcher = set.matcher().expect("128 patterns scan");
+        let bits = matcher.bits("a needle here");
+        assert!(matcher.selects(bits));
+        assert_eq!(matcher.owner(bits), last);
+    }
+
+    /// Nothing to report when nothing asks for a scan: no filter, an
+    /// exclude alone, or the include disabled.
+    #[test]
+    fn scan_off_is_silent_when_nothing_selects() {
+        let mut set = ActiveFilters::new();
+        assert_eq!(set.scan_off(), None, "no filters");
+        set.add_excluding("x").expect("valid");
+        assert_eq!(set.scan_off(), None, "exclude only");
+        let mut disabled = set_with(&["alpha"]);
+        disabled.set_enabled(0, false);
+        assert_eq!(disabled.scan_off(), None, "include disabled");
+    }
+
+    /// A set that does not compile reports it, rather than going silent.
+    #[test]
+    fn scan_off_reports_a_set_that_does_not_compile() {
+        let mut set = set_with(&["alpha"]);
+        set.compiled = None;
+        assert!(set.matcher().is_none());
+        assert_eq!(set.scan_off(), Some(ScanOff::NotCompiled));
     }
 
     #[test]
