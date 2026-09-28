@@ -268,6 +268,16 @@ pub(crate) enum ActionId {
     FilterEditorScrollDown,
     FilterEditorPageUp,
     FilterEditorPageDown,
+    /// Tab: move the focus between the pattern and the lines (#314).
+    FilterEditorFocus,
+    /// `+` on the lines: the pattern must match the line.
+    FilterEditorMarkMatch,
+    /// `-` on the lines: the pattern must not match the line.
+    FilterEditorMarkNoMatch,
+    /// `=` on the lines: remove the line's mark.
+    FilterEditorMarkClear,
+    /// `V` on the lines: open or close a range for the mark keys.
+    FilterEditorVisualLine,
     // The help overlay itself has no ActionId: any key dismisses it, so
     // there is nothing to bind or rebind, and Scope::Help carries no DEFAULT
     // rows for the same reason (#59).
@@ -372,6 +382,11 @@ impl ActionId {
             Self::FilterEditorScrollDown => "filtereditor.scroll.down",
             Self::FilterEditorPageUp => "filtereditor.page.up",
             Self::FilterEditorPageDown => "filtereditor.page.down",
+            Self::FilterEditorFocus => "filtereditor.focus",
+            Self::FilterEditorMarkMatch => "filtereditor.mark.match",
+            Self::FilterEditorMarkNoMatch => "filtereditor.mark.nomatch",
+            Self::FilterEditorMarkClear => "filtereditor.mark.clear",
+            Self::FilterEditorVisualLine => "filtereditor.visual.line",
             Self::PromptCommit => "prompt.commit",
             Self::PromptCancel => "prompt.cancel",
             Self::PromptLeft => "prompt.left",
@@ -581,6 +596,14 @@ pub(crate) const DEFAULT: &[(Scope, &str, ActionId)] = &[
         "PageDown",
         ActionId::FilterEditorPageDown,
     ),
+    (Scope::FilterEditor, "Tab", ActionId::FilterEditorFocus),
+    (Scope::FilterEditor, "+", ActionId::FilterEditorMarkMatch),
+    // `-` is a `RESERVED` key, for the hex view in the file view. The
+    // filter editor takes every key while it is open, so the two can never
+    // meet, and #314 asks for `-` by name.
+    (Scope::FilterEditor, "-", ActionId::FilterEditorMarkNoMatch),
+    (Scope::FilterEditor, "=", ActionId::FilterEditorMarkClear),
+    (Scope::FilterEditor, "V", ActionId::FilterEditorVisualLine),
 ];
 
 /// Keys 1.0 promises to 1.1, bound to nothing.
@@ -762,7 +785,14 @@ impl Keymap {
             // The reserved key that was found, not the label the line was
             // written with: a range names many keys and only one of them is
             // reserved, so `'*-/'` has to be reported as `-`.
-            for (key, claim) in reserved_hits(labels) {
+            //
+            // A filter editor action is not checked (#314): the editor takes
+            // every key while it is open, so a reserved key there can never
+            // meet the key 1.1 gives it, and `-` is its own default.
+            let modal = DEFAULT
+                .iter()
+                .any(|(scope, _, bound)| *bound == action && *scope == Scope::FilterEditor);
+            for (key, claim) in reserved_hits(labels).into_iter().filter(|_| !modal) {
                 reserved.push(format!(
                     "{name} binds '{key}', which is reserved for {claim}; \
                      a later release will want it back, but recon binds it anyway"
@@ -1796,6 +1826,28 @@ mod tests {
 
     // ---- reserved keys (#242, #61) --------------------------------------
 
+    /// The filter editor takes every key while it is open, so a reserved
+    /// key bound there can never meet the key 1.1 gives it (#314).
+    #[test]
+    fn a_reserved_key_in_the_filter_editor_does_not_warn() {
+        let mut bindings = std::collections::BTreeMap::new();
+        bindings.insert("filtereditor.mark.match".to_string(), vec!["-".to_string()]);
+        bindings.insert(
+            "filtereditor.mark.nomatch".to_string(),
+            vec!["_".to_string()],
+        );
+        let overlay = crate::config::KeymapConfig { bindings };
+
+        let (keymap, warnings) = Keymap::new(&overlay).expect("a valid keymap");
+        let dash = normalise(KeyEvent::new(KeyCode::Char('-'), KeyModifiers::empty()));
+
+        assert_eq!(
+            keymap.resolve(Scope::FilterEditor, dash),
+            Some(ActionId::FilterEditorMarkMatch)
+        );
+        assert!(warnings.is_empty(), "{warnings:?}");
+    }
+
     #[test]
     fn binding_a_reserved_key_warns_and_obeys() {
         let mut bindings = std::collections::BTreeMap::new();
@@ -1895,12 +1947,14 @@ mod tests {
         // default binding later should fail this test rather than slip past
         // it.
         for (label, _) in RESERVED {
+            // Not `FilterEditor`: it binds `-` as a mark key (#314). It takes
+            // every key while it is open, so the hex view's `-` in the file
+            // view can never meet it.
             for scope in [
                 Scope::Prompt,
                 Scope::Help,
                 Scope::Picker,
                 Scope::Sets,
-                Scope::FilterEditor,
                 Scope::Global,
                 Scope::Explorer,
                 Scope::View,

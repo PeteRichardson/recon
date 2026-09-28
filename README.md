@@ -577,7 +577,9 @@ Two keys, `-` and `:`, are reserved rather than bound: 1.0 promises them to
 1.1 (a hex view and a command palette), so whichever key a later release
 wants has to be one this release already said was taken. Binding a reserved
 key anyway is allowed — it's your keyboard — recon just warns once, on
-startup, and then obeys.
+startup, and then obeys. The filter editor is the exception: it takes every
+key while it is open, so its own `-` (and any reserved key you bind there)
+can never meet the later release's, and recon does not warn.
 
 Giving an action a key can therefore take that key away from a different
 action. recon works out what your file costs before it starts, and it either
@@ -884,7 +886,33 @@ that compiled left them, so a half-typed `(` does not clear the screen.
 | `Up` / `Down` | Scroll the file a line | `filtereditor.scroll.up` / `filtereditor.scroll.down` |
 | `PageUp` / `PageDown` | Scroll the file a page | `filtereditor.page.up` / `filtereditor.page.down` |
 | `Enter` | Add the pattern as an including filter, or change the selected filter, and close | `filtereditor.commit` |
-| `Esc` | Close and change nothing | `filtereditor.cancel` |
+| `Esc` | Close and change nothing; with a range open, close the range first | `filtereditor.cancel` |
+| `Tab` | Move the keys between the pattern and the lines | `filtereditor.focus` |
+| `+` | On the lines: the pattern must match the cursor line | `filtereditor.mark.match` |
+| `-` | On the lines: the pattern must not match the cursor line | `filtereditor.mark.nomatch` |
+| `=` | On the lines: remove the cursor line's mark | `filtereditor.mark.clear` |
+| `V` | On the lines: open a range, so the next mark key marks each line in it | `filtereditor.visual.line` |
+
+##### Marking lines
+
+`Tab` moves the keys from the pattern to the file's lines. A `>` shows the
+cursor line, and `Up`, `Down`, `PageUp` and `PageDown` move it. `+` marks it
+as a line the pattern must match, and `-` as a line the pattern must not
+match. `=` removes the mark. `V` opens a range, and the next of those three
+keys marks each line in it. `Tab` again goes back to the pattern, where `+`
+and `-` are typed as usual.
+
+Each marked line is a check, and it passes or fails on each key you type in
+the pattern. A passed check shows its `+` or `-` in green. A failed check
+fills its row with red, the loudest style in the editor; a failed
+must-not-match line still shows its matches in reverse video, so you can see
+what the pattern matched by mistake. The status row adds the number of
+failed checks to the count: `312 of 50,000 lines match · 1 check fails`.
+
+If you open the editor from the file view (`f` pressed there), the file
+view's cursor line is already marked must-match. From any other pane, no
+line is marked. The marks last only while the editor is open: `Enter` and
+`Esc` both discard them.
 
 `Enter` does exactly what `f i` with the same pattern does: one including
 filter in the scratch set, and focus returns to where `f` was pressed.

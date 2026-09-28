@@ -874,6 +874,26 @@ pub const KEYMAP: &[Section] = &[
                 action: "Close the editor and change nothing",
                 names: &["filtereditor.cancel"],
             },
+            Binding {
+                keys: &["Tab"],
+                action: "Move between the pattern and the lines",
+                names: &["filtereditor.focus"],
+            },
+            Binding {
+                keys: &["+", "-"],
+                action: "Lines: the pattern must / must not match",
+                names: &["filtereditor.mark.match", "filtereditor.mark.nomatch"],
+            },
+            Binding {
+                keys: &["="],
+                action: "Lines: remove the mark",
+                names: &["filtereditor.mark.clear"],
+            },
+            Binding {
+                keys: &["V"],
+                action: "Lines: mark a range of lines",
+                names: &["filtereditor.visual.line"],
+            },
         ],
     },
     Section {
@@ -1508,21 +1528,21 @@ mod tests {
     /// any further has nowhere left to go without this area's width growing
     /// past 151 — which would stop the second test here from failing on the
     /// regression it exists to catch — and a row that adds to *either* total
-    /// has to be re-measured against both. The height, 56, is likewise the
-    /// exact number of rows two columns hold at the current row count (111,
+    /// has to be re-measured against both. The height, 58, is likewise the
+    /// exact number of rows two columns hold at the current row count (115,
     /// after the two reserved-key rows of #242 raised it from 86 to 88,
     /// the two search-history rows of #274 to 90, the `L` row and the
     /// set picker's section of #284 to 97, the picker's two search rows
     /// of #285 to 99, the three hide rows of #300 to 102, and the `I` rows
-    /// and the filter editor's section of #312 to 110, and the `C` row of
-    /// #313 to 111); adding a row without
+    /// and the filter editor's section of #312 to 110, the `C` row of
+    /// #313 to 111, and the four mark rows of #314 to 115); adding a row without
     /// raising the height would drop it off the bottom, which is a
     /// `shown(&columns) == rows.len()` failure below, not a width one.
     #[test]
     fn a_normal_terminal_shows_the_whole_keymap() {
         let rows = rows(&crate::keymap::Keymap::default());
 
-        let columns = layout(&rows, inner(150, 56));
+        let columns = layout(&rows, inner(150, 58));
 
         assert_eq!(shown(&columns), rows.len(), "the keymap did not fit");
         assert!(

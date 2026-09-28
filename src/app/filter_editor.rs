@@ -7,16 +7,49 @@
 //! takes every key while it is open. Enter adds the pattern to the scratch
 //! set exactly as `f i` would, or replaces the selected filter's pattern
 //! exactly as `f c` would; Esc changes nothing.
+//!
+//! Tab moves the focus from the pattern field to the file's lines, where
+//! `+` and `-` mark a line that the pattern must match or must not match
+//! (#314). Each marked line is a check that passes or fails on each key typed
+//! in the pattern. The marks live only while the editor is open.
 
 use super::App;
 use super::prompt::SearchPrompt;
 use crossterm::event::{self, KeyCode, KeyModifiers};
 use ratatui::prelude::Style;
 use regex::Regex;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 /// Shown in the panel when Enter finds no pattern to add.
 pub(super) const NO_PATTERN: &str = "type a pattern first";
+
+/// Where the filter editor's keys go (#314).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(super) enum EditorFocus {
+    /// A character is typed into the pattern, and Up/Down scroll.
+    #[default]
+    Pattern,
+    /// Up/Down move the cursor line, and the mark keys mark it.
+    Lines,
+}
+
+/// What a marked line says about the pattern (#314).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Mark {
+    /// The pattern must match this line: `+`.
+    MustMatch,
+    /// The pattern must not match this line: `-`.
+    MustNotMatch,
+}
+
+/// A marked line's state under the current pattern: the mark, and whether
+/// the pattern does what the mark says.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct Check {
+    pub(super) mark: Mark,
+    pub(super) passes: bool,
+}
 
 /// What the filter editor holds while it is open.
 #[derive(Debug)]
@@ -48,6 +81,21 @@ pub(super) struct FilterEditor {
     /// editor takes every key while it is open, so nothing can remove the
     /// filter under it; `replace_filter` checks the index anyway.
     pub(super) target: Option<usize>,
+    /// Where the keys go: the pattern field or the lines.
+    pub(super) focus: EditorFocus,
+    /// The cursor line, as an index into `lines`. Drawn and moved only while
+    /// `focus` is `Lines`.
+    pub(super) cursor: usize,
+    /// The other end of a visual-line range, from `V`, or `None` when no
+    /// range is open.
+    pub(super) anchor: Option<usize>,
+    /// The marked lines, by index into `lines`.
+    pub(super) marks: BTreeMap<usize, Mark>,
+    /// How many marks the pattern fails.
+    pub(super) failures: usize,
+    /// Set when the cursor moved and the next render must scroll it into
+    /// view. The render knows the page height; a key does not.
+    pub(super) reveal: bool,
 }
 
 impl FilterEditor {
@@ -63,6 +111,12 @@ impl FilterEditor {
             page: 1,
             style,
             target: None,
+            focus: EditorFocus::default(),
+            cursor: 0,
+            anchor: None,
+            marks: BTreeMap::new(),
+            failures: 0,
+            reveal: false,
         }
     }
 
@@ -95,6 +149,7 @@ impl FilterEditor {
             self.regex = None;
             self.error = None;
             self.matches = 0;
+            self.count_failures();
             return;
         }
         match Regex::new(pattern) {
@@ -106,9 +161,61 @@ impl FilterEditor {
                     .count();
                 self.regex = Some(regex);
                 self.error = None;
+                self.count_failures();
             }
             Err(error) => self.error = Some(error_line(&error)),
         }
+    }
+
+    /// Whether the highlight's pattern matches line `index`. No pattern
+    /// matches nothing, as no line is highlighted.
+    fn matches_line(&self, index: usize) -> bool {
+        self.regex
+            .as_ref()
+            .zip(self.lines.get(index))
+            .is_some_and(|(regex, line)| regex.is_match(line))
+    }
+
+    /// Line `index`'s check, or `None` when it has no mark.
+    pub(super) fn check(&self, index: usize) -> Option<Check> {
+        let mark = *self.marks.get(&index)?;
+        let matched = self.matches_line(index);
+        let passes = match mark {
+            Mark::MustMatch => matched,
+            Mark::MustNotMatch => !matched,
+        };
+        Some(Check { mark, passes })
+    }
+
+    /// Count the checks the pattern fails, after the pattern or a mark
+    /// changed.
+    fn count_failures(&mut self) {
+        self.failures = self
+            .marks
+            .keys()
+            .filter(|&&index| self.check(index).is_some_and(|check| !check.passes))
+            .count();
+    }
+
+    /// Put `mark` on the cursor line, or on every line of the visual range
+    /// and close the range. `None` removes the mark.
+    fn set_mark(&mut self, mark: Option<Mark>) {
+        let (first, last) = self.range();
+        for index in first..=last {
+            match mark {
+                Some(mark) => self.marks.insert(index, mark),
+                None => self.marks.remove(&index),
+            };
+        }
+        self.anchor = None;
+        self.count_failures();
+    }
+
+    /// The first and last line of the visual range, or the cursor line twice
+    /// when no range is open.
+    pub(super) fn range(&self) -> (usize, usize) {
+        let anchor = self.anchor.unwrap_or(self.cursor);
+        (anchor.min(self.cursor), anchor.max(self.cursor))
     }
 
     /// Move the first line drawn by `delta` lines, kept inside the file.
@@ -117,13 +224,69 @@ impl FilterEditor {
         self.top = self.top.saturating_add_signed(delta).min(last);
     }
 
-    /// What the status row shows: how many lines the pattern matches.
+    /// Up/Down and the page keys: scroll in the pattern, and move the cursor
+    /// line in the lines.
+    fn step(&mut self, delta: isize) {
+        match self.focus {
+            EditorFocus::Pattern => self.scroll(delta),
+            EditorFocus::Lines => {
+                let last = self.lines.len().saturating_sub(1);
+                self.cursor = self.cursor.saturating_add_signed(delta).min(last);
+                self.reveal = true;
+            }
+        }
+    }
+
+    /// Tab: move the focus to the other of the pattern and the lines. A
+    /// cursor line off the screen comes back to the first line drawn, so
+    /// the first mark lands where the user is looking. Leaving the lines
+    /// closes a visual range.
+    fn toggle_focus(&mut self) {
+        self.focus = match self.focus {
+            EditorFocus::Pattern => {
+                if self.cursor < self.top || self.cursor >= self.top + self.page {
+                    self.cursor = self.top;
+                }
+                EditorFocus::Lines
+            }
+            EditorFocus::Lines => {
+                self.anchor = None;
+                EditorFocus::Pattern
+            }
+        };
+    }
+
+    /// Scroll so the cursor line is on the screen, if a key moved it.
+    pub(super) fn reveal_cursor(&mut self) {
+        if !std::mem::take(&mut self.reveal) {
+            return;
+        }
+        if self.cursor < self.top {
+            self.top = self.cursor;
+        } else if self.cursor >= self.top + self.page {
+            self.top = self.cursor + 1 - self.page;
+        }
+    }
+
+    /// What the status row shows: how many lines the pattern matches, and
+    /// how many checks it fails once a line is marked.
     pub(super) fn status(&self) -> String {
         let total = grouped(self.lines.len());
-        if self.regex.is_none() {
-            return format!("{total} lines");
+        let count = if self.regex.is_none() {
+            format!("{total} lines")
+        } else {
+            format!("{} of {total} lines match", grouped(self.matches))
+        };
+        if self.marks.is_empty() {
+            return count;
         }
-        format!("{} of {total} lines match", grouped(self.matches))
+        let verb = if self.failures == 1 { "fails" } else { "fail" };
+        let noun = if self.failures == 1 {
+            "check"
+        } else {
+            "checks"
+        };
+        format!("{count} · {} {noun} {verb}", grouped(self.failures))
     }
 }
 
@@ -164,7 +327,28 @@ impl App<'_> {
     pub(super) fn open_filter_editor(&mut self) {
         self.promote_truncated_preview();
         let lines = self.view.source().clone();
-        self.filter_editor = Some(FilterEditor::new(lines, self.filters.next_style()));
+        let mut editor = FilterEditor::new(lines, self.filters.next_style());
+        self.mark_origin_line(&mut editor);
+        self.filter_editor = Some(editor);
+    }
+
+    /// Opened from the file view — `f` pressed there — the file view's
+    /// cursor line is what the user was looking at, so it is the first
+    /// must-match line (#314). Opened from the filter pane, nothing is
+    /// marked.
+    fn mark_origin_line(&self, editor: &mut FilterEditor) {
+        if self.chain_origin != Some(super::Focus::View) {
+            return;
+        }
+        let row = self.view.cursor_visible_row();
+        let line = self.document.source_at(row).unwrap_or(row);
+        if line >= editor.lines.len() {
+            return;
+        }
+        editor.cursor = line;
+        editor.reveal = true;
+        editor.marks.insert(line, Mark::MustMatch);
+        editor.count_failures();
     }
 
     /// `f C`: open the filter editor on the filter at `index` (#313). A
@@ -183,39 +367,88 @@ impl App<'_> {
         let (pattern, style) = (regex.as_str().to_string(), filter.style);
         self.promote_truncated_preview();
         let lines = self.view.source().clone();
-        self.filter_editor = Some(FilterEditor::editing(lines, style, index, pattern));
+        let mut editor = FilterEditor::editing(lines, style, index, pattern);
+        self.mark_origin_line(&mut editor);
+        self.filter_editor = Some(editor);
     }
 
     /// Feed a key to the open filter editor. It takes every key: a key
     /// `Scope::FilterEditor` does not bind is tried as a prompt editing key, and a
     /// character that is neither is typed into the pattern.
+    ///
+    /// The mark keys (#314) act only on the lines. With the focus on the
+    /// pattern they are typed, since `+` and `-` are pattern characters too;
+    /// and with the focus on the lines, a key that would edit the pattern
+    /// does nothing.
     pub(super) fn handle_filter_editor_key(&mut self, key: event::KeyEvent) {
         use crate::keymap::ActionId as A;
         let pressed = crate::keymap::normalise(key);
-        if let Some(action) = self
+        let focus = self
+            .filter_editor
+            .as_ref()
+            .map_or(EditorFocus::Pattern, |editor| editor.focus);
+        let action = self
             .keymap
             .resolve(crate::keymap::Scope::FilterEditor, pressed)
-        {
+            .filter(|action| {
+                focus == EditorFocus::Lines
+                    || !matches!(
+                        action,
+                        A::FilterEditorMarkMatch
+                            | A::FilterEditorMarkNoMatch
+                            | A::FilterEditorMarkClear
+                            | A::FilterEditorVisualLine
+                    )
+            });
+        if let Some(action) = action {
+            let page = |editor: &FilterEditor| isize::try_from(editor.page).unwrap_or(isize::MAX);
             match action {
                 A::FilterEditorCommit => self.commit_filter_editor(),
+                // Esc closes a visual range first, as it does in the file
+                // view; a second Esc closes the editor.
+                A::FilterEditorCancel
+                    if self
+                        .filter_editor
+                        .as_ref()
+                        .is_some_and(|editor| editor.anchor.is_some()) =>
+                {
+                    self.edit_filter_editor(|editor| editor.anchor = None);
+                }
                 A::FilterEditorCancel => {
                     self.filter_editor = None;
                     // As a cancelled `f i` prompt: the chain ends where it is.
                     self.chain_origin = None;
                 }
-                A::FilterEditorScrollUp => self.edit_filter_editor(|editor| editor.scroll(-1)),
-                A::FilterEditorScrollDown => self.edit_filter_editor(|editor| editor.scroll(1)),
-                A::FilterEditorPageUp => self.edit_filter_editor(|editor| {
-                    editor.scroll(-isize::try_from(editor.page).unwrap_or(isize::MAX));
-                }),
-                A::FilterEditorPageDown => self.edit_filter_editor(|editor| {
-                    editor.scroll(isize::try_from(editor.page).unwrap_or(isize::MAX));
+                A::FilterEditorScrollUp => self.edit_filter_editor(|editor| editor.step(-1)),
+                A::FilterEditorScrollDown => self.edit_filter_editor(|editor| editor.step(1)),
+                A::FilterEditorPageUp => {
+                    self.edit_filter_editor(|editor| editor.step(-page(editor)));
+                }
+                A::FilterEditorPageDown => {
+                    self.edit_filter_editor(|editor| editor.step(page(editor)));
+                }
+                A::FilterEditorFocus => self.edit_filter_editor(FilterEditor::toggle_focus),
+                A::FilterEditorMarkMatch => {
+                    self.edit_filter_editor(|editor| editor.set_mark(Some(Mark::MustMatch)));
+                }
+                A::FilterEditorMarkNoMatch => {
+                    self.edit_filter_editor(|editor| editor.set_mark(Some(Mark::MustNotMatch)));
+                }
+                A::FilterEditorMarkClear => self.edit_filter_editor(|editor| editor.set_mark(None)),
+                A::FilterEditorVisualLine => self.edit_filter_editor(|editor| {
+                    editor.anchor = match editor.anchor {
+                        Some(_) => None,
+                        None => Some(editor.cursor),
+                    };
                 }),
                 // `resolve(Scope::FilterEditor, ..)` answers only with the arms
                 // above; matched rather than left to a panic, as in
                 // `handle_search_key`.
                 _ => {}
             }
+            return;
+        }
+        if focus == EditorFocus::Lines {
             return;
         }
         if let Some(action) = self.keymap.resolve(crate::keymap::Scope::Prompt, pressed) {

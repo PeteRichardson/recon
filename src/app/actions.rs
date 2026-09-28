@@ -415,7 +415,12 @@ impl App<'_> {
             | A::FilterEditorScrollUp
             | A::FilterEditorScrollDown
             | A::FilterEditorPageUp
-            | A::FilterEditorPageDown => {
+            | A::FilterEditorPageDown
+            | A::FilterEditorFocus
+            | A::FilterEditorMarkMatch
+            | A::FilterEditorMarkNoMatch
+            | A::FilterEditorMarkClear
+            | A::FilterEditorVisualLine => {
                 debug_assert!(
                     false,
                     "{action:?} resolves in its own modal dispatch, never through `perform`"
