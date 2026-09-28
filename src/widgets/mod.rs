@@ -99,11 +99,14 @@ pub(crate) enum FilterCommand {
     /// in place. The one variant `App` answers by opening a prompt rather than
     /// by changing the set — nothing is mutated until that prompt commits.
     Edit(usize),
+    /// Open the filter editor over this filter's pattern (#313). Like
+    /// `Edit`, nothing is mutated until the editor commits.
+    EditInEditor(usize),
     /// Flip the selected numbered filter between `Include` and `Context`.
     ToggleContext(usize),
     /// Enable or disable a named set as a unit (#129). Never set 0.
     ToggleSet(usize),
-    /// `d`, `c` or `m` on a set's header row: sets are defined in
+    /// `d`, `c`, `C` or `m` on a set's header row: sets are defined in
     /// `filters.toml`, and `App` says so on the status row rather than
     /// letting the key do nothing.
     SetIsReadOnly,
@@ -114,7 +117,7 @@ pub(crate) enum FilterCommand {
     Solo(usize),
     /// `R` anywhere in the pane: every set back to its startup state (#132).
     Reset,
-    /// `d` or `c` on a built-in filter's row (#127): recon's filters can be
+    /// `d`, `c` or `C` on a built-in filter's row (#127): recon's filters can be
     /// switched and collapsed, not deleted or rewritten.
     BuiltInIsReadOnly,
 }

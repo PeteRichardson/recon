@@ -35,9 +35,14 @@ impl FilterEditor {
             );
         }
 
-        let block = Block::bordered()
-            .title(" Filter editor ")
-            .title_bottom(" Enter add · Esc cancel · Up/Down/PgUp/PgDn scroll ");
+        let block =
+            Block::bordered()
+                .title(" Filter editor ")
+                .title_bottom(if self.target.is_some() {
+                    " Enter change · Esc cancel · Up/Down/PgUp/PgDn scroll "
+                } else {
+                    " Enter add · Esc cancel · Up/Down/PgUp/PgDn scroll "
+                });
         let inner = block.inner(panel_area);
         block.render(panel_area, buf);
         if inner.height == 0 {

@@ -365,7 +365,8 @@ impl App<'_> {
             | A::FiltersSolo
             | A::FiltersReset
             | A::FiltersSaveSet
-            | A::FiltersEditorNew => {
+            | A::FiltersEditorNew
+            | A::FiltersEditorOpen => {
                 debug_assert!(
                     false,
                     "{action:?} resolves against its own widget, never through `perform`"

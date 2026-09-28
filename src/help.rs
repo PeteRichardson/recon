@@ -548,8 +548,8 @@ pub const KEYMAP: &[Section] = &[
                 names: &[],
             },
             Binding {
-                keys: &["f I"],
-                action: "Write a new filter in the filter editor",
+                keys: &["f I", "f C"],
+                action: "Filter editor: a new / the selected filter",
                 names: &[],
             },
             Binding {
@@ -783,6 +783,11 @@ pub const KEYMAP: &[Section] = &[
                 action: "Open the filter editor on a new filter",
                 names: &["filters.editor.new"],
             },
+            Binding {
+                keys: &["C"],
+                action: "Open the filter editor on the selected filter",
+                names: &["filters.editor.open"],
+            },
         ],
     },
     Section {
@@ -861,7 +866,7 @@ pub const KEYMAP: &[Section] = &[
             },
             Binding {
                 keys: &["Enter"],
-                action: "Add the pattern as an including filter",
+                action: "Add the filter, or change the selected one",
                 names: &["filtereditor.commit"],
             },
             Binding {
@@ -1503,20 +1508,21 @@ mod tests {
     /// any further has nowhere left to go without this area's width growing
     /// past 151 — which would stop the second test here from failing on the
     /// regression it exists to catch — and a row that adds to *either* total
-    /// has to be re-measured against both. The height, 55, is likewise the
-    /// exact number of rows two columns hold at the current row count (110,
+    /// has to be re-measured against both. The height, 56, is likewise the
+    /// exact number of rows two columns hold at the current row count (111,
     /// after the two reserved-key rows of #242 raised it from 86 to 88,
     /// the two search-history rows of #274 to 90, the `L` row and the
     /// set picker's section of #284 to 97, the picker's two search rows
     /// of #285 to 99, the three hide rows of #300 to 102, and the `I` rows
-    /// and the filter editor's section of #312 to 110); adding a row without
+    /// and the filter editor's section of #312 to 110, and the `C` row of
+    /// #313 to 111); adding a row without
     /// raising the height would drop it off the bottom, which is a
     /// `shown(&columns) == rows.len()` failure below, not a width one.
     #[test]
     fn a_normal_terminal_shows_the_whole_keymap() {
         let rows = rows(&crate::keymap::Keymap::default());
 
-        let columns = layout(&rows, inner(150, 55));
+        let columns = layout(&rows, inner(150, 56));
 
         assert_eq!(shown(&columns), rows.len(), "the keymap did not fit");
         assert!(

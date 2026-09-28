@@ -263,3 +263,180 @@ fn a_rebound_key_opens_the_editor() {
     key(&mut app, KeyCode::Char('W'));
     assert!(app.filter_editor.is_some());
 }
+
+// ---- f C: the selected filter in the editor (#313) -----------------------
+
+/// Select the pane row that `row` is, and focus the pane.
+fn select_row(app: &mut App, row: widgets::filterlist::Row) {
+    let rows = widgets::filterlist::rows(&app.filters);
+    let at = rows
+        .iter()
+        .position(|seen| *seen == row)
+        .expect("the row is drawn");
+    focus_filter_pane(app);
+    app.filters_pane.select(at);
+}
+
+/// Scratch filter 0 is `ERROR`, filter 1 is `INFO`, as an excluding one.
+fn app_with_two_filters(name: &str) -> App<'static> {
+    let mut app = app_over_file(name, BODY);
+    app.add_filter("ERROR").expect("valid");
+    app.add_excluding_filter("INFO").expect("valid");
+    app
+}
+
+fn open_selected(app: &mut App) {
+    key(app, KeyCode::Char('f'));
+    key(app, KeyCode::Char('C'));
+}
+
+#[test]
+fn f_big_c_opens_the_selected_filter_with_its_matches_showing() {
+    let mut app = app_with_two_filters("editor_open_selected");
+    select_row(&mut app, widgets::filterlist::Row::Filter(0));
+    open_selected(&mut app);
+
+    let editor = editor(&app);
+    assert_eq!(editor.field.pattern, "ERROR");
+    assert_eq!(
+        editor.field.cursor, 5,
+        "the cursor is not at the end, as `c` puts it"
+    );
+    assert_eq!(editor.target, Some(0));
+    assert_eq!(editor.matches, 2, "the count did not show at once");
+    assert_eq!(
+        editor.style,
+        app.filters.filters()[0].style,
+        "not the filter's colour"
+    );
+    assert!(rendered(&mut app).contains("Enter change"));
+}
+
+/// Enter changes only the pattern, as `c` does: the sense, the enabled
+/// state, the colour and the index stay.
+#[test]
+fn enter_changes_only_the_pattern() {
+    let mut app = app_with_two_filters("editor_change");
+    app.filters.toggle_enabled(1);
+    let before = app.filters.filters()[1].clone();
+    select_row(&mut app, widgets::filterlist::Row::Filter(1));
+    open_selected(&mut app);
+    key(&mut app, KeyCode::Backspace);
+    key(&mut app, KeyCode::Backspace);
+    typed(&mut app, "timeout");
+    key(&mut app, KeyCode::Enter);
+
+    assert!(app.filter_editor.is_none());
+    assert_eq!(app.filters.len(), 2, "a filter was added, not changed");
+    let after = &app.filters.filters()[1];
+    assert_eq!(after.predicate.display(), "INtimeout");
+    assert_eq!(after.sense, before.sense);
+    assert_eq!(after.enabled, before.enabled);
+    assert_eq!(after.style, before.style);
+    assert_eq!(app.filters.filters()[0].predicate.display(), "ERROR");
+}
+
+#[test]
+fn esc_leaves_the_selected_filter_as_it_was() {
+    let mut app = app_with_two_filters("editor_change_esc");
+    select_row(&mut app, widgets::filterlist::Row::Filter(0));
+    open_selected(&mut app);
+    typed(&mut app, "X");
+    key(&mut app, KeyCode::Esc);
+
+    assert!(app.filter_editor.is_none());
+    assert_eq!(app.filters.filters()[0].predicate.display(), "ERROR");
+}
+
+/// `f C … Enter` returns as `f c … Enter` does.
+#[test]
+fn f_big_c_enter_returns_like_f_c() {
+    let mut app = app_with_two_filters("editor_change_returns");
+    key(&mut app, KeyCode::Char('t'));
+    key(&mut app, KeyCode::Char('f'));
+    key(&mut app, KeyCode::Char('j'));
+    key(&mut app, KeyCode::Char('C'));
+    assert!(
+        app.filter_editor.is_some(),
+        "sanity: j selected the first filter"
+    );
+    typed(&mut app, "!");
+    key(&mut app, KeyCode::Enter);
+
+    assert_eq!(app.focus, Focus::View);
+}
+
+#[test]
+fn f_big_c_on_a_header_row_says_why() {
+    let mut app = app_with_three_sets("editor_header");
+    let a = app
+        .filters
+        .sets()
+        .iter()
+        .position(|set| set.name == "a")
+        .expect("set a");
+    select_row(&mut app, widgets::filterlist::Row::Header(a));
+    key(&mut app, KeyCode::Char('C'));
+
+    assert!(app.filter_editor.is_none());
+    assert_eq!(
+        message(&app),
+        Some("sets are defined in filters.toml; edit the file to change one")
+    );
+}
+
+#[test]
+fn f_big_c_on_a_built_in_filter_says_why() {
+    let mut app = app_over_file("editor_builtin", BODY);
+    let definitions = app
+        .filters
+        .sets()
+        .iter()
+        .position(|set| set.name == filter::DEFINITIONS_SET)
+        .expect("the built-in set");
+    app.filters.set_enabled_set(definitions, true);
+    let (index, _) = app
+        .filters
+        .filters_in(definitions)
+        .next()
+        .expect("a built-in filter");
+    select_row(&mut app, widgets::filterlist::Row::BuiltIn(index));
+    key(&mut app, KeyCode::Char('C'));
+
+    assert!(app.filter_editor.is_none());
+    assert_eq!(
+        message(&app),
+        Some("built-in filters can be switched off or collapsed, not deleted or edited")
+    );
+}
+
+/// A definition filter in a file's set has no regex to show.
+#[test]
+fn f_big_c_on_a_definition_filter_says_why() {
+    let mut set = filter::test_support::loaded("defs", 10, true, &["functions"]);
+    set.filters[0].predicate = filter::Predicate::Definition(crate::syntax::Kind::Function);
+    let mut app = app_over_file("editor_definition", BODY);
+    app.filters = ActiveFilters::with_sets(None, &[set]);
+    app.refresh_view();
+    select_row(&mut app, widgets::filterlist::Row::Filter(0));
+    key(&mut app, KeyCode::Char('C'));
+
+    assert!(app.filter_editor.is_none());
+    assert_eq!(
+        message(&app),
+        Some("a definition filter has no pattern to edit; c turns it into one")
+    );
+}
+
+#[test]
+fn big_c_outside_the_filter_pane_names_the_chain() {
+    let mut app = app_over_file("editor_hint_c", BODY);
+    key(&mut app, KeyCode::Char('t'));
+    key(&mut app, KeyCode::Char('C'));
+
+    assert!(app.filter_editor.is_none());
+    assert_eq!(
+        message(&app),
+        Some("C opens the selected filter in the filter editor · f C")
+    );
+}
