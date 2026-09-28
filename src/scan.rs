@@ -31,7 +31,7 @@ use std::time::SystemTime;
 /// the read; either way nothing more can be read.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Progress {
-    pub seen: Vec<u64>,
+    pub seen: Vec<crate::filter::Bits>,
     pub scanned_to: u64,
     pub eof: bool,
 }
@@ -603,7 +603,7 @@ mod tests {
 
     // ---- records ---------------------------------------------------------
 
-    fn record(seen: &[u64], eof: bool) -> Record {
+    fn record(seen: &[crate::filter::Bits], eof: bool) -> Record {
         Record {
             stamp: None,
             progress: Progress {

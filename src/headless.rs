@@ -236,6 +236,12 @@ fn collect_files(
     warnings: &mut impl Write,
 ) -> Exit {
     let matcher = filters.matcher();
+    // An include asked for matching and there is none, so every file reads
+    // as unmatched. Said once, on the warnings channel, so a script does not
+    // take the result for a real answer (#306).
+    if let Some(off) = filters.scan_off() {
+        let _ = writeln!(warnings, "recon: {off}; no file is matched");
+    }
     let mut lines = Vec::new();
     let mut matched = 0;
     let mut failed = 0;
@@ -882,6 +888,32 @@ mod tests {
             summary,
             format!("recon: emitted 2 files from {}, hide mode", dir.display())
         );
+    }
+
+    /// #306: an include filter asked for matching and the set is past the
+    /// limit, so no file can match. That is said on the warnings channel,
+    /// not left for a script to take as a real answer. "Nothing selects" is
+    /// not a failure and says nothing.
+    #[test]
+    fn files_warns_when_file_matching_is_off() {
+        let inputs = three_logs("headless_files_scan_off");
+        let mut filters = ActiveFilters::new();
+        for i in 0..=crate::filter::MAX_PATTERNS {
+            filters.add(&format!("p{i}")).expect("valid pattern");
+        }
+        let mut warnings = Vec::new();
+        collect_files(&inputs, &filters, Mode::Dimmed, &mut warnings);
+        let text = String::from_utf8(warnings).expect("utf-8");
+        assert!(
+            text.contains("recon: file matching off: ") && text.contains("no file is matched"),
+            "no warning: {text}"
+        );
+
+        let mut exclude_only = ActiveFilters::new();
+        exclude_only.add_excluding("x").expect("valid pattern");
+        let mut warnings = Vec::new();
+        collect_files(&inputs, &exclude_only, Mode::Dimmed, &mut warnings);
+        assert!(warnings.is_empty(), "nothing selects is not a failure");
     }
 
     #[test]

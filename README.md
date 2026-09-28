@@ -1855,11 +1855,15 @@ needs every line's answer at once — see *Definition filters*.
 
 ## Known Limitations
 
-- **The explorer's file matching covers at most 64 patterns**, counted across
+- **The explorer's file matching covers at most 128 patterns**, counted across
   every loaded set whether or not it is enabled — and the built-in
-  `definitions` set's eleven are among them, so fifty-three are yours. Above
-  that the explorer's marking switches off — never wrong, just absent — while
-  the view keeps filtering. A `filters.toml` with many sets can reach this.
+  `definitions` set's eleven are among them, so 117 are yours. Above that the
+  explorer's marking switches off — never wrong, just absent — while the view
+  keeps filtering. The status line then says so, for example
+  `file matching off: 140 patterns, limit 128`, and `--emit files` writes the
+  same words to stderr. `file matching off: patterns too large` means the
+  patterns did not compile together, which the regex engine's size limit can
+  cause before the count does.
 - **Files are read entirely into memory — once, not twice.** `read_lines` in
   `src/widgets/fileview.rs` collects the whole file into a `Vec<String>`, and
   `Document` holds it. A multi-gigabyte log is fully resident, and there is

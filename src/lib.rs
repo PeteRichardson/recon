@@ -3588,8 +3588,16 @@ impl App<'_> {
         } else {
             format!("{count} {noun}")
         };
+        let off = self
+            .filters
+            .scan_off()
+            // Permanent rather than a message, because the cause stays until
+            // the user removes it: the explorer marks nothing and its `n`
+            // finds nothing, and without this nothing on the screen says why.
+            .map(|off| format!("   {off}"))
+            .unwrap_or_default();
         format!(
-            "{funnel}{filters}   {}/{total} lines shown{note}",
+            "{funnel}{filters}   {}/{total} lines shown{note}{off}",
             self.document.visible().len(),
         )
     }
@@ -9507,6 +9515,33 @@ mod tests {
         assert_eq!(app.focus, Focus::Filters);
     }
 
+    /// #306: more patterns than the scan's bits turns the explorer's file
+    /// matching off, and the status line says so, with the count and the
+    /// limit. A delete that brings the count back under the limit takes the
+    /// note away.
+    #[test]
+    fn the_status_line_says_when_file_matching_is_off() {
+        let mut app = app_over_file("scan_off_note", "alpha\n");
+        let room = filter::MAX_PATTERNS - crate::syntax::Kind::ALL.len();
+        for i in 0..room {
+            app.filters.add(&format!("p{i}")).expect("valid pattern");
+        }
+        assert!(
+            !status_line_at(&mut app, 200).contains("file matching off"),
+            "at the limit, matching still runs"
+        );
+
+        app.filters.add("one too many").expect("valid pattern");
+        let status = status_line_at(&mut app, 200);
+        assert!(
+            status.contains("file matching off: 129 patterns, limit 128"),
+            "no note: {status}"
+        );
+
+        app.filters.remove(0);
+        assert!(!status_line_at(&mut app, 200).contains("file matching off"));
+    }
+
     /// With the pane hidden, the status line says how many filters are on,
     /// so a user who hid it knows why lines are coloured or gone.
     #[test]
@@ -14926,7 +14961,7 @@ mod tests {
         );
     }
 
-    fn scanned(app: &App, row: usize, seen: Vec<u64>, eof: bool) -> scan::Scanned {
+    fn scanned(app: &App, row: usize, seen: Vec<filter::Bits>, eof: bool) -> scan::Scanned {
         let (index, path) = app.explorer.files()[row].clone();
         scan::Scanned {
             cache_id: app.scan_cache.id,
