@@ -1,7 +1,7 @@
 //! Filter sets: the set, solo, reset and adopt state machine over
 //! [`ActiveFilters`], and the types the loader hands it.
 
-use super::{ActiveFilters, Filter, Predicate, Sense};
+use super::{ActiveFilters, Example, Filter, Predicate, Sense};
 use crate::syntax::Kind;
 use ratatui::style::{Color, Style};
 use std::collections::BTreeMap;
@@ -109,6 +109,8 @@ pub struct LoadedFilter {
     /// `Filter` unchanged.
     pub description: Option<String>,
     pub prompt: Option<String>,
+    /// The file's `must_match` and `must_not_match` lines (#318).
+    pub examples: Vec<Example>,
 }
 
 /// One set as read from `filters.toml`.
@@ -239,6 +241,7 @@ impl ActiveFilters {
                         name: Some(kind.plural().to_string()),
                         description: None,
                         prompt: None,
+                        examples: Vec::new(),
                         set: index,
                     })
                     .collect();
@@ -273,6 +276,7 @@ impl ActiveFilters {
                     name: Some(filter.name.clone()),
                     description: filter.description.clone(),
                     prompt: filter.prompt.clone(),
+                    examples: filter.examples.clone(),
                     set: index,
                 });
             }
@@ -1685,12 +1689,17 @@ mod tests {
             name: Some("ex".into()),
             description: Some("why".into()),
             prompt: Some("what".into()),
+            examples: vec![Example {
+                line: "a line".into(),
+                must_match: true,
+            }],
         };
         assert!(set.set_details(x, details));
         let filter = &set.filters()[x];
         assert_eq!(filter.display_name(), "ex");
         assert_eq!(filter.description.as_deref(), Some("why"));
         assert_eq!(filter.prompt.as_deref(), Some("what"));
+        assert_eq!(filter.examples.len(), 1);
         let profiles = &set.sets()[1].profiles;
         assert_eq!(profiles["default"], ["ex", "z"]);
         assert_eq!(profiles["loud"], ["ex", "y", "z"]);
@@ -1748,5 +1757,39 @@ mod tests {
         assert!(set.set_sense(index, Sense::Exclude));
         assert!(set.set_sense(index, Sense::Include));
         assert_eq!(set.filters()[index].style, coloured, "the colour changed");
+    }
+
+    // ---- a filter's examples (#318) ------------------------------------------
+
+    #[test]
+    fn failed_examples_names_each_example_a_regex_fails() {
+        let mut a = loaded("a", 50, false, &["x"]);
+        a.filters[0].examples = vec![
+            Example {
+                line: "x one".into(),
+                must_match: true,
+            },
+            Example {
+                line: "two".into(),
+                must_match: true,
+            },
+            Example {
+                line: "x three".into(),
+                must_match: false,
+            },
+        ];
+        let set = ActiveFilters::with_sets(None, &[a]);
+        let (x, filter) = set.filters_in(1).next().expect("x");
+        assert_eq!(filter.examples.len(), 3, "the example went to the filter");
+        let failed: Vec<&str> = set
+            .failed_examples(x, &Regex::new("x").expect("valid"))
+            .into_iter()
+            .map(|example| example.line.as_str())
+            .collect();
+        assert_eq!(failed, ["two", "x three"]);
+        assert!(
+            set.failed_examples(x, &Regex::new("one|two").expect("valid"))
+                .is_empty()
+        );
     }
 }

@@ -13,7 +13,7 @@
 //! effective-enabled, profiles as actions — belongs to the `filter` module.
 
 use crate::config::parse_colour;
-use crate::filter::{LoadedFilter, LoadedSet, Predicate, Sense};
+use crate::filter::{Example, LoadedFilter, LoadedSet, Predicate, Sense};
 use crate::syntax::Kind;
 use regex::Regex;
 use serde::Deserialize;
@@ -74,6 +74,10 @@ struct FilterSchema {
     description: Option<String>,
     /// What the filter's lines look like, for a model (#317). One line.
     prompt: Option<String>,
+    /// Lines the pattern must match (#318), one string each.
+    must_match: Option<Vec<String>>,
+    /// Lines the pattern must not match (#318), one string each.
+    must_not_match: Option<Vec<String>>,
 }
 
 /// `sense` as the file spells it. A separate enum rather than deriving
@@ -315,6 +319,8 @@ fn parse_sets(text: &str, path: &Path) -> Result<Vec<LoadedSet>, Error> {
                     ));
                 }
             }
+            let examples = examples(entry.must_match, entry.must_not_match)
+                .map_err(|message| invalid(&name, Some(&display), message))?;
             if filters.iter().any(|filter| filter.name == display) {
                 return Err(invalid(
                     &name,
@@ -329,6 +335,7 @@ fn parse_sets(text: &str, path: &Path) -> Result<Vec<LoadedSet>, Error> {
                 colour,
                 description: entry.description,
                 prompt: entry.prompt,
+                examples,
             });
         }
 
@@ -379,11 +386,47 @@ fn finish(mut sets: Vec<LoadedSet>) -> Vec<LoadedSet> {
     sets
 }
 
+/// A filter's `must_match` and `must_not_match` lines as examples (#318),
+/// the must-match lines first, each array in the file's order. A line is one
+/// line of a log, so a line break in one is refused; so is a line in both
+/// arrays, which no pattern can pass. A line twice in one array is kept
+/// once. The pattern is not checked against them here: a filter that fails
+/// its examples still loads, and the filter editor shows which fail.
+fn examples(
+    must_match: Option<Vec<String>>,
+    must_not_match: Option<Vec<String>>,
+) -> Result<Vec<Example>, String> {
+    let mut examples: Vec<Example> = Vec::new();
+    for (key, lines, must) in [
+        ("must_match", must_match, true),
+        ("must_not_match", must_not_match, false),
+    ] {
+        for line in lines.unwrap_or_default() {
+            if line.contains(['\n', '\r']) {
+                return Err(format!("a line in `{key}` must be one line of text"));
+            }
+            match examples.iter().find(|example| example.line == line) {
+                Some(example) if example.must_match != must => {
+                    return Err(format!(
+                        "{line:?} is in both `must_match` and `must_not_match`"
+                    ));
+                }
+                Some(_) => {}
+                None => examples.push(Example {
+                    line,
+                    must_match: must,
+                }),
+            }
+        }
+    }
+    Ok(examples)
+}
+
 /// What `S` writes: the scratch set, under a name (#131).
 ///
 /// What the user gave each filter and nothing else: its pattern and sense,
 /// and its name, description and prompt when the filter editor gave it one
-/// (#317). No `priority`, `autoload` or `colour`: each is a one-line hand
+/// (#317), and its examples (#318). No `priority`, `autoload` or `colour`: each is a one-line hand
 /// edit to a file `S` has just shown the shape of, and a default the user
 /// did not ask for is a thing to delete later.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -406,6 +449,8 @@ pub struct FilterToSave {
     pub name: Option<String>,
     pub description: Option<String>,
     pub prompt: Option<String>,
+    /// Written as `must_match` and `must_not_match`; an empty one is not.
+    pub examples: Vec<Example>,
 }
 
 impl FilterToSave {
@@ -418,6 +463,7 @@ impl FilterToSave {
             name: None,
             description: None,
             prompt: None,
+            examples: Vec::new(),
         }
     }
 }
@@ -435,7 +481,8 @@ impl FilterToSave {
 /// survive, and the new tables go at the end. A pattern goes in as a
 /// single-quoted literal string wherever TOML allows one — no `\\` tax on
 /// the way out, matching the way in — and as a basic string only when it
-/// holds a `'` or a newline, which a literal cannot.
+/// holds a `'` or a control character other than a tab, which a literal
+/// cannot.
 pub fn append_set(text: &str, set: &SetToSave<'_>) -> Result<String, String> {
     use toml_edit::{Array, ArrayOfTables, DocumentMut, Item, Table, value};
 
@@ -495,11 +542,38 @@ pub fn append_set(text: &str, set: &SetToSave<'_>) -> Result<String, String> {
         if let Some(sense) = sense {
             filter.insert("sense", value(sense));
         }
+        // The examples last: they are the longest lines in the file.
+        for (key, must) in [("must_match", true), ("must_not_match", false)] {
+            let lines = example_lines(&entry.examples, must)?;
+            if !lines.is_empty() {
+                filter.insert(key, value(lines));
+            }
+        }
         filters.push(filter);
     }
     table.insert("filters", Item::ArrayOfTables(filters));
     sets.insert(set.name, Item::Table(table));
     Ok(doc.to_string())
+}
+
+/// The lines of `examples` that must match, or must not, as a TOML array
+/// with one line of the log on each line of the file (#318): a log line is
+/// long, and side by side in one row they could not be read.
+fn example_lines(examples: &[Example], must_match: bool) -> Result<toml_edit::Array, String> {
+    let mut array = toml_edit::Array::new();
+    for example in examples
+        .iter()
+        .filter(|example| example.must_match == must_match)
+    {
+        let mut line = literal_string(&example.line)?
+            .into_value()
+            .map_err(|_| "a string is not a value".to_string())?;
+        line.decor_mut().set_prefix("\n    ");
+        array.push_formatted(line);
+    }
+    array.set_trailing_comma(true);
+    array.set_trailing("\n");
+    Ok(array)
 }
 
 /// `pattern` as a TOML string value, single-quoted when it can be.
@@ -510,7 +584,12 @@ pub fn append_set(text: &str, set: &SetToSave<'_>) -> Result<String, String> {
 fn literal_string(pattern: &str) -> Result<toml_edit::Item, String> {
     use toml_edit::{DocumentMut, value};
 
-    if pattern.contains('\'') || pattern.contains('\n') || pattern.contains('\r') {
+    // A literal string holds no `'` and no control character but a tab: a
+    // log line with a colour escape in it goes in as a basic string.
+    if pattern
+        .chars()
+        .any(|c| c == '\'' || (c.is_control() && c != '\t'))
+    {
         return Ok(value(pattern));
     }
     let mut one: DocumentMut = format!("pattern = '{pattern}'\n")
@@ -1227,6 +1306,122 @@ sense = "context"
         assert_eq!(s.filters[1].name, "plain");
         assert_eq!(s.filters[1].description, None);
         assert_eq!(s.profiles["default"], vec!["bug57".to_string()]);
+    }
+
+    // ---- a filter's examples (#318) ----------------------------------------
+
+    fn example(line: &str, must_match: bool) -> Example {
+        Example {
+            line: line.into(),
+            must_match,
+        }
+    }
+
+    #[test]
+    fn a_filter_reads_its_examples_must_match_first() {
+        let sets = parsed(
+            "[sets.a]\n[[sets.a.filters]]\npattern = 'ERROR'\n\
+             must_not_match = [\n    'INFO ok',\n]\n\
+             must_match = [\n    'ERROR timeout',\n    'ERROR disk',\n    'ERROR disk',\n]\n\
+             [[sets.a.filters]]\npattern = 'plain'\n",
+        );
+        let a = sets.iter().find(|set| set.name == "a").expect("a");
+        assert_eq!(
+            a.filters[0].examples,
+            [
+                example("ERROR timeout", true),
+                example("ERROR disk", true),
+                example("INFO ok", false),
+            ],
+            "a line twice in one array is one example"
+        );
+        assert!(a.filters[1].examples.is_empty(), "both keys are optional");
+    }
+
+    /// A pattern that fails its examples still loads: the filter editor is
+    /// where the failure shows.
+    #[test]
+    fn a_filter_that_fails_its_examples_still_loads() {
+        let sets = parsed("[sets.a]\n[[sets.a.filters]]\npattern = 'x'\nmust_match = ['y']\n");
+        let a = sets.iter().find(|set| set.name == "a").expect("a");
+        assert_eq!(a.filters[0].examples, [example("y", true)]);
+    }
+
+    #[test]
+    fn an_example_line_in_both_arrays_is_refused() {
+        let message = rejected(
+            "[sets.a]\n[[sets.a.filters]]\nname = 'n'\npattern = 'x'\n\
+             must_match = ['x y']\nmust_not_match = ['x y']\n",
+        );
+        assert!(
+            message.contains("filter 'n': \"x y\" is in both `must_match` and `must_not_match`"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn an_example_of_more_than_one_line_or_not_a_string_is_refused() {
+        let message = rejected(
+            "[sets.a]\n[[sets.a.filters]]\nname = 'n'\npattern = 'x'\n\
+             must_not_match = [\"one\\ntwo\"]\n",
+        );
+        assert!(
+            message.contains("filter 'n': a line in `must_not_match` must be one line"),
+            "{message}"
+        );
+        let message = rejected("[sets.a]\n[[sets.a.filters]]\npattern = 'x'\nmust_match = [3]\n");
+        assert!(message.contains("invalid filter sets file"), "{message}");
+        let message = rejected("[sets.a]\n[[sets.a.filters]]\npattern = 'x'\nmust_match = 'x'\n");
+        assert!(message.contains("must_match"), "{message}");
+    }
+
+    /// `S` writes each example on a line of its own, single-quoted where a
+    /// literal string can hold it, and the file loads back to the same
+    /// examples; the comments already in the file stay.
+    #[test]
+    fn append_set_writes_one_example_on_each_line_and_it_loads_again() {
+        let before = "# my sets\n[sets.old]  # kept\n[[sets.old.filters]]\npattern = 'o'\n";
+        let lines = [
+            example(r"2026-09-28 ERROR [net] C:\temp timeout after 30s", true),
+            example("it's a timeout", true),
+            example("\u{1b}[31mcoloured\u{1b}[0m\ttabbed", true),
+            example("INFO ok", false),
+        ];
+        let after = append_set(
+            before,
+            &SetToSave {
+                name: "s",
+                filters: vec![
+                    FilterToSave {
+                        examples: lines.to_vec(),
+                        ..FilterToSave::new("timeout|coloured", Sense::Include)
+                    },
+                    FilterToSave::new("plain", Sense::Include),
+                ],
+                default: vec![],
+            },
+        )
+        .expect("edits");
+        assert!(after.starts_with(before), "{after}");
+        assert!(
+            after.contains(
+                "must_match = [\n    '2026-09-28 ERROR [net] C:\\temp timeout after 30s',\n    \"it's a timeout\",\n"
+            ),
+            "{after}"
+        );
+        assert!(
+            after.contains("must_not_match = [\n    'INFO ok',\n]\n"),
+            "{after}"
+        );
+        assert_eq!(
+            after.matches("must_match").count(),
+            1,
+            "no key for a filter without examples:\n{after}"
+        );
+        let sets = parse(&after, Path::new("t")).expect("round-trips");
+        let s = sets.iter().find(|set| set.name == "s").expect("s");
+        assert_eq!(s.filters[0].examples, lines);
+        assert!(s.filters[1].examples.is_empty());
     }
 
     // ---- RECON_FILTER_PATH (#46) -------------------------------------------

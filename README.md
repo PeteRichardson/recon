@@ -648,6 +648,12 @@ description = "The AP dropped us (bug #57)"   # one line, for people
 prompt      = "Deauthentication, in either direction"  # one line, what matches
 pattern     = 'deauthenticat(ed|ing)'
 colour      = "red"                      # instead of the next palette colour
+must_match = [                           # examples: lines the pattern must match
+    'wlan0: deauthenticated from 0a:1b:2c:3d:4e:5f (reason: 7)',
+]
+must_not_match = [                       # and lines it must not match
+    'wlan0: deauthentication frame ignored',
+]
 
 [[sets.WiFi_debug.filters]]
 name    = "beacon-loss"
@@ -708,14 +714,21 @@ recon is exactly this model with one set.
   in the same spellings as the palette: a name, `#RRGGBB`, or a 256-colour
   index as a string. A palette position is a poor way to say "errors are
   red".
+- **`must_match`** and **`must_not_match`** — the filter's
+  [examples](#examples): whole lines that the pattern must match, or must
+  not match. Each is an array of strings, one log line to a string. Both
+  keys are optional. recon writes each line of the log on a line of the file
+  of its own, so a long line stays readable. A line of more than one line,
+  or a line in both arrays, is refused. A pattern that fails its examples
+  still loads; the filter editor shows which examples fail.
 
 The file is validated before the terminal is taken, with the same
 refuse-to-start policy as `config.toml`: a pattern that does not compile, a
 colour that does not parse, two filters answering to one name, a profile
 naming a filter the set lacks, a set with no filters, or a key the schema does
 not know each stop recon with a message naming the file, the set and the
-filter. A `description` or a `prompt` that is not a string stops recon in the
-same way. A missing file is not an error. recon writes this file in exactly one
+filter. A `description` or a `prompt` that is not a string, or an example that
+is not a string, stops recon in the same way. A missing file is not an error. recon writes this file in exactly one
 case, `S`, and only ever appends to it — see below.
 
 The filter pane has two levels. The scratch set's filters come first with no
@@ -781,8 +794,8 @@ confirmation. `R` is uppercase because `r` is the global refresh-from-disk.
 **Saving**: `S` in the filter pane saves the scratch filters as a named set.
 A prompt asks for the name; `Enter` appends a `[sets.<name>]` table to
 `filters.toml` with one entry per scratch filter — its pattern, single-quoted,
-its sense when not include, and its name, description and prompt when [the
-filter editor](#the-filter-editor) gave it one — and a `default` profile of the
+its sense when not include, and its name, description, prompt and examples
+when [the filter editor](#the-filter-editor) gave it them — and a `default` profile of the
 filters that are on right now, so the set opens the way it was saved. Comments and every
 existing table survive untouched; the file is created if it does not exist.
 Then the scratch set becomes that set in place, enabled, with the same flags,
@@ -956,9 +969,32 @@ what the pattern matched by mistake. The status row adds the number of
 failed checks to the count: `312 of 50,000 lines match · 1 check fails`.
 
 If you open the editor from the file view (`f` pressed there), the file
-view's cursor line is already marked must-match. From any other pane, no
-line is marked. The marks last only while the editor is open: `Enter` and
-`Esc` both discard them.
+view's cursor line is already marked must-match, unless an example already
+marks it. From any other pane, no line is marked. `Enter` keeps the marks
+on the filter as its examples, and `Esc` discards them.
+
+##### Examples
+
+An example is a check that `Enter` keeps with the filter: a line the pattern
+must match (`+`) or must not match (`-`). It is a regression test. A later
+pattern that fails it does not replace the pattern that passes it.
+
+- `Enter` gives the filter one example for each marked line, with the text
+  of the line. A line that the file has more than once is one example.
+- `Enter` refuses a pattern while a check fails. The panel says how many
+  checks fail and shows the first one's line: `a check fails; fix the
+  pattern or clear the mark: "ERROR disk"`. `f` goes to each failed check.
+  To save, change the pattern or remove the mark with `=`.
+- `f C` shows the filter's examples as marks, on each line of the file that
+  has the example's text. An example that is not a line of the open file is
+  drawn after the file's last line, as `example, not in the file: <line>`.
+  It is a check as any other: it counts in the failed checks, `f` goes to
+  it, and `=` removes it. The status row counts these:
+  `2 of 4 lines match · 1 example not in the file · 0 checks fail`.
+- `f c` refuses a pattern that fails an example of the filter, with the
+  first one's line in the prompt. `f C` shows all of them.
+- `S` writes the examples of the scratch filters as `must_match` and
+  `must_not_match`. A filter without examples works as before.
 
 ##### Going through the lines
 
@@ -1009,7 +1045,8 @@ filter's slot, colour and enabled state; the sense is the one in the sense
 field. On a set's header row or a built-in filter, `C`
 says why it cannot, as `c` does. A definition filter has no pattern to show,
 so `C` says so; `c` is the way to turn one into a pattern. On an
-empty pattern or one that does not compile, `Enter` keeps the editor open.
+empty pattern, one that does not compile, or one that fails a check,
+`Enter` keeps the editor open.
 Unlike a prompt, `Backspace` on an empty pattern does not close it. The
 editor takes every key while it is open, so `q` is typed rather than quitting.
 The scope is `filtereditor`, not `editor`, because `[editor]` is the external

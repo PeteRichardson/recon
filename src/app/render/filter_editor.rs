@@ -31,6 +31,9 @@ const PANEL_ROWS: u16 = 6;
 /// start in one column.
 const LABEL_WIDTH: usize = 13;
 
+/// Before an example that is not a line of the file (#318).
+const NOT_IN_FILE: &str = "example, not in the file: ";
+
 /// The mark of a line the pattern gets right.
 const PASS: Style = Style::new().fg(Color::Green).add_modifier(Modifier::BOLD);
 
@@ -51,15 +54,22 @@ impl FilterEditor {
         block.render(file_area, buf);
         self.page = usize::from(inner.height).max(1);
         self.reveal_cursor();
-        let lines = self.lines.clone();
         // A row, not a line: with matches only (#315), row `top` is not line
         // `top`.
         for (y, index) in
             (inner.y..inner.bottom()).zip((self.top..).map_while(|row| self.line_at(row)))
         {
-            let line = &lines[index];
+            let line = self.text(index).unwrap_or_default();
             let check = self.check(index);
             let mut spans = self.gutter(index, check);
+            // An example the file does not have (#318) says so before its
+            // text, so it is not read as a line of the file.
+            if index >= self.lines.len() {
+                spans.push(Span::styled(
+                    NOT_IN_FILE,
+                    Style::default().fg(Color::DarkGray),
+                ));
+            }
             spans.extend(self.spans(line, dim, check));
             // A failed check fills its whole row, not only its text.
             let row = if check.is_some_and(|check| !check.passes) {
