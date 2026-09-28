@@ -1,5 +1,5 @@
 //! Drawing the filter editor (#312): the file with every match highlighted,
-//! and the panel that holds the pattern.
+//! and the panel that holds the name, description, prompt and pattern.
 
 use super::super::filter_editor::{Check, EditorFocus, FilterEditor, Mark};
 use crate::widgets::pane_block;
@@ -22,6 +22,13 @@ const FAIL: Style = Style::new()
     .bg(Color::Red)
     .add_modifier(Modifier::BOLD);
 
+/// The panel's rows: the four fields and the error line.
+const PANEL_ROWS: u16 = 5;
+
+/// The width of the longest field label, `description: `, so the four
+/// fields start in one column.
+const LABEL_WIDTH: usize = 13;
+
 /// The mark of a line the pattern gets right.
 const PASS: Style = Style::new().fg(Color::Green).add_modifier(Modifier::BOLD);
 
@@ -32,7 +39,8 @@ impl FilterEditor {
     pub(in crate::app) fn render(&mut self, title: &str, dim: Style, area: Rect, buf: &mut Buffer) {
         use Constraint::{Length, Min};
         Clear.render(area, buf);
-        let [file_area, panel_area] = Layout::vertical([Min(0), Length(4)]).areas(area);
+        let [file_area, panel_area] =
+            Layout::vertical([Min(0), Length(PANEL_ROWS + 2)]).areas(area);
 
         // The focused part's frame is thick and green, as a focused pane's
         // is in the main window.
@@ -73,48 +81,53 @@ impl FilterEditor {
             "Enter add"
         };
         let keys = match self.focus {
-            EditorFocus::Pattern => {
-                format!(
-                    " {enter} · Esc cancel · Up/Down/PgUp/PgDn scroll · Ctrl-z/Ctrl-y undo/redo · Tab lines "
-                )
-            }
+            EditorFocus::Pattern => format!(
+                " {enter} · Esc cancel · Up/Down/PgUp/PgDn scroll · Ctrl-z/Ctrl-y undo/redo · Tab lines · Shift-Tab prompt "
+            ),
+            EditorFocus::Name | EditorFocus::Description | EditorFocus::Prompt => format!(
+                " {enter} · Esc cancel · Up/Down/PgUp/PgDn scroll · Tab/Shift-Tab next/previous field "
+            ),
             EditorFocus::Lines => format!(
-                " + must match · - must not · = clear · V range · f/F failed · n/N unmarked · u matches only · {enter} · Esc cancel · Tab pattern "
+                " + must match · - must not · = clear · V range · f/F failed · n/N unmarked · u matches only · {enter} · Esc cancel · Tab name · Shift-Tab pattern "
             ),
         };
         let block =
-            pane_block(" Filter editor ", self.focus == EditorFocus::Pattern).title_bottom(keys);
+            pane_block(" Filter editor ", self.focus != EditorFocus::Lines).title_bottom(keys);
         let inner = block.inner(panel_area);
         block.render(panel_area, buf);
-        if inner.height == 0 {
-            return;
-        }
-        let label = "pattern: ";
         let x = inner.x + 1;
         let width = inner.width.saturating_sub(2);
-        buf.set_stringn(
-            x,
-            inner.y,
-            format!("{label}{}", self.field.pattern),
-            usize::from(width),
-            Style::default(),
-        );
-        // The cursor as the prompt row draws it: the cell in reversed video.
-        // Only while the keys go to the pattern: on the lines, the cursor
-        // line is the one to watch.
-        let column = label.chars().count() + self.field.cursor;
-        if self.focus == EditorFocus::Pattern
-            && let Ok(column) = u16::try_from(column)
-            && column < width
-        {
-            buf[(x + column, inner.y)].set_style(Style::default().add_modifier(Modifier::REVERSED));
+        let fields = [
+            ("name:", &self.name, EditorFocus::Name),
+            ("description:", &self.description, EditorFocus::Description),
+            ("prompt:", &self.prompt, EditorFocus::Prompt),
+            ("pattern:", &self.field, EditorFocus::Pattern),
+        ];
+        for ((label, field, focus), y) in fields.into_iter().zip(inner.y..inner.bottom()) {
+            buf.set_stringn(
+                x,
+                y,
+                format!("{label:LABEL_WIDTH$}{}", field.pattern),
+                usize::from(width),
+                Style::default(),
+            );
+            // The cursor as the prompt row draws it: the cell in reversed
+            // video. Only in the field the keys go to: on the lines, the
+            // cursor line is the one to watch.
+            let column = LABEL_WIDTH + field.cursor;
+            if self.focus == focus
+                && let Ok(column) = u16::try_from(column)
+                && column < width
+            {
+                buf[(x + column, y)].set_style(Style::default().add_modifier(Modifier::REVERSED));
+            }
         }
         if let Some(error) = &self.error
-            && inner.height > 1
+            && inner.height >= PANEL_ROWS
         {
             buf.set_stringn(
                 x,
-                inner.y + 1,
+                inner.y + PANEL_ROWS - 1,
                 error,
                 usize::from(width),
                 Style::default().fg(Color::Red),

@@ -309,9 +309,15 @@ pub struct Filter {
     pub sense: Sense,
     pub enabled: bool,
     pub style: Style,
-    /// The file's `name` for this filter, if it gave one (#128). `None` for
-    /// every typed filter; see `display_name`.
+    /// The file's `name` for this filter, if it gave one (#128), or the one
+    /// typed in the filter editor (#317). `None` for a typed filter until
+    /// then; see `display_name`.
     pub name: Option<String>,
+    /// Why the filter exists, for people only (#317). Never sent to a model.
+    pub description: Option<String>,
+    /// What the filter's lines look like, in plain language (#317): the
+    /// text a model will be given to write the pattern from.
+    pub prompt: Option<String>,
     /// Index into `ActiveFilters::sets`. 0 is the scratch set.
     pub set: usize,
 }
@@ -327,6 +333,15 @@ impl Filter {
             .clone()
             .unwrap_or_else(|| self.predicate.display())
     }
+}
+
+/// What the filter editor edits beside the pattern (#317). `None` is a
+/// field left empty.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Details {
+    pub name: Option<String>,
+    pub description: Option<String>,
+    pub prompt: Option<String>,
 }
 
 /// Every enabled flag in an [`ActiveFilters`], captured so it can be restored.
@@ -555,6 +570,8 @@ impl ActiveFilters {
             enabled: true,
             style,
             name: None,
+            description: None,
+            prompt: None,
             set: 0,
         });
         Ok(())
@@ -573,6 +590,8 @@ impl ActiveFilters {
             enabled: true,
             style: Style::default(),
             name: None,
+            description: None,
+            prompt: None,
             set: 0,
         });
         Ok(())
@@ -591,6 +610,8 @@ impl ActiveFilters {
             enabled: true,
             style,
             name: None,
+            description: None,
+            prompt: None,
             set: 0,
         });
     }
@@ -781,6 +802,54 @@ impl ActiveFilters {
             }
             None => Ok(false),
         }
+    }
+
+    /// Whether a filter other than the one at `index` — or any filter of
+    /// the scratch set, for a new filter (`None`) — answers to `name` in
+    /// the set the filter is in. `parse` refuses two in one set (#128), so
+    /// the filter editor refuses the name first (#317).
+    #[must_use]
+    pub fn name_taken(&self, index: Option<usize>, name: &str) -> bool {
+        let set = index
+            .and_then(|at| self.filters.get(at))
+            .map_or(0, |filter| filter.set);
+        self.filters.iter().enumerate().any(|(at, filter)| {
+            Some(at) != index && filter.set == set && filter.display_name() == name
+        })
+    }
+
+    /// Give the filter at `index` the filter editor's name, description and
+    /// prompt (#317), reporting whether it changed anything. A built-in
+    /// filter is recon's and is left alone, as `set_pattern` leaves it.
+    ///
+    /// A profile names its filters by `display_name`, so a new name is
+    /// written into every profile of the filter's set that named the old
+    /// one: the set still opens the way it did. The caller checks the name
+    /// with `name_taken` first.
+    ///
+    /// No `recompile` and no `forget_capture`: nothing that matches or is
+    /// switched changes.
+    pub fn set_details(&mut self, index: usize, details: Details) -> bool {
+        if !self.is_user_authored(index) {
+            return false;
+        }
+        let Some(filter) = self.filters.get_mut(index) else {
+            return false;
+        };
+        let before = filter.display_name();
+        filter.name = details.name;
+        filter.description = details.description;
+        filter.prompt = details.prompt;
+        let after = filter.display_name();
+        let set = filter.set;
+        if before != after {
+            for members in self.sets[set].profiles.values_mut() {
+                for member in members.iter_mut().filter(|member| **member == before) {
+                    member.clone_from(&after);
+                }
+            }
+        }
+        true
     }
 
     /// Flip a filter between `Include` and `Context`, reporting whether it
@@ -1073,6 +1142,8 @@ pub(crate) mod test_support {
                     predicate: Predicate::Regex(Regex::new(pattern).expect("valid")),
                     sense: Sense::Include,
                     colour: None,
+                    description: None,
+                    prompt: None,
                 })
                 .collect(),
             builtin: false,

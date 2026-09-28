@@ -22,9 +22,15 @@
 //!
 //! `Ctrl-z` and `Ctrl-y` step back and forward through the pattern's
 //! versions (#316). See `FilterEditor::record` for when a version is kept.
+//!
+//! Above the pattern are three more fields (#317): the filter's name, its
+//! description and its prompt. Tab and Shift-Tab move the keys round the
+//! ring name, description, prompt, pattern, lines. Enter gives the filter
+//! what the fields hold; an empty field is a key the filter does not have.
 
 use super::App;
 use super::prompt::SearchPrompt;
+use crate::filter::Details;
 use crossterm::event::{self, KeyCode, KeyModifiers};
 use ratatui::prelude::Style;
 use regex::Regex;
@@ -39,14 +45,50 @@ pub(super) const VERSION_PAUSE: Duration = Duration::from_secs(1);
 /// Shown in the panel when Enter finds no pattern to add.
 pub(super) const NO_PATTERN: &str = "type a pattern first";
 
-/// Where the filter editor's keys go (#314).
+/// Where the filter editor's keys go (#314), in the order Tab moves
+/// through them (#317). Each field takes the characters typed, and Up/Down
+/// scroll the lines under it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(super) enum EditorFocus {
-    /// A character is typed into the pattern, and Up/Down scroll.
+    /// The filter's name.
+    Name,
+    /// Why the filter exists, for people.
+    Description,
+    /// What the filter's lines look like, for a model.
+    Prompt,
+    /// The pattern. Where the editor opens.
     #[default]
     Pattern,
     /// Up/Down move the cursor line, and the mark keys mark it.
     Lines,
+}
+
+impl EditorFocus {
+    const RING: [Self; 5] = [
+        Self::Name,
+        Self::Description,
+        Self::Prompt,
+        Self::Pattern,
+        Self::Lines,
+    ];
+
+    /// Tab: the next in the ring, the lines back to the name.
+    fn next(self) -> Self {
+        let at = Self::RING
+            .iter()
+            .position(|&focus| focus == self)
+            .unwrap_or(0);
+        Self::RING[(at + 1) % Self::RING.len()]
+    }
+
+    /// Shift-Tab: the previous in the ring.
+    fn prev(self) -> Self {
+        let at = Self::RING
+            .iter()
+            .position(|&focus| focus == self)
+            .unwrap_or(0);
+        Self::RING[(at + Self::RING.len() - 1) % Self::RING.len()]
+    }
 }
 
 /// What a marked line says about the pattern (#314).
@@ -73,6 +115,11 @@ pub(super) struct FilterEditor {
     /// so the editor's field and every other prompt move and delete the same
     /// way under the same keys; its `kind`, `origin` and `error` are unused.
     pub(super) field: SearchPrompt,
+    /// The filter's name, description and prompt (#317), edited as `field`
+    /// is. They have no versions: `Ctrl-z` is the pattern's.
+    pub(super) name: SearchPrompt,
+    pub(super) description: SearchPrompt,
+    pub(super) prompt: SearchPrompt,
     /// The file's lines, shared with the file view that read them.
     pub(super) lines: Arc<Vec<String>>,
     /// The regex the highlight uses: the last pattern that compiled, so a
@@ -150,6 +197,9 @@ impl FilterEditor {
     pub(super) fn new(lines: Arc<Vec<String>>, style: Style) -> Self {
         Self {
             field: SearchPrompt::default(),
+            name: SearchPrompt::default(),
+            description: SearchPrompt::default(),
+            prompt: SearchPrompt::default(),
             lines,
             regex: None,
             error: None,
@@ -174,15 +224,26 @@ impl FilterEditor {
 
     /// An editor over `lines` on the pattern of the filter at `index`, cursor
     /// at its end as `c` puts it, with the highlight and the count already
-    /// showing.
+    /// showing, and the filter's name, description and prompt in their
+    /// fields.
     pub(super) fn editing(
         lines: Arc<Vec<String>>,
         style: Style,
         index: usize,
         pattern: String,
+        details: Details,
     ) -> Self {
+        let field = |text: Option<String>| {
+            SearchPrompt::editing(
+                text.unwrap_or_default(),
+                super::prompt::PromptKind::default(),
+            )
+        };
         let mut editor = Self {
-            field: SearchPrompt::editing(pattern, super::prompt::PromptKind::default()),
+            field: field(Some(pattern)),
+            name: field(details.name),
+            description: field(details.description),
+            prompt: field(details.prompt),
             target: Some(index),
             ..Self::new(lines, style)
         };
@@ -191,6 +252,31 @@ impl FilterEditor {
         // from the keyboard.
         editor.record();
         editor
+    }
+
+    /// What the name, description and prompt fields hold, trimmed. An empty
+    /// field is `None`: the filter does not have that key.
+    pub(super) fn details(&self) -> Details {
+        let text = |field: &SearchPrompt| {
+            let text = field.pattern.trim();
+            (!text.is_empty()).then(|| text.to_string())
+        };
+        Details {
+            name: text(&self.name),
+            description: text(&self.description),
+            prompt: text(&self.prompt),
+        }
+    }
+
+    /// The field the keys go to when it is not the pattern, which is the
+    /// only one with versions.
+    fn detail_field(&mut self) -> Option<&mut SearchPrompt> {
+        match self.focus {
+            EditorFocus::Name => Some(&mut self.name),
+            EditorFocus::Description => Some(&mut self.description),
+            EditorFocus::Prompt => Some(&mut self.prompt),
+            EditorFocus::Pattern | EditorFocus::Lines => None,
+        }
     }
 
     /// Compile the pattern again after an edit, and count what it matches.
@@ -470,11 +556,14 @@ impl FilterEditor {
         self.top = self.top.saturating_add_signed(delta).min(last);
     }
 
-    /// Up/Down and the page keys: scroll in the pattern, and move the cursor
+    /// Up/Down and the page keys: scroll in a field, and move the cursor
     /// line in the lines.
     fn step(&mut self, delta: isize) {
         match self.focus {
-            EditorFocus::Pattern => self.scroll(delta),
+            EditorFocus::Name
+            | EditorFocus::Description
+            | EditorFocus::Prompt
+            | EditorFocus::Pattern => self.scroll(delta),
             EditorFocus::Lines => {
                 let last = self.rows().saturating_sub(1);
                 let row = self
@@ -489,29 +578,31 @@ impl FilterEditor {
         }
     }
 
-    /// Tab: move the focus to the other of the pattern and the lines. A
-    /// cursor line off the screen comes back to the first line drawn, so
-    /// the first mark lands where the user is looking. Leaving the lines
+    /// Tab (`forward`) or Shift-Tab: move the focus round the ring. A
+    /// cursor line off the screen comes back to the first line drawn when
+    /// the lines take the keys, so the first mark lands where the user is
+    /// looking. Leaving the pattern keeps it as a version; leaving the lines
     /// closes a visual range.
-    fn toggle_focus(&mut self) {
-        if self.focus == EditorFocus::Pattern {
-            self.record();
-        }
-        self.focus = match self.focus {
-            EditorFocus::Pattern => {
-                let row = self.row_of(self.cursor);
-                if (row < self.top || row >= self.top + self.page)
-                    && let Some(line) = self.line_at(self.top)
-                {
-                    self.cursor = line;
-                }
-                EditorFocus::Lines
-            }
-            EditorFocus::Lines => {
-                self.anchor = None;
-                EditorFocus::Pattern
-            }
+    fn move_focus(&mut self, forward: bool) {
+        let next = if forward {
+            self.focus.next()
+        } else {
+            self.focus.prev()
         };
+        match self.focus {
+            EditorFocus::Pattern => self.record(),
+            EditorFocus::Lines => self.anchor = None,
+            _ => {}
+        }
+        if next == EditorFocus::Lines {
+            let row = self.row_of(self.cursor);
+            if (row < self.top || row >= self.top + self.page)
+                && let Some(line) = self.line_at(self.top)
+            {
+                self.cursor = line;
+            }
+        }
+        self.focus = next;
     }
 
     /// Scroll so the cursor line is on the screen, if a key moved it.
@@ -574,6 +665,14 @@ fn error_line(error: &regex::Error) -> String {
         .to_string()
 }
 
+/// Why `pattern` does not compile, or `None` when it does or is empty.
+fn pattern_error(pattern: &str) -> Option<String> {
+    if pattern.is_empty() {
+        return None;
+    }
+    Regex::new(pattern).err().map(|error| error_line(&error))
+}
+
 /// `n` with a comma between each group of three digits: `50,000`.
 pub(super) fn grouped(n: usize) -> String {
     let digits = n.to_string();
@@ -620,8 +719,12 @@ impl App<'_> {
         editor.refresh();
     }
 
-    /// `f C`: open the filter editor on the filter at `index` (#313). A
-    /// definition filter has no pattern to show, and says so instead.
+    /// `f C`: open the filter editor on the filter at `index` (#313), with
+    /// its name, description and prompt (#317). A definition filter has no
+    /// pattern to show, and says so instead. A typed filter has no name,
+    /// so its name field is empty; a file filter without a `name` has its
+    /// pattern as its name, and keeps it when the pattern changes, as `c`
+    /// keeps it, so its set's profiles still find it.
     pub(super) fn open_filter_editor_on(&mut self, index: usize) {
         let Some(filter) = self.filters.filters().get(index) else {
             return;
@@ -634,9 +737,14 @@ impl App<'_> {
             return;
         };
         let (pattern, style) = (regex.as_str().to_string(), filter.style);
+        let details = Details {
+            name: filter.name.clone(),
+            description: filter.description.clone(),
+            prompt: filter.prompt.clone(),
+        };
         self.promote_truncated_preview();
         let lines = self.view.source().clone();
-        let mut editor = FilterEditor::editing(lines, style, index, pattern);
+        let mut editor = FilterEditor::editing(lines, style, index, pattern, details);
         self.mark_origin_line(&mut editor);
         self.filter_editor = Some(editor);
     }
@@ -645,10 +753,11 @@ impl App<'_> {
     /// `Scope::FilterEditor` does not bind is tried as a prompt editing key, and a
     /// character that is neither is typed into the pattern.
     ///
-    /// The mark keys (#314) act only on the lines. With the focus on the
-    /// pattern they are typed, since `+` and `-` are pattern characters too;
-    /// and with the focus on the lines, a key that would edit the pattern
-    /// does nothing.
+    /// The mark keys (#314) act only on the lines. With the focus on a
+    /// field they are typed, since `+` and `-` are pattern characters too;
+    /// and with the focus on the lines, a key that would edit a field does
+    /// nothing. `Ctrl-z` and `Ctrl-y` are the pattern's versions, so they
+    /// do nothing in the name, the description and the prompt (#317).
     pub(super) fn handle_filter_editor_key(&mut self, key: event::KeyEvent) {
         use crate::keymap::ActionId as A;
         let pressed = crate::keymap::normalise(key);
@@ -659,6 +768,10 @@ impl App<'_> {
         let action = self
             .keymap
             .resolve(crate::keymap::Scope::FilterEditor, pressed)
+            .filter(|action| {
+                matches!(focus, EditorFocus::Pattern | EditorFocus::Lines)
+                    || !matches!(action, A::FilterEditorUndo | A::FilterEditorRedo)
+            })
             .filter(|action| {
                 focus == EditorFocus::Lines
                     || !matches!(
@@ -701,7 +814,10 @@ impl App<'_> {
                 A::FilterEditorPageDown => {
                     self.edit_filter_editor(|editor| editor.step(page(editor)));
                 }
-                A::FilterEditorFocus => self.edit_filter_editor(FilterEditor::toggle_focus),
+                A::FilterEditorFocus => self.edit_filter_editor(|editor| editor.move_focus(true)),
+                A::FilterEditorFocusPrev => {
+                    self.edit_filter_editor(|editor| editor.move_focus(false));
+                }
                 A::FilterEditorMarkMatch => {
                     self.edit_filter_editor(|editor| editor.set_mark(Some(Mark::MustMatch)));
                 }
@@ -760,8 +876,7 @@ impl App<'_> {
                 // the editor keeps no history.
                 _ => return,
             };
-            let now = Instant::now();
-            self.edit_filter_editor(|editor| editor.edit_pattern(now, edit));
+            self.edit_filter_editor_field(edit);
             return;
         }
         match key.code {
@@ -772,12 +887,24 @@ impl App<'_> {
                     .modifiers
                     .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) => {}
             KeyCode::Char(c) if c == '\n' || c == '\r' => {}
-            KeyCode::Char(c) => {
-                let now = Instant::now();
-                self.edit_filter_editor(|editor| editor.edit_pattern(now, |field| field.insert(c)));
-            }
+            KeyCode::Char(c) => self.edit_filter_editor_field(|field| field.insert(c)),
             _ => {}
         }
+    }
+
+    /// An editing key in the field that has the focus: the pattern, with
+    /// its versions and highlight, or the name, description or prompt.
+    fn edit_filter_editor_field(&mut self, edit: impl FnOnce(&mut SearchPrompt)) {
+        let now = Instant::now();
+        self.edit_filter_editor(|editor| match editor.detail_field() {
+            Some(field) => {
+                edit(field);
+                // A refused name is fixed here, so its reason goes; a
+                // pattern that does not compile still says why.
+                editor.error = pattern_error(&editor.field.pattern);
+            }
+            None => editor.edit_pattern(now, edit),
+        });
     }
 
     fn edit_filter_editor(&mut self, edit: impl FnOnce(&mut FilterEditor)) {
@@ -807,9 +934,10 @@ impl App<'_> {
     }
 
     /// Enter: add the pattern as `f i … Enter` would, or change the target
-    /// filter's as `f c … Enter` would, and close. A pattern that is empty
-    /// or does not compile keeps the editor open, with the reason in the
-    /// panel.
+    /// filter's as `f c … Enter` would, give the filter the name,
+    /// description and prompt in the fields (#317), and close. A pattern
+    /// that is empty or does not compile, or a name another filter in the
+    /// set has, keeps the editor open with the reason in the panel.
     fn commit_filter_editor(&mut self) {
         let Some(editor) = self.filter_editor.as_mut() else {
             return;
@@ -821,10 +949,30 @@ impl App<'_> {
         if editor.error.is_some() {
             return;
         }
-        let (pattern, target) = (editor.field.pattern.clone(), editor.target);
+        let (pattern, target, details) = (
+            editor.field.pattern.clone(),
+            editor.target,
+            editor.details(),
+        );
+        if let Some(name) = &details.name
+            && self.filters.name_taken(target, name)
+        {
+            editor.error = Some(format!("another filter in this set is named {name:?}"));
+            return;
+        }
+        // The details go on before a changed pattern: `set_details` renames
+        // the filter in its set's profiles from the name they know it by,
+        // which for a filter with no name is its pattern as it was.
         let outcome = match target {
-            None => self.add_filter(&pattern),
-            Some(index) => self.replace_filter(index, &pattern),
+            None => self.add_filter(&pattern).map(|()| {
+                if let Some((index, _)) = self.filters.filters_in(0).last() {
+                    self.filters.set_details(index, details);
+                }
+            }),
+            Some(index) => {
+                self.filters.set_details(index, details);
+                self.replace_filter(index, &pattern)
+            }
         };
         if let Err(error) = outcome {
             if let Some(editor) = self.filter_editor.as_mut() {

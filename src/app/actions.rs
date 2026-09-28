@@ -417,6 +417,7 @@ impl App<'_> {
             | A::FilterEditorPageUp
             | A::FilterEditorPageDown
             | A::FilterEditorFocus
+            | A::FilterEditorFocusPrev
             | A::FilterEditorMarkMatch
             | A::FilterEditorMarkNoMatch
             | A::FilterEditorMarkClear

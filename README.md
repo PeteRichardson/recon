@@ -643,9 +643,11 @@ name    = "assoc"
 pattern = 'wlan\d+: associated'
 
 [[sets.WiFi_debug.filters]]
-name    = "deauth"
-pattern = 'deauthenticat(ed|ing)'
-colour  = "red"                          # instead of the next palette colour
+name        = "deauth"
+description = "The AP dropped us (bug #57)"   # one line, for people
+prompt      = "Deauthentication, in either direction"  # one line, what matches
+pattern     = 'deauthenticat(ed|ing)'
+colour      = "red"                      # instead of the next palette colour
 
 [[sets.WiFi_debug.filters]]
 name    = "beacon-loss"
@@ -695,6 +697,13 @@ recon is exactly this model with one set.
   naming.
 - **`name`** — what the pane calls a filter, and what profiles refer to. It
   defaults to the pattern itself.
+- **`description`** (of a filter) — one line of plain text that says why the
+  filter exists. It is for people only. The status row shows it while the
+  filter pane's selection is on the filter.
+- **`prompt`** — one line of plain text that says what the filter's lines
+  look like. Today it is only text that you keep with the filter; a later
+  version gives it to a model that writes the pattern. Both keys are
+  optional, and a description or a prompt of more than one line is refused.
 - **`colour`** — a colour for this filter instead of the next palette entry,
   in the same spellings as the palette: a name, `#RRGGBB`, or a 256-colour
   index as a string. A palette position is a poor way to say "errors are
@@ -705,7 +714,8 @@ refuse-to-start policy as `config.toml`: a pattern that does not compile, a
 colour that does not parse, two filters answering to one name, a profile
 naming a filter the set lacks, a set with no filters, or a key the schema does
 not know each stop recon with a message naming the file, the set and the
-filter. A missing file is not an error. recon writes this file in exactly one
+filter. A `description` or a `prompt` that is not a string stops recon in the
+same way. A missing file is not an error. recon writes this file in exactly one
 case, `S`, and only ever appends to it — see below.
 
 The filter pane has two levels. The scratch set's filters come first with no
@@ -771,18 +781,19 @@ confirmation. `R` is uppercase because `r` is the global refresh-from-disk.
 **Saving**: `S` in the filter pane saves the scratch filters as a named set.
 A prompt asks for the name; `Enter` appends a `[sets.<name>]` table to
 `filters.toml` with one entry per scratch filter — its pattern, single-quoted,
-and its sense when not include — and a `default` profile of the filters that
-are on right now, so the set opens the way it was saved. Comments and every
+its sense when not include, and its name, description and prompt when [the
+filter editor](#the-filter-editor) gave it one — and a `default` profile of the
+filters that are on right now, so the set opens the way it was saved. Comments and every
 existing table survive untouched; the file is created if it does not exist.
 Then the scratch set becomes that set in place, enabled, with the same flags,
 and the other sets keep whatever state they are in. A name already in use, an
-empty name, an empty scratch set, or two scratch filters sharing one pattern is
-refused with a message and nothing is written. "In use" means the file as it is
+empty name, an empty scratch set, or two scratch filters sharing one pattern or
+one name is refused with a message and nothing is written. "In use" means the file as it is
 now, not only what was loaded at startup: a table added by hand since is
 refused rather than replaced. The file is written beside itself as
 `filters.toml.tmp` and renamed over, so an interrupted save leaves the old file
-rather than a truncated one. Priority, `autoload`, `listed`, `description`
-and colours are not written:
+rather than a truncated one. Priority, `autoload`, `listed`, the set's
+`description` and colours are not written:
 each is a one-line hand edit to a file `S` has just shown you the shape of.
 `S` writes only to your own `filters.toml`, never to a directory on the
 filter path below.
@@ -882,12 +893,12 @@ that compiled left them, so a half-typed `(` does not clear the screen.
 
 | Key(s) | Action | Name(s) |
 | --- | --- | --- |
-| characters | Type into the pattern; the prompt's editing keys work the same way | `prompt.*` |
+| characters | Type into the field with the focus; the prompt's editing keys work the same way | `prompt.*` |
 | `Up` / `Down` | Scroll the file a line | `filtereditor.scroll.up` / `filtereditor.scroll.down` |
 | `PageUp` / `PageDown` | Scroll the file a page | `filtereditor.page.up` / `filtereditor.page.down` |
 | `Enter` | Add the pattern as an including filter, or change the selected filter, and close | `filtereditor.commit` |
 | `Esc` | Close and change nothing; with a range open, close the range first | `filtereditor.cancel` |
-| `Tab` | Move the keys between the pattern and the lines | `filtereditor.focus` |
+| `Tab` / `Shift-Tab` | Move the keys to the next / previous of the name, description, prompt, pattern and lines | `filtereditor.focus` / `filtereditor.focus.prev` |
 | `+` | On the lines: the pattern must match the cursor line | `filtereditor.mark.match` |
 | `-` | On the lines: the pattern must not match the cursor line | `filtereditor.mark.nomatch` |
 | `=` | On the lines: remove the cursor line's mark | `filtereditor.mark.clear` |
@@ -897,6 +908,24 @@ that compiled left them, so a half-typed `(` does not clear the screen.
 | `u` | On the lines: show only the lines the pattern matches and the marked lines, or every line again | `filtereditor.toggle.matchesonly` |
 | `Ctrl-z` / `Ctrl-y` | Go back / forward one version of the pattern | `filtereditor.undo` / `filtereditor.redo` |
 
+##### The name, description and prompt
+
+Above the pattern, the panel shows three more fields: the filter's name, its
+description and its prompt, as `filters.toml` has them. `Tab` and
+`Shift-Tab` move the keys round the ring *name, description, prompt,
+pattern, lines*; the editor opens on the pattern. The three fields are plain
+text: what you type in them does not change the highlight, and `Ctrl-z`
+does nothing there, as the versions are the pattern's. `Enter` gives the
+filter what each field holds, with the spaces at the two ends removed. An
+empty field is a key the filter does not have: an empty name gives the
+filter its pattern as its name again. A name that another filter in the same
+set has keeps the editor open, with the reason under the pattern. When a
+filter in a named set gets a new name, the set's profiles use the new name.
+`Esc` discards the changes to all four fields.
+
+These changes are in memory, as a changed pattern is. `S` writes them for
+the scratch set; for a filter of a named set, edit `filters.toml`.
+
 ##### Marking lines
 
 `Tab` moves the keys from the pattern to the file's lines, and the thick
@@ -904,7 +933,7 @@ green frame of a focused pane moves with them. A `>` shows the
 cursor line, and `Up`, `Down`, `PageUp` and `PageDown` move it. `+` marks it
 as a line the pattern must match, and `-` as a line the pattern must not
 match. `=` removes the mark. `V` opens a range, and the next of those three
-keys marks each line in it. `Tab` again goes back to the pattern, where `+`
+keys marks each line in it. `Shift-Tab` goes back to the pattern, where `+`
 and `-` are typed as usual.
 
 Each marked line is a check, and it passes or fails on each key you type in
@@ -947,7 +976,7 @@ A version is not made on each key. The pattern as it stands becomes a
 version when it compiles, is not empty, and:
 
 - you stop typing for 1 second or more and then edit it again,
-- `Tab` moves the keys to the lines, or
+- `Tab` or `Shift-Tab` moves the keys away from the pattern, or
 - you press `Ctrl-z` or `Ctrl-y`, so that `Ctrl-y` can come back to it.
 
 A pattern that does not compile is never a version: `Ctrl-z` from it goes
@@ -958,10 +987,12 @@ The versions last only while the editor is open.
 `Enter` does exactly what `f i` with the same pattern does: one including
 filter in the scratch set, and focus returns to where `f` was pressed.
 
-`f C` opens the editor on the selected filter instead, with its pattern in
-the field and its matches already drawn in its own colour. `Enter` then does
-what `f c` does: it replaces the pattern and keeps the filter's slot, sense,
-colour and enabled state. On a set's header row or a built-in filter, `C`
+`f C` opens the editor on the selected filter instead, with its pattern,
+name, description and prompt in the fields and its matches already drawn in
+its own colour. A filter you typed has no name, so its name field is empty; a
+filter from a file without a `name` shows its pattern as its name.
+`Enter` then does what `f c` does: it replaces the pattern and keeps the
+filter's slot, sense, colour and enabled state. On a set's header row or a built-in filter, `C`
 says why it cannot, as `c` does. A definition filter has no pattern to show,
 so `C` says so; `c` is the way to turn one into a pattern. On an
 empty pattern or one that does not compile, `Enter` keeps the editor open.

@@ -202,27 +202,37 @@ impl App<'_> {
         let Some(path) = self.save_path.clone() else {
             return Err("no config home ($XDG_CONFIG_HOME, $HOME unset); nowhere to save".into());
         };
-        // Two scratch filters with one pattern would be two file filters
-        // answering to the same name, which `parse` rejects with advice
-        // about a `name` key the pane cannot set. Say it in the pane's
-        // terms instead (#190).
-        let mut patterns: Vec<String> = self
+        // Two scratch filters that answer to one name would be two file
+        // filters answering to the same name, which `parse` rejects with
+        // advice about a `name` key. Say it in the pane's terms instead
+        // (#190): a filter with no name answers to its pattern.
+        let mut names: Vec<(String, bool)> = self
             .filters
             .filters_in(0)
-            .map(|(_, filter)| filter.predicate.display())
+            .map(|(_, filter)| (filter.display_name(), filter.name.is_some()))
             .collect();
-        patterns.sort_unstable();
-        if let Some([shared, _]) = patterns.windows(2).find(|pair| pair[0] == pair[1]) {
-            return Err(format!(
-                "two scratch filters share the pattern {shared:?}; delete one before saving"
-            ));
+        names.sort_unstable();
+        if let Some(pair) = names.windows(2).find(|pair| pair[0].0 == pair[1].0) {
+            let shared = &pair[0].0;
+            return Err(if pair[0].1 || pair[1].1 {
+                format!("two scratch filters share the name {shared:?}; change one before saving")
+            } else {
+                format!(
+                    "two scratch filters share the pattern {shared:?}; delete one before saving"
+                )
+            });
         }
         let to_save = filtersets::SetToSave {
             name,
             filters: self
                 .filters
                 .filters_in(0)
-                .map(|(_, filter)| (filter.predicate.display(), filter.sense))
+                .map(|(_, filter)| filtersets::FilterToSave {
+                    name: filter.name.clone(),
+                    description: filter.description.clone(),
+                    prompt: filter.prompt.clone(),
+                    ..filtersets::FilterToSave::new(filter.predicate.display(), filter.sense)
+                })
                 .collect(),
             default: self
                 .filters

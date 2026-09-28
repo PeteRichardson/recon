@@ -72,6 +72,17 @@ valid pattern at a pause in the typing, at `Tab`, or before an undo or redo.
 Versions last only while the editor is open.
 _Avoid_: history (that is the prompt's list of earlier patterns), revision
 
+**Description** (of a filter):
+One line that says why a filter exists. It is for people only, and is never
+given to a model. A set has a description of its own, for the set picker.
+_Avoid_: comment, note
+
+**Prompt** (of a filter):
+One line in plain language that says what a filter's lines look like: the
+text a model will write the pattern from. Without a model it is only text
+kept with the filter; it never changes the pattern.
+_Avoid_: query, request (that is one turn of a talk with the model)
+
 **Interesting line**:
 A line an enabled including filter matches. `n` and `N` step between
 interesting lines when no search is set, and hide mode keeps only them.

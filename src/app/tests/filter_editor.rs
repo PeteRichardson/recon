@@ -7,6 +7,43 @@ use regex::Regex;
 
 const BODY: &str = "ERROR timeout\nINFO ok\nERROR disk\nINFO timeout\n";
 
+/// The shared screen, three rows taller: the editor's panel is seven rows
+/// (#317), and on the shared ten the file would get none. These shadow the
+/// shared `AREA`, `draw`, `rendered` and `status_line` in this file.
+const AREA: Rect = Rect {
+    height: super::AREA.height + 3,
+    ..super::AREA
+};
+
+fn draw(app: &mut App) {
+    let mut buf = Buffer::empty(AREA);
+    app.render(AREA, &mut buf);
+}
+
+fn rendered(app: &mut App) -> String {
+    let mut buf = Buffer::empty(AREA);
+    app.render(AREA, &mut buf);
+    (0..AREA.height)
+        .map(|y| {
+            (0..AREA.width)
+                .map(|x| buf[(x, y)].symbol())
+                .collect::<String>()
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn status_line(app: &mut App) -> String {
+    let mut buf = Buffer::empty(AREA);
+    app.render(AREA, &mut buf);
+    let y = AREA.height - 1;
+    (0..AREA.width)
+        .map(|x| buf[(x, y)].symbol())
+        .collect::<String>()
+        .trim_end()
+        .to_string()
+}
+
 fn editor<'a>(app: &'a App) -> &'a FilterEditor {
     app.filter_editor
         .as_ref()
@@ -543,7 +580,7 @@ fn the_mark_keys_are_typed_in_the_pattern() {
     key(&mut app, KeyCode::Backspace);
     assert_eq!(editor(&app).field.pattern, "a+-=V");
 
-    key(&mut app, KeyCode::Tab);
+    key(&mut app, KeyCode::BackTab);
     assert_eq!(editor(&app).focus, EditorFocus::Pattern);
     typed(&mut app, "x");
     assert_eq!(editor(&app).field.pattern, "a+-=Vx");
@@ -604,7 +641,7 @@ fn the_failed_count_follows_each_key() {
     key(&mut app, KeyCode::Char('+')); // ERROR timeout
     key(&mut app, KeyCode::Down);
     key(&mut app, KeyCode::Char('-')); // INFO ok
-    key(&mut app, KeyCode::Tab);
+    key(&mut app, KeyCode::BackTab);
     assert_eq!(status_line(&mut app), "4 lines · 1 check fails");
 
     typed(&mut app, "ERROR");
@@ -636,7 +673,7 @@ fn the_four_states_are_drawn_four_ways() {
     for _ in 0..4 {
         key(&mut app, KeyCode::Up);
     }
-    key(&mut app, KeyCode::Tab);
+    key(&mut app, KeyCode::BackTab);
     typed(&mut app, "timeout");
 
     let area = Rect { height: 20, ..AREA };
@@ -740,7 +777,7 @@ fn app_with_four_checks(name: &str) -> App<'static> {
     for _ in 0..4 {
         key(&mut app, KeyCode::Up);
     }
-    key(&mut app, KeyCode::Tab);
+    key(&mut app, KeyCode::BackTab);
     typed(&mut app, "timeout");
     key(&mut app, KeyCode::Tab);
     assert_eq!(editor(&app).failures, 2, "sanity: two checks fail");
@@ -772,7 +809,7 @@ fn f_and_big_f_go_to_each_failed_check_and_wrap() {
 #[test]
 fn f_says_when_no_check_fails() {
     let mut app = app_with_four_checks("jump_no_failures");
-    key(&mut app, KeyCode::Tab);
+    key(&mut app, KeyCode::BackTab);
     ctrl(&mut app, KeyCode::Char('u'));
     typed(&mut app, "ERROR");
     key(&mut app, KeyCode::Tab);
@@ -833,11 +870,11 @@ fn the_focused_part_has_the_focused_frame() {
     let mut app = app_over_file("editor_frame", BODY);
     open_editor_from_the_filter_pane(&mut app);
     // The top-left corners: of the file's lines at row 0, and of the panel
-    // four rows above the status row.
+    // seven rows above the status row.
     let corners = |app: &mut App| {
         let mut buf = Buffer::empty(AREA);
         app.render(AREA, &mut buf);
-        let panel = AREA.height - 1 - 4;
+        let panel = AREA.height - 1 - 7;
         (buf[(0, 0)].clone(), buf[(0, panel)].clone())
     };
     let thick = |cell: &ratatui::buffer::Cell| cell.symbol() == "┏" && cell.fg == Color::Green;
@@ -865,7 +902,7 @@ fn n_skips_a_line_the_pattern_misses() {
 #[test]
 fn the_jump_keys_are_typed_in_the_pattern() {
     let mut app = app_with_four_checks("jump_typed");
-    key(&mut app, KeyCode::Tab);
+    key(&mut app, KeyCode::BackTab);
     typed(&mut app, "|fFnNu");
     let editor = editor(&app);
     assert_eq!(editor.field.pattern, "timeout|fFnNu");
@@ -1182,4 +1219,278 @@ fn the_help_overlay_shows_the_undo_keys() {
             .any(|binding| binding.names.contains(&name))
     };
     assert!(named("filtereditor.undo") && named("filtereditor.redo"));
+}
+
+// ---- the name, description and prompt (#317) -------------------------------
+
+/// Type `text` into the field that `tabs` presses of Shift-Tab reach from
+/// the pattern: 1 the prompt, 2 the description, 3 the name.
+fn type_in_field(app: &mut App, tabs: usize, text: &str) {
+    for _ in 0..tabs {
+        key(app, KeyCode::BackTab);
+    }
+    typed(app, text);
+    for _ in 0..tabs {
+        key(app, KeyCode::Tab);
+    }
+}
+
+#[test]
+fn tab_and_shift_tab_go_round_the_fields_and_the_lines() {
+    let mut app = app_over_file("details_ring", BODY);
+    open_editor_from_the_filter_pane(&mut app);
+    let focus = |app: &App| editor(app).focus;
+    assert_eq!(focus(&app), EditorFocus::Pattern, "it opens on the pattern");
+    for expected in [
+        EditorFocus::Lines,
+        EditorFocus::Name,
+        EditorFocus::Description,
+        EditorFocus::Prompt,
+        EditorFocus::Pattern,
+    ] {
+        key(&mut app, KeyCode::Tab);
+        assert_eq!(focus(&app), expected);
+    }
+    for expected in [
+        EditorFocus::Prompt,
+        EditorFocus::Description,
+        EditorFocus::Name,
+        EditorFocus::Lines,
+        EditorFocus::Pattern,
+    ] {
+        key(&mut app, KeyCode::BackTab);
+        assert_eq!(focus(&app), expected);
+    }
+}
+
+#[test]
+fn the_panel_shows_the_four_fields() {
+    let mut app = app_over_file("details_panel", BODY);
+    open_editor_from_the_filter_pane(&mut app);
+    typed(&mut app, "timeout");
+    type_in_field(&mut app, 3, "slow");
+    type_in_field(&mut app, 2, "why it exists");
+    type_in_field(&mut app, 1, "lines that time out");
+
+    let screen = rendered(&mut app);
+    for row in [
+        "name:        slow",
+        "description: why it exists",
+        "prompt:      lines that time out",
+        "pattern:     timeout",
+    ] {
+        assert!(screen.contains(row), "no {row:?} in\n{screen}");
+    }
+}
+
+/// The fields are plain text: a character goes into the field with the
+/// focus, and the pattern, its highlight and its versions do not change.
+#[test]
+fn typing_in_a_field_leaves_the_pattern_alone() {
+    let mut app = app_over_file("details_typing", BODY);
+    open_editor_from_the_filter_pane(&mut app);
+    typed(&mut app, "ERROR");
+    key(&mut app, KeyCode::BackTab);
+    typed(&mut app, "(+-u");
+    key(&mut app, KeyCode::Backspace);
+
+    let editor = editor(&app);
+    assert_eq!(editor.prompt.pattern, "(+-");
+    assert_eq!(editor.field.pattern, "ERROR");
+    assert!(editor.error.is_none(), "the prompt is not a regex");
+    assert_eq!(editor.matches, 2);
+    assert!(editor.marks.is_empty(), "+ and - were marks");
+}
+
+/// `Ctrl-z` is the pattern's: in a field it does nothing.
+#[test]
+fn ctrl_z_in_a_field_does_not_change_the_pattern() {
+    let mut app = app_with_three_versions("details_undo");
+    key(&mut app, KeyCode::BackTab);
+    key(&mut app, KeyCode::BackTab);
+    typed(&mut app, "why");
+    ctrl(&mut app, KeyCode::Char('z'));
+
+    assert_eq!(pattern(&app), "INFO");
+    assert_eq!(editor(&app).description.pattern, "why");
+}
+
+#[test]
+fn enter_gives_a_new_filter_its_name_description_and_prompt() {
+    let mut app = app_over_file("details_new", BODY);
+    open_editor_from_the_filter_pane(&mut app);
+    typed(&mut app, "timeout");
+    type_in_field(&mut app, 3, "slow");
+    type_in_field(&mut app, 2, "  why it exists ");
+    key(&mut app, KeyCode::Enter);
+
+    assert!(app.filter_editor.is_none());
+    let (_, filter) = app.filters.filters_in(0).next().expect("a scratch filter");
+    assert_eq!(filter.predicate.display(), "timeout");
+    assert_eq!(filter.name.as_deref(), Some("slow"));
+    assert_eq!(filter.display_name(), "slow");
+    assert_eq!(
+        filter.description.as_deref(),
+        Some("why it exists"),
+        "not trimmed"
+    );
+    assert_eq!(filter.prompt, None, "an empty field is no key");
+}
+
+#[test]
+fn f_big_c_shows_the_filters_fields_and_enter_changes_them() {
+    let mut app = app_with_two_filters("details_change");
+    app.filters.set_details(
+        0,
+        crate::filter::Details {
+            name: Some("errors".into()),
+            description: Some("old".into()),
+            prompt: Some("error lines".into()),
+        },
+    );
+    select_row(&mut app, widgets::filterlist::Row::Filter(0));
+    open_selected(&mut app);
+    let editor_now = editor(&app);
+    assert_eq!(editor_now.name.pattern, "errors");
+    assert_eq!(editor_now.description.pattern, "old");
+    assert_eq!(editor_now.prompt.pattern, "error lines");
+
+    key(&mut app, KeyCode::BackTab);
+    key(&mut app, KeyCode::BackTab);
+    ctrl(&mut app, KeyCode::Char('u'));
+    typed(&mut app, "new");
+    key(&mut app, KeyCode::Enter);
+
+    let filter = &app.filters.filters()[0];
+    assert_eq!(filter.description.as_deref(), Some("new"));
+    assert_eq!(filter.name.as_deref(), Some("errors"));
+    assert_eq!(filter.predicate.display(), "ERROR");
+}
+
+/// A typed filter has no name; the editor does not show its pattern as one.
+#[test]
+fn f_big_c_on_a_typed_filter_has_an_empty_name() {
+    let mut app = app_with_two_filters("details_no_name");
+    select_row(&mut app, widgets::filterlist::Row::Filter(0));
+    open_selected(&mut app);
+    assert_eq!(editor(&app).name.pattern, "");
+}
+
+#[test]
+fn esc_discards_the_fields() {
+    let mut app = app_with_two_filters("details_esc");
+    select_row(&mut app, widgets::filterlist::Row::Filter(0));
+    open_selected(&mut app);
+    type_in_field(&mut app, 3, "renamed");
+    type_in_field(&mut app, 2, "why");
+    key(&mut app, KeyCode::Esc);
+
+    let filter = &app.filters.filters()[0];
+    assert_eq!(filter.name, None);
+    assert_eq!(filter.description, None);
+}
+
+/// Two filters in one set cannot answer to one name: the file would not
+/// load.
+#[test]
+fn enter_refuses_a_name_another_filter_in_the_set_has() {
+    let mut app = app_with_two_filters("details_taken");
+    open_editor_from_the_filter_pane(&mut app);
+    typed(&mut app, "timeout");
+    type_in_field(&mut app, 3, "ERROR");
+    key(&mut app, KeyCode::Enter);
+
+    assert!(app.filter_editor.is_some(), "Enter closed the editor");
+    assert_eq!(
+        editor(&app).error.as_deref(),
+        Some("another filter in this set is named \"ERROR\"")
+    );
+    assert_eq!(app.filters.len(), 2, "a filter was added");
+
+    key(&mut app, KeyCode::BackTab);
+    key(&mut app, KeyCode::BackTab);
+    key(&mut app, KeyCode::BackTab);
+    typed(&mut app, "S");
+    assert_eq!(editor(&app).error, None, "the reason stayed");
+    key(&mut app, KeyCode::Enter);
+    assert!(app.filter_editor.is_none());
+    assert_eq!(
+        app.filters.filters()[..3]
+            .iter()
+            .filter(|f| f.name.as_deref() == Some("ERRORS"))
+            .count(),
+        1
+    );
+}
+
+/// `S` writes the fields, and the file loads back to the same fields.
+#[test]
+fn big_s_writes_the_fields_and_they_load_again() {
+    let path = save_fixture("details_save");
+    let mut app = app_over_file("details_save_file", BODY);
+    app.save_path = Some(path.clone());
+    open_editor_from_the_filter_pane(&mut app);
+    typed(&mut app, "timeout");
+    type_in_field(&mut app, 3, "slow");
+    type_in_field(&mut app, 2, "Instances of bug #57");
+    type_in_field(&mut app, 1, "Timeouts, except in 'DEMO' runs");
+    key(&mut app, KeyCode::Enter);
+    key(&mut app, KeyCode::Char('S'));
+    typed(&mut app, "bugs");
+    key(&mut app, KeyCode::Enter);
+
+    let text = std::fs::read_to_string(&path).expect("written");
+    let sets = crate::filtersets::parse(&text, &path).expect("loads again");
+    let bugs = sets.iter().find(|set| set.name == "bugs").expect("bugs");
+    let filter = &bugs.filters[0];
+    assert_eq!(filter.name, "slow");
+    assert_eq!(filter.description.as_deref(), Some("Instances of bug #57"));
+    assert_eq!(
+        filter.prompt.as_deref(),
+        Some("Timeouts, except in 'DEMO' runs")
+    );
+    assert_eq!(filter.predicate.display(), "timeout");
+    assert_eq!(bugs.profiles["default"], ["slow"]);
+}
+
+/// Outside the editor, the status row shows the description of the filter
+/// the filter pane's selection is on.
+#[test]
+fn the_status_row_shows_the_selected_filters_description() {
+    let mut app = app_with_two_filters("details_status");
+    app.filters.set_details(
+        0,
+        crate::filter::Details {
+            description: Some("errors of every kind".into()),
+            ..crate::filter::Details::default()
+        },
+    );
+    select_row(&mut app, widgets::filterlist::Row::Filter(0));
+    assert!(
+        status_line(&mut app).ends_with("errors of every kind"),
+        "{}",
+        status_line(&mut app)
+    );
+
+    select_row(&mut app, widgets::filterlist::Row::Filter(1));
+    assert!(!status_line(&mut app).contains("errors of every kind"));
+}
+
+/// A file filter without a `name` answers to its pattern. A new pattern
+/// from `f C` keeps that name, as `f c` does, so the set's profile still
+/// finds the filter.
+#[test]
+fn f_big_c_keeps_a_file_filters_name_when_the_pattern_changes() {
+    let mut app = app_with_three_sets("details_file_name");
+    let (alpha, _) = app.filters.filters_in(1).next().expect("alpha");
+    select_row(&mut app, widgets::filterlist::Row::Filter(alpha));
+    open_selected(&mut app);
+    assert_eq!(editor(&app).name.pattern, "alpha");
+    typed(&mut app, "!");
+    key(&mut app, KeyCode::Enter);
+
+    let filter = &app.filters.filters()[alpha];
+    assert_eq!(filter.predicate.display(), "alpha!");
+    assert_eq!(filter.display_name(), "alpha");
+    assert_eq!(app.filters.sets()[1].profiles["default"], ["alpha"]);
 }
