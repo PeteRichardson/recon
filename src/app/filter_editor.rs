@@ -19,6 +19,9 @@
 //! matched and the marked lines (#315). The editor draws its own lines, so
 //! `u` here is hide mode for the editor alone: the main window's hide mode
 //! does not change.
+//!
+//! `Ctrl-z` and `Ctrl-y` step back and forward through the pattern's
+//! versions (#316). See `FilterEditor::record` for when a version is kept.
 
 use super::App;
 use super::prompt::SearchPrompt;
@@ -27,6 +30,11 @@ use ratatui::prelude::Style;
 use regex::Regex;
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+/// How long the typing stops before the pattern as it stands is kept as a
+/// version (#316).
+pub(super) const VERSION_PAUSE: Duration = Duration::from_secs(1);
 
 /// Shown in the panel when Enter finds no pattern to add.
 pub(super) const NO_PATTERN: &str = "type a pattern first";
@@ -110,6 +118,15 @@ pub(super) struct FilterEditor {
     /// every line is drawn. `top` and the page keys count in these rows;
     /// `cursor` and `marks` stay line indexes.
     shown: Option<Vec<usize>>,
+    /// The pattern's versions, oldest first (#316). Only valid patterns,
+    /// and never two the same side by side.
+    pub(super) versions: Vec<String>,
+    /// Which of `versions` the pattern was last, or `None` before the
+    /// first.
+    pub(super) version: Option<usize>,
+    /// When the pattern was last typed into, while that edit is not yet
+    /// kept as a version.
+    pub(super) edited_at: Option<Instant>,
 }
 
 /// Which way a jump key looks from the cursor line (#315).
@@ -149,6 +166,9 @@ impl FilterEditor {
             reveal: false,
             matches_only: false,
             shown: None,
+            versions: Vec::new(),
+            version: None,
+            edited_at: None,
         }
     }
 
@@ -167,6 +187,9 @@ impl FilterEditor {
             ..Self::new(lines, style)
         };
         editor.recompile();
+        // The pattern it came with is the first version: it did not come
+        // from the keyboard.
+        editor.record();
         editor
     }
 
@@ -353,6 +376,94 @@ impl FilterEditor {
         (anchor.min(self.cursor), anchor.max(self.cursor))
     }
 
+    /// Keep the pattern as it stands as a version, if it is valid and not
+    /// the version it already is.
+    ///
+    /// A version is kept when the typing stops, not on each key: when a
+    /// key edits the pattern `VERSION_PAUSE` or more after the last edit,
+    /// when `Tab` leaves the pattern, and before an undo or a redo. The
+    /// pattern must compile and not be empty; a pattern that never compiled
+    /// is not a version to go back to.
+    fn record(&mut self) {
+        self.edited_at = None;
+        let pattern = &self.field.pattern;
+        if pattern.is_empty()
+            || self.error.is_some()
+            || self
+                .version
+                .is_some_and(|version| self.versions[version] == *pattern)
+        {
+            return;
+        }
+        self.versions.truncate(self.version.map_or(0, |at| at + 1));
+        self.versions.push(pattern.clone());
+        self.version = Some(self.versions.len() - 1);
+    }
+
+    /// A key that edits the pattern, at `now`. The pattern before it is a
+    /// version if the typing had stopped; an edit that changes the pattern
+    /// removes the versions an undo left ahead of it.
+    pub(super) fn edit_pattern(&mut self, now: Instant, edit: impl FnOnce(&mut SearchPrompt)) {
+        if self
+            .edited_at
+            .is_some_and(|at| now.saturating_duration_since(at) >= VERSION_PAUSE)
+        {
+            self.record();
+        }
+        let before = self.field.pattern.clone();
+        edit(&mut self.field);
+        if self.field.pattern == before {
+            return;
+        }
+        self.versions.truncate(self.version.map_or(0, |at| at + 1));
+        self.edited_at = Some(now);
+        self.recompile();
+    }
+
+    /// `Ctrl-z`: go back to the previous version. The pattern as typed is
+    /// kept first, so `Ctrl-y` comes back to it; a pattern that does not
+    /// compile goes back to the last version.
+    fn undo(&mut self) -> Option<&'static str> {
+        self.record();
+        let Some(at) = self.version else {
+            return Some("no older version of the pattern");
+        };
+        let target = if self.versions[at] == self.field.pattern {
+            match at.checked_sub(1) {
+                Some(target) => target,
+                None => return Some("no older version of the pattern"),
+            }
+        } else {
+            at
+        };
+        self.go_to_version(target);
+        None
+    }
+
+    /// `Ctrl-y`: go forward to the version an undo left.
+    fn redo(&mut self) -> Option<&'static str> {
+        self.record();
+        match self.version.map(|at| at + 1) {
+            Some(target) if target < self.versions.len() => {
+                self.go_to_version(target);
+                None
+            }
+            _ => Some("no newer version of the pattern"),
+        }
+    }
+
+    /// Put version `index` in the field, cursor at its end, with its
+    /// highlight and counts.
+    fn go_to_version(&mut self, index: usize) {
+        self.version = Some(index);
+        self.field = SearchPrompt::editing(
+            self.versions[index].clone(),
+            super::prompt::PromptKind::default(),
+        );
+        self.edited_at = None;
+        self.recompile();
+    }
+
     /// Move the first row drawn by `delta` rows, kept inside the file.
     fn scroll(&mut self, delta: isize) {
         let last = self.rows().saturating_sub(1);
@@ -383,6 +494,9 @@ impl FilterEditor {
     /// the first mark lands where the user is looking. Leaving the lines
     /// closes a visual range.
     fn toggle_focus(&mut self) {
+        if self.focus == EditorFocus::Pattern {
+            self.record();
+        }
         self.focus = match self.focus {
             EditorFocus::Pattern => {
                 let row = self.row_of(self.cursor);
@@ -616,6 +730,8 @@ impl App<'_> {
                 A::FilterEditorToggleMatchesOnly => {
                     self.edit_filter_editor(FilterEditor::toggle_matches_only);
                 }
+                A::FilterEditorUndo => self.step_filter_editor_version(FilterEditor::undo),
+                A::FilterEditorRedo => self.step_filter_editor_version(FilterEditor::redo),
                 // `resolve(Scope::FilterEditor, ..)` answers only with the arms
                 // above; matched rather than left to a panic, as in
                 // `handle_search_key`.
@@ -644,13 +760,8 @@ impl App<'_> {
                 // the editor keeps no history.
                 _ => return,
             };
-            self.edit_filter_editor(|editor| {
-                let before = editor.field.pattern.clone();
-                edit(&mut editor.field);
-                if editor.field.pattern != before {
-                    editor.recompile();
-                }
-            });
+            let now = Instant::now();
+            self.edit_filter_editor(|editor| editor.edit_pattern(now, edit));
             return;
         }
         match key.code {
@@ -661,10 +772,10 @@ impl App<'_> {
                     .modifiers
                     .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) => {}
             KeyCode::Char(c) if c == '\n' || c == '\r' => {}
-            KeyCode::Char(c) => self.edit_filter_editor(|editor| {
-                editor.field.insert(c);
-                editor.recompile();
-            }),
+            KeyCode::Char(c) => {
+                let now = Instant::now();
+                self.edit_filter_editor(|editor| editor.edit_pattern(now, |field| field.insert(c)));
+            }
             _ => {}
         }
     }
@@ -672,6 +783,14 @@ impl App<'_> {
     fn edit_filter_editor(&mut self, edit: impl FnOnce(&mut FilterEditor)) {
         if let Some(editor) = self.filter_editor.as_mut() {
             edit(editor);
+        }
+    }
+
+    /// `Ctrl-z` or `Ctrl-y`: step through the versions, and say on the
+    /// status row when there is none to step to.
+    fn step_filter_editor_version(&mut self, step: fn(&mut FilterEditor) -> Option<&'static str>) {
+        if let Some(text) = self.filter_editor.as_mut().and_then(step) {
+            self.report(text, false);
         }
     }
 

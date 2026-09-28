@@ -287,6 +287,9 @@ pub(crate) enum ActionId {
     FilterEditorUnmarkedPrev,
     /// `u` on the lines: show only the matched and the marked lines.
     FilterEditorToggleMatchesOnly,
+    /// `Ctrl-z` / `Ctrl-y`: the pattern's previous / next version (#316).
+    FilterEditorUndo,
+    FilterEditorRedo,
     // The help overlay itself has no ActionId: any key dismisses it, so
     // there is nothing to bind or rebind, and Scope::Help carries no DEFAULT
     // rows for the same reason (#59).
@@ -401,6 +404,8 @@ impl ActionId {
             Self::FilterEditorUnmarkedNext => "filtereditor.unmarked.next",
             Self::FilterEditorUnmarkedPrev => "filtereditor.unmarked.prev",
             Self::FilterEditorToggleMatchesOnly => "filtereditor.toggle.matchesonly",
+            Self::FilterEditorUndo => "filtereditor.undo",
+            Self::FilterEditorRedo => "filtereditor.redo",
             Self::PromptCommit => "prompt.commit",
             Self::PromptCancel => "prompt.cancel",
             Self::PromptLeft => "prompt.left",
@@ -629,6 +634,9 @@ pub(crate) const DEFAULT: &[(Scope, &str, ActionId)] = &[
         "u",
         ActionId::FilterEditorToggleMatchesOnly,
     ),
+    // Control keys, so they work in the pattern as well as on the lines.
+    (Scope::FilterEditor, "Ctrl-z", ActionId::FilterEditorUndo),
+    (Scope::FilterEditor, "Ctrl-y", ActionId::FilterEditorRedo),
 ];
 
 /// Keys 1.0 promises to 1.1, bound to nothing.

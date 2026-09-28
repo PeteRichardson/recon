@@ -895,6 +895,7 @@ that compiled left them, so a half-typed `(` does not clear the screen.
 | `f` / `F` | On the lines: go to the next / previous failed check | `filtereditor.failure.next` / `filtereditor.failure.prev` |
 | `n` / `N` | On the lines: go to the next / previous line the pattern matches that has no mark | `filtereditor.unmarked.next` / `filtereditor.unmarked.prev` |
 | `u` | On the lines: show only the lines the pattern matches and the marked lines, or every line again | `filtereditor.toggle.matchesonly` |
+| `Ctrl-z` / `Ctrl-y` | Go back / forward one version of the pattern | `filtereditor.undo` / `filtereditor.redo` |
 
 ##### Marking lines
 
@@ -934,6 +935,25 @@ on the key hide mode has in the main window, and the status row adds
 and the page keys move over the lines that show, and a range marks only
 them. The main window's hide mode does not change: when you close the
 editor, the main window is as it was.
+
+##### Undo and redo
+
+`Ctrl-z` goes back to the previous version of the pattern, and `Ctrl-y`
+goes forward again. Both work in the pattern and on the lines. The
+highlight, the match count and the failed-check count change to agree with
+the version. At the first or the last version, the status row says so.
+
+A version is not made on each key. The pattern as it stands becomes a
+version when it compiles, is not empty, and:
+
+- you stop typing for 1 second or more and then edit it again,
+- `Tab` moves the keys to the lines, or
+- you press `Ctrl-z` or `Ctrl-y`, so that `Ctrl-y` can come back to it.
+
+A pattern that does not compile is never a version: `Ctrl-z` from it goes
+back to the last pattern that did. `f C` starts with the filter's pattern as
+the first version. An edit after `Ctrl-z` removes the versions ahead of it.
+The versions last only while the editor is open.
 
 `Enter` does exactly what `f i` with the same pattern does: one including
 filter in the scratch set, and focus returns to where `f` was pressed.

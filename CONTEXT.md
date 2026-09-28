@@ -66,6 +66,12 @@ matches and the marked lines. `u` on the lines toggles it. It does not change
 the main window's hide mode.
 _Avoid_: hide mode (that is the main window's)
 
+**Version** (of a pattern):
+A pattern the filter editor keeps so that `Ctrl-z` can go back to it: a
+valid pattern at a pause in the typing, at `Tab`, or before an undo or redo.
+Versions last only while the editor is open.
+_Avoid_: history (that is the prompt's list of earlier patterns), revision
+
 **Interesting line**:
 A line an enabled including filter matches. `n` and `N` step between
 interesting lines when no search is set, and hide mode keeps only them.

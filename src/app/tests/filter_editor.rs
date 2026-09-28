@@ -1010,3 +1010,176 @@ fn the_help_overlay_shows_the_jump_keys() {
         assert!(named(name), "{name} has no row in the help overlay");
     }
 }
+
+// ---- undo and redo (#316) ------------------------------------------------
+
+/// As if the typing stopped for `VERSION_PAUSE` after the last edit.
+fn pause(app: &mut App) {
+    let editor = app
+        .filter_editor
+        .as_mut()
+        .expect("the filter editor should be open");
+    if let Some(at) = editor.edited_at.as_mut() {
+        *at -= crate::app::filter_editor::VERSION_PAUSE;
+    }
+}
+
+fn versions<'a>(app: &'a App) -> Vec<&'a str> {
+    editor(app).versions.iter().map(String::as_str).collect()
+}
+
+fn pattern<'a>(app: &'a App) -> &'a str {
+    &editor(app).field.pattern
+}
+
+/// `ERROR`, `ERROR d` and `INFO`, each typed after a pause, so three
+/// versions; the pattern is left at `INFO`, not yet kept.
+fn app_with_three_versions(name: &str) -> App<'static> {
+    let mut app = app_over_file(name, BODY);
+    open_editor_from_the_filter_pane(&mut app);
+    typed(&mut app, "ERROR");
+    pause(&mut app);
+    typed(&mut app, " d");
+    pause(&mut app);
+    ctrl(&mut app, KeyCode::Char('u'));
+    typed(&mut app, "INFO");
+    assert_eq!(versions(&app), ["ERROR", "ERROR d"]);
+    app
+}
+
+#[test]
+fn a_version_is_kept_at_a_pause_and_not_on_each_key() {
+    let mut app = app_over_file("undo_pause", BODY);
+    open_editor_from_the_filter_pane(&mut app);
+    typed(&mut app, "ERROR");
+    assert!(versions(&app).is_empty(), "a key made a version");
+
+    pause(&mut app);
+    typed(&mut app, " d");
+    assert_eq!(versions(&app), ["ERROR"], "only the pattern at the pause");
+}
+
+#[test]
+fn ctrl_z_goes_back_through_each_version_and_stops_at_the_first() {
+    let mut app = app_with_three_versions("undo_back");
+
+    ctrl(&mut app, KeyCode::Char('z'));
+    assert_eq!(pattern(&app), "ERROR d");
+    assert_eq!(status_line(&mut app), "1 of 4 lines match");
+    ctrl(&mut app, KeyCode::Char('z'));
+    assert_eq!(pattern(&app), "ERROR");
+    assert_eq!(status_line(&mut app), "2 of 4 lines match");
+
+    ctrl(&mut app, KeyCode::Char('z'));
+    assert_eq!(pattern(&app), "ERROR", "undo went past the first version");
+    assert_eq!(message(&app), Some("no older version of the pattern"));
+    assert_eq!(versions(&app), ["ERROR", "ERROR d", "INFO"]);
+}
+
+#[test]
+fn ctrl_y_goes_forward_again() {
+    let mut app = app_with_three_versions("undo_redo");
+    ctrl(&mut app, KeyCode::Char('z'));
+    ctrl(&mut app, KeyCode::Char('z'));
+
+    ctrl(&mut app, KeyCode::Char('y'));
+    assert_eq!(pattern(&app), "ERROR d");
+    ctrl(&mut app, KeyCode::Char('y'));
+    assert_eq!(pattern(&app), "INFO", "the pattern undo left came back");
+    assert_eq!(editor(&app).regex.as_ref().map(Regex::as_str), Some("INFO"));
+    ctrl(&mut app, KeyCode::Char('y'));
+    assert_eq!(message(&app), Some("no newer version of the pattern"));
+}
+
+#[test]
+fn an_edit_after_an_undo_removes_the_redo_history() {
+    let mut app = app_with_three_versions("undo_edit");
+    ctrl(&mut app, KeyCode::Char('z'));
+    ctrl(&mut app, KeyCode::Char('z'));
+    typed(&mut app, "x");
+
+    assert_eq!(versions(&app), ["ERROR"]);
+    ctrl(&mut app, KeyCode::Char('y'));
+    assert_eq!(pattern(&app), "ERRORx");
+    assert_eq!(message(&app), Some("no newer version of the pattern"));
+
+    ctrl(&mut app, KeyCode::Char('z'));
+    assert_eq!(pattern(&app), "ERROR");
+    ctrl(&mut app, KeyCode::Char('y'));
+    assert_eq!(pattern(&app), "ERRORx", "the edit is itself a version");
+}
+
+/// The failed-check count follows the version, as the match count does.
+#[test]
+fn the_checks_agree_with_each_version() {
+    let mut app = app_with_three_versions("undo_checks");
+    key(&mut app, KeyCode::Tab);
+    key(&mut app, KeyCode::Char('+')); // ERROR timeout
+    assert_eq!(status_line(&mut app), "2 of 4 lines match · 1 check fails");
+
+    ctrl(&mut app, KeyCode::Char('z'));
+    assert_eq!(pattern(&app), "ERROR d");
+    assert_eq!(status_line(&mut app), "1 of 4 lines match · 1 check fails");
+    ctrl(&mut app, KeyCode::Char('z'));
+    assert_eq!(status_line(&mut app), "2 of 4 lines match · 0 checks fail");
+}
+
+/// Tab away from the pattern keeps it, as a pause does.
+#[test]
+fn tab_keeps_the_pattern_as_a_version() {
+    let mut app = app_over_file("undo_tab", BODY);
+    open_editor_from_the_filter_pane(&mut app);
+    typed(&mut app, "ERROR");
+    key(&mut app, KeyCode::Tab);
+    assert_eq!(versions(&app), ["ERROR"]);
+}
+
+/// A pattern that does not compile is not a version: undo goes back to
+/// the last one that did.
+#[test]
+fn a_pattern_that_does_not_compile_is_not_a_version() {
+    let mut app = app_over_file("undo_invalid", BODY);
+    open_editor_from_the_filter_pane(&mut app);
+    typed(&mut app, "ERROR");
+    pause(&mut app);
+    typed(&mut app, "(");
+    pause(&mut app);
+    typed(&mut app, "x");
+    assert_eq!(versions(&app), ["ERROR"]);
+
+    ctrl(&mut app, KeyCode::Char('z'));
+    assert_eq!(pattern(&app), "ERROR");
+    assert!(editor(&app).error.is_none());
+}
+
+#[test]
+fn f_big_c_starts_with_the_filters_pattern_as_the_first_version() {
+    let mut app = app_with_two_filters("undo_f_c");
+    open_selected(&mut app);
+    let first = pattern(&app).to_string();
+    assert_eq!(versions(&app), [first.as_str()]);
+
+    typed(&mut app, "x");
+    ctrl(&mut app, KeyCode::Char('z'));
+    assert_eq!(pattern(&app), first);
+}
+
+/// The history lives only while the editor is open.
+#[test]
+fn the_history_goes_with_the_editor() {
+    let mut app = app_with_three_versions("undo_close");
+    key(&mut app, KeyCode::Esc);
+    open_editor(&mut app);
+    assert!(versions(&app).is_empty());
+}
+
+#[test]
+fn the_help_overlay_shows_the_undo_keys() {
+    let named = |name: &str| {
+        crate::help::KEYMAP
+            .iter()
+            .flat_map(|section| section.bindings)
+            .any(|binding| binding.names.contains(&name))
+    };
+    assert!(named("filtereditor.undo") && named("filtereditor.redo"));
+}
