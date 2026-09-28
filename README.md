@@ -1075,12 +1075,18 @@ errors, but not the DEMO runs` — and press `Enter`.
   status row shows `asking the model, 2 s · Esc cancels`. `Esc` cancels the
   request; a reply that comes after the cancel changes nothing.
 - The model receives the rules of the pattern language, the filter's
-  prompt, the marked lines, a few other lines of the file and your request.
+  prompt, the pattern as it is now (when it compiles), the marked lines, a
+  few other lines of the file, your earlier requests and your new request.
   It never receives the description.
 - The model's pattern goes in the pattern field as a new version, and its
   explanation shows under the request line. `Ctrl-z` goes back to the
   pattern from before, also an empty one, and works on the request line
   too. The request line is cleared for the next request.
+- Each request the model answered is kept while the editor is open, and
+  goes to the model again with every later request. So you can improve the
+  pattern in steps: `the timeout errors`, then `not the DEMO runs`. A
+  request that you cancel, or that fails, is not kept. The prompt does not
+  change.
 - The pattern is not checked against the marks before it is shown: look at
   the failed checks, and change the pattern or ask again.
 

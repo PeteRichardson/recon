@@ -8,9 +8,10 @@
 //! everything else in it works as before.
 //!
 //! What the model receives is the fixed `INSTRUCTIONS` and the text
-//! `request_text` builds: the filter's prompt, its marked lines, a few other
-//! lines of the file, and the request. The filter's description is for
-//! people only and is never an argument to it.
+//! `request_text` builds: the filter's prompt, the current pattern, its
+//! marked lines, a few other lines of the file, the session's earlier
+//! requests and the latest request. The filter's description is for people
+//! only and is never a part of it.
 
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -32,6 +33,10 @@ The expression is for the Rust `regex` crate. Its rules:
 - Escape . * + ? ( ) [ ] { } | ^ $ and \\ with a backslash to match them \
   literally.
 
+There can be a current pattern and earlier requests. Then change the \
+current pattern to do what the latest request asks, and keep what the \
+earlier requests asked for.
+
 To leave out lines, match only the lines to keep: there is no way to say \
 \"not\" inside the expression. Prefer a short expression that matches the \
 important text over one that copies a whole line.
@@ -42,6 +47,9 @@ explanation: one short sentence about what the expression matches";
 
 /// The most marked lines the model receives of each kind.
 const MARKS_MAX: usize = 20;
+
+/// The most earlier requests the model receives: the latest of them.
+const REQUESTS_MAX: usize = 10;
 
 /// How many of the file's other lines the model receives, spread over the
 /// file, so it sees the lines the pattern must not catch by accident.
@@ -185,32 +193,52 @@ impl Drop for Running {
     }
 }
 
-/// The text the model receives with `INSTRUCTIONS`: the filter's `prompt`,
-/// the lines it must match and must not match, `sample` lines of the file
-/// with no mark, and the user's `request`. Nothing else goes to the model,
-/// and there is no argument for the filter's description.
-pub(crate) fn request_text(
-    prompt: Option<&str>,
-    must_match: &[&str],
-    must_not_match: &[&str],
-    sample: &[&str],
-    request: &str,
-) -> String {
+/// What goes to the model for one request (#319). Nothing else goes to
+/// it, and there is no part for the filter's description.
+#[derive(Debug, Default)]
+pub(crate) struct Parts<'a> {
+    /// The filter's prompt.
+    pub(crate) prompt: Option<&'a str>,
+    /// The pattern in the field, when it compiles.
+    pub(crate) pattern: Option<&'a str>,
+    pub(crate) must_match: &'a [&'a str],
+    pub(crate) must_not_match: &'a [&'a str],
+    /// Lines of the file with no mark.
+    pub(crate) sample: &'a [&'a str],
+    /// The requests of this session the model answered, oldest first.
+    pub(crate) earlier: &'a [String],
+    /// The request to answer.
+    pub(crate) request: &'a str,
+}
+
+/// The text the model receives with `INSTRUCTIONS`, each part under its
+/// heading. An empty part has no heading.
+pub(crate) fn request_text(parts: &Parts) -> String {
     let mut text = String::new();
-    if let Some(prompt) = prompt {
+    if let Some(prompt) = parts.prompt {
         text.push_str("What the lines to match look like: ");
         text.push_str(prompt);
         text.push_str("\n\n");
     }
-    section(&mut text, "Lines the pattern must match:", must_match);
+    if let Some(pattern) = parts.pattern {
+        text.push_str("Current pattern: ");
+        text.push_str(pattern);
+        text.push_str("\n\n");
+    }
+    section(&mut text, "Lines the pattern must match:", parts.must_match);
     section(
         &mut text,
         "Lines the pattern must not match:",
-        must_not_match,
+        parts.must_not_match,
     );
-    section(&mut text, "Other lines of the file:", sample);
+    section(&mut text, "Other lines of the file:", parts.sample);
+    let earlier: Vec<&str> = parts.earlier[parts.earlier.len().saturating_sub(REQUESTS_MAX)..]
+        .iter()
+        .map(String::as_str)
+        .collect();
+    section(&mut text, "Earlier requests, oldest first:", &earlier);
     text.push_str("Request: ");
-    text.push_str(request);
+    text.push_str(parts.request);
     text.push('\n');
     text
 }
@@ -333,32 +361,57 @@ mod tests {
 
     #[test]
     fn the_request_text_has_each_part_under_its_heading() {
-        let text = request_text(
-            Some("timeouts"),
-            &["ERROR timeout"],
-            &["ERROR timeout DEMO"],
-            &["INFO ok"],
-            "also exclude DEMO",
-        );
+        let earlier = ["the timeouts".to_string()];
+        let text = request_text(&Parts {
+            prompt: Some("timeouts"),
+            pattern: Some("timeout"),
+            must_match: &["ERROR timeout"],
+            must_not_match: &["ERROR timeout DEMO"],
+            sample: &["INFO ok"],
+            earlier: &earlier,
+            request: "also exclude DEMO",
+        });
         assert_eq!(
             text,
             "What the lines to match look like: timeouts\n\n\
+             Current pattern: timeout\n\n\
              Lines the pattern must match:\nERROR timeout\n\n\
              Lines the pattern must not match:\nERROR timeout DEMO\n\n\
              Other lines of the file:\nINFO ok\n\n\
+             Earlier requests, oldest first:\nthe timeouts\n\n\
              Request: also exclude DEMO\n"
         );
     }
 
     #[test]
     fn an_empty_part_has_no_heading() {
-        assert_eq!(request_text(None, &[], &[], &[], "x"), "Request: x\n");
+        let text = request_text(&Parts {
+            request: "x",
+            ..Parts::default()
+        });
+        assert_eq!(text, "Request: x\n");
+    }
+
+    #[test]
+    fn only_the_latest_earlier_requests_are_sent() {
+        let earlier: Vec<String> = (0..REQUESTS_MAX + 2).map(|n| format!("r{n}")).collect();
+        let text = request_text(&Parts {
+            earlier: &earlier,
+            request: "x",
+            ..Parts::default()
+        });
+        assert!(!text.contains("r1\n"), "{text}");
+        assert!(text.contains("r2\n") && text.contains(&format!("r{}\n", REQUESTS_MAX + 1)));
     }
 
     #[test]
     fn a_long_line_is_cut() {
         let long = "a".repeat(LINE_MAX + 50);
-        let text = request_text(None, &[&long], &[], &[], "x");
+        let text = request_text(&Parts {
+            must_match: &[&long],
+            request: "x",
+            ..Parts::default()
+        });
         assert!(text.contains(&"a".repeat(LINE_MAX)));
         assert!(!text.contains(&"a".repeat(LINE_MAX + 1)));
     }
