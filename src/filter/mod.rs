@@ -502,8 +502,10 @@ impl ActiveFilters {
         &self.filters
     }
 
-    /// The colour the next filter added will take.
-    fn next_style(&self) -> Style {
+    /// The colour the next filter added will take. Public for the filter
+    /// editor (#312), which draws its matches in the colour `add` will give.
+    #[must_use]
+    pub fn next_style(&self) -> Style {
         Style::default().fg(self.palette.colour(self.known_user_authored_count()))
     }
 

@@ -1,5 +1,6 @@
 //! Drawing `App`: the panes, the status row, and the panels over them.
 
+mod filter_editor;
 pub(super) mod status;
 
 use super::App;
@@ -76,7 +77,12 @@ impl Widget for &mut App<'_> {
         // has an accurate width to work with on a narrow terminal.
         let badge_width: usize = badges.iter().map(|text| text.chars().count() + 1).sum();
         let room = (prompt_area.width as usize).saturating_sub(badge_width);
-        let status = self.status_bar_text(room);
+        // The filter editor's count takes the row's text (#312): the
+        // panes it describes are all under the editor.
+        let status = match &self.filter_editor {
+            Some(editor) => editor.status(),
+            None => self.status_bar_text(room),
+        };
 
         // Three columns, `[explorer | file view | filter pane]` (#300). A
         // hidden pane gets a zero-wide rectangle and is not drawn; the rest
@@ -131,6 +137,10 @@ impl Widget for &mut App<'_> {
         }
         if let Some(picker) = self.set_picker.as_mut() {
             picker.render(area, buf);
+        }
+        if let Some(editor) = self.filter_editor.as_mut() {
+            let title = self.view.filename().display().to_string();
+            editor.render(&title, self.filters.dim_style(), area, buf);
         }
         if self.help {
             help::render(area, buf, &self.keymap);

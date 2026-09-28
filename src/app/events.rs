@@ -167,6 +167,15 @@ impl App<'_> {
             return;
         }
 
+        // The filter editor is modal too (#312). It swallows every event —
+        // a mouse event as well, since nothing under it is on the screen.
+        if self.filter_editor.is_some() {
+            if let event::Event::Key(key) = event {
+                self.handle_filter_editor_key(key);
+            }
+            return;
+        }
+
         // The bounce guard (#48). `Enter` both commits a prompt and toggles a
         // filter, and those are one keystroke apart, so the `Enter` that closed
         // a prompt must not fall through and switch a filter off.
@@ -197,7 +206,7 @@ impl App<'_> {
                 // redirect: making `i` global would collapse `f i` and `i`,
                 // and `x`-not-`e` for exclude exists because `e` is a focus
                 // key. The chain stays the answer; the hint teaches it.
-                // These seven letters are unbound in the explorer and the
+                // These eight letters are unbound in the explorer and the
                 // file view, so this arm shadows nothing.
                 //
                 // Not resolved through the table (#199): these are guidance,
@@ -206,8 +215,11 @@ impl App<'_> {
                 // generated from the table (task 8), so it names the key
                 // that actually reaches the filter action, not the key this
                 // arm happens to match.
-                KeyCode::Char(c @ ('i' | 'x' | 'c' | 'd' | 'm' | 'a' | 's'))
-                    if key.modifiers.is_empty() && self.focus != Focus::Filters =>
+                KeyCode::Char(c @ ('i' | 'x' | 'c' | 'd' | 'm' | 'a' | 's' | 'I'))
+                    // `pressed`, not `key.modifiers.is_empty()`: a terminal
+                    // sets `SHIFT` on the `I`, as on every uppercase letter
+                    // (#250), and `normalise` is what drops it.
+                    if !pressed.ctrl && !pressed.alt && self.focus != Focus::Filters =>
                 {
                     use crate::keymap::ActionId as A;
                     let (action, verb) = match c {
@@ -217,6 +229,7 @@ impl App<'_> {
                         'd' => (A::FiltersDelete, "deletes the selected filter"),
                         'm' => (A::FiltersContext, "toggles include and context"),
                         'a' => (A::FiltersProfile, "picks a profile for the set"),
+                        'I' => (A::FiltersEditorNew, "opens the filter editor"),
                         _ => (A::FiltersSolo, "solos the set"),
                     };
                     if let Some(hint) = self.keymap.hint_for(action, verb, A::GlobalFocusFilters) {

@@ -548,6 +548,11 @@ pub const KEYMAP: &[Section] = &[
                 names: &[],
             },
             Binding {
+                keys: &["f I"],
+                action: "Write a new filter in the filter editor",
+                names: &[],
+            },
+            Binding {
                 keys: &["f d", "f Enter"],
                 action: "Delete / toggle the selected filter — focus stays",
                 names: &[],
@@ -773,6 +778,11 @@ pub const KEYMAP: &[Section] = &[
                 action: "Save the scratch filters as a named set",
                 names: &["filters.save.set"],
             },
+            Binding {
+                keys: &["I"],
+                action: "Open the filter editor on a new filter",
+                names: &["filters.editor.new"],
+            },
         ],
     },
     Section {
@@ -831,6 +841,33 @@ pub const KEYMAP: &[Section] = &[
                 keys: &["Esc"],
                 action: "Discard the changes",
                 names: &["sets.cancel"],
+            },
+        ],
+    },
+    Section {
+        // Its pattern field edits with the prompt's keys, which the section
+        // below lists; only the keys of its own are here.
+        title: "Filter editor",
+        bindings: &[
+            Binding {
+                keys: &["Up", "Down"],
+                action: "Scroll the file a line",
+                names: &["filtereditor.scroll.up", "filtereditor.scroll.down"],
+            },
+            Binding {
+                keys: &["PageUp", "PageDown"],
+                action: "Scroll the file a page",
+                names: &["filtereditor.page.up", "filtereditor.page.down"],
+            },
+            Binding {
+                keys: &["Enter"],
+                action: "Add the pattern as an including filter",
+                names: &["filtereditor.commit"],
+            },
+            Binding {
+                keys: &["Esc"],
+                action: "Close the editor and change nothing",
+                names: &["filtereditor.cancel"],
             },
         ],
     },
@@ -1375,6 +1412,7 @@ mod tests {
                 "Filter pane",
                 "Profile picker",
                 "Set picker",
+                "Filter editor",
                 "While a prompt is open",
             ]
         );
@@ -1404,6 +1442,7 @@ mod tests {
                         && s.title != "While a prompt is open"
                         && s.title != "Profile picker"
                         && s.title != "Set picker"
+                        && s.title != "Filter editor"
                 })
                 .filter(|s| s.bindings.iter().any(|b| b.keys.contains(&key)))
                 .map(|s| s.title)
@@ -1464,19 +1503,20 @@ mod tests {
     /// any further has nowhere left to go without this area's width growing
     /// past 151 — which would stop the second test here from failing on the
     /// regression it exists to catch — and a row that adds to *either* total
-    /// has to be re-measured against both. The height, 51, is likewise the
-    /// exact number of rows two columns hold at the current row count (102,
+    /// has to be re-measured against both. The height, 55, is likewise the
+    /// exact number of rows two columns hold at the current row count (110,
     /// after the two reserved-key rows of #242 raised it from 86 to 88,
     /// the two search-history rows of #274 to 90, the `L` row and the
     /// set picker's section of #284 to 97, the picker's two search rows
-    /// of #285 to 99, and the three hide rows of #300 to 102); adding a row without
+    /// of #285 to 99, the three hide rows of #300 to 102, and the `I` rows
+    /// and the filter editor's section of #312 to 110); adding a row without
     /// raising the height would drop it off the bottom, which is a
     /// `shown(&columns) == rows.len()` failure below, not a width one.
     #[test]
     fn a_normal_terminal_shows_the_whole_keymap() {
         let rows = rows(&crate::keymap::Keymap::default());
 
-        let columns = layout(&rows, inner(150, 51));
+        let columns = layout(&rows, inner(150, 55));
 
         assert_eq!(shown(&columns), rows.len(), "the keymap did not fit");
         assert!(

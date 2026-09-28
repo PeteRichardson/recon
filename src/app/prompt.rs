@@ -235,32 +235,32 @@ impl SearchPrompt {
             .map_or(self.pattern.len(), |(byte, _)| byte)
     }
 
-    fn insert(&mut self, c: char) {
+    pub(super) fn insert(&mut self, c: char) {
         let at = self.byte_at(self.cursor);
         self.pattern.insert(at, c);
         self.cursor += 1;
     }
 
-    fn move_left(&mut self) {
+    pub(super) fn move_left(&mut self) {
         self.cursor = self.cursor.saturating_sub(1);
     }
 
-    fn move_right(&mut self) {
+    pub(super) fn move_right(&mut self) {
         self.cursor = (self.cursor + 1).min(self.pattern.chars().count());
     }
 
-    fn move_to_start(&mut self) {
+    pub(super) fn move_to_start(&mut self) {
         self.cursor = 0;
     }
 
-    fn move_to_end(&mut self) {
+    pub(super) fn move_to_end(&mut self) {
         self.cursor = self.pattern.chars().count();
     }
 
     /// Delete the character before the cursor. `false` when there is none
     /// — at the start of the pattern, which is the only place the caller
     /// has to distinguish an empty pattern from a full one.
-    fn delete_before(&mut self) -> bool {
+    pub(super) fn delete_before(&mut self) -> bool {
         if self.cursor == 0 {
             return false;
         }
@@ -271,7 +271,7 @@ impl SearchPrompt {
     }
 
     /// Delete the character under the cursor; nothing at the end.
-    fn delete_at(&mut self) {
+    pub(super) fn delete_at(&mut self) {
         let (start, end) = (self.byte_at(self.cursor), self.byte_at(self.cursor + 1));
         if start < end {
             self.pattern.replace_range(start..end, "");
@@ -282,7 +282,7 @@ impl SearchPrompt {
     /// before it go, then the word — a run of identifier characters, the
     /// same definition `*` uses, or a run of anything else that is not a
     /// blank, so `foo::` loses `::` and then `foo` in two presses.
-    fn delete_word_before(&mut self) {
+    pub(super) fn delete_word_before(&mut self) {
         let chars: Vec<char> = self.pattern.chars().collect();
         let mut start = self.cursor;
         while start > 0 && chars[start - 1].is_whitespace() {
@@ -302,7 +302,7 @@ impl SearchPrompt {
     }
 
     /// vim's command-line `Ctrl-u`: everything before the cursor goes.
-    fn delete_to_start(&mut self) {
+    pub(super) fn delete_to_start(&mut self) {
         self.delete_range(0, self.cursor);
     }
 

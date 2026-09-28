@@ -69,6 +69,10 @@ pub(crate) enum Scope {
     Picker,
     /// The set picker is open (#284).
     Sets,
+    /// The filter editor is open (#312). It takes every key; a key it does
+    /// not bind is tried as a `Prompt` editing key, and then typed. Not
+    /// `editor`: that word is the external editor's, as in `[editor]`.
+    FilterEditor,
     /// Checked for every key that no modal scope claimed.
     Global,
     Explorer,
@@ -103,6 +107,7 @@ impl Scope {
             Self::Help => "help",
             Self::Picker => "picker",
             Self::Sets => "sets",
+            Self::FilterEditor => "filtereditor",
             Self::Global => "global",
             Self::Explorer => "explorer",
             Self::View => "view",
@@ -251,6 +256,15 @@ pub(crate) enum ActionId {
     SetsSearch,
     SetsHitNext,
     SetsHitPrev,
+    // Filter editor (#312)
+    /// `I` in the filter pane: open the filter editor on a new filter.
+    FiltersEditorNew,
+    FilterEditorCommit,
+    FilterEditorCancel,
+    FilterEditorScrollUp,
+    FilterEditorScrollDown,
+    FilterEditorPageUp,
+    FilterEditorPageDown,
     // The help overlay itself has no ActionId: any key dismisses it, so
     // there is nothing to bind or rebind, and Scope::Help carries no DEFAULT
     // rows for the same reason (#59).
@@ -347,6 +361,13 @@ impl ActionId {
             Self::FiltersSolo => "filters.solo",
             Self::FiltersReset => "filters.reset",
             Self::FiltersSaveSet => "filters.save.set",
+            Self::FiltersEditorNew => "filters.editor.new",
+            Self::FilterEditorCommit => "filtereditor.commit",
+            Self::FilterEditorCancel => "filtereditor.cancel",
+            Self::FilterEditorScrollUp => "filtereditor.scroll.up",
+            Self::FilterEditorScrollDown => "filtereditor.scroll.down",
+            Self::FilterEditorPageUp => "filtereditor.page.up",
+            Self::FilterEditorPageDown => "filtereditor.page.down",
             Self::PromptCommit => "prompt.commit",
             Self::PromptCancel => "prompt.cancel",
             Self::PromptLeft => "prompt.left",
@@ -508,6 +529,7 @@ pub(crate) const DEFAULT: &[(Scope, &str, ActionId)] = &[
     (Scope::Filters, "S", ActionId::FiltersSaveSet),
     (Scope::Filters, "n", ActionId::HitNext),
     (Scope::Filters, "N", ActionId::HitPrev),
+    (Scope::Filters, "I", ActionId::FiltersEditorNew),
     (Scope::Prompt, "Enter", ActionId::PromptCommit),
     (Scope::Prompt, "Esc", ActionId::PromptCancel),
     (Scope::Prompt, "Left", ActionId::PromptLeft),
@@ -540,6 +562,20 @@ pub(crate) const DEFAULT: &[(Scope, &str, ActionId)] = &[
     (Scope::Sets, "/", ActionId::SetsSearch),
     (Scope::Sets, "n", ActionId::SetsHitNext),
     (Scope::Sets, "N", ActionId::SetsHitPrev),
+    (Scope::FilterEditor, "Enter", ActionId::FilterEditorCommit),
+    (Scope::FilterEditor, "Esc", ActionId::FilterEditorCancel),
+    (Scope::FilterEditor, "Up", ActionId::FilterEditorScrollUp),
+    (
+        Scope::FilterEditor,
+        "Down",
+        ActionId::FilterEditorScrollDown,
+    ),
+    (Scope::FilterEditor, "PageUp", ActionId::FilterEditorPageUp),
+    (
+        Scope::FilterEditor,
+        "PageDown",
+        ActionId::FilterEditorPageDown,
+    ),
 ];
 
 /// Keys 1.0 promises to 1.1, bound to nothing.
@@ -1172,7 +1208,8 @@ mod tests {
         assert!(Scope::Prompt < Scope::Help);
         assert!(Scope::Help < Scope::Picker);
         assert!(Scope::Picker < Scope::Sets);
-        assert!(Scope::Sets < Scope::Global);
+        assert!(Scope::Sets < Scope::FilterEditor);
+        assert!(Scope::FilterEditor < Scope::Global);
         assert!(Scope::Global < Scope::Explorer);
     }
 
@@ -1858,6 +1895,7 @@ mod tests {
                 Scope::Help,
                 Scope::Picker,
                 Scope::Sets,
+                Scope::FilterEditor,
                 Scope::Global,
                 Scope::Explorer,
                 Scope::View,
@@ -1927,6 +1965,7 @@ mod tests {
         assert_eq!(Scope::Prompt.name(), "prompt");
         assert_eq!(Scope::Picker.name(), "picker");
         assert_eq!(Scope::Help.name(), "help");
+        assert_eq!(Scope::FilterEditor.name(), "filtereditor");
     }
 
     /// An action bound to several keys hints with the first one the user
