@@ -1557,8 +1557,8 @@ starts in hide mode, so only matches are emitted; without it
 the run is in dim mode and emits everything, with the match count in the
 summary. `-n` numbers lines as in the TUI. `-q` drops the summary; warnings
 still print. All five work in the TUI too. An unknown set or profile is
-refused before anything is read, and the error lists the names
-`filters.toml` defines, with the built-in `definitions` set named apart. So is
+refused before anything is read, and the error lists the names the set
+files define, with the built-in `definitions` set named apart. So is
 `--set` together with `--unlist` on the same set.
 
 **Several files.** With more than one input, `--emit lines` prefixes each

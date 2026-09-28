@@ -811,8 +811,9 @@ impl fmt::Display for ConfigError {
             }
             Self::LineNumbersNeedLines => write!(f, "--line-numbers applies to --emit lines"),
             // The built-in set is listed apart: it is among the known names
-            // — `--set definitions` is accepted (#220) — but the file does
-            // not define it, and the message says what the file defines.
+            // — `--set definitions` is accepted (#220) — but no set file
+            // defines it, and the message says what the set files define.
+            // Not "filters.toml": the sets can come from any set file (#309).
             Self::UnknownSet { name, known } => {
                 let (builtin, file): (Vec<String>, Vec<String>) = known
                     .iter()
@@ -820,7 +821,7 @@ impl fmt::Display for ConfigError {
                     .partition(|set| crate::filter::is_builtin_name(set));
                 write!(
                     f,
-                    "unknown set {name:?}; filters.toml defines: {}",
+                    "unknown set {name:?}; the set files define: {}",
                     known_list(&file)
                 )?;
                 if !builtin.is_empty() {
@@ -1780,7 +1781,7 @@ mod tests {
         let err = config.check_sets(&sets).expect_err("refused");
         assert_eq!(
             err.to_string(),
-            "unknown set \"Foo\"; filters.toml defines: Bugs; built in: definitions"
+            "unknown set \"Foo\"; the set files define: Bugs; built in: definitions"
         );
     }
 
@@ -1982,7 +1983,7 @@ mod tests {
 
         assert_eq!(
             err.to_string(),
-            "unknown set \"Foo\"; filters.toml defines: Bugs; built in: definitions"
+            "unknown set \"Foo\"; the set files define: Bugs; built in: definitions"
         );
     }
 
@@ -1999,7 +2000,7 @@ mod tests {
         assert!(matches!(err, ConfigError::UnknownSet { .. }), "{err:?}");
         assert_eq!(
             err.to_string(),
-            "unknown set \"Foo\"; filters.toml defines: Bugs, WiFi"
+            "unknown set \"Foo\"; the set files define: Bugs, WiFi"
         );
     }
 
@@ -2014,7 +2015,7 @@ mod tests {
 
         assert_eq!(
             err.to_string(),
-            "unknown set \"Foo\"; filters.toml defines: none"
+            "unknown set \"Foo\"; the set files define: none"
         );
     }
 
