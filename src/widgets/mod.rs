@@ -65,38 +65,14 @@ pub(crate) enum Action {
 /// that used to search for a variant are field reads (#73).
 ///
 /// `Explorer` is the default because the explorer is where a session starts.
+/// `Tab` order, left to right, and the rule that skips a hidden pane, are in
+/// `panes.rs` (#300).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) enum Focus {
     #[default]
     Explorer,
     View,
     Filters,
-}
-
-impl Focus {
-    /// The next pane in the `Tab` cycle, wrapping.
-    ///
-    /// Written out rather than derived from a count: the cycle order is a
-    /// deliberate left-to-right, top-to-bottom reading of the layout, and an
-    /// arithmetic version would silently reorder if the variants were ever
-    /// rearranged for an unrelated reason.
-    pub(crate) fn next(self) -> Self {
-        match self {
-            Self::Explorer => Self::View,
-            Self::View => Self::Filters,
-            Self::Filters => Self::Explorer,
-        }
-    }
-
-    /// The other way round. Written out like `next`, and for the same
-    /// reason.
-    pub(crate) fn prev(self) -> Self {
-        match self {
-            Self::Explorer => Self::Filters,
-            Self::View => Self::Explorer,
-            Self::Filters => Self::View,
-        }
-    }
 }
 
 /// What a keypress in the filter pane asks `App` to do.

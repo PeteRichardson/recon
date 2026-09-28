@@ -79,6 +79,9 @@ const AND_BADGE_TEXT: &str = " AND ";
 /// find its hit, and when `N` passed the start. One message for the search
 /// and for `n` over interesting lines, since both step through
 /// `step_visible`.
+/// What `E`, `F` or `global.hide.view` says when the pane is the last one
+/// shown (#300).
+const LAST_PANE: &str = "at least one pane stays shown";
 const WRAPPED_TO_TOP: &str = "wrapped to the top";
 const WRAPPED_TO_BOTTOM: &str = "wrapped to the bottom";
 
@@ -448,6 +451,7 @@ pub mod help;
 pub mod keymap;
 mod layout;
 mod mouse;
+pub mod panes;
 mod path;
 pub mod scan;
 mod selection;
@@ -465,7 +469,8 @@ use clipboard::Clipboard;
 use document::{Document, Mode};
 use editor::Launcher;
 use filter::ActiveFilters;
-use layout::{Divider, ExplorerWidth, FilterHeight};
+use layout::{Divider, PaneWidth};
+use panes::Panes;
 use viewport::Step;
 use widgets::explorer::Explorer;
 use widgets::explorer::Match;
@@ -490,27 +495,27 @@ pub struct App<'a> {
     filters_pane: FilterList,
     /// Which pane has focus, replacing an index into the old vec.
     focus: Focus,
-    explorer_width: ExplorerWidth,
-    /// Boundary column from the last render, for hit-testing mouse events that
-    /// arrive before the next frame.
+    explorer_width: PaneWidth,
+    filter_width: PaneWidth,
+    /// Which panes are on the screen, and what a zoom remembered (#300).
+    panes: Panes,
+    /// The explorer's divider from the last render: the first column to the
+    /// explorer's right. For hit-testing mouse events that arrive before the
+    /// next frame. `u16::MAX` while the explorer is hidden, or is the only
+    /// pane, so no real column can hit it.
     divider: u16,
-    filter_height: FilterHeight,
-    /// The filter pane's rectangle from the last render.
-    ///
-    /// Its top edge is the horizontal divider — the counterpart of `divider`
-    /// above, and hit-tested the same way, against the last frame. Its bottom
-    /// edge is kept too, because that is what turns a dragged row into a
-    /// height: the pane runs from the boundary the mouse is holding down to
-    /// the bottom of the left column, and only a render knows where that is.
+    /// The filter pane's divider from the last render — its first column —
+    /// hit-tested the same way as `divider`. `u16::MAX` while there is no
+    /// file view to its left.
+    filter_divider: u16,
+    /// The three panes' rectangles from the last render: a click is
+    /// hit-tested against the frame the user was looking at when they
+    /// clicked (#58). A hidden pane's is zero wide.
     filter_area: Rect,
-    /// The other two panes' rectangles from the last render, kept for the
-    /// same reason as `filter_area`: a click is hit-tested against the frame
-    /// the user was looking at when they clicked (#58).
     explorer_area: Rect,
     view_area: Rect,
-    /// Everything above the status row — the one rectangle a zoomed pane
-    /// fills, since the three above are meaningless while one pane has the
-    /// whole frame. See `pane_at`.
+    /// Everything above the status row. Its right edge is what turns a drag
+    /// on the filter pane's divider into a width.
     panes_area: Rect,
     /// The status row itself; a click there opens the include prompt.
     status_area: Rect,
@@ -564,11 +569,6 @@ pub struct App<'a> {
     /// and still needs the buffer replaced. Omitting this is the subtlest bug
     /// available here — the view would silently go on showing the old rows.
     last_window: Option<(usize, usize)>,
-    /// The single pane filling the screen, or `None` for the normal split.
-    ///
-    /// Hiding the left column and maximising the file view are the same thing,
-    /// so they share this one field. Two separate flags could disagree.
-    zoom: Option<Focus>,
     /// Both editor command templates, resolved once at startup.
     ///
     /// Resolved at startup but *split* per keypress, so a typo in one template
@@ -655,6 +655,12 @@ pub struct App<'a> {
     /// or a second `f` ends the chain; a toggle or delete inside the pane
     /// does not end it, because those are often one of several.
     chain_origin: Option<Focus>,
+    /// Whether `f` had to show the filter pane to start the chain in
+    /// `chain_origin`. The chain that returns hides it again, so a chain
+    /// does not change the layout (#300). Read only by
+    /// `return_to_chain_origin`, and set afresh by every `f`, so a chain
+    /// that ended some other way leaves nothing stale behind.
+    chain_shown_filters: bool,
     /// Whether the keymap overlay is covering the panes (#25).
     ///
     /// A plain flag rather than a fourth pane: the three panes are persistent
@@ -868,15 +874,21 @@ impl App<'_> {
             }
         }
 
+        // `Config::load` refused a list naming all three; `hiding` keeps the
+        // file view for a `Config` built by hand that does.
+        let panes = Panes::hiding(config.hide_panes().iter().map(|&pane| Focus::from(pane)));
+
         let mut app = Self {
             state: AppState::Running,
             explorer,
             view,
             filters_pane: FilterList::default(),
-            focus: Focus::Explorer,
-            explorer_width: ExplorerWidth::Auto,
+            focus: panes.settle(Focus::Explorer),
+            explorer_width: PaneWidth::Auto,
+            filter_width: PaneWidth::Auto,
+            panes,
             divider: 0,
-            filter_height: FilterHeight::Auto,
+            filter_divider: u16::MAX,
             filter_area: Rect::ZERO,
             explorer_area: Rect::ZERO,
             view_area: Rect::ZERO,
@@ -894,7 +906,6 @@ impl App<'_> {
             document: Document::default(),
             last_generation: None,
             last_window: None,
-            zoom: None,
             editor: config.editor_templates(),
             // Resolved by `main` before the terminal came up
             // (`Config::build_keymap`), so nothing fallible happens here —
@@ -917,6 +928,7 @@ impl App<'_> {
             last_view_click: None,
             swallow_next_enter: false,
             chain_origin: None,
+            chain_shown_filters: false,
             help: false,
             keymap_warnings: config.keymap_warnings.clone(),
             keymap_warnings_open: config.warnings() && !config.keymap_warnings.is_empty(),
@@ -2236,11 +2248,10 @@ impl App<'_> {
             A::GlobalFocusView => self.reveal_and_focus(Focus::View),
             // A second `f` while the pane already has focus is the sticky
             // gesture: the user is staying, so no chain to return to.
-            A::GlobalFocusFilters => {
-                let origin = (self.focus != Focus::Filters).then_some(self.focus);
-                self.reveal_and_focus(Focus::Filters);
-                self.chain_origin = origin;
-            }
+            A::GlobalFocusFilters => self.start_filter_chain(),
+            A::GlobalHideExplorer => self.hide_pane(Focus::Explorer),
+            A::GlobalHideView => self.hide_pane(Focus::View),
+            A::GlobalHideFilters => self.hide_pane(Focus::Filters),
             A::GlobalHelp => self.help = true,
             A::GlobalSets => {
                 self.set_picker = Some(widgets::setpicker::SetPicker::new(self.filters.sets()));
@@ -3568,8 +3579,17 @@ impl App<'_> {
         // matched" over a pane that had in fact lost lines.
         let (total, previewing) = self.total_lines_text();
         let note = if previewing { " (preview)" } else { "" };
+        // With the filter pane hidden, nothing on the screen says which
+        // filters colour or remove lines, so the count is of those in effect
+        // rather than of rows a pane is not showing (#300).
+        let on = self.filters.effective_count();
+        let filters = if !self.panes.is_shown(Focus::Filters) && on > 0 {
+            format!("filters: {on} on")
+        } else {
+            format!("{count} {noun}")
+        };
         format!(
-            "{funnel}{count} {noun}   {}/{total} lines shown{note}",
+            "{funnel}{filters}   {}/{total} lines shown{note}",
             self.document.visible().len(),
         )
     }
@@ -3621,91 +3641,86 @@ impl App<'_> {
         }
     }
 
-    /// Move focus to the next pane.
+    /// Move focus to the next shown pane, left to right, wrapping.
     ///
-    /// Every pane is always on screen, so this is a plain rotation. It used to
-    /// skip the filter pane while an empty set collapsed it out of the layout,
-    /// since focusing a pane that is not drawn would strand the user with no
-    /// visible cursor; the pane no longer collapses, so the special case is
-    /// gone with it and the cycle is three deep at all times.
-    ///
-    /// The `explorer_index`/`file_view_index`/`filter_list_index` helpers this
-    /// used to rotate between are gone with the vec they searched: a `Focus`
-    /// names its pane directly, so there is no lookup left to get wrong
-    /// (#73).
+    /// A hidden pane is skipped (#300): focus is only ever on a pane that is
+    /// on the screen, so the cursor is never somewhere the user cannot see.
     fn focus_next(&mut self) {
         self.chain_origin = None;
-        self.focus = self.focus.next();
-        // The zoomed pane is always the focused pane, so the cursor is never
-        // on a pane that is not on screen. This lives inside `focus_next`
-        // itself, rather than beside its call site, so a future caller of
-        // `focus_next` cannot forget it.
-        if self.zoom.is_some() {
-            self.zoom = Some(self.focus);
-        }
+        self.focus = self.panes.next(self.focus);
     }
 
-    /// `Shift-Tab`. Same zoom rule as `focus_next`, kept inside the method
-    /// for the same reason.
+    /// `Shift-Tab`: the other way round, with the same skip.
     fn focus_prev(&mut self) {
         self.chain_origin = None;
-        self.focus = self.focus.prev();
-        if self.zoom.is_some() {
-            self.zoom = Some(self.focus);
-        }
+        self.focus = self.panes.prev(self.focus);
     }
 
-    /// Zoom `target`, or restore the split if it is already zoomed. Reports
-    /// whether the pane ended up zoomed.
-    fn toggle_zoom(&mut self, target: Focus) -> bool {
-        // A drag in progress has no divider to keep tracking once zoomed —
-        // the `Drag` arm in `handle_divider` only checks `self.dragging`, not
-        // whether a divider is actually on screen — so it would otherwise
-        // keep silently re-pinning `explorer_width` or `filter_height` while
-        // nothing is drawn to explain why, with the new size only appearing
-        // on un-zoom. Zooming (in either direction) cancels it outright.
-        // Unzooming is a no-op here in practice, since a drag can only start
-        // via a click that `divider_at` accepted, and that can't happen while
-        // already zoomed.
-        self.dragging = None;
-        self.zoom = match self.zoom {
-            Some(pane) if pane == target => None,
-            _ => Some(target),
-        };
-        self.zoom == Some(target)
-    }
-
-    /// Maximise the focused pane, or restore the split if it already is.
+    /// `z`: hide every pane but the focused one, or — when it is already the
+    /// only one shown — show the others again. See `Panes::zoom`.
     fn zoom_focused(&mut self) {
-        self.toggle_zoom(self.focus);
-    }
-
-    /// Give the file its full width. Focus follows, because the pane the
-    /// cursor was in may no longer be on screen.
-    ///
-    /// Restoring the split on the second press deliberately leaves focus in
-    /// the file view rather than dragging it back to the explorer: you
-    /// pressed `b` to read the file, so that is where you want to stay. `e`
-    /// is the documented way back, precisely so `b` does not have to carry
-    /// that job too.
-    fn zoom_file_view(&mut self) {
         self.chain_origin = None;
-        if self.toggle_zoom(Focus::View) {
-            self.focus = Focus::View;
-        }
+        self.cancel_drag();
+        self.panes.zoom(self.focus);
     }
 
-    /// Bring the left column back and put the cursor in it.
-    /// Focus `pane`, un-zooming first so it is actually visible.
+    /// `b`: `t`, then `z` (#300). From a split, the file view is focused and
+    /// takes the whole width; pressed again with only the view shown, the
+    /// others come back and focus stays in the file view — you pressed `b` to
+    /// read the file, so that is where you want to stay.
+    fn zoom_file_view(&mut self) {
+        self.reveal_and_focus(Focus::View);
+        self.zoom_focused();
+    }
+
+    /// Focus `pane`, showing it first if it is hidden, so the cursor never
+    /// lands on a pane the user cannot see.
     ///
-    /// Clearing the zoom is the whole reason the focus keys are not just
-    /// `focus = ...`: `b` and `z` can leave a pane hidden, and a focus key
-    /// that moved the cursor onto a pane the user cannot see would be worse
-    /// than no key at all.
+    /// Only `pane` is shown. The focus keys used to clear a zoom outright;
+    /// now a zoom is only a hide, and `e` after `b` puts the explorer beside
+    /// the view rather than bringing back the filter pane too.
     fn reveal_and_focus(&mut self, pane: Focus) {
         self.chain_origin = None;
-        self.zoom = None;
+        self.panes.show(pane);
         self.focus = pane;
+    }
+
+    /// `E`, `F` and `global.hide.view`: take `pane` off the screen.
+    ///
+    /// The last shown pane is refused, with a message: a window with no
+    /// pane in it has no key a user could find to undo it. Focus leaves a
+    /// hidden pane by `Panes::hide`'s rule.
+    fn hide_pane(&mut self, pane: Focus) {
+        match self.panes.hide(pane, self.focus) {
+            Ok(focus) => {
+                if focus != self.focus {
+                    self.chain_origin = None;
+                    self.focus = focus;
+                }
+                self.cancel_drag();
+            }
+            Err(panes::LastPane) => self.report(LAST_PANE, false),
+        }
+    }
+
+    /// A drag in progress has no divider to keep tracking once a pane is
+    /// hidden or shown — the `Drag` arm in `handle_divider` only checks
+    /// `self.dragging`, not whether that divider is still on the screen — so
+    /// it would otherwise go on silently re-pinning a width nothing explains.
+    /// Every layout change cancels it outright.
+    fn cancel_drag(&mut self) {
+        self.dragging = None;
+    }
+
+    /// `f`: focus the filter pane, and remember where focus came from so a
+    /// chain — `f i … Enter` — can go back there. A filter pane that was
+    /// hidden is shown for the chain and hidden again when it returns.
+    fn start_filter_chain(&mut self) {
+        let origin = (self.focus != Focus::Filters).then_some(self.focus);
+        let shown = !self.panes.is_shown(Focus::Filters);
+        self.reveal_and_focus(Focus::Filters);
+        self.chain_origin = origin;
+        self.chain_shown_filters = shown && origin.is_some();
     }
 
     /// End a chain that just committed: focus goes back to where `f` was
@@ -3720,6 +3735,11 @@ impl App<'_> {
             return;
         };
         self.reveal_and_focus(origin);
+        // `f` showed the filter pane to start this chain; the chain is over,
+        // so it goes back to hidden. A chain does not change the layout.
+        if std::mem::take(&mut self.chain_shown_filters) && origin != Focus::Filters {
+            let _ = self.panes.hide(Focus::Filters, self.focus);
+        }
         // The commit that got us here changed the filter set, but the
         // outer `handle_event` loop has not run `refresh_scan` yet — this
         // is still inside the same `dispatch_event` that is doing the
@@ -3982,81 +4002,46 @@ impl Widget for &mut App<'_> {
         let room = (prompt_area.width as usize).saturating_sub(badge_width);
         let status = self.status_bar_text(room);
 
-        // A zoomed pane takes the whole pane area; the others are not drawn.
-        // This deliberately falls through to the status/prompt drawing below
-        // rather than returning, so the status line survives a zoom.
-        if let Some(zoomed) = self.zoom {
-            debug_assert_eq!(
-                zoomed, self.focus,
-                "the zoomed pane must be the focused pane"
-            );
-            // There is no divider to drag while zoomed. `run` draws exactly
-            // one frame per event read, so `divider` is always recomputed by
-            // `render` before the next mouse event can be hit-tested — there
-            // is no frame after un-zooming that could carry a stale
-            // `u16::MAX` forward. Parking it here at `u16::MAX` — well past
-            // any real terminal width — is a second, independent reason a
-            // stray hit-test could not land on it even without that guarantee.
-            self.divider = u16::MAX;
-            // The horizontal divider is parked for the same reason and by the
-            // same argument — but it has to be parked at `u16::MAX` rather
-            // than zeroed. `divider_at` reaches its row test only for a column
-            // strictly left of `self.divider`, and *every* column is strictly
-            // left of `u16::MAX`, so the parked vertical divider is no guard
-            // at all here: a zeroed rect would put the horizontal divider on
-            // row 0 and let a click on the top row of a zoomed pane resize
-            // something invisible.
-            self.filter_area = Rect {
-                x: 0,
-                y: u16::MAX,
-                width: 0,
-                height: 0,
-            };
-            self.set_active_pane();
-            self.view.set_title_accent(self.crossing.is_some());
-            self.view.set_selection(self.painted_selection());
-            self.render_pane(zoomed, area, buf);
-            if zoomed == Focus::View {
-                self.render_crossing(area, buf);
-            }
+        // Three columns, `[explorer | file view | filter pane]` (#300). A
+        // hidden pane gets a zero-wide rectangle and is not drawn; the rest
+        // share the width by `layout::columns`.
+        let [explorer_area, view_area, filter_area] = self.pane_rects(area);
+
+        // Remember the boundaries so mouse events landing before the next
+        // frame can be tested against them. A divider exists only between
+        // two shown panes: the explorer's where anything is to its right,
+        // the filter pane's only where the file view is to its left — with
+        // the view hidden, the filter pane fills what the explorer leaves
+        // and the explorer's divider is the one that moves. A missing one is
+        // parked at `u16::MAX`, past any real terminal width.
+        self.divider = if explorer_area.width > 0 && explorer_area.right() < area.right() {
+            explorer_area.right()
         } else {
-            let explorer_width = self.explorer_width(area);
-            let [left, right] = Layout::horizontal([Length(explorer_width), Min(0)]).areas(area);
+            u16::MAX
+        };
+        self.filter_divider = if filter_area.width > 0 && view_area.width > 0 {
+            filter_area.x
+        } else {
+            u16::MAX
+        };
+        self.explorer_area = explorer_area;
+        self.view_area = view_area;
+        self.filter_area = filter_area;
 
-            // The filter pane sits under the explorer inside the left
-            // column; it claims its preferred height first, leaving the
-            // explorer whatever remains, down to `MIN_EXPLORER_HEIGHT` on a very
-            // short terminal — see
-            // `a_short_terminal_shows_a_real_filter_row_not_just_the_title`.
-            // `filter_pane_split_height` does the capping arithmetically, so
-            // the explorer's own constraint here can be a bare `Min(0)` and
-            // still never drop below its floor while a terminal has enough
-            // rows to give the left column at all.
-            let filter_height = self.filter_pane_split_height(left.height);
-            let [explorer_area, filter_area] =
-                Layout::vertical([Min(0), Length(filter_height)]).areas(left);
-
-            // Remember the boundaries so mouse events landing before the next
-            // frame can be tested against them. The filter pane's whole rect
-            // is kept, not just its top edge: a drag needs the bottom of the
-            // left column to turn the row it is holding into a height.
-            self.divider = area.x + explorer_width;
-            self.filter_area = filter_area;
-            self.explorer_area = explorer_area;
-            self.view_area = right;
-
-            // Each pane gets the area that matches what it is. That used to
-            // need saying — the areas did not share the vec's order, and
-            // indexing one by the other's position panicked the moment a
-            // third widget existed — but pairing a named pane with its named
-            // area leaves nothing to mismatch (#73).
-            self.set_active_pane();
-            self.view.set_title_accent(self.crossing.is_some());
-            self.view.set_selection(self.painted_selection());
-            self.render_pane(Focus::Explorer, explorer_area, buf);
-            self.render_pane(Focus::View, right, buf);
-            self.render_pane(Focus::Filters, filter_area, buf);
-            self.render_crossing(right, buf);
+        self.set_active_pane();
+        self.view.set_title_accent(self.crossing.is_some());
+        self.view.set_selection(self.painted_selection());
+        for (pane, pane_area) in [
+            (Focus::Explorer, explorer_area),
+            (Focus::View, view_area),
+            (Focus::Filters, filter_area),
+        ] {
+            if self.panes.is_shown(pane) {
+                self.render_pane(pane, pane_area, buf);
+            }
+        }
+        if self.panes.is_shown(Focus::View) {
+            self.render_crossing(view_area, buf);
         }
 
         // Last, so it covers whatever the panes just drew — and over `area`,
@@ -4154,9 +4139,10 @@ mod tests {
     use crate::filter::Verdict;
     use crate::fixtures::{fixture_dir, fixture_file, fixture_path as fixture_dir_path};
     use crate::layout::{
-        MAX_EXPLORER_WIDTH, MIN_AUTO_EXPLORER_WIDTH, MIN_AUTO_FILTER_HEIGHT, MIN_EXPLORER_HEIGHT,
-        MIN_FILE_VIEW_WIDTH, MIN_FILTER_HEIGHT, MIN_PANE_WIDTH,
+        MAX_EXPLORER_WIDTH, MAX_FILTER_WIDTH, MIN_AUTO_EXPLORER_WIDTH, MIN_AUTO_FILTER_WIDTH,
+        MIN_FILE_VIEW_WIDTH, MIN_PANE_WIDTH,
     };
+    use crate::panes::PaneSet;
     use crossterm::event::{KeyEvent, MouseButton, MouseEvent, MouseEventKind};
     use ratatui::prelude::Buffer;
     use ratatui::style::Modifier; // the tests assert on Modifier::DIM
@@ -4492,10 +4478,8 @@ mod tests {
         }));
     }
 
-    /// Row 3 is inside the explorer on every fixture area used here, and so
-    /// is clear of the horizontal divider's own hit test — these helpers are
-    /// about the vertical divider, and a row that could land on both would
-    /// make which one they exercise a matter of hit-test ordering.
+    /// Row 3 is inside the panes on every fixture area used here. Both
+    /// dividers run the full height, so any such row hits them.
     fn mouse(app: &mut App, kind: MouseEventKind, column: u16) {
         mouse_at(app, kind, column, 3);
     }
@@ -4504,32 +4488,6 @@ mod tests {
         mouse(app, MouseEventKind::Down(MouseButton::Left), from);
         mouse(app, MouseEventKind::Drag(MouseButton::Left), to);
         mouse(app, MouseEventKind::Up(MouseButton::Left), to);
-    }
-
-    /// Column 1 is well inside the left column on every fixture area used
-    /// here, so the vertical divider's hit test cannot claim these events —
-    /// the mirror of the note on `mouse` above.
-    const INSIDE_LEFT_COLUMN: u16 = 1;
-
-    fn drag_rows_to(app: &mut App, from: u16, to: u16) {
-        mouse_at(
-            app,
-            MouseEventKind::Down(MouseButton::Left),
-            INSIDE_LEFT_COLUMN,
-            from,
-        );
-        mouse_at(
-            app,
-            MouseEventKind::Drag(MouseButton::Left),
-            INSIDE_LEFT_COLUMN,
-            to,
-        );
-        mouse_at(
-            app,
-            MouseEventKind::Up(MouseButton::Left),
-            INSIDE_LEFT_COLUMN,
-            to,
-        );
     }
 
     /// The name is comfortably longer than `MIN_AUTO_EXPLORER_WIDTH` on purpose:
@@ -4631,7 +4589,7 @@ mod tests {
 
         drag_to(&mut app, divider, 60);
 
-        assert_eq!(app.explorer_width, ExplorerWidth::Pinned(60));
+        assert_eq!(app.explorer_width, PaneWidth::Pinned(60));
         assert_eq!(app.explorer_width(AREA), 60);
     }
 
@@ -4666,7 +4624,7 @@ mod tests {
         mouse(&mut app, MouseEventKind::Down(MouseButton::Left), divider);
         mouse(&mut app, MouseEventKind::Down(MouseButton::Left), divider);
 
-        assert_eq!(app.explorer_width, ExplorerWidth::Auto);
+        assert_eq!(app.explorer_width, PaneWidth::Auto);
         // Back to automatic sizing, which for a name this short is the floor
         // rather than the name's own width — see `MIN_AUTO_EXPLORER_WIDTH`.
         assert_eq!(app.explorer_width(AREA), MIN_AUTO_EXPLORER_WIDTH);
@@ -4687,200 +4645,112 @@ mod tests {
         draw(&mut app);
         let divider = app.divider;
         drag_to(&mut app, divider, AREA.width);
-        assert!(
-            AREA.width - app.explorer_width(AREA) >= MIN_PANE_WIDTH,
-            "file view collapsed"
-        );
-        // The bound above is `MIN_PANE_WIDTH` (3), which the file view's own
-        // floor, `MIN_FILE_VIEW_WIDTH` (30), also satisfies — so it alone
-        // cannot tell the two floors apart. A drag all the way to the far
-        // edge is the pinned-width equivalent of
-        // `a_long_filter_pattern_on_a_narrow_terminal_leaves_the_file_view_its_floor`,
-        // so it gets the same exact-equality assertion: the doc comment on
-        // `MIN_FILE_VIEW_WIDTH` claims the ceiling applies to a drag just as
-        // much as to auto-sizing, and nothing was pinning that claim.
+        draw(&mut app);
+        // A drag all the way to the far edge stops at the file view's floor,
+        // `MIN_FILE_VIEW_WIDTH`, not at `MIN_PANE_WIDTH`: the ceiling applies
+        // to a drag just as much as to auto-sizing. The filter pane gives
+        // way first, down to its own floor (#300).
         assert_eq!(
-            AREA.width - app.explorer_width(AREA),
-            MIN_FILE_VIEW_WIDTH,
+            app.view_area.width, MIN_FILE_VIEW_WIDTH,
             "a hard drag to the far edge did not stop at the file view's floor"
         );
+        assert_eq!(app.filter_area.width, MIN_PANE_WIDTH);
     }
 
-    /// The left column's rows on `AREA`, which every horizontal-divider test
-    /// below reasons about: the status row is taken off the top-level split
-    /// before the columns are laid out.
-    const LEFT_HEIGHT: u16 = AREA.height - 1;
-
-    /// #44's second half. The pane's height was content-driven and nothing
-    /// else, which the original design called "no comparable target to drag"
-    /// — true while it collapsed to nothing when empty, and no longer true
-    /// now it opens at `MIN_AUTO_FILTER_HEIGHT` whatever it holds.
-    ///
-    /// Dragging *up* makes the pane taller, because the divider is its top
-    /// border: the pane is anchored to the bottom of the column, so what the
-    /// drag moves is where it starts, not where it ends.
+    /// #300: the filter pane is a column on the right, and its divider — its
+    /// left border and the view's right — drags like the explorer's. A width
+    /// rather than a column is stored: the pane is anchored to the right.
     #[test]
-    fn dragging_the_horizontal_divider_pins_the_filter_panes_height() {
-        let mut app = app_over("hdrag", &["a.rs"]);
+    fn dragging_the_filter_divider_pins_the_filter_panes_width() {
+        let mut app = app_over("fdrag", &["a.rs"]);
         draw(&mut app);
-        let divider = app.filter_area.y;
+        let divider = app.filter_divider;
 
-        drag_rows_to(&mut app, divider, divider - 2);
+        drag_to(&mut app, divider, divider - 5);
 
-        // Two rows up from the boundary, on a column whose bottom is
-        // `LEFT_HEIGHT`, is two rows more pane than it had.
-        assert_eq!(app.filter_height, FilterHeight::Pinned(LEFT_HEIGHT - 3));
-        assert_eq!(app.filter_pane_split_height(LEFT_HEIGHT), LEFT_HEIGHT - 3);
+        let width = AREA.right() - (divider - 5);
+        assert_eq!(app.filter_width, PaneWidth::Pinned(width));
+        assert_eq!(app.filter_pane_width(AREA), width);
     }
 
-    /// The counterpart of `the_floor_does_not_apply_to_a_dragged_width`, and
-    /// the reason the two floors are separate constants: a drag is a
-    /// decision, so it may leave the pane well under the height it opens at.
-    ///
-    /// Measured against a 40-row column, where automatic sizing would give
-    /// `MIN_AUTO_FILTER_HEIGHT` — on `AREA` the caps would produce a small
-    /// number anyway and the test would pass without the drag being honoured.
     #[test]
-    fn the_starting_height_does_not_apply_to_a_dragged_height() {
-        let mut app = app_over("hdrag_small", &["a.rs"]);
+    fn double_clicking_the_filter_divider_restores_automatic_sizing() {
+        let mut app = app_over("fdbl", &["a.rs"]);
         draw(&mut app);
-        let divider = app.filter_area.y;
-
-        // Down to exactly the drag floor: `LEFT_HEIGHT - MIN_FILTER_HEIGHT`
-        // is the boundary row that leaves three rows below it.
-        drag_rows_to(&mut app, divider, LEFT_HEIGHT - MIN_FILTER_HEIGHT);
-
-        assert_eq!(
-            app.filter_pane_split_height(40),
-            MIN_FILTER_HEIGHT,
-            "the starting height overrode a deliberate drag"
+        let divider = app.filter_divider;
+        drag_to(&mut app, divider, divider - 5);
+        assert_ne!(
+            app.filter_width,
+            PaneWidth::Auto,
+            "sanity: the drag did not pin a width to restore from"
         );
+        draw(&mut app);
+
+        let divider = app.filter_divider;
+        mouse(&mut app, MouseEventKind::Down(MouseButton::Left), divider);
+        mouse(&mut app, MouseEventKind::Down(MouseButton::Left), divider);
+
+        assert_eq!(app.filter_width, PaneWidth::Auto);
+        assert_eq!(app.filter_pane_width(AREA), MIN_AUTO_FILTER_WIDTH);
     }
 
-    /// A drag past the bottom of the column asks for a pane of no rows at
-    /// all. It gets `MIN_FILTER_HEIGHT` — enough to still be visible and so
-    /// still be recognisably the thing that was just dragged, rather than a
-    /// pane that vanishes while keeping focus (see `MIN_EXPLORER_HEIGHT`).
+    /// A drag far to the left asks for most of the terminal. The file view's
+    /// floor stops it, as it stops the explorer's.
+    #[test]
+    fn dragging_the_filter_divider_cannot_starve_the_file_view() {
+        let mut app = app_over("fdrag_far", &["a.rs"]);
+        draw(&mut app);
+        let divider = app.filter_divider;
+
+        drag_to(&mut app, divider, 0);
+        draw(&mut app);
+
+        assert_eq!(app.view_area.width, MIN_FILE_VIEW_WIDTH);
+        assert!(app.explorer_area.width >= MIN_PANE_WIDTH);
+    }
+
+    /// And to the right edge: the pane keeps `MIN_PANE_WIDTH`.
     #[test]
     fn dragging_cannot_collapse_the_filter_pane() {
-        let mut app = app_over("hdrag_collapse", &["a.rs"]);
+        let mut app = app_over("fdrag_collapse", &["a.rs"]);
         draw(&mut app);
-        let divider = app.filter_area.y;
+        let divider = app.filter_divider;
 
-        drag_rows_to(&mut app, divider, AREA.height * 2);
+        drag_to(&mut app, divider, AREA.right() + 10);
 
-        assert_eq!(
-            app.filter_pane_split_height(LEFT_HEIGHT),
-            MIN_FILTER_HEIGHT,
-            "the filter pane collapsed"
-        );
+        assert_eq!(app.filter_pane_width(AREA), MIN_PANE_WIDTH);
     }
 
-    /// The other end: a drag to the top of the column asks for everything.
-    /// The explorer's floor is what stops it, and it stops it at exactly the
-    /// floor — the half cap governs automatic sizing only, so a drag can
-    /// legitimately take more than half.
+    /// A drag that went down on one divider keeps moving that one, and a
+    /// double-click on one does not reset the other.
     #[test]
-    fn dragging_cannot_collapse_the_explorer() {
-        let mut app = app_over("hdrag_explorer_floor", &["a.rs"]);
+    fn the_two_dividers_move_different_panes() {
+        let mut app = app_over("fdrag_two", &["a.rs"]);
         draw(&mut app);
-        let divider = app.filter_area.y;
+        let explorer = app.explorer_width(AREA);
+        let divider = app.filter_divider;
 
-        drag_rows_to(&mut app, divider, 0);
+        drag_to(&mut app, divider, divider - 4);
 
-        let filter_height = app.filter_pane_split_height(LEFT_HEIGHT);
-        assert_eq!(
-            LEFT_HEIGHT - filter_height,
-            MIN_EXPLORER_HEIGHT,
-            "the explorer did not keep exactly its floor"
-        );
-        assert!(
-            filter_height > LEFT_HEIGHT / 2,
-            "the half cap bound a drag it has no business binding: \
-             {filter_height}"
-        );
+        assert_eq!(app.explorer_width, PaneWidth::Auto);
+        assert_eq!(app.explorer_width(AREA), explorer);
     }
 
+    /// The filter pane's divider exists only with the file view to its left.
+    /// With the view hidden the filter pane fills what the explorer leaves,
+    /// and the one boundary between them is the explorer's.
     #[test]
-    fn double_clicking_the_horizontal_divider_restores_automatic_sizing() {
-        let mut app = app_over("hdbl", &["a.rs"]);
-        draw(&mut app);
-        let divider = app.filter_area.y;
-        drag_rows_to(&mut app, divider, divider - 2);
-        // Without this, the test passes just as well when the drag never
-        // happened — `Auto` is the state it starts in.
-        assert_ne!(
-            app.filter_height,
-            FilterHeight::Auto,
-            "sanity: the drag did not pin a height to restore from"
-        );
+    fn with_the_view_hidden_the_only_divider_is_the_explorers() {
+        let mut app = app_over("fdrag_noview", &["a.rs"]);
+        app.panes = Panes::hiding([Focus::View]);
         draw(&mut app);
 
-        let divider = app.filter_area.y;
-        mouse_at(
-            &mut app,
-            MouseEventKind::Down(MouseButton::Left),
-            INSIDE_LEFT_COLUMN,
-            divider,
-        );
-        mouse_at(
-            &mut app,
-            MouseEventKind::Down(MouseButton::Left),
-            INSIDE_LEFT_COLUMN,
-            divider,
-        );
-
-        assert_eq!(app.filter_height, FilterHeight::Auto);
-    }
-
-    /// The horizontal divider only exists inside the left column. Without the
-    /// column half of the hit test, every row of the file view at the same
-    /// height would resize the filter pane — including a click on the very
-    /// line the user is reading.
-    #[test]
-    fn the_horizontal_divider_is_not_hit_from_the_file_view() {
-        let mut app = app_over("hdrag_right", &["a.rs"]);
-        draw(&mut app);
-        let row = app.filter_area.y;
-        let in_file_view = AREA.width - 2;
-
-        mouse_at(
-            &mut app,
-            MouseEventKind::Down(MouseButton::Left),
-            in_file_view,
-            row,
-        );
-        mouse_at(
-            &mut app,
-            MouseEventKind::Drag(MouseButton::Left),
-            in_file_view,
-            0,
-        );
-
-        assert_eq!(app.filter_height, FilterHeight::Auto);
-    }
-
-    /// The two dividers cross at one corner. The vertical one spans the whole
-    /// height and is the older, more-reached-for target, so it wins there —
-    /// an arbitrary choice, but one that has to be made and pinned, since a
-    /// silent flip would move the wrong pane under a user aiming for a corner.
-    #[test]
-    fn the_vertical_divider_wins_where_the_two_cross() {
-        let mut app = app_over("cross", &["a.rs"]);
-        draw(&mut app);
-        let column = app.divider;
-        let row = app.filter_area.y;
-
-        mouse_at(
-            &mut app,
-            MouseEventKind::Down(MouseButton::Left),
-            column,
-            row,
-        );
-        mouse_at(&mut app, MouseEventKind::Drag(MouseButton::Left), 60, row);
-
-        assert_eq!(app.explorer_width, ExplorerWidth::Pinned(60));
-        assert_eq!(app.filter_height, FilterHeight::Auto);
+        assert_eq!(app.filter_divider, u16::MAX);
+        assert_eq!(app.divider, app.filter_area.x);
+        let divider = app.divider;
+        drag_to(&mut app, divider, 30);
+        assert_eq!(app.explorer_width, PaneWidth::Pinned(30));
+        assert_eq!(app.filter_width, PaneWidth::Auto);
     }
 
     /// Press a key, as a real terminal would report it.
@@ -7465,8 +7335,8 @@ mod tests {
         // row — where the blank placeholder for "nothing visible" is drawn.
         // (The row still ends in the pane's own right-hand border, hence
         // checking for digits rather than requiring the whole row blank.)
-        let divider = app.divider;
-        let content_row: String = ((divider + 1)..AREA.width)
+        let view = app.view_area;
+        let content_row: String = (view.x + 1..view.right())
             .map(|x| buf[(x, 1)].symbol())
             .collect();
         assert!(
@@ -8910,7 +8780,7 @@ mod tests {
             Focus::View,
             "focus was dragged back to the explorer"
         );
-        assert_eq!(app.zoom, None);
+        assert_eq!(app.panes.shown(), PaneSet::ALL);
     }
 
     /// Hiding the column the cursor is in must move focus somewhere visible,
@@ -8925,15 +8795,25 @@ mod tests {
         assert_eq!(app.focus, Focus::View);
     }
 
-    /// `e` is how you get back, so it must work from a hidden state.
+    /// `e` is how you get back, so it must work from a hidden state. It
+    /// shows the explorer and nothing else (#300): a zoom is only a hide, so
+    /// the filter pane `b` hid stays hidden.
     #[test]
-    fn e_reveals_the_left_column_and_focuses_it() {
+    fn e_shows_the_explorer_and_focuses_it() {
         let mut app = app_over_file("zoom_e", "alpha\n");
         key(&mut app, KeyCode::Char('b'));
 
         key(&mut app, KeyCode::Char('e'));
 
-        assert_eq!(app.zoom, None, "the left column is still hidden");
+        assert!(
+            app.panes.is_shown(Focus::Explorer),
+            "the explorer is still hidden"
+        );
+        assert!(app.panes.is_shown(Focus::View));
+        assert!(
+            !app.panes.is_shown(Focus::Filters),
+            "e showed more than the explorer"
+        );
         assert_eq!(app.focus, Focus::Explorer);
     }
 
@@ -9042,11 +8922,17 @@ mod tests {
         let mut app = app_over_files("explorer_open_focus_zoom", &[("a.log", "alpha\n")]);
         draw(&mut app);
         key(&mut app, KeyCode::Char('z'));
-        assert!(app.zoom.is_some(), "the explorer should be zoomed");
+        assert!(
+            !app.panes.is_shown(Focus::View),
+            "the explorer should be zoomed"
+        );
 
         key(&mut app, KeyCode::Char('l'));
 
-        assert_eq!(app.zoom, None, "the file view is still hidden");
+        assert!(
+            app.panes.is_shown(Focus::View),
+            "the file view is still hidden"
+        );
         assert_eq!(app.focus, Focus::View);
     }
 
@@ -9225,7 +9111,7 @@ mod tests {
         // alone cannot: `z` and `b` leave the app in the exact same state,
         // not just looking the same.
         assert_eq!(with_z.focus, with_b.focus);
-        assert_eq!(with_z.zoom, with_b.zoom);
+        assert_eq!(with_z.panes, with_b.panes);
     }
 
     #[test]
@@ -9254,7 +9140,7 @@ mod tests {
         mouse(&mut app, MouseEventKind::Down(MouseButton::Left), divider);
         assert_eq!(
             app.dragging,
-            Some(Divider::Vertical),
+            Some(Divider::Explorer),
             "sanity: the divider click started a drag"
         );
 
@@ -9263,26 +9149,26 @@ mod tests {
 
         assert_eq!(app.dragging, None, "the drag survived into the zoom");
         assert_eq!(
-            app.explorer_width(AREA),
-            before,
+            app.explorer_width,
+            PaneWidth::Auto,
             "explorer_width changed from a drag that continued while zoomed"
         );
+        key(&mut app, KeyCode::Char('b'));
+        assert_eq!(app.explorer_width(AREA), before);
     }
 
-    /// Tab while zoomed must not leave the cursor on an invisible pane: the
-    /// zoom follows the focus.
+    /// Tab skips hidden panes (#300), so with one pane shown it has nowhere
+    /// to go: focus never moves onto a pane that is not on the screen.
     #[test]
-    fn tab_while_zoomed_moves_the_zoom_with_the_focus() {
+    fn tab_while_zoomed_stays_on_the_one_shown_pane() {
         let mut app = app_over_file("zoom_tab", "alpha\n");
         key(&mut app, KeyCode::Char('z'));
 
-        focus_file_view(&mut app);
-
-        assert_eq!(app.zoom, Some(app.focus), "focus moved off the zoomed pane");
-        assert!(
-            rendered(&mut app).contains("alpha"),
-            "the focused pane is not visible"
-        );
+        key(&mut app, KeyCode::Tab);
+        assert_eq!(app.focus, Focus::Explorer);
+        key(&mut app, KeyCode::BackTab);
+        assert_eq!(app.focus, Focus::Explorer);
+        assert_eq!(app.panes.shown(), PaneSet::only(Focus::Explorer));
     }
 
     /// The modifier guard: an earlier phase shipped a global key that swallowed
@@ -9297,7 +9183,11 @@ mod tests {
                 code,
                 KeyModifiers::CONTROL,
             )));
-            assert_eq!(app.zoom, None, "a Ctrl- key was taken as a zoom command");
+            assert_eq!(
+                app.panes.shown(),
+                PaneSet::ALL,
+                "a Ctrl- key was taken as a zoom command"
+            );
         }
     }
 
@@ -9414,24 +9304,254 @@ mod tests {
         );
     }
 
-    /// The zoomed pane is always the focused pane; `focus_prev` keeps that
-    /// invariant the way `focus_next` does.
+    /// Tab and Shift-Tab go left to right and skip a hidden pane (#300).
     #[test]
-    fn shift_tab_moves_the_zoom_with_the_focus() {
-        let mut app = app_over_file("backtab_zoom", "alpha\n");
-        draw(&mut app);
+    fn tab_and_shift_tab_skip_a_hidden_pane() {
+        let mut app = app_over_file("tab_skip", "alpha\n");
         key(&mut app, KeyCode::Char('t'));
-        key(&mut app, KeyCode::Char('z'));
-        assert_eq!(app.zoom, Some(Focus::View), "sanity: view zoomed");
+        key(&mut app, KeyCode::Char('E'));
 
         key(&mut app, KeyCode::BackTab);
-
-        assert_eq!(app.focus, Focus::Explorer);
         assert_eq!(
-            app.zoom,
-            Some(Focus::Explorer),
-            "zoom stayed on an unfocused pane"
+            app.focus,
+            Focus::Filters,
+            "Shift-Tab reached the hidden explorer"
         );
+        key(&mut app, KeyCode::Tab);
+        assert_eq!(app.focus, Focus::View, "Tab reached the hidden explorer");
+        key(&mut app, KeyCode::Tab);
+        assert_eq!(app.focus, Focus::Filters);
+    }
+
+    // ---- #300: show and hide each pane ------------------------------------
+
+    /// An app over a one-line file, with `global.hide.view` bound to `T` as
+    /// a user would in `config.toml`: it has no default key.
+    fn app_with_hide_view_key(name: &str) -> App<'static> {
+        let mut bindings = std::collections::BTreeMap::new();
+        bindings.insert("global.hide.view".to_string(), vec!["T".to_string()]);
+        let (keymap, _) = crate::keymap::Keymap::new(&crate::config::KeymapConfig { bindings })
+            .expect("a valid keymap");
+        let file = fixture_path(name, "alpha\n");
+        App::new(&Config {
+            path: file.display().to_string(),
+            bindings: keymap,
+            ..Config::default()
+        })
+    }
+
+    #[test]
+    fn e_and_f_hide_their_panes_and_lowercase_shows_them_again() {
+        let mut app = app_over_file("hide_ef", "alpha\n");
+
+        key(&mut app, KeyCode::Char('E'));
+        assert!(
+            !app.panes.is_shown(Focus::Explorer),
+            "E did not hide the explorer"
+        );
+        key(&mut app, KeyCode::Char('F'));
+        assert!(
+            !app.panes.is_shown(Focus::Filters),
+            "F did not hide the filter pane"
+        );
+        assert_eq!(app.focus, Focus::View);
+
+        key(&mut app, KeyCode::Char('e'));
+        assert!(app.panes.is_shown(Focus::Explorer));
+        assert_eq!(app.focus, Focus::Explorer);
+        key(&mut app, KeyCode::Char('f'));
+        assert!(app.panes.is_shown(Focus::Filters));
+        assert_eq!(app.focus, Focus::Filters);
+    }
+
+    #[test]
+    fn the_file_view_hides_by_a_bound_key_and_t_shows_it_again() {
+        let mut app = app_with_hide_view_key("hide_view");
+        key(&mut app, KeyCode::Char('t'));
+
+        key(&mut app, KeyCode::Char('T'));
+        assert!(
+            !app.panes.is_shown(Focus::View),
+            "the bound key did not hide the view"
+        );
+        assert_eq!(
+            app.focus,
+            Focus::Filters,
+            "focus goes to the next shown pane"
+        );
+
+        key(&mut app, KeyCode::Char('t'));
+        assert!(app.panes.is_shown(Focus::View));
+        assert_eq!(app.focus, Focus::View);
+    }
+
+    /// A hidden pane is not drawn, and the others take its width.
+    #[test]
+    fn a_hidden_pane_is_not_drawn() {
+        let mut app = app_over_file("hide_draw", "alpha\n");
+        key(&mut app, KeyCode::Char('E'));
+
+        let text = rendered(&mut app);
+
+        // See `b_hides_the_left_column` for why `../` is the probe.
+        assert!(!text.contains("../"), "the explorer is still on screen");
+        assert_eq!(
+            app.view_area.x, 0,
+            "the view did not take the explorer's place"
+        );
+        assert_eq!(app.explorer_area.width, 0);
+        assert_eq!(app.divider, u16::MAX, "a hidden explorer left a divider");
+    }
+
+    #[test]
+    fn the_last_shown_pane_cannot_be_hidden() {
+        let mut app = app_with_hide_view_key("hide_last");
+        key(&mut app, KeyCode::Char('t'));
+        key(&mut app, KeyCode::Char('z'));
+
+        key(&mut app, KeyCode::Char('T'));
+
+        assert!(app.panes.is_shown(Focus::View), "the last pane was hidden");
+        assert_eq!(app.focus, Focus::View);
+        let status = status_line(&mut app);
+        assert!(status.contains(LAST_PANE), "no message: {status}");
+    }
+
+    /// Hiding the focused pane moves focus to the file view.
+    #[test]
+    fn hiding_the_focused_pane_moves_focus_to_the_file_view() {
+        let mut app = app_over_file("hide_focus", "alpha\n");
+        assert_eq!(app.focus, Focus::Explorer);
+
+        key(&mut app, KeyCode::Char('E'));
+
+        assert_eq!(app.focus, Focus::View);
+    }
+
+    /// A hidden pane keeps its state, and its global keys still work.
+    #[test]
+    fn a_hidden_filter_pane_keeps_its_global_keys() {
+        let mut app = app_with_two_filters("hide_global_keys");
+        key(&mut app, KeyCode::Char('F'));
+
+        key(&mut app, KeyCode::Char('1'));
+        assert!(
+            !app.filters.filters()[0].enabled,
+            "1 did not toggle the hidden pane's filter"
+        );
+        key(&mut app, KeyCode::Char('!'));
+        assert!(
+            !app.filters.any_enabled(),
+            "! did not reach the hidden pane's filters"
+        );
+        assert!(
+            !app.panes.is_shown(Focus::Filters),
+            "a global key showed the pane"
+        );
+    }
+
+    /// The example in #300: `z` in the file view, then `f`, then `z`. Two
+    /// panes are shown at the second `z`, so it zooms the filter pane. It
+    /// does not restore.
+    #[test]
+    fn z_after_f_zooms_the_filter_pane_rather_than_restoring() {
+        let mut app = app_over_file("zoom_example", "alpha\n");
+        key(&mut app, KeyCode::Char('t'));
+        key(&mut app, KeyCode::Char('z'));
+        assert_eq!(app.panes.shown(), PaneSet::only(Focus::View));
+
+        key(&mut app, KeyCode::Char('f'));
+        key(&mut app, KeyCode::Char('z'));
+
+        assert_eq!(app.panes.shown(), PaneSet::only(Focus::Filters));
+        assert_eq!(app.focus, Focus::Filters);
+    }
+
+    /// `f i … Enter` with the filter pane hidden: the pane shows for the
+    /// chain, and hides again when focus goes back. A chain does not change
+    /// the layout.
+    #[test]
+    fn a_chain_with_the_filter_pane_hidden_leaves_it_hidden() {
+        let mut app = app_over_file("chain_hidden", "plain\nfn one\n");
+        key(&mut app, KeyCode::Char('t'));
+        key(&mut app, KeyCode::Char('F'));
+
+        key(&mut app, KeyCode::Char('f'));
+        assert!(
+            app.panes.is_shown(Focus::Filters),
+            "f did not show the pane for the chain"
+        );
+        key(&mut app, KeyCode::Char('i'));
+        typed(&mut app, "fn");
+        key(&mut app, KeyCode::Enter);
+
+        assert_eq!(app.filters.row_count(), 1, "the filter was not added");
+        assert_eq!(app.focus, Focus::View, "focus did not go back");
+        assert!(
+            !app.panes.is_shown(Focus::Filters),
+            "the chain changed the layout"
+        );
+    }
+
+    /// `f` alone, with the pane hidden, shows it and stays: that is not a
+    /// chain that returns, so the pane stays shown.
+    #[test]
+    fn f_alone_shows_a_hidden_filter_pane_to_stay() {
+        let mut app = app_over_file("chain_hidden_stay", "alpha\n");
+        key(&mut app, KeyCode::Char('F'));
+
+        key(&mut app, KeyCode::Char('f'));
+        key(&mut app, KeyCode::Char('j'));
+
+        assert!(app.panes.is_shown(Focus::Filters));
+        assert_eq!(app.focus, Focus::Filters);
+    }
+
+    /// With the pane hidden, the status line says how many filters are on,
+    /// so a user who hid it knows why lines are coloured or gone.
+    #[test]
+    fn the_status_line_counts_filters_on_while_the_pane_is_hidden() {
+        let mut app = app_with_two_filters("hide_status");
+        assert!(
+            !status_line(&mut app).contains("filters: "),
+            "shown pane, no indicator"
+        );
+
+        key(&mut app, KeyCode::Char('F'));
+        let status = status_line(&mut app);
+        assert!(status.contains("filters: 2 on"), "no indicator: {status}");
+
+        key(&mut app, KeyCode::Char('1'));
+        let status = status_line(&mut app);
+        assert!(
+            status.contains("filters: 1 on"),
+            "the count did not follow: {status}"
+        );
+
+        key(&mut app, KeyCode::Char('!'));
+        let status = status_line(&mut app);
+        assert!(
+            !status.contains(" on"),
+            "nothing is on, so no indicator: {status}"
+        );
+    }
+
+    /// `--hide-pane` (or `[layout] hide_panes`) hides panes at startup, and
+    /// focus starts on a shown pane.
+    #[test]
+    fn hide_pane_at_startup_hides_those_panes() {
+        let file = fixture_path("hide_startup", "alpha\n");
+        let app = App::new(&Config {
+            path: file.display().to_string(),
+            hide_pane: Some(vec![
+                crate::panes::Pane::Explorer,
+                crate::panes::Pane::Filters,
+            ]),
+            ..Config::default()
+        });
+
+        assert_eq!(app.panes.shown(), PaneSet::only(Focus::View));
+        assert_eq!(app.focus, Focus::View, "focus started on a hidden pane");
     }
 
     #[test]
@@ -9554,275 +9674,104 @@ mod tests {
         );
     }
 
-    /// The left column takes the wider of the explorer's and the filter
-    /// pane's preferred widths — but a long filter pattern must not push it
-    /// past `MAX_EXPLORER_WIDTH` any more than a long file name already does.
+    fn add_filters(app: &mut App, patterns: &[&str]) {
+        for pattern in patterns {
+            key(app, KeyCode::Char('f'));
+            key(app, KeyCode::Char('i'));
+            typed(app, pattern);
+            key(app, KeyCode::Enter);
+        }
+    }
+
+    /// #300: the filter pane sizes itself to its longest row, capped at
+    /// `MAX_FILTER_WIDTH` as the explorer is at `MAX_EXPLORER_WIDTH` — and
+    /// it no longer shares a column with the explorer, so a long pattern
+    /// does not widen the explorer at all.
     #[test]
-    fn a_long_filter_pattern_does_not_push_the_column_past_the_cap() {
+    fn a_long_filter_pattern_is_capped_and_leaves_the_explorer_alone() {
         let mut app = app_over_file("wide_filter", "alpha\n");
-        let long_pattern = "a".repeat(200);
-        key(&mut app, KeyCode::Char('f'));
-        key(&mut app, KeyCode::Char('i'));
-        typed(&mut app, &long_pattern);
-        key(&mut app, KeyCode::Enter);
+        add_filters(&mut app, &[&"a".repeat(200)]);
         draw(&mut app);
 
-        assert_eq!(app.explorer_width(AREA), MAX_EXPLORER_WIDTH);
+        assert_eq!(app.filter_pane_width(AREA), MAX_FILTER_WIDTH);
+        assert_eq!(app.explorer_width(AREA), MIN_AUTO_EXPLORER_WIDTH);
     }
 
-    /// On a wide terminal `MAX_EXPLORER_WIDTH` alone governs, exactly as before
-    /// the filter pane existed — `MIN_FILE_VIEW_WIDTH` never binds here.
-    /// Companion to `a_long_filter_pattern_does_not_push_the_column_past_the_cap`,
-    /// but asserting the *other* bound is the one doing nothing, not just
-    /// that the column stopped somewhere reasonable.
+    /// A row longer than the pane is cut at the pane's edge, not wrapped.
     #[test]
-    fn on_a_wide_terminal_the_max_width_cap_governs_not_the_new_floor() {
-        let mut app = app_over_file("wide_filter_floor_slack", "alpha\n");
-        let long_pattern = "a".repeat(50);
-        key(&mut app, KeyCode::Char('f'));
-        key(&mut app, KeyCode::Char('i'));
-        typed(&mut app, &long_pattern);
-        key(&mut app, KeyCode::Enter);
-        draw(&mut app);
+    fn a_long_filter_pattern_is_cut_at_the_panes_edge() {
+        let mut app = app_over_file("wide_filter_cut", "alpha\n");
+        add_filters(&mut app, &[&format!("{}zzz", "a".repeat(60))]);
+        let text = rendered(&mut app);
 
-        assert_eq!(
-            app.explorer_width(AREA),
-            MAX_EXPLORER_WIDTH,
-            "MAX_EXPLORER_WIDTH is not governing"
-        );
         assert!(
-            AREA.width - app.explorer_width(AREA) > MIN_FILE_VIEW_WIDTH,
-            "the file view is sitting at its floor on a wide terminal — the \
-             floor, not MAX_EXPLORER_WIDTH, is what's actually governing here"
+            text.contains("1[x] inc aaaa"),
+            "the row is not drawn: {text}"
         );
+        assert!(!text.contains("zzz"), "the row was not cut: {text}");
     }
 
-    /// On a narrow terminal, a filter pattern that would otherwise want more
-    /// than the terminal can spare must not starve the file view below its
-    /// floor — asserted as the exact width, not merely "greater than zero".
+    /// The pane is a column of its own, the full height of the panes, so a
+    /// large set is on the screen at once.
     #[test]
-    fn a_long_filter_pattern_on_a_narrow_terminal_leaves_the_file_view_its_floor() {
-        let narrow = Rect {
+    fn the_filter_pane_is_a_full_height_column_right_of_the_view() {
+        let mut app = app_over("filter_column", &["a.rs"]);
+        draw(&mut app);
+
+        assert_eq!(app.filter_area.y, 0);
+        assert_eq!(
+            app.filter_area.height,
+            AREA.height - 1,
+            "all but the status row"
+        );
+        assert_eq!(app.filter_area.right(), AREA.right());
+        assert_eq!(app.filter_area.x, app.view_area.right());
+        assert_eq!(app.view_area.x, app.explorer_area.right());
+    }
+
+    /// An empty pane opens at `MIN_AUTO_FILTER_WIDTH`, which holds the whole
+    /// hint (#44's point, on the new axis).
+    #[test]
+    fn an_empty_filter_pane_opens_wide_enough_for_its_hint() {
+        let mut app = app_over("empty_filter_width", &["a.rs"]);
+
+        let text = rendered(&mut app);
+
+        assert_eq!(app.filter_area.width, MIN_AUTO_FILTER_WIDTH);
+        assert!(text.contains("press f i to add"), "no full hint: {text}");
+    }
+
+    /// On a narrow terminal the filter pane gives way first, then the
+    /// explorer, and the file view keeps `MIN_FILE_VIEW_WIDTH`. No pane is
+    /// hidden to make room.
+    #[test]
+    fn a_narrow_terminal_shrinks_the_filter_pane_then_the_explorer() {
+        let mut app = app_over_file("narrow_order", "alpha\n");
+        add_filters(&mut app, &[&"a".repeat(50)]);
+        let area = |width| Rect {
             x: 0,
             y: 0,
-            width: 40,
+            width,
             height: 12,
         };
-        let mut app = app_over_file("narrow_filter_floor", "alpha\n");
-        let long_pattern = "a".repeat(50);
-        key(&mut app, KeyCode::Char('f'));
-        key(&mut app, KeyCode::Char('i'));
-        typed(&mut app, &long_pattern);
-        key(&mut app, KeyCode::Enter);
-        draw(&mut app);
 
+        // 60 columns: 30 for the view, 20 for the explorer, 10 left over.
+        let [explorer, view, filters] = app.pane_rects(area(60));
         assert_eq!(
-            narrow.width - app.explorer_width(narrow),
-            MIN_FILE_VIEW_WIDTH,
-            "the file view lost its floor"
+            (explorer.width, view.width, filters.width),
+            (MIN_AUTO_EXPLORER_WIDTH, MIN_FILE_VIEW_WIDTH, 10)
         );
-    }
 
-    /// If the terminal is too short for the filter pane's requested height,
-    /// the explorer is squeezed to its floor (`MIN_EXPLORER_HEIGHT`) so the
-    /// filter pane — the pane the user is actively working with — gets a
-    /// genuine content row rather than merely surviving as a title with
-    /// nothing under it.
-    ///
-    /// The area here is picked so the filter pane gets exactly 3 rows (top
-    /// border, one content row, bottom border): asserting on the actual row
-    /// text `1[x] inc one`, not just `"Filters"` on the border, is the
-    /// point — a one-row (title-only) or zero-row pane both contain
-    /// `"Filters"` too (the title is drawn on the top border, which survives
-    /// down to a single row), so that alone cannot tell a real, usable pane
-    /// apart from a vanished one that still happens to have focus. That gap
-    /// is exactly how a prior version of this test passed at 40×5 while a
-    /// 40×4 terminal made the pane vanish entirely while still focused,
-    /// silently routing keys (e.g. `d`) to content the user could not see.
-    #[test]
-    fn a_short_terminal_shows_a_real_filter_row_not_just_the_title() {
-        let mut app = app_over_file("short_terminal", "alpha\n");
-        for pattern in ["one", "two", "three", "four", "five", "six"] {
-            key(&mut app, KeyCode::Char('f'));
-            key(&mut app, KeyCode::Char('i'));
-            typed(&mut app, pattern);
-            key(&mut app, KeyCode::Enter);
-        }
-
-        // Status row: 1. Left column: 6 rows, split 3 (explorer floor) / 3
-        // (filter: still short of the 8 all six filters would need, so the
-        // floors are still genuinely competing). Wide enough that the
-        // filter pane's auto width comfortably fits a full row's text
-        // rather than truncating it — this test is about the *height*
-        // floor, so the width must not be the thing hiding the row.
-        let short = Rect {
-            x: 0,
-            y: 0,
-            width: 60,
-            height: 7,
-        };
-        let mut buf = Buffer::empty(short);
-        // Must not panic even though the filter pane alone wants more rows
-        // (6 filters + 2 borders = 8) than the whole terminal has.
-        (&mut app).render(short, &mut buf);
-
-        let text: String = (0..short.height)
-            .flat_map(|y| (0..short.width).map(move |x| (x, y)))
-            .map(|(x, y)| buf[(x, y)].symbol())
-            .collect();
-        assert!(
-            text.contains("1[x] inc one"),
-            "the filter pane shrank to its title with no content row visible \
-             while still focusable: {text}"
-        );
-    }
-
-    /// `filter_pane_split_height` is the arithmetic Important 2 replaced a
-    /// reliance on constraint-solver internals with. This drives it directly
-    /// at a height where the two floors genuinely compete — the filter pane
-    /// wants more than is available, and the explorer's floor is what
-    /// limits how much of it can win — and asserts the exact split, matching
-    /// the measured (not documented) behaviour of the constraint-solver
-    /// version this replaced: `Min(3) + Length(8)` over 4 rows produced explorer
-    /// 3, filter 1.
-    #[test]
-    fn the_two_height_floors_compete_and_split_arithmetically() {
-        let mut app = app_over_file("short_terminal_split", "alpha\n");
-        for pattern in ["one", "two", "three", "four", "five", "six"] {
-            key(&mut app, KeyCode::Char('f'));
-            key(&mut app, KeyCode::Char('i'));
-            typed(&mut app, pattern);
-            key(&mut app, KeyCode::Enter);
-        }
-        // The filter pane wants 6 + 2 = 8 rows; only 4 are available for the
-        // whole left column, so both floors are in play at once.
-        let filter_height = app.filter_pane_split_height(4);
-
-        assert_eq!(filter_height, 1, "the filter pane did not get its share");
+        // 45 columns: the filter pane is at its floor, so the explorer gives
+        // way next.
+        let [explorer, view, filters] = app.pane_rects(area(45));
         assert_eq!(
-            4 - filter_height,
-            MIN_EXPLORER_HEIGHT,
-            "the explorer did not keep exactly its floor"
-        );
-    }
-
-    /// Before the cap in `filter_pane_split_height`, `preferred_height` grew
-    /// without bound as filters were added — so a filter set that grows past
-    /// a handful would pin the explorer at its bare floor *permanently* on
-    /// any terminal, not only a genuinely short one. `List`/`ListState`
-    /// already scrolls the pane, so nothing is lost by capping it.
-    #[test]
-    fn the_filter_pane_cannot_pin_the_explorer_at_its_bare_floor() {
-        let mut app = app_over_file("many_filters_cap", "alpha\n");
-        for i in 0..20 {
-            key(&mut app, KeyCode::Char('f'));
-            key(&mut app, KeyCode::Char('i'));
-            typed(&mut app, &format!("f{i}"));
-            key(&mut app, KeyCode::Enter);
-        }
-
-        // 20 filters want 22 rows. On a column with 20 rows to give, the
-        // floor-only cap (`left_height - MIN_EXPLORER_HEIGHT` = 17) would still
-        // let the filter pane take all but the explorer's bare floor.
-        let filter_height = app.filter_pane_split_height(20);
-
-        assert!(
-            filter_height <= 10,
-            "the filter pane claimed more than half the column: {filter_height}"
-        );
-        assert!(
-            20 - filter_height > MIN_EXPLORER_HEIGHT,
-            "the explorer was pinned at its bare floor despite ample room \
-             (filter_height = {filter_height})"
-        );
-    }
-
-    /// #44: the pane is a headline feature and read as an afterthought at the
-    /// three rows an empty set asked for — a title, one line of hint, a
-    /// border. It now opens at `MIN_AUTO_FILTER_HEIGHT` whatever it holds, so
-    /// the room to define filters in is visible before the first one exists.
-    ///
-    /// Driven through `filter_pane_split_height` rather than a render, for
-    /// the same reason the two tests above are: the arithmetic is the claim,
-    /// and inspecting cells to recover a height only obscures which floor
-    /// produced it.
-    #[test]
-    fn an_empty_filter_pane_still_opens_at_its_starting_height() {
-        let app = app_over_file("empty_filter_height", "alpha\n");
-
-        assert_eq!(app.filters.row_count(), 0, "the fixture defined a filter");
-        // 40 rows is comfortably clear of both caps (half is 20, the
-        // explorer's floor leaves 37), so the floor is unambiguously what
-        // this measures.
-        assert_eq!(
-            app.filter_pane_split_height(40),
-            MIN_AUTO_FILTER_HEIGHT,
-            "an empty pane did not claim its starting height"
-        );
-    }
-
-    /// #44's claim is visual, and every other test of it drives
-    /// `filter_pane_split_height` directly — a method the renderer merely
-    /// calls, and could stop calling. This one goes through `render` on an
-    /// ordinary terminal and reads back the rect the pane was actually
-    /// handed.
-    #[test]
-    fn an_empty_filter_pane_renders_at_its_starting_height() {
-        let mut app = app_over("empty_filter_render", &["a.rs"]);
-        let tall = Rect {
-            x: 0,
-            y: 0,
-            width: 120,
-            height: 40,
-        };
-        let mut buf = Buffer::empty(tall);
-
-        (&mut app).render(tall, &mut buf);
-
-        assert_eq!(app.filter_area.height, MIN_AUTO_FILTER_HEIGHT);
-        assert_eq!(
-            app.filter_area.bottom(),
-            tall.height - 1,
-            "the pane is not sitting on the bottom of the left column \
-             (the status row is the one below it)"
-        );
-    }
-
-    /// The starting height is a floor, not a fixed size: a set larger than it
-    /// still gets the rows it asks for. Guards the difference between
-    /// `.max(MIN_AUTO_FILTER_HEIGHT)` and assigning it, which the test above
-    /// alone cannot tell apart.
-    #[test]
-    fn the_starting_height_does_not_cap_a_larger_filter_set() {
-        let mut app = app_over_file("tall_filter_set", "alpha\n");
-        for i in 0..12 {
-            key(&mut app, KeyCode::Char('f'));
-            key(&mut app, KeyCode::Char('i'));
-            typed(&mut app, &format!("f{i}"));
-            key(&mut app, KeyCode::Enter);
-        }
-
-        // 12 filters and the built-in set's header want 15 rows, and a
-        // 40-row column can spare them.
-        assert_eq!(
-            app.filter_pane_split_height(40),
-            12 + 1 + 2,
-            "the starting height capped a set that asked for more"
-        );
-    }
-
-    /// The starting height is the pane's *preference*, so it is subject to
-    /// the same two caps `preferred_height` always was — it does not get to
-    /// claim eight rows out of a twelve-row column just because it is a
-    /// floor. Here the half cap is the tighter of the two and governs.
-    #[test]
-    fn the_starting_height_still_yields_to_the_half_cap() {
-        let app = app_over_file("empty_filter_short", "alpha\n");
-
-        assert_eq!(
-            app.filter_pane_split_height(12),
-            6,
-            "the starting height overrode the half cap"
+            (explorer.width, view.width, filters.width),
+            (
+                45 - MIN_FILE_VIEW_WIDTH - MIN_PANE_WIDTH,
+                MIN_FILE_VIEW_WIDTH,
+                MIN_PANE_WIDTH
+            )
         );
     }
 
@@ -10233,16 +10182,9 @@ mod tests {
     }
 
     /// Deleting the last filter while the pane is zoomed must not leave
-    /// `App::zoom` naming a pane focus has moved off. `App::render` also
-    /// carries `debug_assert_eq!(zoomed, self.focus)` for exactly
-    /// this invariant, but that macro compiles out entirely in `--release`
-    /// — this test's assertion must catch the same defect on its own, not
-    /// merely lean on the debug build to do it. The prior form of this test
-    /// wrapped its assertion in `if let Some(index) = app.zoom`, which is
-    /// vacuously true whenever the zoom is `None` — asserting the
-    /// disjunction directly below closes that gap.
+    /// focus on a pane that is not shown, and the pane must still be drawn.
     #[test]
-    fn deleting_the_last_filter_while_zoomed_keeps_the_zoom_invariant() {
+    fn deleting_the_last_filter_while_zoomed_keeps_the_pane_on_screen() {
         let mut app = app_over_file("pane_delete_last_zoomed", "alpha\n");
         key(&mut app, KeyCode::Char('f'));
         key(&mut app, KeyCode::Char('i'));
@@ -10250,27 +10192,20 @@ mod tests {
         key(&mut app, KeyCode::Enter);
         focus_filter_pane(&mut app);
         key(&mut app, KeyCode::Char('z'));
-        assert_eq!(app.zoom, Some(app.focus), "z did not zoom the filter pane");
+        assert_eq!(
+            app.panes.shown(),
+            PaneSet::only(Focus::Filters),
+            "z did not zoom the filter pane"
+        );
 
         key(&mut app, KeyCode::Char('d'));
 
-        assert!(
-            app.zoom.is_none() || app.zoom == Some(app.focus),
-            "zoom ({:?}) outlived the pane it named (focus = {:?})",
-            app.zoom,
-            app.focus
-        );
         assert!(
             app.focus == Focus::Filters,
             "focus left the filter pane, which deleting its last filter no longer collapses"
         );
 
-        // The disjunction above is satisfiable by a blank frame that merely
-        // avoids naming the wrong pane; this pins the stronger claim that
-        // whatever the zoom now points at is genuinely drawn, not empty.
-        // Focus stays on the filter pane now that its last filter no longer
-        // collapses it, so the zoomed pane is the filter pane — it used to be
-        // the explorer, which is why this looked for a filename before.
+        // The focused pane is genuinely drawn, not a blank frame.
         let text = rendered(&mut app);
         assert!(
             text.contains("Filters") && text.contains("press f"),
@@ -15905,14 +15840,14 @@ mod tests {
     fn a_click_inside_the_zoomed_pane_keeps_the_zoom() {
         let mut app = app_over_files("click_zoomed", &[("a.log", "a\n"), ("b.log", "b\n")]);
         app.zoom_focused();
-        assert_eq!(app.zoom, Some(Focus::Explorer));
+        assert_eq!(app.panes.shown(), PaneSet::only(Focus::Explorer));
         draw(&mut app);
 
         // Full-frame pane: the third inner row is `b.log`.
         mouse_at(&mut app, MouseEventKind::Down(MouseButton::Left), 1, 3);
 
         assert_eq!(shown(&app), "b.log");
-        assert_eq!(app.zoom, Some(Focus::Explorer));
+        assert_eq!(app.panes.shown(), PaneSet::only(Focus::Explorer));
     }
 
     // ---- visual mode and the yank (#67) ---------------------------------

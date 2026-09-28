@@ -868,6 +868,15 @@ impl ActiveFilters {
         }
     }
 
+    /// How many filters take effect: enabled, in an enabled set. The count
+    /// the status line gives while the filter pane is hidden (#300).
+    #[must_use]
+    pub fn effective_count(&self) -> usize {
+        (0..self.filters.len())
+            .filter(|&index| self.effective(index))
+            .count()
+    }
+
     #[must_use]
     pub fn any_enabled(&self) -> bool {
         self.filters.iter().any(|filter| filter.enabled)

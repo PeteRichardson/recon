@@ -54,9 +54,14 @@ motions throughout.
   `i` adds an include filter and `x` an exclude; each one is listed, numbered,
   independently toggled with `Enter`, and editable in place with `c` — a
   near-miss regex is corrected where it stands rather than deleted and retyped
-  into a different slot. The filter pane is on screen whenever
-  the explorer is, showing `press f i to add` until you define your first
-  filter, so the layout never shifts under you as the set grows and shrinks.
+  into a different slot. The filter pane is a full-height column on the right
+  of the file view, so a large set — seventy filters, say — is easy to read.
+  It shows `press f i to add` until you define your first filter.
+- **Show only the panes you need** — three columns, `[explorer | file view |
+  filter pane]`, and any of them can be hidden. `E` hides the explorer to
+  triage one file; `F` hides the filter pane to use recon as a plain file
+  manager. `e`, `t` and `f` show a hidden pane again and focus it, and `z`
+  hides every pane but the focused one. See [Show and hide the panes](#show-and-hide-the-panes).
 - **Dim or hide, on one keystroke** — `u` toggles unmatched lines between
   dimmed-but-present and removed. Toggling back returns you to the exact line
   you were on. Dimming marks unmatched lines whenever an *including* filter
@@ -109,9 +114,8 @@ motions throughout.
   enter it), a filter to switch it, a row of the look-ahead listing to go
   straight to it, the status row to add a filter, or the file's text to put the
   cursor there. Drag either pane divider
-  to resize: the vertical one sets the left column's width, the horizontal one
-  under the explorer sets how tall the filter pane is. Double-click either to
-  return it to auto-sizing.
+  to resize: one sets the explorer's width, the other the filter pane's.
+  Double-click either to return it to auto-sizing.
 - **Code is coloured** — keywords, strings and comments in around 150
   languages, Swift and TOML included, using your terminal's own palette by
   default so it matches whatever theme you already run. Pick a bundled theme
@@ -253,6 +257,10 @@ Options:
           effect on the view or on `--emit`. Repeatable
       --hide
           Start in hide mode: only matching lines and files
+      --hide-pane <PANES>
+          Panes to hide at startup, comma-separated: `explorer`, `view`,
+          `filters`. Replaces `[layout] hide_panes` in `config.toml`. At least
+          one pane stays shown [possible values: explorer, view, filters]
   -q, --quiet
           Suppress the summary line on stderr; warnings still print
       --warnings [<WARNINGS>]
@@ -369,13 +377,13 @@ Global (`src/lib.rs`), handled before the focused pane sees the key:
 | `?` | Show the keymap overlay — every binding on one screen. Any key closes it, and that key does nothing else | `global.help` |
 | `q` | Quit | `global.quit` |
 | `Q` | Quit without emitting — the same as `q` unless `--emit` was given | `global.quit.silent` |
-| `Tab` / `Shift-Tab` | Move focus to the next / previous of the three panes — explorer, file view, filter pane. All three are always on screen, so the cycle never skips one | `global.focus.next` / `global.focus.prev` |
+| `Tab` / `Shift-Tab` | Move focus to the next / previous shown pane, left to right — explorer, file view, filter pane. A hidden pane is skipped | `global.focus.next` / `global.focus.prev` |
 | `/` | Search as you type. In the file view or the filter pane, set the search: the cursor moves to the first hit at or after the line you started on, wrapping once to the top and saying so, and the hits in the window are highlighted. In the explorer, search filenames: the selection moves to the first name that matches at or after the row you started on, the matching names light up, and the view pane previews the file under the selection as it would for `j`. Each keystroke re-runs from where `/` opened, so a narrowed pattern never walks away from where you started. Esc puts the cursor and the scroll, or the selected row and its preview, back there; Enter keeps the position. Only the visible lines are searched, and none of them changes | `global.search` |
 | `p` | Promote the search into a numbered include filter and clear it; the filter's colour replaces the highlight | `global.search.promote` |
 | `Esc` | In the explorer with a filename search active, clear it; otherwise clear the search and its highlight. An open prompt takes this key first: in a search prompt it returns you to where `/` opened — the cursor and the scroll, or the explorer's row and its preview — with the search you had before, and in a filter prompt it just cancels | `global.escape` |
-| `e` | Focus the explorer, revealing the left column if `b` or `z` hid it | `global.focus.explorer` |
-| `t` | Focus the file view | `global.focus.view` |
-| `f` | Focus the filter pane. `f i`, `f x` and `f c` are chains: the pair works from anywhere, and when the prompt commits, focus returns to where you were and the app steps as if you had pressed `n`. `f f` stays in the pane | `global.focus.filters` |
+| `e` | Show the explorer if it is hidden, then focus it | `global.focus.explorer` |
+| `t` | Show the file view if it is hidden, then focus it | `global.focus.view` |
+| `f` | Show the filter pane if it is hidden, then focus it. `f i`, `f x` and `f c` are chains: the pair works from anywhere, and when the prompt commits, focus returns to where you were and the app steps as if you had pressed `n`. A chain that showed a hidden filter pane hides it again when focus returns. `f f` stays in the pane | `global.focus.filters` |
 | `space` | **Peek at the plain file** — drop every filter and flip the hide mode, so the code reads normally. Press again to put the filtered view back exactly as it was. See [Peeking at the plain file](#peeking-at-the-plain-file) | `global.peek` |
 | `.` / `,` | Skip to the next / previous file the filters match, landing on its first / last interesting line. Works from every pane; focus stays put. The keycaps say `>` and `<` | `global.file.next` / `global.file.prev` |
 | `[` / `]` | Page the file view up / down, whichever pane has focus — so a peeked file can be skimmed from the explorer | `global.page.up` / `global.page.down` |
@@ -384,8 +392,11 @@ Global (`src/lib.rs`), handled before the focused pane sees the key:
 | `!` | Disable every filter, remembering which were on; restores exactly that (or enables all, if none were on to remember) | `global.filters.disable` |
 | `&` | Combine the enabled include filters with **AND** instead of OR — a line must match every one of them. Press again for OR. See [Combining filters with AND](#combining-filters-with-and) | `global.filters.and` |
 | `L` | Open the set picker — choose which filter sets the filter pane lists. See [The set picker](#the-set-picker) | `global.sets` |
-| `b` | Hide the left column — both the explorer and the filter pane — and focus the file view; press again to restore the split (focus stays in the file view; `e` returns it) | `global.zoom.view` |
-| `z` | Maximise the focused pane, or restore the split — works in the explorer too, for long filenames | `global.zoom.focused` |
+| `E` | Hide the explorer | `global.hide.explorer` |
+| `F` | Hide the filter pane | `global.hide.filters` |
+| — | Hide the file view. It has no default key; bind one in `config.toml`, for example `"global.hide.view" = "T"` | `global.hide.view` |
+| `z` | Zoom: if more than one pane is shown, hide all but the focused pane; if only one is shown, show the panes the last zoom hid, or all three | `global.zoom.focused` |
+| `b` | The same as `t`, then `z`: zoom the file view, or — pressed again — show the others and keep focus in the file view | `global.zoom.view` |
 | `o` | Open the selected file's enclosing **project** in your editor, at the line the cursor is on — see [Opening an editor](#opening-an-editor) | `global.editor.project` |
 | `O` | Open the selected **file alone**, at the same line — no project, no walk-up | `global.editor.file` |
 | `r` | **Refresh from disk** — re-list, re-stat and rescan the explorer's listing (so a file created since the listing was built appears), and reload the file in the view with the cursor kept on its line. The status row shows `changed on disk · r` when the open file's size or mtime has moved | `global.reload` |
@@ -448,16 +459,56 @@ include prompt, exactly as `f i` does, and committing it returns focus to the
 pane you clicked from. The wheel scrolls the file view while it has focus, as
 before.
 
-Drag the vertical divider between the columns to resize them; double-click it
-to return to auto-sizing the left column to whichever of the explorer or the
-filter pane currently needs more room.
+Drag the divider on the explorer's right to set its width; double-click it to
+return to auto-sizing the explorer to its longest entry.
 
-The horizontal divider — the border between the explorer and the filter pane
-below it — drags the same way, and sets how many rows the filter pane gets.
-Dragging it *up* makes the pane taller, since the pane is anchored to the
-bottom of the column and what moves is where it begins. Double-click it to go
-back to automatic sizing. Neither drag can squeeze the explorer out of
-existence: it keeps three rows whatever you ask for.
+The divider on the filter pane's left — between it and the file view — drags
+the same way, and sets the filter pane's width. The pane is anchored to the
+right edge, so dragging *left* makes it wider. Double-click it to go back to
+automatic sizing. Neither drag can squeeze the file view below its floor, or
+a side pane out of existence: each keeps three columns whatever you ask for.
+
+### Show and hide the panes
+
+The window has three panes in one row: `[explorer | file view | filter
+pane]`. The explorer is beside the file view because it selects what the file
+view shows; the filter pane is on the other side because it changes what the
+file view shows. Any pane can be hidden:
+
+- `E` hides the explorer — to triage one file, where the explorer is not
+  used and the file view and the filter pane get its width.
+- `F` hides the filter pane — to move around the file system with no
+  filters, where recon looks like a plain TUI file manager.
+- `global.hide.view` hides the file view. It has no default key.
+- `e`, `t` and `f` show their pane if it is hidden, and focus it.
+
+At least one pane is always shown: a hide of the last one does nothing, and
+the status line says so. If you hide the focused pane, focus goes to the file
+view, or to the next shown pane if the file view is hidden too. A hidden pane
+keeps its cursor, scroll and selection, and its global keys still work — `.`
+and `,`, `1`–`9`, `!`, `&`, `p` and `L` act on it while you cannot see it.
+With the filter pane hidden and a filter on, the status line shows
+`filters: 3 on`, so you know why lines are coloured or gone.
+
+**Zoom** is a short way to hide panes, not a separate mode. `z` with more than
+one pane shown hides all but the focused pane, and remembers which were shown;
+`z` with only one shown shows them again, or all three if nothing is
+remembered. What `z` does comes from what is on the screen now: `z` in the
+file view, then `f`, then `z` zooms the filter pane, because two panes were
+shown at the second `z`.
+
+To start with panes hidden, name them in `config.toml` or with
+`--hide-pane explorer,filters`, which replaces the file's list. The names are
+`explorer`, `view` and `filters`. Hiding all three stops recon with an error.
+
+```toml
+[layout]
+hide_panes = ["explorer", "filters"]
+```
+
+When the terminal is narrow, the filter pane gets narrower first, then the
+explorer; the file view keeps its minimum width. recon never hides a pane by
+itself.
 
 ### Configuring the keymap
 
@@ -1068,7 +1119,7 @@ is not typed into it, and a pasted carriage return commits it, exactly as
 `Enter` does.
 
 `b` and `e` are global window commands rather than vim word motions: the
-trade was deliberate, since returning to the explorer from a maximised file
+trade was deliberate, since returning to the explorer from a zoomed file
 view is exactly when you need `e`. `w` still moves forward by word.
 
 `n` and `N` are handled globally, the same as `u`, so — like that key — they
@@ -1315,9 +1366,10 @@ status row says `scanning…` and the marks land on their own; if nothing
 matches, it says `no matching file`. Neither lands anywhere. Only a commit returns — `f d`, `f Enter`, `f m`, `f a`, `f s` and a
 plain `f` leave focus in the pane, because a toggle or a delete is often one
 of several. `f f` is the way to say "I am staying": the second `f` ends the
-chain. So does any other focus key, `Tab`, or cancelling the prompt. If you
-zoomed the filter pane after `f`, the return restores the split, because the
-origin pane has to be visible to take focus.
+chain. So does any other focus key, `Tab`, or cancelling the prompt. The
+return shows the origin pane if it was hidden since, because it has to be
+visible to take focus; and if `f` had to show the filter pane to start the
+chain, the return hides it again, so a chain does not change the layout.
 
 A pane's verb pressed in the wrong pane is not silent. `i`, `x`, `c`, `d`, `m`,
 `a` or `s` in the explorer or the file view puts a one-line hint on the status
@@ -1343,23 +1395,18 @@ only filters. While a search is set, the status row shows its pattern as
 step by. `p` is what moves the pattern into the numbered set, where it gets a
 row like any other filter.
 
-The pane never widens the left column to fit its hint: the column is sized by
-the explorer's longest entry. The hint gives way instead, which is why it has
-a short form and can be dropped altogether.
+The pane sizes its width to its longest row, from 20 columns up to 40, as the
+explorer does. A longer pattern is cut at the pane's edge; drag the divider
+to see all of it. With no filters defined it opens at 20 columns, which holds
+its whole hint; when a drag or a narrow terminal leaves less, the hint gives
+way instead, which is why it has a short form and can be dropped altogether.
 
-The left column has a floor when it sizes itself automatically, so entering a
+The explorer has a floor when it sizes itself automatically, so entering a
 directory of one short name no longer shrinks it to a few columns and moves
 every pane on screen. It still widens for longer names, up to its cap. The
 floor applies to automatic sizing only — dragging the divider is a decision
 and may still take the column narrower, and `b` or `z` give the file view the
 whole width outright.
-
-The pane's *height* has a floor for the same reason, and it applies even with
-no filters defined: eight rows, so the pane you define filters in is visible
-before the first one exists rather than being a title and a hint wedged under
-the explorer. A larger set still gets the rows it asks for, up to half the
-column. Both bounds govern automatic sizing only — drag the horizontal divider
-and the pane is whatever height you left it at, down to a single row.
 
 ---
 
@@ -1848,7 +1895,8 @@ needs every line's answer at once — see *Definition filters*.
   `~/.config/recon/config.toml` on every platform including macOS, under a
   `CLI > env > file > defaults` precedence chain. The settings so far are the
   two editor templates below, `[clipboard] command`, `[filters] palette`,
-  `[syntax] theme` and `[view] center_jumps`; every other key in the
+  `[layout] hide_panes`, `[syntax] theme` and `[view] center_jumps`; every
+  other key in the
   file is reported as an unknown key. Settings land one issue at a time
   against github issue #18; see
   `docs/specs/2026-08-22-configuration-mechanism.md` for the rules and the list

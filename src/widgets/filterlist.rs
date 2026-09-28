@@ -323,32 +323,17 @@ impl FilterList {
         Self::toggle_command(target)
     }
 
-    /// Rows this pane wants: one per row plus its borders, and never fewer
-    /// than the single row a hint needs.
-    ///
-    /// An empty set used to ask for nothing, which collapsed the pane out of
-    /// the layout entirely. It is now on screen whenever the explorer is, so
-    /// the floor is one content row rather than zero — see `EMPTY_HINTS`.
-    pub(crate) fn preferred_height(&self, rows: usize) -> u16 {
-        u16::try_from(rows.max(1))
-            .unwrap_or(u16::MAX)
-            .saturating_add(BORDERS)
-    }
-
     /// Columns needed for the widest row.
     ///
     /// Two borders and the widest row. There is no selection marker to
     /// reserve room for — #15 removed it from both panes; #19 brings it back
     /// as a setting.
     ///
-    /// Deliberately does **not** account for `EMPTY_HINTS`. `App::explorer_width`
-    /// sizes the left column to whichever pane wants more, so counting the
-    /// hint here would put a ~18-column floor under the column for every user
-    /// who has not defined a filter — including the directory of short names
-    /// that `auto_width_has_no_floor` exists to keep narrow. The hint is
-    /// guidance, not content: it yields to the explorer rather than widening
-    /// the column, and `render` simply omits it when the column is too narrow
-    /// to hold it.
+    /// Deliberately does **not** account for `EMPTY_HINTS`: the hint is
+    /// guidance, not content. `App::filter_wanted` floors the automatic width
+    /// at `MIN_AUTO_FILTER_WIDTH`, which already holds the longest hint, and
+    /// `render` picks a shorter form, or none, when a drag or a narrow
+    /// terminal leaves less.
     pub(crate) fn preferred_width(&self, filters: &ActiveFilters) -> u16 {
         let longest = Self::texts(filters)
             .iter()
@@ -452,10 +437,10 @@ impl FilterList {
 
     pub(crate) fn render(&mut self, filters: &ActiveFilters, area: Rect, buf: &mut Buffer) {
         // The hint takes the longest of its forms that fits the column, and
-        // is blanked rather than clipped when none does: `preferred_width`
-        // deliberately lets the explorer win the width (see its doc
-        // comment), so a narrow column is an expected state, not a broken
-        // one, and half a sentence of advice is worse than none. `DIM_STYLE`
+        // is blanked rather than clipped when none does: a drag or a narrow
+        // terminal can leave the column narrower than the hint (see
+        // `preferred_width`), which is an expected state, not a broken one,
+        // and half a sentence of advice is worse than none. `DIM_STYLE`
         // is the same grey the disabled rows use, so it reads as chrome.
         let interior = area.width.saturating_sub(BORDERS) as usize;
         let hint = EMPTY_HINTS
@@ -786,34 +771,8 @@ mod tests {
         assert_eq!(list.selected(), None);
     }
 
-    /// The pane is on screen whenever the explorer is, so an empty set still
-    /// reserves its borders plus the one row a hint is drawn on.
-    #[test]
-    fn an_empty_pane_reserves_a_row_for_the_hint() {
-        let list = FilterList::default();
-
-        assert_eq!(list.preferred_height(0), BORDERS + 1);
-    }
-
-    /// One filter must not make the pane shorter than no filters did.
-    #[test]
-    fn one_filter_is_no_shorter_than_an_empty_pane() {
-        let list = FilterList::default();
-
-        assert_eq!(list.preferred_height(1), list.preferred_height(0));
-    }
-
-    #[test]
-    fn the_pane_grows_with_the_number_of_filters() {
-        let list = FilterList::default();
-
-        assert!(list.preferred_height(3) > list.preferred_height(1));
-    }
-
-    /// The hint must not widen the left column. `App::explorer_width` takes the
-    /// larger of the two panes' preferred widths, so counting the hint here
-    /// would put a floor under the column for everyone who has not defined a
-    /// filter — see `auto_width_has_no_floor` in `lib.rs`.
+    /// The hint is not content, so it does not count toward the width the
+    /// pane asks for. `MIN_AUTO_FILTER_WIDTH` is what makes room for it.
     #[test]
     fn the_hint_does_not_widen_the_column() {
         let list = FilterList::default();

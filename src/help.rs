@@ -405,22 +405,22 @@ pub const KEYMAP: &[Section] = &[
             },
             Binding {
                 keys: &["Tab", "Shift-Tab"],
-                action: "Focus the next / previous pane",
+                action: "Focus the next / previous shown pane",
                 names: &["global.focus.next", "global.focus.prev"],
             },
             Binding {
                 keys: &["e"],
-                action: "Focus the explorer",
+                action: "Show the explorer if hidden, and focus it",
                 names: &["global.focus.explorer"],
             },
             Binding {
                 keys: &["t"],
-                action: "Focus the file view",
+                action: "Show the file view if hidden, and focus it",
                 names: &["global.focus.view"],
             },
             Binding {
                 keys: &["f"],
-                action: "Focus the filter pane; f i / f x / f c return on commit",
+                action: "Show, focus filters; f i / f x / f c return on commit",
                 names: &["global.focus.filters"],
             },
             Binding {
@@ -479,14 +479,31 @@ pub const KEYMAP: &[Section] = &[
                 names: &["global.sets"],
             },
             Binding {
-                keys: &["b"],
-                action: "Hide the left column, and focus the file view",
-                names: &["global.zoom.view"],
+                keys: &["E"],
+                action: "Hide the explorer",
+                names: &["global.hide.explorer"],
+            },
+            Binding {
+                keys: &["F"],
+                action: "Hide the filter pane",
+                names: &["global.hide.filters"],
+            },
+            // No default key (#300) — see `keymap::UNBOUND`. The overlay
+            // draws "unbound" until a `[keymap]` line gives it one.
+            Binding {
+                keys: &[],
+                action: "Hide the file view",
+                names: &["global.hide.view"],
             },
             Binding {
                 keys: &["z"],
-                action: "Maximise the focused pane, or restore the split",
+                action: "Hide all panes but the focused one, or show them again",
                 names: &["global.zoom.focused"],
+            },
+            Binding {
+                keys: &["b"],
+                action: "t then z: zoom the file view, or show the others again",
+                names: &["global.zoom.view"],
             },
             Binding {
                 keys: &["o"],
@@ -1447,19 +1464,19 @@ mod tests {
     /// any further has nowhere left to go without this area's width growing
     /// past 151 — which would stop the second test here from failing on the
     /// regression it exists to catch — and a row that adds to *either* total
-    /// has to be re-measured against both. The height, 50, is likewise the
-    /// exact number of rows two columns hold at the current row count (99,
+    /// has to be re-measured against both. The height, 51, is likewise the
+    /// exact number of rows two columns hold at the current row count (102,
     /// after the two reserved-key rows of #242 raised it from 86 to 88,
     /// the two search-history rows of #274 to 90, the `L` row and the
-    /// set picker's section of #284 to 97, and the picker's two search rows
-    /// of #285 to 99); adding a row without
+    /// set picker's section of #284 to 97, the picker's two search rows
+    /// of #285 to 99, and the three hide rows of #300 to 102); adding a row without
     /// raising the height would drop it off the bottom, which is a
     /// `shown(&columns) == rows.len()` failure below, not a width one.
     #[test]
     fn a_normal_terminal_shows_the_whole_keymap() {
         let rows = rows(&crate::keymap::Keymap::default());
 
-        let columns = layout(&rows, inner(150, 50));
+        let columns = layout(&rows, inner(150, 51));
 
         assert_eq!(shown(&columns), rows.len(), "the keymap did not fit");
         assert!(
@@ -1713,7 +1730,15 @@ mod tests {
         let literal: Vec<String> = KEYMAP
             .iter()
             .flat_map(|section| section.bindings)
-            .map(|binding| binding.keys.join(" / "))
+            // A row naming an action with no default key (#300) draws
+            // `UNBOUND`, which is what a default keymap leaves it.
+            .map(|binding| {
+                if binding.keys.is_empty() && !binding.names.is_empty() {
+                    UNBOUND.to_string()
+                } else {
+                    binding.keys.join(" / ")
+                }
+            })
             .collect();
 
         let rendered: Vec<String> = rows(&crate::keymap::Keymap::default())

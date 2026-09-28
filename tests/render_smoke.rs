@@ -416,13 +416,15 @@ fn dragging_the_divider_resizes_the_panes_on_screen() {
     let before = divider_column(&buf);
 
     click(&mut app, MouseEventKind::Down(MouseButton::Left), before);
-    click(&mut app, MouseEventKind::Drag(MouseButton::Left), 50);
-    click(&mut app, MouseEventKind::Up(MouseButton::Left), 50);
+    // 40, not further: on 80 columns the file view keeps 30 and the filter
+    // pane its floor of 3 (#300), so a drag past 47 stops at 47.
+    click(&mut app, MouseEventKind::Drag(MouseButton::Left), 40);
+    click(&mut app, MouseEventKind::Up(MouseButton::Left), 40);
 
     let mut after_buf = Buffer::empty(AREA);
     (&mut app).render(AREA, &mut after_buf);
     let after = divider_column(&after_buf);
 
     assert_ne!(before, after, "divider did not move");
-    assert_eq!(after, 50, "divider did not land where it was dragged");
+    assert_eq!(after, 40, "divider did not land where it was dragged");
 }
