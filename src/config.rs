@@ -38,6 +38,26 @@ const CONFIG_DIR: &str = "recon";
 /// The one file recon reads. Never written — see `Cargo.toml`.
 const CONFIG_FILE: &str = "config.toml";
 
+/// What `recon --version` prints after the name (#331): the version, and
+/// whether this build can ask Foundation Models for a pattern (#319). The
+/// filter editor has no request line both in a build without it and on a
+/// Mac whose model is not ready, so this is the way to tell the two apart.
+/// `-V` prints the version alone.
+///
+/// `on` under the same `cfg` that gives `generate::system` a model.
+#[cfg(all(
+    feature = "foundation-models",
+    target_os = "macos",
+    target_arch = "aarch64"
+))]
+const LONG_VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "\nfoundation-models: on");
+#[cfg(not(all(
+    feature = "foundation-models",
+    target_os = "macos",
+    target_arch = "aarch64"
+)))]
+const LONG_VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "\nfoundation-models: off");
+
 /// The fully resolved configuration the app runs on.
 ///
 /// This is the *result* of the precedence chain, not one layer of it. `path`
@@ -50,7 +70,7 @@ const CONFIG_FILE: &str = "config.toml";
 // description line of `--help`. The prose below is for whoever maintains the
 // precedence chain, not for someone running `recon --help`.
 #[derive(Parser, Debug)]
-#[command(version, about = None, long_about = None)]
+#[command(version, long_version = LONG_VERSION, about = None, long_about = None)]
 pub struct Config {
     /// File or directory to open. A directory is listed with its first entry
     /// selected; a file is opened with its own directory listed alongside.
@@ -1468,6 +1488,33 @@ mod tests {
         let config = Config::try_parse_from(["recon"]).expect("parses with no argument");
 
         assert_eq!(config.path, ".");
+    }
+
+    /// `--version` says whether this build has Foundation Models (#331),
+    /// and `-V` is the version alone, as before.
+    #[test]
+    fn version_says_if_foundation_models_is_built_in() {
+        let expected = if cfg!(all(
+            feature = "foundation-models",
+            target_os = "macos",
+            target_arch = "aarch64"
+        )) {
+            "on"
+        } else {
+            "off"
+        };
+        let version = env!("CARGO_PKG_VERSION");
+        let long = Config::try_parse_from(["recon", "--version"])
+            .expect_err("--version exits")
+            .to_string();
+        assert_eq!(
+            long,
+            format!("recon {version}\nfoundation-models: {expected}\n")
+        );
+        let short = Config::try_parse_from(["recon", "-V"])
+            .expect_err("-V exits")
+            .to_string();
+        assert_eq!(short, format!("recon {version}\n"));
     }
 
     #[test]
