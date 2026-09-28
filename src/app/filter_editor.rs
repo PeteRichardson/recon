@@ -38,7 +38,9 @@
 //! With a language model (#319), the panel has a request line under the
 //! pattern: `Ctrl-g` moves the keys to it, and Enter there sends the request
 //! to the model on a worker thread. The reply's pattern goes in the pattern
-//! field as a new version, and its explanation under it. Esc cancels a
+//! field as a new version, and its explanation under it. Each request the
+//! model answered goes to it again with every later one, with the pattern
+//! as it stands, so the pattern improves step by step. Esc cancels a
 //! request while it runs. Without a model the request line is not there,
 //! and nothing else changes. See `crate::generate` for what the model
 //! receives.
@@ -217,8 +219,13 @@ pub(super) struct FilterEditor {
     pub(super) model: bool,
     /// The request line: what the user asks the model for next.
     pub(super) request: SearchPrompt,
-    /// The request the model is answering, if one is running.
-    pub(super) running: Option<Running>,
+    /// The request the model is answering, and its text, if one is
+    /// running.
+    pub(super) running: Option<(Running, String)>,
+    /// The requests of this session the model answered, oldest first. Each
+    /// goes to the model with every later request, so the pattern improves
+    /// step by step. They last only while the editor is open.
+    pub(super) requests: Vec<String>,
     /// The whole seconds the running request has taken, as the status row
     /// last showed them.
     pub(super) waited: u64,
@@ -282,6 +289,7 @@ impl FilterEditor {
             model: false,
             request: SearchPrompt::default(),
             running: None,
+            requests: Vec::new(),
             waited: 0,
             explanation: None,
         }
@@ -633,9 +641,10 @@ impl FilterEditor {
     /// and its explanation under it. The pattern as it was is kept first,
     /// so `Ctrl-z` goes back to it — an empty pattern too, as `Ctrl-z`
     /// must undo what the model did. A pattern that does not compile is not
-    /// a version; it shows its error as a typed one does. The request line
-    /// is cleared for the next request.
-    fn take_candidate(&mut self, candidate: Candidate) {
+    /// a version; it shows its error as a typed one does. The request joins
+    /// the session's requests, and the request line is cleared for the
+    /// next one.
+    fn take_candidate(&mut self, request: String, candidate: Candidate) {
         self.error = pattern_error(&self.field.pattern);
         if self.field.pattern.is_empty() {
             self.edited_at = None;
@@ -647,12 +656,13 @@ impl FilterEditor {
         self.recompile();
         self.record();
         self.explanation = Some(candidate.explanation);
+        self.requests.push(request);
         self.request = SearchPrompt::default();
     }
 
     /// The text the model receives for `request` (#319): the prompt field,
-    /// the marks, and a sample of the unmarked lines. Never the
-    /// description.
+    /// the pattern when it compiles, the marks, a sample of the unmarked
+    /// lines and the session's earlier requests. Never the description.
     pub(super) fn request_text(&self, request: &str) -> String {
         let examples = self.details().examples;
         let lines = |must_match: bool| -> Vec<&str> {
@@ -663,13 +673,17 @@ impl FilterEditor {
                 .collect()
         };
         let prompt = self.prompt.pattern.trim();
-        generate::request_text(
-            (!prompt.is_empty()).then_some(prompt),
-            &lines(true),
-            &lines(false),
-            &self.sample(),
+        let pattern = &self.field.pattern;
+        generate::request_text(&generate::Parts {
+            prompt: (!prompt.is_empty()).then_some(prompt),
+            pattern: (!pattern.is_empty() && pattern_error(pattern).is_none())
+                .then_some(pattern.as_str()),
+            must_match: &lines(true),
+            must_not_match: &lines(false),
+            sample: &self.sample(),
+            earlier: &self.requests,
             request,
-        )
+        })
     }
 
     /// Up to `SAMPLE_LINES` lines of the file with no mark and some text,
@@ -1274,7 +1288,7 @@ impl App<'_> {
             return;
         }
         let text = editor.request_text(request);
-        editor.running = Some(Running::start(model, text));
+        editor.running = Some((Running::start(model, text), request.to_string()));
         editor.waited = 0;
         editor.explanation = None;
         editor.error = pattern_error(&editor.field.pattern);
@@ -1287,16 +1301,19 @@ impl App<'_> {
         let Some(editor) = self.filter_editor.as_mut() else {
             return false;
         };
-        let Some(running) = editor.running.as_ref() else {
+        let Some((running, _)) = editor.running.as_ref() else {
             return false;
         };
         let Some(reply) = running.poll() else {
             let waited = running.started.elapsed().as_secs();
             return std::mem::replace(&mut editor.waited, waited) != waited;
         };
-        editor.running = None;
+        let Some((_, request)) = editor.running.take() else {
+            return false;
+        };
         match reply {
-            Ok(candidate) => editor.take_candidate(candidate),
+            // A request that failed is not kept: the model did not act on it.
+            Ok(candidate) => editor.take_candidate(request, candidate),
             Err(error) => editor.error = Some(format!("the model gave no pattern: {error}")),
         }
         true

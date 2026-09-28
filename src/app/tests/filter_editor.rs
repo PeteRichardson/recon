@@ -2191,3 +2191,68 @@ fn closing_the_editor_cancels_the_request() {
     assert!(!app.drain_request());
     assert_eq!(app.filters.len(), 1);
 }
+
+/// A second request goes with the first and the pattern the first gave, so
+/// the pattern improves step by step.
+#[test]
+fn a_later_request_has_the_earlier_requests_and_the_pattern() {
+    let (mut app, harness) = app_with_model("fe_rounds", true, Ok(candidate("timeout")));
+    open_editor(&mut app);
+    ask(&mut app, "the timeouts");
+    harness.answer();
+    take_reply(&mut app);
+    let first = harness.sent();
+    assert!(!first[0].contains("Earlier requests"), "{}", first[0]);
+    assert!(!first[0].contains("Current pattern"), "{}", first[0]);
+
+    ask(&mut app, "also exclude DEMO");
+    harness.answer();
+    take_reply(&mut app);
+
+    let sent = harness.sent();
+    assert!(
+        sent[1].contains("Current pattern: timeout\n"),
+        "{}",
+        sent[1]
+    );
+    assert!(
+        sent[1].contains("Earlier requests, oldest first:\nthe timeouts\n"),
+        "{}",
+        sent[1]
+    );
+    assert!(
+        sent[1].ends_with("Request: also exclude DEMO\n"),
+        "{}",
+        sent[1]
+    );
+    assert_eq!(editor(&app).requests, ["the timeouts", "also exclude DEMO"]);
+}
+
+/// A request the model did not act on — cancelled, or failed — is not one
+/// of the session's requests.
+#[test]
+fn a_cancelled_or_failed_request_is_not_kept() {
+    let (mut app, harness) = app_with_model("fe_not_kept", true, Err("busy".to_string()));
+    open_editor(&mut app);
+    ask(&mut app, "the timeouts");
+    key(&mut app, KeyCode::Esc);
+    harness.answer();
+
+    typed(&mut app, "the errors");
+    key(&mut app, KeyCode::Enter);
+    harness.answer();
+    take_reply(&mut app);
+    assert!(editor(&app).requests.is_empty());
+}
+
+/// A pattern that does not compile is not sent as the current pattern.
+#[test]
+fn a_broken_pattern_is_not_sent() {
+    let (mut app, harness) = app_with_model("fe_broken_sent", true, Ok(candidate("x")));
+    open_editor(&mut app);
+    typed(&mut app, "timeout(");
+    ask(&mut app, "the timeouts");
+    harness.answer();
+    take_reply(&mut app);
+    assert!(!harness.sent()[0].contains("Current pattern"));
+}
