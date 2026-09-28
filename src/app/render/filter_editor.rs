@@ -74,7 +74,9 @@ impl FilterEditor {
         };
         let keys = match self.focus {
             EditorFocus::Pattern => {
-                format!(" {enter} · Esc cancel · Up/Down/PgUp/PgDn scroll · Tab lines ")
+                format!(
+                    " {enter} · Esc cancel · Up/Down/PgUp/PgDn scroll · Ctrl-z/Ctrl-y undo/redo · Tab lines "
+                )
             }
             EditorFocus::Lines => format!(
                 " + must match · - must not · = clear · V range · f/F failed · n/N unmarked · u matches only · {enter} · Esc cancel · Tab pattern "
