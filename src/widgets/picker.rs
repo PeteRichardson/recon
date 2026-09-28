@@ -1,7 +1,7 @@
 //! The profile picker: a small overlay listing one set's profiles (#130).
 //!
 //! Profiles are deliberately not drawn in the filter pane. A comma-separated
-//! list after a set's name is too wide for a column the navigator sizes, and
+//! list after a set's name is too wide for a column the explorer sizes, and
 //! a row per profile would double the pane's height for a thing used once
 //! per triage. So a set's header carries a bare `*` when it has profiles,
 //! and `a` on that row opens this: a centred box over the panes, one profile
@@ -80,7 +80,7 @@ impl ProfilePicker {
                 None => PickerOutcome::Closed,
             },
             A::PickerCancel => PickerOutcome::Closed,
-            // See `FileNav::perform`'s trailing arm: `resolve(Scope::Picker,
+            // See `Explorer::perform`'s trailing arm: `resolve(Scope::Picker,
             // ..)` only ever answers with one of the four arms above, so this
             // is unreached today, and stays inert rather than panicking if
             // that ever stops being true.

@@ -195,7 +195,7 @@ impl App<'_> {
         // the fork falls back to numbering the buffer 1..N, which is right only
         // when the buffer *is* the file — a window starting at visible row
         // 1,000 would be numbered 1, 2, 3. The reason for the old gate ("a
-        // vector the length of the file, rebuilt on every navigator arrow key")
+        // vector the length of the file, rebuilt on every explorer arrow key")
         // is gone: the vector is now the length of the window.
         let numbers: Vec<usize> = self.document.visible()[window_start..window_end].to_vec();
         // Still gated on `hiding`: with the whole file on screen every line's
@@ -254,7 +254,7 @@ impl App<'_> {
         // compiled once; re-parsing the same string here is deterministic
         // and cannot fail today. Even so, this
         // is the hottest path in the app — every filter mutation and every
-        // navigator preview reaches it — so a future regression here should
+        // explorer preview reaches it — so a future regression here should
         // cost a stale highlight, not a panic that takes the whole TUI down.
         // Swallowing it accepts that cosmetic failure mode deliberately, rather
         // than escalating it into one this codebase's own tests are better
@@ -272,7 +272,7 @@ impl App<'_> {
         // cursor nudged back onto `screen_row` — the whole point of
         // `scroll_cursor_to_row` is undoing that reset. Requesting it
         // unconditionally used to queue a no-op nudge on every call that hid
-        // nothing new (every navigator arrow key goes through `Preview` →
+        // nothing new (every explorer arrow key goes through `Preview` →
         // `refresh_view` → here, whether or not a filter is even defined),
         // and `apply_pending_scroll` pays for that with a full scratch
         // render of the file view on the very next frame regardless of

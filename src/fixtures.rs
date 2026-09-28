@@ -3,7 +3,7 @@
 //! Three test modules each grew their own way of making scratch files under
 //! `target/`: `lib.rs` claimed directory names through a guarded registry,
 //! `fileview.rs` claimed file names through a second registry that could not
-//! see the first, and `filenav.rs` — plus a dozen `lib.rs` tests that built
+//! see the first, and `explorer.rs` — plus a dozen `lib.rs` tests that built
 //! their path by hand — claimed nothing and went straight to
 //! `remove_dir_all`/`create_dir_all`. The collision guard #69 added to close
 //! a release-only flake covered exactly one of the three. A new fixture whose
@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 /// Where every fixture lives. One root rather than the three there used to
-/// be (`test-appdirs`, `test-navdirs`, `test-fixtures`) so that the registry
+/// be (`test-appdirs`, `test-explorerdirs`, `test-fixtures`) so that the registry
 /// below describes the filesystem exactly: two names that would collide on
 /// disk collide here.
 const ROOT: &str = "target/test-fixtures";

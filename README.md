@@ -20,7 +20,7 @@ Filters are individually toggled, disabled en masse with `!`, and survive
 loading a different file. It's for the moment when `grep -v` has become four 
 chained `grep -v`s and you've lost track of what you're excluding.
 
-Three panes: a file navigator, the file view, and the filter list. Vim-style
+Three panes: a file explorer, the file view, and the filter list. Vim-style
 motions throughout.
 
 > **Status:** Active development — pre-1.0, no tagged releases. Keybindings and
@@ -55,7 +55,7 @@ motions throughout.
   independently toggled with `Enter`, and editable in place with `c` — a
   near-miss regex is corrected where it stands rather than deleted and retyped
   into a different slot. The filter pane is on screen whenever
-  the navigator is, showing `press f i to add` until you define your first
+  the explorer is, showing `press f i to add` until you define your first
   filter, so the layout never shifts under you as the set grows and shrinks.
 - **Dim or hide, on one keystroke** — `u` toggles unmatched lines between
   dimmed-but-present and removed. Toggling back returns you to the exact line
@@ -66,7 +66,7 @@ motions throughout.
   first hit from the line you are on, the hits in the window are
   highlighted, and `n`/`N` step between hit lines. A search never changes
   which lines are visible — in hide mode it finds nothing among the lines
-  the filters removed — and does not dim, mark files in the navigator, or
+  the filters removed — and does not dim, mark files in the explorer, or
   answer to `!` or `u`. `Esc` clears it; `p` promotes it into the numbered
   set with its own colour, so a filter set gets built by trying patterns
   rather than by retyping them.
@@ -79,11 +79,11 @@ motions throughout.
   remembers what was on, so it's one keystroke back to an unfiltered view
   without discarding your work.
 - **Skim a directory for hits** — with a filter set and `u` hiding, move
-  down the navigator and each file draws only its matching lines. A file that
+  down the explorer and each file draws only its matching lines. A file that
   comes up blank has none, which makes a directory of logs answerable by
   arrow key rather than by four chained `grep`s.
 - **One key per pane, and you can see which has it** — `e`, `t` and `f` jump
-  straight to the navigator, the file view and the filter pane, so focus is
+  straight to the explorer, the file view and the filter pane, so focus is
   something you set rather than something you hunt for with `Tab`. The focused
   pane draws its border green *and* heavy, so it reads at a glance on a theme
   with weak colour and in a terminal with none.
@@ -96,8 +96,8 @@ motions throughout.
   grey, because it is the one row that is never what you are looking for.
 - **Look before you enter** — selecting a directory lists its contents in the
   view pane, with size and modification time, so you can see what is inside
-  without going in. `l` on that selection makes the listing the navigator's.
-- **Cheap navigation** — moving through the navigator renders a bounded preview
+  without going in. `l` on that selection makes the listing the explorer's.
+- **Cheap navigation** — moving through the explorer renders a bounded preview
   (50,000 lines / 10 MiB), so scrolling a directory of very large logs doesn't
   stutter. Ordinary files are well inside those bounds and are simply read.
 - **Copy what you found** — `v` or `V` starts a selection in the file view,
@@ -110,7 +110,7 @@ motions throughout.
   straight to it, the status row to add a filter, or the file's text to put the
   cursor there. Drag either pane divider
   to resize: the vertical one sets the left column's width, the horizontal one
-  under the navigator sets how tall the filter pane is. Double-click either to
+  under the explorer sets how tall the filter pane is. Double-click either to
   return it to auto-sizing.
 - **Code is coloured** — keywords, strings and comments in around 150
   languages, Swift and TOML included, using your terminal's own palette by
@@ -272,7 +272,7 @@ Regenerate by running the test and pasting what it prints.
 
 The argument is optional, and takes either a file or a directory:
 
-| Command | Navigator lists | Cursor starts on | View shows |
+| Command | Explorer lists | Cursor starts on | View shows |
 | --- | --- | --- | --- |
 | `recon app.log` | the file's parent | `app.log` | the file, read in full |
 | `recon /var/log` | `/var/log` | its first entry | that entry, previewed |
@@ -369,26 +369,26 @@ Global (`src/lib.rs`), handled before the focused pane sees the key:
 | `?` | Show the keymap overlay — every binding on one screen. Any key closes it, and that key does nothing else | `global.help` |
 | `q` | Quit | `global.quit` |
 | `Q` | Quit without emitting — the same as `q` unless `--emit` was given | `global.quit.silent` |
-| `Tab` / `Shift-Tab` | Move focus to the next / previous of the three panes — navigator, file view, filter pane. All three are always on screen, so the cycle never skips one | `global.focus.next` / `global.focus.prev` |
-| `/` | Search as you type. In the file view or the filter pane, set the search: the cursor moves to the first hit at or after the line you started on, wrapping once to the top and saying so, and the hits in the window are highlighted. In the navigator, search filenames: the selection moves to the first name that matches at or after the row you started on, the matching names light up, and the view pane previews the file under the selection as it would for `j`. Each keystroke re-runs from where `/` opened, so a narrowed pattern never walks away from where you started. Esc puts the cursor and the scroll, or the selected row and its preview, back there; Enter keeps the position. Only the visible lines are searched, and none of them changes | `global.search` |
+| `Tab` / `Shift-Tab` | Move focus to the next / previous of the three panes — explorer, file view, filter pane. All three are always on screen, so the cycle never skips one | `global.focus.next` / `global.focus.prev` |
+| `/` | Search as you type. In the file view or the filter pane, set the search: the cursor moves to the first hit at or after the line you started on, wrapping once to the top and saying so, and the hits in the window are highlighted. In the explorer, search filenames: the selection moves to the first name that matches at or after the row you started on, the matching names light up, and the view pane previews the file under the selection as it would for `j`. Each keystroke re-runs from where `/` opened, so a narrowed pattern never walks away from where you started. Esc puts the cursor and the scroll, or the selected row and its preview, back there; Enter keeps the position. Only the visible lines are searched, and none of them changes | `global.search` |
 | `p` | Promote the search into a numbered include filter and clear it; the filter's colour replaces the highlight | `global.search.promote` |
-| `Esc` | In the navigator with a filename search active, clear it; otherwise clear the search and its highlight. An open prompt takes this key first: in a search prompt it returns you to where `/` opened — the cursor and the scroll, or the navigator's row and its preview — with the search you had before, and in a filter prompt it just cancels | `global.escape` |
-| `e` | Focus the navigator, revealing the left column if `b` or `z` hid it | `global.focus.nav` |
+| `Esc` | In the explorer with a filename search active, clear it; otherwise clear the search and its highlight. An open prompt takes this key first: in a search prompt it returns you to where `/` opened — the cursor and the scroll, or the explorer's row and its preview — with the search you had before, and in a filter prompt it just cancels | `global.escape` |
+| `e` | Focus the explorer, revealing the left column if `b` or `z` hid it | `global.focus.explorer` |
 | `t` | Focus the file view | `global.focus.view` |
 | `f` | Focus the filter pane. `f i`, `f x` and `f c` are chains: the pair works from anywhere, and when the prompt commits, focus returns to where you were and the app steps as if you had pressed `n`. `f f` stays in the pane | `global.focus.filters` |
 | `space` | **Peek at the plain file** — drop every filter and flip the hide mode, so the code reads normally. Press again to put the filtered view back exactly as it was. See [Peeking at the plain file](#peeking-at-the-plain-file) | `global.peek` |
 | `.` / `,` | Skip to the next / previous file the filters match, landing on its first / last interesting line. Works from every pane; focus stays put. The keycaps say `>` and `<` | `global.file.next` / `global.file.prev` |
-| `[` / `]` | Page the file view up / down, whichever pane has focus — so a peeked file can be skimmed from the navigator | `global.page.up` / `global.page.down` |
+| `[` / `]` | Page the file view up / down, whichever pane has focus — so a peeked file can be skimmed from the explorer | `global.page.up` / `global.page.down` |
 | `1` – `9` | Toggle the filter the pane numbers `1` to `9`, from any pane. Built-in filters and set headers have no number; `Enter` in the filter pane toggles those | `global.filters.toggle` |
 | `u` / `Ctrl-H` / `H` | Toggle between dimming unmatched lines and hiding them — `u` for **u**nmatched; the other two are aliases for terminals and habits that already use them | `global.toggle.hide` |
 | `!` | Disable every filter, remembering which were on; restores exactly that (or enables all, if none were on to remember) | `global.filters.disable` |
 | `&` | Combine the enabled include filters with **AND** instead of OR — a line must match every one of them. Press again for OR. See [Combining filters with AND](#combining-filters-with-and) | `global.filters.and` |
 | `L` | Open the set picker — choose which filter sets the filter pane lists. See [The set picker](#the-set-picker) | `global.sets` |
-| `b` | Hide the left column — both the navigator and the filter pane — and focus the file view; press again to restore the split (focus stays in the file view; `e` returns it) | `global.zoom.view` |
-| `z` | Maximise the focused pane, or restore the split — works in the navigator too, for long filenames | `global.zoom.focused` |
+| `b` | Hide the left column — both the explorer and the filter pane — and focus the file view; press again to restore the split (focus stays in the file view; `e` returns it) | `global.zoom.view` |
+| `z` | Maximise the focused pane, or restore the split — works in the explorer too, for long filenames | `global.zoom.focused` |
 | `o` | Open the selected file's enclosing **project** in your editor, at the line the cursor is on — see [Opening an editor](#opening-an-editor) | `global.editor.project` |
 | `O` | Open the selected **file alone**, at the same line — no project, no walk-up | `global.editor.file` |
-| `r` | **Refresh from disk** — re-list, re-stat and rescan the navigator's listing (so a file created since the listing was built appears), and reload the file in the view with the cursor kept on its line. The status row shows `changed on disk · r` when the open file's size or mtime has moved | `global.reload` |
+| `r` | **Refresh from disk** — re-list, re-stat and rescan the explorer's listing (so a file created since the listing was built appears), and reload the file in the view with the cursor kept on its line. The status row shows `changed on disk · r` when the open file's size or mtime has moved | `global.reload` |
 
 `?` used to search backward. `n`/`N` cover both directions now, which is what
 freed it for the overlay — it is the conventional help key in the pagers and
@@ -416,30 +416,30 @@ are how a pane verb is reached from anywhere:
 | `f c` | Change the selected filter's pattern; returns on commit the same way | — |
 | `f d` / `f Enter` | Delete / toggle the selected filter; focus stays in the pane, since one delete is often the first of several | — |
 | `f f` | Stay in the filter pane — the second `f` ends the chain | — |
-| `e n` | Move the navigator to its next `n`: the next filename-search hit if one is active, else the next file the filters match. Unlike `.`, focus moves to the navigator | — |
-| `t *` | Search for the word under the file view's cursor, from the navigator or the filter pane | — |
+| `e n` | Move the explorer to its next `n`: the next filename-search hit if one is active, else the next file the filters match. Unlike `.`, focus moves to the explorer | — |
+| `t *` | Search for the word under the file view's cursor, from the explorer or the filter pane | — |
 
 Shared motions — the same key, the same meaning, in every pane where the idea
 exists:
 
-| Key(s) | Navigator | File view | Filter pane | Name(s) |
+| Key(s) | Explorer | File view | Filter pane | Name(s) |
 | --- | --- | --- | --- | --- |
-| `j` / `k`, `Down` / `Up` | next / previous entry | cursor down / up | next / previous row | `nav.up` / `nav.down` / `view.up` / `view.down` / `filters.up` / `filters.down` |
-| `g` / `G`, `Home` / `End` | first / last entry | top / bottom of the file | first / last row | `nav.goto.start` / `nav.goto.end` / `view.goto.start` / `view.goto.end` / `filters.goto.start` / `filters.goto.end` |
-| `Ctrl-d` / `Ctrl-u` | half a page | scroll half a page | half a page | `nav.halfpage.down` / `nav.halfpage.up` / `view.halfpage.down` / `view.halfpage.up` / `filters.halfpage.down` / `filters.halfpage.up` |
-| `PageDown` / `PageUp` | a page | scroll a page (also `Ctrl-f` / `Ctrl-b`) | a page | `nav.page.down` / `nav.page.up` / `view.page.down` / `view.page.up` / `filters.page.down` / `filters.page.up` |
-| `n` / `N` | next / previous filename-search match, or file the filters match | with a search set, next / previous hit line, wrapping within the file; otherwise next / previous interesting line, crossing files | acts on the file view | `hit.next` / `hit.prev` / `nav.hit.next` / `nav.hit.prev` |
-| `Enter` | open the entry — a file also takes the focus | — | toggle the filter or the set | `nav.open` / `filters.toggle` |
+| `j` / `k`, `Down` / `Up` | next / previous entry | cursor down / up | next / previous row | `explorer.up` / `explorer.down` / `view.up` / `view.down` / `filters.up` / `filters.down` |
+| `g` / `G`, `Home` / `End` | first / last entry | top / bottom of the file | first / last row | `explorer.goto.start` / `explorer.goto.end` / `view.goto.start` / `view.goto.end` / `filters.goto.start` / `filters.goto.end` |
+| `Ctrl-d` / `Ctrl-u` | half a page | scroll half a page | half a page | `explorer.halfpage.down` / `explorer.halfpage.up` / `view.halfpage.down` / `view.halfpage.up` / `filters.halfpage.down` / `filters.halfpage.up` |
+| `PageDown` / `PageUp` | a page | scroll a page (also `Ctrl-f` / `Ctrl-b`) | a page | `explorer.page.down` / `explorer.page.up` / `view.page.down` / `view.page.up` / `filters.page.down` / `filters.page.up` |
+| `n` / `N` | next / previous filename-search match, or file the filters match | with a search set, next / previous hit line, wrapping within the file; otherwise next / previous interesting line, crossing files | acts on the file view | `hit.next` / `hit.prev` / `explorer.hit.next` / `explorer.hit.prev` |
+| `Enter` | open the entry — a file also takes the focus | — | toggle the filter or the set | `explorer.open` / `filters.toggle` |
 
 `[` and `]` page the file view from every pane and so live in the Global table.
 
 Mouse: a click does what the cursor keys and `Enter` would do to the row under
 it, and focuses the pane it lands in — which is why a click on a file in the
-navigator, unlike `Enter`, leaves the focus there. In the navigator, one click
+explorer, unlike `Enter`, leaves the focus there. In the explorer, one click
 on a file opens it and one click on a directory looks inside it; a second click
 on the same directory (or on `..`) enters it, the way `Enter` does. In the
 filter pane a click toggles the filter or the set header on that row. In the file view, a click on a row of a directory's look-ahead
-listing takes the navigator into that directory and opens the entry clicked —
+listing takes the explorer into that directory and opens the entry clicked —
 one click instead of `l`, a cursor motion and `Enter`. A click on a *file's*
 text puts the cursor on the character under the pointer; dragging from there
 selects, and double-clicking selects the word, both ready for `y` — see
@@ -449,14 +449,14 @@ pane you clicked from. The wheel scrolls the file view while it has focus, as
 before.
 
 Drag the vertical divider between the columns to resize them; double-click it
-to return to auto-sizing the left column to whichever of the navigator or the
+to return to auto-sizing the left column to whichever of the explorer or the
 filter pane currently needs more room.
 
-The horizontal divider — the border between the navigator and the filter pane
+The horizontal divider — the border between the explorer and the filter pane
 below it — drags the same way, and sets how many rows the filter pane gets.
 Dragging it *up* makes the pane taller, since the pane is anchored to the
 bottom of the column and what moves is where it begins. Double-click it to go
-back to automatic sizing. Neither drag can squeeze the navigator out of
+back to automatic sizing. Neither drag can squeeze the explorer out of
 existence: it keeps three rows whatever you ask for.
 
 ### Configuring the keymap
@@ -468,7 +468,7 @@ one key or, for an action several keys reach today, a list:
 ```toml
 [keymap]
 'global.reload' = 'F5'
-'nav.up' = ['k', 'Up']
+'explorer.up' = ['k', 'Up']
 ```
 
 An entry replaces that action's keys entirely; any action the stanza does not
@@ -546,7 +546,7 @@ recon **refuses to start** when a key you wrote could never be reached:
 Every fault is reported together, so one run tells you everything to correct.
 
 recon **warns and carries on** when your line is obeyed and a default you never
-mentioned pays for it — say `'global.quit' = 'j'`, which costs `nav.down`,
+mentioned pays for it — say `'global.quit' = 'j'`, which costs `explorer.down`,
 `view.down` and `filters.down` their `j`. The warnings appear in a panel when
 recon starts, and any key closes it. Each one names the action that lost a key
 and says what it still answers to. Write a line for that action, with another
@@ -768,7 +768,7 @@ file that it reads and each set that is hidden.
 #### The set picker
 
 `L` shows every known set on one screen, so you can choose which sets the
-filter pane lists without quitting recon. It opens from the navigator, the
+filter pane lists without quitting recon. It opens from the explorer, the
 file view and the filter pane — not from inside a prompt, where `L` is typed —
 and covers the panes, because the filter pane under it would not change while
 you toggle.
@@ -798,7 +798,7 @@ takes every key while it is open, so `q` does not quit from inside it.
 
 `/` finds a set when you remember only a word of its description. The pattern
 is a regex, as in every other `/`, and it matches the name or the description.
-As in the navigator, the search moves the selection as you type — to the first
+As in the explorer, the search moves the selection as you type — to the first
 matching row at or after the row where `/` opened — and colours the matching
 rows; it hides no row. Esc in the prompt goes back to that row, and Enter
 keeps the row the search reached. The picker keeps its own history for `Up`
@@ -850,7 +850,7 @@ applies a profile from the command line, the same as for any set. The set is
 always known to `--set`, table or no table: without one, `--set definitions`
 enables it with every filter off, like any set with no `default`.
 
-On a log file the rows exist and are inert. The navigator's file matching does
+On a log file the rows exist and are inert. The explorer's file matching does
 not evaluate definition filters — it reads text it never parses — so they
 affect only the viewed file. Turning one on costs one whole-file grammar pass,
 about ten microseconds a line, paid once per file; a file with no grammar
@@ -965,7 +965,7 @@ What the mode does and does not touch:
   shown; that sense promises "also show these" and keeps its promise.
 - The search (`/`) is not a term either: it is a motion over the visible
   lines, not a filter. `p` promotes it into one.
-- The navigator follows the same rule: a file is marked when one of its lines
+- The explorer follows the same rule: a file is marked when one of its lines
   matches every enabled including filter, in that first filter's colour. The
   cached scan re-answers the folder with no I/O, as any toggle does.
 
@@ -975,7 +975,7 @@ What the mode does and does not touch:
 The hide toggle survives loading another file, exactly as the filter set does
 — it describes how you are reading, not which file you are reading. That is
 what makes skimming work: set a filter, press `u`, then walk the
-navigator with `j`. Each file is drawn hidden, so the ones with no matches
+explorer with `j`. Each file is drawn hidden, so the ones with no matches
 come up blank and the ones worth opening are the ones with anything in them.
 
 Because the toggle survives file loads, it is easy to forget it is on — so
@@ -1023,7 +1023,7 @@ which one you are in: text already there means you are changing something, an
 empty prompt means you are making something new.
 
 Searching is by regular expression in both panes — the file view matches line
-contents, the navigator matches entry names, so `^foo` anchors to the start of
+contents, the explorer matches entry names, so `^foo` anchors to the start of
 a filename. Both move as you type, from the row where `/` opened. A pattern
 that does not compile yet, such as `foo(`, is silent while you type: nothing
 moves and nothing is highlighted. Enter on it reports `E486: invalid pattern`
@@ -1068,11 +1068,11 @@ is not typed into it, and a pasted carriage return commits it, exactly as
 `Enter` does.
 
 `b` and `e` are global window commands rather than vim word motions: the
-trade was deliberate, since returning to the navigator from a maximised file
+trade was deliberate, since returning to the explorer from a maximised file
 view is exactly when you need `e`. `w` still moves forward by word.
 
 `n` and `N` are handled globally, the same as `u`, so — like that key — they
-act on the file view from the filter pane as well; the navigator keeps its
+act on the file view from the filter pane as well; the explorer keeps its
 own `n`/`N`, described in the Shared motions table above. While a search is
 set, they step between its *hit* lines — the visible lines the pattern
 matches — one stop per line however many times it matches, wrapping within
@@ -1089,7 +1089,7 @@ cost two focus keys per file (`e n t`). With the crossing, the whole loop is
 This is vim's quickfix model (`:cnext`) and the shape of `grep -n` output. `j`/`k`
 stay bounded to the file, so "walk this file's hits" and "walk every hit
 everywhere" are both available. The crossing uses the filters' answer for each
-file and ignores the navigator's filename search: a filename hit with no
+file and ignores the explorer's filename search: a filename hit with no
 interesting lines has nowhere to land.
 
 The cursor keeps five rows of context between itself and the pane's top or
@@ -1114,12 +1114,12 @@ margin's edge like a held `j` would, in `config.toml`:
 center_jumps = false
 ```
 
-Navigator pane (`src/widgets/filenav.rs`) — its own verbs; the shared motions are tabled above:
+Explorer pane (`src/widgets/explorer.rs`) — its own verbs; the shared motions are tabled above:
 
 | Key(s) | Action | Name(s) |
 | --- | --- | --- |
-| `h` / `Left` | Go to the parent directory, landing on the directory just left | `nav.parent` |
-| `l` / `Right` | Open the selected entry — descend into a directory, or load a file and move the focus to the file view (`Enter` does the same) | `nav.open` |
+| `h` / `Left` | Go to the parent directory, landing on the directory just left | `explorer.parent` |
+| `l` / `Right` | Open the selected entry — descend into a directory, or load a file and move the focus to the file view (`Enter` does the same) | `explorer.open` |
 
 `h` and `l` act on the pane rather than on the row: `h` climbs out whatever is
 selected, and `l` is `Enter` in every case, including on a file. They mean
@@ -1131,16 +1131,16 @@ and `e`.
 in this pane: go one level deeper. For a directory, deeper is its contents; for
 a file, deeper is the file's own contents, which the file view draws. You can
 therefore find a file and read it with `h`, `j`, `k` and `l` alone. The
-navigator previews each entry as the cursor passes over it, so without the
+explorer previews each entry as the cursor passes over it, so without the
 focus moving, `l` on a file changed almost nothing on the screen.
 
 The two directions are not symmetrical. `h` in the file view scrolls the text
 left; it does not send the focus back. The file view needs `h` and `l` for long
 lines, and a key whose job changes at column 0 is both hard to learn and easy to
-trip. `Tab`, `Shift-Tab` and `e` are the ways back to the navigator.
+trip. `Tab`, `Shift-Tab` and `e` are the ways back to the explorer.
 
 A **mouse** click is the exception: one click on a file loads it and leaves the
-focus in the navigator. A click already moves the focus to the pane it lands in,
+focus in the explorer. A click already moves the focus to the pane it lands in,
 so a click that then threw the focus out again would be a click that lands
 somewhere else.
 
@@ -1194,9 +1194,9 @@ README.md           18.4K  2026-08-20 11:02
 ```
 
 It is a look-ahead, not a pane you act in. `l` (or `Enter`) on the selected
-directory makes that listing the navigator's own, which is the one keystroke
+directory makes that listing the explorer's own, which is the one keystroke
 between seeing and being there. `..` is deliberately absent — it is the
-navigator's way back out and nothing here could act on it.
+explorer's way back out and nothing here could act on it.
 
 A directory reports `-` for size: the number `stat` gives is the size of the
 directory file, not of what is in it. Times are local, resolved from the
@@ -1205,7 +1205,7 @@ numbering filenames says nothing; your `#` preference is untouched and applies
 again as soon as a file is selected. An empty directory reads
 `<empty directory>`, and one that cannot be read reports why.
 
-The metadata sits to the right of the name on purpose: when the navigator is
+The metadata sits to the right of the name on purpose: when the explorer is
 wide the view narrows, and a clipped row loses the time first, the size next,
 and the name last.
 
@@ -1217,7 +1217,7 @@ Filter pane (`src/widgets/filterlist.rs`), reached with `f` or `Tab` — the
 pane sizes to its contents, and with no filters defined it holds a single
 dimmed row reading `press f i to add` (shortened to `press f i`, then to
 `f i`, or dropped entirely, if the column is too narrow for it). It is on
-screen whenever the navigator is — its own verbs; the shared motions are
+screen whenever the explorer is — its own verbs; the shared motions are
 tabled above:
 
 | Key(s) | Action |
@@ -1241,23 +1241,23 @@ backspacing past the start does the same, so an edit can never leave an empty
 pattern behind. A pattern that will not compile reports `E486: invalid pattern`
 and leaves the prompt open over the intact filter, exactly as `i` does.
 
-### Three senses, and which files the navigator marks
+### Three senses, and which files the explorer marks
 
 Every numbered filter has a sense, shown in its row as `inc`, `ctx` or `exc`:
 
-| Sense | In the view | A stop for `n`? | Marks the file in the navigator? |
+| Sense | In the view | A stop for `n`? | Marks the file in the explorer? |
 | --- | --- | --- | --- |
 | `inc` — include | shows the line, in the filter's colour | **yes** | **yes** |
 | `ctx` — context | shows the line, in the filter's colour | no | no |
 | `exc` — exclude | removes the line | no | no |
 
 A context line is there to be read *around* a hit, not to be one: `n`/`N` step over it,
-`j`/`k` still walk it, and hide mode keeps it. That is the same rule the navigator uses to
+`j`/`k` still walk it, and hide mode keeps it. That is the same rule the explorer uses to
 mark files, so the two panes agree on what "interesting" means. Where an include filter and
 a context filter both match a line, the include filter's colour wins, which is again the
-navigator's colour for the file.
+explorer's colour for the file.
 
-With at least one include filter enabled, the navigator marks
+With at least one include filter enabled, the explorer marks
 each file: a name drawn in a filter's colour has at least one line that filter
 selected; a dimmed name has none; a plain name has not been scanned yet. In hide
 mode (`u`), non-matching files leave the listing the way non-matching lines
@@ -1296,7 +1296,7 @@ and recon has no undo, so no habit collides. The two old keys stay as aliases. T
 list motions (`g`/`G`, `Ctrl-d`/`Ctrl-u`, `PageUp`/`PageDown`) are the same in every
 list pane for the same reason `n` is: a key with one meaning is one you stop
 thinking about. `Esc` clears the focused pane's own search before the file search, so a
-navigator search you thought you had dismissed cannot keep driving `n`. And the
+explorer search you thought you had dismissed cannot keep driving `n`. And the
 digits toggle the filter the pane numbers, from anywhere, because switching a filter
 off to see what it was hiding is a loop action, not a setup one.
 
@@ -1308,7 +1308,7 @@ which is exactly what `f` and `F` used to do and the reason they moved.
 
 A chain that commits a prompt returns. `f i fn Enter` from the file view adds
 the filter, puts focus back in the view, and lands on the first `fn`, as if you
-had pressed `n`; from the navigator, focus returns and `n` runs there too —
+had pressed `n`; from the explorer, focus returns and `n` runs there too —
 which repeats a filename search if one is active, or otherwise steps to the
 next file the filters match once the scan has answered. Until it has, the
 status row says `scanning…` and the marks land on their own; if nothing
@@ -1320,9 +1320,9 @@ zoomed the filter pane after `f`, the return restores the split, because the
 origin pane has to be visible to take focus.
 
 A pane's verb pressed in the wrong pane is not silent. `i`, `x`, `c`, `d`, `m`,
-`a` or `s` in the navigator or the file view puts a one-line hint on the status
+`a` or `s` in the explorer or the file view puts a one-line hint on the status
 row — `i adds a filter · f i` — for one keypress; `h` and `l` in the filter pane
-do the same for the navigator. It is a hint rather than a redirect on purpose:
+do the same for the explorer. It is a hint rather than a redirect on purpose:
 making `i` global would make `f i` and `i` the same key, and the chain is the
 thing worth learning.
 
@@ -1344,7 +1344,7 @@ step by. `p` is what moves the pattern into the numbered set, where it gets a
 row like any other filter.
 
 The pane never widens the left column to fit its hint: the column is sized by
-the navigator's longest entry. The hint gives way instead, which is why it has
+the explorer's longest entry. The hint gives way instead, which is why it has
 a short form and can be dropped altogether.
 
 The left column has a floor when it sizes itself automatically, so entering a
@@ -1357,7 +1357,7 @@ whole width outright.
 The pane's *height* has a floor for the same reason, and it applies even with
 no filters defined: eight rows, so the pane you define filters in is visible
 before the first one exists rather than being a title and a hint wedged under
-the navigator. A larger set still gets the rows it asks for, up to half the
+the explorer. A larger set still gets the rows it asks for, up to half the
 column. Both bounds govern automatic sizing only — drag the horizontal divider
 and the pane is whatever height you left it at, down to a single row.
 
@@ -1428,8 +1428,8 @@ dir="$(recon --emit cwd)" && cd "$dir"           # where you ended up
 | `--emit` | Prints, on `q` | Summary on stderr |
 | --- | --- | --- |
 | `lines` | the file view's visible lines, verbatim, in the current mode — what the filters chose; a search does not affect it | `recon: emitted 812 lines of app.log, dim mode (27 match) — Ctrl-H to emit matches only` |
-| `files` | the navigator's listed files, one absolute path per line, in navigator order | `recon: emitted 14 files from /var/log, dim mode (3 match, 2 unscanned) — Ctrl-H to emit matches only` |
-| `cwd` | the directory the navigator is showing | `recon: emitted /var/log` |
+| `files` | the explorer's listed files, one absolute path per line, in explorer order | `recon: emitted 14 files from /var/log, dim mode (3 match, 2 unscanned) — Ctrl-H to emit matches only` |
+| `cwd` | the directory the explorer is showing | `recon: emitted /var/log` |
 
 **`q` emits, `Q` doesn't.** `Q` quits without printing and exits 1 when
 `--emit` was given, so an aborted browse never `cd`s anywhere and a pipeline
@@ -1440,7 +1440,7 @@ the file, every file in the listing; hide mode emits only the matches. The
 output cannot say which, so every emit prints one summary line to stderr
 naming the mode and the counts, and it reaches the terminal even when stdout is
 piped or captured. `dim mode (3 match)` when you wanted the three is the cue to
-press `Ctrl-H` and quit again. `unscanned` appears while the navigator's scan
+press `Ctrl-H` and quit again. `unscanned` appears while the explorer's scan
 is still running: those files might match. Empty output is legitimate — hide
 mode with no matches emits nothing and exits 0.
 
@@ -1493,7 +1493,7 @@ a terminal, `< /dev/null` forces it.
 
 **Inputs.** Each non-blank line of stdin is a path — what `ls -1` and `find`
 print. With nothing on stdin, a `PATH` directory means its files,
-non-recursive, in the navigator's order, and a `PATH` file means itself.
+non-recursive, in the explorer's order, and a `PATH` file means itself.
 
 **Flags.** `--set NAME` enables a saved set with its `default` profile;
 `--set NAME:PROFILE` applies another profile instead. Repeat it for several
@@ -1527,7 +1527,7 @@ TUI, with `pass --hide to emit matches only` in place of the key:
 A file that cannot be read is reported as it is met — `recon: cannot read
 /var/log/secure: permission denied`, `… is a directory`, and for `--emit
 lines` `… binary file` (`--emit files` scans a binary like any other file, as
-the navigator does) — and skipped: not emitted, not counted. The run
+the explorer does) — and skipped: not emitted, not counted. The run
 continues and exits **2**, grep's convention for an input that failed. Exit 0
 otherwise, empty output included; exit 1 for a refused flag or an unreadable
 `filters.toml`.
@@ -1539,7 +1539,7 @@ Not in the first version: ad-hoc patterns (`-i PATTERN`) and a search —
 
 `o` hands the selected file to your editor, opened at the line the cursor is on,
 with the **enclosing project** alongside it. It works from any pane — the file
-it means is whatever the view is showing, which already follows the navigator's
+it means is whatever the view is showing, which already follows the explorer's
 selection.
 
 The project is found by walking up from the file until a marker turns up:
@@ -1773,7 +1773,7 @@ and most VS Code and TextMate themes distribute. The newer
 The default is `ansi`, which names your terminal's own sixteen colours rather
 than fixed RGB values: keywords take the terminal's magenta, comments its
 green, and plain text its default foreground. That is the same choice the
-navigator's blue and green make — the result follows your terminal theme
+explorer's blue and green make — the result follows your terminal theme
 instead of fighting it, works on a light background as well as a dark one, and
 needs no truecolor support. `base16` is the same idea with a fixed foreground.
 Every other bundled theme paints 24-bit colour and expects a background it
@@ -1793,7 +1793,7 @@ in the focused pane is the usual reversed bar.
 
 A grammar's state at line N depends on every line before it, so a file cannot
 be coloured from the middle — and colouring a 10 MiB log whole would stall the
-navigator for seconds on every arrow key. recon colours only the lines about
+explorer for seconds on every arrow key. recon colours only the lines about
 to be drawn, continuing from where the parser stopped when you scroll and
 resyncing a short way above the target when you jump: `G` on a large file, or a
 filter showing lines thousands apart, restarts the grammar 64 lines above each
@@ -1808,10 +1808,10 @@ needs every line's answer at once — see *Definition filters*.
 
 ## Known Limitations
 
-- **The navigator's file matching covers at most 64 patterns**, counted across
+- **The explorer's file matching covers at most 64 patterns**, counted across
   every loaded set whether or not it is enabled — and the built-in
   `definitions` set's eleven are among them, so fifty-three are yours. Above
-  that the navigator's marking switches off — never wrong, just absent — while
+  that the explorer's marking switches off — never wrong, just absent — while
   the view keeps filtering. A `filters.toml` with many sets can reach this.
 - **Files are read entirely into memory — once, not twice.** `read_lines` in
   `src/widgets/fileview.rs` collects the whole file into a `Vec<String>`, and
@@ -1824,7 +1824,7 @@ needs every line's answer at once — see *Definition filters*.
   (`docs/specs/2026-08-22-windowed-textarea-viewport.md`, github issue #7),
   which takes that to ~1.5×. Replacing `Document`'s own copy with a line-offset
   index is the remaining half, github issue #51.
-- **Previews are bounded, full loads are not.** While the navigator has focus,
+- **Previews are bounded, full loads are not.** While the explorer has focus,
   only `PREVIEW_LINES` (50,000) lines or `MAX_PREVIEW_BYTES` (10 MiB) are read,
   whichever comes first. The full read happens once you focus the view.
 
@@ -1977,8 +1977,8 @@ Layout:
 | `src/document.rs` | The loaded file and its visible-line set |
 | `src/filter/mod.rs` | `ActiveFilters` — the filter stack, its evaluation and the palette |
 | `src/filter/sets.rs` | Filter sets: enable, solo, reset, adopt the scratch set |
-| `src/filter/matcher.rs` | `Matcher` — the snapshot the navigator's scan matches with |
-| `src/widgets/filenav.rs` | Directory navigator pane |
+| `src/filter/matcher.rs` | `Matcher` — the snapshot the explorer's scan matches with |
+| `src/widgets/explorer.rs` | Directory explorer pane |
 | `src/widgets/fileview.rs` | File view pane |
 | `src/widgets/filterlist.rs` | Filter list pane |
 | `tests/render_smoke.rs` | End-to-end render tests |

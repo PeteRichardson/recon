@@ -1,14 +1,14 @@
 //! The scan-side snapshot of the filter set: what a thread matching whole
-//! files in the navigator needs from [`ActiveFilters`], and nothing more.
+//! files in the explorer needs from [`ActiveFilters`], and nothing more.
 
 use super::{ActiveFilters, Combine, Sense};
 use regex::RegexSet;
 
-/// The bitset width. Up to 64 patterns in total; past this the navigator's
+/// The bitset width. Up to 64 patterns in total; past this the explorer's
 /// file matching switches off rather than shifting out of range.
 const MAX_PATTERNS: usize = 64;
 
-/// Which filter selected a file, for its colour in the navigator: the
+/// Which filter selected a file, for its colour in the explorer: the
 /// filter's index. The lowest index wins — the view's "first matching filter
 /// wins", applied per file.
 ///
@@ -195,7 +195,7 @@ mod tests {
 
     // ---- the matcher snapshot --------------------------------------------
 
-    /// The invariant the navigator rests on, stated the way the spec states
+    /// The invariant the explorer rests on, stated the way the spec states
     /// it: a line selects its file when an enabled `Include` filter hits it
     /// and no enabled `Exclude` does. Deliberately *not*
     /// derived from `verdict`'s index — that is a colouring rule (first match
@@ -260,7 +260,7 @@ mod tests {
             set.verdict("beta delta", KindSet::EMPTY),
             Verdict::Included(2),
             "the include filter outranks the context one, so the view's colour \
-             is the navigator's"
+             is the explorer's"
         );
         assert_eq!(matcher.owner(matcher.bits("alpha delta")), Some(0));
     }

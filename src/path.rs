@@ -1,12 +1,12 @@
 //! One rule for turning a user-supplied path into an absolute one.
 //!
-//! recon resolves paths in three places — the navigator's `set_dir`, the
+//! recon resolves paths in three places — the explorer's `set_dir`, the
 //! editor's `project_root`, and `open_in_editor` — and they used to disagree
 //! (#78). Two called `std::path::absolute` and documented at length why
 //! *not* to resolve symlinks; the third called `fs::canonicalize`, which
 //! resolves them. The disagreement was reachable: navigate into a symlinked
-//! directory with `l` and the navigator had already resolved it, so `o` opened
-//! the link target — a path the navigator never showed.
+//! directory with `l` and the explorer had already resolved it, so `o` opened
+//! the link target — a path the explorer never showed.
 //!
 //! The rule is now this function, at all three sites.
 
@@ -17,8 +17,8 @@ use std::path::{Component, Path, PathBuf};
 ///
 /// Two jobs, and it is worth being clear that they are separate.
 ///
-/// **Absolutising** is what the navigator actually needed from
-/// `fs::canonicalize`. `FileNav::go_to_parent` climbs with `Path::parent`,
+/// **Absolutising** is what the explorer actually needed from
+/// `fs::canonicalize`. `Explorer::go_to_parent` climbs with `Path::parent`,
 /// which on a bare `.` returns `None` — so without this, launching recon with
 /// no argument left the user unable to climb out of the directory they started
 /// in.
@@ -26,7 +26,7 @@ use std::path::{Component, Path, PathBuf};
 /// **Collapsing** is what has to be added back, because `std::path::absolute`
 /// deliberately keeps `..` — resolving it lexically is wrong in general, since
 /// `a/link/..` is `a` only when `link` is a real directory. That generality is
-/// exactly what recon does not want: the navigator's contract is that it shows
+/// exactly what recon does not want: the explorer's contract is that it shows
 /// the path you walked, so `recon ..` should title itself with the parent
 /// directory rather than `/where/you/were/..`, and climbing out of *that*
 /// should not land you back where you started.
@@ -99,7 +99,7 @@ mod tests {
         assert_eq!(lexical_absolute(Path::new("/")), Path::new("/"));
     }
 
-    /// The job `fs::canonicalize` was really doing for the navigator: without
+    /// The job `fs::canonicalize` was really doing for the explorer: without
     /// an absolute path, `Path::parent` on `.` is `None` and `go_to_parent`
     /// cannot climb at all.
     #[test]
@@ -126,7 +126,7 @@ mod tests {
     }
 
     /// The whole point of #78: this must **not** resolve symlinks, so the
-    /// navigator keeps showing the path the user walked and `open_in_editor`
+    /// explorer keeps showing the path the user walked and `open_in_editor`
     /// opens that same path.
     #[cfg(unix)]
     #[test]

@@ -47,7 +47,7 @@ const HIDE_BADGE_STYLE: Style = Style::new()
 /// The badge saying the file on screen is not the file on disk (#119).
 ///
 /// Raised by `poll_stamps` when the *active* file's stamp moves, cleared by
-/// reloading. The navigator's answer for that file updates on its own; the
+/// reloading. The explorer's answer for that file updates on its own; the
 /// view does not reload on its own. That is a real inconsistency between the
 /// panes, and the badge exists so it is never a silent one: one key resolves
 /// it.
@@ -136,7 +136,7 @@ enum PromptKind {
 ///
 /// A search is a motion, not a filter (ADR 0001). It lives here, on the
 /// `App`, and not in the `ActiveFilters`: it never changes which lines are
-/// visible, does not dim, marks no file in the navigator, does not answer to
+/// visible, does not dim, marks no file in the explorer, does not answer to
 /// `!` or `u`, and is not saved with a filter set. What it does is move the
 /// cursor to its next hit among the visible lines and highlight the hits in
 /// the window.
@@ -180,8 +180,8 @@ impl Search {
 enum Origin {
     /// `/` over the file view or the filter pane, which forwards it.
     View(ViewOrigin),
-    /// `/` over the navigator (#272).
-    Nav(NavOrigin),
+    /// `/` over the explorer (#272).
+    Explorer(ExplorerOrigin),
     /// `/` in the set picker (#285).
     Sets(SetsOrigin),
 }
@@ -201,10 +201,10 @@ struct ViewOrigin {
     search: Option<Search>,
 }
 
-/// The navigator's selected row, and the filename search that was set at
+/// The explorer's selected row, and the filename search that was set at
 /// the time.
 #[derive(Debug, Clone)]
-struct NavOrigin {
+struct ExplorerOrigin {
     /// The selected row as an `entries` index, which a scan answer that
     /// re-lists the rows in hide mode cannot move; the row it is on can.
     entry: usize,
@@ -228,7 +228,7 @@ const HISTORY_CAP: usize = 50;
 /// (#274), so a near-miss regex is recalled and corrected rather than
 /// retyped.
 ///
-/// One per prompt kind that has one: the file search, the navigator's
+/// One per prompt kind that has one: the file search, the explorer's
 /// filename search and the set picker's search (#285) keep separate
 /// histories, because a filename pattern offered in the file prompt is
 /// noise. In memory only, so a session starts
@@ -465,10 +465,10 @@ use clipboard::Clipboard;
 use document::{Document, Mode};
 use editor::Launcher;
 use filter::ActiveFilters;
-use layout::{Divider, FilterHeight, NavWidth};
+use layout::{Divider, ExplorerWidth, FilterHeight};
 use viewport::Step;
-use widgets::filenav::FileNav;
-use widgets::filenav::Match;
+use widgets::explorer::Explorer;
+use widgets::explorer::Match;
 use widgets::fileview::FileView;
 use widgets::filterlist::FilterList;
 use widgets::{Action, FilterCommand, Focus};
@@ -485,12 +485,12 @@ pub struct App<'a> {
     /// paying a linear scan and an `unwrap_or` fallback for a case that could
     /// not happen. Named fields make the invariant unrepresentable instead of
     /// merely checked, and the scans become field reads.
-    nav: FileNav<'a>,
+    explorer: Explorer<'a>,
     view: FileView<'a>,
     filters_pane: FilterList,
     /// Which pane has focus, replacing an index into the old vec.
     focus: Focus,
-    nav_width: NavWidth,
+    explorer_width: ExplorerWidth,
     /// Boundary column from the last render, for hit-testing mouse events that
     /// arrive before the next frame.
     divider: u16,
@@ -506,7 +506,7 @@ pub struct App<'a> {
     /// The other two panes' rectangles from the last render, kept for the
     /// same reason as `filter_area`: a click is hit-tested against the frame
     /// the user was looking at when they clicked (#58).
-    nav_area: Rect,
+    explorer_area: Rect,
     view_area: Rect,
     /// Everything above the status row — the one rectangle a zoomed pane
     /// fills, since the three above are meaningless while one pane has the
@@ -521,10 +521,10 @@ pub struct App<'a> {
     /// one divider followed quickly by a click on the other reads as a
     /// double-click and resets a pane the user never aimed at.
     last_divider_click: Option<(Divider, Instant)>,
-    /// The last click on a navigator row, by visible-row index. Two on the
+    /// The last click on an explorer row, by visible-row index. Two on the
     /// same row inside `DOUBLE_CLICK` open a directory; the row is part of
     /// the record for the same reason the divider's axis is above.
-    last_nav_click: Option<(usize, Instant)>,
+    last_explorer_click: Option<(usize, Instant)>,
     /// Open while a search pattern, a filter pattern or a set name is being
     /// typed.
     prompt: Option<SearchPrompt>,
@@ -532,10 +532,10 @@ pub struct App<'a> {
     /// `p` turns it into a filter. It outlives a file load.
     search: Option<Search>,
     /// The patterns Enter committed in the file view's `/` prompt, for
-    /// Up and Down in the next one (#274). The navigator's is separate.
+    /// Up and Down in the next one (#274). The explorer's is separate.
     search_history: History,
-    /// The patterns Enter committed in the navigator's `/` prompt.
-    nav_search_history: History,
+    /// The patterns Enter committed in the explorer's `/` prompt.
+    explorer_search_history: History,
     /// The patterns Enter committed in the set picker's `/` prompt (#285).
     sets_search_history: History,
     filters: ActiveFilters,
@@ -632,7 +632,7 @@ pub struct App<'a> {
     /// selection from. `None` once released.
     press: Option<(usize, usize)>,
     /// The last click on the view's text, by source line, for the
-    /// double-click that selects a word — timed here as `last_nav_click` is.
+    /// double-click that selects a word — timed here as `last_explorer_click` is.
     last_view_click: Option<(usize, Instant)>,
     /// Set when a prompt commits, so the `Enter` that committed it cannot also
     /// toggle the filter under the cursor (#48).
@@ -680,7 +680,7 @@ pub struct App<'a> {
     /// `None` when the environment names no home. A field rather than a
     /// call at save time so tests can point it at a fixture.
     save_path: Option<std::path::PathBuf>,
-    /// Runs the navigator's file scans (#119). A `Box<dyn Scan>` for the same
+    /// Runs the explorer's file scans (#119). A `Box<dyn Scan>` for the same
     /// reason `launcher` is: tests swap in a recording double.
     scanner: Box<dyn scan::Scan>,
     /// Where the scanner's results arrive. Drained on the render tick by
@@ -808,7 +808,7 @@ enum AppState {
 impl App<'_> {
     #[must_use]
     pub fn new(config: &Config) -> Self {
-        // Absolute from here on, which is the rule the navigator, the scan
+        // Absolute from here on, which is the rule the explorer, the scan
         // cache and `check_stamps` already share. Held as typed, the
         // argument was a second spelling of one path: `check_stamps`
         // compared `path == active` against `dir.join(name)` and never
@@ -817,24 +817,24 @@ impl App<'_> {
         // `app.log` to the full path after the first navigation (#157).
         let argument = crate::path::lexical_absolute(std::path::Path::new(&config.path));
         let argument = argument.as_path();
-        let mut nav = FileNav::new(config.path.clone());
-        nav.set_background(config.background());
+        let mut explorer = Explorer::new(config.path.clone());
+        explorer.set_background(config.background());
         let mut view = FileView::default();
         // Before the load, not after: `load` looks up the file's grammar, and
         // `set_theme` after it would look it up a second time (#186). Here
         // there is nothing shown yet, so this costs nothing.
         view.set_theme(config.syntax_theme());
 
-        match nav.selected_path() {
+        match explorer.selected_path() {
             // A directory argument *selects* an entry rather than being
             // handed one, so it is previewed — bounded by `PREVIEW_LINES` —
             // exactly as arrowing onto it would be. Loading it in full would
             // read a whole log at startup merely because it sorts first,
             // which is the cost the preview mechanism exists to avoid.
             Some(selected) if argument.is_dir() => view.preview(&selected),
-            // A file argument loads the argument itself, not the navigator's
+            // A file argument loads the argument itself, not the explorer's
             // selection. They are the same path when the file exists; when it
-            // does not, the navigator falls back to the first entry, and
+            // does not, the explorer falls back to the first entry, and
             // loading *that* would silently open some other file in response
             // to a typo. Reporting the argument is what recon already does.
             _ => view.load(argument),
@@ -870,25 +870,25 @@ impl App<'_> {
 
         let mut app = Self {
             state: AppState::Running,
-            nav,
+            explorer,
             view,
             filters_pane: FilterList::default(),
-            focus: Focus::Nav,
-            nav_width: NavWidth::Auto,
+            focus: Focus::Explorer,
+            explorer_width: ExplorerWidth::Auto,
             divider: 0,
             filter_height: FilterHeight::Auto,
             filter_area: Rect::ZERO,
-            nav_area: Rect::ZERO,
+            explorer_area: Rect::ZERO,
             view_area: Rect::ZERO,
             panes_area: Rect::ZERO,
             status_area: Rect::ZERO,
             dragging: None,
             last_divider_click: None,
-            last_nav_click: None,
+            last_explorer_click: None,
             prompt: None,
             search: None,
             search_history: History::default(),
-            nav_search_history: History::default(),
+            explorer_search_history: History::default(),
             sets_search_history: History::default(),
             filters,
             document: Document::default(),
@@ -1007,7 +1007,7 @@ impl App<'_> {
                         // wrap it reported while typing went with the
                         // keystroke, so say it again if the hit is above
                         // where `/` opened: the jump upward was real. The
-                        // navigator's search never reported a wrap and
+                        // explorer's search never reported a wrap and
                         // still does not: its `n` is silent about one too.
                         if let Some(Origin::View(origin)) = origin
                             && self.search.is_some()
@@ -1061,7 +1061,7 @@ impl App<'_> {
                 // `resolve(Scope::Prompt, ..)` only ever answers with one of
                 // the arms above — see `DEFAULT`'s `Scope::Prompt` rows — so
                 // this is unreached today. Not a wildcard omitted by
-                // accident: matched explicitly, like `FileNav::perform`'s
+                // accident: matched explicitly, like `Explorer::perform`'s
                 // trailing arm, so a scope neither of us wired stays inert
                 // instead of panicking a user's terminal.
                 _ => {}
@@ -1149,11 +1149,11 @@ impl App<'_> {
 
     /// The history a `/` prompt with this origin reads and feeds: the file
     /// search's for the view (and the filter pane, which forwards `/` to
-    /// it), the filename search's for the navigator.
+    /// it), the filename search's for the explorer.
     fn history_for(&mut self, origin: &Origin) -> &mut History {
         match origin {
             Origin::View(_) => &mut self.search_history,
-            Origin::Nav(_) => &mut self.nav_search_history,
+            Origin::Explorer(_) => &mut self.explorer_search_history,
             Origin::Sets(_) => &mut self.sets_search_history,
         }
     }
@@ -1162,7 +1162,7 @@ impl App<'_> {
     fn history_for_ref(&self, origin: &Origin) -> &History {
         match origin {
             Origin::View(_) => &self.search_history,
-            Origin::Nav(_) => &self.nav_search_history,
+            Origin::Explorer(_) => &self.explorer_search_history,
             Origin::Sets(_) => &self.sets_search_history,
         }
     }
@@ -1170,7 +1170,7 @@ impl App<'_> {
     /// Close the prompt without committing, and put back the origin if the
     /// prompt had one: the cursor, the scroll, and the search that was set
     /// before `/` opened — so the highlight the probe painted goes with it.
-    /// In the navigator, the selected row, the preview it had, and the
+    /// In the explorer, the selected row, the preview it had, and the
     /// filename search that was set.
     fn cancel_prompt(&mut self) {
         let origin = self.prompt.take().and_then(|prompt| prompt.origin);
@@ -1180,9 +1180,9 @@ impl App<'_> {
                 self.search.clone_from(&origin.search);
                 self.restore_origin(&origin);
             }
-            Some(Origin::Nav(origin)) => {
-                self.nav.set_search(origin.search);
-                self.move_nav_to(origin.entry);
+            Some(Origin::Explorer(origin)) => {
+                self.explorer.set_search(origin.search);
+                self.move_explorer_to(origin.entry);
             }
             Some(Origin::Sets(origin)) => {
                 if let Some(picker) = self.set_picker.as_mut() {
@@ -1210,25 +1210,25 @@ impl App<'_> {
         self.view.set_cursor_col(origin.col);
     }
 
-    /// Move the navigator's selection to `entry` and preview it, as a `j`
+    /// Move the explorer's selection to `entry` and preview it, as a `j`
     /// onto that row would — the view pane follows a filename search the
     /// same way it follows the cursor keys. Nothing when the selection is
     /// already there, so a probe that stays put does not reload the pane.
-    fn move_nav_to(&mut self, entry: usize) {
-        if let Some(action) = self.nav.go_to_entry(entry) {
+    fn move_explorer_to(&mut self, entry: usize) {
+        if let Some(action) = self.explorer.go_to_entry(entry) {
             self.perform_widget_action(action);
         }
     }
 
     /// The origin for a `/` opened now, in the pane that has focus: the
-    /// navigator's selected row and its filename search, or the file view's
+    /// explorer's selected row and its filename search, or the file view's
     /// cursor and the search that is set. The filter pane forwards `/` to
     /// the view, so its origin is the view's.
     fn capture_origin(&self) -> Origin {
         match self.focus {
-            Focus::Nav => Origin::Nav(NavOrigin {
-                entry: self.nav.selected_entry().unwrap_or(0),
-                search: self.nav.search_matcher(),
+            Focus::Explorer => Origin::Explorer(ExplorerOrigin {
+                entry: self.explorer.selected_entry().unwrap_or(0),
+                search: self.explorer.search_matcher(),
             }),
             Focus::View | Focus::Filters => Origin::View(ViewOrigin {
                 row: self.view.cursor_visible_row(),
@@ -1242,7 +1242,7 @@ impl App<'_> {
     /// The search moves as it is typed: run it from the origin for the
     /// pattern the prompt holds now, and move to the first hit at or after
     /// the origin — the cursor to a line, with the window's hits
-    /// highlighted, or the navigator's selection to an entry, with the
+    /// highlighted, or the explorer's selection to an entry, with the
     /// matching names restyled and the view pane previewing it.
     ///
     /// Always from the origin, never from where the last keystroke landed:
@@ -1264,7 +1264,7 @@ impl App<'_> {
         let pattern = prompt.pattern.clone();
         match origin {
             Origin::View(origin) => self.rescan_view_from(&origin, &pattern),
-            Origin::Nav(origin) => self.rescan_nav_from(&origin, &pattern),
+            Origin::Explorer(origin) => self.rescan_explorer_from(&origin, &pattern),
             Origin::Sets(origin) => self.rescan_sets_from(&origin, &pattern),
         }
     }
@@ -1294,23 +1294,23 @@ impl App<'_> {
         }
     }
 
-    /// `rescan_from_origin` for the navigator (#272): the filename search
+    /// `rescan_from_origin` for the explorer (#272): the filename search
     /// is set so the matching names light up, and the selection goes to
     /// the first of them at or after the origin row, or back to the origin
     /// row when there is none — or nothing to look for yet.
-    fn rescan_nav_from(&mut self, origin: &NavOrigin, pattern: &str) {
+    fn rescan_explorer_from(&mut self, origin: &ExplorerOrigin, pattern: &str) {
         let matcher = if pattern.is_empty() {
             None
         } else {
             regex::Regex::new(pattern).ok()
         };
-        self.nav.set_search(matcher);
-        let entry = self.nav.hit_from(origin.entry).unwrap_or(origin.entry);
-        self.move_nav_to(entry);
+        self.explorer.set_search(matcher);
+        let entry = self.explorer.hit_from(origin.entry).unwrap_or(origin.entry);
+        self.move_explorer_to(entry);
     }
 
     /// `rescan_from_origin` for the set picker (#285): the same as the
-    /// navigator's, over the picker's rows.
+    /// explorer's, over the picker's rows.
     fn rescan_sets_from(&mut self, origin: &SetsOrigin, pattern: &str) {
         let search = if pattern.is_empty() {
             None
@@ -1326,12 +1326,12 @@ impl App<'_> {
     /// Run a committed `/` pattern against whichever pane has focus, or
     /// against the set picker when the prompt opened over it.
     ///
-    /// In the navigator, Enter sets the filename search and keeps the row
+    /// In the explorer, Enter sets the filename search and keeps the row
     /// the typing reached, so `n`/`N` repeat it from there. In the file
     /// view and the filter pane, `/` sets the search and moves to its first
     /// hit.
     fn run_search(&mut self, pattern: &str) -> Result<(), regex::Error> {
-        // The set picker: as the navigator, nothing moves on Enter, and a
+        // The set picker: as the explorer, nothing moves on Enter, and a
         // pattern no row matches is reported.
         if let Some(Origin::Sets(origin)) = self
             .prompt
@@ -1351,7 +1351,7 @@ impl App<'_> {
             return Ok(());
         }
         match self.focus {
-            Focus::Nav => {
+            Focus::Explorer => {
                 // Nothing moves: the typing already did. What Enter adds is
                 // the report. A pattern no name matches used to close the
                 // prompt with nothing moved and nothing said, which a user
@@ -1365,11 +1365,11 @@ impl App<'_> {
                     .as_ref()
                     .and_then(|prompt| prompt.origin.as_ref())
                 {
-                    Some(Origin::Nav(origin)) => origin.entry,
-                    _ => self.nav.selected_entry().unwrap_or(0),
+                    Some(Origin::Explorer(origin)) => origin.entry,
+                    _ => self.explorer.selected_entry().unwrap_or(0),
                 };
-                self.nav.set_search(Some(matcher));
-                if self.nav.hit_from(from).is_none() {
+                self.explorer.set_search(Some(matcher));
+                if self.explorer.hit_from(from).is_none() {
                     self.report(&format!("no filenames match \"{pattern}\""), false);
                 }
                 Ok(())
@@ -1551,10 +1551,10 @@ impl App<'_> {
 
     /// The one place the mode is set. `Ctrl-H`/`H` is one key with one meaning
     /// in both panes: non-matching *lines* dim or hide in the view, and
-    /// non-matching *files* dim or hide in the navigator (#119).
+    /// non-matching *files* dim or hide in the explorer (#119).
     fn set_mode(&mut self, mode: Mode) {
         self.document.set_mode(mode);
-        self.nav.set_mode(mode);
+        self.explorer.set_mode(mode);
     }
 
     /// Flip between dimming unmatched lines and hiding them.
@@ -1642,7 +1642,7 @@ impl App<'_> {
     /// Put the filters back before a jump that leaves the peeked file.
     ///
     /// The peek disabled every filter, and the scan that answers "which
-    /// files match" was told so: every navigator entry is `Match::Unknown`
+    /// files match" was told so: every explorer entry is `Match::Unknown`
     /// until `refresh_scan` runs again — which is normally after this
     /// keypress is dispatched, too late for a cross-file step made now. So
     /// the scan is refreshed here, and the answers come straight back from
@@ -1655,7 +1655,7 @@ impl App<'_> {
     /// `toggle_peek` just above turns `matcher()` from `None` back into
     /// `Some(_)`, so the state computed here differs from the one recorded
     /// while peeked and the guard lets the scan through. Without that
-    /// difference `refresh_scan(false)` would be a no-op and the navigator's
+    /// difference `refresh_scan(false)` would be a no-op and the explorer's
     /// answers would still read `Match::Unknown` for this step.
     fn restore_peek_before_moving(&mut self) {
         if self.peek.is_none() {
@@ -1678,7 +1678,7 @@ impl App<'_> {
     /// terminal nobody was touching (#85). ratatui diffs the cell buffer, so
     /// the *writes* stayed small and the cost was invisible — but the render
     /// tree is not diffed away, and every one of those passes still rebuilt
-    /// the navigator's `List`, every `Entry::display()` string, and every
+    /// the explorer's `List`, every `Entry::display()` string, and every
     /// filter row. For a log viewer that sits open on a desk all day that is
     /// the difference between idling at 0% and idling at a few percent.
     pub fn run<B>(mut self, mut terminal: Terminal<B>) -> Result<emit::Exit>
@@ -1771,24 +1771,24 @@ impl App<'_> {
         }
     }
 
-    /// `--emit files`: the navigator's listed files as absolute paths. Hide
+    /// `--emit files`: the explorer's listed files as absolute paths. Hide
     /// mode has already dropped the non-matching rows, so the list is the
     /// matches; dim mode lists every file and the summary says how many
     /// match, and how many the scan has not answered yet.
     ///
-    /// The counting branch follows what the navigator can answer, not
+    /// The counting branch follows what the explorer can answer, not
     /// whether any filter is switched on: `matcher()` is `None` both with no
     /// including filter enabled (an exclude-only set, or none at all) and
     /// above `MAX_PATTERNS`, and in both states `refresh_scan` never runs, so
     /// every file sits at `Match::Unknown` and a "0 match, N unscanned" line
     /// would describe a scan that will never happen.
     fn collect_files(&self) -> emit::Exit {
-        let listed = self.nav.listed_files();
+        let listed = self.explorer.listed_files();
         let lines = listed
             .iter()
             .map(|file| emit::path_bytes(&file.path))
             .collect();
-        let dir = self.nav.dir().display();
+        let dir = self.explorer.dir().display();
         let count = listed.len();
         let summary = if self.filters.is_scanning() {
             match self.document.mode() {
@@ -1820,9 +1820,9 @@ impl App<'_> {
         }
     }
 
-    /// `--emit cwd`: the directory the navigator is showing, one line.
+    /// `--emit cwd`: the directory the explorer is showing, one line.
     fn collect_cwd(&self) -> emit::Exit {
-        let dir = self.nav.dir();
+        let dir = self.explorer.dir();
         emit::Exit::Emit {
             lines: vec![emit::path_bytes(dir)],
             summary: format!("recon: emitted {}", dir.display()),
@@ -1858,7 +1858,7 @@ impl App<'_> {
         Ok(drained)
     }
 
-    /// Dispatch a single event, then let the navigator's scan catch up.
+    /// Dispatch a single event, then let the explorer's scan catch up.
     ///
     /// Split out from the polling loop so that it can be driven directly. The
     /// one thing added around `dispatch_event` is `refresh_scan`: the dispatch
@@ -2023,7 +2023,7 @@ impl App<'_> {
                 // redirect: making `i` global would collapse `f i` and `i`,
                 // and `x`-not-`e` for exclude exists because `e` is a focus
                 // key. The chain stays the answer; the hint teaches it.
-                // These seven letters are unbound in the navigator and the
+                // These seven letters are unbound in the explorer and the
                 // file view, so this arm shadows nothing.
                 //
                 // Not resolved through the table (#199): these are guidance,
@@ -2103,7 +2103,7 @@ impl App<'_> {
         // character alone (`..` on the modifier fields) — so an unbound
         // *modified* key, `Alt-j` for instance, reached the file view and
         // moved the cursor as if the modifier were never pressed, forcing a
-        // truncated preview to a full load on the way in. The navigator and
+        // truncated preview to a full load on the way in. The explorer and
         // the filter pane never had that gap: both resolve through their own
         // scope and drop an unresolved key rather than forwarding the raw
         // event (`Scope::for_focus` below; `handle_filter_key`). The view
@@ -2131,10 +2131,10 @@ impl App<'_> {
         // `perform` — resync here instead, without re-reading the file.
         let was_truncated = self.file_view_truncated();
         let action = match self.focus {
-            Focus::Nav => {
+            Focus::Explorer => {
                 // The only call site `Scope::for_focus` has (#199): the
-                // navigator's key resolves in its own scope here, then
-                // `FileNav::perform` carries out whatever it named.
+                // explorer's key resolves in its own scope here, then
+                // `Explorer::perform` carries out whatever it named.
                 let resolved = match event {
                     event::Event::Key(key) => {
                         let pressed = crate::keymap::normalise(key);
@@ -2152,9 +2152,12 @@ impl App<'_> {
                 // gated on the action rather than on the result.
                 let is_step_key = matches!(
                     resolved,
-                    Some(crate::keymap::ActionId::NavHitNext | crate::keymap::ActionId::NavHitPrev)
+                    Some(
+                        crate::keymap::ActionId::ExplorerHitNext
+                            | crate::keymap::ActionId::ExplorerHitPrev
+                    )
                 );
-                let action = resolved.and_then(|action| self.nav.perform(action));
+                let action = resolved.and_then(|action| self.explorer.perform(action));
                 if action.is_none() && is_step_key {
                     // "No matching file" is a claim about every file, and
                     // it is false while the worker is still out (#158):
@@ -2165,9 +2168,9 @@ impl App<'_> {
                     // With no matcher there is no worker and the marks
                     // stay `Unknown` for good, so that case keeps the
                     // plain answer.
-                    let text = if self.nav.has_search() {
+                    let text = if self.explorer.has_search() {
                         "no more matches"
-                    } else if self.filters.is_scanning() && self.nav.any_unscanned() {
+                    } else if self.filters.is_scanning() && self.explorer.any_unscanned() {
                         "scanning…"
                     } else {
                         "no matching file"
@@ -2203,7 +2206,7 @@ impl App<'_> {
     /// Before this, the same behaviour was reachable from up to four `match`
     /// arms in different files, which is the drift #199 describes.
     ///
-    /// `Scope::Global` and `Scope::View` resolve into this. `Nav`, `Filters`,
+    /// `Scope::Global` and `Scope::View` resolve into this. `Explorer`, `Filters`,
     /// `Prompt` and `Picker` never do — each resolves at its own call site
     /// and is carried out there or by its widget's own `perform`, never
     /// through here. Every variant that can never reach this function is
@@ -2229,7 +2232,7 @@ impl App<'_> {
             A::GlobalQuitSilent => self.state = AppState::Quit { emit: false },
             A::GlobalFocusNext => self.focus_next(),
             A::GlobalFocusPrev => self.focus_prev(),
-            A::GlobalFocusNav => self.reveal_and_focus(Focus::Nav),
+            A::GlobalFocusExplorer => self.reveal_and_focus(Focus::Explorer),
             A::GlobalFocusView => self.reveal_and_focus(Focus::View),
             // A second `f` while the pane already has focus is the sticky
             // gesture: the user is staying, so no chain to return to.
@@ -2270,7 +2273,7 @@ impl App<'_> {
                 }
             }
             A::GlobalSearchWord => {
-                if self.focus == Focus::Nav {
+                if self.focus == Focus::Explorer {
                     if let Some(hint) = self.keymap.hint_for(
                         A::GlobalSearchWord,
                         "searches the word under the cursor",
@@ -2309,7 +2312,7 @@ impl App<'_> {
                 // highlight with it, which `apply_view` paints from
                 // `self.search`; nothing is re-evaluated, since a search
                 // never changed a verdict.
-                if self.focus == Focus::Nav && self.nav.clear_search() {
+                if self.focus == Focus::Explorer && self.explorer.clear_search() {
                     return;
                 }
                 if self.search.take().is_some() {
@@ -2384,9 +2387,9 @@ impl App<'_> {
                 self.open_in_editor(&template, EditorScope::File);
             }
             A::GlobalReload => {
-                self.nav.reload();
+                self.explorer.reload();
                 // `r` is the one place the listing is stat'd on this thread:
-                // it is asked for, and `nav.reload` has just read the
+                // it is asked for, and `explorer.reload` has just read the
                 // directory here anyway. `refresh_scan` trusts its records
                 // (#156), so without this a change would wait for the poll.
                 self.check_stamps();
@@ -2394,7 +2397,7 @@ impl App<'_> {
                 self.reload_active_file();
             }
             // `v`/`V` start, switch or end a selection; from any pane but the
-            // view they hint instead, as `*` does from the navigator (#67,
+            // view they hint instead, as `*` does from the explorer (#67,
             // #120 §9) — there is no cursor column there to anchor to.
             A::GlobalVisualChar | A::GlobalVisualLine => {
                 if self.focus == Focus::View {
@@ -2511,9 +2514,9 @@ impl App<'_> {
             // task that gives it a real arm, so a variant left behind after
             // that task lands is a build error rather than a silent no-op.
             //
-            // Task 6 gave the navigator and filter-pane scopes their real
-            // arms, but neither lives here: `Scope::Nav` resolves at the
-            // per-focus dispatch and is carried out by `FileNav::perform`,
+            // Task 6 gave the explorer and filter-pane scopes their real
+            // arms, but neither lives here: `Scope::Explorer` resolves at the
+            // per-focus dispatch and is carried out by `Explorer::perform`,
             // and `Scope::Filters` resolves inside `handle_filter_key` and
             // is carried out there or by `FilterList::perform`. Neither call
             // site routes its result through this function, so no code path
@@ -2526,18 +2529,18 @@ impl App<'_> {
             // programmer error, so it must not crash the TUI. `debug_assert!`
             // still catches a programmer error loudly in tests and debug
             // builds; a release binary just does nothing.
-            A::NavUp
-            | A::NavDown
-            | A::NavParent
-            | A::NavOpen
-            | A::NavGotoStart
-            | A::NavGotoEnd
-            | A::NavHalfPageDown
-            | A::NavHalfPageUp
-            | A::NavPageDown
-            | A::NavPageUp
-            | A::NavHitNext
-            | A::NavHitPrev
+            A::ExplorerUp
+            | A::ExplorerDown
+            | A::ExplorerParent
+            | A::ExplorerOpen
+            | A::ExplorerGotoStart
+            | A::ExplorerGotoEnd
+            | A::ExplorerHalfPageDown
+            | A::ExplorerHalfPageUp
+            | A::ExplorerPageDown
+            | A::ExplorerPageUp
+            | A::ExplorerHitNext
+            | A::ExplorerHitPrev
             | A::FiltersUp
             | A::FiltersDown
             | A::FiltersGotoStart
@@ -2724,7 +2727,7 @@ impl App<'_> {
     }
 
     /// Select, load and land in the next (previous) file the filters
-    /// selected. `false` when there is no *other* such file — the navigator
+    /// selected. `false` when there is no *other* such file — the explorer
     /// wraps, so "the only match is the one we are in" comes back as an
     /// unchanged selection rather than `None`.
     ///
@@ -2733,11 +2736,11 @@ impl App<'_> {
     /// accent on the view's title. Log files look alike, and a step that
     /// silently changed which one is on screen would be worse than no step.
     fn cross_file(&mut self, backwards: bool) -> bool {
-        let before = self.nav.selected_entry();
-        let Some(action) = self.nav.step_to_match(backwards) else {
+        let before = self.explorer.selected_entry();
+        let Some(action) = self.explorer.step_to_match(backwards) else {
             return false;
         };
-        if self.nav.selected_entry() == before {
+        if self.explorer.selected_entry() == before {
             return false;
         }
         self.perform_widget_action(action);
@@ -2745,7 +2748,7 @@ impl App<'_> {
         if let Some(target) = self.first_interesting(backwards) {
             self.land_on(target);
         }
-        let name = self.nav.selected_name().unwrap_or_default();
+        let name = self.explorer.selected_name().unwrap_or_default();
         let crossing = Crossing { backwards, name };
         self.report(&format!("{} · {}", crossing.label(), crossing.name), false);
         self.crossing = Some(crossing);
@@ -2796,12 +2799,12 @@ impl App<'_> {
         //
         // `lexical_absolute` rather than `canonicalize`: it does not touch the
         // filesystem and does not resolve symlinks, so the editor opens the
-        // path the navigator is showing rather than wherever it happens to
+        // path the explorer is showing rather than wherever it happens to
         // point. For a file reached through a symlinked directory, that is the
         // one the user can find their way back to.
         //
-        // That claim was false until #78. `FileNav::set_dir` canonicalized, so
-        // the navigator had *already* resolved the link before this ran and
+        // That claim was false until #78. `Explorer::set_dir` canonicalized, so
+        // the explorer had *already* resolved the link before this ran and
         // there was nothing left here to preserve. All three sites share this
         // one function now, which is what makes the sentence above true.
         let file = path::lexical_absolute(&relative);
@@ -2964,14 +2967,14 @@ impl App<'_> {
         true
     }
 
-    /// Decide whether the navigator's answers need work, and start it (#119).
+    /// Decide whether the explorer's answers need work, and start it (#119).
     ///
     /// Cheap-idempotent unless `force`: it compares the pattern generation, the
     /// masks and the directory to what it saw last time and returns at once
     /// if nothing moved. Runs after every event, so that guard is what keeps a
     /// keystroke in the file view from walking the listing at all.
     ///
-    /// When it proceeds, every file the navigator lists is answered from the
+    /// When it proceeds, every file the explorer lists is answered from the
     /// cache if it can be — `Record::answer` — and put on a request if it
     /// cannot. A toggle whose every answer is cached issues no request and
     /// touches no thread; that is the whole point of caching bitsets rather
@@ -2985,11 +2988,11 @@ impl App<'_> {
             .last_scan
             .as_ref()
             .map(|last| (last.stamp, last.dir.as_path()))
-            == stamp.map(|stamp| (stamp, self.nav.dir()));
+            == stamp.map(|stamp| (stamp, self.explorer.dir()));
         if !force && unchanged {
             return;
         }
-        let dir = self.nav.dir().to_path_buf();
+        let dir = self.explorer.dir().to_path_buf();
         self.last_scan = stamp.map(|stamp| ScanState {
             stamp,
             dir: dir.clone(),
@@ -2997,11 +3000,11 @@ impl App<'_> {
 
         let Some(matcher) = self.filters.matcher() else {
             // Nothing selects: the feature is off, not "nothing matches".
-            for (index, _) in self.nav.files() {
-                self.nav.set_answer(index, Match::Unknown);
+            for (index, _) in self.explorer.files() {
+                self.explorer.set_answer(index, Match::Unknown);
             }
             self.scanner.cancel();
-            self.nav.restyle();
+            self.explorer.restyle();
             return;
         };
 
@@ -3014,7 +3017,7 @@ impl App<'_> {
         // `poll_stamps` finds a file that changed, off this thread, and a
         // resumed scan re-checks its own stamp in the worker.
         let mut pending = Vec::new();
-        for (index, path) in self.nav.files() {
+        for (index, path) in self.explorer.files() {
             let answer = self
                 .scan_cache
                 .records
@@ -3037,7 +3040,7 @@ impl App<'_> {
                 });
                 Match::Unknown
             };
-            self.nav.set_answer(index, matched);
+            self.explorer.set_answer(index, matched);
         }
 
         if pending.is_empty() {
@@ -3049,17 +3052,17 @@ impl App<'_> {
                 files: pending,
             });
         }
-        self.nav.restyle();
+        self.explorer.restyle();
     }
 
-    /// Move scan results into the cache and the navigator, reporting whether
+    /// Move scan results into the cache and the explorer, reporting whether
     /// anything on screen changed.
     ///
     /// A result is dropped if its cache id is stale — the pattern list changed
     /// while it was in flight, so its bitsets mean something else. Otherwise
     /// it replaces the held record only if it read further; a cancelled
     /// worker's partial can arrive after the fresh worker's complete. The row
-    /// it names is checked against the path it is for before the navigator is
+    /// it names is checked against the path it is for before the explorer is
     /// told anything: the listing may have changed under it.
     fn drain_scan_results(&mut self) -> bool {
         let Some(results) = self.scan_results.as_ref() else {
@@ -3103,12 +3106,12 @@ impl App<'_> {
                 .as_ref()
                 .map_or(Match::Unknown, |m| self.answer_to_match(&record, m));
             self.scan_cache.records.insert(scanned.path.clone(), record);
-            if self.nav.path_at(scanned.index).as_ref() == Some(&scanned.path) {
-                changed |= self.nav.set_answer(scanned.index, matched);
+            if self.explorer.path_at(scanned.index).as_ref() == Some(&scanned.path) {
+                changed |= self.explorer.set_answer(scanned.index, matched);
             }
         }
         if changed {
-            self.nav.restyle();
+            self.explorer.restyle();
         }
         changed
     }
@@ -3160,7 +3163,7 @@ impl App<'_> {
     /// Every listed file that has a record, with the stamp the record holds —
     /// what a stamp check compares the disk against.
     fn held_stamps(&self) -> Vec<(std::path::PathBuf, Option<scan::Stamp>)> {
-        self.nav
+        self.explorer
             .files()
             .into_iter()
             .filter_map(|(_, path)| {
@@ -3193,7 +3196,7 @@ impl App<'_> {
             .collect();
         let active = self.view.filename().to_path_buf();
         let mut changed = false;
-        for (index, path) in self.nav.files() {
+        for (index, path) in self.explorer.files() {
             let Some(stamp) = moved.get(&path) else {
                 continue;
             };
@@ -3204,7 +3207,7 @@ impl App<'_> {
                 continue;
             }
             self.scan_cache.records.remove(&path);
-            self.nav.set_answer(index, Match::Unknown);
+            self.explorer.set_answer(index, Match::Unknown);
             if path == active {
                 self.view_stale = true;
             }
@@ -3224,7 +3227,7 @@ impl App<'_> {
         self.apply_moved(moved)
     }
 
-    /// A record's answer as the navigator's `Match`, with the owning filter's
+    /// A record's answer as the explorer's `Match`, with the owning filter's
     /// colour on a yes.
     fn answer_to_match(&self, record: &scan::Record, matcher: &filter::Matcher) -> Match {
         match record.answer(matcher) {
@@ -3235,7 +3238,7 @@ impl App<'_> {
     }
 
     /// The style the view would draw a line selected by `owner` with. The
-    /// navigator draws the file's name in it, so the two panes agree at a
+    /// explorer draws the file's name in it, so the two panes agree at a
     /// glance and the colour says *which* filter picked the file.
     fn match_style(&self, owner: Option<filter::Owner>) -> Style {
         owner
@@ -3280,12 +3283,12 @@ impl App<'_> {
         // set does — and for the same reason. The filters survived a load
         // only because `App` owns them separately from the `Document` this
         // line replaces; the mode lives *on* the document, so without
-        // carrying it across, every load and every navigator preview silently
+        // carrying it across, every load and every explorer preview silently
         // reset it to `Mode::default()`.
         //
         // That made the toggle almost unusable for its main purpose: skimming
         // a directory for the files a filter actually matches means moving
-        // the navigator's selection, and every move fired a `Preview` through
+        // the explorer's selection, and every move fired a `Preview` through
         // here and undid the `Ctrl-H` that made the skim possible.
         let mode = self.document.mode();
         self.document = Document::for_file(self.view.filename(), lines);
@@ -3375,29 +3378,31 @@ impl App<'_> {
     fn handle_filter_key(&mut self, key: event::KeyEvent) {
         use crate::keymap::ActionId as A;
 
-        // The navigator's `h`/`l` in this pane: a hint, not a redirect, for
+        // The explorer's `h`/`l` in this pane: a hint, not a redirect, for
         // the same reason as the filter verbs elsewhere (#120 §9). The keys
         // themselves have no `ActionId` in `Scope::Filters` — `FilterList`
         // cannot report, since the status row is `App`'s — so this stays a
         // pre-resolution special case, guarded on an empty modifier set as
-        // before; but the text names the nav actions they point at, so it
+        // before; but the text names the explorer actions they point at, so it
         // is generated from the table (task 8) rather than hand-written.
         if key.modifiers.is_empty() {
             match key.code {
                 KeyCode::Char('h') => {
-                    if let Some(hint) =
-                        self.keymap
-                            .hint_for(A::NavParent, "goes up a directory", A::GlobalFocusNav)
-                    {
+                    if let Some(hint) = self.keymap.hint_for(
+                        A::ExplorerParent,
+                        "goes up a directory",
+                        A::GlobalFocusExplorer,
+                    ) {
                         self.report(&hint, false);
                     }
                     return;
                 }
                 KeyCode::Char('l') => {
-                    if let Some(hint) =
-                        self.keymap
-                            .hint_for(A::NavOpen, "opens the entry", A::GlobalFocusNav)
-                    {
+                    if let Some(hint) = self.keymap.hint_for(
+                        A::ExplorerOpen,
+                        "opens the entry",
+                        A::GlobalFocusExplorer,
+                    ) {
                         self.report(&hint, false);
                     }
                     return;
@@ -3588,9 +3593,9 @@ impl App<'_> {
         }
     }
 
-    /// The directory the navigator is listing.
-    fn nav_dir(&self) -> &std::path::Path {
-        self.nav.dir()
+    /// The directory the explorer is listing.
+    fn explorer_dir(&self) -> &std::path::Path {
+        self.explorer.dir()
     }
 
     /// The whole bottom row: filter state first, then the directory in
@@ -3602,7 +3607,7 @@ impl App<'_> {
     /// needs on a narrow terminal, where all of this cannot fit at once.
     fn status_bar_text(&self, width: usize) -> String {
         let status = self.status_text();
-        let dir = self.nav_dir().display().to_string();
+        let dir = self.explorer_dir().display().to_string();
         if status.is_empty() {
             return elide_left(&dir, width);
         }
@@ -3624,7 +3629,7 @@ impl App<'_> {
     /// visible cursor; the pane no longer collapses, so the special case is
     /// gone with it and the cycle is three deep at all times.
     ///
-    /// The `nav_index`/`file_view_index`/`filter_list_index` helpers this
+    /// The `explorer_index`/`file_view_index`/`filter_list_index` helpers this
     /// used to rotate between are gone with the vec they searched: a `Focus`
     /// names its pane directly, so there is no lookup left to get wrong
     /// (#73).
@@ -3656,7 +3661,7 @@ impl App<'_> {
         // A drag in progress has no divider to keep tracking once zoomed —
         // the `Drag` arm in `handle_divider` only checks `self.dragging`, not
         // whether a divider is actually on screen — so it would otherwise
-        // keep silently re-pinning `nav_width` or `filter_height` while
+        // keep silently re-pinning `explorer_width` or `filter_height` while
         // nothing is drawn to explain why, with the new size only appearing
         // on un-zoom. Zooming (in either direction) cancels it outright.
         // Unzooming is a no-op here in practice, since a drag can only start
@@ -3679,7 +3684,7 @@ impl App<'_> {
     /// cursor was in may no longer be on screen.
     ///
     /// Restoring the split on the second press deliberately leaves focus in
-    /// the file view rather than dragging it back to the navigator: you
+    /// the file view rather than dragging it back to the explorer: you
     /// pressed `b` to read the file, so that is where you want to stay. `e`
     /// is the documented way back, precisely so `b` does not have to carry
     /// that job too.
@@ -3706,7 +3711,7 @@ impl App<'_> {
     /// End a chain that just committed: focus goes back to where `f` was
     /// pressed, and the app behaves as if `n` were pressed there — the
     /// first `fn` after `f i fn Enter` from the view, the next matching
-    /// file from the navigator. Dispatching a real `n` rather than calling
+    /// file from the explorer. Dispatching a real `n` rather than calling
     /// either step directly is what keeps "as if `n`" true per pane.
     ///
     /// Nothing to do when `f` was not what brought focus here.
@@ -3733,7 +3738,7 @@ impl App<'_> {
     /// Three assignments rather than an enumerate-and-compare over a vec: the
     /// index that loop compared against no longer exists (#73).
     fn set_active_pane(&mut self) {
-        self.nav.set_active(self.focus == Focus::Nav);
+        self.explorer.set_active(self.focus == Focus::Explorer);
         self.view.set_active(self.focus == Focus::View);
         self.filters_pane.set_active(self.focus == Focus::Filters);
     }
@@ -3747,7 +3752,7 @@ impl App<'_> {
     /// arguments it actually takes.
     fn render_pane(&mut self, pane: Focus, area: Rect, buf: &mut Buffer) {
         match pane {
-            Focus::Nav => self.nav.render(area, buf),
+            Focus::Explorer => self.explorer.render(area, buf),
             Focus::View => self.view.render(area, buf),
             Focus::Filters => self.filters_pane.render(&self.filters, area, buf),
         }
@@ -4015,29 +4020,29 @@ impl Widget for &mut App<'_> {
                 self.render_crossing(area, buf);
             }
         } else {
-            let nav_width = self.nav_width(area);
-            let [left, right] = Layout::horizontal([Length(nav_width), Min(0)]).areas(area);
+            let explorer_width = self.explorer_width(area);
+            let [left, right] = Layout::horizontal([Length(explorer_width), Min(0)]).areas(area);
 
-            // The filter pane sits under the navigator inside the left
+            // The filter pane sits under the explorer inside the left
             // column; it claims its preferred height first, leaving the
-            // navigator whatever remains, down to `MIN_NAV_HEIGHT` on a very
+            // explorer whatever remains, down to `MIN_EXPLORER_HEIGHT` on a very
             // short terminal — see
             // `a_short_terminal_shows_a_real_filter_row_not_just_the_title`.
             // `filter_pane_split_height` does the capping arithmetically, so
-            // the navigator's own constraint here can be a bare `Min(0)` and
+            // the explorer's own constraint here can be a bare `Min(0)` and
             // still never drop below its floor while a terminal has enough
             // rows to give the left column at all.
             let filter_height = self.filter_pane_split_height(left.height);
-            let [nav_area, filter_area] =
+            let [explorer_area, filter_area] =
                 Layout::vertical([Min(0), Length(filter_height)]).areas(left);
 
             // Remember the boundaries so mouse events landing before the next
             // frame can be tested against them. The filter pane's whole rect
             // is kept, not just its top edge: a drag needs the bottom of the
             // left column to turn the row it is holding into a height.
-            self.divider = area.x + nav_width;
+            self.divider = area.x + explorer_width;
             self.filter_area = filter_area;
-            self.nav_area = nav_area;
+            self.explorer_area = explorer_area;
             self.view_area = right;
 
             // Each pane gets the area that matches what it is. That used to
@@ -4048,7 +4053,7 @@ impl Widget for &mut App<'_> {
             self.set_active_pane();
             self.view.set_title_accent(self.crossing.is_some());
             self.view.set_selection(self.painted_selection());
-            self.render_pane(Focus::Nav, nav_area, buf);
+            self.render_pane(Focus::Explorer, explorer_area, buf);
             self.render_pane(Focus::View, right, buf);
             self.render_pane(Focus::Filters, filter_area, buf);
             self.render_crossing(right, buf);
@@ -4149,8 +4154,8 @@ mod tests {
     use crate::filter::Verdict;
     use crate::fixtures::{fixture_dir, fixture_file, fixture_path as fixture_dir_path};
     use crate::layout::{
-        MAX_NAV_WIDTH, MIN_AUTO_FILTER_HEIGHT, MIN_AUTO_NAV_WIDTH, MIN_FILE_VIEW_WIDTH,
-        MIN_FILTER_HEIGHT, MIN_NAV_HEIGHT, MIN_PANE_WIDTH,
+        MAX_EXPLORER_WIDTH, MIN_AUTO_EXPLORER_WIDTH, MIN_AUTO_FILTER_HEIGHT, MIN_EXPLORER_HEIGHT,
+        MIN_FILE_VIEW_WIDTH, MIN_FILTER_HEIGHT, MIN_PANE_WIDTH,
     };
     use crossterm::event::{KeyEvent, MouseButton, MouseEvent, MouseEventKind};
     use ratatui::prelude::Buffer;
@@ -4203,7 +4208,7 @@ mod tests {
         })
     }
 
-    /// `app_over`, with a `[keymap]` that costs `nav.down` its `j` — the
+    /// `app_over`, with a `[keymap]` that costs `explorer.down` its `j` — the
     /// smallest config that produces a warning.
     fn app_with_warnings(name: &str, files: &[&str]) -> App<'static> {
         app_over_keymap(name, files, false)
@@ -4249,7 +4254,7 @@ mod tests {
             screen.contains("Keymap warnings"),
             "the panel did not draw:\n{screen}"
         );
-        assert!(screen.contains("nav.down"), "{screen}");
+        assert!(screen.contains("explorer.down"), "{screen}");
     }
 
     #[test]
@@ -4348,7 +4353,7 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
 
-        assert!(screen.contains("nav.down"), "{screen}");
+        assert!(screen.contains("explorer.down"), "{screen}");
         assert!(
             screen.contains("filters.down"),
             "the third warning was cut though the box had room for it:\n{screen}"
@@ -4392,7 +4397,7 @@ mod tests {
         );
     }
 
-    /// The argument is held the way the navigator holds it, absolute. Two
+    /// The argument is held the way the explorer holds it, absolute. Two
     /// spellings of one path made `check_stamps` compare unequal, so the
     /// changed-on-disk badge never fired for a file opened from the command
     /// line, and the title changed after the first navigation (#157).
@@ -4413,11 +4418,11 @@ mod tests {
         );
     }
 
-    /// Select the `row`th file in the navigator and load it into the view,
-    /// the way `Enter` in the navigator would.
+    /// Select the `row`th file in the explorer and load it into the view,
+    /// the way `Enter` in the explorer would.
     fn open_file(app: &mut App, row: usize) {
-        let (index, path) = app.nav.files()[row].clone();
-        app.nav.select_entry(index);
+        let (index, path) = app.explorer.files()[row].clone();
+        app.explorer.select_entry(index);
         app.perform_widget_action(Action::Load(path));
     }
 
@@ -4487,7 +4492,7 @@ mod tests {
         }));
     }
 
-    /// Row 3 is inside the navigator on every fixture area used here, and so
+    /// Row 3 is inside the explorer on every fixture area used here, and so
     /// is clear of the horizontal divider's own hit test — these helpers are
     /// about the vertical divider, and a row that could land on both would
     /// make which one they exercise a matter of hit-test ordering.
@@ -4527,7 +4532,7 @@ mod tests {
         );
     }
 
-    /// The name is comfortably longer than `MIN_AUTO_NAV_WIDTH` on purpose:
+    /// The name is comfortably longer than `MIN_AUTO_EXPLORER_WIDTH` on purpose:
     /// below the floor the column reports the floor, so a short name would
     /// make this pass without the snapping it is named for ever happening.
     #[test]
@@ -4538,10 +4543,10 @@ mod tests {
 
         // Name plus two borders; the `>>` marker used to add two more.
         assert!(
-            LONGEST.len() as u16 + 2 > MIN_AUTO_NAV_WIDTH,
+            LONGEST.len() as u16 + 2 > MIN_AUTO_EXPLORER_WIDTH,
             "fixture no longer exercises snapping"
         );
-        assert_eq!(app.nav_width(AREA), LONGEST.len() as u16 + 2);
+        assert_eq!(app.explorer_width(AREA), LONGEST.len() as u16 + 2);
     }
 
     #[test]
@@ -4550,7 +4555,7 @@ mod tests {
         let mut app = app_over("capped", &[long.as_str()]);
         draw(&mut app);
 
-        assert_eq!(app.nav_width(AREA), MAX_NAV_WIDTH);
+        assert_eq!(app.explorer_width(AREA), MAX_EXPLORER_WIDTH);
     }
 
     /// A directory of short names gets the floor, not the width of its
@@ -4566,21 +4571,21 @@ mod tests {
         let mut app = app_over("tiny", &["a"]);
         draw(&mut app);
 
-        assert_eq!(app.nav_width(AREA), MIN_AUTO_NAV_WIDTH);
+        assert_eq!(app.explorer_width(AREA), MIN_AUTO_EXPLORER_WIDTH);
     }
 
     /// The floor is not a fixed width: a directory of longer names still
     /// widens past it, up to the cap.
     #[test]
     fn auto_width_still_grows_past_the_floor() {
-        let name = "a".repeat(MIN_AUTO_NAV_WIDTH as usize + 5);
+        let name = "a".repeat(MIN_AUTO_EXPLORER_WIDTH as usize + 5);
         let mut app = app_over("above_floor", &[name.as_str()]);
         draw(&mut app);
 
         assert!(
-            app.nav_width(AREA) > MIN_AUTO_NAV_WIDTH,
+            app.explorer_width(AREA) > MIN_AUTO_EXPLORER_WIDTH,
             "the floor became a fixed width, got {}",
-            app.nav_width(AREA)
+            app.explorer_width(AREA)
         );
     }
 
@@ -4594,27 +4599,27 @@ mod tests {
 
         drag_to(&mut app, divider, MIN_PANE_WIDTH);
 
-        assert_eq!(app.nav_width(AREA), MIN_PANE_WIDTH);
+        assert_eq!(app.explorer_width(AREA), MIN_PANE_WIDTH);
     }
 
     /// On a terminal too narrow to honour both, the file view's floor wins:
-    /// the navigator giving up columns it would like is better than the pane
+    /// the explorer giving up columns it would like is better than the pane
     /// the app exists for becoming unusable.
     #[test]
-    fn the_file_views_floor_outranks_the_navigators() {
+    fn the_file_views_floor_outranks_the_explorers() {
         let mut app = app_over("narrow_term", &["a"]);
         let narrow = Rect {
             x: 0,
             y: 0,
-            width: MIN_FILE_VIEW_WIDTH + MIN_AUTO_NAV_WIDTH - 5,
+            width: MIN_FILE_VIEW_WIDTH + MIN_AUTO_EXPLORER_WIDTH - 5,
             height: 10,
         };
         draw(&mut app);
 
         assert!(
-            app.nav_width(narrow) < MIN_AUTO_NAV_WIDTH,
+            app.explorer_width(narrow) < MIN_AUTO_EXPLORER_WIDTH,
             "the floor starved the file view, got {}",
-            app.nav_width(narrow)
+            app.explorer_width(narrow)
         );
     }
 
@@ -4626,8 +4631,8 @@ mod tests {
 
         drag_to(&mut app, divider, 60);
 
-        assert_eq!(app.nav_width, NavWidth::Pinned(60));
-        assert_eq!(app.nav_width(AREA), 60);
+        assert_eq!(app.explorer_width, ExplorerWidth::Pinned(60));
+        assert_eq!(app.explorer_width(AREA), 60);
     }
 
     #[test]
@@ -4645,7 +4650,7 @@ mod tests {
         app.handle_event(event::Event::Key(KeyCode::Enter.into()));
         draw(&mut app);
 
-        assert_eq!(app.nav_width(AREA), 55, "navigation overrode the drag");
+        assert_eq!(app.explorer_width(AREA), 55, "navigation overrode the drag");
     }
 
     #[test]
@@ -4654,17 +4659,17 @@ mod tests {
         draw(&mut app);
         let divider = app.divider;
         drag_to(&mut app, divider, 70);
-        assert_eq!(app.nav_width(AREA), 70);
+        assert_eq!(app.explorer_width(AREA), 70);
         draw(&mut app);
 
         let divider = app.divider;
         mouse(&mut app, MouseEventKind::Down(MouseButton::Left), divider);
         mouse(&mut app, MouseEventKind::Down(MouseButton::Left), divider);
 
-        assert_eq!(app.nav_width, NavWidth::Auto);
+        assert_eq!(app.explorer_width, ExplorerWidth::Auto);
         // Back to automatic sizing, which for a name this short is the floor
-        // rather than the name's own width — see `MIN_AUTO_NAV_WIDTH`.
-        assert_eq!(app.nav_width(AREA), MIN_AUTO_NAV_WIDTH);
+        // rather than the name's own width — see `MIN_AUTO_EXPLORER_WIDTH`.
+        assert_eq!(app.explorer_width(AREA), MIN_AUTO_EXPLORER_WIDTH);
     }
 
     #[test]
@@ -4674,13 +4679,16 @@ mod tests {
 
         let divider = app.divider;
         drag_to(&mut app, divider, 0);
-        assert!(app.nav_width(AREA) >= MIN_PANE_WIDTH, "nav pane collapsed");
+        assert!(
+            app.explorer_width(AREA) >= MIN_PANE_WIDTH,
+            "explorer pane collapsed"
+        );
 
         draw(&mut app);
         let divider = app.divider;
         drag_to(&mut app, divider, AREA.width);
         assert!(
-            AREA.width - app.nav_width(AREA) >= MIN_PANE_WIDTH,
+            AREA.width - app.explorer_width(AREA) >= MIN_PANE_WIDTH,
             "file view collapsed"
         );
         // The bound above is `MIN_PANE_WIDTH` (3), which the file view's own
@@ -4692,7 +4700,7 @@ mod tests {
         // `MIN_FILE_VIEW_WIDTH` claims the ceiling applies to a drag just as
         // much as to auto-sizing, and nothing was pinning that claim.
         assert_eq!(
-            AREA.width - app.nav_width(AREA),
+            AREA.width - app.explorer_width(AREA),
             MIN_FILE_VIEW_WIDTH,
             "a hard drag to the far edge did not stop at the file view's floor"
         );
@@ -4752,7 +4760,7 @@ mod tests {
     /// A drag past the bottom of the column asks for a pane of no rows at
     /// all. It gets `MIN_FILTER_HEIGHT` — enough to still be visible and so
     /// still be recognisably the thing that was just dragged, rather than a
-    /// pane that vanishes while keeping focus (see `MIN_NAV_HEIGHT`).
+    /// pane that vanishes while keeping focus (see `MIN_EXPLORER_HEIGHT`).
     #[test]
     fn dragging_cannot_collapse_the_filter_pane() {
         let mut app = app_over("hdrag_collapse", &["a.rs"]);
@@ -4769,12 +4777,12 @@ mod tests {
     }
 
     /// The other end: a drag to the top of the column asks for everything.
-    /// The navigator's floor is what stops it, and it stops it at exactly the
+    /// The explorer's floor is what stops it, and it stops it at exactly the
     /// floor — the half cap governs automatic sizing only, so a drag can
     /// legitimately take more than half.
     #[test]
-    fn dragging_cannot_collapse_the_navigator() {
-        let mut app = app_over("hdrag_nav_floor", &["a.rs"]);
+    fn dragging_cannot_collapse_the_explorer() {
+        let mut app = app_over("hdrag_explorer_floor", &["a.rs"]);
         draw(&mut app);
         let divider = app.filter_area.y;
 
@@ -4783,8 +4791,8 @@ mod tests {
         let filter_height = app.filter_pane_split_height(LEFT_HEIGHT);
         assert_eq!(
             LEFT_HEIGHT - filter_height,
-            MIN_NAV_HEIGHT,
-            "the navigator did not keep exactly its floor"
+            MIN_EXPLORER_HEIGHT,
+            "the explorer did not keep exactly its floor"
         );
         assert!(
             filter_height > LEFT_HEIGHT / 2,
@@ -4871,7 +4879,7 @@ mod tests {
         );
         mouse_at(&mut app, MouseEventKind::Drag(MouseButton::Left), 60, row);
 
-        assert_eq!(app.nav_width, NavWidth::Pinned(60));
+        assert_eq!(app.explorer_width, ExplorerWidth::Pinned(60));
         assert_eq!(app.filter_height, FilterHeight::Auto);
     }
 
@@ -5216,8 +5224,11 @@ mod tests {
         key(&mut app, KeyCode::Enter);
 
         assert!(app.prompt.is_none(), "prompt stayed open");
-        let nav = &app.nav;
-        assert_eq!(nav.entries()[nav.selected().unwrap()].name, "gamma.rs");
+        let explorer = &app.explorer;
+        assert_eq!(
+            explorer.entries()[explorer.selected().unwrap()].name,
+            "gamma.rs"
+        );
     }
 
     #[test]
@@ -5236,9 +5247,9 @@ mod tests {
         );
     }
 
-    /// Searching in the nav pane jumps to the file *and* previews it.
+    /// Searching in the explorer pane jumps to the file *and* previews it.
     #[test]
-    fn a_nav_search_previews_the_matched_file() {
+    fn a_explorer_search_previews_the_matched_file() {
         let mut app = app_over("prompt_preview", &["alpha.rs", "gamma.rs"]);
         fs::write(
             fixture_dir_path("prompt_preview").join("gamma.rs"),
@@ -5264,12 +5275,12 @@ mod tests {
         );
     }
 
-    /// From the navigator, `/` searches file names. A pattern that matches no
+    /// From the explorer, `/` searches file names. A pattern that matches no
     /// name used to close the prompt in silence, which looks the same as `Esc`.
     /// Say so, the way `n` reports a dead end (#243).
     #[test]
-    fn a_nav_search_with_no_matching_filename_says_so() {
-        let mut app = app_over("nav_search_dead_end", &["alpha.log", "beta.log"]);
+    fn a_explorer_search_with_no_matching_filename_says_so() {
+        let mut app = app_over("explorer_search_dead_end", &["alpha.log", "beta.log"]);
 
         app.run_search("ERROR").expect("valid pattern");
 
@@ -5281,8 +5292,8 @@ mod tests {
 
     /// The report is for the dead end only. A name that does match stays quiet.
     #[test]
-    fn a_nav_search_that_matches_reports_nothing() {
-        let mut app = app_over("nav_search_hit", &["alpha.log", "beta.log"]);
+    fn a_explorer_search_that_matches_reports_nothing() {
+        let mut app = app_over("explorer_search_hit", &["alpha.log", "beta.log"]);
 
         app.run_search("beta").expect("valid pattern");
 
@@ -5305,13 +5316,13 @@ mod tests {
     fn a_click_away_from_the_divider_is_not_a_drag() {
         let mut app = app_over("passthrough", &["a.rs"]);
         draw(&mut app);
-        let before = app.nav_width(AREA);
+        let before = app.explorer_width(AREA);
 
         mouse(&mut app, MouseEventKind::Down(MouseButton::Left), 90);
         mouse(&mut app, MouseEventKind::Drag(MouseButton::Left), 60);
 
         assert_eq!(app.dragging, None);
-        assert_eq!(app.nav_width(AREA), before);
+        assert_eq!(app.explorer_width(AREA), before);
     }
 
     #[test]
@@ -5727,12 +5738,12 @@ mod tests {
         );
     }
 
-    /// The workflow in the issue is cursor movement in the navigator, which
+    /// The workflow in the issue is cursor movement in the explorer, which
     /// fires `Preview`, not `Load` — so previews must hold the mode too, or
     /// the whole point (skimming a directory for files that are not blank) is
     /// lost on every keystroke.
     #[test]
-    fn the_hide_mode_survives_a_navigator_preview() {
+    fn the_hide_mode_survives_a_explorer_preview() {
         let mut app = app_over_file("hide_mode_preview", "alpha\nbeta\n");
         key(&mut app, KeyCode::Char('f'));
         key(&mut app, KeyCode::Char('i'));
@@ -5851,7 +5862,7 @@ mod tests {
     /// document. Reloading the *same* file while an excluding filter is
     /// active reproduces an identical generation every time (the document
     /// is genuinely equal), which the guard alone cannot tell apart from
-    /// "nothing changed". `FileNav` fires `Action::Load` unconditionally
+    /// "nothing changed". `Explorer` fires `Action::Load` unconditionally
     /// on `Enter`, even over the entry that is already open, so this is not a
     /// contrived path.
     #[test]
@@ -6326,9 +6337,9 @@ mod tests {
             ..Config::default()
         });
 
-        // The nav pane previews the log rather than reading the whole
+        // The explorer pane previews the log rather than reading the whole
         // 600-line file. The startup argument names a file that does not
-        // exist, so the navigator falls back to the first real entry — which
+        // exist, so the explorer falls back to the first real entry — which
         // is the log — and `Down` holds it there.
         key(&mut app, KeyCode::Down);
 
@@ -6552,7 +6563,7 @@ mod tests {
     /// normalises a key before resolving it, but an *unresolved* key used to
     /// fall through to `FileView::handle_events`, which matches the character
     /// with the modifier fields ignored — so `Alt-j` moved the cursor as
-    /// though the modifier had never been pressed. The navigator and the
+    /// though the modifier had never been pressed. The explorer and the
     /// filter pane have always dropped what their own scope does not
     /// resolve; the view does too now.
     #[test]
@@ -6586,7 +6597,7 @@ mod tests {
             ..Config::default()
         });
         // The startup argument names a file that does not exist, so the
-        // navigator falls back to the first real entry — the log — and
+        // explorer falls back to the first real entry — the log — and
         // previews it rather than reading the whole thing.
         key(&mut app, KeyCode::Down);
         focus_file_view(&mut app);
@@ -7491,7 +7502,7 @@ mod tests {
         let mut app = app_over_file("funnel_dimmed_exclude", "alpha\nnoise\ngamma\n");
         // Set directly rather than through `f x … Enter` (#120): an
         // excluding-only set selects nothing, so the chain that commit
-        // triggers always ends with nothing for the navigator to step `n`
+        // triggers always ends with nothing for the explorer to step `n`
         // to, and the resulting "no matching file" report would displace
         // the funnel status this test means to check. That interaction
         // belongs to the keymap-chain tests, not this one.
@@ -7513,7 +7524,7 @@ mod tests {
     // ---- saved filter sets (#128) -------------------------------------------
 
     /// An `autoload` set's `default` profile is what the app starts with,
-    /// and the navigator has something to scan for from the first frame.
+    /// and the explorer has something to scan for from the first frame.
     #[test]
     fn an_autoload_set_is_live_at_startup() {
         let mut set = filter::test_support::loaded("a", 50, true, &["alpha", "beta"]);
@@ -7527,7 +7538,7 @@ mod tests {
         assert_eq!(flags, vec![false, true]);
         assert!(
             app.filters.matcher().is_some(),
-            "beta selects, so the navigator scans"
+            "beta selects, so the explorer scans"
         );
     }
 
@@ -8032,14 +8043,14 @@ mod tests {
 
     /// Characterises the precedence `dispatch_event` already has, before the
     /// refactor that resolves it through the table (#199): `q` is a global
-    /// binding and the navigator does not bind it, so the pane must never get
+    /// binding and the explorer does not bind it, so the pane must never get
     /// a chance to swallow it first.
     #[test]
     fn the_global_scope_is_consulted_before_the_pane() {
         let (mut app, _root) = app_over_project("resolve_global", "alpha\n");
-        app.focus = Focus::Nav;
+        app.focus = Focus::Explorer;
 
-        // `q` is a global binding and the navigator does not bind it.
+        // `q` is a global binding and the explorer does not bind it.
         key(&mut app, KeyCode::Char('q'));
 
         // `emit: true` pins the action, not just the scope: `Quit { .. }`
@@ -8205,7 +8216,7 @@ mod tests {
             emit: Some(emit::Emit::Lines),
             ..Config::default()
         });
-        // The navigator starts on `a.txt`; select `..` so the view shows a
+        // The explorer starts on `a.txt`; select `..` so the view shows a
         // listing rather than a file.
         key(&mut app, KeyCode::Char('g'));
         key(&mut app, KeyCode::Char('q'));
@@ -8262,7 +8273,7 @@ mod tests {
 
         let (lines, summary) = emitted(&app);
 
-        let dir = app.nav.dir().display().to_string();
+        let dir = app.explorer.dir().display().to_string();
         assert_eq!(
             lines,
             vec![
@@ -8289,7 +8300,7 @@ mod tests {
 
         let (_, summary) = emitted(&app);
 
-        let dir = app.nav.dir().display().to_string();
+        let dir = app.explorer.dir().display().to_string();
         assert_eq!(
             summary,
             format!(
@@ -8309,7 +8320,7 @@ mod tests {
 
         let (lines, summary) = emitted(&app);
 
-        let dir = app.nav.dir().display().to_string();
+        let dir = app.explorer.dir().display().to_string();
         assert_eq!(lines, vec![format!("{dir}/a.log"), format!("{dir}/c.log")]);
         assert_eq!(
             summary,
@@ -8326,7 +8337,7 @@ mod tests {
         let (lines, summary) = emitted(&app);
 
         assert_eq!(lines.len(), 2);
-        let dir = app.nav.dir().display().to_string();
+        let dir = app.explorer.dir().display().to_string();
         assert_eq!(
             summary,
             format!("recon: emitted 2 files from {dir}, dim mode, no filter")
@@ -8364,7 +8375,7 @@ mod tests {
         let odd = std::ffi::OsStr::from_bytes(b"bad\xffname.log");
         // APFS and HFS+ enforce valid UTF-8 in filenames and reject this one
         // with EILSEQ, so on macOS there is no such file to list and nothing
-        // to assert (see `non_utf8_fixture` in `widgets::filenav::tests`).
+        // to assert (see `non_utf8_fixture` in `widgets::explorer::tests`).
         // ext4, XFS, tmpfs and every other Unix filesystem take arbitrary
         // bytes, which is where this test actually runs.
         if let Err(err) = fs::write(dir.join(odd), "x\n") {
@@ -8387,17 +8398,17 @@ mod tests {
     }
 
     #[test]
-    fn cwd_emits_the_navigator_s_directory() {
+    fn cwd_emits_the_explorer_s_directory() {
         let mut app = app_over_files("emit_cwd", &[("a.log", "x\n")]);
         app.emit = Some(emit::Emit::Cwd);
         key(&mut app, KeyCode::Char('q'));
 
         let (lines, summary) = emitted(&app);
 
-        let dir = app.nav.dir().display().to_string();
+        let dir = app.explorer.dir().display().to_string();
         assert_eq!(lines, vec![dir.clone()]);
         assert_eq!(summary, format!("recon: emitted {dir}"));
-        assert!(app.nav.dir().is_absolute());
+        assert!(app.explorer.dir().is_absolute());
     }
 
     #[test]
@@ -8504,7 +8515,7 @@ mod tests {
     }
 
     /// `Enter` on a disabled set's header enables it, applies `default`, and
-    /// the view and navigator follow; `Enter` again collapses it and its
+    /// the view and explorer follow; `Enter` again collapses it and its
     /// filters stop matching.
     #[test]
     fn enter_on_a_header_toggles_the_set_and_the_view_follows() {
@@ -8706,7 +8717,7 @@ mod tests {
         let mut app = app_over_file("badge_dimmed", "alpha\nbeta\n");
         // Set directly rather than through `f x … Enter` (#120): an
         // excluding-only set selects nothing, so the chain that commit
-        // triggers always ends with nothing for the navigator to step `n`
+        // triggers always ends with nothing for the explorer to step `n`
         // to, and the resulting "no matching file" report would displace
         // the status this test means to check. That interaction belongs to
         // the keymap-chain tests, not this one.
@@ -8805,7 +8816,7 @@ mod tests {
         let mut app = app_over_file("status_shown_not_matched", "alpha\nnoise\ngamma\n");
         // Set directly rather than through `f x … Enter` (#120): an
         // excluding-only set selects nothing, so the chain that commit
-        // triggers always ends with nothing for the navigator to step `n`
+        // triggers always ends with nothing for the explorer to step `n`
         // to, and the resulting "no matching file" report would displace
         // the line-count status this test means to check. That interaction
         // belongs to the keymap-chain tests, not this one.
@@ -8866,21 +8877,21 @@ mod tests {
         let after = rendered(&mut app);
         assert_ne!(before, after, "the layout did not change");
         assert!(after.contains("alpha"), "the file view went missing");
-        // `../` is the probe for "the navigator is drawn": every listing has
+        // `../` is the probe for "the explorer is drawn": every listing has
         // a parent entry, and the block title cannot contain `..` because
         // `set_dir` collapses it (#78). This used to look for the `>>`
         // selection marker, which no longer exists — leaving the assertion
         // vacuously true.
-        assert!(!after.contains("../"), "the navigator is still on screen");
+        assert!(!after.contains("../"), "the explorer is still on screen");
     }
 
     /// `b` restores the split, but deliberately leaves the cursor where it
     /// moved it: you pressed `b` to read the file, so being dropped back into
-    /// the navigator on the way out would be the surprise. `e` is the way back.
+    /// the explorer on the way out would be the surprise. `e` is the way back.
     #[test]
     fn b_toggles_back_but_leaves_focus_in_the_file_view() {
         let mut app = app_over_file("zoom_b_back", "alpha\n");
-        assert_eq!(app.focus, Focus::Nav);
+        assert_eq!(app.focus, Focus::Explorer);
 
         // Capture the baseline with focus already where `b b` will leave it,
         // so the comparison below isolates the layout claim rather than also
@@ -8897,7 +8908,7 @@ mod tests {
         assert_eq!(
             app.focus,
             Focus::View,
-            "focus was dragged back to the navigator"
+            "focus was dragged back to the explorer"
         );
         assert_eq!(app.zoom, None);
     }
@@ -8907,7 +8918,7 @@ mod tests {
     #[test]
     fn b_moves_focus_out_of_the_hidden_column() {
         let mut app = app_over_file("zoom_b_focus", "alpha\n");
-        assert_eq!(app.focus, Focus::Nav, "starts in the navigator");
+        assert_eq!(app.focus, Focus::Explorer, "starts in the explorer");
 
         key(&mut app, KeyCode::Char('b'));
 
@@ -8923,18 +8934,18 @@ mod tests {
         key(&mut app, KeyCode::Char('e'));
 
         assert_eq!(app.zoom, None, "the left column is still hidden");
-        assert_eq!(app.focus, Focus::Nav);
+        assert_eq!(app.focus, Focus::Explorer);
     }
 
     #[test]
-    fn e_focuses_the_navigator_even_when_nothing_is_hidden() {
+    fn e_focuses_the_explorer_even_when_nothing_is_hidden() {
         let mut app = app_over_file("zoom_e_visible", "alpha\n");
         focus_file_view(&mut app);
-        assert_ne!(app.focus, Focus::Nav);
+        assert_ne!(app.focus, Focus::Explorer);
 
         key(&mut app, KeyCode::Char('e'));
 
-        assert_eq!(app.focus, Focus::Nav);
+        assert_eq!(app.focus, Focus::Explorer);
     }
 
     /// `t` reaches the text pane directly, the way `e` reaches the explorer.
@@ -8952,18 +8963,18 @@ mod tests {
 
     /// `l`, `Right` and `Enter` on a *file* land the cursor in the view.
     ///
-    /// All three in one loop because they share `nav.open`: a change that
+    /// All three in one loop because they share `explorer.open`: a change that
     /// reached only the arm one of them took would still pass a test that
     /// pressed only that one.
     ///
     /// Without this, `l` on a file changed almost nothing on screen — the
-    /// navigator already previews every row the cursor passes over — and
+    /// explorer already previews every row the cursor passes over — and
     /// reading the file needed a second, differently-shaped keystroke.
     #[test]
     fn opening_a_file_moves_the_focus_to_the_file_view() {
         // One fixture, three apps: the registry refuses a name claimed twice,
-        // and each key needs a navigator that has not already moved.
-        let dir = fixture_dir("nav_open_focus");
+        // and each key needs an explorer that has not already moved.
+        let dir = fixture_dir("explorer_open_focus");
         fs::write(dir.join("a.log"), "alpha\n").expect("write fixture");
 
         for code in [KeyCode::Char('l'), KeyCode::Right, KeyCode::Enter] {
@@ -8972,11 +8983,11 @@ mod tests {
                 ..Config::default()
             });
             draw(&mut app);
-            assert_eq!(app.focus, Focus::Nav, "{code:?}");
+            assert_eq!(app.focus, Focus::Explorer, "{code:?}");
 
             // Rows: `..`, `a.log`. The cursor opens on the first real entry,
             // not on `..`, so `a.log` is already under it.
-            assert_eq!(app.nav.selected(), Some(1), "{code:?}");
+            assert_eq!(app.explorer.selected(), Some(1), "{code:?}");
             key(&mut app, code);
 
             assert_eq!(app.focus, Focus::View, "{code:?}");
@@ -8985,53 +8996,53 @@ mod tests {
     }
 
     /// A directory is the other half of "one level deeper", and the work is
-    /// still in the navigator once you are inside it — so the focus stays.
+    /// still in the explorer once you are inside it — so the focus stays.
     #[test]
-    fn opening_a_directory_keeps_the_focus_in_the_navigator() {
-        let (mut app, dir) = app_over_nested("nav_open_focus_dir");
+    fn opening_a_directory_keeps_the_focus_in_the_explorer() {
+        let (mut app, dir) = app_over_nested("explorer_open_focus_dir");
         draw(&mut app);
 
         // Rows: `..`, `sub/`, `z.log`, and the cursor opens on `sub/`.
-        assert_eq!(app.nav.selected(), Some(1));
+        assert_eq!(app.explorer.selected(), Some(1));
         key(&mut app, KeyCode::Char('l'));
 
         assert!(
-            app.nav.dir().ends_with(dir.join("sub")),
+            app.explorer.dir().ends_with(dir.join("sub")),
             "did not descend, got {}",
-            app.nav.dir().display()
+            app.explorer.dir().display()
         );
-        assert_eq!(app.focus, Focus::Nav);
+        assert_eq!(app.focus, Focus::Explorer);
     }
 
     /// `..` climbs out, which is a directory move like any other.
     #[test]
-    fn opening_the_parent_entry_keeps_the_focus_in_the_navigator() {
-        let (mut app, _dir) = app_over_nested("nav_open_focus_parent");
+    fn opening_the_parent_entry_keeps_the_focus_in_the_explorer() {
+        let (mut app, _dir) = app_over_nested("explorer_open_focus_parent");
         draw(&mut app);
-        let before = app.nav.dir().to_path_buf();
+        let before = app.explorer.dir().to_path_buf();
 
         // The cursor opens on `sub/`; `Up` backs it onto `..`.
         key(&mut app, KeyCode::Up);
-        assert_eq!(app.nav.selected(), Some(0));
+        assert_eq!(app.explorer.selected(), Some(0));
         key(&mut app, KeyCode::Char('l'));
 
         assert_eq!(
-            app.nav.dir(),
+            app.explorer.dir(),
             before.parent().expect("the fixture has a parent"),
             "did not climb out"
         );
-        assert_eq!(app.focus, Focus::Nav);
+        assert_eq!(app.focus, Focus::Explorer);
     }
 
     /// The focus goes through `reveal_and_focus`, not a bare assignment, so
-    /// `z` on the navigator cannot leave the cursor on a pane that is not
+    /// `z` on the explorer cannot leave the cursor on a pane that is not
     /// drawn. Same reason the focus *keys* do not just set the field.
     #[test]
     fn opening_a_file_reveals_a_hidden_file_view() {
-        let mut app = app_over_files("nav_open_focus_zoom", &[("a.log", "alpha\n")]);
+        let mut app = app_over_files("explorer_open_focus_zoom", &[("a.log", "alpha\n")]);
         draw(&mut app);
         key(&mut app, KeyCode::Char('z'));
-        assert!(app.zoom.is_some(), "the navigator should be zoomed");
+        assert!(app.zoom.is_some(), "the explorer should be zoomed");
 
         key(&mut app, KeyCode::Char('l'));
 
@@ -9045,7 +9056,7 @@ mod tests {
     /// `Shift-Tab` and `e` are the documented ways back.
     #[test]
     fn h_in_the_file_view_does_not_send_the_focus_back() {
-        let mut app = app_over_files("nav_open_focus_h", &[("a.log", "alpha\n")]);
+        let mut app = app_over_files("explorer_open_focus_h", &[("a.log", "alpha\n")]);
         draw(&mut app);
         key(&mut app, KeyCode::Char('l'));
         assert_eq!(app.focus, Focus::View);
@@ -9100,11 +9111,11 @@ mod tests {
             // a reused name, deliberately, so tests cannot race over one.
             let mut app = app_over_file(name, "alpha\n");
 
-            // The navigator has focus at startup.
+            // The explorer has focus at startup.
             key(&mut app, code);
             assert!(
                 app.prompt.is_none(),
-                "{code:?} opened a prompt from the navigator"
+                "{code:?} opened a prompt from the explorer"
             );
 
             key(&mut app, KeyCode::Char('t'));
@@ -9128,12 +9139,12 @@ mod tests {
         assert!(app.prompt.is_none(), "F still opens a prompt");
     }
 
-    /// The navigator's own top-left corner, as symbol and style.
+    /// The explorer's own top-left corner, as symbol and style.
     ///
     /// The corner is the probe because it is drawn by the border and by
     /// nothing else — a row's highlight, a title, and the pane's contents all
     /// stay out of it.
-    fn nav_corner(app: &mut App) -> (String, Style) {
+    fn explorer_corner(app: &mut App) -> (String, Style) {
         let mut buf = Buffer::empty(AREA);
         app.render(AREA, &mut buf);
         (buf[(0, 0)].symbol().to_string(), buf[(0, 0)].style())
@@ -9148,11 +9159,11 @@ mod tests {
     #[test]
     fn the_focused_pane_border_differs_in_colour_and_weight() {
         let mut app = app_over_file("focus_border", "alpha\n");
-        // The navigator holds focus at startup.
-        let (focused_symbol, focused_style) = nav_corner(&mut app);
+        // The explorer holds focus at startup.
+        let (focused_symbol, focused_style) = explorer_corner(&mut app);
 
         key(&mut app, KeyCode::Char('t'));
-        let (unfocused_symbol, unfocused_style) = nav_corner(&mut app);
+        let (unfocused_symbol, unfocused_style) = explorer_corner(&mut app);
 
         assert_ne!(
             focused_style.fg, unfocused_style.fg,
@@ -9165,22 +9176,22 @@ mod tests {
         );
     }
 
-    /// `z` maximises whatever has focus — including the navigator, for long
+    /// `z` maximises whatever has focus — including the explorer, for long
     /// filenames.
     #[test]
-    fn z_zooms_the_navigator_when_it_has_focus() {
-        // A distinctive marker, not "alpha": the navigator titles its block
+    fn z_zooms_the_explorer_when_it_has_focus() {
+        // A distinctive marker, not "alpha": the explorer titles its block
         // with the absolutised checkout path, which could itself contain
         // "alpha" on some checkout — the negative assertion below would then
         // pass or fail depending on where the repo happens to be checked
         // out, rather than on what the test claims to check.
-        let mut app = app_over_file("zoom_z_nav", "ZOOMMARKER\n");
+        let mut app = app_over_file("zoom_z_explorer", "ZOOMMARKER\n");
 
         key(&mut app, KeyCode::Char('z'));
 
         let after = rendered(&mut app);
         // See `b_hides_the_left_column` for why `../` is the probe.
-        assert!(after.contains("../"), "the navigator is not on screen");
+        assert!(after.contains("../"), "the explorer is not on screen");
         assert!(
             !after.contains("ZOOMMARKER"),
             "the file view is still showing"
@@ -9232,13 +9243,13 @@ mod tests {
     /// no divider to drag while zoomed, but the `Drag` arm in
     /// `handle_divider` only checks `self.dragging`, so without
     /// `toggle_zoom` cancelling it, moving the mouse mid-drag would silently
-    /// re-pin `nav_width` while nothing is drawn to explain why.
+    /// re-pin `explorer_width` while nothing is drawn to explain why.
     #[test]
     fn zooming_mid_drag_cancels_the_drag() {
         let mut app = app_over_file("zoom_drag_cancel", "alpha\n");
         draw(&mut app);
         let divider = app.divider;
-        let before = app.nav_width(AREA);
+        let before = app.explorer_width(AREA);
 
         mouse(&mut app, MouseEventKind::Down(MouseButton::Left), divider);
         assert_eq!(
@@ -9252,9 +9263,9 @@ mod tests {
 
         assert_eq!(app.dragging, None, "the drag survived into the zoom");
         assert_eq!(
-            app.nav_width(AREA),
+            app.explorer_width(AREA),
             before,
-            "nav_width changed from a drag that continued while zoomed"
+            "explorer_width changed from a drag that continued while zoomed"
         );
     }
 
@@ -9311,7 +9322,7 @@ mod tests {
 
     /// The pane costs nothing until a filter exists.
     #[test]
-    /// The pane is on screen whenever the navigator is, filters or not — so a
+    /// The pane is on screen whenever the explorer is, filters or not — so a
     /// user who has never pressed `f i` still sees where filters will appear,
     /// and the layout does not shift under them the first time they add one.
     fn the_filter_pane_is_present_before_any_filter_is_defined() {
@@ -9374,8 +9385,8 @@ mod tests {
 
         assert_eq!(
             app.focus,
-            Focus::Nav,
-            "focus did not return to the navigator"
+            Focus::Explorer,
+            "focus did not return to the explorer"
         );
     }
 
@@ -9385,18 +9396,22 @@ mod tests {
     fn shift_tab_reverses_tab() {
         let mut app = app_over_file("backtab_cycle", "alpha\n");
         draw(&mut app);
-        assert_eq!(app.focus, Focus::Nav, "sanity: starts on the navigator");
+        assert_eq!(app.focus, Focus::Explorer, "sanity: starts on the explorer");
 
         key(&mut app, KeyCode::BackTab);
         assert_eq!(app.focus, Focus::Filters, "did not wrap to the filter pane");
         key(&mut app, KeyCode::BackTab);
         assert_eq!(app.focus, Focus::View);
         key(&mut app, KeyCode::BackTab);
-        assert_eq!(app.focus, Focus::Nav);
+        assert_eq!(app.focus, Focus::Explorer);
 
         key(&mut app, KeyCode::Tab);
         key(&mut app, KeyCode::BackTab);
-        assert_eq!(app.focus, Focus::Nav, "Tab then Shift-Tab is not a no-op");
+        assert_eq!(
+            app.focus,
+            Focus::Explorer,
+            "Tab then Shift-Tab is not a no-op"
+        );
     }
 
     /// The zoomed pane is always the focused pane; `focus_prev` keeps that
@@ -9411,10 +9426,10 @@ mod tests {
 
         key(&mut app, KeyCode::BackTab);
 
-        assert_eq!(app.focus, Focus::Nav);
+        assert_eq!(app.focus, Focus::Explorer);
         assert_eq!(
             app.zoom,
-            Some(Focus::Nav),
+            Some(Focus::Explorer),
             "zoom stayed on an unfocused pane"
         );
     }
@@ -9441,7 +9456,7 @@ mod tests {
     }
 
     /// The README documents the exact order `Tab` cycles the panes in
-    /// (navigator, file view, filter pane), which follows `Focus::next`
+    /// (explorer, file view, filter pane), which follows `Focus::next`
     /// rather than anything visual — the filter pane sits *above* the file
     /// view on screen but *after* it in the cycle. Nothing else pins that
     /// order, so a reshuffle of `Focus::next` would otherwise leave the
@@ -9451,7 +9466,7 @@ mod tests {
     /// break this test loudly. The bare `0`/`1`/`2` indices this used to
     /// compare would have gone on passing while meaning something new (#73).
     #[test]
-    fn tab_cycles_navigator_then_file_view_then_filter_pane() {
+    fn tab_cycles_explorer_then_file_view_then_filter_pane() {
         let mut app = app_over_file("tab_cycle_order", "alpha\n");
         key(&mut app, KeyCode::Char('f'));
         key(&mut app, KeyCode::Char('i'));
@@ -9459,36 +9474,36 @@ mod tests {
         key(&mut app, KeyCode::Enter);
         // Creating a filter now *leaves* focus on the filter pane — `f` moved
         // it there. This test is about the cycle, not about where creating a
-        // filter lands, so come back to the navigator deliberately rather than
+        // filter lands, so come back to the explorer deliberately rather than
         // assuming the setup left focus untouched.
         key(&mut app, KeyCode::Char('e'));
         draw(&mut app);
 
         assert_eq!(
             app.focus,
-            Focus::Nav,
-            "should start focused on the navigator"
+            Focus::Explorer,
+            "should start focused on the explorer"
         );
 
         key(&mut app, KeyCode::Tab);
         assert_eq!(
             app.focus,
             Focus::View,
-            "one Tab from the navigator should reach the file view"
+            "one Tab from the explorer should reach the file view"
         );
 
         key(&mut app, KeyCode::Tab);
         assert_eq!(
             app.focus,
             Focus::Filters,
-            "two Tabs from the navigator should reach the filter pane"
+            "two Tabs from the explorer should reach the filter pane"
         );
 
         key(&mut app, KeyCode::Tab);
         assert_eq!(
             app.focus,
-            Focus::Nav,
-            "three Tabs should cycle back to the navigator"
+            Focus::Explorer,
+            "three Tabs should cycle back to the explorer"
         );
     }
 
@@ -9539,9 +9554,9 @@ mod tests {
         );
     }
 
-    /// The left column takes the wider of the navigator's and the filter
+    /// The left column takes the wider of the explorer's and the filter
     /// pane's preferred widths — but a long filter pattern must not push it
-    /// past `MAX_NAV_WIDTH` any more than a long file name already does.
+    /// past `MAX_EXPLORER_WIDTH` any more than a long file name already does.
     #[test]
     fn a_long_filter_pattern_does_not_push_the_column_past_the_cap() {
         let mut app = app_over_file("wide_filter", "alpha\n");
@@ -9552,10 +9567,10 @@ mod tests {
         key(&mut app, KeyCode::Enter);
         draw(&mut app);
 
-        assert_eq!(app.nav_width(AREA), MAX_NAV_WIDTH);
+        assert_eq!(app.explorer_width(AREA), MAX_EXPLORER_WIDTH);
     }
 
-    /// On a wide terminal `MAX_NAV_WIDTH` alone governs, exactly as before
+    /// On a wide terminal `MAX_EXPLORER_WIDTH` alone governs, exactly as before
     /// the filter pane existed — `MIN_FILE_VIEW_WIDTH` never binds here.
     /// Companion to `a_long_filter_pattern_does_not_push_the_column_past_the_cap`,
     /// but asserting the *other* bound is the one doing nothing, not just
@@ -9571,14 +9586,14 @@ mod tests {
         draw(&mut app);
 
         assert_eq!(
-            app.nav_width(AREA),
-            MAX_NAV_WIDTH,
-            "MAX_NAV_WIDTH is not governing"
+            app.explorer_width(AREA),
+            MAX_EXPLORER_WIDTH,
+            "MAX_EXPLORER_WIDTH is not governing"
         );
         assert!(
-            AREA.width - app.nav_width(AREA) > MIN_FILE_VIEW_WIDTH,
+            AREA.width - app.explorer_width(AREA) > MIN_FILE_VIEW_WIDTH,
             "the file view is sitting at its floor on a wide terminal — the \
-             floor, not MAX_NAV_WIDTH, is what's actually governing here"
+             floor, not MAX_EXPLORER_WIDTH, is what's actually governing here"
         );
     }
 
@@ -9602,14 +9617,14 @@ mod tests {
         draw(&mut app);
 
         assert_eq!(
-            narrow.width - app.nav_width(narrow),
+            narrow.width - app.explorer_width(narrow),
             MIN_FILE_VIEW_WIDTH,
             "the file view lost its floor"
         );
     }
 
     /// If the terminal is too short for the filter pane's requested height,
-    /// the navigator is squeezed to its floor (`MIN_NAV_HEIGHT`) so the
+    /// the explorer is squeezed to its floor (`MIN_EXPLORER_HEIGHT`) so the
     /// filter pane — the pane the user is actively working with — gets a
     /// genuine content row rather than merely surviving as a title with
     /// nothing under it.
@@ -9634,7 +9649,7 @@ mod tests {
             key(&mut app, KeyCode::Enter);
         }
 
-        // Status row: 1. Left column: 6 rows, split 3 (nav floor) / 3
+        // Status row: 1. Left column: 6 rows, split 3 (explorer floor) / 3
         // (filter: still short of the 8 all six filters would need, so the
         // floors are still genuinely competing). Wide enough that the
         // filter pane's auto width comfortably fits a full row's text
@@ -9665,10 +9680,10 @@ mod tests {
     /// `filter_pane_split_height` is the arithmetic Important 2 replaced a
     /// reliance on constraint-solver internals with. This drives it directly
     /// at a height where the two floors genuinely compete — the filter pane
-    /// wants more than is available, and the navigator's floor is what
+    /// wants more than is available, and the explorer's floor is what
     /// limits how much of it can win — and asserts the exact split, matching
     /// the measured (not documented) behaviour of the constraint-solver
-    /// version this replaced: `Min(3) + Length(8)` over 4 rows produced nav
+    /// version this replaced: `Min(3) + Length(8)` over 4 rows produced explorer
     /// 3, filter 1.
     #[test]
     fn the_two_height_floors_compete_and_split_arithmetically() {
@@ -9686,18 +9701,18 @@ mod tests {
         assert_eq!(filter_height, 1, "the filter pane did not get its share");
         assert_eq!(
             4 - filter_height,
-            MIN_NAV_HEIGHT,
-            "the navigator did not keep exactly its floor"
+            MIN_EXPLORER_HEIGHT,
+            "the explorer did not keep exactly its floor"
         );
     }
 
     /// Before the cap in `filter_pane_split_height`, `preferred_height` grew
     /// without bound as filters were added — so a filter set that grows past
-    /// a handful would pin the navigator at its bare floor *permanently* on
+    /// a handful would pin the explorer at its bare floor *permanently* on
     /// any terminal, not only a genuinely short one. `List`/`ListState`
     /// already scrolls the pane, so nothing is lost by capping it.
     #[test]
-    fn the_filter_pane_cannot_pin_the_navigator_at_its_bare_floor() {
+    fn the_filter_pane_cannot_pin_the_explorer_at_its_bare_floor() {
         let mut app = app_over_file("many_filters_cap", "alpha\n");
         for i in 0..20 {
             key(&mut app, KeyCode::Char('f'));
@@ -9707,8 +9722,8 @@ mod tests {
         }
 
         // 20 filters want 22 rows. On a column with 20 rows to give, the
-        // floor-only cap (`left_height - MIN_NAV_HEIGHT` = 17) would still
-        // let the filter pane take all but the navigator's bare floor.
+        // floor-only cap (`left_height - MIN_EXPLORER_HEIGHT` = 17) would still
+        // let the filter pane take all but the explorer's bare floor.
         let filter_height = app.filter_pane_split_height(20);
 
         assert!(
@@ -9716,8 +9731,8 @@ mod tests {
             "the filter pane claimed more than half the column: {filter_height}"
         );
         assert!(
-            20 - filter_height > MIN_NAV_HEIGHT,
-            "the navigator was pinned at its bare floor despite ample room \
+            20 - filter_height > MIN_EXPLORER_HEIGHT,
+            "the explorer was pinned at its bare floor despite ample room \
              (filter_height = {filter_height})"
         );
     }
@@ -9737,7 +9752,7 @@ mod tests {
 
         assert_eq!(app.filters.row_count(), 0, "the fixture defined a filter");
         // 40 rows is comfortably clear of both caps (half is 20, the
-        // navigator's floor leaves 37), so the floor is unambiguously what
+        // explorer's floor leaves 37), so the floor is unambiguously what
         // this measures.
         assert_eq!(
             app.filter_pane_split_height(40),
@@ -10255,7 +10270,7 @@ mod tests {
         // whatever the zoom now points at is genuinely drawn, not empty.
         // Focus stays on the filter pane now that its last filter no longer
         // collapses it, so the zoomed pane is the filter pane — it used to be
-        // the navigator, which is why this looked for a filename before.
+        // the explorer, which is why this looked for a filename before.
         let text = rendered(&mut app);
         assert!(
             text.contains("Filters") && text.contains("press f"),
@@ -10295,7 +10310,7 @@ mod tests {
     }
 
     /// Task 6 review (RULING 27): before the table, a global arm guarded
-    /// only on `focus != Focus::Nav` ran ahead of both scopes' own
+    /// only on `focus != Focus::Explorer` ran ahead of both scopes' own
     /// `HitNext`/`HitPrev` rows and called `step_interesting` itself, so
     /// neither arm had ever executed in production. Pins that the file
     /// view's own arm — `Scope::View`'s bare `n`/`N` rows in `keymap.rs` —
@@ -10701,7 +10716,7 @@ mod tests {
     }
 
     /// `n` belongs to the file view. Hoisting it into `App` must not make it
-    /// global — in the navigator it is still the navigator's key.
+    /// global — in the explorer it is still the explorer's key.
     ///
     /// `app_over` writes a single-line "x" into every fixture file, which
     /// made the previous version of this test vacuous: with one line, the
@@ -10709,8 +10724,8 @@ mod tests {
     /// would still be a no-op and the test would pass regardless. This fixture
     /// puts the hit on row 1, so a leak is observable as the cursor moving.
     #[test]
-    fn n_in_the_navigator_does_not_move_the_file_view_cursor() {
-        let dir = fixture_dir("n_nav");
+    fn n_in_the_explorer_does_not_move_the_file_view_cursor() {
+        let dir = fixture_dir("n_explorer");
         fs::write(dir.join("alpha.log"), "alpha\nx\n").expect("write fixture");
 
         let mut app = App::new(&Config {
@@ -10718,7 +10733,7 @@ mod tests {
             ..Config::default()
         });
         // The startup argument names a file that does not exist, so `App::new`
-        // loads that (an error message, not real content) and the navigator
+        // loads that (an error message, not real content) and the explorer
         // falls back to selecting the one real entry. `Down` is what actually
         // previews it into the file view — the same two-step construction
         // `n_promotes_a_truncated_preview_before_stepping` uses, for the same
@@ -10754,9 +10769,9 @@ mod tests {
         );
         assert_eq!(cursor_source(&app), 0, "did not land on the first hit");
         assert_eq!(
-            app.nav.selected_name().as_deref(),
+            app.explorer.selected_name().as_deref(),
             Some("c.log"),
-            "the navigator's selection did not follow"
+            "the explorer's selection did not follow"
         );
         assert_eq!(
             app.status_message.as_ref().map(|m| m.text.as_str()),
@@ -10822,11 +10837,11 @@ mod tests {
         );
     }
 
-    /// A filename search in the navigator does not redirect the content loop.
+    /// A filename search in the explorer does not redirect the content loop.
     #[test]
-    fn n_crossing_ignores_the_navigator_filename_search() {
+    fn n_crossing_ignores_the_explorer_filename_search() {
         let (mut app, _tx) = app_over_matching_logs("cross_ignores_search");
-        app.nav.search("b", false).expect("valid pattern");
+        app.explorer.search("b", false).expect("valid pattern");
         open_file(&mut app, 0);
         key(&mut app, KeyCode::Char('n'));
         key(&mut app, KeyCode::Char('n'));
@@ -10842,7 +10857,7 @@ mod tests {
 
     /// A context filter's lines are shown *around* the hits, not as hits:
     /// `n` skips them, hide mode keeps them, and they keep their colour.
-    /// The navigator already treats context this way when it marks files
+    /// The explorer already treats context this way when it marks files
     /// (`Sense::Context` is left out of the scan's selecting mask), so the
     /// view's `n` now agrees with it.
     #[test]
@@ -10879,11 +10894,11 @@ mod tests {
         );
     }
 
-    /// `.`/`,` ignore the navigator's filename search too, same as `n`/`N`.
+    /// `.`/`,` ignore the explorer's filename search too, same as `n`/`N`.
     #[test]
-    fn dot_ignores_the_navigator_filename_search() {
+    fn dot_ignores_the_explorer_filename_search() {
         let (mut app, _tx) = app_over_matching_logs("dot_ignores_search");
-        app.nav.search("b", false).expect("valid pattern");
+        app.explorer.search("b", false).expect("valid pattern");
         open_file(&mut app, 0);
 
         key(&mut app, KeyCode::Char('.'));
@@ -10951,7 +10966,7 @@ mod tests {
         assert_eq!(cursor_source(&app), 1);
     }
 
-    /// The restore has to reach the navigator's answers too, or `n` at the
+    /// The restore has to reach the explorer's answers too, or `n` at the
     /// last hit finds no file to cross to and wraps in silence.
     #[test]
     fn n_at_the_last_hit_while_peeked_still_crosses_files() {
@@ -11107,8 +11122,8 @@ mod tests {
 
         key(&mut app, KeyCode::Char('e'));
         key(&mut app, KeyCode::Char('.'));
-        assert_eq!(shown(&app), "a.log", "from the navigator (wrapped)");
-        assert_eq!(app.focus, Focus::Nav);
+        assert_eq!(shown(&app), "a.log", "from the explorer (wrapped)");
+        assert_eq!(app.focus, Focus::Explorer);
 
         key(&mut app, KeyCode::Char('f'));
         key(&mut app, KeyCode::Char(','));
@@ -11193,7 +11208,7 @@ mod tests {
 
         // The title sits on the view's top border; find the first cell of
         // the file name and read its style. Search from the divider column:
-        // the navigator's own border title is the fixture directory name,
+        // the explorer's own border title is the fixture directory name,
         // which contains `notice_title` and would otherwise match `c` first.
         let title_cell = (app.divider..AREA.width)
             .map(|x| buf[(x, 0)].clone())
@@ -11214,7 +11229,7 @@ mod tests {
     /// `[`/`]` are global so a peeked file can be paged without leaving the
     /// pane the loop is being driven from (#120 §3).
     #[test]
-    fn brackets_page_the_file_view_from_the_navigator_and_filter_pane() {
+    fn brackets_page_the_file_view_from_the_explorer_and_filter_pane() {
         let body = numbered_lines(400);
         let mut app = app_over_file("brackets_global", &body);
         let mut buf = Buffer::empty(AREA);
@@ -11225,8 +11240,8 @@ mod tests {
         key(&mut app, KeyCode::Char(']'));
         (&mut app).render(AREA, &mut buf);
         let after_page = cursor_source(&app);
-        assert!(after_page > 0, "] from the navigator did not page the view");
-        assert_eq!(app.focus, Focus::Nav, "focus moved");
+        assert!(after_page > 0, "] from the explorer did not page the view");
+        assert_eq!(app.focus, Focus::Explorer, "focus moved");
 
         key(&mut app, KeyCode::Char('f'));
         key(&mut app, KeyCode::Char('['));
@@ -11636,7 +11651,7 @@ mod tests {
         assert_eq!(cursor_source(&app), 2);
     }
 
-    /// The file search and the navigator's filename search keep separate
+    /// The file search and the explorer's filename search keep separate
     /// histories: a filename pattern never appears in the file prompt, nor
     /// the reverse.
     #[test]
@@ -11646,7 +11661,7 @@ mod tests {
         assert_eq!(
             selected_name(&app),
             "a.log",
-            "sanity: the navigator has focus"
+            "sanity: the explorer has focus"
         );
         commit_search(&mut app, "b");
         assert_eq!(
@@ -11676,13 +11691,13 @@ mod tests {
         assert_eq!(
             prompt_pattern(&app),
             "b",
-            "the navigator lost its own history"
+            "the explorer lost its own history"
         );
         key(&mut app, KeyCode::Up);
         assert_eq!(
             prompt_pattern(&app),
             "b",
-            "the navigator prompt recalled a file pattern"
+            "the explorer prompt recalled a file pattern"
         );
         key(&mut app, KeyCode::Esc);
 
@@ -11943,20 +11958,20 @@ mod tests {
         assert_eq!(app.file_view_highlight().as_deref(), Some("beta"));
     }
 
-    // ---- the navigator's filename search moves as you type (#272) --------
+    // ---- the explorer's filename search moves as you type (#272) --------
 
     fn selected_name(app: &App) -> String {
-        app.nav.selected_name().expect("an entry is selected")
+        app.explorer.selected_name().expect("an entry is selected")
     }
 
-    /// Each keystroke in the navigator's prompt moves the selection before
+    /// Each keystroke in the explorer's prompt moves the selection before
     /// Enter, and each re-runs from the origin row rather than from the
     /// entry the last keystroke reached: `b2` then Backspace lands on
     /// `b1.log`, the first `b` after the origin, not on `b3.log`, the first
     /// `b` after `b2.log`.
     #[test]
-    fn typing_in_the_navigator_moves_the_selection_and_rescans_from_the_origin() {
-        let mut app = app_over("type_nav", &["a.log", "b1.log", "b2.log", "b3.log"]);
+    fn typing_in_the_explorer_moves_the_selection_and_rescans_from_the_origin() {
+        let mut app = app_over("type_explorer", &["a.log", "b1.log", "b2.log", "b3.log"]);
         key(&mut app, KeyCode::Char('e'));
         assert_eq!(selected_name(&app), "a.log", "sanity: the origin");
 
@@ -11983,7 +11998,7 @@ mod tests {
         assert!(app.prompt.is_none(), "Enter did not close the prompt");
         assert_eq!(selected_name(&app), "b3.log", "Enter moved the selection");
         assert!(
-            app.nav.has_search(),
+            app.explorer.has_search(),
             "Enter did not set the filename search"
         );
     }
@@ -11993,7 +12008,7 @@ mod tests {
     /// put rather than stepping to the next match.
     #[test]
     fn a_filename_pattern_the_origin_matches_stays_on_the_origin() {
-        let mut app = app_over("type_nav_own", &["alpha.log", "alps.log"]);
+        let mut app = app_over("type_explorer_own", &["alpha.log", "alps.log"]);
         key(&mut app, KeyCode::Char('e'));
         assert_eq!(selected_name(&app), "alpha.log", "sanity: the origin");
 
@@ -12007,9 +12022,9 @@ mod tests {
     /// for a `j` onto that row, and Esc puts back both the selected row and
     /// the preview it had.
     #[test]
-    fn the_view_follows_the_navigator_selection_while_typing_and_esc_restores_both() {
+    fn the_view_follows_the_explorer_selection_while_typing_and_esc_restores_both() {
         let mut app = app_over_files(
-            "type_nav_preview",
+            "type_explorer_preview",
             &[
                 ("alpha.log", "ALPHA MARKER\n"),
                 ("gamma.log", "GAMMA MARKER\n"),
@@ -12034,7 +12049,7 @@ mod tests {
             "alpha.log",
             "Esc did not restore the row"
         );
-        assert!(!app.nav.has_search(), "Esc left a filename search set");
+        assert!(!app.explorer.has_search(), "Esc left a filename search set");
         let frame = rendered(&mut app);
         assert!(
             frame.contains("ALPHA MARKER") && !frame.contains("GAMMA MARKER"),
@@ -12046,8 +12061,8 @@ mod tests {
     /// `n` repeats it, and a probe that stays on the origin row does not
     /// reload the pane on the way out.
     #[test]
-    fn esc_in_the_navigator_prompt_restores_the_previous_filename_search() {
-        let mut app = app_over("type_nav_prev", &["a.log", "b1.log", "b2.log"]);
+    fn esc_in_the_explorer_prompt_restores_the_previous_filename_search() {
+        let mut app = app_over("type_explorer_prev", &["a.log", "b1.log", "b2.log"]);
         key(&mut app, KeyCode::Char('e'));
         key(&mut app, KeyCode::Char('/'));
         typed(&mut app, "b");
@@ -12059,7 +12074,7 @@ mod tests {
         assert_eq!(selected_name(&app), "b1.log", "a dead end moved the row");
         key(&mut app, KeyCode::Esc);
 
-        assert!(app.nav.has_search(), "Esc dropped the previous search");
+        assert!(app.explorer.has_search(), "Esc dropped the previous search");
         key(&mut app, KeyCode::Char('n'));
         assert_eq!(
             selected_name(&app),
@@ -12072,7 +12087,7 @@ mod tests {
     /// from the row it reached.
     #[test]
     fn n_and_big_n_repeat_a_typed_filename_search() {
-        let mut app = app_over("type_nav_repeat", &["a.log", "b1.log", "b2.log"]);
+        let mut app = app_over("type_explorer_repeat", &["a.log", "b1.log", "b2.log"]);
         key(&mut app, KeyCode::Char('e'));
 
         key(&mut app, KeyCode::Char('/'));
@@ -12091,7 +12106,7 @@ mod tests {
     /// the row where it is.
     #[test]
     fn a_filename_pattern_with_no_match_sits_at_the_origin_and_enter_says_so() {
-        let mut app = app_over("type_nav_dead_end", &["alpha.log", "beta.log"]);
+        let mut app = app_over("type_explorer_dead_end", &["alpha.log", "beta.log"]);
         key(&mut app, KeyCode::Char('e'));
 
         key(&mut app, KeyCode::Char('/'));
@@ -12105,12 +12120,12 @@ mod tests {
         assert_eq!(status(&app), Some("no filenames match \"ERROR\""));
     }
 
-    /// A half-typed regex is silent in the navigator too: no error, the
+    /// A half-typed regex is silent in the explorer too: no error, the
     /// selection on the origin row. Enter on it reports `E486` and keeps the
     /// prompt open.
     #[test]
-    fn a_half_typed_invalid_filename_regex_is_silent_in_the_navigator() {
-        let mut app = app_over("type_nav_invalid", &["alpha.log", "beta.log"]);
+    fn a_half_typed_invalid_filename_regex_is_silent_in_the_explorer() {
+        let mut app = app_over("type_explorer_invalid", &["alpha.log", "beta.log"]);
         key(&mut app, KeyCode::Char('e'));
 
         key(&mut app, KeyCode::Char('/'));
@@ -12139,11 +12154,11 @@ mod tests {
         assert_eq!(selected_name(&app), "alpha.log");
     }
 
-    /// Enter on an empty navigator prompt cancels, as in the file view: it
+    /// Enter on an empty explorer prompt cancels, as in the file view: it
     /// does not step to the next entry as a search for `""` would.
     #[test]
-    fn enter_on_an_empty_navigator_prompt_cancels() {
-        let mut app = app_over("type_nav_empty", &["alpha.log", "beta.log"]);
+    fn enter_on_an_empty_explorer_prompt_cancels() {
+        let mut app = app_over("type_explorer_empty", &["alpha.log", "beta.log"]);
         key(&mut app, KeyCode::Char('e'));
 
         key(&mut app, KeyCode::Char('/'));
@@ -12151,7 +12166,7 @@ mod tests {
 
         assert!(app.prompt.is_none(), "the prompt stayed open");
         assert_eq!(selected_name(&app), "alpha.log", "an empty search moved");
-        assert!(!app.nav.has_search(), "an empty search was set");
+        assert!(!app.explorer.has_search(), "an empty search was set");
     }
 
     /// The cursor lands on the column of the first occurrence, so a long
@@ -12397,12 +12412,12 @@ mod tests {
         key(&mut app, KeyCode::Char('/'));
         typed(&mut app, "hit");
         key(&mut app, KeyCode::Enter);
-        let before = app.nav.selected_entry();
+        let before = app.explorer.selected_entry();
 
         key(&mut app, KeyCode::Char('n'));
 
         assert_eq!(
-            app.nav.selected_entry(),
+            app.explorer.selected_entry(),
             before,
             "n crossed to another file"
         );
@@ -12492,12 +12507,12 @@ mod tests {
         }
     }
 
-    /// The navigator marks files from filters only. With nothing but a
+    /// The explorer marks files from filters only. With nothing but a
     /// search there is nothing to scan for, which is what `matcher` being
-    /// `None` means to the navigator.
+    /// `None` means to the explorer.
     #[test]
-    fn the_navigator_marks_files_from_filters_only() {
-        let mut app = app_over_file("nav_marks_search", "alpha\nbeta\n");
+    fn the_explorer_marks_files_from_filters_only() {
+        let mut app = app_over_file("explorer_marks_search", "alpha\nbeta\n");
         key(&mut app, KeyCode::Char('t'));
 
         key(&mut app, KeyCode::Char('/'));
@@ -12759,32 +12774,35 @@ mod tests {
         assert!(app.prompt.is_none(), "? still opens a prompt");
     }
 
-    /// `/` in the navigator still searches filenames — that pane has its own
+    /// `/` in the explorer still searches filenames — that pane has its own
     /// search and is untouched by this work. Asserts the selection actually
     /// moved, not just that no filter was created: a `/` that did nothing at
     /// all would also pass the filter-only assertion.
     #[test]
-    fn slash_in_the_navigator_still_searches_filenames() {
-        let mut app = app_over("slash_nav", &["alpha.log", "zebra.log"]);
+    fn slash_in_the_explorer_still_searches_filenames() {
+        let mut app = app_over("slash_explorer", &["alpha.log", "zebra.log"]);
         key(&mut app, KeyCode::Char('e'));
 
         key(&mut app, KeyCode::Char('/'));
         typed(&mut app, "zebra");
         key(&mut app, KeyCode::Enter);
 
-        assert!(app.search.is_none(), "a nav search became the file search");
-        let nav = &app.nav;
+        assert!(
+            app.search.is_none(),
+            "an explorer search became the file search"
+        );
+        let explorer = &app.explorer;
         assert_eq!(
-            nav.entries()[nav.selected().unwrap()].name,
+            explorer.entries()[explorer.selected().unwrap()].name,
             "zebra.log",
-            "the nav search did not move the selection"
+            "the explorer search did not move the selection"
         );
     }
 
     /// #120 §8: `Esc` clears whichever search the focused pane owns first,
     /// then the file search. One key, one meaning, layered.
     #[test]
-    fn esc_clears_the_navigator_search_before_the_file_search() {
+    fn esc_clears_the_explorer_search_before_the_file_search() {
         let mut app = app_over_files(
             "esc_layers",
             &[("alpha.log", "hit\n"), ("zebra.log", "hit\n")],
@@ -12800,12 +12818,12 @@ mod tests {
         key(&mut app, KeyCode::Char('/'));
         typed(&mut app, "zebra");
         key(&mut app, KeyCode::Enter);
-        assert!(app.nav.has_search(), "sanity: navigator search set");
+        assert!(app.explorer.has_search(), "sanity: explorer search set");
 
         key(&mut app, KeyCode::Esc);
         assert!(
-            !app.nav.has_search(),
-            "Esc did not clear the navigator search"
+            !app.explorer.has_search(),
+            "Esc did not clear the explorer search"
         );
         assert!(
             app.search.is_some(),
@@ -12819,9 +12837,9 @@ mod tests {
         );
     }
 
-    /// From the file view, `Esc` does not reach into the navigator.
+    /// From the file view, `Esc` does not reach into the explorer.
     #[test]
-    fn esc_in_the_view_leaves_the_navigator_search_alone() {
+    fn esc_in_the_view_leaves_the_explorer_search_alone() {
         let mut app = app_over("esc_view_only", &["alpha.log", "zebra.log"]);
         key(&mut app, KeyCode::Char('e'));
         key(&mut app, KeyCode::Char('/'));
@@ -12831,7 +12849,7 @@ mod tests {
 
         key(&mut app, KeyCode::Esc);
 
-        assert!(app.nav.has_search());
+        assert!(app.explorer.has_search());
     }
 
     /// #120 §7 decision (b): the filter pane forwards `/` to the view.
@@ -12877,33 +12895,37 @@ mod tests {
         assert!(app.chain_origin.is_none(), "origin not consumed");
     }
 
-    /// From the navigator, the return acts as the navigator's `n`. A
+    /// From the explorer, the return acts as the explorer's `n`. A
     /// filename search is the observable form: adding a filter changes the
     /// scan cache key, so match marks cannot be pre-sent in a test, but the
-    /// navigator's search-repeat needs no scan at all.
+    /// explorer's search-repeat needs no scan at all.
     #[test]
-    fn f_i_enter_from_the_navigator_returns_and_repeats_its_n() {
-        let mut app = app_over("chain_fi_nav", &["a.log", "b.log", "c.log"]);
+    fn f_i_enter_from_the_explorer_returns_and_repeats_its_n() {
+        let mut app = app_over("chain_fi_explorer", &["a.log", "b.log", "c.log"]);
         key(&mut app, KeyCode::Char('e'));
         key(&mut app, KeyCode::Char('/'));
         typed(&mut app, "log");
         key(&mut app, KeyCode::Enter);
-        // The navigator starts on `a.log`, and a typed search considers the
+        // The explorer starts on `a.log`, and a typed search considers the
         // origin row first, as the file search does (#272): `a.log` matches,
         // so `/log` stays on it. The `n` the return presses is the step —
         // the first match strictly after the selection.
-        assert_eq!(app.nav.selected_name().as_deref(), Some("a.log"), "sanity");
+        assert_eq!(
+            app.explorer.selected_name().as_deref(),
+            Some("a.log"),
+            "sanity"
+        );
 
         key(&mut app, KeyCode::Char('f'));
         key(&mut app, KeyCode::Char('i'));
         typed(&mut app, "x");
         key(&mut app, KeyCode::Enter);
 
-        assert_eq!(app.focus, Focus::Nav, "focus did not return");
+        assert_eq!(app.focus, Focus::Explorer, "focus did not return");
         assert_eq!(
-            app.nav.selected_name().as_deref(),
+            app.explorer.selected_name().as_deref(),
             Some("b.log"),
-            "the return did not act as the navigator's n"
+            "the return did not act as the explorer's n"
         );
     }
 
@@ -13081,27 +13103,27 @@ mod tests {
         assert_eq!(app.filters.len(), 1);
     }
 
-    /// A return to the navigator whose `n` finds nothing says so, rather
+    /// A return to the explorer whose `n` finds nothing says so, rather
     /// than landing silently. The commit has only just started the scan, so
     /// every mark is still `Unknown` and the honest answer is "not scanned
     /// yet", not "no matching file" (#158) — that one is reserved for a
     /// listing the scan has finished answering.
     #[test]
-    fn a_return_to_the_navigator_before_the_scan_answers_says_scanning() {
-        let mut app = app_over("chain_nav_scanning", &["a.log", "b.log"]);
+    fn a_return_to_the_explorer_before_the_scan_answers_says_scanning() {
+        let mut app = app_over("chain_explorer_scanning", &["a.log", "b.log"]);
         let (_scanner, tx) = record_scans(&mut app);
         key(&mut app, KeyCode::Char('e'));
-        let before = app.nav.selected_name();
+        let before = app.explorer.selected_name();
 
         key(&mut app, KeyCode::Char('f'));
         key(&mut app, KeyCode::Char('i'));
         typed(&mut app, "zzz");
         key(&mut app, KeyCode::Enter);
 
-        assert_eq!(app.focus, Focus::Nav, "sanity: returned");
+        assert_eq!(app.focus, Focus::Explorer, "sanity: returned");
         assert_eq!(status(&app), Some("scanning…"));
         assert_eq!(
-            app.nav.selected_name(),
+            app.explorer.selected_name(),
             before,
             "nothing to step to, so the selection should not have moved"
         );
@@ -13161,7 +13183,7 @@ mod tests {
     }
 
     /// The `Enter` that commits is still swallowed once after the return,
-    /// so it cannot also open the navigator's selection.
+    /// so it cannot also open the explorer's selection.
     #[test]
     fn the_committing_enter_is_swallowed_after_a_return() {
         let mut app = app_over("chain_swallow", &["a.log", "b.log"]);
@@ -13172,7 +13194,7 @@ mod tests {
         key(&mut app, KeyCode::Char('i'));
         typed(&mut app, "x");
         key(&mut app, KeyCode::Enter);
-        assert_eq!(app.focus, Focus::Nav, "sanity: returned");
+        assert_eq!(app.focus, Focus::Explorer, "sanity: returned");
         key(&mut app, KeyCode::Enter);
 
         assert_eq!(shown(&app), before, "the doubled Enter opened an entry");
@@ -13197,8 +13219,8 @@ mod tests {
     }
 
     #[test]
-    fn every_filter_verb_hints_in_the_navigator() {
-        let mut app = app_over("hint_nav", &["a.log"]);
+    fn every_filter_verb_hints_in_the_explorer() {
+        let mut app = app_over("hint_explorer", &["a.log"]);
         key(&mut app, KeyCode::Char('e'));
         let expected = [
             ('i', "i adds a filter · f i"),
@@ -13212,7 +13234,7 @@ mod tests {
         for (c, text) in expected {
             key(&mut app, KeyCode::Char(c));
             assert_eq!(status(&app), Some(text), "hint for {c}");
-            assert_eq!(app.focus, Focus::Nav, "{c} moved focus");
+            assert_eq!(app.focus, Focus::Explorer, "{c} moved focus");
         }
         assert!(app.filters.is_empty(), "a verb acted outside its pane");
     }
@@ -13230,7 +13252,7 @@ mod tests {
     }
 
     #[test]
-    fn h_and_l_in_the_filter_pane_hint_at_the_navigator() {
+    fn h_and_l_in_the_filter_pane_hint_at_the_explorer() {
         let mut app = app_over("hint_pane", &["a.log"]);
         key(&mut app, KeyCode::Char('f'));
 
@@ -13425,7 +13447,7 @@ mod tests {
     }
 
     #[test]
-    fn star_in_the_navigator_hints_at_t_star() {
+    fn star_in_the_explorer_hints_at_t_star() {
         let mut app = app_over_file("star_hint", "foo\n");
         key(&mut app, KeyCode::Char('e'));
 
@@ -13436,7 +13458,7 @@ mod tests {
             status(&app),
             Some("* searches the word under the cursor · t *")
         );
-        assert_eq!(app.focus, Focus::Nav);
+        assert_eq!(app.focus, Focus::Explorer);
     }
 
     /// `*` from the filter pane acts on the view's cursor, like `n`/`N`,
@@ -13645,7 +13667,7 @@ mod tests {
             path: dir.join("placeholder").display().to_string(),
             ..Config::default()
         });
-        // The navigator falls back to the first real entry (the log) and
+        // The explorer falls back to the first real entry (the log) and
         // previews it, exactly as `upgrading_a_truncated_preview_resyncs_styles_without_reloading`
         // does — the startup argument names a file that does not exist.
         key(&mut app, KeyCode::Down);
@@ -13866,21 +13888,21 @@ mod tests {
         );
     }
 
-    /// Global, not pane-scoped. The navigator is where `o` is most natural to
+    /// Global, not pane-scoped. The explorer is where `o` is most natural to
     /// press, so requiring the file view to be focused first would break it in
     /// the one place it matters most.
     #[test]
-    fn o_works_from_the_navigator_pane() {
-        let (mut app, _root) = app_over_project("o_from_nav", "alpha\n");
+    fn o_works_from_the_explorer_pane() {
+        let (mut app, _root) = app_over_project("o_from_explorer", "alpha\n");
         let launcher = record_launches(&mut app, RecordingLauncher::default());
 
         assert!(
-            app.focus == Focus::Nav,
-            "the navigator should have focus at startup"
+            app.focus == Focus::Explorer,
+            "the explorer should have focus at startup"
         );
         key(&mut app, KeyCode::Char('o'));
 
-        assert!(!launcher.is_empty(), "`o` did nothing from the navigator");
+        assert!(!launcher.is_empty(), "`o` did nothing from the explorer");
     }
 
     /// The template is a setting, so a configured one has to actually reach the
@@ -14152,17 +14174,17 @@ mod tests {
 
     /// Global, not pane-scoped, exactly like `o`.
     #[test]
-    fn shift_o_works_from_the_navigator_pane() {
-        let (mut app, _root) = app_over_project("shift_o_from_nav", "alpha\n");
+    fn shift_o_works_from_the_explorer_pane() {
+        let (mut app, _root) = app_over_project("shift_o_from_explorer", "alpha\n");
         let launcher = record_launches(&mut app, RecordingLauncher::default());
 
         assert!(
-            app.focus == Focus::Nav,
-            "the navigator should have focus at startup"
+            app.focus == Focus::Explorer,
+            "the explorer should have focus at startup"
         );
         shift(&mut app, KeyCode::Char('O'));
 
-        assert!(!launcher.is_empty(), "`O` did nothing from the navigator");
+        assert!(!launcher.is_empty(), "`O` did nothing from the explorer");
     }
 
     /// A harness that sends no modifier at all must still reach the key. The
@@ -14467,12 +14489,12 @@ mod tests {
     /// Global, like `!` and `o`: the file the user means is whatever the view
     /// is showing, so the peek must not require focusing a particular pane.
     #[test]
-    fn space_peeks_from_the_navigator_pane() {
-        let mut app = app_hiding("space_from_nav");
+    fn space_peeks_from_the_explorer_pane() {
+        let mut app = app_hiding("space_from_explorer");
         key(&mut app, KeyCode::Char('e'));
         assert!(
-            app.focus == Focus::Nav,
-            "sanity: the navigator should have focus"
+            app.focus == Focus::Explorer,
+            "sanity: the explorer should have focus"
         );
 
         key(&mut app, KeyCode::Char(' '));
@@ -14732,7 +14754,7 @@ mod tests {
         );
     }
 
-    // ---- navigator filter matches (#119) ----------------------------------
+    // ---- explorer filter matches (#119) ----------------------------------
 
     use scan::double::RecordingScanner;
     use std::sync::mpsc::Sender;
@@ -14862,12 +14884,12 @@ mod tests {
 
         assert_eq!(scanner.requests().len(), 1, "a toggle re-scanned");
         assert!(matches!(
-            app.nav.entries()[app.nav.files()[0].0].matched,
-            widgets::filenav::Match::Yes(_)
+            app.explorer.entries()[app.explorer.files()[0].0].matched,
+            widgets::explorer::Match::Yes(_)
         ));
         assert_eq!(
-            app.nav.entries()[app.nav.files()[1].0].matched,
-            widgets::filenav::Match::No
+            app.explorer.entries()[app.explorer.files()[1].0].matched,
+            widgets::explorer::Match::No
         );
     }
 
@@ -14925,18 +14947,18 @@ mod tests {
 
         key(&mut app, KeyCode::Char(' '));
         assert!(
-            app.nav
+            app.explorer
                 .entries()
                 .iter()
-                .all(|e| e.matched == widgets::filenav::Match::Unknown),
+                .all(|e| e.matched == widgets::explorer::Match::Unknown),
             "peek must un-dim"
         );
         key(&mut app, KeyCode::Char(' '));
 
         assert_eq!(scanner.requests().len(), before);
         assert_eq!(
-            app.nav.entries()[app.nav.files()[0].0].matched,
-            widgets::filenav::Match::No
+            app.explorer.entries()[app.explorer.files()[0].0].matched,
+            widgets::explorer::Match::No
         );
     }
 
@@ -14964,13 +14986,13 @@ mod tests {
 
         let expected = app.filters.filters()[1].style;
         assert_eq!(
-            app.nav.entries()[app.nav.files()[0].0].matched,
-            widgets::filenav::Match::Yes(expected)
+            app.explorer.entries()[app.explorer.files()[0].0].matched,
+            widgets::explorer::Match::Yes(expected)
         );
     }
 
     fn scanned(app: &App, row: usize, seen: Vec<u64>, eof: bool) -> scan::Scanned {
-        let (index, path) = app.nav.files()[row].clone();
+        let (index, path) = app.explorer.files()[row].clone();
         scan::Scanned {
             cache_id: app.scan_cache.id,
             index,
@@ -14999,10 +15021,13 @@ mod tests {
             "answers arrived, the frame is stale"
         );
         assert!(matches!(
-            app.nav.entries()[app.nav.files()[0].0].matched,
+            app.explorer.entries()[app.explorer.files()[0].0].matched,
             Match::Yes(_)
         ));
-        assert_eq!(app.nav.entries()[app.nav.files()[1].0].matched, Match::No);
+        assert_eq!(
+            app.explorer.entries()[app.explorer.files()[1].0].matched,
+            Match::No
+        );
         assert!(!app.drain_scan_results(), "nothing new");
     }
 
@@ -15019,7 +15044,7 @@ mod tests {
 
         assert!(!app.drain_scan_results());
         assert_eq!(
-            app.nav.entries()[app.nav.files()[0].0].matched,
+            app.explorer.entries()[app.explorer.files()[0].0].matched,
             Match::Unknown
         );
     }
@@ -15041,9 +15066,12 @@ mod tests {
         tx.send(near).expect("send");
         app.drain_scan_results();
 
-        let (_, path) = &app.nav.files()[0];
+        let (_, path) = &app.explorer.files()[0];
         assert_eq!(app.scan_cache.records[path].progress.scanned_to, 50);
-        assert_eq!(app.nav.entries()[app.nav.files()[0].0].matched, Match::No);
+        assert_eq!(
+            app.explorer.entries()[app.explorer.files()[0].0].matched,
+            Match::No
+        );
     }
 
     /// The row a result names may no longer be the file it was for.
@@ -15054,14 +15082,14 @@ mod tests {
         app.add_filter("alpha").expect("valid pattern");
         app.refresh_scan(false);
         let mut moved = scanned(&app, 0, vec![0b1], false);
-        moved.index = app.nav.files()[1].0;
+        moved.index = app.explorer.files()[1].0;
 
         tx.send(moved.clone()).expect("send");
         app.drain_scan_results();
 
         assert!(app.scan_cache.records.contains_key(&moved.path));
         assert_eq!(
-            app.nav.entries()[moved.index].matched,
+            app.explorer.entries()[moved.index].matched,
             Match::Unknown,
             "applied to the wrong row"
         );
@@ -15076,13 +15104,13 @@ mod tests {
         assert!(!app.drain_scan_results());
     }
 
-    /// The navigator's listed rows, read by rendering it — `entries` and
-    /// `visible` are private to `filenav`, so this is the only way a test
+    /// The explorer's listed rows, read by rendering it — `entries` and
+    /// `visible` are private to `explorer`, so this is the only way a test
     /// outside that module can see which rows are actually drawn.
-    fn nav_rows(app: &mut App) -> Vec<String> {
+    fn explorer_rows(app: &mut App) -> Vec<String> {
         let area = Rect::new(0, 0, 40, 20);
         let mut buf = Buffer::empty(area);
-        (&mut app.nav).render(area, &mut buf);
+        (&mut app.explorer).render(area, &mut buf);
         (0..area.height)
             .map(|y| {
                 (0..area.width)
@@ -15093,7 +15121,7 @@ mod tests {
     }
 
     #[test]
-    fn hide_mode_hides_non_matching_files_in_the_navigator_too() {
+    fn hide_mode_hides_non_matching_files_in_the_explorer_too() {
         let mut app = app_over_logs("hide_both");
         let (_scanner, tx) = record_scans(&mut app);
         app.add_filter("alpha").expect("valid pattern");
@@ -15104,12 +15132,12 @@ mod tests {
 
         ctrl(&mut app, KeyCode::Char('h'));
         assert!(
-            !nav_rows(&mut app).iter().any(|r| r.contains("a.log")),
+            !explorer_rows(&mut app).iter().any(|r| r.contains("a.log")),
             "a.log should be hidden"
         );
 
         ctrl(&mut app, KeyCode::Char('h'));
-        assert!(nav_rows(&mut app).iter().any(|r| r.contains("a.log")));
+        assert!(explorer_rows(&mut app).iter().any(|r| r.contains("a.log")));
     }
 
     #[test]
@@ -15121,16 +15149,16 @@ mod tests {
         tx.send(scanned(&app, 0, vec![0], true)).expect("send");
         app.drain_scan_results();
         ctrl(&mut app, KeyCode::Char('h'));
-        assert!(!nav_rows(&mut app).iter().any(|r| r.contains("a.log")));
+        assert!(!explorer_rows(&mut app).iter().any(|r| r.contains("a.log")));
 
         key(&mut app, KeyCode::Char(' '));
         assert!(
-            nav_rows(&mut app).iter().any(|r| r.contains("a.log")),
+            explorer_rows(&mut app).iter().any(|r| r.contains("a.log")),
             "peek must show the plain listing"
         );
 
         key(&mut app, KeyCode::Char(' '));
-        assert!(!nav_rows(&mut app).iter().any(|r| r.contains("a.log")));
+        assert!(!explorer_rows(&mut app).iter().any(|r| r.contains("a.log")));
     }
 
     /// #120 §10: hide mode is toggled often and lived behind Shift. `u`
@@ -15159,17 +15187,17 @@ mod tests {
     /// `Ctrl-u` must reach the panes: the global `u` arm is guarded on an
     /// empty modifier set precisely so it does not swallow this.
     #[test]
-    fn ctrl_d_and_ctrl_u_page_the_navigator_through_the_app() {
+    fn ctrl_d_and_ctrl_u_page_the_explorer_through_the_app() {
         let files: Vec<String> = (0..30).map(|i| format!("f{i:02}.log")).collect();
         let names: Vec<&str> = files.iter().map(String::as_str).collect();
-        let mut app = app_over("ctrl_page_nav", &names);
+        let mut app = app_over("ctrl_page_explorer", &names);
         draw(&mut app);
         key(&mut app, KeyCode::Char('e'));
-        let before = app.nav.selected_name();
+        let before = app.explorer.selected_name();
 
         ctrl(&mut app, KeyCode::Char('d'));
-        let after = app.nav.selected_name();
-        assert_ne!(after, before, "Ctrl-d did not move the navigator");
+        let after = app.explorer.selected_name();
+        assert_ne!(after, before, "Ctrl-d did not move the explorer");
         assert_eq!(
             app.document.mode(),
             Mode::Dimmed,
@@ -15177,7 +15205,11 @@ mod tests {
         );
 
         ctrl(&mut app, KeyCode::Char('u'));
-        assert_eq!(app.nav.selected_name(), before, "Ctrl-u did not move back");
+        assert_eq!(
+            app.explorer.selected_name(),
+            before,
+            "Ctrl-u did not move back"
+        );
         assert_eq!(
             app.document.mode(),
             Mode::Dimmed,
@@ -15185,10 +15217,10 @@ mod tests {
         );
     }
 
-    /// `u` is global: it works with the navigator focused, not only the view.
+    /// `u` is global: it works with the explorer focused, not only the view.
     #[test]
-    fn u_toggles_hiding_from_the_navigator() {
-        let mut app = app_over_file("u_from_nav", "alpha\nbeta\n");
+    fn u_toggles_hiding_from_the_explorer() {
+        let mut app = app_over_file("u_from_explorer", "alpha\nbeta\n");
         app.filters.add("beta").expect("valid pattern");
         app.refresh_view();
         key(&mut app, KeyCode::Char('e'));
@@ -15196,7 +15228,7 @@ mod tests {
         key(&mut app, KeyCode::Char('u'));
 
         assert_eq!(app.document.mode(), Mode::FilteredOnly);
-        assert_eq!(app.focus, Focus::Nav, "focus moved");
+        assert_eq!(app.focus, Focus::Explorer, "focus moved");
     }
 
     #[test]
@@ -15207,14 +15239,17 @@ mod tests {
         app.refresh_scan(false);
         tx.send(scanned(&app, 0, vec![0], true)).expect("send");
         app.drain_scan_results();
-        assert_eq!(app.nav.entries()[app.nav.files()[0].0].matched, Match::No);
-        let (_, path) = app.nav.files()[0].clone();
+        assert_eq!(
+            app.explorer.entries()[app.explorer.files()[0].0].matched,
+            Match::No
+        );
+        let (_, path) = app.explorer.files()[0].clone();
         fs::write(&path, "now alpha is here\nand more\n").expect("rewrite");
 
         assert!(app.check_stamps());
 
         assert_eq!(
-            app.nav.entries()[app.nav.files()[0].0].matched,
+            app.explorer.entries()[app.explorer.files()[0].0].matched,
             Match::Unknown
         );
         let last = scanner.requests().last().expect("a rescan").clone();
@@ -15327,7 +15362,7 @@ mod tests {
         app.add_filter("alpha").expect("valid pattern");
         app.add_filter("beta").expect("valid pattern");
         app.refresh_scan(false);
-        for (_, path) in app.nav.files() {
+        for (_, path) in app.explorer.files() {
             app.scan_cache.records.insert(
                 path,
                 scan::Record {
@@ -15346,7 +15381,10 @@ mod tests {
         app.refresh_scan(false);
 
         assert_eq!(scanner.requests().len(), before, "a toggle re-scanned");
-        assert_eq!(app.nav.entries()[app.nav.files()[0].0].matched, Match::No);
+        assert_eq!(
+            app.explorer.entries()[app.explorer.files()[0].0].matched,
+            Match::No
+        );
     }
 
     /// A resumed scan carries the stamp its progress was read under, so the
@@ -15357,7 +15395,7 @@ mod tests {
         let (scanner, _tx) = record_scans(&mut app);
         app.add_filter("alpha").expect("valid pattern");
         app.refresh_scan(false);
-        let (_, path) = app.nav.files()[0].clone();
+        let (_, path) = app.explorer.files()[0].clone();
         let held = Some((std::time::SystemTime::UNIX_EPOCH, 7));
         app.scan_cache.records.insert(
             path.clone(),
@@ -15396,7 +15434,7 @@ mod tests {
         app.drain_scan_results();
 
         assert!(matches!(
-            app.nav.entries()[app.nav.files()[0].0].matched,
+            app.explorer.entries()[app.explorer.files()[0].0].matched,
             Match::Yes(_)
         ));
     }
@@ -15411,7 +15449,7 @@ mod tests {
         app.refresh_scan(false);
         tx.send(scanned(&app, 0, vec![0], true)).expect("send");
         app.drain_scan_results();
-        let (_, path) = app.nav.files()[0].clone();
+        let (_, path) = app.explorer.files()[0].clone();
         let before = scanner.requests().len();
 
         let changed = app.apply_moved(vec![scan::Moved {
@@ -15420,7 +15458,10 @@ mod tests {
         }]);
 
         assert!(!changed);
-        assert_eq!(app.nav.entries()[app.nav.files()[0].0].matched, Match::No);
+        assert_eq!(
+            app.explorer.entries()[app.explorer.files()[0].0].matched,
+            Match::No
+        );
         assert_eq!(scanner.requests().len(), before);
     }
 
@@ -15434,7 +15475,7 @@ mod tests {
         app.refresh_scan(false);
         tx.send(scanned(&app, 0, vec![0], true)).expect("send");
         app.drain_scan_results();
-        let (_, path) = app.nav.files()[0].clone();
+        let (_, path) = app.explorer.files()[0].clone();
         fs::write(&path, "now alpha is here\nand more\n").expect("rewrite");
 
         let deadline = Instant::now() + Duration::from_secs(5);
@@ -15446,7 +15487,7 @@ mod tests {
 
         assert!(changed, "the poll never reported the change");
         assert_eq!(
-            app.nav.entries()[app.nav.files()[0].0].matched,
+            app.explorer.entries()[app.explorer.files()[0].0].matched,
             Match::Unknown
         );
         assert!(
@@ -15465,7 +15506,7 @@ mod tests {
         app.refresh_scan(false);
         tx.send(scanned(&app, 0, vec![0], true)).expect("send");
         app.drain_scan_results();
-        let (_, path) = app.nav.files()[0].clone();
+        let (_, path) = app.explorer.files()[0].clone();
         fs::write(&path, "now alpha is here\nand more\n").expect("rewrite");
 
         key(&mut app, KeyCode::Char('r'));
@@ -15541,9 +15582,9 @@ mod tests {
     #[test]
     fn r_re_lists_the_directory_so_a_new_file_appears() {
         let mut app = app_over_logs("r_relist");
-        let dir = app.nav.dir().to_path_buf();
+        let dir = app.explorer.dir().to_path_buf();
         assert!(
-            !nav_rows(&mut app).iter().any(|r| r.contains("c.log")),
+            !explorer_rows(&mut app).iter().any(|r| r.contains("c.log")),
             "c.log should not be listed before it exists"
         );
         fs::write(dir.join("c.log"), "x").expect("write new file");
@@ -15551,11 +15592,11 @@ mod tests {
         key(&mut app, KeyCode::Char('r'));
 
         assert!(
-            nav_rows(&mut app).iter().any(|r| r.contains("c.log")),
+            explorer_rows(&mut app).iter().any(|r| r.contains("c.log")),
             "c.log should appear once r re-lists the directory"
         );
         assert_eq!(
-            app.nav.selected_path(),
+            app.explorer.selected_path(),
             Some(dir.join("a.log")),
             "selection should stay on the file it was on"
         );
@@ -15590,62 +15631,62 @@ mod tests {
     }
 
     #[test]
-    fn clicking_a_file_in_the_navigator_loads_it_and_focuses_the_pane() {
-        let mut app = app_over_files("click_nav_file", &[("a.log", "a\n"), ("b.log", "b\n")]);
+    fn clicking_a_file_in_the_explorer_loads_it_and_focuses_the_pane() {
+        let mut app = app_over_files("click_explorer_file", &[("a.log", "a\n"), ("b.log", "b\n")]);
         key(&mut app, KeyCode::Tab);
         assert_eq!(app.focus, Focus::View);
         draw(&mut app);
 
         // Rows: `..`, `a.log`, `b.log`.
-        click_pane(&mut app, Focus::Nav, 2);
+        click_pane(&mut app, Focus::Explorer, 2);
 
         assert_eq!(shown(&app), "b.log");
-        assert_eq!(app.nav.selected(), Some(2));
-        assert_eq!(app.focus, Focus::Nav);
+        assert_eq!(app.explorer.selected(), Some(2));
+        assert_eq!(app.focus, Focus::Explorer);
     }
 
     #[test]
     fn a_single_click_on_a_directory_previews_it_and_a_double_click_descends() {
-        let (mut app, dir) = app_over_nested("click_nav_dir");
+        let (mut app, dir) = app_over_nested("click_explorer_dir");
         draw(&mut app);
 
-        click_pane(&mut app, Focus::Nav, 1);
+        click_pane(&mut app, Focus::Explorer, 1);
         assert!(app.view.showing_directory(), "one click looks ahead");
-        assert!(app.nav.dir().ends_with(&dir), "one click stays put");
+        assert!(app.explorer.dir().ends_with(&dir), "one click stays put");
 
-        click_pane(&mut app, Focus::Nav, 1);
+        click_pane(&mut app, Focus::Explorer, 1);
         assert!(
-            app.nav.dir().ends_with(dir.join("sub")),
+            app.explorer.dir().ends_with(dir.join("sub")),
             "two clicks descend, got {}",
-            app.nav.dir().display()
+            app.explorer.dir().display()
         );
     }
 
     #[test]
     fn a_double_click_on_the_parent_entry_climbs_out() {
-        let (mut app, dir) = app_over_nested("click_nav_parent");
+        let (mut app, dir) = app_over_nested("click_explorer_parent");
         draw(&mut app);
 
-        click_pane(&mut app, Focus::Nav, 0);
-        click_pane(&mut app, Focus::Nav, 0);
+        click_pane(&mut app, Focus::Explorer, 0);
+        click_pane(&mut app, Focus::Explorer, 0);
 
         assert!(
-            app.nav
+            app.explorer
                 .dir()
                 .ends_with(dir.parent().expect("fixture parent"))
         );
-        assert!(!app.nav.dir().ends_with(&dir));
+        assert!(!app.explorer.dir().ends_with(&dir));
     }
 
     #[test]
     fn two_clicks_on_different_rows_are_not_a_double_click() {
-        let (mut app, dir) = app_over_nested("click_nav_two_rows");
+        let (mut app, dir) = app_over_nested("click_explorer_two_rows");
         draw(&mut app);
 
-        click_pane(&mut app, Focus::Nav, 1);
-        click_pane(&mut app, Focus::Nav, 2);
+        click_pane(&mut app, Focus::Explorer, 1);
+        click_pane(&mut app, Focus::Explorer, 2);
 
-        assert!(app.nav.dir().ends_with(&dir), "no descent");
+        assert!(app.explorer.dir().ends_with(&dir), "no descent");
         assert_eq!(shown(&app), "z.log");
     }
 
@@ -15653,53 +15694,56 @@ mod tests {
     fn a_click_lands_on_the_row_drawn_there_once_the_list_has_scrolled() {
         let names: Vec<String> = (0..30).map(|i| format!("f{i:02}")).collect();
         let files: Vec<&str> = names.iter().map(String::as_str).collect();
-        let mut app = app_over("click_nav_scrolled", &files);
+        let mut app = app_over("click_explorer_scrolled", &files);
         key(&mut app, KeyCode::Char('G'));
         draw(&mut app);
         // 31 rows including `..`, scrolled so the last is on the bottom
         // inner row; the first inner row shows the entry `offset` rows in.
-        let inner = usize::from(app.nav_area.height - 2);
+        let inner = usize::from(app.explorer_area.height - 2);
         let offset = 31 - inner;
 
-        click_pane(&mut app, Focus::Nav, 0);
+        click_pane(&mut app, Focus::Explorer, 0);
 
-        assert_eq!(app.nav.selected(), Some(offset));
+        assert_eq!(app.explorer.selected(), Some(offset));
         assert_eq!(shown(&app), format!("f{:02}", offset - 1));
     }
 
     #[test]
     fn a_click_on_a_pane_border_only_moves_focus() {
-        let mut app = app_over_files("click_nav_border", &[("a.log", "a\n"), ("b.log", "b\n")]);
+        let mut app = app_over_files(
+            "click_explorer_border",
+            &[("a.log", "a\n"), ("b.log", "b\n")],
+        );
         key(&mut app, KeyCode::Tab);
         draw(&mut app);
-        let before = app.nav.selected();
+        let before = app.explorer.selected();
         let showing = shown(&app);
 
-        // The navigator's top border, well away from either divider.
-        let nav_area = app.nav_area;
+        // The explorer's top border, well away from either divider.
+        let explorer_area = app.explorer_area;
         mouse_at(
             &mut app,
             MouseEventKind::Down(MouseButton::Left),
-            nav_area.x + 1,
-            nav_area.y,
+            explorer_area.x + 1,
+            explorer_area.y,
         );
 
-        assert_eq!(app.focus, Focus::Nav);
-        assert_eq!(app.nav.selected(), before);
+        assert_eq!(app.focus, Focus::Explorer);
+        assert_eq!(app.explorer.selected(), before);
         assert_eq!(shown(&app), showing, "nothing was opened");
     }
 
     #[test]
     fn a_click_below_the_last_entry_does_nothing() {
-        let mut app = app_over_files("click_nav_blank", &[("a.log", "a\n")]);
+        let mut app = app_over_files("click_explorer_blank", &[("a.log", "a\n")]);
         draw(&mut app);
-        let before = app.nav.selected();
+        let before = app.explorer.selected();
         let showing = shown(&app);
 
         // Rows: `..`, `a.log`; the third inner row is blank.
-        click_pane(&mut app, Focus::Nav, 2);
+        click_pane(&mut app, Focus::Explorer, 2);
 
-        assert_eq!(app.nav.selected(), before);
+        assert_eq!(app.explorer.selected(), before);
         assert_eq!(shown(&app), showing, "nothing was opened");
     }
 
@@ -15788,17 +15832,17 @@ mod tests {
     fn clicking_a_row_of_the_listing_in_the_view_opens_that_entry() {
         let (mut app, dir) = app_over_nested("click_view_listing");
         draw(&mut app);
-        click_pane(&mut app, Focus::Nav, 1);
+        click_pane(&mut app, Focus::Explorer, 1);
         assert!(app.view.showing_directory());
         draw(&mut app);
 
         // The look-ahead lists `inner_a.log`, `inner_b.log`; no `..`.
         click_pane(&mut app, Focus::View, 1);
 
-        assert!(app.nav.dir().ends_with(dir.join("sub")));
+        assert!(app.explorer.dir().ends_with(dir.join("sub")));
         assert_eq!(shown(&app), "inner_b.log");
         assert!(
-            app.nav
+            app.explorer
                 .selected_path()
                 .is_some_and(|p| p.ends_with("inner_b.log"))
         );
@@ -15815,15 +15859,15 @@ mod tests {
             ..Config::default()
         });
         draw(&mut app);
-        click_pane(&mut app, Focus::Nav, 1); // `outer/`, previewed
+        click_pane(&mut app, Focus::Explorer, 1); // `outer/`, previewed
         draw(&mut app);
 
         click_pane(&mut app, Focus::View, 0); // `deeper/` in the look-ahead
 
         assert!(
-            app.nav.dir().ends_with(dir.join("outer/deeper")),
+            app.explorer.dir().ends_with(dir.join("outer/deeper")),
             "got {}",
-            app.nav.dir().display()
+            app.explorer.dir().display()
         );
         assert!(app.view.showing_directory() || shown(&app) == "leaf.log");
     }
@@ -15832,15 +15876,15 @@ mod tests {
     fn clicking_the_view_while_it_shows_a_file_only_focuses_it() {
         let mut app = app_over_files("click_view_file", &[("a.log", "a\nb\nc\n")]);
         open_file(&mut app, 0);
-        assert_eq!(app.focus, Focus::Nav);
+        assert_eq!(app.focus, Focus::Explorer);
         draw(&mut app);
-        let dir = app.nav.dir().to_path_buf();
+        let dir = app.explorer.dir().to_path_buf();
 
         click_pane(&mut app, Focus::View, 1);
 
         assert_eq!(app.focus, Focus::View);
         assert_eq!(shown(&app), "a.log");
-        assert_eq!(app.nav.dir(), dir);
+        assert_eq!(app.explorer.dir(), dir);
     }
 
     #[test]
@@ -15851,7 +15895,7 @@ mod tests {
         draw(&mut app);
         let showing = shown(&app);
 
-        click_pane(&mut app, Focus::Nav, 2);
+        click_pane(&mut app, Focus::Explorer, 2);
 
         assert!(app.prompt.is_some(), "the prompt is still open");
         assert_eq!(shown(&app), showing, "nothing was opened");
@@ -15861,14 +15905,14 @@ mod tests {
     fn a_click_inside_the_zoomed_pane_keeps_the_zoom() {
         let mut app = app_over_files("click_zoomed", &[("a.log", "a\n"), ("b.log", "b\n")]);
         app.zoom_focused();
-        assert_eq!(app.zoom, Some(Focus::Nav));
+        assert_eq!(app.zoom, Some(Focus::Explorer));
         draw(&mut app);
 
         // Full-frame pane: the third inner row is `b.log`.
         mouse_at(&mut app, MouseEventKind::Down(MouseButton::Left), 1, 3);
 
         assert_eq!(shown(&app), "b.log");
-        assert_eq!(app.zoom, Some(Focus::Nav));
+        assert_eq!(app.zoom, Some(Focus::Explorer));
     }
 
     // ---- visual mode and the yank (#67) ---------------------------------
@@ -16527,7 +16571,7 @@ mod tests {
     #[test]
     fn big_l_opens_the_set_picker_from_every_pane() {
         let mut app = app_with_three_sets("set_picker_opens");
-        for focus in [Focus::Nav, Focus::View, Focus::Filters] {
+        for focus in [Focus::Explorer, Focus::View, Focus::Filters] {
             app.reveal_and_focus(focus);
             key(&mut app, KeyCode::Char('L'));
             assert!(app.set_picker.is_some(), "L did not open from {focus:?}");

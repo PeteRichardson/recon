@@ -348,7 +348,7 @@ struct Claim {
 /// `help::label_matches`, which expands a label before comparing, so `5` and
 /// `1-9` are two spellings that the same keypress reaches. Grouping by the
 /// label string could not see that, and the contest it missed is exactly the
-/// one this module exists to report: a written `'nav.up' = '5'` that the
+/// one this module exists to report: a written `'explorer.up' = '5'` that the
 /// global `1-9` answers first was accepted in silence.
 ///
 /// Each entry is therefore expanded to the keys it actually names and indexed
@@ -446,7 +446,7 @@ pub(crate) fn check(built: &Keymap, written: &[ActionId]) -> Report {
     };
 
     for claim in &claims {
-        if !matches!(claim.scope, Scope::Nav | Scope::View | Scope::Filters) {
+        if !matches!(claim.scope, Scope::Explorer | Scope::View | Scope::Filters) {
             continue;
         }
         let Some(global) = winner_in(Scope::Global, claim.key) else {
@@ -760,7 +760,7 @@ mod tests {
 
     #[test]
     fn a_global_line_over_pane_defaults_warns_once_for_each_pane() {
-        // 'j' is nav.down, view.down and filters.down by default.
+        // 'j' is explorer.down, view.down and filters.down by default.
         let report = report(&[("global.quit", &["j"])]);
 
         assert_eq!(report.errors, vec![]);
@@ -768,12 +768,12 @@ mod tests {
             report.warnings,
             vec![
                 Problem::Displaced {
-                    taken_in: vec![Scope::Nav],
+                    taken_in: vec![Scope::Explorer],
                     key: "j".to_string(),
                     winner: ActionId::GlobalQuit,
-                    loser: ActionId::NavDown,
+                    loser: ActionId::ExplorerDown,
                     remaining: vec!["Down".to_string()],
-                    lost_in: vec![Scope::Nav],
+                    lost_in: vec![Scope::Explorer],
                 },
                 Problem::Displaced {
                     taken_in: vec![Scope::View],
@@ -799,17 +799,17 @@ mod tests {
 
     #[test]
     fn a_pane_line_under_a_default_global_binding_is_an_error() {
-        // 'q' is global.quit's default. nav.up can never get it.
-        let report = report(&[("nav.up", &["q"])]);
+        // 'q' is global.quit's default. explorer.up can never get it.
+        let report = report(&[("explorer.up", &["q"])]);
 
         assert_eq!(report.warnings, vec![]);
         assert_eq!(report.evict, vec![]);
         assert_eq!(
             report.errors,
             vec![Problem::Unreachable {
-                scope: Scope::Nav,
+                scope: Scope::Explorer,
                 key: "q".to_string(),
-                written: ActionId::NavUp,
+                written: ActionId::ExplorerUp,
                 global: ActionId::GlobalQuit,
             }]
         );
@@ -819,14 +819,14 @@ mod tests {
     fn a_pane_line_under_a_written_global_binding_is_also_an_error() {
         // '=' is bound nowhere by default, so the only two claims on it are
         // the two this config writes.
-        let report = report(&[("global.reload", &["="]), ("nav.up", &["="])]);
+        let report = report(&[("global.reload", &["="]), ("explorer.up", &["="])]);
 
         assert_eq!(
             report.errors,
             vec![Problem::Unreachable {
-                scope: Scope::Nav,
+                scope: Scope::Explorer,
                 key: "=".to_string(),
-                written: ActionId::NavUp,
+                written: ActionId::ExplorerUp,
                 global: ActionId::GlobalReload,
             }],
             "who holds the global key does not change the verdict"
@@ -838,7 +838,7 @@ mod tests {
         // 'Ctrl-a' is prompt.start, and the prompt scope is the only scope
         // that binds it. A global line claiming it is not a collision: while
         // a prompt is open it owns the whole keyboard, so the two never meet.
-        // (`Enter` would be the wrong key to test with — it is bound in Nav
+        // (`Enter` would be the wrong key to test with — it is bound in Explorer
         // and Filters as well, so it genuinely does cross.)
         let report = report(&[("global.reload", &["Ctrl-a"])]);
         assert_eq!(report.errors, vec![], "{report:?}");
@@ -879,21 +879,21 @@ mod tests {
 
     /// The defect the concrete-key grouping exists to remove. `resolve`
     /// expands a label before matching, so the global `1-9` answers `5` and
-    /// answers it first; a written `nav.up = '5'` can never fire. Comparing
+    /// answers it first; a written `explorer.up = '5'` can never fire. Comparing
     /// label strings saw `'5'` and `'1-9'` as unrelated and let the file
     /// through in silence.
     #[test]
     fn a_pane_line_under_a_default_range_is_an_error() {
-        let report = report(&[("nav.up", &["5"])]);
+        let report = report(&[("explorer.up", &["5"])]);
 
         assert_eq!(report.warnings, vec![]);
         assert_eq!(report.evict, vec![]);
         assert_eq!(
             report.errors,
             vec![Problem::Unreachable {
-                scope: Scope::Nav,
+                scope: Scope::Explorer,
                 key: "5".to_string(),
-                written: ActionId::NavUp,
+                written: ActionId::ExplorerUp,
                 global: ActionId::GlobalFiltersToggle,
             }],
             "'5' and '1-9' are one key however differently they are spelled"
@@ -1118,11 +1118,11 @@ mod tests {
             global.warnings
         );
 
-        // The navigator's `n` is a different action losing its own key, so it
+        // The explorer's `n` is a different action losing its own key, so it
         // stays a warning in its own right — collapsing must not swallow it.
         assert!(
-            !displaced(&global, ActionId::NavHitNext).is_empty(),
-            "nav.hit.next lost 'n' too and must still be reported: {:?}",
+            !displaced(&global, ActionId::ExplorerHitNext).is_empty(),
+            "explorer.hit.next lost 'n' too and must still be reported: {:?}",
             global.warnings
         );
 

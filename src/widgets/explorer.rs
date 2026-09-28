@@ -1,5 +1,5 @@
 use super::listmotion::ListMotion;
-/// `FileNav`
+/// `Explorer`
 ///
 use crate::document::Mode;
 use crate::filter::Background;
@@ -77,7 +77,7 @@ const EXEC_STYLE: Style = Style::new().fg(Color::Green);
 // grey that already says "not what you are looking for" on unmatched lines
 // and on disabled filters, rather than a second shade that would drift from
 // it. Which grey that is follows the background (#231), so it is read from
-// `FileNav::background` rather than held as a constant.
+// `Explorer::background` rather than held as a constant.
 //
 // `..` *is* a directory, and drawing it as one is defensible; but it is the
 // single row in every listing that is never the thing being looked for, and
@@ -121,11 +121,11 @@ impl Kind {
 }
 
 /// Whether a file would show a line under the active filters — the answer the
-/// navigator is *told*, never one it works out (#119).
+/// explorer is *told*, never one it works out (#119).
 ///
 /// `Yes` carries a ready style: the colour of the filter that selected the
 /// file, decided by `App`, which is the only thing that can see the filters.
-/// The navigator needs to know nothing about filters to draw it.
+/// The explorer needs to know nothing about filters to draw it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) enum Match {
     /// Not yet scanned, or the feature is off. Drawn plain, never hidden:
@@ -228,16 +228,16 @@ impl Entry {
 }
 
 #[derive(Debug, Default)]
-pub(crate) struct FileNav<'a> {
+pub(crate) struct Explorer<'a> {
     /// Directory currently being listed.
     dir: PathBuf,
     /// `PARENT` followed by the sorted contents of `dir`.
     ///
     /// Private because `entries[0]` must be the `..` row — `index_of` and
-    /// `activate_selection` both depend on it — and because `navlist` must stay
+    /// `activate_selection` both depend on it — and because `entry_list` must stay
     /// in step with this, which only `rebuild_list` keeps true (#81).
     entries: Vec<Entry>,
-    navlist: List<'a>,
+    entry_list: List<'a>,
     /// The cursor over `visible`, and the page size (#194).
     list: ListMotion,
     active: bool,
@@ -267,7 +267,7 @@ pub(crate) struct FileNav<'a> {
     visible: Vec<usize>,
 }
 
-impl FileNav<'_> {
+impl Explorer<'_> {
     /// Open the pane on `path`, which may name either a file or a directory.
     ///
     /// A directory is listed itself, with the cursor on its first entry. A
@@ -276,11 +276,11 @@ impl FileNav<'_> {
     /// useful.
     pub(crate) fn new(path: String) -> Self {
         let path = Path::new(&path);
-        let mut nav = Self::default();
+        let mut explorer = Self::default();
 
         if path.is_dir() {
-            nav.set_dir(path.to_path_buf(), Select::First);
-            return nav;
+            explorer.set_dir(path.to_path_buf(), Select::First);
+            return explorer;
         }
 
         // A bare filename such as `Cargo.toml` has an empty parent, so fall
@@ -292,8 +292,8 @@ impl FileNav<'_> {
         let select = path
             .file_name()
             .map_or(Select::First, |name| Select::Named(name.to_owned()));
-        nav.set_dir(dir, select);
-        nav
+        explorer.set_dir(dir, select);
+        explorer
     }
 
     /// Re-list the pane at `dir`, selecting its first entry.
@@ -305,7 +305,7 @@ impl FileNav<'_> {
     /// This used to be `fs::canonicalize`, which did the same two jobs and a
     /// third nobody asked for: it resolved symlinks (#78). `editor::project_root`
     /// and `App::open_in_editor` both deliberately do not, and both say so at
-    /// length — so descending into a symlinked directory left the navigator
+    /// length — so descending into a symlinked directory left the explorer
     /// showing one path and `o` opening another. `lexical_absolute` is now the
     /// single rule all three share; see its doc comment for why the collapse is
     /// lexical rather than filesystem-truthful.
@@ -386,7 +386,7 @@ impl FileNav<'_> {
             })
             .collect();
         self.widest = widest;
-        self.navlist = List::new(items);
+        self.entry_list = List::new(items);
     }
 
     /// Set a search over the entry names and step to its next match: what
@@ -412,7 +412,7 @@ impl FileNav<'_> {
     /// Set the filename search, or clear it with `None`, without moving the
     /// selection: the names it matches are restyled, and that is all.
     ///
-    /// This is the half of `search` that a `/` typed in the navigator wants
+    /// This is the half of `search` that a `/` typed in the explorer wants
     /// on every keystroke (#272): the pattern is set so the matching names
     /// light up, and *where* to go is a separate question, answered by
     /// `hit_from` against the origin rather than by a step from wherever
@@ -551,7 +551,7 @@ impl FileNav<'_> {
         self.preview_selection()
     }
 
-    /// Carry out a `Scope::Nav` action, returning what it asked `App` to do,
+    /// Carry out a `Scope::Explorer` action, returning what it asked `App` to do,
     /// if anything.
     ///
     /// One arm per action, each holding the body its key arm held before the
@@ -565,11 +565,11 @@ impl FileNav<'_> {
     pub(crate) fn perform(&mut self, action: crate::keymap::ActionId) -> Option<Action> {
         use crate::keymap::ActionId as A;
         match action {
-            A::NavUp => {
+            A::ExplorerUp => {
                 self.select_previous();
                 self.preview_selection()
             }
-            A::NavDown => {
+            A::ExplorerDown => {
                 self.select_next();
                 self.preview_selection()
             }
@@ -578,38 +578,38 @@ impl FileNav<'_> {
             // file: a key that works on some rows and silently does nothing
             // on others is worse than one that always does the obvious
             // thing.
-            A::NavParent => self.go_to_parent(),
-            A::NavOpen => self.open_selection(),
-            A::NavHitNext => self.repeat_search(false),
-            A::NavHitPrev => self.repeat_search(true),
+            A::ExplorerParent => self.go_to_parent(),
+            A::ExplorerOpen => self.open_selection(),
+            A::ExplorerHitNext => self.repeat_search(false),
+            A::ExplorerHitPrev => self.repeat_search(true),
             // Shared list motions (#120 §3): the same keys, with the same
             // meaning, as the file view. `g`/`G` and the Ctrl pair are
             // deliberately not intercepted by `App` for this pane — only the
-            // file view holds a *window* of its document; the navigator
+            // file view holds a *window* of its document; the explorer
             // holds all its rows, so it can answer itself.
-            A::NavGotoStart => {
+            A::ExplorerGotoStart => {
                 self.select_first();
                 self.preview_selection()
             }
-            A::NavGotoEnd => {
+            A::ExplorerGotoEnd => {
                 self.select_last();
                 self.preview_selection()
             }
-            A::NavHalfPageDown => {
+            A::ExplorerHalfPageDown => {
                 let half = (self.page_rows() / 2).max(1);
                 self.move_by(isize::try_from(half).unwrap_or(isize::MAX));
                 self.preview_selection()
             }
-            A::NavHalfPageUp => {
+            A::ExplorerHalfPageUp => {
                 let half = (self.page_rows() / 2).max(1);
                 self.move_by(-isize::try_from(half).unwrap_or(isize::MAX));
                 self.preview_selection()
             }
-            A::NavPageDown => {
+            A::ExplorerPageDown => {
                 self.move_by(isize::try_from(self.page_rows()).unwrap_or(isize::MAX));
                 self.preview_selection()
             }
-            A::NavPageUp => {
+            A::ExplorerPageUp => {
                 self.move_by(-isize::try_from(self.page_rows()).unwrap_or(isize::MAX));
                 self.preview_selection()
             }
@@ -677,7 +677,7 @@ impl FileNav<'_> {
     /// occupies two columns, so counting chars sized the pane to about half the
     /// width it needed and clipped every row (#97).
     ///
-    /// A field read. `App::nav_width` calls this from inside `App::render`, so
+    /// A field read. `App::explorer_width` calls this from inside `App::render`, so
     /// the old version allocated a `String` per directory entry on every frame
     /// to re-measure a listing that had not changed (#84).
     pub(crate) fn preferred_width(&self) -> u16 {
@@ -717,7 +717,7 @@ impl FileNav<'_> {
     /// The path the cursor is sitting on.
     ///
     /// `pub(crate)` for `App::new`, which builds the file view from whatever
-    /// the navigator selected rather than from the command-line argument.
+    /// the explorer selected rather than from the command-line argument.
     pub(crate) fn selected_path(&self) -> Option<PathBuf> {
         let index = self.selected_entry()?;
         Some(self.dir.join(&self.entries.get(index)?.name))
@@ -881,7 +881,7 @@ impl FileNav<'_> {
     /// directory, deeper is its contents; for a file, deeper is the file's
     /// own contents, and those are drawn in the sibling pane. Without the
     /// focus moving, `l` on a file changed almost nothing on screen — the
-    /// navigator already previews each row as the cursor passes over it —
+    /// explorer already previews each row as the cursor passes over it —
     /// so reading the file needed a second keystroke of a different shape.
     ///
     /// Only the key path. `click` and `open_listed` go to
@@ -891,7 +891,7 @@ impl FileNav<'_> {
     fn open_selection(&mut self) -> Option<Action> {
         match self.activate_selection()? {
             Action::Load(path) => Some(Action::LoadAndFocus(path)),
-            // A descent or a climb, which previews. The navigator is still
+            // A descent or a climb, which previews. The explorer is still
             // where the work is, so it keeps the focus.
             other => Some(other),
         }
@@ -926,7 +926,7 @@ impl FileNav<'_> {
 
     /// `ListState`'s own `select_previous`, kept as it was: with nothing
     /// selected it wraps to the end, which `ListMotion::select_previous`
-    /// does not, and the navigator always has a row selected anyway.
+    /// does not, and the explorer always has a row selected anyway.
     fn select_previous(&mut self) {
         self.list.state_mut().select_previous();
     }
@@ -974,7 +974,7 @@ fn read_dir_entries(dir: &Path) -> Vec<Entry> {
         // `PARENT_STYLE`.
         kind: Kind::Parent,
         // Not stat'd: `..` is a way out of this listing rather than an entry
-        // in it, and the navigator shows neither field anyway.
+        // in it, and the explorer shows neither field anyway.
         size: None,
         modified: None,
         matched: Match::Unknown,
@@ -996,11 +996,11 @@ fn read_dir_entries(dir: &Path) -> Vec<Entry> {
 /// `read_dir_entries` prepends.
 ///
 /// Split out for the file view, which lists a directory as a look-ahead when
-/// one is selected. `..` is deliberately absent there: it is the navigator's
+/// one is selected. `..` is deliberately absent there: it is the explorer's
 /// way back out, and nothing in a look-ahead can act on it.
 ///
 /// Returns the error rather than swallowing it, so the view can say *why* a
-/// directory is unreadable. The navigator discards it — see above.
+/// directory is unreadable. The explorer discards it — see above.
 pub(crate) fn sorted_entries(dir: &Path) -> std::io::Result<Vec<Entry>> {
     let mut listed: Vec<Entry> = fs::read_dir(dir)?
         .filter_map(|entry| Some(describe(&entry.ok()?)))
@@ -1119,7 +1119,7 @@ fn is_executable(_meta: &fs::Metadata) -> bool {
     false
 }
 
-impl Widget for &mut FileNav<'_> {
+impl Widget for &mut Explorer<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let mut highlight_style = Style::new().add_modifier(Modifier::REVERSED);
         if self.active {
@@ -1128,7 +1128,7 @@ impl Widget for &mut FileNav<'_> {
         // The block is drawn separately rather than attached to the list, and
         // the list is moved rather than cloned. Both of `Block`- and
         // `highlight_style`-attaching take `self` by value, and the obvious
-        // way to satisfy that — `self.navlist.clone()` — deep-copies every
+        // way to satisfy that — `self.entry_list.clone()` — deep-copies every
         // `ListItem`, and with it every `Line` and `Span`, once per frame.
         // `App::run` redraws unconditionally at 60 Hz, so a five-thousand
         // entry directory paid for five thousand copies a second while the
@@ -1140,9 +1140,9 @@ impl Widget for &mut FileNav<'_> {
         self.list.rendered(inner.height);
         block.render(area, buf);
 
-        let list = std::mem::take(&mut self.navlist).highlight_style(highlight_style);
+        let list = std::mem::take(&mut self.entry_list).highlight_style(highlight_style);
         StatefulWidget::render(&list, inner, buf, self.list.state_mut());
-        self.navlist = list;
+        self.entry_list = list;
     }
 }
 
@@ -1153,32 +1153,32 @@ mod tests {
     use crate::fixtures::{fixture_dir, fixture_path};
     use crossterm::event::{KeyEvent, KeyModifiers};
 
-    fn press(nav: &mut FileNav<'_>, code: KeyCode) -> Option<Action> {
+    fn press(explorer: &mut Explorer<'_>, code: KeyCode) -> Option<Action> {
         let modifiers = match code {
             KeyCode::Char(c) if c.is_uppercase() => KeyModifiers::SHIFT,
             _ => KeyModifiers::empty(),
         };
-        press_mod(nav, code, modifiers)
+        press_mod(explorer, code, modifiers)
     }
 
-    fn enter(nav: &mut FileNav<'_>) -> Option<Action> {
-        press(nav, KeyCode::Enter)
+    fn enter(explorer: &mut Explorer<'_>) -> Option<Action> {
+        press(explorer, KeyCode::Enter)
     }
 
     /// Move the selection onto a named entry, so tests don't hard-code indices
     /// that shift as the working tree changes.
-    fn select(nav: &mut FileNav<'_>, name: &str) {
-        let index = nav
+    fn select(explorer: &mut Explorer<'_>, name: &str) {
+        let index = explorer
             .entries
             .iter()
             .position(|e| e.name == name)
-            .unwrap_or_else(|| panic!("{name} not among {:?}", nav.entries));
-        nav.select(index);
+            .unwrap_or_else(|| panic!("{name} not among {:?}", explorer.entries));
+        explorer.select(index);
     }
 
     /// A fixture with one plain file, one executable file and one directory,
     /// which is the whole matrix the palette distinguishes.
-    fn nav_with_kinds(name: &str) -> FileNav<'static> {
+    fn explorer_with_kinds(name: &str) -> Explorer<'static> {
         let dir = fixture_dir(name);
         fs::create_dir_all(dir.join("subdir")).expect("create subdir");
         fs::write(dir.join("plain.txt"), "x").expect("write plain");
@@ -1189,14 +1189,14 @@ mod tests {
             use std::os::unix::fs::PermissionsExt;
             fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).expect("chmod");
         }
-        FileNav::new(dir.join("placeholder").display().to_string())
+        Explorer::new(dir.join("placeholder").display().to_string())
     }
 
     /// The rendered row for `name`, as cells, so styles can be read off it.
-    fn row_cells(nav: &mut FileNav<'_>, name: &str) -> Vec<(String, Style)> {
+    fn row_cells(explorer: &mut Explorer<'_>, name: &str) -> Vec<(String, Style)> {
         let area = Rect::new(0, 0, 40, 10);
         let mut buf = Buffer::empty(area);
-        nav.render(area, &mut buf);
+        explorer.render(area, &mut buf);
         for y in 0..area.height {
             let row: Vec<(String, Style)> = (0..area.width)
                 .map(|x| (buf[(x, y)].symbol().to_string(), buf[(x, y)].style()))
@@ -1209,8 +1209,8 @@ mod tests {
         panic!("no row containing {name:?}");
     }
 
-    fn row_text(nav: &mut FileNav<'_>, name: &str) -> String {
-        row_cells(nav, name)
+    fn row_text(explorer: &mut Explorer<'_>, name: &str) -> String {
+        row_cells(explorer, name)
             .iter()
             .map(|(sym, _)| sym.as_str())
             .collect::<String>()
@@ -1220,8 +1220,8 @@ mod tests {
 
     /// The style on the first cell of `name` itself, past the border and any
     /// indentation, so the assertion reads the name's own styling.
-    fn name_style(nav: &mut FileNav<'_>, name: &str) -> Style {
-        let cells = row_cells(nav, name);
+    fn name_style(explorer: &mut Explorer<'_>, name: &str) -> Style {
+        let cells = row_cells(explorer, name);
         let first = name.chars().next().expect("empty name");
         cells
             .iter()
@@ -1232,15 +1232,15 @@ mod tests {
 
     #[test]
     fn directories_get_a_trailing_slash() {
-        let mut nav = nav_with_kinds("kinds_slash");
+        let mut explorer = explorer_with_kinds("kinds_slash");
 
         assert!(
-            row_text(&mut nav, "subdir").ends_with("subdir/"),
+            row_text(&mut explorer, "subdir").ends_with("subdir/"),
             "no trailing slash: {:?}",
-            row_text(&mut nav, "subdir")
+            row_text(&mut explorer, "subdir")
         );
         assert!(
-            !row_text(&mut nav, "plain.txt").ends_with('/'),
+            !row_text(&mut explorer, "plain.txt").ends_with('/'),
             "a plain file was given a directory's slash"
         );
     }
@@ -1249,9 +1249,9 @@ mod tests {
     /// theme with weak colour, and the slash for no colour at all.
     #[test]
     fn directories_are_bright_blue_and_bold() {
-        let mut nav = nav_with_kinds("kinds_dir_style");
+        let mut explorer = explorer_with_kinds("kinds_dir_style");
 
-        let style = name_style(&mut nav, "subdir");
+        let style = name_style(&mut explorer, "subdir");
 
         assert_eq!(style.fg, Some(Color::LightBlue));
         assert!(
@@ -1265,9 +1265,12 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn executable_files_are_green() {
-        let mut nav = nav_with_kinds("kinds_exec");
+        let mut explorer = explorer_with_kinds("kinds_exec");
 
-        assert_eq!(name_style(&mut nav, "script.sh").fg, Some(Color::Green));
+        assert_eq!(
+            name_style(&mut explorer, "script.sh").fg,
+            Some(Color::Green)
+        );
     }
 
     /// The common case pays for no colour: with directories and executables
@@ -1275,9 +1278,9 @@ mod tests {
     /// theme governs the rows there are most of.
     #[test]
     fn ordinary_files_are_left_unstyled() {
-        let mut nav = nav_with_kinds("kinds_plain");
+        let mut explorer = explorer_with_kinds("kinds_plain");
 
-        let style = name_style(&mut nav, "plain.txt");
+        let style = name_style(&mut explorer, "plain.txt");
 
         // A rendered cell carries `Reset` rather than `None`; either way it
         // must not be wearing one of the kind colours.
@@ -1297,9 +1300,9 @@ mod tests {
     /// in open competition with the actual listing.
     #[test]
     fn the_parent_entry_is_dimmed_as_chrome() {
-        let mut nav = nav_with_kinds("kinds_parent");
+        let mut explorer = explorer_with_kinds("kinds_parent");
 
-        let style = name_style(&mut nav, PARENT);
+        let style = name_style(&mut explorer, PARENT);
 
         assert_eq!(style.fg, DIM_STYLE.fg, "`..` is not drawn in the dim grey");
         assert!(
@@ -1317,9 +1320,9 @@ mod tests {
     /// a terminal with no colour at all.
     #[test]
     fn the_parent_entry_keeps_its_trailing_slash() {
-        let mut nav = nav_with_kinds("kinds_parent_slash");
+        let mut explorer = explorer_with_kinds("kinds_parent_slash");
 
-        assert!(row_text(&mut nav, PARENT).ends_with("../"));
+        assert!(row_text(&mut explorer, PARENT).ends_with("../"));
     }
 
     /// The case this change could quietly break: reverse video is the only
@@ -1331,13 +1334,13 @@ mod tests {
     /// where the cursor is.
     #[test]
     fn a_selected_parent_entry_still_reads_as_selected() {
-        let mut nav = nav_with_kinds("kinds_parent_selected");
-        select(&mut nav, PARENT);
+        let mut explorer = explorer_with_kinds("kinds_parent_selected");
+        select(&mut explorer, PARENT);
 
-        let selected = name_style(&mut nav, PARENT);
-        let mut unselected_nav = nav_with_kinds("kinds_parent_unselected");
-        select(&mut unselected_nav, "plain.txt");
-        let unselected = name_style(&mut unselected_nav, PARENT);
+        let selected = name_style(&mut explorer, PARENT);
+        let mut unselected_explorer = explorer_with_kinds("kinds_parent_unselected");
+        select(&mut unselected_explorer, "plain.txt");
+        let unselected = name_style(&mut unselected_explorer, PARENT);
 
         assert!(
             selected.add_modifier.contains(Modifier::REVERSED),
@@ -1353,10 +1356,10 @@ mod tests {
     /// signal, and the kind is still carried by the slash and the bold.
     #[test]
     fn a_search_match_outranks_the_kind_colour() {
-        let mut nav = nav_with_kinds("kinds_search");
-        nav.search("subdir", false).expect("valid pattern");
+        let mut explorer = explorer_with_kinds("kinds_search");
+        explorer.search("subdir", false).expect("valid pattern");
 
-        assert_eq!(name_style(&mut nav, "subdir").fg, Some(Color::Yellow));
+        assert_eq!(name_style(&mut explorer, "subdir").fg, Some(Color::Yellow));
     }
 
     /// The width is measured from the row *as drawn*, so the longest entry
@@ -1367,10 +1370,10 @@ mod tests {
         let dir = fixture_dir("kinds_width");
         fs::create_dir_all(dir.join("the_longest_entry_here")).expect("create subdir");
         fs::write(dir.join("short.txt"), "x").expect("write");
-        let nav = FileNav::new(dir.join("placeholder").display().to_string());
+        let explorer = Explorer::new(dir.join("placeholder").display().to_string());
 
         assert_eq!(
-            nav.preferred_width(),
+            explorer.preferred_width(),
             "the_longest_entry_here".len() as u16 + 1 + 2,
             "expected the name, its slash, and two borders"
         );
@@ -1379,10 +1382,10 @@ mod tests {
     /// The selection marker is gone; reverse video is what says "selected".
     #[test]
     fn no_selection_marker_is_drawn() {
-        let mut nav = nav_with_kinds("kinds_no_marker");
+        let mut explorer = explorer_with_kinds("kinds_no_marker");
         let area = Rect::new(0, 0, 40, 10);
         let mut buf = Buffer::empty(area);
-        nav.render(area, &mut buf);
+        explorer.render(area, &mut buf);
 
         let text: String = (0..area.height)
             .flat_map(|y| (0..area.width).map(move |x| (x, y)))
@@ -1401,10 +1404,10 @@ mod tests {
     /// survive either way, which is the whole reason for carrying three cues.
     #[test]
     fn a_selected_directory_is_still_marked_as_selected_and_as_a_directory() {
-        let mut nav = nav_with_kinds("kinds_selected_dir");
-        select(&mut nav, "subdir");
+        let mut explorer = explorer_with_kinds("kinds_selected_dir");
+        select(&mut explorer, "subdir");
 
-        let cells = row_cells(&mut nav, "subdir");
+        let cells = row_cells(&mut explorer, "subdir");
         let style = cells
             .iter()
             .find(|(sym, _)| sym == "s")
@@ -1420,7 +1423,7 @@ mod tests {
             "the directory lost its bold when selected"
         );
         assert!(
-            row_text(&mut nav, "subdir").ends_with('/'),
+            row_text(&mut explorer, "subdir").ends_with('/'),
             "the directory lost its slash when selected"
         );
     }
@@ -1445,13 +1448,13 @@ mod tests {
         // claimed twice, and nothing here writes into the directory.
         let dir = nested_fixture("keys_up");
         for code in [KeyCode::Char('h'), KeyCode::Left] {
-            let mut nav = FileNav::new(dir.join("alpha.txt").display().to_string());
-            let start = nav.dir.clone();
+            let mut explorer = Explorer::new(dir.join("alpha.txt").display().to_string());
+            let start = explorer.dir.clone();
 
-            press(&mut nav, code);
+            press(&mut explorer, code);
 
             assert_eq!(
-                nav.dir,
+                explorer.dir,
                 start.parent().expect("fixture has a parent"),
                 "{code:?} did not climb out"
             );
@@ -1463,13 +1466,13 @@ mod tests {
     #[test]
     fn h_goes_up_regardless_of_what_is_selected() {
         let dir = nested_fixture("keys_up_any");
-        let mut nav = FileNav::new(dir.join("alpha.txt").display().to_string());
-        select(&mut nav, "beta_dir");
-        let start = nav.dir.clone();
+        let mut explorer = Explorer::new(dir.join("alpha.txt").display().to_string());
+        select(&mut explorer, "beta_dir");
+        let start = explorer.dir.clone();
 
-        press(&mut nav, KeyCode::Char('h'));
+        press(&mut explorer, KeyCode::Char('h'));
 
-        assert_eq!(nav.dir, start.parent().expect("has parent"));
+        assert_eq!(explorer.dir, start.parent().expect("has parent"));
     }
 
     #[test]
@@ -1478,12 +1481,16 @@ mod tests {
         // claimed twice, and nothing here writes into the directory.
         let dir = nested_fixture("keys_down");
         for code in [KeyCode::Char('l'), KeyCode::Right] {
-            let mut nav = FileNav::new(dir.join("alpha.txt").display().to_string());
-            select(&mut nav, "beta_dir");
+            let mut explorer = Explorer::new(dir.join("alpha.txt").display().to_string());
+            select(&mut explorer, "beta_dir");
 
-            press(&mut nav, code);
+            press(&mut explorer, code);
 
-            assert_eq!(nav.dir.file_name().expect("named"), "beta_dir", "{code:?}");
+            assert_eq!(
+                explorer.dir.file_name().expect("named"),
+                "beta_dir",
+                "{code:?}"
+            );
         }
     }
 
@@ -1498,10 +1505,10 @@ mod tests {
     fn l_and_right_on_a_file_load_it_and_ask_for_the_focus() {
         let dir = nested_fixture("keys_l_file");
         for code in [KeyCode::Char('l'), KeyCode::Right] {
-            let mut nav = FileNav::new(dir.join("alpha.txt").display().to_string());
-            select(&mut nav, "gamma.txt");
+            let mut explorer = Explorer::new(dir.join("alpha.txt").display().to_string());
+            select(&mut explorer, "gamma.txt");
 
-            let action = press(&mut nav, code);
+            let action = press(&mut explorer, code);
 
             assert!(
                 matches!(&action, Some(Action::LoadAndFocus(path)) if path.ends_with("gamma.txt")),
@@ -1518,17 +1525,17 @@ mod tests {
     #[test]
     fn a_click_on_a_file_loads_it_without_asking_for_the_focus() {
         let dir = nested_fixture("click_l_file");
-        let mut nav = FileNav::new(dir.join("alpha.txt").display().to_string());
+        let mut explorer = Explorer::new(dir.join("alpha.txt").display().to_string());
         // The drawn row, not the entry index: `click` reads `visible`, which
         // a filter can make shorter than `entries`. Nothing has rendered, so
         // the list is unscrolled and the row is also the line clicked.
-        let row = nav
+        let row = explorer
             .visible
             .iter()
-            .position(|&i| nav.entries[i].name == "gamma.txt")
+            .position(|&i| explorer.entries[i].name == "gamma.txt")
             .expect("gamma.txt is in the fixture");
 
-        let action = nav.click(u16::try_from(row).expect("small fixture"), false);
+        let action = explorer.click(u16::try_from(row).expect("small fixture"), false);
 
         assert!(
             matches!(&action, Some(Action::Load(path)) if path.ends_with("gamma.txt")),
@@ -1543,13 +1550,13 @@ mod tests {
     #[test]
     fn descending_selects_the_first_entry_and_previews_it() {
         let dir = nested_fixture("keys_first_entry");
-        let mut nav = FileNav::new(dir.join("alpha.txt").display().to_string());
-        select(&mut nav, "beta_dir");
+        let mut explorer = Explorer::new(dir.join("alpha.txt").display().to_string());
+        select(&mut explorer, "beta_dir");
 
-        let action = press(&mut nav, KeyCode::Char('l'));
+        let action = press(&mut explorer, KeyCode::Char('l'));
 
         assert_eq!(
-            selected_name(&nav),
+            selected_name(&explorer),
             "inner_a.txt",
             "did not land on the first entry"
         );
@@ -1567,13 +1574,13 @@ mod tests {
         let dir = fixture_dir("keys_first_is_dir");
         fs::create_dir_all(dir.join("outer/aaa_dir")).expect("create");
         fs::write(dir.join("outer/zzz.txt"), "x").expect("write");
-        let mut nav = FileNav::new(dir.join("placeholder").display().to_string());
-        select(&mut nav, "outer");
+        let mut explorer = Explorer::new(dir.join("placeholder").display().to_string());
+        select(&mut explorer, "outer");
 
-        press(&mut nav, KeyCode::Char('l'));
+        press(&mut explorer, KeyCode::Char('l'));
 
         assert_eq!(
-            selected_name(&nav),
+            selected_name(&explorer),
             "aaa_dir",
             "skipped the directory to find a file"
         );
@@ -1585,12 +1592,12 @@ mod tests {
     fn descending_into_an_empty_directory_selects_the_parent_entry() {
         let dir = fixture_dir("keys_empty");
         fs::create_dir_all(dir.join("hollow")).expect("create");
-        let mut nav = FileNav::new(dir.join("placeholder").display().to_string());
-        select(&mut nav, "hollow");
+        let mut explorer = Explorer::new(dir.join("placeholder").display().to_string());
+        select(&mut explorer, "hollow");
 
-        press(&mut nav, KeyCode::Char('l'));
+        press(&mut explorer, KeyCode::Char('l'));
 
-        assert_eq!(selected_name(&nav), PARENT);
+        assert_eq!(selected_name(&explorer), PARENT);
     }
 
     /// Climbing out lands on the directory just left, so going up and into a
@@ -1598,19 +1605,19 @@ mod tests {
     #[test]
     fn going_up_selects_the_directory_just_left() {
         let dir = nested_fixture("keys_back_out");
-        let mut nav = FileNav::new(dir.join("alpha.txt").display().to_string());
-        select(&mut nav, "beta_dir");
-        press(&mut nav, KeyCode::Char('l'));
+        let mut explorer = Explorer::new(dir.join("alpha.txt").display().to_string());
+        select(&mut explorer, "beta_dir");
+        press(&mut explorer, KeyCode::Char('l'));
         assert_eq!(
-            nav.dir.file_name().expect("named"),
+            explorer.dir.file_name().expect("named"),
             "beta_dir",
             "precondition"
         );
 
-        let action = press(&mut nav, KeyCode::Char('h'));
+        let action = press(&mut explorer, KeyCode::Char('h'));
 
         assert_eq!(
-            selected_name(&nav),
+            selected_name(&explorer),
             "beta_dir",
             "did not land on the directory just left"
         );
@@ -1624,12 +1631,12 @@ mod tests {
     #[test]
     fn enter_on_the_parent_entry_also_selects_the_directory_just_left() {
         let dir = nested_fixture("keys_enter_parent");
-        let mut nav = FileNav::new(dir.join("beta_dir/inner_a.txt").display().to_string());
-        select(&mut nav, PARENT);
+        let mut explorer = Explorer::new(dir.join("beta_dir/inner_a.txt").display().to_string());
+        select(&mut explorer, PARENT);
 
-        enter(&mut nav);
+        enter(&mut explorer);
 
-        assert_eq!(selected_name(&nav), "beta_dir");
+        assert_eq!(selected_name(&explorer), "beta_dir");
     }
 
     // ---- #21 item 5 / #22: what the startup argument selects ------------
@@ -1639,23 +1646,23 @@ mod tests {
     #[test]
     fn a_file_argument_selects_that_file() {
         let dir = nested_fixture("arg_file");
-        let nav = FileNav::new(dir.join("gamma.txt").display().to_string());
+        let explorer = Explorer::new(dir.join("gamma.txt").display().to_string());
 
-        assert_eq!(selected_name(&nav), "gamma.txt");
+        assert_eq!(selected_name(&explorer), "gamma.txt");
     }
 
     #[test]
     fn a_directory_argument_lists_that_directory_and_selects_its_first_entry() {
         let dir = nested_fixture("arg_dir");
-        let nav = FileNav::new(dir.display().to_string());
+        let explorer = Explorer::new(dir.display().to_string());
 
         assert_eq!(
-            nav.dir.file_name().expect("named"),
+            explorer.dir.file_name().expect("named"),
             "arg_dir",
             "listed the parent"
         );
         // `beta_dir` rather than `alpha.txt`: directories sort first (#96).
-        assert_eq!(selected_name(&nav), "beta_dir");
+        assert_eq!(selected_name(&explorer), "beta_dir");
     }
 
     /// `j` at the bottom of the listing must stay on the last entry. It used
@@ -1664,36 +1671,39 @@ mod tests {
     /// highlight is clamped separately.
     #[test]
     fn select_next_stops_at_the_last_entry() {
-        let mut nav = nav_over("clamp_bottom", &["alpha.txt"]);
-        let last = nav.entries.len() - 1;
-        nav.select(last);
+        let mut explorer = explorer_over("clamp_bottom", &["alpha.txt"]);
+        let last = explorer.entries.len() - 1;
+        explorer.select(last);
 
-        let action = press(&mut nav, KeyCode::Char('j'));
+        let action = press(&mut explorer, KeyCode::Char('j'));
 
-        assert_eq!(nav.selected(), Some(last), "ran off the end");
+        assert_eq!(explorer.selected(), Some(last), "ran off the end");
         assert!(
             action.is_some(),
             "preview stopped at the bottom of the list"
         );
     }
 
-    /// A bare filename has no directory component, so the nav pane should fall
+    /// A bare filename has no directory component, so the explorer pane should fall
     /// back to the current directory rather than listing nothing.
     ///
     /// The one test here that is *about* the working directory, so it reads
     /// the working directory — but compares against a fresh listing of it
     /// rather than naming entries it expects to find (#163). Whether `src`
     /// and `Cargo.toml` are in the cwd is a fact about where the suite was
-    /// run, not about the navigator.
+    /// run, not about the explorer.
     #[test]
     fn bare_filename_lists_current_directory() {
-        let nav = FileNav::new("any-bare-name.txt".to_string());
+        let explorer = Explorer::new("any-bare-name.txt".to_string());
         let cwd = std::env::current_dir().expect("cwd");
 
-        assert_eq!(nav.dir, cwd, "did not fall back to the current directory");
+        assert_eq!(
+            explorer.dir, cwd,
+            "did not fall back to the current directory"
+        );
         let listed = sorted_entries(&cwd).expect("cwd is readable");
         assert_eq!(
-            drawn(&nav.entries[1..]),
+            drawn(&explorer.entries[1..]),
             drawn(&listed),
             "the entries are not the current directory's"
         );
@@ -1701,8 +1711,8 @@ mod tests {
 
     #[test]
     fn parent_entry_comes_first() {
-        let nav = nav_over("parent_first", &["a.txt"]);
-        assert_eq!(names(&nav).first().map(String::as_str), Some(PARENT));
+        let explorer = explorer_over("parent_first", &["a.txt"]);
+        assert_eq!(names(&explorer).first().map(String::as_str), Some(PARENT));
     }
 
     /// The view lists a directory with size and modification time, and both
@@ -1746,8 +1756,8 @@ mod tests {
     #[test]
     fn entries_after_parent_are_sorted() {
         let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
-        let nav = FileNav::new(root.display().to_string());
-        let rest = &nav.entries[1..];
+        let explorer = Explorer::new(root.display().to_string());
+        let rest = &explorer.entries[1..];
         let mut sorted = rest.to_vec();
         sort_listing(&mut sorted);
 
@@ -1772,11 +1782,11 @@ mod tests {
         entries.iter().map(Entry::display).collect()
     }
 
-    fn listing(nav: &FileNav<'_>) -> Vec<String> {
-        drawn(&nav.entries)
+    fn listing(explorer: &Explorer<'_>) -> Vec<String> {
+        drawn(&explorer.entries)
     }
 
-    fn sort_fixture(name: &str, dirs: &[&str], files: &[&str]) -> FileNav<'static> {
+    fn sort_fixture(name: &str, dirs: &[&str], files: &[&str]) -> Explorer<'static> {
         let dir = fixture_dir(name);
         for sub in dirs {
             fs::create_dir_all(dir.join(sub)).expect("create fixture subdir");
@@ -1784,7 +1794,7 @@ mod tests {
         for file in files {
             fs::write(dir.join(file), "x").expect("write fixture");
         }
-        FileNav::new(dir.join("placeholder").display().to_string())
+        Explorer::new(dir.join("placeholder").display().to_string())
     }
 
     /// Bytewise order put every capitalised name in a block above every
@@ -1792,14 +1802,14 @@ mod tests {
     /// regardless of letter. `ls`, Finder and `yazi` all fold case instead.
     #[test]
     fn entries_sort_case_insensitively() {
-        let nav = sort_fixture(
+        let explorer = sort_fixture(
             "sort_case",
             &[],
             &["Cargo.toml", "app.log", "README.md", "beta.rs"],
         );
 
         assert_eq!(
-            listing(&nav),
+            listing(&explorer),
             ["../", "app.log", "beta.rs", "Cargo.toml", "README.md"]
         );
     }
@@ -1808,14 +1818,14 @@ mod tests {
     /// is what every other file lister this pane's palette follows does.
     #[test]
     fn directories_sort_before_files() {
-        let nav = sort_fixture(
+        let explorer = sort_fixture(
             "sort_dirs_first",
             &["src", "zeta_dir"],
             &["app.log", "beta.rs"],
         );
 
         assert_eq!(
-            listing(&nav),
+            listing(&explorer),
             ["../", "src/", "zeta_dir/", "app.log", "beta.rs"]
         );
     }
@@ -1833,19 +1843,22 @@ mod tests {
         fs::write(dir.join("zed.log"), "x").expect("write");
         // A relative target, resolved against the link's own directory.
         std::os::unix::fs::symlink("real", dir.join("link")).expect("symlink");
-        let nav = FileNav::new(dir.join("placeholder").display().to_string());
+        let explorer = Explorer::new(dir.join("placeholder").display().to_string());
 
-        assert_eq!(listing(&nav), ["../", "link/", "real/", "zed.log"]);
-        let link = nav
+        assert_eq!(listing(&explorer), ["../", "link/", "real/", "zed.log"]);
+        let link = explorer
             .entries
             .iter()
             .find(|entry| entry.name == "link")
             .expect("listed");
         assert_eq!(link.kind, Kind::Dir);
         assert!(
-            nav.files().iter().all(|(_, path)| !path.ends_with("link")),
+            explorer
+                .files()
+                .iter()
+                .all(|(_, path)| !path.ends_with("link")),
             "a directory is never a file to scan: {:?}",
-            nav.files()
+            explorer.files()
         );
     }
 
@@ -1863,9 +1876,10 @@ mod tests {
         std::os::unix::fs::symlink("plain.log", dir.join("to_plain")).expect("ln");
         std::os::unix::fs::symlink("run.sh", dir.join("to_run")).expect("ln");
         std::os::unix::fs::symlink("missing", dir.join("dangling")).expect("ln");
-        let nav = FileNav::new(dir.join("placeholder").display().to_string());
+        let explorer = Explorer::new(dir.join("placeholder").display().to_string());
         let kind_of = |name: &str| {
-            nav.entries
+            explorer
+                .entries
                 .iter()
                 .find(|entry| entry.name == name)
                 .unwrap_or_else(|| panic!("{name} listed"))
@@ -1899,9 +1913,9 @@ mod tests {
         let dir = fixture_dir("special_socket");
         fs::write(dir.join("a.log"), "x").expect("write");
         let _listener = std::os::unix::net::UnixListener::bind(dir.join("sock")).expect("bind");
-        let nav = FileNav::new(dir.join("placeholder").display().to_string());
+        let explorer = Explorer::new(dir.join("placeholder").display().to_string());
 
-        let sock = nav
+        let sock = explorer
             .entries
             .iter()
             .find(|entry| entry.name == "sock")
@@ -1913,14 +1927,15 @@ mod tests {
             "dimmed, like `..`: not content"
         );
         assert_eq!(sock.display(), "sock", "no suffix; the dimming is the cue");
-        let scanned: Vec<_> = nav.files().into_iter().map(|(_, path)| path).collect();
+        let scanned: Vec<_> = explorer.files().into_iter().map(|(_, path)| path).collect();
         assert_eq!(
             scanned,
-            [nav.dir.join("a.log")],
+            [explorer.dir.join("a.log")],
             "the scanner never opens it"
         );
         assert!(
-            nav.listed_files()
+            explorer
+                .listed_files()
                 .iter()
                 .all(|file| !file.path.ends_with("sock")),
             "`--emit files` never names it either"
@@ -2003,15 +2018,15 @@ mod tests {
             return;
         };
 
-        let mut nav = FileNav::new(dir.join("placeholder").display().to_string());
+        let mut explorer = Explorer::new(dir.join("placeholder").display().to_string());
         assert_eq!(
-            nav.entries.len(),
+            explorer.entries.len(),
             2,
             "expected `..` and the one fixture file"
         );
-        nav.select(1);
+        explorer.select(1);
 
-        let path = nav.selected_path().expect("an entry is selected");
+        let path = explorer.selected_path().expect("an entry is selected");
 
         assert_eq!(
             path.file_name(),
@@ -2035,16 +2050,16 @@ mod tests {
             return;
         };
 
-        let mut nav = FileNav::new(dir.join(&raw).join("inner").display().to_string());
+        let mut explorer = Explorer::new(dir.join(&raw).join("inner").display().to_string());
         assert_eq!(
-            nav.dir.file_name(),
+            explorer.dir.file_name(),
             Some(raw.as_os_str()),
             "precondition: the pane is inside the odd directory"
         );
 
-        press(&mut nav, KeyCode::Char('h'));
+        press(&mut explorer, KeyCode::Char('h'));
 
-        let landed = nav.selected_path().expect("nothing selected");
+        let landed = explorer.selected_path().expect("nothing selected");
         assert_eq!(
             landed.file_name(),
             Some(raw.as_os_str()),
@@ -2058,7 +2073,7 @@ mod tests {
     #[test]
     fn selected_path_joins_the_name_as_the_os_gave_it() {
         let raw = non_utf8_name();
-        let mut nav = FileNav {
+        let mut explorer = Explorer {
             dir: PathBuf::from("/tmp/somewhere"),
             entries: vec![Entry {
                 name: raw.clone(),
@@ -2072,10 +2087,10 @@ mod tests {
             visible: vec![0],
             ..Default::default()
         };
-        nav.select(0);
+        explorer.select(0);
 
         assert_eq!(
-            nav.selected_path(),
+            explorer.selected_path(),
             Some(PathBuf::from("/tmp/somewhere").join(&raw))
         );
     }
@@ -2099,20 +2114,20 @@ mod tests {
     #[test]
     fn path_with_directory_lists_that_directory() {
         let dir = repo_like("path_with_directory");
-        let nav = FileNav::new(dir.join("src/lib.rs").display().to_string());
+        let explorer = Explorer::new(dir.join("src/lib.rs").display().to_string());
         assert!(
-            nav.entries.iter().any(|e| e.name == "lib.rs"),
+            explorer.entries.iter().any(|e| e.name == "lib.rs"),
             "expected lib.rs among entries, got {:?}",
-            nav.entries
+            explorer.entries
         );
-        assert!(!nav.entries.iter().any(|e| e.name == "Cargo.toml"));
+        assert!(!explorer.entries.iter().any(|e| e.name == "Cargo.toml"));
     }
 
     /// An unreadable directory still offers `..` so the user can escape.
     #[test]
     fn missing_directory_still_offers_parent() {
-        let nav = FileNav::new("no/such/dir/file.txt".to_string());
-        assert_eq!(names(&nav), vec![PARENT]);
+        let explorer = Explorer::new("no/such/dir/file.txt".to_string());
+        assert_eq!(names(&explorer), vec![PARENT]);
     }
 
     /// A directory shaped like a crate root — `Cargo.toml` beside
@@ -2131,22 +2146,22 @@ mod tests {
 
     /// Build a directory with known contents, so width assertions do not
     /// depend on whatever happens to be in the working tree.
-    fn nav_over(name: &str, files: &[&str]) -> FileNav<'static> {
+    fn explorer_over(name: &str, files: &[&str]) -> Explorer<'static> {
         let dir = fixture_dir(name);
         for file in files {
             fs::write(dir.join(file), "x").expect("write fixture");
         }
-        FileNav::new(dir.join("placeholder").display().to_string())
+        Explorer::new(dir.join("placeholder").display().to_string())
     }
 
-    /// A nav pane over a known set of names, for search assertions. Each test
+    /// An explorer pane over a known set of names, for search assertions. Each test
     /// gets its own directory, since tests run in parallel.
-    fn searchable(name: &str) -> FileNav<'static> {
-        nav_over(name, &["alpha.rs", "beta.rs", "beta2.rs", "gamma.rs"])
+    fn searchable(name: &str) -> Explorer<'static> {
+        explorer_over(name, &["alpha.rs", "beta.rs", "beta2.rs", "gamma.rs"])
     }
 
-    fn selected_name(nav: &FileNav<'_>) -> String {
-        nav.entries[nav.selected_entry().expect("nothing selected")]
+    fn selected_name(explorer: &Explorer<'_>) -> String {
+        explorer.entries[explorer.selected_entry().expect("nothing selected")]
             .name
             .to_string_lossy()
             .into_owned()
@@ -2158,37 +2173,40 @@ mod tests {
     /// Reads `visible`, not `entries` directly: the point is what is
     /// *listed*, and a hidden row must not appear here even though it is
     /// still in `entries`.
-    fn names(nav: &FileNav<'_>) -> Vec<String> {
-        nav.visible
+    fn names(explorer: &Explorer<'_>) -> Vec<String> {
+        explorer
+            .visible
             .iter()
-            .map(|&i| nav.entries[i].name.to_string_lossy().into_owned())
+            .map(|&i| explorer.entries[i].name.to_string_lossy().into_owned())
             .collect()
     }
 
     #[test]
     fn search_selects_a_matching_entry() {
-        let mut nav = searchable("search_sel");
+        let mut explorer = searchable("search_sel");
 
-        nav.search("beta", false).expect("valid pattern");
+        explorer.search("beta", false).expect("valid pattern");
 
-        assert_eq!(selected_name(&nav), "beta.rs");
+        assert_eq!(selected_name(&explorer), "beta.rs");
     }
 
     #[test]
     fn search_is_a_regex() {
-        let mut nav = searchable("search_regex");
+        let mut explorer = searchable("search_regex");
 
-        nav.search(r"^gam+a\.rs$", false).expect("valid pattern");
+        explorer
+            .search(r"^gam+a\.rs$", false)
+            .expect("valid pattern");
 
-        assert_eq!(selected_name(&nav), "gamma.rs");
+        assert_eq!(selected_name(&explorer), "gamma.rs");
     }
 
     /// Jumping to a file previews it, exactly as moving the cursor does.
     #[test]
     fn search_asks_for_the_matched_file_to_be_previewed() {
-        let mut nav = searchable("search_preview");
+        let mut explorer = searchable("search_preview");
 
-        let action = nav.search("gamma", false).expect("valid pattern");
+        let action = explorer.search("gamma", false).expect("valid pattern");
 
         match action {
             Some(Action::Preview(path)) => {
@@ -2200,162 +2218,174 @@ mod tests {
 
     #[test]
     fn n_cycles_to_the_next_match() {
-        let mut nav = searchable("search_cycle");
-        nav.search("beta", false).expect("valid pattern");
+        let mut explorer = searchable("search_cycle");
+        explorer.search("beta", false).expect("valid pattern");
 
-        press(&mut nav, KeyCode::Char('n'));
-        assert_eq!(selected_name(&nav), "beta2.rs");
+        press(&mut explorer, KeyCode::Char('n'));
+        assert_eq!(selected_name(&explorer), "beta2.rs");
 
-        press(&mut nav, KeyCode::Char('N'));
-        assert_eq!(selected_name(&nav), "beta.rs");
+        press(&mut explorer, KeyCode::Char('N'));
+        assert_eq!(selected_name(&explorer), "beta.rs");
     }
 
     #[test]
     fn search_wraps_around_the_listing() {
-        let mut nav = searchable("search_wrap");
-        nav.search("beta", false).expect("valid pattern");
-        press(&mut nav, KeyCode::Char('n')); // beta2.rs, the last match
+        let mut explorer = searchable("search_wrap");
+        explorer.search("beta", false).expect("valid pattern");
+        press(&mut explorer, KeyCode::Char('n')); // beta2.rs, the last match
 
-        press(&mut nav, KeyCode::Char('n'));
+        press(&mut explorer, KeyCode::Char('n'));
 
-        assert_eq!(selected_name(&nav), "beta.rs", "search did not wrap");
+        assert_eq!(selected_name(&explorer), "beta.rs", "search did not wrap");
     }
 
     #[test]
     fn a_backward_search_walks_upwards() {
-        let mut nav = searchable("search_back");
-        select(&mut nav, "gamma.rs");
+        let mut explorer = searchable("search_back");
+        select(&mut explorer, "gamma.rs");
 
-        nav.search("beta", true).expect("valid pattern");
+        explorer.search("beta", true).expect("valid pattern");
 
-        assert_eq!(selected_name(&nav), "beta2.rs");
+        assert_eq!(selected_name(&explorer), "beta2.rs");
     }
 
     #[test]
     fn an_invalid_pattern_is_reported() {
-        let mut nav = searchable("search_bad");
+        let mut explorer = searchable("search_bad");
 
-        assert!(nav.search("[", false).is_err());
+        assert!(explorer.search("[", false).is_err());
     }
 
     #[test]
     fn a_pattern_matching_nothing_leaves_the_selection_alone() {
-        let mut nav = searchable("search_nomatch");
-        select(&mut nav, "alpha.rs");
+        let mut explorer = searchable("search_nomatch");
+        select(&mut explorer, "alpha.rs");
 
-        let action = nav.search("zzz", false).expect("valid pattern");
+        let action = explorer.search("zzz", false).expect("valid pattern");
 
         assert!(action.is_none());
-        assert_eq!(selected_name(&nav), "alpha.rs");
+        assert_eq!(selected_name(&explorer), "alpha.rs");
     }
 
     // ---- n / N over matches ----------------------------------------------
 
     #[test]
     fn n_steps_to_the_next_matching_file_when_no_search_is_active() {
-        let mut nav = nav_over("n_match", &["a.log", "b.log", "c.log"]);
-        let (a, c) = (nav.files()[0].0, nav.files()[2].0);
-        nav.set_answer(a, Match::Yes(Style::default()));
-        nav.set_answer(c, Match::Yes(Style::default()));
-        nav.restyle();
-        nav.select_entry(a);
+        let mut explorer = explorer_over("n_match", &["a.log", "b.log", "c.log"]);
+        let (a, c) = (explorer.files()[0].0, explorer.files()[2].0);
+        explorer.set_answer(a, Match::Yes(Style::default()));
+        explorer.set_answer(c, Match::Yes(Style::default()));
+        explorer.restyle();
+        explorer.select_entry(a);
 
-        let action = press(&mut nav, KeyCode::Char('n'));
+        let action = press(&mut explorer, KeyCode::Char('n'));
 
-        assert_eq!(nav.selected_entry(), Some(c));
+        assert_eq!(explorer.selected_entry(), Some(c));
         assert!(
             matches!(action, Some(Action::Preview(_))),
             "the step previews, like a search step"
         );
 
-        press(&mut nav, KeyCode::Char('n'));
-        assert_eq!(nav.selected_entry(), Some(a), "wraps");
+        press(&mut explorer, KeyCode::Char('n'));
+        assert_eq!(explorer.selected_entry(), Some(a), "wraps");
 
-        press(&mut nav, KeyCode::Char('N'));
-        assert_eq!(nav.selected_entry(), Some(c), "N reverses");
+        press(&mut explorer, KeyCode::Char('N'));
+        assert_eq!(explorer.selected_entry(), Some(c), "N reverses");
     }
 
     /// The cross-file step the file view's `n` uses: filter matches only,
     /// even when a filename search is active and would pick differently.
     #[test]
     fn step_to_match_ignores_the_filename_search() {
-        let mut nav = nav_over("step_match", &["a.log", "b.log", "c.log"]);
-        let (a, b, c) = (nav.files()[0].0, nav.files()[1].0, nav.files()[2].0);
-        nav.set_answer(a, Match::Yes(Style::default()));
-        nav.set_answer(b, Match::Yes(Style::default()));
-        nav.set_answer(c, Match::No);
-        nav.restyle();
-        nav.search("c", false).expect("valid pattern");
-        nav.select_entry(a);
+        let mut explorer = explorer_over("step_match", &["a.log", "b.log", "c.log"]);
+        let (a, b, c) = (
+            explorer.files()[0].0,
+            explorer.files()[1].0,
+            explorer.files()[2].0,
+        );
+        explorer.set_answer(a, Match::Yes(Style::default()));
+        explorer.set_answer(b, Match::Yes(Style::default()));
+        explorer.set_answer(c, Match::No);
+        explorer.restyle();
+        explorer.search("c", false).expect("valid pattern");
+        explorer.select_entry(a);
 
-        let action = nav.step_to_match(false);
+        let action = explorer.step_to_match(false);
 
         assert_eq!(
-            nav.selected_entry(),
+            explorer.selected_entry(),
             Some(b),
             "went to the filter match, not the search hit"
         );
         assert!(matches!(action, Some(Action::Preview(_))));
-        assert_eq!(nav.selected_name().as_deref(), Some("b.log"));
+        assert_eq!(explorer.selected_name().as_deref(), Some("b.log"));
 
-        nav.step_to_match(false);
+        explorer.step_to_match(false);
         assert_eq!(
-            nav.selected_entry(),
+            explorer.selected_entry(),
             Some(a),
             "wraps past the unmatched c.log"
         );
 
-        nav.step_to_match(true);
-        assert_eq!(nav.selected_entry(), Some(b), "reverse");
+        explorer.step_to_match(true);
+        assert_eq!(explorer.selected_entry(), Some(b), "reverse");
     }
 
     #[test]
     fn step_to_match_is_none_when_nothing_matches() {
-        let mut nav = nav_over("step_match_none", &["a.log", "b.log"]);
-        let a = nav.files()[0].0;
-        nav.set_answer(a, Match::No);
-        nav.restyle();
-        nav.select_entry(a);
+        let mut explorer = explorer_over("step_match_none", &["a.log", "b.log"]);
+        let a = explorer.files()[0].0;
+        explorer.set_answer(a, Match::No);
+        explorer.restyle();
+        explorer.select_entry(a);
 
-        assert!(nav.step_to_match(false).is_none());
-        assert_eq!(nav.selected_entry(), Some(a), "selection untouched");
+        assert!(explorer.step_to_match(false).is_none());
+        assert_eq!(explorer.selected_entry(), Some(a), "selection untouched");
     }
 
     /// A filename search, once started, owns `n`/`N` — exactly as before.
     #[test]
     fn n_repeats_the_search_when_one_is_active() {
-        let mut nav = nav_over("n_search", &["a.log", "b.log", "c.log"]);
-        let c = nav.files()[2].0;
-        nav.set_answer(c, Match::Yes(Style::default()));
-        nav.search("b", false).expect("valid pattern");
-        nav.select_entry(nav.files()[0].0);
+        let mut explorer = explorer_over("n_search", &["a.log", "b.log", "c.log"]);
+        let c = explorer.files()[2].0;
+        explorer.set_answer(c, Match::Yes(Style::default()));
+        explorer.search("b", false).expect("valid pattern");
+        explorer.select_entry(explorer.files()[0].0);
 
-        press(&mut nav, KeyCode::Char('n'));
+        press(&mut explorer, KeyCode::Char('n'));
 
-        assert_eq!(nav.selected_path().unwrap().file_name().unwrap(), "b.log");
+        assert_eq!(
+            explorer.selected_path().unwrap().file_name().unwrap(),
+            "b.log"
+        );
     }
 
     #[test]
     fn n_with_nothing_matching_and_no_search_goes_nowhere() {
-        let mut nav = nav_over("n_nothing", &["a.log"]);
-        let a = nav.files()[0].0;
-        nav.select_entry(a);
+        let mut explorer = explorer_over("n_nothing", &["a.log"]);
+        let a = explorer.files()[0].0;
+        explorer.select_entry(a);
 
-        assert!(press(&mut nav, KeyCode::Char('n')).is_none());
-        assert_eq!(nav.selected_entry(), Some(a));
+        assert!(press(&mut explorer, KeyCode::Char('n')).is_none());
+        assert_eq!(explorer.selected_entry(), Some(a));
     }
 
     #[test]
     fn matching_entries_are_highlighted() {
-        let mut nav = searchable("search_highlight");
-        nav.search("beta", false).expect("valid pattern");
+        let mut explorer = searchable("search_highlight");
+        explorer.search("beta", false).expect("valid pattern");
         let area = Rect::new(0, 0, 20, 10);
         let mut buf = Buffer::empty(area);
 
-        nav.render(area, &mut buf);
+        explorer.render(area, &mut buf);
 
         let row_style = |name: &str| {
-            let y = nav.entries.iter().position(|e| e.name == name).unwrap() as u16 + 1;
+            let y = explorer
+                .entries
+                .iter()
+                .position(|e| e.name == name)
+                .unwrap() as u16
+                + 1;
             buf[(4, y)].style()
         };
         assert_ne!(
@@ -2367,11 +2397,11 @@ mod tests {
 
     #[test]
     fn preferred_width_fits_the_longest_entry() {
-        let nav = nav_over("widths", &["a.rs", "much_longer_name.rs"]);
+        let explorer = explorer_over("widths", &["a.rs", "much_longer_name.rs"]);
 
         // Two borders plus the name. The `>>` marker used to add two more.
         assert_eq!(
-            nav.preferred_width(),
+            explorer.preferred_width(),
             "much_longer_name.rs".len() as u16 + 2
         );
     }
@@ -2381,11 +2411,11 @@ mod tests {
     /// row (#97).
     #[test]
     fn preferred_width_counts_display_columns_not_chars() {
-        let nav = nav_over("widths_cjk", &["日本語のファイル.rs"]);
+        let explorer = explorer_over("widths_cjk", &["日本語のファイル.rs"]);
 
         // 8 ideographs at 2 columns each, `の` included, plus `.rs` at 1 each,
         // plus two borders. Counting chars would give 11 + 2.
-        assert_eq!(nav.preferred_width(), 16 + 3 + 2);
+        assert_eq!(explorer.preferred_width(), 16 + 3 + 2);
     }
 
     /// The cache #84 introduces must not outlive the listing it was measured
@@ -2393,22 +2423,23 @@ mod tests {
     /// mutation path, not just the two `set_dir` reaches.
     #[test]
     fn the_cached_width_matches_a_fresh_computation() {
-        let mut nav = nav_over("widths_cache", &["a.rs", "much_longer_name.rs"]);
+        let mut explorer = explorer_over("widths_cache", &["a.rs", "much_longer_name.rs"]);
 
-        let fresh = |nav: &FileNav<'_>| {
-            nav.entries
+        let fresh = |explorer: &Explorer<'_>| {
+            explorer
+                .entries
                 .iter()
                 .map(|entry| UnicodeWidthStr::width(entry.display().as_str()))
                 .max()
                 .unwrap_or(0) as u16
                 + 2
         };
-        assert_eq!(nav.preferred_width(), fresh(&nav));
+        assert_eq!(explorer.preferred_width(), fresh(&explorer));
 
-        nav.go_to_parent();
+        explorer.go_to_parent();
         assert_eq!(
-            nav.preferred_width(),
-            fresh(&nav),
+            explorer.preferred_width(),
+            fresh(&explorer),
             "climbing to the parent left the width measuring the old listing"
         );
     }
@@ -2420,23 +2451,23 @@ mod tests {
     /// which claims one back. Net one column narrower than before.
     #[test]
     fn preferred_width_of_an_empty_directory_covers_the_parent_entry() {
-        let nav = nav_over("empty", &[]);
+        let explorer = explorer_over("empty", &[]);
 
-        assert_eq!(names(&nav), vec![PARENT]);
+        assert_eq!(names(&explorer), vec![PARENT]);
         // `../` plus two borders.
-        assert_eq!(nav.preferred_width(), PARENT.len() as u16 + 1 + 2);
+        assert_eq!(explorer.preferred_width(), PARENT.len() as u16 + 1 + 2);
     }
 
     #[test]
     fn preferred_width_tracks_the_directory_being_listed() {
-        let mut nav = nav_over("outer", &["short.rs"]);
-        let narrow = nav.preferred_width();
+        let mut explorer = explorer_over("outer", &["short.rs"]);
+        let narrow = explorer.preferred_width();
         let outer = fixture_path("outer");
         fs::create_dir_all(outer.join("a_much_longer_subdir")).expect("create subdir");
-        nav.set_dir(outer, Select::First);
+        explorer.set_dir(outer, Select::First);
 
         assert!(
-            nav.preferred_width() > narrow,
+            explorer.preferred_width() > narrow,
             "width did not grow for a longer entry"
         );
     }
@@ -2445,10 +2476,10 @@ mod tests {
     /// is needed to see its contents.
     #[test]
     fn moving_onto_a_file_requests_a_preview() {
-        let mut nav = nav_over("move_down", &["alpha.rs", "beta.rs"]);
-        select(&mut nav, "alpha.rs");
+        let mut explorer = explorer_over("move_down", &["alpha.rs", "beta.rs"]);
+        select(&mut explorer, "alpha.rs");
 
-        match press(&mut nav, KeyCode::Down) {
+        match press(&mut explorer, KeyCode::Down) {
             Some(Action::Preview(path)) => {
                 assert_eq!(path.file_name().unwrap(), "beta.rs");
             }
@@ -2460,10 +2491,10 @@ mod tests {
     fn moving_up_onto_a_file_requests_a_preview() {
         // Own fixture directory: the repo's own listing changes as files are
         // added, which would silently move which entries are adjacent.
-        let mut nav = nav_over("move_up", &["alpha.rs", "beta.rs"]);
-        select(&mut nav, "beta.rs");
+        let mut explorer = explorer_over("move_up", &["alpha.rs", "beta.rs"]);
+        select(&mut explorer, "beta.rs");
 
-        match press(&mut nav, KeyCode::Up) {
+        match press(&mut explorer, KeyCode::Up) {
             Some(Action::Preview(path)) => {
                 assert_eq!(path.file_name().unwrap(), "alpha.rs");
             }
@@ -2479,18 +2510,18 @@ mod tests {
     fn moving_onto_a_directory_requests_a_preview() {
         // Own fixture directory: the repo's own listing shifts as files are
         // added, which silently changes which entry follows which.
-        let mut nav = nav_over("move_onto_dir", &["alpha.rs"]);
+        let mut explorer = explorer_over("move_onto_dir", &["alpha.rs"]);
         let dir = fixture_path("move_onto_dir");
         fs::create_dir_all(dir.join("beta_dir")).expect("create subdir");
-        nav.set_dir(dir, Select::First);
+        explorer.set_dir(dir, Select::First);
         // `beta_dir` sorts directly under `..`, ahead of `alpha.rs`, since
         // directories come first (#96).
-        select(&mut nav, PARENT);
+        select(&mut explorer, PARENT);
 
-        let action = press(&mut nav, KeyCode::Down);
+        let action = press(&mut explorer, KeyCode::Down);
 
         assert_eq!(
-            selected_name(&nav),
+            selected_name(&explorer),
             "beta_dir",
             "moved onto the wrong entry"
         );
@@ -2505,12 +2536,12 @@ mod tests {
     fn moving_onto_the_parent_entry_requests_a_preview() {
         // Own fixture directory: the repo's own listing shifts as files are
         // added, which silently changes which entry follows which.
-        let mut nav = nav_over("parent_entry", &["alpha.rs"]);
-        select(&mut nav, "alpha.rs"); // `..` is above it
+        let mut explorer = explorer_over("parent_entry", &["alpha.rs"]);
+        select(&mut explorer, "alpha.rs"); // `..` is above it
 
-        let action = press(&mut nav, KeyCode::Up);
+        let action = press(&mut explorer, KeyCode::Up);
 
-        assert_eq!(selected_name(&nav), PARENT);
+        assert_eq!(selected_name(&explorer), PARENT);
         assert!(
             matches!(action, Some(Action::Preview(_))),
             "expected a preview of the parent directory, got {action:?}"
@@ -2520,10 +2551,10 @@ mod tests {
     #[test]
     fn enter_on_a_file_requests_a_load() {
         let dir = repo_like("enter_on_file");
-        let mut nav = FileNav::new(dir.join("Cargo.toml").display().to_string());
-        select(&mut nav, "Cargo.toml");
+        let mut explorer = Explorer::new(dir.join("Cargo.toml").display().to_string());
+        select(&mut explorer, "Cargo.toml");
 
-        let action = enter(&mut nav);
+        let action = enter(&mut explorer);
 
         match action {
             Some(Action::LoadAndFocus(path)) => {
@@ -2537,21 +2568,21 @@ mod tests {
     #[test]
     fn enter_on_a_directory_navigates_into_it() {
         let dir = repo_like("enter_on_directory");
-        let mut nav = FileNav::new(dir.join("Cargo.toml").display().to_string());
-        select(&mut nav, "src");
+        let mut explorer = Explorer::new(dir.join("Cargo.toml").display().to_string());
+        select(&mut explorer, "src");
 
-        let action = enter(&mut nav);
+        let action = enter(&mut explorer);
 
         assert!(
             matches!(action, Some(Action::Preview(_))),
             "descending should preview what it selected, got {action:?}"
         );
         assert!(
-            nav.entries.iter().any(|e| e.name == "lib.rs"),
+            explorer.entries.iter().any(|e| e.name == "lib.rs"),
             "did not descend into src, entries: {:?}",
-            nav.entries
+            explorer.entries
         );
-        assert_eq!(nav.dir.file_name().unwrap(), "src");
+        assert_eq!(explorer.dir.file_name().unwrap(), "src");
     }
 
     #[test]
@@ -2559,51 +2590,51 @@ mod tests {
     /// used to land on `..` itself, which is the way back out.
     fn descending_selects_the_first_entry_not_the_parent() {
         let dir = repo_like("descend_first_entry");
-        let mut nav = FileNav::new(dir.join("Cargo.toml").display().to_string());
-        select(&mut nav, "src");
-        enter(&mut nav);
-        assert_eq!(nav.selected(), Some(1));
+        let mut explorer = Explorer::new(dir.join("Cargo.toml").display().to_string());
+        select(&mut explorer, "src");
+        enter(&mut explorer);
+        assert_eq!(explorer.selected(), Some(1));
     }
 
     #[test]
     fn parent_entry_climbs_back_up() {
         let dir = repo_like("parent_climbs");
-        let mut nav = FileNav::new(dir.join("src/lib.rs").display().to_string());
-        let start = nav.dir.clone();
-        select(&mut nav, PARENT);
+        let mut explorer = Explorer::new(dir.join("src/lib.rs").display().to_string());
+        let start = explorer.dir.clone();
+        select(&mut explorer, PARENT);
 
-        let action = enter(&mut nav);
+        let action = enter(&mut explorer);
 
         assert!(
             matches!(action, Some(Action::Preview(_))),
             "climbing out should preview what it selected, got {action:?}"
         );
-        assert_eq!(nav.dir, start.parent().unwrap());
-        assert!(nav.entries.iter().any(|e| e.name == "Cargo.toml"));
+        assert_eq!(explorer.dir, start.parent().unwrap());
+        assert!(explorer.entries.iter().any(|e| e.name == "Cargo.toml"));
     }
 
     /// Navigating in and back out should land on the original directory, not
     /// accumulate `./src/..` path segments.
     #[test]
     fn round_trip_returns_to_the_same_directory() {
-        let dir = repo_like("nav_round_trip");
-        let mut nav = FileNav::new(dir.join("Cargo.toml").display().to_string());
-        let start = nav.dir.clone();
+        let dir = repo_like("explorer_round_trip");
+        let mut explorer = Explorer::new(dir.join("Cargo.toml").display().to_string());
+        let start = explorer.dir.clone();
 
-        select(&mut nav, "src");
-        enter(&mut nav);
-        select(&mut nav, PARENT);
-        enter(&mut nav);
+        select(&mut explorer, "src");
+        enter(&mut explorer);
+        select(&mut explorer, PARENT);
+        enter(&mut explorer);
 
-        assert_eq!(nav.dir, start);
+        assert_eq!(explorer.dir, start);
     }
 
     /// Startup lands on the file recon was launched with, not on `..`.
     #[test]
     fn starts_on_the_launched_file() {
         let dir = repo_like("starts_on_file");
-        let nav = FileNav::new(dir.join("Cargo.toml").display().to_string());
-        assert_eq!(selected_name(&nav), "Cargo.toml");
+        let explorer = Explorer::new(dir.join("Cargo.toml").display().to_string());
+        assert_eq!(selected_name(&explorer), "Cargo.toml");
     }
 
     /// The movement primitives are about moving, so these pin the starting
@@ -2611,94 +2642,110 @@ mod tests {
     #[test]
     fn select_next_advances_selection() {
         let dir = repo_like("select_next");
-        let mut nav = FileNav::new(dir.join("Cargo.toml").display().to_string());
-        nav.select(0);
-        nav.select_next();
-        assert_eq!(nav.selected(), Some(1));
+        let mut explorer = Explorer::new(dir.join("Cargo.toml").display().to_string());
+        explorer.select(0);
+        explorer.select_next();
+        assert_eq!(explorer.selected(), Some(1));
     }
 
     #[test]
     fn select_previous_clamps_at_first_entry() {
         let dir = repo_like("select_previous");
-        let mut nav = FileNav::new(dir.join("Cargo.toml").display().to_string());
-        nav.select(0);
-        nav.select_previous();
-        assert_eq!(nav.selected(), Some(0));
+        let mut explorer = Explorer::new(dir.join("Cargo.toml").display().to_string());
+        explorer.select(0);
+        explorer.select_previous();
+        assert_eq!(explorer.selected(), Some(0));
     }
 
     // ---- shared list motions (#120 §3) ----------------------------------
 
-    fn render_at_height(nav: &mut FileNav<'_>, height: u16) {
+    fn render_at_height(explorer: &mut Explorer<'_>, height: u16) {
         let area = Rect::new(0, 0, 40, height);
         let mut buf = Buffer::empty(area);
-        (&mut *nav).render(area, &mut buf);
+        (&mut *explorer).render(area, &mut buf);
     }
 
     // `press` above takes no modifiers, and is shared by dozens of tests that
     // predate this one; these motions need Ctrl and Shift, so they get their
     // own helper rather than colliding with it.
-    fn press_mod(nav: &mut FileNav<'_>, code: KeyCode, modifiers: KeyModifiers) -> Option<Action> {
+    fn press_mod(
+        explorer: &mut Explorer<'_>,
+        code: KeyCode,
+        modifiers: KeyModifiers,
+    ) -> Option<Action> {
         let pressed = crate::keymap::normalise(KeyEvent::new(code, modifiers));
         let action =
-            crate::keymap::Keymap::default().resolve(crate::keymap::Scope::Nav, pressed)?;
-        nav.perform(action)
+            crate::keymap::Keymap::default().resolve(crate::keymap::Scope::Explorer, pressed)?;
+        explorer.perform(action)
     }
 
     #[test]
     fn g_and_capital_g_select_the_first_and_last_entry() {
         let files: Vec<String> = (0..30).map(|i| format!("f{i:02}.log")).collect();
         let names: Vec<&str> = files.iter().map(String::as_str).collect();
-        let mut nav = nav_over("motions_ends", &names);
-        nav.select_entry(nav.files()[5].0);
+        let mut explorer = explorer_over("motions_ends", &names);
+        explorer.select_entry(explorer.files()[5].0);
 
-        let action = press_mod(&mut nav, KeyCode::Char('G'), KeyModifiers::SHIFT);
-        assert_eq!(selected_name(&nav), "f29.log", "G did not reach the end");
+        let action = press_mod(&mut explorer, KeyCode::Char('G'), KeyModifiers::SHIFT);
+        assert_eq!(
+            selected_name(&explorer),
+            "f29.log",
+            "G did not reach the end"
+        );
         assert!(
             matches!(action, Some(Action::Preview(_))),
             "G did not preview"
         );
 
-        press_mod(&mut nav, KeyCode::Char('g'), KeyModifiers::NONE);
-        assert_eq!(selected_name(&nav), PARENT, "g did not reach the top");
+        press_mod(&mut explorer, KeyCode::Char('g'), KeyModifiers::NONE);
+        assert_eq!(selected_name(&explorer), PARENT, "g did not reach the top");
 
-        press_mod(&mut nav, KeyCode::End, KeyModifiers::NONE);
-        assert_eq!(selected_name(&nav), "f29.log");
-        press_mod(&mut nav, KeyCode::Home, KeyModifiers::NONE);
-        assert_eq!(selected_name(&nav), PARENT);
+        press_mod(&mut explorer, KeyCode::End, KeyModifiers::NONE);
+        assert_eq!(selected_name(&explorer), "f29.log");
+        press_mod(&mut explorer, KeyCode::Home, KeyModifiers::NONE);
+        assert_eq!(selected_name(&explorer), PARENT);
     }
 
     #[test]
     fn page_motions_use_the_rendered_height_and_clamp() {
         let files: Vec<String> = (0..30).map(|i| format!("f{i:02}.log")).collect();
         let names: Vec<&str> = files.iter().map(String::as_str).collect();
-        let mut nav = nav_over("motions_page", &names);
+        let mut explorer = explorer_over("motions_page", &names);
         // 12 rows tall, 10 inside the border: a page is 10, half is 5.
-        render_at_height(&mut nav, 12);
-        nav.select_entry(nav.files()[0].0); // row 1, under `..`
+        render_at_height(&mut explorer, 12);
+        explorer.select_entry(explorer.files()[0].0); // row 1, under `..`
 
-        press_mod(&mut nav, KeyCode::Char('d'), KeyModifiers::CONTROL);
-        assert_eq!(selected_name(&nav), "f05.log", "Ctrl-d is not half a page");
-        press_mod(&mut nav, KeyCode::PageDown, KeyModifiers::NONE);
-        assert_eq!(selected_name(&nav), "f15.log", "PageDown is not a page");
-        press_mod(&mut nav, KeyCode::Char('u'), KeyModifiers::CONTROL);
+        press_mod(&mut explorer, KeyCode::Char('d'), KeyModifiers::CONTROL);
         assert_eq!(
-            selected_name(&nav),
+            selected_name(&explorer),
+            "f05.log",
+            "Ctrl-d is not half a page"
+        );
+        press_mod(&mut explorer, KeyCode::PageDown, KeyModifiers::NONE);
+        assert_eq!(
+            selected_name(&explorer),
+            "f15.log",
+            "PageDown is not a page"
+        );
+        press_mod(&mut explorer, KeyCode::Char('u'), KeyModifiers::CONTROL);
+        assert_eq!(
+            selected_name(&explorer),
             "f10.log",
             "Ctrl-u is not half a page up"
         );
 
-        press_mod(&mut nav, KeyCode::PageUp, KeyModifiers::NONE);
-        press_mod(&mut nav, KeyCode::PageUp, KeyModifiers::NONE);
+        press_mod(&mut explorer, KeyCode::PageUp, KeyModifiers::NONE);
+        press_mod(&mut explorer, KeyCode::PageUp, KeyModifiers::NONE);
         assert_eq!(
-            selected_name(&nav),
+            selected_name(&explorer),
             PARENT,
             "PageUp did not clamp at the top"
         );
         for _ in 0..5 {
-            press_mod(&mut nav, KeyCode::PageDown, KeyModifiers::NONE);
+            press_mod(&mut explorer, KeyCode::PageDown, KeyModifiers::NONE);
         }
         assert_eq!(
-            selected_name(&nav),
+            selected_name(&explorer),
             "f29.log",
             "PageDown did not clamp at the end"
         );
@@ -2710,12 +2757,12 @@ mod tests {
     fn page_motions_assume_a_height_before_the_first_render() {
         let files: Vec<String> = (0..30).map(|i| format!("f{i:02}.log")).collect();
         let names: Vec<&str> = files.iter().map(String::as_str).collect();
-        let mut nav = nav_over("motions_unrendered", &names);
-        nav.select_entry(nav.files()[0].0);
+        let mut explorer = explorer_over("motions_unrendered", &names);
+        explorer.select_entry(explorer.files()[0].0);
 
-        press_mod(&mut nav, KeyCode::PageDown, KeyModifiers::NONE);
+        press_mod(&mut explorer, KeyCode::PageDown, KeyModifiers::NONE);
 
-        assert_eq!(selected_name(&nav), "f20.log");
+        assert_eq!(selected_name(&explorer), "f20.log");
     }
 
     /// Render the pane and return the selected row.
@@ -2723,10 +2770,10 @@ mod tests {
     /// Finds it by the reverse-video attribute rather than by a `>>` marker:
     /// the marker is gone, and reverse video is now the only thing that says
     /// "selected", so this probes what actually carries the meaning.
-    fn highlighted_row(nav: &mut FileNav<'_>) -> String {
+    fn highlighted_row(explorer: &mut Explorer<'_>) -> String {
         let area = Rect::new(0, 0, 20, 10);
         let mut buf = Buffer::empty(area);
-        nav.render(area, &mut buf);
+        explorer.render(area, &mut buf);
         (0..area.height)
             .find(|&y| {
                 (0..area.width).any(|x| {
@@ -2751,11 +2798,11 @@ mod tests {
     /// anything it means to assert.
     #[test]
     fn renders_entries_into_the_buffer() {
-        let mut nav = nav_over("render_entries", &["alpha.rs", "beta.rs"]);
+        let mut explorer = explorer_over("render_entries", &["alpha.rs", "beta.rs"]);
         let area = Rect::new(0, 0, 20, 10);
         let mut buf = Buffer::empty(area);
 
-        nav.render(area, &mut buf);
+        explorer.render(area, &mut buf);
 
         let text: String = buf
             .content()
@@ -2766,19 +2813,19 @@ mod tests {
         assert!(text.contains(PARENT), "parent entry not drawn:\n{text}");
     }
 
-    /// `render` moves `navlist` out of the pane to style it and moves it back,
+    /// `render` moves `entry_list` out of the pane to style it and moves it back,
     /// rather than cloning the whole item vector once a frame. That leaves the
     /// pane momentarily holding an empty list, so the second frame is the one
     /// that catches a missing hand-back — the first would draw fine either way.
     #[test]
     fn a_second_render_draws_the_same_entries() {
-        let mut nav = nav_over("render_twice", &["alpha.rs", "beta.rs"]);
+        let mut explorer = explorer_over("render_twice", &["alpha.rs", "beta.rs"]);
         let area = Rect::new(0, 0, 20, 10);
 
         let mut first = Buffer::empty(area);
-        nav.render(area, &mut first);
+        explorer.render(area, &mut first);
         let mut second = Buffer::empty(area);
-        nav.render(area, &mut second);
+        explorer.render(area, &mut second);
 
         let text: String = second
             .content()
@@ -2796,27 +2843,27 @@ mod tests {
     /// where they have navigated to.
     #[test]
     fn title_shows_the_current_directory() {
-        let mut nav = nav_over("title_dir", &["alpha.rs"]);
+        let mut explorer = explorer_over("title_dir", &["alpha.rs"]);
         // Wide enough that the absolute path is not truncated away.
         let area = Rect::new(0, 0, 120, 10);
         let mut buf = Buffer::empty(area);
 
-        nav.render(area, &mut buf);
+        explorer.render(area, &mut buf);
 
         let title: String = (0..area.width).map(|x| buf[(x, 0)].symbol()).collect();
         assert!(
-            title.contains(&nav.dir.display().to_string()),
+            title.contains(&explorer.dir.display().to_string()),
             "title does not show the current directory:\n{title}"
         );
     }
 
     #[test]
     fn rendered_highlight_follows_selection() {
-        let mut nav = nav_over("highlight_follows", &["alpha.rs", "beta.rs"]);
+        let mut explorer = explorer_over("highlight_follows", &["alpha.rs", "beta.rs"]);
 
-        let first = highlighted_row(&mut nav);
-        nav.select_next();
-        let second = highlighted_row(&mut nav);
+        let first = highlighted_row(&mut explorer);
+        explorer.select_next();
+        let second = highlighted_row(&mut explorer);
 
         assert_ne!(
             first, second,
@@ -2827,19 +2874,19 @@ mod tests {
     #[test]
     fn j_and_k_move_in_vim_directions() {
         let dir = repo_like("j_and_k");
-        let mut nav = FileNav::new(dir.join("Cargo.toml").display().to_string());
-        nav.select(0);
-        press(&mut nav, KeyCode::Char('j'));
-        assert_eq!(nav.selected(), Some(1), "j should move down");
+        let mut explorer = Explorer::new(dir.join("Cargo.toml").display().to_string());
+        explorer.select(0);
+        press(&mut explorer, KeyCode::Char('j'));
+        assert_eq!(explorer.selected(), Some(1), "j should move down");
 
-        press(&mut nav, KeyCode::Char('k'));
-        assert_eq!(nav.selected(), Some(0), "k should move back up");
+        press(&mut explorer, KeyCode::Char('k'));
+        assert_eq!(explorer.selected(), Some(0), "k should move back up");
     }
 
-    /// #78: the navigator must show the path the user walked, not wherever a
+    /// #78: the explorer must show the path the user walked, not wherever a
     /// symlink points. `set_dir` used to call `fs::canonicalize`, which
     /// resolved the link — so `o` (which absolutises without resolving) opened
-    /// a path the navigator had never displayed. The two rules disagreed on
+    /// a path the explorer had never displayed. The two rules disagreed on
     /// the one case both were written to settle.
     #[cfg(unix)]
     #[test]
@@ -2849,17 +2896,17 @@ mod tests {
         fs::write(root.join("real/inside.txt"), "x").expect("write");
         std::os::unix::fs::symlink("real", root.join("link")).expect("symlink");
 
-        let mut nav = FileNav::new(root.join("placeholder").display().to_string());
-        select(&mut nav, "link");
-        nav.activate_selection();
+        let mut explorer = Explorer::new(root.join("placeholder").display().to_string());
+        select(&mut explorer, "link");
+        explorer.activate_selection();
 
         assert!(
-            nav.dir.ends_with("symlink_descend/link"),
-            "the navigator resolved the symlink away: {:?}",
-            nav.dir
+            explorer.dir.ends_with("symlink_descend/link"),
+            "the explorer resolved the symlink away: {:?}",
+            explorer.dir
         );
         assert!(
-            names(&nav).iter().any(|n| n == "inside.txt"),
+            names(&explorer).iter().any(|n| n == "inside.txt"),
             "sanity: the linked directory's contents should still list"
         );
     }
@@ -2870,15 +2917,15 @@ mod tests {
     /// recon was launched in.
     #[test]
     fn a_relative_start_directory_can_still_be_climbed_out_of() {
-        let mut nav = FileNav::new(".".to_string());
+        let mut explorer = Explorer::new(".".to_string());
 
         assert!(
-            nav.dir.is_absolute(),
+            explorer.dir.is_absolute(),
             "a relative argument must be absolutised: {:?}",
-            nav.dir
+            explorer.dir
         );
         assert!(
-            nav.go_to_parent().is_some(),
+            explorer.go_to_parent().is_some(),
             "could not climb out of a relative start directory"
         );
     }
@@ -2887,25 +2934,25 @@ mod tests {
     /// `<cwd>/..` — and climbing out of it must not land back in the cwd.
     #[test]
     fn a_parent_argument_is_collapsed_rather_than_kept_literally() {
-        let nav = FileNav::new("..".to_string());
+        let explorer = Explorer::new("..".to_string());
         let cwd = std::env::current_dir().expect("cwd");
 
-        assert_eq!(nav.dir, cwd.parent().expect("cwd has a parent"));
+        assert_eq!(explorer.dir, cwd.parent().expect("cwd has a parent"));
     }
 
     // ---- filter matches ---------------------------------------------------
 
-    fn row_style_of(nav: &mut FileNav<'_>, name: &str) -> Style {
-        name_style(nav, name)
+    fn row_style_of(explorer: &mut Explorer<'_>, name: &str) -> Style {
+        name_style(explorer, name)
     }
 
     #[test]
     fn files_lists_every_non_directory_with_its_index_and_absolute_path() {
-        let nav = nav_over("match_files", &["a.log", "b.log"]);
-        std::fs::create_dir_all(nav.dir().join("sub")).expect("subdir");
-        let nav = FileNav::new(nav.dir().join("placeholder").display().to_string());
+        let explorer = explorer_over("match_files", &["a.log", "b.log"]);
+        std::fs::create_dir_all(explorer.dir().join("sub")).expect("subdir");
+        let explorer = Explorer::new(explorer.dir().join("placeholder").display().to_string());
 
-        let files = nav.files();
+        let files = explorer.files();
         let names: Vec<_> = files
             .iter()
             .map(|(_, p)| p.file_name().unwrap().to_owned())
@@ -2918,7 +2965,7 @@ mod tests {
         assert!(
             files
                 .iter()
-                .all(|(i, p)| nav.path_at(*i).as_ref() == Some(p))
+                .all(|(i, p)| explorer.path_at(*i).as_ref() == Some(p))
         );
         assert!(files.iter().all(|(_, p)| p.is_absolute()));
     }
@@ -2929,17 +2976,21 @@ mod tests {
     /// without a second pass over the entries (#143).
     #[test]
     fn listed_files_follows_the_visible_rows_and_carries_the_answer() {
-        let nav = nav_over("listed_files", &["no.log", "unk.log", "yes.log"]);
-        std::fs::create_dir_all(nav.dir().join("sub")).expect("subdir");
-        let mut nav = FileNav::new(nav.dir().join("placeholder").display().to_string());
-        let idx = |nav: &FileNav<'_>, name: &str| {
-            nav.entries.iter().position(|e| e.name == name).expect(name)
+        let explorer = explorer_over("listed_files", &["no.log", "unk.log", "yes.log"]);
+        std::fs::create_dir_all(explorer.dir().join("sub")).expect("subdir");
+        let mut explorer = Explorer::new(explorer.dir().join("placeholder").display().to_string());
+        let idx = |explorer: &Explorer<'_>, name: &str| {
+            explorer
+                .entries
+                .iter()
+                .position(|e| e.name == name)
+                .expect(name)
         };
-        nav.set_answer(idx(&nav, "no.log"), Match::No);
-        nav.set_answer(idx(&nav, "yes.log"), Match::Yes(Style::default()));
-        nav.restyle();
+        explorer.set_answer(idx(&explorer, "no.log"), Match::No);
+        explorer.set_answer(idx(&explorer, "yes.log"), Match::Yes(Style::default()));
+        explorer.restyle();
 
-        let dim: Vec<(String, Option<bool>)> = nav
+        let dim: Vec<(String, Option<bool>)> = explorer
             .listed_files()
             .into_iter()
             .map(|f| {
@@ -2959,12 +3010,12 @@ mod tests {
             "dim mode lists every file, with its answer"
         );
         assert!(
-            nav.listed_files().iter().all(|f| f.path.is_absolute()),
+            explorer.listed_files().iter().all(|f| f.path.is_absolute()),
             "paths are absolute"
         );
 
-        nav.set_mode(Mode::FilteredOnly);
-        let hidden: Vec<String> = nav
+        explorer.set_mode(Mode::FilteredOnly);
+        let hidden: Vec<String> = explorer
             .listed_files()
             .into_iter()
             .map(|f| f.path.file_name().unwrap().to_string_lossy().into_owned())
@@ -2978,33 +3029,36 @@ mod tests {
 
     #[test]
     fn a_yes_answer_draws_the_name_in_the_style_it_was_given() {
-        let mut nav = nav_over("match_yes", &["a.log"]);
-        let index = nav.files()[0].0;
+        let mut explorer = explorer_over("match_yes", &["a.log"]);
+        let index = explorer.files()[0].0;
         let style = Style::default().fg(Color::Magenta);
 
-        assert!(nav.set_answer(index, Match::Yes(style)));
-        nav.restyle();
+        assert!(explorer.set_answer(index, Match::Yes(style)));
+        explorer.restyle();
 
-        assert_eq!(row_style_of(&mut nav, "a.log").fg, Some(Color::Magenta));
+        assert_eq!(
+            row_style_of(&mut explorer, "a.log").fg,
+            Some(Color::Magenta)
+        );
     }
 
     #[test]
     fn a_no_answer_dims_the_name_and_unknown_leaves_it_alone() {
-        let mut nav = nav_over("match_no", &["a.log", "b.log"]);
-        let (a, b) = (nav.files()[0].0, nav.files()[1].0);
+        let mut explorer = explorer_over("match_no", &["a.log", "b.log"]);
+        let (a, b) = (explorer.files()[0].0, explorer.files()[1].0);
 
         // Capture b.log's style before any answers are set
-        let plain = name_style(&mut nav, "b.log");
+        let plain = name_style(&mut explorer, "b.log");
 
-        nav.set_answer(a, Match::No);
-        nav.set_answer(b, Match::Unknown);
-        nav.restyle();
+        explorer.set_answer(a, Match::No);
+        explorer.set_answer(b, Match::Unknown);
+        explorer.restyle();
 
         // Move selection to parent so neither row is selected when we extract styles
-        select(&mut nav, PARENT);
+        select(&mut explorer, PARENT);
 
-        let a_style = name_style(&mut nav, "a.log");
-        let b_style = name_style(&mut nav, "b.log");
+        let a_style = name_style(&mut explorer, "a.log");
+        let b_style = name_style(&mut explorer, "b.log");
 
         assert_eq!(a_style.fg, DIM_STYLE.fg, "a.log should be dimmed");
         assert!(
@@ -3017,113 +3071,128 @@ mod tests {
 
     #[test]
     fn set_answer_reports_whether_anything_changed() {
-        let mut nav = nav_over("match_changed", &["a.log"]);
-        let index = nav.files()[0].0;
+        let mut explorer = explorer_over("match_changed", &["a.log"]);
+        let index = explorer.files()[0].0;
 
-        assert!(!nav.set_answer(index, Match::Unknown), "unknown to unknown");
-        assert!(nav.set_answer(index, Match::No));
-        assert!(!nav.set_answer(index, Match::No));
-        assert!(!nav.set_answer(99, Match::No), "no such row");
+        assert!(
+            !explorer.set_answer(index, Match::Unknown),
+            "unknown to unknown"
+        );
+        assert!(explorer.set_answer(index, Match::No));
+        assert!(!explorer.set_answer(index, Match::No));
+        assert!(!explorer.set_answer(99, Match::No), "no such row");
     }
 
     /// The filename search asked for that name by name; it keeps its highlight.
     #[test]
     fn a_search_hit_stays_yellow_whatever_its_answer() {
-        let mut nav = nav_over("match_search", &["a.log"]);
-        let index = nav.files()[0].0;
-        nav.search("a", false).expect("valid pattern");
-        nav.set_answer(index, Match::No);
-        nav.restyle();
+        let mut explorer = explorer_over("match_search", &["a.log"]);
+        let index = explorer.files()[0].0;
+        explorer.search("a", false).expect("valid pattern");
+        explorer.set_answer(index, Match::No);
+        explorer.restyle();
 
         // The search match outranks the answer, so it stays yellow regardless
-        let style = name_style(&mut nav, "a.log");
+        let style = name_style(&mut explorer, "a.log");
         assert_eq!(style.fg, MATCH_STYLE.fg, "search hit should stay yellow");
     }
 
     #[test]
     fn a_new_listing_forgets_every_answer() {
-        let mut nav = nav_over("match_reset", &["a.log"]);
-        nav.set_answer(nav.files()[0].0, Match::No);
-        std::fs::create_dir_all(nav.dir().join("sub")).expect("subdir");
+        let mut explorer = explorer_over("match_reset", &["a.log"]);
+        explorer.set_answer(explorer.files()[0].0, Match::No);
+        std::fs::create_dir_all(explorer.dir().join("sub")).expect("subdir");
 
-        nav.set_dir(nav.dir().join("sub"), Select::First);
-        nav.go_to_parent();
+        explorer.set_dir(explorer.dir().join("sub"), Select::First);
+        explorer.go_to_parent();
 
-        assert!(nav.entries().iter().all(|e| e.matched == Match::Unknown));
+        assert!(
+            explorer
+                .entries()
+                .iter()
+                .all(|e| e.matched == Match::Unknown)
+        );
     }
 
     // ---- hide mode --------------------------------------------------------
 
     #[test]
     fn hide_mode_removes_no_answers_and_keeps_unknown_and_directories() {
-        let nav = nav_over("hide_basic", &["no.log", "unk.log", "yes.log"]);
-        std::fs::create_dir_all(nav.dir().join("sub")).expect("subdir");
-        let mut nav = FileNav::new(nav.dir().join("placeholder").display().to_string());
-        let idx = |nav: &FileNav<'_>, name: &str| {
-            nav.entries().iter().position(|e| e.name == name).unwrap()
+        let explorer = explorer_over("hide_basic", &["no.log", "unk.log", "yes.log"]);
+        std::fs::create_dir_all(explorer.dir().join("sub")).expect("subdir");
+        let mut explorer = Explorer::new(explorer.dir().join("placeholder").display().to_string());
+        let idx = |explorer: &Explorer<'_>, name: &str| {
+            explorer
+                .entries()
+                .iter()
+                .position(|e| e.name == name)
+                .unwrap()
         };
-        nav.set_answer(idx(&nav, "no.log"), Match::No);
-        nav.set_answer(idx(&nav, "yes.log"), Match::Yes(Style::default()));
+        explorer.set_answer(idx(&explorer, "no.log"), Match::No);
+        explorer.set_answer(idx(&explorer, "yes.log"), Match::Yes(Style::default()));
 
-        nav.set_mode(Mode::FilteredOnly);
-        assert_eq!(names(&nav), vec![PARENT, "sub", "unk.log", "yes.log"]);
+        explorer.set_mode(Mode::FilteredOnly);
+        assert_eq!(names(&explorer), vec![PARENT, "sub", "unk.log", "yes.log"]);
 
-        nav.set_mode(Mode::Dimmed);
+        explorer.set_mode(Mode::Dimmed);
         // Directories sort before files (#96) whatever the mode — this is
         // `entries`' own order, `rebuild_visible` in `Dimmed` just keeps all
         // of it.
         assert_eq!(
-            names(&nav),
+            names(&explorer),
             vec![PARENT, "sub", "no.log", "unk.log", "yes.log"]
         );
     }
 
     #[test]
     fn the_selection_follows_its_entry_across_a_rebuild() {
-        let mut nav = nav_over("hide_follow", &["no.log", "yes.log"]);
-        let (no, yes) = (nav.files()[0].0, nav.files()[1].0);
-        nav.set_answer(no, Match::No);
-        nav.set_answer(yes, Match::Yes(Style::default()));
-        nav.select_entry(yes);
+        let mut explorer = explorer_over("hide_follow", &["no.log", "yes.log"]);
+        let (no, yes) = (explorer.files()[0].0, explorer.files()[1].0);
+        explorer.set_answer(no, Match::No);
+        explorer.set_answer(yes, Match::Yes(Style::default()));
+        explorer.select_entry(yes);
 
-        nav.set_mode(Mode::FilteredOnly);
+        explorer.set_mode(Mode::FilteredOnly);
 
-        assert_eq!(nav.selected_entry(), Some(yes));
-        assert_eq!(nav.selected_path().unwrap().file_name().unwrap(), "yes.log");
+        assert_eq!(explorer.selected_entry(), Some(yes));
+        assert_eq!(
+            explorer.selected_path().unwrap().file_name().unwrap(),
+            "yes.log"
+        );
     }
 
     #[test]
     fn a_selection_whose_row_vanishes_clamps_to_a_neighbour_never_to_none() {
-        let mut nav = nav_over("hide_clamp", &["a.log", "no.log"]);
-        let no = nav.files()[1].0;
-        nav.set_answer(no, Match::No);
-        nav.select_entry(no);
+        let mut explorer = explorer_over("hide_clamp", &["a.log", "no.log"]);
+        let no = explorer.files()[1].0;
+        explorer.set_answer(no, Match::No);
+        explorer.select_entry(no);
 
-        nav.set_mode(Mode::FilteredOnly);
+        explorer.set_mode(Mode::FilteredOnly);
 
-        assert!(nav.selected_entry().is_some());
-        assert_ne!(nav.selected_entry(), Some(no));
+        assert!(explorer.selected_entry().is_some());
+        assert_ne!(explorer.selected_entry(), Some(no));
     }
 
     /// `j`, `Enter` and the filename search all walk the *visible* rows.
     #[test]
     fn movement_and_activation_see_only_visible_rows() {
-        let mut nav = nav_over("hide_walk", &["a.log", "no.log", "z.log"]);
-        let no = nav.files()[1].0;
-        nav.set_answer(no, Match::No);
-        nav.set_mode(Mode::FilteredOnly);
-        nav.select_entry(nav.files()[0].0);
+        let mut explorer = explorer_over("hide_walk", &["a.log", "no.log", "z.log"]);
+        let no = explorer.files()[1].0;
+        explorer.set_answer(no, Match::No);
+        explorer.set_mode(Mode::FilteredOnly);
+        explorer.select_entry(explorer.files()[0].0);
 
-        press(&mut nav, KeyCode::Char('j'));
+        press(&mut explorer, KeyCode::Char('j'));
         assert_eq!(
-            nav.selected_path().unwrap().file_name().unwrap(),
+            explorer.selected_path().unwrap().file_name().unwrap(),
             "z.log",
             "j landed on a hidden row"
         );
 
-        nav.search("no", false).expect("valid pattern");
+        explorer.search("no", false).expect("valid pattern");
         assert_eq!(
-            nav.selected_path().unwrap().file_name().unwrap(),
+            explorer.selected_path().unwrap().file_name().unwrap(),
             "z.log",
             "search found a hidden row"
         );
@@ -3131,12 +3200,12 @@ mod tests {
 
     #[test]
     fn a_new_listing_shows_everything_again() {
-        let mut nav = nav_over("hide_reset", &["no.log"]);
-        nav.set_answer(nav.files()[0].0, Match::No);
-        nav.set_mode(Mode::FilteredOnly);
-        assert_eq!(names(&nav), vec![PARENT]);
+        let mut explorer = explorer_over("hide_reset", &["no.log"]);
+        explorer.set_answer(explorer.files()[0].0, Match::No);
+        explorer.set_mode(Mode::FilteredOnly);
+        assert_eq!(names(&explorer), vec![PARENT]);
 
-        nav.go_to_parent();
-        assert!(names(&nav).len() > 1);
+        explorer.go_to_parent();
+        assert!(names(&explorer).len() > 1);
     }
 }

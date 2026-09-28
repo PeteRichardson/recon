@@ -71,7 +71,7 @@ pub(crate) enum Scope {
     Sets,
     /// Checked for every key that no modal scope claimed.
     Global,
-    Nav,
+    Explorer,
     View,
     Filters,
 }
@@ -79,12 +79,12 @@ pub(crate) enum Scope {
 impl Scope {
     /// The pane scope for the focused pane.
     ///
-    /// `App`'s per-focus dispatch derives `Scope::Nav` from this at the
-    /// navigator's key site (task 6, #199): the focus is the thing that
+    /// `App`'s per-focus dispatch derives `Scope::Explorer` from this at the
+    /// explorer's key site (task 6, #199): the focus is the thing that
     /// decides, so reading it from the focus is the honest spelling.
     pub(crate) fn for_focus(focus: crate::widgets::Focus) -> Self {
         match focus {
-            crate::widgets::Focus::Nav => Self::Nav,
+            crate::widgets::Focus::Explorer => Self::Explorer,
             crate::widgets::Focus::View => Self::View,
             crate::widgets::Focus::Filters => Self::Filters,
         }
@@ -92,7 +92,7 @@ impl Scope {
 
     /// The scope's name, for a message that must say where a key was bound.
     ///
-    /// An action's own name usually carries its scope — `nav.up`, `global.quit`
+    /// An action's own name usually carries its scope — `explorer.up`, `global.quit`
     /// — so a message can read the scope off the name. `hit.next` and
     /// `hit.prev` cannot: they are bare names living in both `View` and
     /// `Filters`, so a collision involving one has no scope to read and needs
@@ -104,7 +104,7 @@ impl Scope {
             Self::Picker => "picker",
             Self::Sets => "sets",
             Self::Global => "global",
-            Self::Nav => "nav",
+            Self::Explorer => "explorer",
             Self::View => "view",
             Self::Filters => "filters",
         }
@@ -119,9 +119,9 @@ impl Scope {
 ///
 /// The grammar: `scope.verb[.object]` for a command (`global.quit`,
 /// `filters.include`, `prompt.delete.word`), `scope.target[.direction]` for a
-/// motion (`nav.goto.start`, `view.halfpage.down`). A multi-word token never
+/// motion (`explorer.goto.start`, `view.halfpage.down`). A multi-word token never
 /// gets a dot of its own — `halfpage` and `linenumbers` are one token each,
-/// so `nav.halfpage.down` and `view.toggle.linenumbers` are exactly three
+/// so `explorer.halfpage.down` and `view.toggle.linenumbers` are exactly three
 /// segments, not four. A **bare** `verb.object` with no scope prefix —
 /// `hit.next`, `hit.prev` — means the action is bound the same way in more
 /// than one pane scope, so there is no single scope to prefix it with (#59
@@ -133,7 +133,7 @@ pub(crate) enum ActionId {
     GlobalQuitSilent,
     GlobalFocusNext,
     GlobalFocusPrev,
-    GlobalFocusNav,
+    GlobalFocusExplorer,
     GlobalFocusView,
     GlobalFocusFilters,
     GlobalHelp,
@@ -164,19 +164,19 @@ pub(crate) enum ActionId {
     // rule in the doc comment above.
     HitNext,
     HitPrev,
-    // Navigator
-    NavUp,
-    NavDown,
-    NavParent,
-    NavOpen,
-    NavGotoStart,
-    NavGotoEnd,
-    NavHalfPageDown,
-    NavHalfPageUp,
-    NavPageDown,
-    NavPageUp,
-    NavHitNext,
-    NavHitPrev,
+    // Explorer
+    ExplorerUp,
+    ExplorerDown,
+    ExplorerParent,
+    ExplorerOpen,
+    ExplorerGotoStart,
+    ExplorerGotoEnd,
+    ExplorerHalfPageDown,
+    ExplorerHalfPageUp,
+    ExplorerPageDown,
+    ExplorerPageUp,
+    ExplorerHitNext,
+    ExplorerHitPrev,
     // File view
     ViewLeft,
     ViewRight,
@@ -263,7 +263,7 @@ impl ActionId {
             Self::GlobalQuitSilent => "global.quit.silent",
             Self::GlobalFocusNext => "global.focus.next",
             Self::GlobalFocusPrev => "global.focus.prev",
-            Self::GlobalFocusNav => "global.focus.nav",
+            Self::GlobalFocusExplorer => "global.focus.explorer",
             Self::GlobalFocusView => "global.focus.view",
             Self::GlobalFocusFilters => "global.focus.filters",
             Self::GlobalHelp => "global.help",
@@ -291,18 +291,18 @@ impl ActionId {
             Self::GlobalSets => "global.sets",
             Self::HitNext => "hit.next",
             Self::HitPrev => "hit.prev",
-            Self::NavUp => "nav.up",
-            Self::NavDown => "nav.down",
-            Self::NavParent => "nav.parent",
-            Self::NavOpen => "nav.open",
-            Self::NavGotoStart => "nav.goto.start",
-            Self::NavGotoEnd => "nav.goto.end",
-            Self::NavHalfPageDown => "nav.halfpage.down",
-            Self::NavHalfPageUp => "nav.halfpage.up",
-            Self::NavPageDown => "nav.page.down",
-            Self::NavPageUp => "nav.page.up",
-            Self::NavHitNext => "nav.hit.next",
-            Self::NavHitPrev => "nav.hit.prev",
+            Self::ExplorerUp => "explorer.up",
+            Self::ExplorerDown => "explorer.down",
+            Self::ExplorerParent => "explorer.parent",
+            Self::ExplorerOpen => "explorer.open",
+            Self::ExplorerGotoStart => "explorer.goto.start",
+            Self::ExplorerGotoEnd => "explorer.goto.end",
+            Self::ExplorerHalfPageDown => "explorer.halfpage.down",
+            Self::ExplorerHalfPageUp => "explorer.halfpage.up",
+            Self::ExplorerPageDown => "explorer.page.down",
+            Self::ExplorerPageUp => "explorer.page.up",
+            Self::ExplorerHitNext => "explorer.hit.next",
+            Self::ExplorerHitPrev => "explorer.hit.prev",
             Self::ViewLeft => "view.left",
             Self::ViewRight => "view.right",
             Self::ViewUp => "view.up",
@@ -377,7 +377,7 @@ pub(crate) const DEFAULT: &[(Scope, &str, ActionId)] = &[
     (Scope::Global, "Q", ActionId::GlobalQuitSilent),
     (Scope::Global, "Tab", ActionId::GlobalFocusNext),
     (Scope::Global, "Shift-Tab", ActionId::GlobalFocusPrev),
-    (Scope::Global, "e", ActionId::GlobalFocusNav),
+    (Scope::Global, "e", ActionId::GlobalFocusExplorer),
     (Scope::Global, "t", ActionId::GlobalFocusView),
     (Scope::Global, "f", ActionId::GlobalFocusFilters),
     (Scope::Global, "?", ActionId::GlobalHelp),
@@ -411,32 +411,32 @@ pub(crate) const DEFAULT: &[(Scope, &str, ActionId)] = &[
     (Scope::Global, "[", ActionId::GlobalPageUp),
     (Scope::Global, "L", ActionId::GlobalSets),
     // `n`/`N` are scoped away from Global (#59 review): `src/lib.rs`'s
-    // global arm is guarded `self.focus != Focus::Nav`, so in the navigator
-    // it never fires and the key falls through to `filenav.rs`'s own
+    // global arm is guarded `self.focus != Focus::Explorer`, so in the explorer
+    // it never fires and the key falls through to `explorer.rs`'s own
     // `repeat_search`. Binding it here unconditionally would let this table
-    // resolve the navigator's `n` to the wrong action. It binds identically
+    // resolve the explorer's `n` to the wrong action. It binds identically
     // in the file view and the filter pane instead (see those sections
     // below), hence the bare `hit.next` / `hit.prev` name — see the grammar
     // note on `ActionId`.
-    (Scope::Nav, "k", ActionId::NavUp),
-    (Scope::Nav, "Up", ActionId::NavUp),
-    (Scope::Nav, "j", ActionId::NavDown),
-    (Scope::Nav, "Down", ActionId::NavDown),
-    (Scope::Nav, "h", ActionId::NavParent),
-    (Scope::Nav, "Left", ActionId::NavParent),
-    (Scope::Nav, "l", ActionId::NavOpen),
-    (Scope::Nav, "Right", ActionId::NavOpen),
-    (Scope::Nav, "Enter", ActionId::NavOpen),
-    (Scope::Nav, "g", ActionId::NavGotoStart),
-    (Scope::Nav, "Home", ActionId::NavGotoStart),
-    (Scope::Nav, "G", ActionId::NavGotoEnd),
-    (Scope::Nav, "End", ActionId::NavGotoEnd),
-    (Scope::Nav, "Ctrl-d", ActionId::NavHalfPageDown),
-    (Scope::Nav, "Ctrl-u", ActionId::NavHalfPageUp),
-    (Scope::Nav, "PageDown", ActionId::NavPageDown),
-    (Scope::Nav, "PageUp", ActionId::NavPageUp),
-    (Scope::Nav, "n", ActionId::NavHitNext),
-    (Scope::Nav, "N", ActionId::NavHitPrev),
+    (Scope::Explorer, "k", ActionId::ExplorerUp),
+    (Scope::Explorer, "Up", ActionId::ExplorerUp),
+    (Scope::Explorer, "j", ActionId::ExplorerDown),
+    (Scope::Explorer, "Down", ActionId::ExplorerDown),
+    (Scope::Explorer, "h", ActionId::ExplorerParent),
+    (Scope::Explorer, "Left", ActionId::ExplorerParent),
+    (Scope::Explorer, "l", ActionId::ExplorerOpen),
+    (Scope::Explorer, "Right", ActionId::ExplorerOpen),
+    (Scope::Explorer, "Enter", ActionId::ExplorerOpen),
+    (Scope::Explorer, "g", ActionId::ExplorerGotoStart),
+    (Scope::Explorer, "Home", ActionId::ExplorerGotoStart),
+    (Scope::Explorer, "G", ActionId::ExplorerGotoEnd),
+    (Scope::Explorer, "End", ActionId::ExplorerGotoEnd),
+    (Scope::Explorer, "Ctrl-d", ActionId::ExplorerHalfPageDown),
+    (Scope::Explorer, "Ctrl-u", ActionId::ExplorerHalfPageUp),
+    (Scope::Explorer, "PageDown", ActionId::ExplorerPageDown),
+    (Scope::Explorer, "PageUp", ActionId::ExplorerPageUp),
+    (Scope::Explorer, "n", ActionId::ExplorerHitNext),
+    (Scope::Explorer, "N", ActionId::ExplorerHitPrev),
     (Scope::View, "h", ActionId::ViewLeft),
     (Scope::View, "Left", ActionId::ViewLeft),
     (Scope::View, "l", ActionId::ViewRight),
@@ -805,7 +805,7 @@ impl Keymap {
 
     /// The key label bound to `action`, or `None` when nothing is.
     ///
-    /// An action bound to more than one key (`nav.parent` also binds `Left`)
+    /// An action bound to more than one key (`explorer.parent` also binds `Left`)
     /// takes its first row: that is the canonical spelling, listed first, and
     /// the one a hint should show. Under an overlay that is the first key the
     /// user listed, which is what makes a hint track a rebind.
@@ -860,7 +860,7 @@ impl Keymap {
     /// The verb is not looked up here: the table holds no prose, and
     /// `help::KEYMAP`'s `action` text is both the wrong register for a
     /// status-line sentence (imperative and capitalised, for a command list —
-    /// not third-person lowercase, for a sentence) and, for `nav.open`,
+    /// not third-person lowercase, for a sentence) and, for `explorer.open`,
     /// ambiguous — it names two different rows. So a caller supplies its own
     /// verb, and only the key and the opener are generated.
     ///
@@ -1007,10 +1007,10 @@ fn losses(keymap: &Keymap, defaults: &Keymap, action: ActionId) -> Vec<String> {
             }
             // Only `Scope::Global` shadows a pane, which is `check`'s pass
             // two. A peer pane holding the same key by coincidence — `j`
-            // defaults `nav.down`, `view.down` and `filters.down` — never
+            // defaults `explorer.down`, `view.down` and `filters.down` — never
             // crosses with this one, so it must not be searched.
             let mut scopes = vec![*scope];
-            if matches!(scope, Scope::Nav | Scope::View | Scope::Filters) {
+            if matches!(scope, Scope::Explorer | Scope::View | Scope::Filters) {
                 scopes.push(Scope::Global);
             }
             let Some((_, _, thief)) = keymap.entries.iter().find(|(entry_scope, entry, a)| {
@@ -1136,12 +1136,15 @@ mod tests {
         assert!(Scope::Help < Scope::Picker);
         assert!(Scope::Picker < Scope::Sets);
         assert!(Scope::Sets < Scope::Global);
-        assert!(Scope::Global < Scope::Nav);
+        assert!(Scope::Global < Scope::Explorer);
     }
 
     #[test]
     fn a_pane_scope_is_named_for_its_focus() {
-        assert_eq!(Scope::for_focus(crate::widgets::Focus::Nav), Scope::Nav);
+        assert_eq!(
+            Scope::for_focus(crate::widgets::Focus::Explorer),
+            Scope::Explorer
+        );
         assert_eq!(Scope::for_focus(crate::widgets::Focus::View), Scope::View);
         assert_eq!(
             Scope::for_focus(crate::widgets::Focus::Filters),
@@ -1178,7 +1181,7 @@ mod tests {
     /// row `DEFAULT` actually has, some `KEYMAP` binding whose `keys`
     /// contains that label has to name that exact action (#59 review: this
     /// is what would have caught `n`/`N` being bound in both `Global` and
-    /// `Nav` — the set comparison alone did not).
+    /// `Explorer` — the set comparison alone did not).
     ///
     /// A `RESERVED` row (`-`, `:`) is documented on purpose while binding
     /// nothing: its `names` is empty, so it contributes nothing to either
@@ -1321,7 +1324,7 @@ mod tests {
         keymap.evict(report.evict());
 
         let printed = print_keymap(&keymap, &defaults);
-        for action in ["'nav.down'", "'view.down'", "'filters.down'"] {
+        for action in ["'explorer.down'", "'view.down'", "'filters.down'"] {
             let line = printed
                 .lines()
                 .find(|line| line.starts_with(action))
@@ -1332,10 +1335,10 @@ mod tests {
 
     /// Task 7 fix round 1: the thief lookup used to scan every scope for the
     /// lost label and take the first action that was not the one
-    /// being annotated. `j` is also `nav.down`'s, `view.down`'s and
+    /// being annotated. `j` is also `explorer.down`'s, `view.down`'s and
     /// `picker.down`'s default key, so a same-scope eviction — one write in
     /// `Scope::Filters` taking `Scope::Filters`'s own `j` — was misreported
-    /// as `nav.down`'s doing, purely because `Scope::Nav` sorts first in the
+    /// as `explorer.down`'s doing, purely because `Scope::Explorer` sorts first in the
     /// table. The thief must be searched for in the scope the key was lost
     /// in (and `Scope::Global`, which can shadow it), never a peer pane.
     #[test]
@@ -1356,26 +1359,26 @@ mod tests {
             "the real thief is in the same scope: {line}"
         );
         assert!(
-            !line.contains("nav.down"),
-            "nav.down never touched this key and must not be blamed: {line}"
+            !line.contains("explorer.down"),
+            "explorer.down never touched this key and must not be blamed: {line}"
         );
 
-        let nav_line = printed
+        let explorer_line = printed
             .lines()
-            .find(|line| line.starts_with("'nav.down'"))
-            .expect("nav.down must be printed");
+            .find(|line| line.starts_with("'explorer.down'"))
+            .expect("explorer.down must be printed");
         assert!(
-            !nav_line.contains('#'),
-            "nav.down's own 'j' is untouched and must carry no annotation: {nav_line}"
+            !explorer_line.contains('#'),
+            "explorer.down's own 'j' is untouched and must carry no annotation: {explorer_line}"
         );
     }
 
     /// A second reproduction of the same fault, along the axis the first one
     /// didn't cover: `k` has **no default `Global` row at all** (its only
-    /// rows are `Nav`, `View`, `Filters` and `Picker`), so a buggy unscoped
+    /// rows are `Explorer`, `View`, `Filters` and `Picker`), so a buggy unscoped
     /// scan does not even need a `Global` coincidence to misfire — it walks
-    /// straight past every scope to `Nav`'s untouched `k` and blames
-    /// `nav.up`, which never lost anything.
+    /// straight past every scope to `Explorer`'s untouched `k` and blames
+    /// `explorer.up`, which never lost anything.
     #[test]
     fn a_same_scope_contest_with_no_global_row_still_names_the_real_thief() {
         let defaults = Keymap::default();
@@ -1394,17 +1397,17 @@ mod tests {
             "the real thief is in the same scope: {line}"
         );
         assert!(
-            !line.contains("nav.up"),
-            "nav.up never touched this key and must not be blamed: {line}"
+            !line.contains("explorer.up"),
+            "explorer.up never touched this key and must not be blamed: {line}"
         );
 
-        let nav_line = printed
+        let explorer_line = printed
             .lines()
-            .find(|line| line.starts_with("'nav.up'"))
-            .expect("nav.up must be printed");
+            .find(|line| line.starts_with("'explorer.up'"))
+            .expect("explorer.up must be printed");
         assert!(
-            !nav_line.contains('#'),
-            "nav.up's own 'k' is untouched and must carry no annotation: {nav_line}"
+            !explorer_line.contains('#'),
+            "explorer.up's own 'k' is untouched and must carry no annotation: {explorer_line}"
         );
     }
 
@@ -1816,7 +1819,7 @@ mod tests {
                 Scope::Picker,
                 Scope::Sets,
                 Scope::Global,
-                Scope::Nav,
+                Scope::Explorer,
                 Scope::View,
                 Scope::Filters,
             ] {
@@ -1878,7 +1881,7 @@ mod tests {
     #[test]
     fn every_scope_has_a_name_for_a_message() {
         assert_eq!(Scope::Global.name(), "global");
-        assert_eq!(Scope::Nav.name(), "nav");
+        assert_eq!(Scope::Explorer.name(), "explorer");
         assert_eq!(Scope::View.name(), "view");
         assert_eq!(Scope::Filters.name(), "filters");
         assert_eq!(Scope::Prompt.name(), "prompt");
@@ -2027,11 +2030,11 @@ mod tests {
         keymap.evict(report.evict());
 
         assert!(
-            !keymap.labels_for(ActionId::NavDown).contains(&"j"),
+            !keymap.labels_for(ActionId::ExplorerDown).contains(&"j"),
             "the overlay must stop offering a key that quits"
         );
         assert_eq!(
-            keymap.labels_for(ActionId::NavDown),
+            keymap.labels_for(ActionId::ExplorerDown),
             vec!["Down"],
             "and must still offer the key that works"
         );
@@ -2050,7 +2053,7 @@ mod tests {
             .flat_map(|(_, label, _)| crate::help::chords_for_label(label))
             .collect();
         for (scope, label, _) in DEFAULT {
-            if matches!(scope, Scope::Nav | Scope::View | Scope::Filters) {
+            if matches!(scope, Scope::Explorer | Scope::View | Scope::Filters) {
                 for chord in crate::help::chords_for_label(label) {
                     assert!(
                         !global.contains(&chord),

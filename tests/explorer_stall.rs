@@ -1,4 +1,4 @@
-//! Moving the navigator's selection onto a large file must not stall the
+//! Moving the explorer's selection onto a large file must not stall the
 //! UI thread (#265).
 //!
 //! Every selection move previews the file and evaluates every line against
@@ -32,7 +32,7 @@ const BUDGET: Duration = Duration::from_secs(1);
 /// A directory holding a three-line file that sorts first and a large log
 /// after it, so a single `j` from the first entry lands on the log.
 fn fixture() -> std::path::PathBuf {
-    let dir = std::path::Path::new("target/test-navdirs/nav_stall");
+    let dir = std::path::Path::new("target/test-explorerdirs/explorer_stall");
     std::fs::remove_dir_all(dir).ok();
     std::fs::create_dir_all(dir).expect("create fixture dir");
     std::fs::write(dir.join("aaa.txt"), "one\ntwo\nthree\n").expect("write fixture");

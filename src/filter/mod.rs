@@ -161,7 +161,7 @@ pub(crate) const LIGHT_DIM_STYLE: Style = Style::new()
 /// patterns that pick out metadata every log carries: the commit, the host.
 /// The second kind is wanted in the view and useless for choosing files. A
 /// `Context` filter is an `Include` for every purpose except one: it never
-/// selects a file in the navigator.
+/// selects a file in the explorer.
 ///
 /// A variant rather than a flag on `Include`: an `Exclude` already never
 /// selects a file, so "selects?" is not orthogonal to sense but one more value
@@ -188,7 +188,7 @@ pub enum Verdict {
     ///
     /// Shown and coloured exactly like `Included`, but not *interesting*: a
     /// context line is there to be read around a hit, not to be a hit. `n`
-    /// steps over it, and the navigator's scan already leaves context
+    /// steps over it, and the explorer's scan already leaves context
     /// filters out of the mask that marks a file as matching — this variant
     /// is what lets the view agree with it.
     Context(usize),
@@ -265,7 +265,7 @@ impl Predicate {
         }
     }
 
-    /// The regex, when there is one. The navigator's `Matcher` runs regexes
+    /// The regex, when there is one. The explorer's `Matcher` runs regexes
     /// over files it never parses, so it has nothing to ask a definition.
     #[must_use]
     pub fn as_regex(&self) -> Option<&Regex> {
@@ -654,7 +654,7 @@ impl ActiveFilters {
         // Include outranks context in both modes, whatever their order in
         // the set: a line an include filter selected is a hit, and must say
         // so — `n` stops on `Included`, not on `Context` — and its colour is
-        // then the same one the navigator gives the file, whose owner is the
+        // then the same one the explorer gives the file, whose owner is the
         // lowest *selecting* filter and never a context one.
         match self.combine {
             Combine::Or => live(Sense::Include)
@@ -946,7 +946,7 @@ impl ActiveFilters {
     ///
     /// A failure is rare and its consequences are invisible without this
     /// warning: `verdict` falls back to per-filter scanning, which is only
-    /// slow, but `matcher` returns `None` and the navigator's marking
+    /// slow, but `matcher` returns `None` and the explorer's marking
     /// switches off with nothing said (#187).
     fn recompile(&mut self) {
         self.generation = GENERATIONS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -956,7 +956,7 @@ impl ActiveFilters {
             Err(err) => {
                 log::warn!(
                     "cannot compile the filter patterns together: {err}; \
-                     the navigator stops marking files until they change"
+                     the explorer stops marking files until they change"
                 );
                 self.compiled = None;
             }
@@ -1157,7 +1157,7 @@ mod tests {
         );
         assert_eq!(set.verdict("fn x()", functions), Verdict::Unmatched);
     }
-    /// The navigator cannot evaluate a definition, so its bit is in no mask:
+    /// The explorer cannot evaluate a definition, so its bit is in no mask:
     /// alone it yields no matcher, and beside a regex it neither selects nor
     /// excludes.
     #[test]
@@ -1308,7 +1308,7 @@ mod tests {
         }
     }
 
-    /// The navigator's rule follows: a file matches when one line matches
+    /// The explorer's rule follows: a file matches when one line matches
     /// every enabled include filter, and its owner is the first of them.
     #[test]
     fn the_matcher_ands_too() {

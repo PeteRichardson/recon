@@ -810,7 +810,7 @@ mod tests {
         assert!(!set.any_excluding());
     }
 
-    /// The navigator's masks and dimming follow the same rule.
+    /// The explorer's masks and dimming follow the same rule.
     #[test]
     fn the_matcher_and_dimming_ignore_filters_in_disabled_sets() {
         let mut set = ActiveFilters::with_sets(None, &[loaded("a", 50, true, &["foo"])]);

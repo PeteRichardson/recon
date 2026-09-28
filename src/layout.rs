@@ -1,4 +1,4 @@
-//! Pane geometry: how wide the navigator is, how tall the filter pane is, and
+//! Pane geometry: how wide the explorer is, how tall the filter pane is, and
 //! where the two dividers sit.
 //!
 //! Split out of `impl App` (#74), which had grown to 1,762 lines mixing this
@@ -8,9 +8,9 @@
 //!
 //! What makes this a real seam rather than an arbitrary cut: everything here
 //! answers "how big is each pane, given the terminal" from `App`'s own sizing
-//! fields (`nav_width`, `filter_height`, `divider`, `filter_area`,
+//! fields (`explorer_width`, `filter_height`, `divider`, `filter_area`,
 //! `dragging`). None of it touches the document, the filters, or the panes'
-//! contents. The one exception is deliberate — `nav_width` asks the navigator
+//! contents. The one exception is deliberate — `explorer_width` asks the explorer
 //! and the filter pane what width they would prefer, because an automatic
 //! width that ignored its contents would clip them.
 //!
@@ -25,14 +25,14 @@ use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
 use ratatui::prelude::Rect;
 use std::time::{Duration, Instant};
 
-/// Widest the nav pane will size itself to automatically.
-pub(crate) const MAX_NAV_WIDTH: u16 = 40;
+/// Widest the explorer pane will size itself to automatically.
+pub(crate) const MAX_EXPLORER_WIDTH: u16 = 40;
 
 /// Narrowest either pane may be dragged, so a bordered block still renders.
 ///
-/// This is nav's own floor — how little it may have — and is independent of
+/// This is explorer's own floor — how little it may have — and is independent of
 /// `MIN_FILE_VIEW_WIDTH` below, which bounds how much it may *take*. A drag
-/// to the far edge, or a directory of short filenames, may still leave nav
+/// to the far edge, or a directory of short filenames, may still leave explorer
 /// narrower than `MIN_FILE_VIEW_WIDTH` would ask for; that is fine, since
 /// nothing at that end is starving the file view.
 pub(crate) const MIN_PANE_WIDTH: u16 = 3;
@@ -57,62 +57,62 @@ pub(crate) const MIN_PANE_WIDTH: u16 = 3;
 /// 20 fits an 18-character name inside the borders, which covers most of what
 /// a source or log directory holds. It is a judgement call rather than a fact,
 /// and a good candidate for a config entry once #18 lands.
-pub(crate) const MIN_AUTO_NAV_WIDTH: u16 = 20;
+pub(crate) const MIN_AUTO_EXPLORER_WIDTH: u16 = 20;
 
-/// Rows the navigator keeps even when the filter pane's stacked below it
+/// Rows the explorer keeps even when the filter pane's stacked below it
 /// wants more than the terminal can spare.
 ///
-/// This used to be enforced by giving the navigator `Min(MIN_NAV_HEIGHT)`
+/// This used to be enforced by giving the explorer `Min(MIN_EXPLORER_HEIGHT)`
 /// and the filter pane `Length(filter_height)`, on the claim that `Min`
 /// beats `Length` for priority. It doesn't: in ratatui-core 0.1.2 `Length`
 /// adds its equality constraint an order of magnitude *stronger* than `Min`
 /// adds its bound, so the filter pane's `Length` was actually the one
-/// winning — a bare `Min(0)` navigator constraint could be squeezed to zero
+/// winning — a bare `Min(0)` explorer constraint could be squeezed to zero
 /// rows by a tall filter pane while still being the *focused* pane,
 /// stranding the user on a cursor they cannot see. That this is backwards
 /// from what the constraint names suggest fooled an implementer and a
 /// re-reviewer in turn.
 ///
 /// The floor is now arithmetic instead of leaned on the solver: `App::render`
-/// caps `filter_height` at `left.height.saturating_sub(MIN_NAV_HEIGHT)`
-/// before handing it to `Length`, so the navigator's own constraint can be
+/// caps `filter_height` at `left.height.saturating_sub(MIN_EXPLORER_HEIGHT)`
+/// before handing it to `Length`, so the explorer's own constraint can be
 /// `Min(0)` and still never drop below this floor whenever the terminal has
-/// at least `MIN_NAV_HEIGHT` rows to give the left column in total. Below
+/// at least `MIN_EXPLORER_HEIGHT` rows to give the left column in total. Below
 /// that — a terminal shorter than the floor itself — the cap saturates to
-/// zero, the filter pane gets nothing, and the navigator takes whatever the
+/// zero, the filter pane gets nothing, and the explorer takes whatever the
 /// terminal has, however little that is; there is no lower floor to fall
 /// back to at that point. `MIN_PANE_WIDTH`'s reasoning applied to the other
 /// axis: enough for a bordered block to render at all (top border, one
 /// content row, bottom border), not enough to call comfortable.
-pub(crate) const MIN_NAV_HEIGHT: u16 = 3;
+pub(crate) const MIN_EXPLORER_HEIGHT: u16 = 3;
 
 /// Rows the filter pane sizes itself to *automatically*, at minimum.
 ///
-/// The height analogue of `MIN_AUTO_NAV_WIDTH`, and it exists for the same
+/// The height analogue of `MIN_AUTO_EXPLORER_WIDTH`, and it exists for the same
 /// kind of reason: a pane sized purely by its contents is not necessarily a
 /// pane sized usefully. An empty set asked for three rows — a title on the
 /// top border, one row for the hint, a bottom border — which is the smallest
 /// thing that can be drawn rather than a considered size, and it read as an
-/// afterthought stuck under the navigator. #44 asks for the pane to look like
+/// afterthought stuck under the explorer. #44 asks for the pane to look like
 /// the headline feature it is before the first filter exists, on the grounds
 /// that recon is heading further in a filter-forward direction, not less.
 ///
 /// A floor, not a fixed height: a larger set still gets the rows it asks for,
 /// up to the same two caps in `filter_pane_split_height` that have always
 /// bounded it. Those caps also outrank this floor, so a short terminal is
-/// unaffected — the navigator's floor and the half share are still what
+/// unaffected — the explorer's floor and the half share are still what
 /// govern there, and this only shows up once there is room to honour it.
 ///
-/// Eight is a judgement call, as `MIN_AUTO_NAV_WIDTH`'s twenty is: six
+/// Eight is a judgement call, as `MIN_AUTO_EXPLORER_WIDTH`'s twenty is: six
 /// content rows inside the borders, which holds a working filter set without
-/// scrolling while still leaving the navigator the larger share of any
+/// scrolling while still leaving the explorer the larger share of any
 /// terminal tall enough for the floor to apply at all. Like that constant, a
 /// good candidate for a config entry.
 pub(crate) const MIN_AUTO_FILTER_HEIGHT: u16 = 8;
 
 /// Fewest rows a *dragged* filter pane may be left with — the height
 /// analogue of `MIN_PANE_WIDTH`, and its counterpart in the same way
-/// `MIN_AUTO_FILTER_HEIGHT` is `MIN_AUTO_NAV_WIDTH`'s.
+/// `MIN_AUTO_FILTER_HEIGHT` is `MIN_AUTO_EXPLORER_WIDTH`'s.
 ///
 /// Distinct from `MIN_AUTO_FILTER_HEIGHT` above, which bounds a height nobody
 /// asked for; this bounds a decision, and so is much smaller: top border, one
@@ -120,7 +120,7 @@ pub(crate) const MIN_AUTO_FILTER_HEIGHT: u16 = 8;
 /// evidently wants it out of the way, and the app's answer to that is to keep
 /// one usable row rather than to argue — the same trade `MIN_PANE_WIDTH`
 /// makes, and the same reason a collapsed-but-focusable pane is the outcome
-/// to avoid (see `MIN_NAV_HEIGHT`).
+/// to avoid (see `MIN_EXPLORER_HEIGHT`).
 pub(crate) const MIN_FILTER_HEIGHT: u16 = 3;
 
 /// Columns the file view needs to stay genuinely readable, not merely
@@ -137,7 +137,7 @@ pub(crate) const MIN_FILTER_HEIGHT: u16 = 3;
 ///   arbitrary round number.
 ///
 /// Used as the ceiling on how much of the terminal the left column may
-/// claim, in both `nav_width`'s auto-sizing and pinned (dragged) branches,
+/// claim, in both `explorer_width`'s auto-sizing and pinned (dragged) branches,
 /// so a deliberate drag cannot starve the view any more than auto-sizing
 /// can — the app already refuses to let a drag collapse a pane outright
 /// (`MIN_PANE_WIDTH`); this is the same principle at a usable threshold.
@@ -147,17 +147,17 @@ pub(crate) const MIN_FILE_VIEW_WIDTH: u16 = 2 + (6 + 2) + 20;
 /// Crossterm does not report double-clicks, so they are timed here.
 pub(crate) const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 
-/// How the nav pane's width is decided.
+/// How the explorer pane's width is decided.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum NavWidth {
-    /// Snap to the longest entry, capped at `MAX_NAV_WIDTH`.
+pub(crate) enum ExplorerWidth {
+    /// Snap to the longest entry, capped at `MAX_EXPLORER_WIDTH`.
     #[default]
     Auto,
     /// Held at the width the user dragged to.
     Pinned(u16),
 }
 
-/// How the filter pane's height is decided — `NavWidth` on the other axis.
+/// How the filter pane's height is decided — `ExplorerWidth` on the other axis.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum FilterHeight {
     /// Size to the filter set, floored at `MIN_AUTO_FILTER_HEIGHT`.
@@ -184,7 +184,7 @@ pub(crate) enum FilterHeight {
 pub(crate) enum Divider {
     /// Between the left column and the file view.
     Vertical,
-    /// Between the navigator and the filter pane stacked below it.
+    /// Between the explorer and the filter pane stacked below it.
     Horizontal,
 }
 
@@ -205,12 +205,12 @@ impl App<'_> {
     }
 
     /// How much of `left_height` (the left column's total rows) the filter
-    /// pane gets, out of the navigator's floor `MIN_NAV_HEIGHT`.
+    /// pane gets, out of the explorer's floor `MIN_EXPLORER_HEIGHT`.
     ///
     /// The filter pane gets its preferred height, capped at whatever is left
-    /// over once the navigator's floor is set aside — expressed as
+    /// over once the explorer's floor is set aside — expressed as
     /// arithmetic rather than leaned on how ratatui's constraint solver
-    /// weighs `Min` against `Length` (see `MIN_NAV_HEIGHT`'s doc comment for
+    /// weighs `Min` against `Length` (see `MIN_EXPLORER_HEIGHT`'s doc comment for
     /// why that was the wrong thing to lean on). Kept as its own method,
     /// rather than inlined at its one call site in `render`, so the two
     /// floors this expresses are directly testable without going through a
@@ -219,29 +219,29 @@ impl App<'_> {
     /// Also capped at half of `left_height`: `preferred_height` alone grows
     /// without bound as filters are added, so on an ordinary terminal a
     /// filter set that grows past a handful would otherwise pin the
-    /// navigator at its bare floor *permanently* rather than only on a
+    /// explorer at its bare floor *permanently* rather than only on a
     /// genuinely short terminal — the floor is meant as a last resort, not
-    /// the navigator's everyday allotment. `List`/`ListState` already
+    /// the explorer's everyday allotment. `List`/`ListState` already
     /// scrolls, so a capped pane loses nothing but simultaneous visibility:
     /// every filter stays reachable. The two caps compose via `min`: on a
     /// short terminal the floor-based one is tighter and wins, exactly as
     /// before this cap existed; on a tall one the half-based one is tighter
-    /// and gives the navigator a proportional share instead of the bare
+    /// and gives the explorer a proportional share instead of the bare
     /// floor.
     ///
     /// The preferred height is floored at `MIN_AUTO_FILTER_HEIGHT` before
     /// either cap applies, which is what makes the pane open at a usable size
     /// with nothing in it (#44). Deliberately *inside* the caps rather than
     /// applied to the result: a floor that outranked them would hand an empty
-    /// pane eight of a twelve-row column, which is the navigator-starving
+    /// pane eight of a twelve-row column, which is the explorer-starving
     /// behaviour the caps exist to prevent — and it would do it for a pane
     /// that has nothing to show.
     /// A dragged height skips both the starting floor and the half cap, and
-    /// keeps only the navigator's floor. Both of the ones it skips exist to
+    /// keeps only the explorer's floor. Both of the ones it skips exist to
     /// stop *automatic* sizing producing a silly split; a drag is a decision,
-    /// and the same reasoning `MIN_AUTO_NAV_WIDTH` and `MIN_PANE_WIDTH` split
+    /// and the same reasoning `MIN_AUTO_EXPLORER_WIDTH` and `MIN_PANE_WIDTH` split
     /// on the other axis applies unchanged. What it keeps is the one bound
-    /// that is not about taste: a navigator squeezed to nothing while still
+    /// that is not about taste: an explorer squeezed to nothing while still
     /// focusable strands the user on a cursor they cannot see.
     pub(crate) fn filter_pane_split_height(&self, left_height: u16) -> u16 {
         let wanted = match self.filter_height {
@@ -252,33 +252,33 @@ impl App<'_> {
             FilterHeight::Pinned(rows) => rows.max(MIN_FILTER_HEIGHT),
         };
         // Applied last, and to both branches, so that on a terminal too short
-        // to honour any of this the navigator is what survives.
-        wanted.min(left_height.saturating_sub(MIN_NAV_HEIGHT))
+        // to honour any of this the explorer is what survives.
+        wanted.min(left_height.saturating_sub(MIN_EXPLORER_HEIGHT))
     }
 
-    /// Resolve the nav pane's width within `area`.
-    pub(crate) fn nav_width(&self, area: Rect) -> u16 {
-        let width = match self.nav_width {
+    /// Resolve the explorer pane's width within `area`.
+    pub(crate) fn explorer_width(&self, area: Rect) -> u16 {
+        let width = match self.explorer_width {
             // The column has to fit whichever pane currently wants more:
-            // the navigator's longest entry, or the filter pane's longest
+            // the explorer's longest entry, or the filter pane's longest
             // row. Either alone could otherwise get silently clipped by the
             // other's narrower automatic width.
-            NavWidth::Auto => {
-                let nav_width = self.nav.preferred_width();
+            ExplorerWidth::Auto => {
+                let explorer_width = self.explorer.preferred_width();
                 let filter_width = self.filters_pane.preferred_width(&self.filters);
                 // Clamped, not just `.max`: the floor must not push a column
                 // past the cap when both apply.
-                nav_width
+                explorer_width
                     .max(filter_width)
-                    .clamp(MIN_AUTO_NAV_WIDTH, MAX_NAV_WIDTH)
+                    .clamp(MIN_AUTO_EXPLORER_WIDTH, MAX_EXPLORER_WIDTH)
             }
-            NavWidth::Pinned(width) => width,
+            ExplorerWidth::Pinned(width) => width,
         };
 
-        // Whatever the source — auto-sizing or a drag — nav may not claim so
+        // Whatever the source — auto-sizing or a drag — explorer may not claim so
         // much that the file view drops below a genuinely usable width.
         // `MIN_PANE_WIDTH` is the fallback once the terminal is too narrow
-        // even for that (its `.max` below): nav's own floor, unrelated to
+        // even for that (its `.max` below): explorer's own floor, unrelated to
         // this ceiling, is applied last.
         let widest = area
             .width
@@ -304,7 +304,7 @@ impl App<'_> {
 
                 if double_click {
                     match divider {
-                        Divider::Vertical => self.nav_width = NavWidth::Auto,
+                        Divider::Vertical => self.explorer_width = ExplorerWidth::Auto,
                         Divider::Horizontal => self.filter_height = FilterHeight::Auto,
                     }
                     self.last_divider_click = None;
@@ -316,7 +316,9 @@ impl App<'_> {
             }
             MouseEventKind::Drag(MouseButton::Left) => {
                 match self.dragging {
-                    Some(Divider::Vertical) => self.nav_width = NavWidth::Pinned(mouse.column),
+                    Some(Divider::Vertical) => {
+                        self.explorer_width = ExplorerWidth::Pinned(mouse.column);
+                    }
                     // The pane runs from wherever the mouse now is to the
                     // bottom of the left column, which is the one part of the
                     // last frame's geometry a row alone cannot supply.
@@ -343,7 +345,7 @@ impl App<'_> {
     /// The divider under `(column, row)`, if either is.
     ///
     /// A divider is the pair of adjacent borders between two panes — the
-    /// navigator's right border and the view's left, or the navigator's
+    /// explorer's right border and the view's left, or the explorer's
     /// bottom border and the filter pane's top — and exactly that pair. It
     /// used to take a cell of slack either side, to be less fiddly to grab;
     /// now that a click on a row does something (#58), the slack would have

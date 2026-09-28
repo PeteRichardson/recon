@@ -1,5 +1,5 @@
 //! Selection and paging over a [`ListState`], shared by the two panes that
-//! are a list — the navigator and the filter pane (#194).
+//! are a list — the explorer and the filter pane (#194).
 //!
 //! Each pane used to carry its own `ListState`, its own `last_height`, its
 //! own `ASSUMED_PAGE` and a near-identical set of motions over them, with
@@ -44,7 +44,7 @@ impl ListMotion {
     ///
     /// Clamps explicitly rather than using `ListState::select_next`, which
     /// increments without knowing the list length: at the bottom it moved the
-    /// navigator's selection *past* the last entry, where `selected_path`
+    /// explorer's selection *past* the last entry, where `selected_path`
     /// returned `None` and previewing silently stopped until `k` was pressed.
     /// Rendering hid it, because `List` clamps the highlight for drawing.
     pub(crate) fn select_next(&mut self, len: usize) {

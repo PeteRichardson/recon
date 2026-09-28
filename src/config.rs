@@ -1530,7 +1530,7 @@ mod tests {
     /// most confusing config failure there is.
     #[test]
     fn unknown_key_is_rejected_and_named() {
-        let path = fixture("unknown-key.toml", "nav_wdith = 20\n");
+        let path = fixture("unknown-key.toml", "explorer_wdith = 20\n");
         let err = load_from(&path).expect_err("an unknown key must fail");
         assert!(
             matches!(err, ConfigError::Parse { .. }),
@@ -1538,7 +1538,7 @@ mod tests {
         );
         let rendered = err.to_string();
         assert!(
-            rendered.contains("nav_wdith"),
+            rendered.contains("explorer_wdith"),
             "the error must name the offending key: {rendered}"
         );
         assert!(
@@ -2563,7 +2563,7 @@ mod tests {
         bindings.insert("global.quit".to_string(), vec!["x".to_string()]);
         bindings.insert("global.reload".to_string(), vec!["x".to_string()]);
         // A pane line under a default global binding.
-        bindings.insert("nav.up".to_string(), vec!["?".to_string()]);
+        bindings.insert("explorer.up".to_string(), vec!["?".to_string()]);
         let config = Config {
             keymap: Some(KeymapConfig { bindings }),
             ..Config::default()
@@ -2574,7 +2574,7 @@ mod tests {
 
         assert!(rendered.contains("global.quit"), "{rendered}");
         assert!(rendered.contains("global.reload"), "{rendered}");
-        assert!(rendered.contains("nav.up"), "{rendered}");
+        assert!(rendered.contains("explorer.up"), "{rendered}");
         assert_eq!(
             rendered
                 .lines()

@@ -66,7 +66,7 @@ _Avoid_: match (used for filters)
 
 **Origin**:
 Where the user was when they pressed `/`: the cursor and scroll in the file
-view, or the selected row in the navigator or the set picker. Esc in the
+view, or the selected row in the explorer or the set picker. Esc in the
 prompt returns there; Enter keeps the position the search reached.
 
 **Promote**:
@@ -78,6 +78,26 @@ The patterns Enter committed in a `/` prompt, newest first, that Up and Down
 recall in the next one. The file search, the filename search and the set
 picker's search each keep their own; a filter prompt keeps none.
 _Avoid_: recent searches, last patterns
+
+### Panes
+
+**Pane**:
+One of the three columns of the recon window, from left to right: the
+**explorer**, the **file view** and the **filter pane**.
+_Avoid_: panel, window (that is a slice of the visible lines), navigator (the old name of the explorer)
+
+**Shown / Hidden** (of a pane):
+Whether a pane is on the screen. Any pane can be hidden, but at least one is
+always shown. Always say which pane: "hide the explorer", "show the filter
+pane", never only "hide". A hidden pane keeps its state, and its global keys
+still work.
+_Avoid_: open, closed, collapsed
+
+**Zoom**:
+Hide every pane except the focused pane, and remember which panes were shown.
+A zoom when only one pane is shown does the opposite: it shows the remembered
+panes again, or all panes if none are remembered.
+_Avoid_: maximise
 
 ### The view
 

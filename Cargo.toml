@@ -52,7 +52,7 @@ pedantic = { level = "warn", priority = -1 }
 # and saturation instead; see `cursor_screen_row`.
 cast_possible_truncation = "allow"
 
-# `handle_events` on `FileNav` and `FileView` take `Event`/`Input` by value
+# `handle_events` on `Explorer` and `FileView` take `Event`/`Input` by value
 # because they consume it by matching, and the two `new(path: String)` ctors
 # take an owned `String` because they store it. Borrowing would push a clone to
 # every caller to save one here.

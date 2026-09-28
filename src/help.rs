@@ -94,7 +94,7 @@ pub struct Binding {
     ///
     /// A list, not one name, because a row can bind more than one action at
     /// once: "Shared motions" documents `j`/`k` once for three panes, and
-    /// that one row names `nav.up`, `view.up` and `filters.up` together
+    /// that one row names `explorer.up`, `view.up` and `filters.up` together
     /// rather than splitting into three rows and losing the "documented
     /// once" shape the module is built around.
     ///
@@ -410,8 +410,8 @@ pub const KEYMAP: &[Section] = &[
             },
             Binding {
                 keys: &["e"],
-                action: "Focus the navigator",
-                names: &["global.focus.nav"],
+                action: "Focus the explorer",
+                names: &["global.focus.explorer"],
             },
             Binding {
                 keys: &["t"],
@@ -542,7 +542,7 @@ pub const KEYMAP: &[Section] = &[
             },
             Binding {
                 keys: &["e n"],
-                action: "Navigator's n — search hit, else next matching file",
+                action: "Explorer's n — search hit, else next matching file",
                 names: &[],
             },
             Binding {
@@ -562,8 +562,8 @@ pub const KEYMAP: &[Section] = &[
                 keys: &["j", "k", "Down", "Up"],
                 action: "Down / up a row",
                 names: &[
-                    "nav.up",
-                    "nav.down",
+                    "explorer.up",
+                    "explorer.down",
                     "view.up",
                     "view.down",
                     "filters.up",
@@ -574,8 +574,8 @@ pub const KEYMAP: &[Section] = &[
                 keys: &["g", "G"],
                 action: "First / last row (also Home / End)",
                 names: &[
-                    "nav.goto.start",
-                    "nav.goto.end",
+                    "explorer.goto.start",
+                    "explorer.goto.end",
                     "view.goto.start",
                     "view.goto.end",
                     "filters.goto.start",
@@ -586,8 +586,8 @@ pub const KEYMAP: &[Section] = &[
                 keys: &["Ctrl-d", "Ctrl-u"],
                 action: "Half a page down / up",
                 names: &[
-                    "nav.halfpage.down",
-                    "nav.halfpage.up",
+                    "explorer.halfpage.down",
+                    "explorer.halfpage.up",
                     "view.halfpage.down",
                     "view.halfpage.up",
                     "filters.halfpage.down",
@@ -598,8 +598,8 @@ pub const KEYMAP: &[Section] = &[
                 keys: &["PageDown", "PageUp"],
                 action: "A page down / up",
                 names: &[
-                    "nav.page.down",
-                    "nav.page.up",
+                    "explorer.page.down",
+                    "explorer.page.up",
                     "view.page.down",
                     "view.page.up",
                     "filters.page.down",
@@ -608,28 +608,33 @@ pub const KEYMAP: &[Section] = &[
             },
             Binding {
                 keys: &["n", "N"],
-                action: "Next / previous hit, else interesting line; nav: file",
-                names: &["hit.next", "hit.prev", "nav.hit.next", "nav.hit.prev"],
+                action: "Next / prev hit, else interesting line; explorer: file",
+                names: &[
+                    "hit.next",
+                    "hit.prev",
+                    "explorer.hit.next",
+                    "explorer.hit.prev",
+                ],
             },
             Binding {
                 keys: &["Enter"],
                 action: "Open entry; toggle filter or set; not the view",
-                names: &["nav.open", "filters.toggle"],
+                names: &["explorer.open", "filters.toggle"],
             },
         ],
     },
     Section {
-        title: "Navigator",
+        title: "Explorer",
         bindings: &[
             Binding {
                 keys: &["h", "Left"],
                 action: "Up to the parent directory",
-                names: &["nav.parent"],
+                names: &["explorer.parent"],
             },
             Binding {
                 keys: &["l", "Right"],
                 action: "Open the entry; a file takes the focus",
-                names: &["nav.open"],
+                names: &["explorer.open"],
             },
         ],
     },
@@ -915,7 +920,7 @@ fn rows(keymap: &crate::keymap::Keymap) -> Vec<Row<'static>> {
 ///
 /// Substituting label by label, rather than listing everything the row's
 /// actions are now bound to, because `keys` is a curated list and the overlay
-/// depends on it staying curated. `nav.goto.start` also binds `Home`, which
+/// depends on it staying curated. `explorer.goto.start` also binds `Home`, which
 /// the shared row deliberately spells in prose instead of in its keys to stay
 /// inside the layout budget, and `global.toggle.hide` orders its three keys
 /// differently here than `keymap::DEFAULT` does. Rebuilding a row's keys from
@@ -949,7 +954,7 @@ fn keys_for(
     //
     // Only a label the defaults do not already hold is appended, which is what
     // keeps the curated list curated: `Home` and `End` are in
-    // `nav.goto.start`'s default labels and merely held off the row by prose
+    // `explorer.goto.start`'s default labels and merely held off the row by prose
     // (`keymap::tests::DOCUMENTED_IN_PROSE`), so they are never appended. Under
     // a default keymap the two lists are identical and nothing is appended at
     // all, which is what leaves the pinned rendering untouched.
@@ -974,7 +979,7 @@ fn keys_for(
 /// What now reaches the actions `key` reached by default on this row.
 ///
 /// One key can stand for one action per pane: the shared row's `k` is
-/// `nav.up`, `view.up` and `filters.up` at once. So every name on the row is
+/// `explorer.up`, `view.up` and `filters.up` at once. So every name on the row is
 /// asked, and each answers with the label sitting where `key` sits in its own
 /// default list — a config that rebinds one pane's motion leaves the row
 /// documenting two keys, and both are true.
@@ -1348,7 +1353,7 @@ mod tests {
                 "Global",
                 "Chains",
                 "Shared motions",
-                "Navigator",
+                "Explorer",
                 "File view",
                 "Filter pane",
                 "Profile picker",
@@ -1395,8 +1400,8 @@ mod tests {
 
         // Pane verbs stay in their pane.
         let pane_only = [
-            ("h", "Navigator"),
-            ("l", "Navigator"),
+            ("h", "Explorer"),
+            ("l", "Explorer"),
             ("i", "Filter pane"),
             ("*", "File view"),
         ];
@@ -1654,14 +1659,14 @@ mod tests {
         );
     }
 
-    /// One key can stand for one action per pane. `nav.up` alone is rebound
+    /// One key can stand for one action per pane. `explorer.up` alone is rebound
     /// here, so `k` still reaches the file view and the filter pane — and the
     /// row reports both keys, because both are true. Showing only the
-    /// navigator's `K` would tell two thirds of the row's readers to press a
+    /// explorer's `K` would tell two thirds of the row's readers to press a
     /// key that does nothing for them.
     #[test]
     fn a_shared_row_shows_every_key_that_still_reaches_it() {
-        let rows = rows(&keymap(&[("nav.up", &["K"])]));
+        let rows = rows(&keymap(&[("explorer.up", &["K"])]));
 
         assert_eq!(
             keys_under(&rows, "Shared motions", "Down / up a row"),
@@ -1700,7 +1705,7 @@ mod tests {
 
     /// The defaults must render as the table spells them, to the byte. The
     /// layout tests above are calibrated against this text, and `keys` is a
-    /// curated list — `nav.goto.start` also binds `Home`, which the shared
+    /// curated list — `explorer.goto.start` also binds `Home`, which the shared
     /// row deliberately keeps out of its keys — so a rendering derived from
     /// the keymap must not rewrite it.
     #[test]

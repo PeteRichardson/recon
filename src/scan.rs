@@ -10,7 +10,7 @@
 //! The bitsets are the point. A file matches under a mask iff some line's
 //! bitset has a selecting bit and no excluding bit — a few `u64` ops — so a
 //! filter toggle re-answers a whole folder with no I/O. See the design at
-//! `docs/specs/2026-09-02-navigator-filter-matches-design.md`.
+//! `docs/specs/2026-09-02-explorer-filter-matches-design.md`.
 
 use crate::filter::{Matcher, Owner};
 use std::fs::File;
@@ -91,7 +91,7 @@ impl Record {
 }
 
 /// One file a [`Request`] asks for, named the way [`Scanned`] names its
-/// answer (#171): `index` is the navigator row, `progress` is how far an
+/// answer (#171): `index` is the explorer row, `progress` is how far an
 /// earlier scan got, so the worker resumes rather than restarts.
 ///
 /// `stamp` is the stamp `progress` was read under. The worker stats the file
@@ -116,7 +116,7 @@ pub struct Request {
     pub files: Vec<FileToScan>,
 }
 
-/// One file's result. `index` is the navigator row the request named; the
+/// One file's result. `index` is the explorer row the request named; the
 /// receiver checks it still names `path` before using it.
 #[derive(Debug, Clone)]
 pub struct Scanned {
@@ -188,7 +188,7 @@ impl Scan for Scanner {
 /// disconnects the channel: `drain_scan_results`'s `Disconnected` warning
 /// cannot fire, and the file stays `Unknown` for ever with nothing said. A
 /// caught panic is reported as `eof: true` instead — the file is answered,
-/// wrongly but finitely, and the navigator stops waiting (#188).
+/// wrongly but finitely, and the explorer stops waiting (#188).
 fn scan_caught(
     reader: impl BufRead,
     matcher: &Matcher,
@@ -661,7 +661,7 @@ mod tests {
     }
 
     /// A panic inside one file's scan must not lose the file. It is reported
-    /// complete, so the navigator stops waiting on it, and the run continues
+    /// complete, so the explorer stops waiting on it, and the run continues
     /// with the next file (#188).
     #[test]
     fn a_panicking_read_is_reported_complete_rather_than_lost() {

@@ -265,7 +265,7 @@ impl Document {
     ///
     /// Windowing this matters more than it looks: unlike the gutter numbers,
     /// the style vector was never gated on hiding, so an unfiltered million-line
-    /// file rebuilt a million-entry vector on every navigator arrow key.
+    /// file rebuilt a million-entry vector on every explorer arrow key.
     #[must_use]
     pub fn visible_styles_range(
         &self,

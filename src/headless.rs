@@ -1,7 +1,7 @@
 //! Headless mode (#143): `--emit` with stdin that is not a terminal.
 //!
 //! The pieces `App` composes — `ActiveFilters`, `Document`, `scan::scan` —
-//! with no navigator, no view and no terminal. Files come from stdin or
+//! with no explorer, no view and no terminal. Files come from stdin or
 //! from the `PATH` argument; the result leaves through the same `Exit` a
 //! TUI session hands back, so `main` prints both the same way.
 
@@ -12,7 +12,7 @@ use crate::filter::{ActiveFilters, Matcher};
 use crate::path::lexical_absolute;
 use crate::scan::{self, Progress};
 use crate::viewport::is_interesting;
-use crate::widgets::filenav::sorted_entries;
+use crate::widgets::explorer::sorted_entries;
 use color_eyre::{Result, eyre::eyre};
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Write};
@@ -32,7 +32,7 @@ pub(crate) struct Inputs {
 pub(crate) enum Source {
     /// One path per line on stdin.
     Stdin,
-    /// `PATH` named a directory: its files, in the navigator's order.
+    /// `PATH` named a directory: its files, in the explorer's order.
     Directory(PathBuf),
     /// `PATH` named a file — or nothing that exists: that path alone.
     File,
@@ -100,7 +100,7 @@ pub(crate) fn collect(
 
 /// Read the input list: every non-blank line of `stdin` as a path, or, when
 /// stdin held none, what `path` names — a directory's files in the
-/// navigator's order, or the file itself.
+/// explorer's order, or the file itself.
 ///
 /// Lines are bytes, not `String`s, for the reason `Entry::name` is an
 /// `OsString`: a Unix filename need not be UTF-8, and `ls -1` writes it
@@ -221,10 +221,10 @@ fn collect_lines(
 
 /// `--emit files`: every readable input in dim mode; in hide mode, the
 /// inputs the matcher selects — or every readable input when nothing
-/// selects, which is the navigator's rule: it hides nothing it cannot mark.
+/// selects, which is the explorer's rule: it hides nothing it cannot mark.
 ///
 /// One scan per file, stopping at the first selecting line, which is what
-/// the navigator's scan costs. With nothing to scan, each input is still
+/// the explorer's scan costs. With nothing to scan, each input is still
 /// opened, so an unreadable one is warned about and skipped in every mode.
 /// The summary's `from <dir>` / `of N inputs` follows where the list came
 /// from; there is no `unscanned` here, since every scan runs to its answer
@@ -411,7 +411,7 @@ mod tests {
     }
 
     #[test]
-    fn a_path_directory_lists_its_files_in_navigator_order_without_directories() {
+    fn a_path_directory_lists_its_files_in_explorer_order_without_directories() {
         let dir = fixture_dir("headless_inputs_dir");
         fs::write(dir.join("b.log"), "x").expect("write");
         fs::write(dir.join("A.log"), "x").expect("write");
@@ -425,7 +425,7 @@ mod tests {
     }
 
     /// A FIFO under the directory would block the first read for ever — a
-    /// cron job that never finishes (#221). The navigator's `Kind::Special`
+    /// cron job that never finishes (#221). The explorer's `Kind::Special`
     /// is what `inputs` skips, so the two agree on what a file is.
     #[cfg(unix)]
     #[test]
@@ -566,7 +566,7 @@ mod tests {
     }
 
     /// A directory of `files`, listed as stdin would give them: in the
-    /// order of `files`, not the navigator's.
+    /// order of `files`, not the explorer's.
     fn from_stdin(name: &str, files: &[(&str, &str)]) -> Inputs {
         let dir = fixture_dir(name);
         let files = files
@@ -673,7 +673,7 @@ mod tests {
                 format!("{}\t2\thit", b.display()),
                 format!("{}\t1\thit", a.display()),
             ],
-            "b before a: the input order, not the navigator's"
+            "b before a: the input order, not the explorer's"
         );
         assert_eq!(summary, "recon: emitted 2 lines of 2 files, hide mode");
     }
@@ -969,7 +969,7 @@ mod tests {
 
     /// A NUL-bearing file is a read failure for `lines` (`Document::read`
     /// sniffs it) but an ordinary input for `files` (`scan` reads bytes, as
-    /// the navigator's scan does). Pinned so the asymmetry is a decision on
+    /// the explorer's scan does). Pinned so the asymmetry is a decision on
     /// record, not an accident.
     #[test]
     fn a_binary_input_is_listed_by_files_but_refused_by_lines() {
