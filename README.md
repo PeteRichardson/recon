@@ -426,6 +426,7 @@ are how a pane verb is reached from anywhere:
 | `f i` / `f x` | Add an including / excluding filter. When the prompt commits, focus returns to where you were and `n` runs there | — |
 | `f c` | Change the selected filter's pattern; returns on commit the same way | — |
 | `f I` | Write a new filter in the filter editor; `Enter` adds it and returns the same way | — |
+| `f C` | Change the selected filter's pattern in the filter editor; returns on commit the same way | — |
 | `f d` / `f Enter` | Delete / toggle the selected filter; focus stays in the pane, since one delete is often the first of several | — |
 | `f f` | Stay in the filter pane — the second `f` ends the chain | — |
 | `e n` | Move the explorer to its next `n`: the next filename-search hit if one is active, else the next file the filters match. Unlike `.`, focus moves to the explorer | — |
@@ -882,11 +883,18 @@ that compiled left them, so a half-typed `(` does not clear the screen.
 | characters | Type into the pattern; the prompt's editing keys work the same way | `prompt.*` |
 | `Up` / `Down` | Scroll the file a line | `filtereditor.scroll.up` / `filtereditor.scroll.down` |
 | `PageUp` / `PageDown` | Scroll the file a page | `filtereditor.page.up` / `filtereditor.page.down` |
-| `Enter` | Add the pattern as an including filter and close | `filtereditor.commit` |
+| `Enter` | Add the pattern as an including filter, or change the selected filter, and close | `filtereditor.commit` |
 | `Esc` | Close and change nothing | `filtereditor.cancel` |
 
 `Enter` does exactly what `f i` with the same pattern does: one including
-filter in the scratch set, and focus returns to where `f` was pressed. On an
+filter in the scratch set, and focus returns to where `f` was pressed.
+
+`f C` opens the editor on the selected filter instead, with its pattern in
+the field and its matches already drawn in its own colour. `Enter` then does
+what `f c` does: it replaces the pattern and keeps the filter's slot, sense,
+colour and enabled state. On a set's header row or a built-in filter, `C`
+says why it cannot, as `c` does. A definition filter has no pattern to show,
+so `C` says so; `c` is the way to turn one into a pattern. On an
 empty pattern or one that does not compile, `Enter` keeps the editor open.
 Unlike a prompt, `Backspace` on an empty pattern does not close it. The
 editor takes every key while it is open, so `q` is typed rather than quitting.
@@ -1321,6 +1329,7 @@ tabled above:
 | `R` | Reset every set to its startup state; filters you typed are kept |
 | `S` | Save the scratch filters as a named set in `filters.toml` — the one thing recon ever writes |
 | `I` | Open the filter editor on a new filter — see *The filter editor* below |
+| `C` | Open the filter editor on the selected filter's pattern |
 
 `c` edits in place: the filter keeps its slot, and so keeps its colour, its
 sense and whether it is enabled. That matters because a slot is a precedence —
@@ -1411,7 +1420,7 @@ visible to take focus; and if `f` had to show the filter pane to start the
 chain, the return hides it again, so a chain does not change the layout.
 
 A pane's verb pressed in the wrong pane is not silent. `i`, `x`, `c`, `d`, `m`,
-`a`, `s` or `I` in the explorer or the file view puts a one-line hint on the status
+`a`, `s`, `I` or `C` in the explorer or the file view puts a one-line hint on the status
 row — `i adds a filter · f i` — for one keypress; `h` and `l` in the filter pane
 do the same for the explorer. It is a hint rather than a redirect on purpose:
 making `i` global would make `f i` and `i` the same key, and the chain is the

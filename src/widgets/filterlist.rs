@@ -275,6 +275,8 @@ impl FilterList {
             (A::FiltersDelete, Row::Filter(index)) => Some(FilterCommand::Delete(index)),
             // `c` for change, as in vim.
             (A::FiltersEdit, Row::Filter(index)) => Some(FilterCommand::Edit(index)),
+            // `C`: `c` in the filter editor (#313).
+            (A::FiltersEditorOpen, Row::Filter(index)) => Some(FilterCommand::EditInEditor(index)),
             // `m` as in *metadata*: the filter keeps showing its lines but
             // stops choosing files in the explorer (#119).
             (A::FiltersContext, Row::Filter(index) | Row::BuiltIn(index)) => {
@@ -282,14 +284,15 @@ impl FilterList {
             }
             // A built-in filter is recon's: switch it, but do not delete or
             // rewrite it (#127).
-            (A::FiltersDelete | A::FiltersEdit, Row::BuiltIn(_)) => {
+            (A::FiltersDelete | A::FiltersEdit | A::FiltersEditorOpen, Row::BuiltIn(_)) => {
                 Some(FilterCommand::BuiltInIsReadOnly)
             }
             // A set is defined by the file, and the pane says so rather than
             // doing nothing (#120's "no silent keys").
-            (A::FiltersDelete | A::FiltersEdit | A::FiltersContext, Row::Header(_)) => {
-                Some(FilterCommand::SetIsReadOnly)
-            }
+            (
+                A::FiltersDelete | A::FiltersEdit | A::FiltersEditorOpen | A::FiltersContext,
+                Row::Header(_),
+            ) => Some(FilterCommand::SetIsReadOnly),
             // `a` as in *apply*: a profile is a set verb, so on a filter row
             // it is nothing.
             (A::FiltersProfile, Row::Header(set)) => Some(FilterCommand::PickProfile(set)),

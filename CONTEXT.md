@@ -51,7 +51,7 @@ _Avoid_: catalogue, set list, filter list
 **Filter editor**:
 The screen that covers the whole recon window, where the user writes a
 filter's pattern against the open file and sees every line it matches while
-typing. `f I` opens it on a new filter.
+typing. `f I` opens it on a new filter, and `f C` on the selected one.
 _Avoid_: editor alone (that is the external editor `o` and `O` open), regex builder
 
 **Interesting line**:

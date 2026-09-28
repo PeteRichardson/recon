@@ -206,7 +206,7 @@ impl App<'_> {
                 // redirect: making `i` global would collapse `f i` and `i`,
                 // and `x`-not-`e` for exclude exists because `e` is a focus
                 // key. The chain stays the answer; the hint teaches it.
-                // These eight letters are unbound in the explorer and the
+                // These nine letters are unbound in the explorer and the
                 // file view, so this arm shadows nothing.
                 //
                 // Not resolved through the table (#199): these are guidance,
@@ -215,7 +215,7 @@ impl App<'_> {
                 // generated from the table (task 8), so it names the key
                 // that actually reaches the filter action, not the key this
                 // arm happens to match.
-                KeyCode::Char(c @ ('i' | 'x' | 'c' | 'd' | 'm' | 'a' | 's' | 'I'))
+                KeyCode::Char(c @ ('i' | 'x' | 'c' | 'd' | 'm' | 'a' | 's' | 'I' | 'C'))
                     // `pressed`, not `key.modifiers.is_empty()`: a terminal
                     // sets `SHIFT` on the `I`, as on every uppercase letter
                     // (#250), and `normalise` is what drops it.
@@ -230,6 +230,10 @@ impl App<'_> {
                         'm' => (A::FiltersContext, "toggles include and context"),
                         'a' => (A::FiltersProfile, "picks a profile for the set"),
                         'I' => (A::FiltersEditorNew, "opens the filter editor"),
+                        'C' => (
+                            A::FiltersEditorOpen,
+                            "opens the selected filter in the filter editor",
+                        ),
                         _ => (A::FiltersSolo, "solos the set"),
                     };
                     if let Some(hint) = self.keymap.hint_for(action, verb, A::GlobalFocusFilters) {

@@ -397,6 +397,10 @@ impl App<'_> {
                 }
                 return;
             }
+            FilterCommand::EditInEditor(index) => {
+                self.open_filter_editor_on(index);
+                return;
+            }
             FilterCommand::BuiltInIsReadOnly => {
                 self.report(
                     "built-in filters can be switched off or collapsed, not deleted or edited",

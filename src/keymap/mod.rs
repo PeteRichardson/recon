@@ -259,6 +259,9 @@ pub(crate) enum ActionId {
     // Filter editor (#312)
     /// `I` in the filter pane: open the filter editor on a new filter.
     FiltersEditorNew,
+    /// `C` in the filter pane: open the filter editor on the selected filter
+    /// (#313).
+    FiltersEditorOpen,
     FilterEditorCommit,
     FilterEditorCancel,
     FilterEditorScrollUp,
@@ -362,6 +365,7 @@ impl ActionId {
             Self::FiltersReset => "filters.reset",
             Self::FiltersSaveSet => "filters.save.set",
             Self::FiltersEditorNew => "filters.editor.new",
+            Self::FiltersEditorOpen => "filters.editor.open",
             Self::FilterEditorCommit => "filtereditor.commit",
             Self::FilterEditorCancel => "filtereditor.cancel",
             Self::FilterEditorScrollUp => "filtereditor.scroll.up",
@@ -530,6 +534,7 @@ pub(crate) const DEFAULT: &[(Scope, &str, ActionId)] = &[
     (Scope::Filters, "n", ActionId::HitNext),
     (Scope::Filters, "N", ActionId::HitPrev),
     (Scope::Filters, "I", ActionId::FiltersEditorNew),
+    (Scope::Filters, "C", ActionId::FiltersEditorOpen),
     (Scope::Prompt, "Enter", ActionId::PromptCommit),
     (Scope::Prompt, "Esc", ActionId::PromptCancel),
     (Scope::Prompt, "Left", ActionId::PromptLeft),

@@ -2,9 +2,11 @@
 //! pattern against the open file, with every line it matches highlighted
 //! while it is typed.
 //!
-//! `f I` opens it on a new, empty pattern. It covers the whole window, as the
-//! set picker does, and takes every key while it is open. Enter adds the
-//! pattern to the scratch set exactly as `f i` would; Esc changes nothing.
+//! `f I` opens it on a new, empty pattern, and `f C` on the selected filter's
+//! pattern (#313). It covers the whole window, as the set picker does, and
+//! takes every key while it is open. Enter adds the pattern to the scratch
+//! set exactly as `f i` would, or replaces the selected filter's pattern
+//! exactly as `f c` would; Esc changes nothing.
 
 use super::App;
 use super::prompt::SearchPrompt;
@@ -38,9 +40,14 @@ pub(super) struct FilterEditor {
     pub(super) top: usize,
     /// How many lines the last render drew, for a page key.
     pub(super) page: usize,
-    /// The colour the new filter will take, so the highlight shows the line
-    /// as the file view will show it after Enter.
+    /// The colour the filter takes, so the highlight shows the line as the
+    /// file view will show it after Enter: the next palette colour for a new
+    /// filter, the filter's own for one being changed.
     pub(super) style: Style,
+    /// The filter Enter changes, by index, or `None` for a new filter. The
+    /// editor takes every key while it is open, so nothing can remove the
+    /// filter under it; `replace_filter` checks the index anyway.
+    pub(super) target: Option<usize>,
 }
 
 impl FilterEditor {
@@ -55,7 +62,26 @@ impl FilterEditor {
             top: 0,
             page: 1,
             style,
+            target: None,
         }
+    }
+
+    /// An editor over `lines` on the pattern of the filter at `index`, cursor
+    /// at its end as `c` puts it, with the highlight and the count already
+    /// showing.
+    pub(super) fn editing(
+        lines: Arc<Vec<String>>,
+        style: Style,
+        index: usize,
+        pattern: String,
+    ) -> Self {
+        let mut editor = Self {
+            field: SearchPrompt::editing(pattern, super::prompt::PromptKind::default()),
+            target: Some(index),
+            ..Self::new(lines, style)
+        };
+        editor.recompile();
+        editor
     }
 
     /// Compile the pattern again after an edit, and count what it matches.
@@ -141,6 +167,25 @@ impl App<'_> {
         self.filter_editor = Some(FilterEditor::new(lines, self.filters.next_style()));
     }
 
+    /// `f C`: open the filter editor on the filter at `index` (#313). A
+    /// definition filter has no pattern to show, and says so instead.
+    pub(super) fn open_filter_editor_on(&mut self, index: usize) {
+        let Some(filter) = self.filters.filters().get(index) else {
+            return;
+        };
+        let Some(regex) = filter.predicate.as_regex() else {
+            self.report(
+                "a definition filter has no pattern to edit; c turns it into one",
+                false,
+            );
+            return;
+        };
+        let (pattern, style) = (regex.as_str().to_string(), filter.style);
+        self.promote_truncated_preview();
+        let lines = self.view.source().clone();
+        self.filter_editor = Some(FilterEditor::editing(lines, style, index, pattern));
+    }
+
     /// Feed a key to the open filter editor. It takes every key: a key
     /// `Scope::FilterEditor` does not bind is tried as a prompt editing key, and a
     /// character that is neither is typed into the pattern.
@@ -222,9 +267,10 @@ impl App<'_> {
         }
     }
 
-    /// Enter: add the pattern as `f i … Enter` would, and close. A pattern
-    /// that is empty or does not compile keeps the editor open, with the
-    /// reason in the panel.
+    /// Enter: add the pattern as `f i … Enter` would, or change the target
+    /// filter's as `f c … Enter` would, and close. A pattern that is empty
+    /// or does not compile keeps the editor open, with the reason in the
+    /// panel.
     fn commit_filter_editor(&mut self) {
         let Some(editor) = self.filter_editor.as_mut() else {
             return;
@@ -236,8 +282,12 @@ impl App<'_> {
         if editor.error.is_some() {
             return;
         }
-        let pattern = editor.field.pattern.clone();
-        if let Err(error) = self.add_filter(&pattern) {
+        let (pattern, target) = (editor.field.pattern.clone(), editor.target);
+        let outcome = match target {
+            None => self.add_filter(&pattern),
+            Some(index) => self.replace_filter(index, &pattern),
+        };
+        if let Err(error) = outcome {
             if let Some(editor) = self.filter_editor.as_mut() {
                 editor.error = Some(error_line(&error));
             }
