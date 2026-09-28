@@ -199,7 +199,7 @@ fn an_unknown_set_is_refused_before_anything_is_read() {
 
     assert!(out.stdout.is_empty());
     assert!(
-        text(&out.stderr).contains("unknown set \"Nope\"; filters.toml defines: Bugs"),
+        text(&out.stderr).contains("unknown set \"Nope\"; the set files define: Bugs"),
         "stderr: {}",
         text(&out.stderr)
     );
