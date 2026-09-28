@@ -14,7 +14,8 @@
 //! in the pattern. The marks live only while the editor is open.
 //!
 //! On the lines, `f` and `F` go to the next and previous failed check, `n`
-//! and `N` to the next and previous unmarked match, and `u` shows only the
+//! and `N` to the next and previous unmarked match, each wrapping at the end
+//! of the file, and `u` shows only the
 //! matched and the marked lines (#315). The editor draws its own lines, so
 //! `u` here is hide mode for the editor alone: the main window's hide mode
 //! does not change.
@@ -305,43 +306,44 @@ impl FilterEditor {
     }
 
     /// `f`, `F`, `n` and `N`: move the cursor line to the nearest `target`
-    /// line in `direction`, or say why it did not move. A jump does not
-    /// wrap: "no more" is what the user needs to know when all the lines
-    /// are examined.
-    fn jump(&mut self, target: Target, direction: Direction) -> Result<(), &'static str> {
-        let found = match target {
-            Target::Failure => {
-                let failed = |&(&index, _): &(&usize, &Mark)| {
-                    self.check(index).is_some_and(|check| !check.passes)
-                };
-                match direction {
-                    Direction::Down => self.marks.range(self.cursor + 1..).find(failed),
-                    Direction::Up => self.marks.range(..self.cursor).rev().find(failed),
-                }
-                .map(|(&index, _)| index)
-            }
-            Target::Unmarked => {
-                let unmarked =
-                    |&index: &usize| !self.marks.contains_key(&index) && self.matches_line(index);
-                match direction {
-                    Direction::Down => (self.cursor + 1..self.lines.len()).find(unmarked),
-                    Direction::Up => (0..self.cursor).rev().find(unmarked),
-                }
-            }
+    /// line in `direction`, and wrap once past the end of the file as `n`
+    /// and `N` do in the file view. The text is what the status row says: a
+    /// wrap, or that the file has no `target` line.
+    fn jump(&mut self, target: Target, direction: Direction) -> Option<&'static str> {
+        let is_target = |index: usize| match target {
+            Target::Failure => self.check(index).is_some_and(|check| !check.passes),
+            Target::Unmarked => !self.marks.contains_key(&index) && self.matches_line(index),
         };
-        let Some(line) = found else {
-            return Err(match (target, direction) {
-                (Target::Failure, Direction::Down) => "no failed check below",
-                (Target::Failure, Direction::Up) => "no failed check above",
-                (Target::Unmarked, Direction::Down) => "no unmarked match below",
-                (Target::Unmarked, Direction::Up) => "no unmarked match above",
-            });
+        let (cursor, len) = (self.cursor, self.lines.len());
+        // The cursor line is looked at last, after the wrap: the only
+        // target, it is where the jump lands.
+        let (before, after): (Vec<usize>, Vec<usize>) = match direction {
+            Direction::Down => (
+                (cursor + 1..len).collect(),
+                (0..(cursor + 1).min(len)).collect(),
+            ),
+            Direction::Up => ((0..cursor).rev().collect(), (cursor..len).rev().collect()),
+        };
+        let (line, wrapped) = match before.into_iter().find(|&index| is_target(index)) {
+            Some(line) => (line, false),
+            None => match after.into_iter().find(|&index| is_target(index)) {
+                Some(line) => (line, true),
+                None => {
+                    return Some(match target {
+                        Target::Failure => "no failed check",
+                        Target::Unmarked => "no unmarked match",
+                    });
+                }
+            },
         };
         // A failed check is marked and an unmarked match matches, so the
         // line is drawn in either mode.
         self.cursor = line;
         self.reveal = true;
-        Ok(())
+        wrapped.then_some(match direction {
+            Direction::Down => super::search::WRAPPED_TO_TOP,
+            Direction::Up => super::search::WRAPPED_TO_BOTTOM,
+        })
     }
 
     /// The first and last line of the visual range, or the cursor line twice
@@ -673,14 +675,14 @@ impl App<'_> {
         }
     }
 
-    /// A jump key: move the cursor line, or say on the status row that
-    /// there is no more to go to.
+    /// A jump key: move the cursor line, and say on the status row when it
+    /// wrapped or found nothing.
     fn jump_in_filter_editor(&mut self, target: Target, direction: Direction) {
-        let outcome = self
+        let text = self
             .filter_editor
             .as_mut()
-            .map_or(Ok(()), |editor| editor.jump(target, direction));
-        if let Err(text) = outcome {
+            .and_then(|editor| editor.jump(target, direction));
+        if let Some(text) = text {
             self.report(text, false);
         }
     }

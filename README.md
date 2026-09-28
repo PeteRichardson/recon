@@ -898,7 +898,8 @@ that compiled left them, so a half-typed `(` does not clear the screen.
 
 ##### Marking lines
 
-`Tab` moves the keys from the pattern to the file's lines. A `>` shows the
+`Tab` moves the keys from the pattern to the file's lines, and the thick
+green frame of a focused pane moves with them. A `>` shows the
 cursor line, and `Up`, `Down`, `PageUp` and `PageDown` move it. `+` marks it
 as a line the pattern must match, and `-` as a line the pattern must not
 match. `=` removes the mark. `V` opens a range, and the next of those three
@@ -921,9 +922,10 @@ line is marked. The marks last only while the editor is open: `Enter` and
 
 On the lines, `f` goes to the next failed check and `F` to the previous one.
 `n` goes to the next line the pattern matches that has no mark, and `N` to
-the previous one, so you can examine each match and mark it. These keys do
-not wrap: at the last one, the status row says so (`no failed check below`)
-and the cursor stays where it is.
+the previous one, so you can examine each match and mark it. As `n` and `N`
+do in the file view, these keys wrap at the end of the file, and the status
+row says `wrapped to the top` or `wrapped to the bottom`. When there is none
+to go to, it says `no failed check` or `no unmarked match`.
 
 `u` shows only the lines the pattern matches and the marked lines — a marked
 line stays, also when its check fails. It is hide mode for the editor alone,
