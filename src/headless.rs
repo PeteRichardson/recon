@@ -5,13 +5,13 @@
 //! from the `PATH` argument; the result leaves through the same `Exit` a
 //! TUI session hands back, so `main` prints both the same way.
 
+use crate::app::viewport::is_interesting;
 use crate::config::Config;
 use crate::document::{self, Document, Mode};
 use crate::emit::{Emit, Exit, path_bytes};
 use crate::filter::{ActiveFilters, Matcher};
 use crate::path::lexical_absolute;
 use crate::scan::{self, Progress};
-use crate::viewport::is_interesting;
 use crate::widgets::explorer::sorted_entries;
 use color_eyre::{Result, eyre::eyre};
 use std::fs::File;

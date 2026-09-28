@@ -24,7 +24,7 @@
 //! turns the resulting drag into a new size — and leaving half of it in
 //! `lib.rs` would have split the pair that the geometry constants exist for.
 
-use crate::App;
+use super::App;
 use crate::panes::PaneSet;
 use crate::widgets::Focus;
 use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};

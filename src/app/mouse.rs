@@ -11,9 +11,9 @@ use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::{Margin, Position, Rect};
 use std::time::Instant;
 
-use crate::layout::DOUBLE_CLICK;
+use super::layout::DOUBLE_CLICK;
+use super::{App, PromptKind, SearchPrompt};
 use crate::widgets::{Focus, filterlist};
-use crate::{App, PromptKind, SearchPrompt};
 
 impl App<'_> {
     /// Handle a click, reporting whether it was consumed.
@@ -155,7 +155,7 @@ impl App<'_> {
         self.press = Some((source, col));
         if double
             && let Some(line) = self.document.lines().get(source)
-            && let Some((start, end)) = crate::viewport::word_span(line, col)
+            && let Some((start, end)) = super::viewport::word_span(line, col)
         {
             self.start_visual_at(source, start);
             self.view.set_cursor(row, end - 1);

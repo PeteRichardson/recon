@@ -21,7 +21,7 @@
 //! already documented as a unit" — the unit is now a module, so the table
 //! above has somewhere to live that isn't a comment buried mid-file.
 
-use crate::App;
+use super::App;
 use crate::document::Document;
 use crate::filter::Verdict;
 use crate::keymap::ActionId;

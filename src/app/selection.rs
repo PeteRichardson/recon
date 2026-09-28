@@ -16,7 +16,7 @@
 //! without an `App` — and so `--emit` (#143) can reuse the yank if it ever
 //! wants a selection.
 
-use crate::App;
+use super::App;
 use crate::widgets::Focus;
 
 /// The fixed end of a selection in progress. The moving end is the cursor.
@@ -180,9 +180,9 @@ impl App<'_> {
     pub(crate) fn visual_badge(&self) -> Option<&'static str> {
         self.visual.map(|visual| {
             if visual.linewise {
-                crate::VLINE_BADGE_TEXT
+                super::VLINE_BADGE_TEXT
             } else {
-                crate::VISUAL_BADGE_TEXT
+                super::VISUAL_BADGE_TEXT
             }
         })
     }
