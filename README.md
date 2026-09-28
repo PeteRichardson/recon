@@ -786,9 +786,10 @@ filter path below.
 #### More directories of sets
 
 `RECON_FILTER_PATH` (or `--filter-path`) names more directories to read sets
-from, colon-separated like `PATH`. In each directory, recon reads
-`filters.toml` and every `<name>.filters.toml`, all in the same format, so a
-directory can keep one file or one file for each group of sets:
+from, colon-separated like `PATH`. In each directory, and in
+`~/.config/recon` too, recon reads `filters.toml` and every
+`<name>.filters.toml`, all in the same format, so a directory can keep one
+file or one file for each group of sets:
 
 ```sh
 export RECON_FILTER_PATH=~/work/team-filters:./.recon
@@ -801,14 +802,16 @@ export RECON_FILTER_PATH=~/work/team-filters:./.recon
 └── triage.filters.toml
 ```
 
-recon reads your own `~/.config/recon/filters.toml` first, then each directory
-in order, and the files in a directory in name order. When two files define a
-set with the same name, the earlier file wins and the later set is hidden, not
-merged, so a personal set replaces a team set of the same name. A table for
-the built-in `definitions` set follows the same rule. A directory that does not
-exist is skipped. A file
-that recon reads must be valid, even when its sets are all hidden: an error in
-any file stops recon before it starts.
+recon reads your own `~/.config/recon` first, then each directory in order. In
+each directory it reads `filters.toml` first, then the other files in name
+order. When two files define a set with the same name, the earlier file wins
+and the later set is hidden, not merged, so a personal set replaces a team set
+of the same name. A table for the built-in `definitions` set follows the same
+rule. `~/.config/recon/filters.toml` is the file that `S` writes, so a set you
+save is never hidden by a set in another file. A directory that does not exist
+is skipped, and a directory named two times is read one time. A file that
+recon reads must be valid, even when its sets are all hidden: an error in any
+file stops recon before it starts.
 
 recon never reads `./.recon` or any other directory unless you name it. An
 empty entry does not mean the current directory, as it does in `PATH`. So a
