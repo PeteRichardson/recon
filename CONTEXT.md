@@ -60,6 +60,12 @@ must not match (`-`). It passes or fails under the pattern as typed. A check
 lasts only while the editor is open.
 _Avoid_: example (the word for a check once it is saved with the filter), test
 
+**Matches only**:
+The filter editor's own hide mode: it shows only the lines the pattern
+matches and the marked lines. `u` on the lines toggles it. It does not change
+the main window's hide mode.
+_Avoid_: hide mode (that is the main window's)
+
 **Interesting line**:
 A line an enabled including filter matches. `n` and `N` step between
 interesting lines when no search is set, and hide mode keeps only them.

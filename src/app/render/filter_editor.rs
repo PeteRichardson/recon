@@ -39,10 +39,12 @@ impl FilterEditor {
         self.page = usize::from(inner.height).max(1);
         self.reveal_cursor();
         let lines = self.lines.clone();
-        for ((y, line), index) in (inner.y..inner.bottom())
-            .zip(lines.iter().skip(self.top))
-            .zip(self.top..)
+        // A row, not a line: with matches only (#315), row `top` is not line
+        // `top`.
+        for (y, index) in
+            (inner.y..inner.bottom()).zip((self.top..).map_while(|row| self.line_at(row)))
         {
+            let line = &lines[index];
             let check = self.check(index);
             let mut spans = self.gutter(index, check);
             spans.extend(self.spans(line, dim, check));
@@ -72,7 +74,7 @@ impl FilterEditor {
                 format!(" {enter} · Esc cancel · Up/Down/PgUp/PgDn scroll · Tab lines ")
             }
             EditorFocus::Lines => format!(
-                " + must match · - must not · = clear · V range · {enter} · Esc cancel · Tab pattern "
+                " + must match · - must not · = clear · V range · f/F failed · n/N unmarked · u matches only · {enter} · Esc cancel · Tab pattern "
             ),
         };
         let block = Block::bordered()

@@ -278,6 +278,15 @@ pub(crate) enum ActionId {
     FilterEditorMarkClear,
     /// `V` on the lines: open or close a range for the mark keys.
     FilterEditorVisualLine,
+    /// `f` / `F` on the lines: the next / previous failed check (#315).
+    FilterEditorFailureNext,
+    FilterEditorFailurePrev,
+    /// `n` / `N` on the lines: the next / previous line the pattern matches
+    /// that has no mark.
+    FilterEditorUnmarkedNext,
+    FilterEditorUnmarkedPrev,
+    /// `u` on the lines: show only the matched and the marked lines.
+    FilterEditorToggleMatchesOnly,
     // The help overlay itself has no ActionId: any key dismisses it, so
     // there is nothing to bind or rebind, and Scope::Help carries no DEFAULT
     // rows for the same reason (#59).
@@ -387,6 +396,11 @@ impl ActionId {
             Self::FilterEditorMarkNoMatch => "filtereditor.mark.nomatch",
             Self::FilterEditorMarkClear => "filtereditor.mark.clear",
             Self::FilterEditorVisualLine => "filtereditor.visual.line",
+            Self::FilterEditorFailureNext => "filtereditor.failure.next",
+            Self::FilterEditorFailurePrev => "filtereditor.failure.prev",
+            Self::FilterEditorUnmarkedNext => "filtereditor.unmarked.next",
+            Self::FilterEditorUnmarkedPrev => "filtereditor.unmarked.prev",
+            Self::FilterEditorToggleMatchesOnly => "filtereditor.toggle.matchesonly",
             Self::PromptCommit => "prompt.commit",
             Self::PromptCancel => "prompt.cancel",
             Self::PromptLeft => "prompt.left",
@@ -604,6 +618,17 @@ pub(crate) const DEFAULT: &[(Scope, &str, ActionId)] = &[
     (Scope::FilterEditor, "-", ActionId::FilterEditorMarkNoMatch),
     (Scope::FilterEditor, "=", ActionId::FilterEditorMarkClear),
     (Scope::FilterEditor, "V", ActionId::FilterEditorVisualLine),
+    (Scope::FilterEditor, "f", ActionId::FilterEditorFailureNext),
+    (Scope::FilterEditor, "F", ActionId::FilterEditorFailurePrev),
+    // `n` and `N`, as the file view steps between interesting lines.
+    (Scope::FilterEditor, "n", ActionId::FilterEditorUnmarkedNext),
+    (Scope::FilterEditor, "N", ActionId::FilterEditorUnmarkedPrev),
+    // `u`, the key of hide mode in the main window.
+    (
+        Scope::FilterEditor,
+        "u",
+        ActionId::FilterEditorToggleMatchesOnly,
+    ),
 ];
 
 /// Keys 1.0 promises to 1.1, bound to nothing.

@@ -892,6 +892,9 @@ that compiled left them, so a half-typed `(` does not clear the screen.
 | `-` | On the lines: the pattern must not match the cursor line | `filtereditor.mark.nomatch` |
 | `=` | On the lines: remove the cursor line's mark | `filtereditor.mark.clear` |
 | `V` | On the lines: open a range, so the next mark key marks each line in it | `filtereditor.visual.line` |
+| `f` / `F` | On the lines: go to the next / previous failed check | `filtereditor.failure.next` / `filtereditor.failure.prev` |
+| `n` / `N` | On the lines: go to the next / previous line the pattern matches that has no mark | `filtereditor.unmarked.next` / `filtereditor.unmarked.prev` |
+| `u` | On the lines: show only the lines the pattern matches and the marked lines, or every line again | `filtereditor.toggle.matchesonly` |
 
 ##### Marking lines
 
@@ -913,6 +916,22 @@ If you open the editor from the file view (`f` pressed there), the file
 view's cursor line is already marked must-match. From any other pane, no
 line is marked. The marks last only while the editor is open: `Enter` and
 `Esc` both discard them.
+
+##### Going through the lines
+
+On the lines, `f` goes to the next failed check and `F` to the previous one.
+`n` goes to the next line the pattern matches that has no mark, and `N` to
+the previous one, so you can examine each match and mark it. These keys do
+not wrap: at the last one, the status row says so (`no failed check below`)
+and the cursor stays where it is.
+
+`u` shows only the lines the pattern matches and the marked lines — a marked
+line stays, also when its check fails. It is hide mode for the editor alone,
+on the key hide mode has in the main window, and the status row adds
+`matches only` while it is on. With no pattern, every line shows. The arrows
+and the page keys move over the lines that show, and a range marks only
+them. The main window's hide mode does not change: when you close the
+editor, the main window is as it was.
 
 `Enter` does exactly what `f i` with the same pattern does: one including
 filter in the scratch set, and focus returns to where `f` was pressed.
