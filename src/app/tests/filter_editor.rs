@@ -1901,10 +1901,11 @@ use std::sync::mpsc::{Receiver, channel};
 use std::sync::{Arc, Mutex};
 
 /// A model double. It keeps each text it is sent, waits for the test to
-/// release it, answers `reply`, and says it is done.
+/// release it, answers the next of `replies` — the last one again once it
+/// is the only one left — and says it is done.
 struct FakeModel {
     available: bool,
-    reply: Result<Candidate, String>,
+    replies: Mutex<Vec<Result<Candidate, String>>>,
     sent: Arc<Mutex<Vec<String>>>,
     release: Mutex<Receiver<()>>,
     done: Mutex<Sender<()>>,
@@ -1918,8 +1919,16 @@ impl Model for FakeModel {
     fn generate(&self, text: &str, _cancel: &Cancel) -> Result<Candidate, String> {
         self.sent.lock().expect("sent").push(text.to_string());
         let _ = self.release.lock().expect("release").recv();
+        let reply = {
+            let mut replies = self.replies.lock().expect("replies");
+            if replies.len() > 1 {
+                replies.remove(0)
+            } else {
+                replies[0].clone()
+            }
+        };
         let _ = self.done.lock().expect("done").send(());
-        self.reply.clone()
+        reply
     }
 }
 
@@ -1957,12 +1966,21 @@ fn app_with_model(
     available: bool,
     reply: Result<Candidate, String>,
 ) -> (App<'static>, Harness) {
+    app_with_replies(name, available, vec![reply])
+}
+
+/// An app over `BODY` with a model that answers `replies` in turn.
+fn app_with_replies(
+    name: &str,
+    available: bool,
+    replies: Vec<Result<Candidate, String>>,
+) -> (App<'static>, Harness) {
     let (release_tx, release_rx) = channel();
     let (done_tx, done_rx) = channel();
     let sent = Arc::new(Mutex::new(Vec::new()));
     let model = FakeModel {
         available,
-        reply,
+        replies: Mutex::new(replies),
         sent: Arc::clone(&sent),
         release: Mutex::new(release_rx),
         done: Mutex::new(done_tx),
@@ -2248,11 +2266,189 @@ fn a_cancelled_or_failed_request_is_not_kept() {
 /// A pattern that does not compile is not sent as the current pattern.
 #[test]
 fn a_broken_pattern_is_not_sent() {
-    let (mut app, harness) = app_with_model("fe_broken_sent", true, Ok(candidate("x")));
+    let (mut app, harness) = app_with_model("fe_broken_sent", true, Ok(candidate("timeout")));
     open_editor(&mut app);
     typed(&mut app, "timeout(");
     ask(&mut app, "the timeouts");
     harness.answer();
     take_reply(&mut app);
     assert!(!harness.sent()[0].contains("Current pattern"));
+}
+
+// ---- the verify loop (#320) -----------------------------------------------
+
+use crate::generate::ATTEMPTS;
+
+/// Let the model answer the attempt that runs, and take the reply. When
+/// the loop goes on, wait until the next attempt's text is with the model.
+fn answer(app: &mut App, harness: &Harness) {
+    harness.answer();
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while !app.drain_request() {
+        assert!(std::time::Instant::now() < deadline, "no reply to take");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    if let Some(attempt) = editor(app).running.as_ref().map(|asking| asking.attempt) {
+        while harness.sent().len() < attempt {
+            assert!(std::time::Instant::now() < deadline, "no next attempt");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+}
+
+/// The editor with `ERROR timeout` marked must-match and `INFO timeout`
+/// must-not-match.
+fn open_with_marks(app: &mut App) {
+    open_editor(app);
+    key(app, KeyCode::Tab);
+    key(app, KeyCode::Tab);
+    assert_eq!(editor(app).focus, EditorFocus::Lines);
+    key(app, KeyCode::Char('+'));
+    for _ in 0..3 {
+        key(app, KeyCode::Down);
+    }
+    key(app, KeyCode::Char('-'));
+    assert_eq!(marks(app), [(0, Mark::MustMatch), (3, Mark::MustNotMatch)]);
+}
+
+#[test]
+fn a_pattern_that_fails_a_mark_is_sent_back_and_never_shown() {
+    let (mut app, harness) = app_with_replies(
+        "fe_verify_mark",
+        true,
+        vec![Ok(candidate("timeout")), Ok(candidate("ERROR timeout"))],
+    );
+    open_with_marks(&mut app);
+    ask(&mut app, "the error timeouts");
+
+    answer(&mut app, &harness);
+    assert!(editor(&app).running.is_some(), "the loop stopped");
+    assert_eq!(editor(&app).field.pattern, "", "a failed pattern was shown");
+    assert!(editor(&app).explanation.is_none());
+
+    let sent = harness.sent();
+    assert_eq!(sent.len(), 2);
+    assert!(sent[1].starts_with(&sent[0]), "{}", sent[1]);
+    assert!(
+        sent[1].contains(
+            "Pattern: timeout\nIt matches these lines, which it must not match:\nINFO timeout\n"
+        ),
+        "{}",
+        sent[1]
+    );
+
+    answer(&mut app, &harness);
+    let editor = editor(&app);
+    assert!(editor.running.is_none());
+    assert_eq!(editor.field.pattern, "ERROR timeout");
+    assert_eq!(editor.failures, 0);
+    assert_eq!(editor.requests, ["the error timeouts"]);
+}
+
+#[test]
+fn a_pattern_that_does_not_compile_is_sent_back_with_the_error() {
+    let (mut app, harness) = app_with_replies(
+        "fe_verify_compile",
+        true,
+        vec![Ok(candidate("ERROR(")), Ok(candidate("ERROR"))],
+    );
+    open_with_marks(&mut app);
+    ask(&mut app, "the errors");
+    answer(&mut app, &harness);
+    assert_eq!(editor(&app).field.pattern, "");
+    let sent = harness.sent();
+    assert!(
+        sent[1].contains("Pattern: ERROR(\nIt does not compile: unclosed group"),
+        "{}",
+        sent[1]
+    );
+    answer(&mut app, &harness);
+    assert_eq!(editor(&app).field.pattern, "ERROR");
+}
+
+#[test]
+fn the_loop_stops_at_the_last_attempt_and_says_why() {
+    let (mut app, harness) = app_with_model("fe_verify_max", true, Ok(candidate("INFO")));
+    open_with_marks(&mut app);
+    key(&mut app, KeyCode::BackTab);
+    key(&mut app, KeyCode::BackTab);
+    typed(&mut app, "ERROR");
+    ask(&mut app, "the errors");
+    for attempt in 1..=ATTEMPTS {
+        assert_eq!(
+            editor(&app).running.as_ref().map(|a| a.attempt),
+            Some(attempt)
+        );
+        answer(&mut app, &harness);
+    }
+    assert!(editor(&app).running.is_none());
+    assert_eq!(harness.sent().len(), ATTEMPTS);
+    let editor = editor(&app);
+    assert_eq!(editor.field.pattern, "ERROR", "the pattern changed");
+    assert!(editor.requests.is_empty());
+    let error = editor.error.clone().unwrap_or_default();
+    assert!(
+        error.contains(&format!("in {ATTEMPTS} tries"))
+            && error.contains("INFO")
+            && error.contains("\"ERROR timeout\""),
+        "{error}"
+    );
+    assert!(rendered(&mut app).contains(&format!("in {ATTEMPTS} tries")));
+}
+
+#[test]
+fn the_status_line_shows_the_attempt() {
+    let (mut app, harness) = app_with_replies(
+        "fe_verify_status",
+        true,
+        vec![Ok(candidate("INFO")), Ok(candidate("ERROR"))],
+    );
+    open_with_marks(&mut app);
+    ask(&mut app, "the errors");
+    let status = status_line(&mut app);
+    assert!(status.contains(&format!("try 1 of {ATTEMPTS}")), "{status}");
+    answer(&mut app, &harness);
+    let status = status_line(&mut app);
+    assert!(status.contains(&format!("try 2 of {ATTEMPTS}")), "{status}");
+    answer(&mut app, &harness);
+    assert!(!status_line(&mut app).contains("try "));
+}
+
+#[test]
+fn esc_cancels_the_loop_at_a_later_attempt_and_keeps_the_pattern() {
+    let (mut app, harness) = app_with_replies(
+        "fe_verify_cancel",
+        true,
+        vec![Ok(candidate("INFO")), Ok(candidate("ERROR"))],
+    );
+    open_with_marks(&mut app);
+    key(&mut app, KeyCode::BackTab);
+    key(&mut app, KeyCode::BackTab);
+    typed(&mut app, "timeout");
+    ask(&mut app, "the errors");
+    answer(&mut app, &harness);
+    assert_eq!(editor(&app).running.as_ref().map(|a| a.attempt), Some(2));
+
+    key(&mut app, KeyCode::Esc);
+    assert!(app.filter_editor.is_some(), "Esc closed the editor");
+    assert!(editor(&app).running.is_none());
+    harness.answer();
+    // Time for the late reply to be sent, were there anywhere to send it.
+    std::thread::sleep(Duration::from_millis(20));
+    assert!(!app.drain_request());
+    assert_eq!(editor(&app).field.pattern, "timeout");
+    assert_eq!(harness.sent().len(), 2);
+    assert!(editor(&app).requests.is_empty());
+}
+
+/// The `?` help says how many tries a request has.
+#[test]
+fn the_help_says_the_number_of_tries() {
+    let action = crate::help::KEYMAP
+        .iter()
+        .flat_map(|section| section.bindings)
+        .find(|binding| binding.names.contains(&"filtereditor.request"))
+        .map(|binding| binding.action)
+        .expect("a help row for the request line");
+    assert!(action.contains(&format!("{ATTEMPTS} tries")), "{action}");
 }
