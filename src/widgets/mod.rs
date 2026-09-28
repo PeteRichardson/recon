@@ -1,4 +1,4 @@
-pub(crate) mod filenav;
+pub(crate) mod explorer;
 pub(crate) mod fileview;
 pub(crate) mod filterlist;
 pub(crate) mod listmotion;
@@ -45,8 +45,8 @@ pub(crate) enum Action {
     ///
     /// A second variant rather than a `focus: bool` on `Load`, because the
     /// two are raised for different reasons and each reads as a whole
-    /// sentence at the call site. Only the navigator's *keys* raise this
-    /// one. Its two mouse paths — `FileNav::click` and `open_listed` — keep
+    /// sentence at the call site. Only the explorer's *keys* raise this
+    /// one. Its two mouse paths — `Explorer::click` and `open_listed` — keep
     /// `Load`, because a click has already put the focus on the pane it
     /// landed in, and a bool there would have been a bare `false` with no
     /// room to say why.
@@ -64,11 +64,11 @@ pub(crate) enum Action {
 /// down, not a position you have to go and find, so the twenty linear scans
 /// that used to search for a variant are field reads (#73).
 ///
-/// `Nav` is the default because the navigator is where a session starts.
+/// `Explorer` is the default because the explorer is where a session starts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) enum Focus {
     #[default]
-    Nav,
+    Explorer,
     View,
     Filters,
 }
@@ -82,9 +82,9 @@ impl Focus {
     /// rearranged for an unrelated reason.
     pub(crate) fn next(self) -> Self {
         match self {
-            Self::Nav => Self::View,
+            Self::Explorer => Self::View,
             Self::View => Self::Filters,
-            Self::Filters => Self::Nav,
+            Self::Filters => Self::Explorer,
         }
     }
 
@@ -92,8 +92,8 @@ impl Focus {
     /// reason.
     pub(crate) fn prev(self) -> Self {
         match self {
-            Self::Nav => Self::Filters,
-            Self::View => Self::Nav,
+            Self::Explorer => Self::Filters,
+            Self::View => Self::Explorer,
             Self::Filters => Self::View,
         }
     }

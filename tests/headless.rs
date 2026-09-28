@@ -380,7 +380,7 @@ fn print_keymap_defaults_survives_a_keymap_recon_refuses() {
 fn headless_puts_keymap_warnings_on_stderr() {
     let dir = fixture("headless_keymap_warnings");
     let home = config_home(&dir);
-    // 'j' is nav.down, view.down and filters.down by default, so one line
+    // 'j' is explorer.down, view.down and filters.down by default, so one line
     // costs three panes their key and raises three warnings.
     fs::write(
         home.join("recon/config.toml"),
@@ -395,7 +395,7 @@ fn headless_puts_keymap_warnings_on_stderr() {
 
     assert_eq!(out.status.code(), Some(0), "stderr: {}", text(&out.stderr));
     let stderr = text(&out.stderr);
-    for loser in ["nav.down", "view.down", "filters.down"] {
+    for loser in ["explorer.down", "view.down", "filters.down"] {
         assert!(
             stderr.contains(loser),
             "{loser}'s warning never reached stderr: {stderr}"

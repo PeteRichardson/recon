@@ -2,7 +2,7 @@
 use crate::document::BINARY_SNIFF_BYTES;
 use crate::document::{self, Sniff, read_lossy_line, read_utf16_lines, sniff};
 use crate::syntax::{Highlighter, Span, Theme};
-use crate::widgets::filenav::Entry;
+use crate::widgets::explorer::Entry;
 /// `FileView` Widget
 ///
 ///
@@ -199,7 +199,7 @@ pub(crate) fn window_holds(
 /// a UTF-16 byte-order mark explains its NULs away (#165).
 const BINARY_MESSAGE: &str = "<binary file: contains NUL bytes>";
 
-/// Shown when the navigator's selection is a directory with nothing in it.
+/// Shown when the explorer's selection is a directory with nothing in it.
 ///
 /// A directory now renders as its listing, so this survives only for the case
 /// where there is no listing to show. Distinguished from `<directory>`, which
@@ -450,7 +450,7 @@ impl FileView<'_> {
     /// `apply_view` — replaced that clone through `show_window` before the
     /// first draw, because `sync_document` clears the record `apply_view`
     /// keys its rebuild on. So a full load was resident three times at its
-    /// peak, and every navigator arrow copied the preview twice, for a
+    /// peak, and every explorer arrow copied the preview twice, for a
     /// buffer nothing ever rendered. The textarea now gets exactly the window
     /// `apply_view` builds before the first render — `window_for` with the
     /// cursor on the first line and the pre-render pane height — which is the
@@ -517,7 +517,7 @@ impl FileView<'_> {
     /// Show `path` in the pane, replacing whatever was there.
     ///
     /// A file that cannot be read is reported in the pane itself rather than
-    /// bringing the TUI down, since any entry in the nav pane can be selected.
+    /// bringing the TUI down, since any entry in the explorer pane can be selected.
     /// Rebuilding the `TextArea` also resets the cursor and scroll position.
     pub(crate) fn load(&mut self, path: &Path) {
         self.filename = path.to_path_buf();
@@ -537,7 +537,7 @@ impl FileView<'_> {
     /// Show just enough of `path` to fill the pane.
     ///
     /// Used as the selection moves, where reading whole files on every cursor
-    /// key would stutter on large logs. While the nav pane holds focus the
+    /// key would stutter on large logs. While the explorer pane holds focus the
     /// view cannot be scrolled, so a screenful is all that can be seen; the
     /// rest is read by `handle_events` as soon as the view is actually used.
     pub(crate) fn preview(&mut self, path: &Path) {
@@ -1332,15 +1332,15 @@ fn capped(
 /// The view is the widest pane on screen and was spending all of it on the
 /// word `<directory>`. Listing what is actually there turns a selected
 /// directory into a look-ahead — and `l` on that selection makes the listing
-/// the navigator's own, which is what stops it being a navigable-looking list
+/// the explorer's own, which is what stops it being a navigable-looking list
 /// that cannot be navigated.
 ///
-/// `..` is absent deliberately: it is the navigator's way back out, and there
+/// `..` is absent deliberately: it is the explorer's way back out, and there
 /// is nothing here that could act on it.
 /// Widest a name column grows before long names are allowed to push the
 /// metadata out of line on their own row.
 ///
-/// Same trade `MAX_NAV_WIDTH` makes: one pathological 200-character filename
+/// Same trade `MAX_EXPLORER_WIDTH` makes: one pathological 200-character filename
 /// would otherwise pad *every* row out to 200 columns and push the size and
 /// time off screen for all of them. Capping means that one row misaligns
 /// instead of all of them going blank.
@@ -1386,7 +1386,7 @@ fn format_modified(time: std::time::SystemTime) -> Option<String> {
 /// One row: name, then size, then when it changed.
 ///
 /// The metadata sits to the *right* of the name deliberately. The view pane
-/// narrows when the navigator is wide, and a row clipped at the pane's edge
+/// narrows when the explorer is wide, and a row clipped at the pane's edge
 /// then loses the time first, the size next, and the name last — which is the
 /// priority order this wants, achieved by layout rather than by logic that
 /// would need a width the listing does not have when it is built.
@@ -1405,11 +1405,11 @@ fn listing_row(entry: &Entry, name_width: usize) -> String {
 }
 
 fn directory_listing(path: &Path, max_lines: usize) -> Contents {
-    let entries = match crate::widgets::filenav::sorted_entries(path) {
+    let entries = match crate::widgets::explorer::sorted_entries(path) {
         Ok(entries) => entries,
         // Same shape as an unreadable file: say why, verbatim from the OS.
-        // Worded distinctly from the navigator's own "cannot list" (#83, in
-        // filenav.rs): that is a different subsystem failing at the same
+        // Worded distinctly from the explorer's own "cannot list" (#83, in
+        // explorer.rs): that is a different subsystem failing at the same
         // directory, and a reader of the log should be able to tell them
         // apart rather than seeing two identical lines.
         Err(err) => {
@@ -2128,7 +2128,7 @@ mod tests {
     /// `adopt` used to give the textarea a copy of every line read, and every
     /// production caller replaced that copy through `show_window` before the
     /// first draw — so a full load was resident three times at its peak and
-    /// every navigator arrow copied the preview twice. The textarea now gets
+    /// every explorer arrow copied the preview twice. The textarea now gets
     /// the window `apply_view` would build before the first render, and no
     /// more.
     #[test]
@@ -2228,7 +2228,7 @@ mod tests {
         assert!(view.truncated);
     }
 
-    /// While the nav pane has focus the preview is all that is on screen, but
+    /// While the explorer pane has focus the preview is all that is on screen, but
     /// the moment the view is used it must hold the whole file.
     #[test]
     fn interacting_upgrades_a_truncated_preview() {
@@ -3228,8 +3228,8 @@ mod tests {
         );
     }
 
-    /// The view is the pane with width to spare — the navigator is capped at
-    /// `MAX_NAV_WIDTH` and could never carry these — so the listing shows what
+    /// The view is the pane with width to spare — the explorer is capped at
+    /// `MAX_EXPLORER_WIDTH` and could never carry these — so the listing shows what
     /// `ls -l` would: how big, and when it last changed.
     ///
     /// A directory gets `-` for size rather than the number `stat` reports,
@@ -3273,7 +3273,7 @@ mod tests {
     ///
     /// It is a look-ahead rather than a pane you act in, which is what keeps
     /// it from being the "navigable-looking list you cannot navigate" that
-    /// #15 rejected: `l` on the selected directory makes it the navigator's
+    /// #15 rejected: `l` on the selected directory makes it the explorer's
     /// listing, so there is a one-key path from looking to being there.
     /// Moving the selection onto a FIFO fires a preview, and `File::open` on
     /// a FIFO blocks until a writer appears — the TUI would hang on an arrow
@@ -3320,10 +3320,10 @@ mod tests {
     /// applied in columns — `{:<width$}` counts chars.
     #[test]
     fn the_listing_name_column_aligns_across_wide_glyphs() {
-        use crate::widgets::filenav::Match;
+        use crate::widgets::explorer::Match;
         let named = |name: &str| Entry {
             name: name.into(),
-            kind: crate::widgets::filenav::Kind::Plain,
+            kind: crate::widgets::explorer::Kind::Plain,
             size: Some(1),
             modified: None,
             matched: Match::Unknown,
@@ -3363,7 +3363,7 @@ mod tests {
         assert!(!view.truncated, "a directory is not a truncated preview");
     }
 
-    /// `load` is only reached for files today — the navigator descends into a
+    /// `load` is only reached for files today — the explorer descends into a
     /// directory rather than loading it — but it must not be the one place
     /// that leaks a raw OS error if that ever changes. It lists the directory
     /// exactly as `preview` does, unbounded, since `load` is the uncapped path.

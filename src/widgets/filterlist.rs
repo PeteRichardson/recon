@@ -24,7 +24,7 @@ const BORDERS: u16 = 2;
 /// Candidate texts for the pane's single row when no filter is defined,
 /// longest first. `render` draws the first one that fits the column.
 ///
-/// The pane is on screen whenever the navigator is, so with an empty set it
+/// The pane is on screen whenever the explorer is, so with an empty set it
 /// would otherwise be a titled box with nothing in it — space taken and
 /// nothing said. Naming the binding that fills it turns that row into the one
 /// place `f i` is discoverable without reading the README.
@@ -33,7 +33,7 @@ const BORDERS: u16 = 2;
 /// be — and it is: `f` focuses this pane, and pressing it while the pane
 /// already has focus is a no-op, so the pair works from anywhere.
 ///
-/// Three forms rather than one because the column is sized by the *navigator*
+/// Three forms rather than one because the column is sized by the *explorer*
 /// (see `preferred_width`), and a directory of short names leaves well under
 /// 16 columns inside the borders — the full sentence would then never be
 /// drawn at all.
@@ -276,7 +276,7 @@ impl FilterList {
             // `c` for change, as in vim.
             (A::FiltersEdit, Row::Filter(index)) => Some(FilterCommand::Edit(index)),
             // `m` as in *metadata*: the filter keeps showing its lines but
-            // stops choosing files in the navigator (#119).
+            // stops choosing files in the explorer (#119).
             (A::FiltersContext, Row::Filter(index) | Row::BuiltIn(index)) => {
                 Some(FilterCommand::ToggleContext(index))
             }
@@ -327,7 +327,7 @@ impl FilterList {
     /// than the single row a hint needs.
     ///
     /// An empty set used to ask for nothing, which collapsed the pane out of
-    /// the layout entirely. It is now on screen whenever the navigator is, so
+    /// the layout entirely. It is now on screen whenever the explorer is, so
     /// the floor is one content row rather than zero — see `EMPTY_HINTS`.
     pub(crate) fn preferred_height(&self, rows: usize) -> u16 {
         u16::try_from(rows.max(1))
@@ -341,12 +341,12 @@ impl FilterList {
     /// reserve room for — #15 removed it from both panes; #19 brings it back
     /// as a setting.
     ///
-    /// Deliberately does **not** account for `EMPTY_HINTS`. `App::nav_width`
+    /// Deliberately does **not** account for `EMPTY_HINTS`. `App::explorer_width`
     /// sizes the left column to whichever pane wants more, so counting the
     /// hint here would put a ~18-column floor under the column for every user
     /// who has not defined a filter — including the directory of short names
     /// that `auto_width_has_no_floor` exists to keep narrow. The hint is
-    /// guidance, not content: it yields to the navigator rather than widening
+    /// guidance, not content: it yields to the explorer rather than widening
     /// the column, and `render` simply omits it when the column is too narrow
     /// to hold it.
     pub(crate) fn preferred_width(&self, filters: &ActiveFilters) -> u16 {
@@ -453,7 +453,7 @@ impl FilterList {
     pub(crate) fn render(&mut self, filters: &ActiveFilters, area: Rect, buf: &mut Buffer) {
         // The hint takes the longest of its forms that fits the column, and
         // is blanked rather than clipped when none does: `preferred_width`
-        // deliberately lets the navigator win the width (see its doc
+        // deliberately lets the explorer win the width (see its doc
         // comment), so a narrow column is an expected state, not a broken
         // one, and half a sentence of advice is worse than none. `DIM_STYLE`
         // is the same grey the disabled rows use, so it reads as chrome.
@@ -645,7 +645,7 @@ mod tests {
     }
 
     /// A pattern can hold wide glyphs as readily as a filename can, and this
-    /// pane sizes itself the same way the navigator does — so it needs the
+    /// pane sizes itself the same way the explorer does — so it needs the
     /// same measurement (#97).
     #[test]
     fn preferred_width_counts_display_columns_not_chars() {
@@ -786,7 +786,7 @@ mod tests {
         assert_eq!(list.selected(), None);
     }
 
-    /// The pane is on screen whenever the navigator is, so an empty set still
+    /// The pane is on screen whenever the explorer is, so an empty set still
     /// reserves its borders plus the one row a hint is drawn on.
     #[test]
     fn an_empty_pane_reserves_a_row_for_the_hint() {
@@ -810,7 +810,7 @@ mod tests {
         assert!(list.preferred_height(3) > list.preferred_height(1));
     }
 
-    /// The hint must not widen the left column. `App::nav_width` takes the
+    /// The hint must not widen the left column. `App::explorer_width` takes the
     /// larger of the two panes' preferred widths, so counting the hint here
     /// would put a floor under the column for everyone who has not defined a
     /// filter — see `auto_width_has_no_floor` in `lib.rs`.
@@ -830,7 +830,7 @@ mod tests {
     }
 
     /// The short form is what keeps the binding visible at the widths the
-    /// navigator actually produces — a directory of short names leaves about
+    /// explorer actually produces — a directory of short names leaves about
     /// nine columns inside the borders, well under the full sentence.
     #[test]
     fn a_column_too_narrow_for_the_sentence_still_shows_the_binding() {

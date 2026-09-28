@@ -9,7 +9,7 @@
 //! * **Colour arrives lazily, in file order.** A grammar's state at line N
 //!   depends on every line before it, so a file cannot be coloured from the
 //!   middle; nor can it be coloured whole on open, since at roughly 13 µs a
-//!   line a 10 MiB log would stall the navigator for seconds on every arrow
+//!   line a 10 MiB log would stall the explorer for seconds on every arrow
 //!   key. [`Highlighter::ensure`] colours forward from where it left off when
 //!   the wanted line is near, and otherwise *resyncs*: it restarts the grammar
 //!   [`RESYNC_LOOKBACK`] lines above the wanted one and accepts that a
@@ -25,7 +25,7 @@
 //! * **Terminal colours are encoded in the alpha channel.** bat's `ansi` and
 //!   `base16` themes name the terminal's own palette slots rather than RGB
 //!   values, using the convention [`colour`] decodes. `ansi` is the default
-//!   for the same reason the navigator's blue and green are ANSI slots: the
+//!   for the same reason the explorer's blue and green are ANSI slots: the
 //!   result follows the terminal's theme instead of fighting it, and it needs
 //!   no truecolor support.
 

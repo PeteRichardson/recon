@@ -43,7 +43,7 @@ pub(crate) enum SetPickerOutcome {
     NoHit,
 }
 
-/// The rows the search matches: the navigator's `MATCH_STYLE`, so a hit
+/// The rows the search matches: the explorer's `MATCH_STYLE`, so a hit
 /// looks the same in both lists.
 const MATCH_STYLE: Style = Style::new().fg(Color::Yellow);
 

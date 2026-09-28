@@ -90,7 +90,7 @@ fn an_unreadable_file_is_logged() {
     );
 }
 
-/// A pattern set that will not compile turns the navigator's marking off.
+/// A pattern set that will not compile turns the explorer's marking off.
 /// That is a state the user can see, so it must reach the log (#187).
 ///
 /// Driven through `ActiveFilters` and not through `App`: this is the unit
@@ -138,18 +138,18 @@ fn the_crate_logs_at_all() {
 /// survives, exactly as for an unreadable file (#189).
 ///
 /// `App::new`'s own `_ => view.load(argument)` arm cannot be the route here:
-/// for *any* directory argument, `nav.selected_path()` is always `Some` —
+/// for *any* directory argument, `explorer.selected_path()` is always `Some` —
 /// `read_dir_entries` seeds `..` unconditionally even when the real listing
-/// fails, so an unreadable directory's navigator still selects `..` rather
+/// fails, so an unreadable directory's explorer still selects `..` rather
 /// than nothing — and that keeps `App::new` on its `view.preview` arm, never
-/// its `_` arm. So the fixture instead makes the *navigator's own directory*
-/// readable, with one unreadable child inside it: the navigator lists the
+/// its `_` arm. So the fixture instead makes the *explorer's own directory*
+/// readable, with one unreadable child inside it: the explorer lists the
 /// parent fine and selects that child as its first (only) entry, previewing
 /// it exactly as arrowing onto it would — which is `read_preview_with_caps`'s
 /// own `is_dir` branch, i.e. `directory_listing` on the child directly.
 ///
 /// Asserting on the fixture name alone is not enough here either: opening the
-/// parent makes the navigator itself log nothing (it lists successfully), but
+/// parent makes the explorer itself log nothing (it lists successfully), but
 /// once the preview reaches the child, `read_preview_with_caps` calls
 /// `directory_listing`, whose only failure this fixture can trigger is the
 /// one this test exists to prove exists. Asserting on `directory_listing`'s
@@ -169,7 +169,7 @@ fn a_directory_that_cannot_be_listed_is_logged() {
     std::fs::set_permissions(&child, std::fs::Permissions::from_mode(0o000))
         .expect("make the child directory unreadable");
 
-    // The navigator lists `parent` (readable) and selects `child` — its only
+    // The explorer lists `parent` (readable) and selects `child` — its only
     // entry — as the preview target, exactly as arrowing onto it would.
     let _app = app_over(&parent.display().to_string());
 

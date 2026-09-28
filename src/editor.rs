@@ -69,7 +69,7 @@ pub fn project_root(path: &Path) -> PathBuf {
     // user navigated. Falls back to the path as given if the cwd is
     // unreadable, which is the only way it can fail.
     //
-    // Shared with `FileNav::set_dir` and `App::open_in_editor` since #78 —
+    // Shared with `Explorer::set_dir` and `App::open_in_editor` since #78 —
     // this is the codebase's one path-resolution rule. It also collapses `..`,
     // which plain `absolute` leaves in place: the loop below climbs with
     // `Path::parent`, and a literal `..` segment would make it walk back down
@@ -228,7 +228,7 @@ pub fn split_template(template: &str) -> Result<Vec<String>, TemplateError> {
 /// argument no matter what the path contains.
 ///
 /// The result is `OsString`, not `String` (#182): a Unix filename need not be
-/// UTF-8, and the navigator can reach one (#71). The two path placeholders are
+/// UTF-8, and the explorer can reach one (#71). The two path placeholders are
 /// pushed as the `OsStr` they are, so the editor is handed the bytes the
 /// filesystem holds rather than a `U+FFFD` rendering that names a file which
 /// does not exist. The template itself is text and stays text.
@@ -929,7 +929,7 @@ mod tests {
         assert_eq!(project_root(relative), root);
     }
 
-    /// The navigator can have a directory selected, and the file view shows its
+    /// The explorer can have a directory selected, and the file view shows its
     /// listing. Walking up from the directory itself — rather than from its
     /// parent — is what makes `o` on a project's own root open that project.
     #[test]

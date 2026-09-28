@@ -356,7 +356,7 @@ fn restore_terminal() -> Result<()> {
 /// recon draws on stderr, so a record written between `init_terminal` and
 /// `restore_terminal` lands on top of the frame and stays there until the
 /// next full redraw. #83 added call sites that fire during a session, and
-/// #189 added more, which turned a latent problem into one per navigator
+/// #189 added more, which turned a latent problem into one per explorer
 /// keypress (#246).
 ///
 /// Dropping is the least bad of the three answers. Buffering needs a bound

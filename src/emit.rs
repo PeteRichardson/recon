@@ -16,9 +16,9 @@ use std::process::ExitCode;
 pub enum Emit {
     /// The file view's visible lines, in the current mode
     Lines,
-    /// The navigator's listed files, one absolute path per line
+    /// The explorer's listed files, one absolute path per line
     Files,
-    /// The directory the navigator is showing
+    /// The directory the explorer is showing
     Cwd,
 }
 

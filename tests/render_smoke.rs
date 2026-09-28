@@ -11,16 +11,16 @@ const AREA: Rect = Rect {
     height: 24,
 };
 
-/// Column where the nav pane ends, read off its top-right corner. The panes
+/// Column where the explorer pane ends, read off its top-right corner. The panes
 /// size themselves to their contents, so the split cannot be assumed.
 fn divider_column(buf: &Buffer) -> u16 {
     (0..AREA.width)
         // Plain *or* thick: the focused pane draws a heavy border, so the
-        // navigator's own corner is `┓` whenever it has focus. Matching only
+        // explorer's own corner is `┓` whenever it has focus. Matching only
         // the plain glyph found the *file view's* corner instead and put the
         // divider at the far edge of the screen.
         .find(|&x| matches!(buf[(x, 0)].symbol(), "┐" | "┓"))
-        .expect("no nav pane border in the rendered frame")
+        .expect("no explorer pane border in the rendered frame")
         + 1
 }
 
@@ -70,19 +70,19 @@ fn press(app: &mut App, code: KeyCode) {
 /// mention it near the top.
 const MARKER: &str = "name = \"render-smoke-fixture\"";
 
-/// A directory of known files under `target/test-navdirs/render_smoke/`,
+/// A directory of known files under `target/test-explorerdirs/render_smoke/`,
 /// one per test so the tests can run in parallel.
 ///
 /// Every test here used to run against the repo root, which made each one a
 /// claim about the working tree: that `..` fits above `Cargo.toml` in a
-/// 13-row navigator, that `Cargo.toml` mentions a vendored crate in its
-/// first screen, that `Cargo.lock` exists, that `filenav.rs` is longer than
+/// 13-row explorer, that `Cargo.toml` mentions a vendored crate in its
+/// first screen, that `Cargo.lock` exists, that `explorer.rs` is longer than
 /// a page. An untracked directory or two in the root — a worktree, a tool's
 /// cache — scrolled `..` off and failed a test that had nothing to do with
 /// the change (#152, and #82 before it). What the working tree contains is
 /// not any of these tests' subject.
 ///
-/// The layout, in navigator order — directories first, then names
+/// The layout, in explorer order — directories first, then names
 /// case-insensitively:
 ///
 /// ```text
@@ -97,7 +97,7 @@ const MARKER: &str = "name = \"render-smoke-fixture\"";
 /// `beta_dir` is the only directory, so it sits directly above `alpha.rs`:
 /// the directory tests step between the two.
 fn fixture(name: &str) -> std::path::PathBuf {
-    let dir = std::path::Path::new("target/test-navdirs/render_smoke").join(name);
+    let dir = std::path::Path::new("target/test-explorerdirs/render_smoke").join(name);
     std::fs::remove_dir_all(&dir).ok();
     std::fs::create_dir_all(dir.join("beta_dir")).expect("create fixture dir");
     let write = |rel: &str, body: &str| {
@@ -152,8 +152,8 @@ fn renders_file_contents_into_buffer() {
     assert!(text.contains("Cargo.toml"), "block title missing");
 }
 
-/// Read the left-hand nav pane back out of the buffer, row by row.
-fn nav_pane_rows(buf: &Buffer) -> Vec<String> {
+/// Read the left-hand explorer pane back out of the buffer, row by row.
+fn explorer_pane_rows(buf: &Buffer) -> Vec<String> {
     let divider = divider_column(buf);
     (0..AREA.height)
         .map(|y| {
@@ -167,32 +167,32 @@ fn nav_pane_rows(buf: &Buffer) -> Vec<String> {
 }
 
 #[test]
-fn nav_pane_renders_directory_entries() {
-    let mut app = app_on("nav_pane_entries", "Cargo.toml");
+fn explorer_pane_renders_directory_entries() {
+    let mut app = app_on("explorer_pane_entries", "Cargo.toml");
     let area = Rect::new(0, 0, 80, 24);
     let mut buf = Buffer::empty(area);
 
     (&mut app).render(area, &mut buf);
 
-    let rows = nav_pane_rows(&buf);
+    let rows = explorer_pane_rows(&buf);
     let pane = rows.join("\n");
 
     assert!(pane.contains(".."), "parent entry missing:\n{pane}");
     assert!(
         pane.contains("Cargo.toml"),
-        "nav pane did not list real directory entries:\n{pane}"
+        "explorer pane did not list real directory entries:\n{pane}"
     );
     assert!(
         pane.contains("beta_dir"),
-        "nav pane missing the directory entry:\n{pane}"
+        "explorer pane missing the directory entry:\n{pane}"
     );
     assert!(
         highlighted_row_index(&buf).is_some(),
-        "nav pane drew no selection highlight:\n{pane}"
+        "explorer pane drew no selection highlight:\n{pane}"
     );
 }
 
-/// Row of the nav pane drawn as selected, found by its reverse-video
+/// Row of the explorer pane drawn as selected, found by its reverse-video
 /// attribute.
 ///
 /// This used to look for the `>>` marker, which no longer exists — reverse
@@ -210,7 +210,7 @@ fn highlighted_row_index(buf: &Buffer) -> Option<u16> {
     })
 }
 
-/// The name on the currently highlighted nav row, with border glyphs and a
+/// The name on the currently highlighted explorer row, with border glyphs and a
 /// directory's trailing `/` stripped off.
 fn highlighted_name(app: &mut App) -> String {
     let mut buf = Buffer::empty(AREA);
@@ -225,7 +225,7 @@ fn highlighted_name(app: &mut App) -> String {
         .to_string()
 }
 
-/// Walk the nav selection to `name`. Keeps the tests independent of how many
+/// Walk the explorer selection to `name`. Keeps the tests independent of how many
 /// entries the working tree happens to contain.
 ///
 /// Rewinds to the top first: the cursor no longer starts on `..`, it starts
@@ -317,7 +317,7 @@ fn moving_onto_a_directory_shows_that_it_is_a_directory() {
     );
 }
 
-/// Descending relists the nav pane *and* moves the view onto the first entry
+/// Descending relists the explorer pane *and* moves the view onto the first entry
 /// of the directory entered.
 ///
 /// It used to leave the view untouched, so you descended into a directory and
@@ -343,10 +343,10 @@ fn enter_on_a_directory_relists_and_previews_its_first_entry() {
 
     let mut buf = Buffer::empty(AREA);
     (&mut app).render(AREA, &mut buf);
-    let nav = nav_pane_rows(&buf).join("\n");
+    let explorer = explorer_pane_rows(&buf).join("\n");
     assert!(
-        nav.contains("second.rs"),
-        "nav did not descend into beta_dir:\n{nav}"
+        explorer.contains("second.rs"),
+        "explorer did not descend into beta_dir:\n{explorer}"
     );
 
     // `first.rs` sorts first, so the cursor landed on it and previewed it.
@@ -375,12 +375,12 @@ fn tab_moves_focus_to_the_file_view() {
 
 /// The panes size themselves to the longest entry name, capped at a default.
 #[test]
-fn nav_pane_snaps_to_its_contents() {
-    let mut app = app_on("nav_pane_snaps", "Cargo.toml");
+fn explorer_pane_snaps_to_its_contents() {
+    let mut app = app_on("explorer_pane_snaps", "Cargo.toml");
     let mut buf = Buffer::empty(AREA);
     (&mut app).render(AREA, &mut buf);
 
-    let longest = nav_pane_rows(&buf)
+    let longest = explorer_pane_rows(&buf)
         .iter()
         .filter_map(|row| {
             row.split(['│', '┌', '┐', '┃', '┏', '┓'])
@@ -389,12 +389,12 @@ fn nav_pane_snaps_to_its_contents() {
                 .map(str::len)
         })
         .max()
-        .expect("no nav rows");
+        .expect("no explorer rows");
 
     // Two borders and the two-column marker on top of the longest name.
     assert!(
         divider_column(&buf) <= longest as u16 + 6,
-        "nav pane is wider than its contents need: {} for a {longest}-char name",
+        "explorer pane is wider than its contents need: {} for a {longest}-char name",
         divider_column(&buf)
     );
 }

@@ -58,7 +58,7 @@ impl App<'_> {
         }
         let line = mouse.row - inner.y;
         match pane {
-            Focus::Nav => self.click_nav(line),
+            Focus::Explorer => self.click_explorer(line),
             Focus::Filters => self.click_filter(line),
             Focus::View => self.click_view(line, mouse.column - inner.x),
         }
@@ -74,7 +74,7 @@ impl App<'_> {
         if let Some(zoomed) = self.zoom {
             return self.panes_area.contains(at).then_some(zoomed);
         }
-        [Focus::Nav, Focus::View, Focus::Filters]
+        [Focus::Explorer, Focus::View, Focus::Filters]
             .into_iter()
             .find(|&pane| self.pane_area(pane).contains(at))
     }
@@ -86,29 +86,29 @@ impl App<'_> {
             return self.panes_area;
         }
         match pane {
-            Focus::Nav => self.nav_area,
+            Focus::Explorer => self.explorer_area,
             Focus::View => self.view_area,
             Focus::Filters => self.filter_area,
         }
     }
 
-    /// A navigator row: select it, and open it as `FileNav::click` decides.
+    /// An explorer row: select it, and open it as `Explorer::click` decides.
     /// Two clicks on the same row inside `DOUBLE_CLICK` are a double-click,
     /// timed here because crossterm does not report them — the same clock the
     /// divider uses.
-    fn click_nav(&mut self, line: u16) {
-        let Some(row) = self.nav.row_at(line) else {
+    fn click_explorer(&mut self, line: u16) {
+        let Some(row) = self.explorer.row_at(line) else {
             return;
         };
         let now = Instant::now();
         let double = self
-            .last_nav_click
+            .last_explorer_click
             .is_some_and(|(last, at)| last == row && now.duration_since(at) <= DOUBLE_CLICK);
         // A double-click is spent: a third click starts a new pair rather than
         // continuing this one, or holding the button down would descend a
         // level every 400ms.
-        self.last_nav_click = (!double).then_some((row, now));
-        if let Some(action) = self.nav.click(line, double) {
+        self.last_explorer_click = (!double).then_some((row, now));
+        if let Some(action) = self.explorer.click(line, double) {
             self.perform_widget_action(action);
         }
         self.ensure_window();
@@ -122,7 +122,7 @@ impl App<'_> {
         }
     }
 
-    /// A row of the look-ahead listing: the navigator enters the directory
+    /// A row of the look-ahead listing: the explorer enters the directory
     /// the view is showing and opens the entry clicked, which is the `l`,
     /// cursor motion and `Enter` that would otherwise get there.
     ///
@@ -141,7 +141,7 @@ impl App<'_> {
                 return;
             };
             let dir = self.view.filename().to_path_buf();
-            if let Some(action) = self.nav.open_listed(&dir, index) {
+            if let Some(action) = self.explorer.open_listed(&dir, index) {
                 self.perform_widget_action(action);
             }
             self.ensure_window();
