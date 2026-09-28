@@ -1732,4 +1732,21 @@ mod tests {
         assert!(!set.set_details(index, details));
         assert_ne!(set.filters()[index].display_name(), "mine");
     }
+
+    #[test]
+    fn set_sense_gives_an_excluding_filter_a_colour_on_the_way_out() {
+        let mut set = ActiveFilters::new();
+        set.add_excluding("DEBUG").expect("valid");
+        let (index, _) = set.filters_in(0).next().expect("DEBUG");
+        assert_eq!(set.filters()[index].style, Style::default());
+
+        assert!(set.set_sense(index, Sense::Context));
+        let coloured = set.filters()[index].style;
+        assert_ne!(coloured, Style::default(), "no colour");
+        assert!(!set.set_sense(index, Sense::Context), "no change");
+
+        assert!(set.set_sense(index, Sense::Exclude));
+        assert!(set.set_sense(index, Sense::Include));
+        assert_eq!(set.filters()[index].style, coloured, "the colour changed");
+    }
 }

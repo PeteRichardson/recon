@@ -898,7 +898,9 @@ that compiled left them, so a half-typed `(` does not clear the screen.
 | `PageUp` / `PageDown` | Scroll the file a page | `filtereditor.page.up` / `filtereditor.page.down` |
 | `Enter` | Add the pattern as an including filter, or change the selected filter, and close | `filtereditor.commit` |
 | `Esc` | Close and change nothing; with a range open, close the range first | `filtereditor.cancel` |
-| `Tab` / `Shift-Tab` | Move the keys to the next / previous of the name, description, prompt, pattern and lines | `filtereditor.focus` / `filtereditor.focus.prev` |
+| `Tab` / `Shift-Tab` | Move the keys to the next / previous of the name, description, prompt, sense, pattern and lines | `filtereditor.focus` / `filtereditor.focus.prev` |
+| `Space` / `Left` / `Right` | On the sense: the next / previous sense | — |
+| `i` / `c` / `x` | On the sense: include / context / exclude | — |
 | `+` | On the lines: the pattern must match the cursor line | `filtereditor.mark.match` |
 | `-` | On the lines: the pattern must not match the cursor line | `filtereditor.mark.nomatch` |
 | `=` | On the lines: remove the cursor line's mark | `filtereditor.mark.clear` |
@@ -908,12 +910,22 @@ that compiled left them, so a half-typed `(` does not clear the screen.
 | `u` | On the lines: show only the lines the pattern matches and the marked lines, or every line again | `filtereditor.toggle.matchesonly` |
 | `Ctrl-z` / `Ctrl-y` | Go back / forward one version of the pattern | `filtereditor.undo` / `filtereditor.redo` |
 
-##### The name, description and prompt
+##### The name, description, prompt and sense
 
-Above the pattern, the panel shows three more fields: the filter's name, its
-description and its prompt, as `filters.toml` has them. `Tab` and
-`Shift-Tab` move the keys round the ring *name, description, prompt,
-pattern, lines*; the editor opens on the pattern. The three fields are plain
+Above the pattern, the panel shows four more fields: the filter's name, its
+description, its prompt and its sense, as `filters.toml` has them. `Tab` and
+`Shift-Tab` move the keys round the ring *name, description, prompt, sense,
+pattern, lines*; the editor opens on the pattern.
+
+The sense row shows `include  context  exclude`, with the filter's sense in
+bold. A new filter includes, as `f i` gives. On the sense, `Space` and
+`Right` choose the next sense and `Left` the previous; `i`, `c` and `x`
+choose include, context and exclude. Other keys do nothing there. `Enter`
+with *exclude* adds the filter as `f x` does: with no colour, and its lines
+leave the view. An excluding filter that becomes including or context takes
+the next palette colour.
+
+The name, description and prompt are plain
 text: what you type in them does not change the highlight, and `Ctrl-z`
 does nothing there, as the versions are the pattern's. `Enter` gives the
 filter what each field holds, with the spaces at the two ends removed. An
@@ -921,7 +933,7 @@ empty field is a key the filter does not have: an empty name gives the
 filter its pattern as its name again. A name that another filter in the same
 set has keeps the editor open, with the reason under the pattern. When a
 filter in a named set gets a new name, the set's profiles use the new name.
-`Esc` discards the changes to all four fields.
+`Esc` discards the changes to all five fields.
 
 These changes are in memory, as a changed pattern is. `S` writes them for
 the scratch set; for a filter of a named set, edit `filters.toml`.
@@ -984,15 +996,17 @@ back to the last pattern that did. `f C` starts with the filter's pattern as
 the first version. An edit after `Ctrl-z` removes the versions ahead of it.
 The versions last only while the editor is open.
 
-`Enter` does exactly what `f i` with the same pattern does: one including
-filter in the scratch set, and focus returns to where `f` was pressed.
+`Enter` does exactly what `f i` with the same pattern does — or `f x`, with
+*exclude* in the sense field: one filter in the scratch set, and focus
+returns to where `f` was pressed.
 
 `f C` opens the editor on the selected filter instead, with its pattern,
-name, description and prompt in the fields and its matches already drawn in
+name, description, prompt and sense in the fields and its matches already drawn in
 its own colour. A filter you typed has no name, so its name field is empty; a
 filter from a file without a `name` shows its pattern as its name.
 `Enter` then does what `f c` does: it replaces the pattern and keeps the
-filter's slot, sense, colour and enabled state. On a set's header row or a built-in filter, `C`
+filter's slot, colour and enabled state; the sense is the one in the sense
+field. On a set's header row or a built-in filter, `C`
 says why it cannot, as `c` does. A definition filter has no pattern to show,
 so `C` says so; `c` is the way to turn one into a pattern. On an
 empty pattern or one that does not compile, `Enter` keeps the editor open.
