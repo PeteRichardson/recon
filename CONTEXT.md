@@ -27,7 +27,9 @@ _Avoid_: discovered, available
 
 **Listed / Unlisted**:
 Whether a known set has a row in the filter pane. An unlisted set has no
-effect on what the user sees. The scratch set is always listed.
+effect on recon — not on what the user sees, and not on the pattern limit —
+except that it can be listed. A set listed again comes back as its file
+describes it. The scratch set is always listed.
 _Avoid_: loaded, unloaded, hidden, shelved
 
 **Enabled / Disabled** (of a set):

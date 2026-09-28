@@ -1306,7 +1306,9 @@ mod tests {
             "{:?}",
             rows(&filters)
         );
-        assert_eq!(numbered(&filters), vec![0, 3], "scratch, then b's z");
+        // `a`'s filters leave the list with it (#305), so `b`'s `z` moves up
+        // to index 1; its pane number is 2 either way.
+        assert_eq!(numbered(&filters), vec![0, 1], "scratch, then b's z");
         let mut list = FilterList::default();
         let rendered = rendered(&mut list, &filters, 30);
         assert!(

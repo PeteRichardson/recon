@@ -673,7 +673,8 @@ recon is exactly this model with one set.
 - **`listed`** — whether the set has a row in the pane at startup; the
   default is `true`. With `listed = false` the set is known but has no row
   and no effect: it changes no visible line, highlight, count or `--emit`
-  output. It wins over `autoload = true` — the file is not refused, so to put
+  output, and its patterns do not count toward the explorer's pattern limit
+  (see [Known Limitations](#known-limitations)). It wins over `autoload = true` — the file is not refused, so to put
   a set away you change one key. An unlisted set is never enabled; `--set`
   lists it and enables it, and `--unlist` unlists a listed one for one run.
   The scratch set is always listed. `L` changes it during a session; see
@@ -841,9 +842,12 @@ checked.
 
 Changes are staged: nothing moves until `Enter`. Then a set you unlisted loses
 its row and is disabled, so the view, the highlights and the counts change at
-once; its filter flags are kept. A set you listed again comes back disabled,
-with its flags as they were, in its `priority` position — `autoload` is a
-startup value and does not apply. After the picker closes you are where you
+once, and its patterns leave the explorer's file matching. A set you listed
+again comes back as its file describes it — disabled, every filter off — in
+its `priority` position; the flags it had before you unlisted it are not
+kept, and `autoload` is a startup value and does not apply. A list or an
+unlist starts the explorer's file matching again from the beginning, and ends
+a peek first. After the picker closes you are where you
 were before `L`: the same pane, the same cursor, the same scroll. The picker
 takes every key while it is open, so `q` does not quit from inside it.
 
@@ -1856,8 +1860,9 @@ needs every line's answer at once — see *Definition filters*.
 ## Known Limitations
 
 - **The explorer's file matching covers at most 128 patterns**, counted across
-  every loaded set whether or not it is enabled — and the built-in
-  `definitions` set's eleven are among them, so 117 are yours. Above that the
+  every listed set whether or not it is enabled — and the built-in
+  `definitions` set's eleven are among them, so 117 are yours. An unlisted
+  set does not count: `--unlist` a large set you do not need for this run. Above that the
   explorer's marking switches off — never wrong, just absent — while the view
   keeps filtering. The status line then says so, for example
   `file matching off: 140 patterns, limit 128`, and `--emit files` writes the

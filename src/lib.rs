@@ -3351,6 +3351,12 @@ impl App<'_> {
         if changes.is_empty() {
             return;
         }
+        // A peek holds every filter's flag by position, and a list or an
+        // unlist moves the positions (#305). Put the flags back first, while
+        // they still line up.
+        if self.peek.is_some() {
+            self.toggle_peek();
+        }
         let before = widgets::filterlist::rows(&self.filters);
         let selected = self
             .filters_pane
@@ -16606,9 +16612,10 @@ mod tests {
         assert_eq!(included(&app), 3);
     }
 
-    /// A set listed again comes back disabled, with its filter flags kept.
+    /// A set listed again comes back disabled, as its file describes it:
+    /// the flags it had when it was unlisted are not kept (#305).
     #[test]
-    fn a_set_listed_again_comes_back_disabled_with_its_flags() {
+    fn a_set_listed_again_comes_back_as_its_file_describes_it() {
         let mut app = app_with_three_sets("set_picker_relist");
         let a = set_index(&app, "a");
         key(&mut app, KeyCode::Char('L'));
@@ -16620,9 +16627,27 @@ mod tests {
         assert!(app.filters.sets()[a].listed);
         assert!(!app.filters.sets()[a].enabled);
         assert!(
-            app.filters.filters_in(a).all(|(_, filter)| filter.enabled),
-            "alpha's own flag survives"
+            app.filters.filters_in(a).all(|(_, filter)| !filter.enabled),
+            "the file's state, not the state before the unlist"
         );
+    }
+
+    /// A peek holds every filter's flag by position, and an unlist moves the
+    /// positions (#305). The picker's apply ends the peek first, so the
+    /// flags come back to the filters they belong to.
+    #[test]
+    fn listing_during_a_peek_ends_the_peek_first() {
+        let mut app = app_with_three_sets("set_picker_peek");
+        assert_eq!(included(&app), 3);
+        key(&mut app, KeyCode::Char(' '));
+        assert_eq!(included(&app), 0, "sanity: peeking");
+
+        key(&mut app, KeyCode::Char('L'));
+        key(&mut app, KeyCode::Char(' '));
+        key(&mut app, KeyCode::Enter);
+
+        assert!(app.peek.is_none(), "the peek survived a list change");
+        assert_eq!(included(&app), 2, "the other two sets' flags came back");
     }
 
     #[test]
