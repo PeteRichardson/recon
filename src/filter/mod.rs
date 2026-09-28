@@ -852,6 +852,34 @@ impl ActiveFilters {
         true
     }
 
+    /// Give the filter at `index` `sense` (#317), from the filter editor,
+    /// reporting whether it changed. A built-in filter is left alone, as
+    /// `set_pattern` leaves it.
+    ///
+    /// An excluding filter carries no colour (`add_excluding`), so one that
+    /// becomes including or context takes the next palette colour. One that
+    /// becomes excluding keeps its colour, unused, for the way back.
+    ///
+    /// No `recompile` and no `forget_capture`, for the reasons
+    /// `toggle_context` gives. Callers re-evaluate: every verdict can change.
+    pub fn set_sense(&mut self, index: usize, sense: Sense) -> bool {
+        if !self.is_user_authored(index) {
+            return false;
+        }
+        let colour = self.next_style();
+        let Some(filter) = self.filters.get_mut(index) else {
+            return false;
+        };
+        if filter.sense == sense {
+            return false;
+        }
+        filter.sense = sense;
+        if sense != Sense::Exclude && filter.style == Style::default() {
+            filter.style = colour;
+        }
+        true
+    }
+
     /// Flip a filter between `Include` and `Context`, reporting whether it
     /// changed. An `Exclude` filter is left alone: it already selects nothing.
     ///

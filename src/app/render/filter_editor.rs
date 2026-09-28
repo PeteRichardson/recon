@@ -1,7 +1,9 @@
 //! Drawing the filter editor (#312): the file with every match highlighted,
-//! and the panel that holds the name, description, prompt and pattern.
+//! and the panel that holds the name, description, prompt, sense and
+//! pattern.
 
 use super::super::filter_editor::{Check, EditorFocus, FilterEditor, Mark};
+use crate::filter::Sense;
 use crate::widgets::pane_block;
 use ratatui::prelude::{
     Buffer, Color, Constraint, Layout, Line, Modifier, Rect, Span, Style, Widget,
@@ -22,11 +24,11 @@ const FAIL: Style = Style::new()
     .bg(Color::Red)
     .add_modifier(Modifier::BOLD);
 
-/// The panel's rows: the four fields and the error line.
-const PANEL_ROWS: u16 = 5;
+/// The panel's rows: the five fields and the error line.
+const PANEL_ROWS: u16 = 6;
 
-/// The width of the longest field label, `description: `, so the four
-/// fields start in one column.
+/// The width of the longest field label, `description: `, so the fields
+/// start in one column.
 const LABEL_WIDTH: usize = 13;
 
 /// The mark of a line the pattern gets right.
@@ -87,6 +89,9 @@ impl FilterEditor {
             EditorFocus::Name | EditorFocus::Description | EditorFocus::Prompt => format!(
                 " {enter} · Esc cancel · Up/Down/PgUp/PgDn scroll · Tab/Shift-Tab next/previous field "
             ),
+            EditorFocus::Sense => format!(
+                " Space/Left/Right change · i include · c context · x exclude · {enter} · Esc cancel · Tab/Shift-Tab next/previous field "
+            ),
             EditorFocus::Lines => format!(
                 " + must match · - must not · = clear · V range · f/F failed · n/N unmarked · u matches only · {enter} · Esc cancel · Tab name · Shift-Tab pattern "
             ),
@@ -97,13 +102,23 @@ impl FilterEditor {
         block.render(panel_area, buf);
         let x = inner.x + 1;
         let width = inner.width.saturating_sub(2);
+        // Row 3 is the sense, which is a choice, not text.
         let fields = [
-            ("name:", &self.name, EditorFocus::Name),
-            ("description:", &self.description, EditorFocus::Description),
-            ("prompt:", &self.prompt, EditorFocus::Prompt),
-            ("pattern:", &self.field, EditorFocus::Pattern),
+            ("name:", &self.name, EditorFocus::Name, 0),
+            (
+                "description:",
+                &self.description,
+                EditorFocus::Description,
+                1,
+            ),
+            ("prompt:", &self.prompt, EditorFocus::Prompt, 2),
+            ("pattern:", &self.field, EditorFocus::Pattern, 4),
         ];
-        for ((label, field, focus), y) in fields.into_iter().zip(inner.y..inner.bottom()) {
+        for (label, field, focus, row) in fields {
+            let y = inner.y + row;
+            if y >= inner.bottom() {
+                continue;
+            }
             buf.set_stringn(
                 x,
                 y,
@@ -122,6 +137,17 @@ impl FilterEditor {
                 buf[(x + column, y)].set_style(Style::default().add_modifier(Modifier::REVERSED));
             }
         }
+        if inner.height > 3 {
+            Line::from(self.sense_spans()).render(
+                Rect {
+                    x,
+                    y: inner.y + 3,
+                    width,
+                    height: 1,
+                },
+                buf,
+            );
+        }
         if let Some(error) = &self.error
             && inner.height >= PANEL_ROWS
         {
@@ -133,6 +159,29 @@ impl FilterEditor {
                 Style::default().fg(Color::Red),
             );
         }
+    }
+
+    /// The sense row: the three senses, the filter's in bold, and in
+    /// reversed video while the keys go to it; the other two dimmed.
+    fn sense_spans(&self) -> Vec<Span<'static>> {
+        let mut spans = vec![Span::raw(format!("{:LABEL_WIDTH$}", "sense:"))];
+        for (sense, word) in [
+            (Sense::Include, "include"),
+            (Sense::Context, "context"),
+            (Sense::Exclude, "exclude"),
+        ] {
+            let style = if sense != self.sense {
+                Style::default().fg(Color::DarkGray)
+            } else if self.focus == EditorFocus::Sense {
+                Style::default().add_modifier(Modifier::BOLD | Modifier::REVERSED)
+            } else {
+                Style::default().add_modifier(Modifier::BOLD)
+            };
+            spans.push(Span::styled(word, style));
+            spans.push(Span::raw("  "));
+        }
+        spans.pop();
+        spans
     }
 
     /// The columns before line `index`: `>` on the cursor line and `|` on

@@ -7,11 +7,11 @@ use regex::Regex;
 
 const BODY: &str = "ERROR timeout\nINFO ok\nERROR disk\nINFO timeout\n";
 
-/// The shared screen, three rows taller: the editor's panel is seven rows
+/// The shared screen, four rows taller: the editor's panel is eight rows
 /// (#317), and on the shared ten the file would get none. These shadow the
 /// shared `AREA`, `draw`, `rendered` and `status_line` in this file.
 const AREA: Rect = Rect {
-    height: super::AREA.height + 3,
+    height: super::AREA.height + 4,
     ..super::AREA
 };
 
@@ -870,11 +870,11 @@ fn the_focused_part_has_the_focused_frame() {
     let mut app = app_over_file("editor_frame", BODY);
     open_editor_from_the_filter_pane(&mut app);
     // The top-left corners: of the file's lines at row 0, and of the panel
-    // seven rows above the status row.
+    // eight rows above the status row.
     let corners = |app: &mut App| {
         let mut buf = Buffer::empty(AREA);
         app.render(AREA, &mut buf);
-        let panel = AREA.height - 1 - 7;
+        let panel = AREA.height - 1 - 8;
         (buf[(0, 0)].clone(), buf[(0, panel)].clone())
     };
     let thick = |cell: &ratatui::buffer::Cell| cell.symbol() == "┏" && cell.fg == Color::Green;
@@ -1223,16 +1223,18 @@ fn the_help_overlay_shows_the_undo_keys() {
 
 // ---- the name, description and prompt (#317) -------------------------------
 
-/// Type `text` into the field that `tabs` presses of Shift-Tab reach from
-/// the pattern: 1 the prompt, 2 the description, 3 the name.
-fn type_in_field(app: &mut App, tabs: usize, text: &str) {
-    for _ in 0..tabs {
+/// Shift-Tab from wherever the keys are until they are on `field`.
+fn focus_field(app: &mut App, field: EditorFocus) {
+    while editor(app).focus != field {
         key(app, KeyCode::BackTab);
     }
+}
+
+/// Type `text` into `field`, and come back to the pattern.
+fn type_in_field(app: &mut App, field: EditorFocus, text: &str) {
+    focus_field(app, field);
     typed(app, text);
-    for _ in 0..tabs {
-        key(app, KeyCode::Tab);
-    }
+    focus_field(app, EditorFocus::Pattern);
 }
 
 #[test]
@@ -1246,12 +1248,14 @@ fn tab_and_shift_tab_go_round_the_fields_and_the_lines() {
         EditorFocus::Name,
         EditorFocus::Description,
         EditorFocus::Prompt,
+        EditorFocus::Sense,
         EditorFocus::Pattern,
     ] {
         key(&mut app, KeyCode::Tab);
         assert_eq!(focus(&app), expected);
     }
     for expected in [
+        EditorFocus::Sense,
         EditorFocus::Prompt,
         EditorFocus::Description,
         EditorFocus::Name,
@@ -1268,15 +1272,16 @@ fn the_panel_shows_the_four_fields() {
     let mut app = app_over_file("details_panel", BODY);
     open_editor_from_the_filter_pane(&mut app);
     typed(&mut app, "timeout");
-    type_in_field(&mut app, 3, "slow");
-    type_in_field(&mut app, 2, "why it exists");
-    type_in_field(&mut app, 1, "lines that time out");
+    type_in_field(&mut app, EditorFocus::Name, "slow");
+    type_in_field(&mut app, EditorFocus::Description, "why it exists");
+    type_in_field(&mut app, EditorFocus::Prompt, "lines that time out");
 
     let screen = rendered(&mut app);
     for row in [
         "name:        slow",
         "description: why it exists",
         "prompt:      lines that time out",
+        "sense:       include  context  exclude",
         "pattern:     timeout",
     ] {
         assert!(screen.contains(row), "no {row:?} in\n{screen}");
@@ -1290,7 +1295,7 @@ fn typing_in_a_field_leaves_the_pattern_alone() {
     let mut app = app_over_file("details_typing", BODY);
     open_editor_from_the_filter_pane(&mut app);
     typed(&mut app, "ERROR");
-    key(&mut app, KeyCode::BackTab);
+    focus_field(&mut app, EditorFocus::Prompt);
     typed(&mut app, "(+-u");
     key(&mut app, KeyCode::Backspace);
 
@@ -1306,8 +1311,7 @@ fn typing_in_a_field_leaves_the_pattern_alone() {
 #[test]
 fn ctrl_z_in_a_field_does_not_change_the_pattern() {
     let mut app = app_with_three_versions("details_undo");
-    key(&mut app, KeyCode::BackTab);
-    key(&mut app, KeyCode::BackTab);
+    focus_field(&mut app, EditorFocus::Description);
     typed(&mut app, "why");
     ctrl(&mut app, KeyCode::Char('z'));
 
@@ -1320,8 +1324,8 @@ fn enter_gives_a_new_filter_its_name_description_and_prompt() {
     let mut app = app_over_file("details_new", BODY);
     open_editor_from_the_filter_pane(&mut app);
     typed(&mut app, "timeout");
-    type_in_field(&mut app, 3, "slow");
-    type_in_field(&mut app, 2, "  why it exists ");
+    type_in_field(&mut app, EditorFocus::Name, "slow");
+    type_in_field(&mut app, EditorFocus::Description, "  why it exists ");
     key(&mut app, KeyCode::Enter);
 
     assert!(app.filter_editor.is_none());
@@ -1355,8 +1359,7 @@ fn f_big_c_shows_the_filters_fields_and_enter_changes_them() {
     assert_eq!(editor_now.description.pattern, "old");
     assert_eq!(editor_now.prompt.pattern, "error lines");
 
-    key(&mut app, KeyCode::BackTab);
-    key(&mut app, KeyCode::BackTab);
+    focus_field(&mut app, EditorFocus::Description);
     ctrl(&mut app, KeyCode::Char('u'));
     typed(&mut app, "new");
     key(&mut app, KeyCode::Enter);
@@ -1381,8 +1384,8 @@ fn esc_discards_the_fields() {
     let mut app = app_with_two_filters("details_esc");
     select_row(&mut app, widgets::filterlist::Row::Filter(0));
     open_selected(&mut app);
-    type_in_field(&mut app, 3, "renamed");
-    type_in_field(&mut app, 2, "why");
+    type_in_field(&mut app, EditorFocus::Name, "renamed");
+    type_in_field(&mut app, EditorFocus::Description, "why");
     key(&mut app, KeyCode::Esc);
 
     let filter = &app.filters.filters()[0];
@@ -1397,7 +1400,7 @@ fn enter_refuses_a_name_another_filter_in_the_set_has() {
     let mut app = app_with_two_filters("details_taken");
     open_editor_from_the_filter_pane(&mut app);
     typed(&mut app, "timeout");
-    type_in_field(&mut app, 3, "ERROR");
+    type_in_field(&mut app, EditorFocus::Name, "ERROR");
     key(&mut app, KeyCode::Enter);
 
     assert!(app.filter_editor.is_some(), "Enter closed the editor");
@@ -1407,9 +1410,7 @@ fn enter_refuses_a_name_another_filter_in_the_set_has() {
     );
     assert_eq!(app.filters.len(), 2, "a filter was added");
 
-    key(&mut app, KeyCode::BackTab);
-    key(&mut app, KeyCode::BackTab);
-    key(&mut app, KeyCode::BackTab);
+    focus_field(&mut app, EditorFocus::Name);
     typed(&mut app, "S");
     assert_eq!(editor(&app).error, None, "the reason stayed");
     key(&mut app, KeyCode::Enter);
@@ -1431,9 +1432,13 @@ fn big_s_writes_the_fields_and_they_load_again() {
     app.save_path = Some(path.clone());
     open_editor_from_the_filter_pane(&mut app);
     typed(&mut app, "timeout");
-    type_in_field(&mut app, 3, "slow");
-    type_in_field(&mut app, 2, "Instances of bug #57");
-    type_in_field(&mut app, 1, "Timeouts, except in 'DEMO' runs");
+    type_in_field(&mut app, EditorFocus::Name, "slow");
+    type_in_field(&mut app, EditorFocus::Description, "Instances of bug #57");
+    type_in_field(
+        &mut app,
+        EditorFocus::Prompt,
+        "Timeouts, except in 'DEMO' runs",
+    );
     key(&mut app, KeyCode::Enter);
     key(&mut app, KeyCode::Char('S'));
     typed(&mut app, "bugs");
@@ -1493,4 +1498,133 @@ fn f_big_c_keeps_a_file_filters_name_when_the_pattern_changes() {
     assert_eq!(filter.predicate.display(), "alpha!");
     assert_eq!(filter.display_name(), "alpha");
     assert_eq!(app.filters.sets()[1].profiles["default"], ["alpha"]);
+}
+
+// ---- the sense (#317) ------------------------------------------------------
+
+#[test]
+fn the_sense_keys_choose_and_cycle_the_sense() {
+    let mut app = app_over_file("sense_keys", BODY);
+    open_editor_from_the_filter_pane(&mut app);
+    let sense = |app: &App| editor(app).sense;
+    assert_eq!(sense(&app), Sense::Include, "a new filter includes");
+    focus_field(&mut app, EditorFocus::Sense);
+
+    key(&mut app, KeyCode::Char(' '));
+    assert_eq!(sense(&app), Sense::Context);
+    key(&mut app, KeyCode::Right);
+    assert_eq!(sense(&app), Sense::Exclude);
+    key(&mut app, KeyCode::Right);
+    assert_eq!(sense(&app), Sense::Include, "Right wraps");
+    key(&mut app, KeyCode::Left);
+    assert_eq!(sense(&app), Sense::Exclude, "Left wraps");
+    key(&mut app, KeyCode::Char('c'));
+    assert_eq!(sense(&app), Sense::Context);
+    key(&mut app, KeyCode::Char('i'));
+    assert_eq!(sense(&app), Sense::Include);
+    key(&mut app, KeyCode::Char('x'));
+    assert_eq!(sense(&app), Sense::Exclude);
+
+    typed(&mut app, "qz+");
+    assert_eq!(sense(&app), Sense::Exclude, "another key changed it");
+    assert_eq!(editor(&app).field.pattern, "", "a key was typed");
+    assert!(editor(&app).marks.is_empty());
+}
+
+/// A new excluding filter is what `f x` gives: no colour, and its lines
+/// leave the view.
+#[test]
+fn enter_adds_an_excluding_filter_as_f_x_does() {
+    let mut app = app_over_file("sense_exclude", BODY);
+    open_editor_from_the_filter_pane(&mut app);
+    typed(&mut app, "INFO");
+    focus_field(&mut app, EditorFocus::Sense);
+    key(&mut app, KeyCode::Char('x'));
+    key(&mut app, KeyCode::Enter);
+
+    assert!(app.filter_editor.is_none());
+    let (_, filter) = app.filters.filters_in(0).next().expect("a scratch filter");
+    assert_eq!(filter.sense, Sense::Exclude);
+    assert_eq!(
+        filter.style,
+        Style::default(),
+        "an excluding filter has a colour"
+    );
+    assert_eq!(
+        app.document.visible().len(),
+        2,
+        "the INFO lines are still shown"
+    );
+}
+
+#[test]
+fn enter_adds_a_context_filter() {
+    let mut app = app_over_file("sense_context", BODY);
+    open_editor_from_the_filter_pane(&mut app);
+    typed(&mut app, "INFO");
+    focus_field(&mut app, EditorFocus::Sense);
+    key(&mut app, KeyCode::Char('c'));
+    key(&mut app, KeyCode::Enter);
+
+    let (_, filter) = app.filters.filters_in(0).next().expect("a scratch filter");
+    assert_eq!(filter.sense, Sense::Context);
+    assert_ne!(
+        filter.style,
+        Style::default(),
+        "a context filter has no colour"
+    );
+}
+
+/// `f C` shows the filter's sense, and Enter changes it.
+#[test]
+fn f_big_c_shows_and_changes_the_sense() {
+    let mut app = app_with_two_filters("sense_change");
+    select_row(&mut app, widgets::filterlist::Row::Filter(1));
+    open_selected(&mut app);
+    assert_eq!(editor(&app).sense, Sense::Exclude, "INFO is excluding");
+    focus_field(&mut app, EditorFocus::Sense);
+    key(&mut app, KeyCode::Char('i'));
+    key(&mut app, KeyCode::Enter);
+
+    let filter = &app.filters.filters()[1];
+    assert_eq!(filter.sense, Sense::Include);
+    assert_ne!(filter.style, Style::default(), "it has no colour");
+    assert_eq!(filter.predicate.display(), "INFO");
+    assert_eq!(
+        app.document.visible().len(),
+        4,
+        "the INFO lines stay hidden"
+    );
+}
+
+#[test]
+fn esc_discards_the_sense() {
+    let mut app = app_with_two_filters("sense_esc");
+    select_row(&mut app, widgets::filterlist::Row::Filter(0));
+    open_selected(&mut app);
+    focus_field(&mut app, EditorFocus::Sense);
+    key(&mut app, KeyCode::Char('x'));
+    key(&mut app, KeyCode::Esc);
+    assert_eq!(app.filters.filters()[0].sense, Sense::Include);
+}
+
+/// `S` writes the sense the editor gave, and it loads again.
+#[test]
+fn big_s_writes_the_sense_from_the_editor() {
+    let path = save_fixture("sense_save");
+    let mut app = app_over_file("sense_save_file", BODY);
+    app.save_path = Some(path.clone());
+    open_editor_from_the_filter_pane(&mut app);
+    typed(&mut app, "INFO");
+    focus_field(&mut app, EditorFocus::Sense);
+    key(&mut app, KeyCode::Char('c'));
+    key(&mut app, KeyCode::Enter);
+    key(&mut app, KeyCode::Char('S'));
+    typed(&mut app, "ctx");
+    key(&mut app, KeyCode::Enter);
+
+    let text = std::fs::read_to_string(&path).expect("written");
+    let sets = crate::filtersets::parse(&text, &path).expect("loads again");
+    let ctx = sets.iter().find(|set| set.name == "ctx").expect("ctx");
+    assert_eq!(ctx.filters[0].sense, Sense::Context);
 }

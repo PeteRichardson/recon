@@ -23,14 +23,15 @@
 //! `Ctrl-z` and `Ctrl-y` step back and forward through the pattern's
 //! versions (#316). See `FilterEditor::record` for when a version is kept.
 //!
-//! Above the pattern are three more fields (#317): the filter's name, its
-//! description and its prompt. Tab and Shift-Tab move the keys round the
-//! ring name, description, prompt, pattern, lines. Enter gives the filter
-//! what the fields hold; an empty field is a key the filter does not have.
+//! Above the pattern are four more fields (#317): the filter's name, its
+//! description, its prompt and its sense. Tab and Shift-Tab move the keys
+//! round the ring name, description, prompt, sense, pattern, lines. Enter
+//! gives the filter what the fields hold; an empty text field is a key the
+//! filter does not have.
 
 use super::App;
 use super::prompt::SearchPrompt;
-use crate::filter::Details;
+use crate::filter::{Details, Sense};
 use crossterm::event::{self, KeyCode, KeyModifiers};
 use ratatui::prelude::Style;
 use regex::Regex;
@@ -46,8 +47,8 @@ pub(super) const VERSION_PAUSE: Duration = Duration::from_secs(1);
 pub(super) const NO_PATTERN: &str = "type a pattern first";
 
 /// Where the filter editor's keys go (#314), in the order Tab moves
-/// through them (#317). Each field takes the characters typed, and Up/Down
-/// scroll the lines under it.
+/// through them (#317). Each text field takes the characters typed, and
+/// Up/Down scroll the lines under it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(super) enum EditorFocus {
     /// The filter's name.
@@ -56,6 +57,8 @@ pub(super) enum EditorFocus {
     Description,
     /// What the filter's lines look like, for a model.
     Prompt,
+    /// Include, context or exclude: a choice, not text.
+    Sense,
     /// The pattern. Where the editor opens.
     #[default]
     Pattern,
@@ -64,10 +67,11 @@ pub(super) enum EditorFocus {
 }
 
 impl EditorFocus {
-    const RING: [Self; 5] = [
+    const RING: [Self; 6] = [
         Self::Name,
         Self::Description,
         Self::Prompt,
+        Self::Sense,
         Self::Pattern,
         Self::Lines,
     ];
@@ -120,6 +124,8 @@ pub(super) struct FilterEditor {
     pub(super) name: SearchPrompt,
     pub(super) description: SearchPrompt,
     pub(super) prompt: SearchPrompt,
+    /// What a match does (#317): `Include` for a new filter, as `f i` gives.
+    pub(super) sense: Sense,
     /// The file's lines, shared with the file view that read them.
     pub(super) lines: Arc<Vec<String>>,
     /// The regex the highlight uses: the last pattern that compiled, so a
@@ -176,6 +182,14 @@ pub(super) struct FilterEditor {
     pub(super) edited_at: Option<Instant>,
 }
 
+/// What a key on the sense field asks for (#317).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SenseKey {
+    Next,
+    Prev,
+    Choose(Sense),
+}
+
 /// Which way a jump key looks from the cursor line (#315).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Direction {
@@ -200,6 +214,7 @@ impl FilterEditor {
             name: SearchPrompt::default(),
             description: SearchPrompt::default(),
             prompt: SearchPrompt::default(),
+            sense: Sense::Include,
             lines,
             regex: None,
             error: None,
@@ -225,13 +240,14 @@ impl FilterEditor {
     /// An editor over `lines` on the pattern of the filter at `index`, cursor
     /// at its end as `c` puts it, with the highlight and the count already
     /// showing, and the filter's name, description and prompt in their
-    /// fields.
+    /// fields, and its sense.
     pub(super) fn editing(
         lines: Arc<Vec<String>>,
         style: Style,
         index: usize,
         pattern: String,
         details: Details,
+        sense: Sense,
     ) -> Self {
         let field = |text: Option<String>| {
             SearchPrompt::editing(
@@ -244,6 +260,7 @@ impl FilterEditor {
             name: field(details.name),
             description: field(details.description),
             prompt: field(details.prompt),
+            sense,
             target: Some(index),
             ..Self::new(lines, style)
         };
@@ -275,7 +292,7 @@ impl FilterEditor {
             EditorFocus::Name => Some(&mut self.name),
             EditorFocus::Description => Some(&mut self.description),
             EditorFocus::Prompt => Some(&mut self.prompt),
-            EditorFocus::Pattern | EditorFocus::Lines => None,
+            EditorFocus::Sense | EditorFocus::Pattern | EditorFocus::Lines => None,
         }
     }
 
@@ -563,6 +580,7 @@ impl FilterEditor {
             EditorFocus::Name
             | EditorFocus::Description
             | EditorFocus::Prompt
+            | EditorFocus::Sense
             | EditorFocus::Pattern => self.scroll(delta),
             EditorFocus::Lines => {
                 let last = self.rows().saturating_sub(1);
@@ -603,6 +621,23 @@ impl FilterEditor {
             }
         }
         self.focus = next;
+    }
+
+    /// A key on the sense field: Space and Right choose the next sense,
+    /// Left the previous, in the order include, context, exclude, and `i`,
+    /// `c` and `x` choose include, context and exclude. Any other key does
+    /// nothing.
+    fn sense_key(&mut self, key: SenseKey) {
+        const ORDER: [Sense; 3] = [Sense::Include, Sense::Context, Sense::Exclude];
+        let at = ORDER
+            .iter()
+            .position(|&sense| sense == self.sense)
+            .unwrap_or(0);
+        self.sense = match key {
+            SenseKey::Next => ORDER[(at + 1) % ORDER.len()],
+            SenseKey::Prev => ORDER[(at + ORDER.len() - 1) % ORDER.len()],
+            SenseKey::Choose(sense) => sense,
+        };
     }
 
     /// Scroll so the cursor line is on the screen, if a key moved it.
@@ -736,7 +771,7 @@ impl App<'_> {
             );
             return;
         };
-        let (pattern, style) = (regex.as_str().to_string(), filter.style);
+        let (pattern, style, sense) = (regex.as_str().to_string(), filter.style, filter.sense);
         let details = Details {
             name: filter.name.clone(),
             description: filter.description.clone(),
@@ -744,7 +779,7 @@ impl App<'_> {
         };
         self.promote_truncated_preview();
         let lines = self.view.source().clone();
-        let mut editor = FilterEditor::editing(lines, style, index, pattern, details);
+        let mut editor = FilterEditor::editing(lines, style, index, pattern, details, sense);
         self.mark_origin_line(&mut editor);
         self.filter_editor = Some(editor);
     }
@@ -858,6 +893,10 @@ impl App<'_> {
         if focus == EditorFocus::Lines {
             return;
         }
+        if focus == EditorFocus::Sense {
+            self.handle_sense_key(key);
+            return;
+        }
         if let Some(action) = self.keymap.resolve(crate::keymap::Scope::Prompt, pressed) {
             let edit: fn(&mut SearchPrompt) = match action {
                 A::PromptLeft => SearchPrompt::move_left,
@@ -889,6 +928,33 @@ impl App<'_> {
             KeyCode::Char(c) if c == '\n' || c == '\r' => {}
             KeyCode::Char(c) => self.edit_filter_editor_field(|field| field.insert(c)),
             _ => {}
+        }
+    }
+
+    /// A key on the sense field. Left and Right are the prompt's keys for
+    /// the cursor, so a rebinding of them moves the choice too.
+    fn handle_sense_key(&mut self, key: event::KeyEvent) {
+        use crate::keymap::ActionId as A;
+        let pressed = crate::keymap::normalise(key);
+        let choice = match self.keymap.resolve(crate::keymap::Scope::Prompt, pressed) {
+            Some(A::PromptRight) => Some(SenseKey::Next),
+            Some(A::PromptLeft) => Some(SenseKey::Prev),
+            _ if key
+                .modifiers
+                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+            {
+                None
+            }
+            _ => match key.code {
+                KeyCode::Char(' ') => Some(SenseKey::Next),
+                KeyCode::Char('i') => Some(SenseKey::Choose(Sense::Include)),
+                KeyCode::Char('c') => Some(SenseKey::Choose(Sense::Context)),
+                KeyCode::Char('x') => Some(SenseKey::Choose(Sense::Exclude)),
+                _ => None,
+            },
+        };
+        if let Some(choice) = choice {
+            self.edit_filter_editor(|editor| editor.sense_key(choice));
         }
     }
 
@@ -935,7 +1001,8 @@ impl App<'_> {
 
     /// Enter: add the pattern as `f i … Enter` would, or change the target
     /// filter's as `f c … Enter` would, give the filter the name,
-    /// description and prompt in the fields (#317), and close. A pattern
+    /// description, prompt and sense in the fields (#317), and close. A new
+    /// excluding filter is added as `f x` adds one. A pattern
     /// that is empty or does not compile, or a name another filter in the
     /// set has, keeps the editor open with the reason in the panel.
     fn commit_filter_editor(&mut self) {
@@ -949,10 +1016,11 @@ impl App<'_> {
         if editor.error.is_some() {
             return;
         }
-        let (pattern, target, details) = (
+        let (pattern, target, details, sense) = (
             editor.field.pattern.clone(),
             editor.target,
             editor.details(),
+            editor.sense,
         );
         if let Some(name) = &details.name
             && self.filters.name_taken(target, name)
@@ -963,14 +1031,27 @@ impl App<'_> {
         // The details go on before a changed pattern: `set_details` renames
         // the filter in its set's profiles from the name they know it by,
         // which for a filter with no name is its pattern as it was.
+        // The sense goes on before the add or the replace, whose re-evaluate
+        // is what shows it.
         let outcome = match target {
-            None => self.add_filter(&pattern).map(|()| {
-                if let Some((index, _)) = self.filters.filters_in(0).last() {
-                    self.filters.set_details(index, details);
-                }
-            }),
+            None => {
+                let added = if sense == Sense::Exclude {
+                    self.add_excluding_filter(&pattern)
+                } else {
+                    self.add_filter(&pattern)
+                };
+                added.map(|()| {
+                    if let Some((index, _)) = self.filters.filters_in(0).last() {
+                        self.filters.set_details(index, details);
+                        if self.filters.set_sense(index, sense) {
+                            self.refresh_view();
+                        }
+                    }
+                })
+            }
             Some(index) => {
                 self.filters.set_details(index, details);
+                self.filters.set_sense(index, sense);
                 self.replace_filter(index, &pattern)
             }
         };
