@@ -180,9 +180,9 @@ impl App<'_> {
     pub(crate) fn visual_badge(&self) -> Option<&'static str> {
         self.visual.map(|visual| {
             if visual.linewise {
-                super::VLINE_BADGE_TEXT
+                super::render::status::VLINE_BADGE_TEXT
             } else {
-                super::VISUAL_BADGE_TEXT
+                super::render::status::VISUAL_BADGE_TEXT
             }
         })
     }

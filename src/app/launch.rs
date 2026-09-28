@@ -1,6 +1,7 @@
 //! Opening a file in an editor, and reporting on the status row.
 
-use super::{App, EditorScope, StatusMessage};
+use super::render::status::StatusMessage;
+use super::{App, EditorScope};
 use crate::{editor, path};
 
 impl App<'_> {
