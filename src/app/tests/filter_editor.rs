@@ -749,23 +749,38 @@ fn app_with_four_checks(name: &str) -> App<'static> {
 }
 
 #[test]
-fn f_and_big_f_go_to_each_failed_check_and_say_when_there_are_no_more() {
+fn f_and_big_f_go_to_each_failed_check_and_wrap() {
     let mut app = app_with_four_checks("jump_failures");
 
     key(&mut app, KeyCode::Char('f'));
     assert_eq!(editor(&app).cursor, 2);
     key(&mut app, KeyCode::Char('f'));
     assert_eq!(editor(&app).cursor, 3);
+    assert_eq!(message(&app), None);
     key(&mut app, KeyCode::Char('f'));
-    assert_eq!(editor(&app).cursor, 3, "the cursor moved past the last");
-    assert_eq!(message(&app), Some("no failed check below"));
+    assert_eq!(editor(&app).cursor, 2, "a passed check stopped the jump");
+    assert_eq!(message(&app), Some("wrapped to the top"));
 
+    key(&mut app, KeyCode::Char('F'));
+    assert_eq!(editor(&app).cursor, 3);
+    assert_eq!(message(&app), Some("wrapped to the bottom"));
     key(&mut app, KeyCode::Char('F'));
     assert_eq!(editor(&app).cursor, 2);
     assert_eq!(message(&app), None, "the message outlived its key");
-    key(&mut app, KeyCode::Char('F'));
-    assert_eq!(editor(&app).cursor, 2, "a passed check stopped the jump");
-    assert_eq!(message(&app), Some("no failed check above"));
+}
+
+#[test]
+fn f_says_when_no_check_fails() {
+    let mut app = app_with_four_checks("jump_no_failures");
+    key(&mut app, KeyCode::Tab);
+    ctrl(&mut app, KeyCode::Char('u'));
+    typed(&mut app, "ERROR");
+    key(&mut app, KeyCode::Tab);
+    assert_eq!(editor(&app).failures, 0, "sanity");
+
+    key(&mut app, KeyCode::Char('f'));
+    assert_eq!(editor(&app).cursor, 0);
+    assert_eq!(message(&app), Some("no failed check"));
 }
 
 #[test]
@@ -787,9 +802,12 @@ fn n_and_big_n_do_not_stop_on_a_marked_line() {
     key(&mut app, KeyCode::Char('n'));
     assert_eq!(editor(&app).cursor, 3);
     key(&mut app, KeyCode::Char('n'));
-    assert_eq!(editor(&app).cursor, 3);
-    assert_eq!(message(&app), Some("no unmarked match below"));
+    assert_eq!(editor(&app).cursor, 0);
+    assert_eq!(message(&app), Some("wrapped to the top"));
 
+    key(&mut app, KeyCode::Char('N'));
+    assert_eq!(editor(&app).cursor, 3);
+    assert_eq!(message(&app), Some("wrapped to the bottom"));
     key(&mut app, KeyCode::Char('N'));
     key(&mut app, KeyCode::Char('N'));
     assert_eq!(
@@ -797,8 +815,39 @@ fn n_and_big_n_do_not_stop_on_a_marked_line() {
         0,
         "the jump stopped on the marked line"
     );
-    key(&mut app, KeyCode::Char('N'));
-    assert_eq!(message(&app), Some("no unmarked match above"));
+}
+
+#[test]
+fn n_says_when_there_is_no_unmarked_match() {
+    let mut app = app_over_file("jump_no_unmarked", BODY);
+    open_editor_from_the_filter_pane(&mut app);
+    key(&mut app, KeyCode::Tab);
+    key(&mut app, KeyCode::Char('n'));
+    assert_eq!(message(&app), Some("no unmarked match"), "no pattern");
+}
+
+/// Tab moves the thick green frame of a focused pane between the lines and
+/// the pattern.
+#[test]
+fn the_focused_part_has_the_focused_frame() {
+    let mut app = app_over_file("editor_frame", BODY);
+    open_editor_from_the_filter_pane(&mut app);
+    // The top-left corners: of the file's lines at row 0, and of the panel
+    // four rows above the status row.
+    let corners = |app: &mut App| {
+        let mut buf = Buffer::empty(AREA);
+        app.render(AREA, &mut buf);
+        let panel = AREA.height - 1 - 4;
+        (buf[(0, 0)].clone(), buf[(0, panel)].clone())
+    };
+    let thick = |cell: &ratatui::buffer::Cell| cell.symbol() == "┏" && cell.fg == Color::Green;
+
+    let (lines, pattern) = corners(&mut app);
+    assert!(!thick(&lines) && thick(&pattern), "{lines:?} {pattern:?}");
+
+    key(&mut app, KeyCode::Tab);
+    let (lines, pattern) = corners(&mut app);
+    assert!(thick(&lines) && !thick(&pattern), "{lines:?} {pattern:?}");
 }
 
 /// A line the pattern does not match is not an unmarked match.

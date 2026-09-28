@@ -2,10 +2,11 @@
 //! and the panel that holds the pattern.
 
 use super::super::filter_editor::{Check, EditorFocus, FilterEditor, Mark};
+use crate::widgets::pane_block;
 use ratatui::prelude::{
     Buffer, Color, Constraint, Layout, Line, Modifier, Rect, Span, Style, Widget,
 };
-use ratatui::widgets::{Block, Clear};
+use ratatui::widgets::Clear;
 
 /// How many columns a tab takes. A raw tab in a cell draws as nothing, and
 /// log lines carry them.
@@ -33,7 +34,9 @@ impl FilterEditor {
         Clear.render(area, buf);
         let [file_area, panel_area] = Layout::vertical([Min(0), Length(4)]).areas(area);
 
-        let block = Block::bordered().title(format!(" {title} "));
+        // The focused part's frame is thick and green, as a focused pane's
+        // is in the main window.
+        let block = pane_block(format!(" {title} "), self.focus == EditorFocus::Lines);
         let inner = block.inner(file_area);
         block.render(file_area, buf);
         self.page = usize::from(inner.height).max(1);
@@ -77,9 +80,8 @@ impl FilterEditor {
                 " + must match · - must not · = clear · V range · f/F failed · n/N unmarked · u matches only · {enter} · Esc cancel · Tab pattern "
             ),
         };
-        let block = Block::bordered()
-            .title(" Filter editor ")
-            .title_bottom(keys);
+        let block =
+            pane_block(" Filter editor ", self.focus == EditorFocus::Pattern).title_bottom(keys);
         let inner = block.inner(panel_area);
         block.render(panel_area, buf);
         if inner.height == 0 {
