@@ -267,6 +267,21 @@ pub struct Config {
     #[arg(long)]
     pub hide: bool,
 
+    /// Panes to hide at startup, comma-separated: `explorer`, `view`,
+    /// `filters`. Replaces `[layout] hide_panes` in `config.toml`. At least
+    /// one pane stays shown.
+    //
+    // Not `--hide`: that is hide mode for lines, and it keeps its name
+    // (#300). `Option` for the usual reason — `None` lets the file layer
+    // fill the hole, where an empty `Vec` could not say "not given".
+    #[arg(
+        long = "hide-pane",
+        value_name = "PANES",
+        value_delimiter = ',',
+        value_enum
+    )]
+    pub hide_pane: Option<Vec<crate::panes::Pane>>,
+
     /// Suppress the summary line on stderr; warnings still print.
     ///
     /// `--no-warnings` is the switch that hides those. The two are
@@ -344,6 +359,7 @@ impl Default for Config {
             set: Vec::new(),
             unlist: Vec::new(),
             hide: false,
+            hide_pane: None,
             quiet: false,
             warnings: None,
             no_warnings: false,
@@ -374,6 +390,8 @@ pub struct FileConfig {
     pub syntax: Option<SyntaxConfig>,
     /// `[view]`. Same again.
     pub view: Option<ViewConfig>,
+    /// `[layout]`. Same again.
+    pub layout: Option<LayoutConfig>,
     /// `[keymap]`. Same again. Handed to `Keymap::new` (task 4) rather than
     /// merged key by key here: a rebind either names a real action and a
     /// parseable key, or the whole file is refused — there is no per-key
@@ -391,6 +409,15 @@ pub struct FileConfig {
 pub struct ViewConfig {
     /// See [`Config::center_jumps`].
     pub center_jumps: Option<bool>,
+}
+
+/// The `[layout]` table: which panes are on the screen (#300).
+#[derive(Deserialize, Debug, Default, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct LayoutConfig {
+    /// See [`Config::hide_pane`]. The names are `explorer`, `view` and
+    /// `filters`; anything else is a parse error that names the line.
+    pub hide_panes: Option<Vec<crate::panes::Pane>>,
 }
 
 /// The `[syntax]` table.
@@ -752,6 +779,10 @@ pub enum ConfigError {
     /// `--set` and `--unlist` naming the same set (#283): one asks for it
     /// enabled, the other for it gone, and neither wins silently.
     SetAndUnlist(String),
+    /// `--hide-pane` or `[layout] hide_panes` naming all three panes (#300).
+    /// Refused rather than corrected: a window with no pane has nothing to
+    /// press, and quietly showing one would ignore what was asked.
+    AllPanesHidden,
     /// `[keymap]` naming an action that does not exist. `known` is every name
     /// that does, for the message — a typo is the common case and the list is
     /// the fix.
@@ -801,6 +832,10 @@ impl fmt::Display for ConfigError {
                 f,
                 "unknown profile {name:?}; set {set:?} defines: {}",
                 known_list(known)
+            ),
+            Self::AllPanesHidden => write!(
+                f,
+                "--hide-pane or [layout] hide_panes hides every pane; at least one must stay shown"
             ),
             Self::SetAndUnlist(name) => {
                 write!(f, "--set and --unlist both name the set {name:?}")
@@ -946,6 +981,28 @@ impl Config {
         Ok(())
     }
 
+    /// Refuse a startup that hides every pane (#300). After the file layer,
+    /// unlike `check_flags`: the list may come from either the flag or
+    /// `config.toml`.
+    pub fn check_panes(&self) -> Result<(), ConfigError> {
+        use crate::panes::Pane;
+        let hidden = self.hide_panes();
+        if [Pane::Explorer, Pane::View, Pane::Filters]
+            .iter()
+            .all(|pane| hidden.contains(pane))
+        {
+            return Err(ConfigError::AllPanesHidden);
+        }
+        Ok(())
+    }
+
+    /// The panes to hide at startup, once the chain has run: the flag, else
+    /// `[layout] hide_panes`, else none.
+    #[must_use]
+    pub fn hide_panes(&self) -> &[crate::panes::Pane] {
+        self.hide_pane.as_deref().unwrap_or_default()
+    }
+
     /// `--set` as the pairs `App::new` and headless mode apply: the set's
     /// name and, after the first colon, the profile to apply instead of
     /// `default`. A set name holding a colon is misparsed here; the
@@ -1069,6 +1126,7 @@ impl Config {
         let mut config = Self::parse();
         config.check_flags()?;
         config.apply(&load_file()?);
+        config.check_panes()?;
         Ok(config)
     }
 
@@ -1095,6 +1153,7 @@ impl Config {
             filters,
             syntax,
             view,
+            layout,
             keymap,
             warnings,
         } = file;
@@ -1134,6 +1193,15 @@ impl Config {
             && let Some(center_jumps) = center_jumps
         {
             self.center_jumps.get_or_insert(*center_jumps);
+        }
+
+        // The flag replaces the file's list whole rather than adding to it:
+        // `--hide-pane view` on a config that hides the explorer shows the
+        // explorer (#300).
+        if let Some(LayoutConfig { hide_panes }) = layout
+            && let Some(hide_panes) = hide_panes
+        {
+            self.hide_pane.get_or_insert_with(|| hide_panes.clone());
         }
 
         if let Some(keymap) = keymap {
@@ -2184,6 +2252,65 @@ mod tests {
         let path = fixture("filters-typo.toml", "[filters]\npallete = ['red']\n");
         let err = load_from(&path).expect_err("a typo'd key must fail");
         assert!(err.to_string().contains("pallete"), "{err}");
+    }
+
+    /// `[layout] hide_panes` (#300) parses the three pane names, and the
+    /// file layer fills `hide_pane` when the flag left it empty.
+    #[test]
+    fn layout_hide_panes_reaches_the_resolved_config() {
+        use crate::panes::Pane;
+        let path = fixture(
+            "layout-hide.toml",
+            "[layout]\nhide_panes = [\"explorer\", \"filters\"]\n",
+        );
+        let file = load_from(&path).expect("a valid [layout]");
+        let mut config = Config::default();
+        config.apply(&file);
+        assert_eq!(config.hide_panes(), [Pane::Explorer, Pane::Filters]);
+    }
+
+    /// A name other than the three is refused, and the error names it.
+    #[test]
+    fn an_unknown_pane_name_is_rejected_and_named() {
+        let path = fixture(
+            "layout-bad.toml",
+            "[layout]\nhide_panes = [\"navigator\"]\n",
+        );
+        let err = load_from(&path).expect_err("an unknown pane must fail");
+        assert!(err.to_string().contains("navigator"), "{err}");
+    }
+
+    /// `--hide-pane` takes a comma-separated list, and it replaces the file's
+    /// list whole rather than adding to it.
+    #[test]
+    fn the_hide_pane_flag_replaces_the_file_list() {
+        use crate::panes::Pane;
+        let mut config =
+            Config::try_parse_from(["recon", "--hide-pane", "view,filters"]).expect("parses");
+        assert_eq!(config.hide_panes(), [Pane::View, Pane::Filters]);
+        config.apply(&FileConfig {
+            layout: Some(LayoutConfig {
+                hide_panes: Some(vec![Pane::Explorer]),
+            }),
+            ..FileConfig::default()
+        });
+        assert_eq!(config.hide_panes(), [Pane::View, Pane::Filters]);
+    }
+
+    /// Hiding all three panes stops recon with a config error, from either
+    /// layer.
+    #[test]
+    fn hiding_every_pane_is_a_config_error() {
+        let config = Config::try_parse_from(["recon", "--hide-pane", "explorer,view,filters"])
+            .expect("parses");
+        let err = config
+            .check_panes()
+            .expect_err("all three hidden must fail");
+        assert!(matches!(err, ConfigError::AllPanesHidden), "{err:?}");
+
+        let two =
+            Config::try_parse_from(["recon", "--hide-pane", "explorer,view"]).expect("parses");
+        assert!(two.check_panes().is_ok(), "two hidden is allowed");
     }
 
     /// There is no CLI flag for the palette, so the file layer is the only one

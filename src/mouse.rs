@@ -65,26 +65,16 @@ impl App<'_> {
         true
     }
 
-    /// The pane under `at`, if any.
-    ///
-    /// While zoomed there is exactly one pane and it fills everything above
-    /// the status row; the three per-pane rectangles are from whichever split
-    /// frame was last drawn and must not be consulted.
+    /// The pane under `at`, if any. A hidden pane's rectangle is zero wide,
+    /// so it never answers.
     fn pane_at(&self, at: Position) -> Option<Focus> {
-        if let Some(zoomed) = self.zoom {
-            return self.panes_area.contains(at).then_some(zoomed);
-        }
         [Focus::Explorer, Focus::View, Focus::Filters]
             .into_iter()
             .find(|&pane| self.pane_area(pane).contains(at))
     }
 
-    /// Where `pane` was drawn in the last frame — the whole frame above the
-    /// status row when it is the zoomed pane.
+    /// Where `pane` was drawn in the last frame.
     pub(crate) fn pane_area(&self, pane: Focus) -> Rect {
-        if self.zoom.is_some() {
-            return self.panes_area;
-        }
         match pane {
             Focus::Explorer => self.explorer_area,
             Focus::View => self.view_area,
@@ -203,9 +193,7 @@ impl App<'_> {
     /// returns focus to where the click came from and steps to the first
     /// match there, exactly as the keys would.
     fn click_status(&mut self) {
-        let origin = (self.focus != Focus::Filters).then_some(self.focus);
-        self.reveal_and_focus(Focus::Filters);
-        self.chain_origin = origin;
+        self.start_filter_chain();
         self.prompt = Some(SearchPrompt::new(PromptKind::Filter));
     }
 }
