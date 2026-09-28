@@ -705,7 +705,7 @@ pub fn print_editor_config(
 
 /// The test double the [`Launcher`] trait exists for.
 ///
-/// Outside `mod tests` so `lib.rs`'s tests can reach it too — they drive the
+/// Outside `mod tests` so `app`'s tests can reach it too — they drive the
 /// `o` key end to end and need the same "what would have run?" recording, and a
 /// second copy over there is the sort of duplicate that drifts.
 #[cfg(test)]
@@ -1369,7 +1369,7 @@ mod tests {
     }
 
     /// The double has to be able to fail, or the status-row error path in
-    /// `lib.rs` has nothing to exercise it.
+    /// `app/launch.rs` has nothing to exercise it.
     #[test]
     fn the_recording_launcher_can_be_told_to_fail() {
         let launcher = RecordingLauncher::failing("no such file or directory");

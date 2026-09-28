@@ -123,7 +123,7 @@ impl Clipboard for ProcessClipboard {
 }
 
 /// The test double the [`Clipboard`] trait exists for. Outside `mod tests`
-/// so `lib.rs`'s tests can reach it, as `editor::double` is.
+/// so `app`'s tests can reach it, as `editor::double` is.
 #[cfg(test)]
 pub(crate) mod double {
     use super::Clipboard;

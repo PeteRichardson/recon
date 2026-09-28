@@ -269,7 +269,7 @@ impl FilterList {
             // `x` open, which is why it was left unbound here until now — a
             // doubled press would commit a pattern and then silently switch a
             // filter off. `App` swallows exactly one `Enter` immediately after
-            // a commit; see `swallow_next_enter` in `lib.rs`. The guard lives
+            // a commit; see `swallow_next_enter` in `app/mod.rs`. The guard lives
             // there rather than here because only `App` knows a prompt closed.
             (A::FiltersToggle, row) => Self::toggle_command(row),
             (A::FiltersDelete, Row::Filter(index)) => Some(FilterCommand::Delete(index)),

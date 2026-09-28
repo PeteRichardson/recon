@@ -338,7 +338,7 @@ the keymap in force). The defaults live in one place,
 but the table in force for a given run is that base layer with a
 `[keymap]` from `config.toml` folded in, see
 [Configuring the keymap](#configuring-the-keymap). Every key starts at `App::handle_event`
-in `src/lib.rs`, which resolves it against the scope ladder in precedence
+in `src/app/events.rs`, which resolves it against the scope ladder in precedence
 order — an open prompt or picker first, then the global keys, then whichever
 pane has focus — and hands whatever action it found to `perform`, one match
 arm per action.
@@ -370,7 +370,7 @@ and are reached from elsewhere by a chain. Two rules hold across all of it: a
 key with a direction has a partner, and where vim has an opinion recon follows
 it unless a paragraph here says why not.
 
-Global (`src/lib.rs`), handled before the focused pane sees the key:
+Global (`src/app/events.rs`), handled before the focused pane sees the key:
 
 | Key(s) | Action | Name(s) |
 | --- | --- | --- |
@@ -2033,7 +2033,11 @@ Layout:
 | Path | Contents |
 | --- | --- |
 | `src/main.rs` | Entry point: terminal setup, error hooks, logging |
-| `src/lib.rs` | `App` — layout, global keys, pane focus, prompts |
+| `src/lib.rs` | The module list, and the public `App` and `Config` |
+| `src/app/mod.rs` | `App` — its state, `new` and the event loop |
+| `src/app/*.rs` | One topic of `App` each: events, actions, prompt, search, filters, focus, layout… |
+| `src/app/render/` | Drawing `App`: the panes and the status row |
+| `src/app/tests/` | The tests of `App`, one file for each topic |
 | `src/document.rs` | The loaded file and its visible-line set |
 | `src/filter/mod.rs` | `ActiveFilters` — the filter stack, its evaluation and the palette |
 | `src/filter/sets.rs` | Filter sets: enable, solo, reset, adopt the scratch set |

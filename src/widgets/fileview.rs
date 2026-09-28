@@ -27,7 +27,7 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 /// `MAX_PREVIEW_BYTES` is the binding limit well before it at any realistic
 /// line length.
 ///
-/// `pub(crate)` for the tests in `lib.rs`: reaching the truncated branch
+/// `pub(crate)` for the tests in `app/tests/`: reaching the truncated branch
 /// through `App` means a fixture past this cap, and one that hard-coded the
 /// number would quietly stop testing truncation the next time it moves.
 pub(crate) const PREVIEW_LINES: usize = 50_000;
@@ -530,7 +530,7 @@ impl FileView<'_> {
         // A pending restore was measured against the buffer this just threw
         // away; carrying it into an unrelated file would apply it to the
         // wrong data entirely — see `sync_document`'s clearing of
-        // `last_generation` in `lib.rs` for the same reasoning.
+        // `last_generation` in `app/mod.rs` for the same reasoning.
         self.pending_screen_row = None;
     }
 

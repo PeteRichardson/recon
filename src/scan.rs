@@ -347,7 +347,7 @@ impl Default for Box<dyn Scan> {
     }
 }
 
-/// Test doubles. `pub(crate)` so `lib.rs`'s tests can install one.
+/// Test doubles. `pub(crate)` so `app`'s tests can install one.
 #[cfg(test)]
 pub(crate) mod double {
     use super::{Request, Scan};
