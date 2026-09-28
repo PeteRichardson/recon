@@ -303,7 +303,7 @@ impl Predicate {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Filter {
     pub predicate: Predicate,
     pub sense: Sense,
@@ -425,6 +425,15 @@ pub struct ActiveFilters {
     /// compares instead of building the pattern key on every event (#186).
     /// Drawn from `GENERATIONS`, so no two sets ever share one.
     generation: u64,
+    /// Each set's filters as they were loaded — disabled, with their colours
+    /// — aligned with `sets`; empty for the scratch set (#305).
+    ///
+    /// An unlisted set's filters are not in `filters` at all, so they are in
+    /// no compiled set, no scan and no pattern limit: an unlisted set is
+    /// known, and has no other effect. This is where they wait. Listing the
+    /// set puts a fresh copy back, which is why a set listed again comes
+    /// back as its file describes it, not as it was when it was unlisted.
+    as_loaded: Vec<Vec<Filter>>,
 }
 
 /// The source of every `ActiveFilters::generation`. Process-wide rather than
@@ -467,6 +476,7 @@ impl ActiveFilters {
             remembered: None,
             compiled: None,
             generation: 0,
+            as_loaded: vec![Vec::new()],
         }
     }
 
@@ -494,7 +504,22 @@ impl ActiveFilters {
 
     /// The colour the next filter added will take.
     fn next_style(&self) -> Style {
-        Style::default().fg(self.palette.colour(self.user_authored_count()))
+        Style::default().fg(self.palette.colour(self.known_user_authored_count()))
+    }
+
+    /// `user_authored_count`, plus the filters of every unlisted set (#305).
+    /// What colours run over, so a colour never depends on which sets are
+    /// listed: a set's filters keep the colours they had at startup when it
+    /// is listed again, and a typed filter does not take one of theirs.
+    fn known_user_authored_count(&self) -> usize {
+        let unlisted: usize = self
+            .sets
+            .iter()
+            .zip(&self.as_loaded)
+            .filter(|(set, _)| !set.listed && set.origin != Origin::BuiltIn)
+            .map(|(_, filters)| filters.len())
+            .sum();
+        self.user_authored_count() + unlisted
     }
 
     /// How many filters the user wrote — scratch and file — which is what

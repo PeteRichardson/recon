@@ -41,8 +41,9 @@ pub fn is_builtin_name(name: &str) -> bool {
 
 /// A named group of filters, toggled as a unit (#128).
 ///
-/// The filters themselves are not here: they are in `ActiveFilters::filters`,
-/// the flat known list, each carrying the index of its set. Keeping the list
+/// The filters themselves are not here: a listed set's are in
+/// `ActiveFilters::filters`, the flat list, each carrying the index of its
+/// set; an unlisted set's wait in `ActiveFilters::as_loaded` (#305). Keeping the list
 /// flat is what leaves `Verdict::Included(index)`, `Matcher` and the scan
 /// cache untouched by sets. A filter takes effect only when it is enabled
 /// *and* its set is — see `ActiveFilters::effective`.
@@ -224,16 +225,18 @@ impl ActiveFilters {
                 });
                 // No palette colour: a built-in filter wears the terminal's
                 // default, so the pane's colours stay the user's own.
-                for kind in Kind::ALL {
-                    this.filters.push(Filter {
+                let filters = Kind::ALL
+                    .into_iter()
+                    .map(|kind| Filter {
                         predicate: Predicate::Definition(kind),
                         sense: Sense::Include,
                         enabled: false,
                         style: Style::default(),
                         name: Some(kind.plural().to_string()),
                         set: index,
-                    });
-                }
+                    })
+                    .collect();
+                this.load_set(filters);
                 continue;
             }
             this.sets.push(FilterSet {
@@ -246,12 +249,17 @@ impl ActiveFilters {
                 description: loaded.description.clone(),
                 profiles: loaded.profiles.clone(),
             });
+            // Colours are given over the known list, listed or not, so a
+            // filter's colour never depends on which sets are listed.
+            let mut filters = Vec::with_capacity(loaded.filters.len());
             for filter in &loaded.filters {
                 let style = match filter.colour {
                     Some(colour) => Style::default().fg(colour),
-                    None => this.next_style(),
+                    None => Style::default().fg(this
+                        .palette
+                        .colour(this.known_user_authored_count() + filters.len())),
                 };
-                this.filters.push(Filter {
+                filters.push(Filter {
                     predicate: filter.predicate.clone(),
                     sense: filter.sense,
                     enabled: false,
@@ -260,6 +268,7 @@ impl ActiveFilters {
                     set: index,
                 });
             }
+            this.load_set(filters);
         }
         this.recompile();
         // `listed = false` wins over `autoload = true` (ADR 0002).
@@ -269,6 +278,16 @@ impl ActiveFilters {
             }
         }
         this
+    }
+
+    /// Record the last set pushed onto `sets` as loaded, and put its filters
+    /// in the list when it is listed. The set is always the last one, so its
+    /// filters go at the end and the list stays contiguous by set.
+    fn load_set(&mut self, filters: Vec<Filter>) {
+        if self.sets.last().is_some_and(|set| set.listed) {
+            self.filters.extend(filters.iter().cloned());
+        }
+        self.as_loaded.push(filters);
     }
 
     /// Every set, scratch first, then in pane order.
@@ -313,11 +332,19 @@ impl ActiveFilters {
 
     /// List or unlist a named set for this session (#282).
     ///
-    /// Unlisting also disables the set, so it stops deciding lines at once;
-    /// its filter flags are kept. Unlisting the soloed set ends the solo.
-    /// Listing gives a disabled set with the flags it had, in its `priority`
-    /// position, which it never left: `autoload` is a startup value and does
-    /// not apply here.
+    /// An unlisted set is known and has no other effect (#305): unlisting
+    /// disables the set and takes its filters out of the list, so they are
+    /// in no compiled set, no scan and no pattern limit. Unlisting the
+    /// soloed set ends the solo. Listing puts a fresh copy of its filters
+    /// back, as they were loaded — all off — in its `priority` position,
+    /// which it never left, and gives a disabled set: the state its file
+    /// describes, not the state it was unlisted in. `autoload` is a startup
+    /// value and does not apply here.
+    ///
+    /// Either way the patterns change, so the set is compiled again and a
+    /// full rescan follows; filter indices move, so a pending `!` capture is
+    /// dropped. Listing a listed set, or unlisting an unlisted one, changes
+    /// nothing.
     ///
     /// Returns `false`, changing nothing, for the scratch set — which is
     /// always listed — and for an index that names no set.
@@ -325,13 +352,31 @@ impl ActiveFilters {
         if set == 0 || set >= self.sets.len() {
             return false;
         }
+        if self.sets[set].listed == listed {
+            return true;
+        }
         self.sets[set].listed = listed;
-        if !listed {
+        if listed {
+            let at = self
+                .filters
+                .iter()
+                .position(|filter| filter.set > set)
+                .unwrap_or(self.filters.len());
+            let fresh: Vec<Filter> = self.as_loaded[set]
+                .iter()
+                .cloned()
+                .map(|filter| Filter { set, ..filter })
+                .collect();
+            self.filters.splice(at..at, fresh);
+        } else {
             self.sets[set].enabled = false;
             if let Some(solo) = self.solo.take_if(|solo| solo.set == set) {
                 self.restore(solo.snapshot);
             }
+            self.filters.retain(|filter| filter.set != set);
         }
+        self.recompile();
+        self.forget_capture();
         true
     }
 
@@ -537,6 +582,18 @@ impl ActiveFilters {
         for filter in &mut adopted {
             filter.set = at;
         }
+        // As its file will load it: the same filters, all off.
+        self.as_loaded.insert(
+            at,
+            adopted
+                .iter()
+                .cloned()
+                .map(|filter| Filter {
+                    enabled: false,
+                    ..filter
+                })
+                .collect(),
+        );
         let splice_at = self
             .filters
             .iter()
@@ -578,8 +635,9 @@ impl ActiveFilters {
     /// Distinct from `len`, which counts every filter and is what
     /// `Verdict::Included` indexes into.
     ///
-    /// An unlisted set's filters are not counted: the pane has no row for
-    /// them (#282).
+    /// An unlisted set's filters are not in the list at all (#305); the
+    /// `listed` test stays as a guard, since the pane has no row for them
+    /// (#282).
     #[must_use]
     pub fn row_count(&self) -> usize {
         self.filters
@@ -1327,8 +1385,12 @@ mod tests {
         assert_eq!(set.row_count(), 0, "and has no row");
     }
 
+    /// #305: an unlisted set is known and has no other effect. Its filters
+    /// leave the list, the compiled set and the scan's pattern key; listing
+    /// it again brings them back as its file describes them — all off —
+    /// not as they were when it was unlisted.
     #[test]
-    fn unlisting_an_enabled_set_disables_it_and_keeps_its_flags() {
+    fn unlisting_a_set_takes_its_filters_out_and_listing_gives_the_file_state() {
         let mut set = ActiveFilters::with_sets(
             None,
             &[
@@ -1339,18 +1401,92 @@ mod tests {
         set.set_enabled(0, true);
         set.set_enabled(1, true);
         assert!(set.needs_regex());
+        let colours: Vec<_> = set.filters_in(1).map(|(_, f)| f.style).collect();
+        let generation = set.generation;
 
         assert!(set.set_listed(1, false));
         assert!(!set.sets()[1].listed);
         assert!(!set.sets()[1].enabled);
         assert!(!set.needs_regex(), "the visible lines change at once");
-        assert_eq!(flags(&set, 1), vec![true, true], "flags kept");
+        assert_eq!(set.filters_in(1).count(), 0, "no filter left in the list");
+        assert!(
+            !set.pattern_key().iter().any(|p| p == "x" || p == "y"),
+            "an unlisted set's patterns are in no compiled set"
+        );
+        assert_ne!(set.generation, generation, "a rescan follows");
 
         assert!(set.set_listed(1, true));
         assert_eq!(set.sets()[1].name, "a", "back in its priority position");
         assert!(set.sets()[1].listed);
         assert!(!set.sets()[1].enabled, "listing again gives a disabled set");
-        assert_eq!(flags(&set, 1), vec![true, true], "with the flags it had");
+        assert_eq!(flags(&set, 1), vec![false, false], "the file's state");
+        let again: Vec<_> = set.filters_in(1).map(|(_, f)| f.style).collect();
+        assert_eq!(again, colours, "the same colours");
+        assert_eq!(
+            set.filters().iter().map(|f| f.set).collect::<Vec<_>>(),
+            {
+                let mut sets = vec![1, 1, 2];
+                sets.extend(std::iter::repeat_n(3, Kind::ALL.len()));
+                sets
+            },
+            "contiguous by set"
+        );
+    }
+
+    /// Listing a listed set, or unlisting an unlisted one, changes nothing:
+    /// no filter is duplicated, and no rescan starts.
+    #[test]
+    fn listing_twice_changes_nothing() {
+        let mut set = ActiveFilters::with_sets(None, &[loaded("a", 10, false, &["x"])]);
+        let generation = set.generation;
+        assert!(set.set_listed(1, true));
+        assert_eq!(set.filters_in(1).count(), 1);
+        assert_eq!(set.generation, generation);
+        set.set_listed(1, false);
+        let generation = set.generation;
+        assert!(set.set_listed(1, false));
+        assert_eq!(set.generation, generation);
+    }
+
+    /// An unlisted set's patterns do not count toward the scan's limit:
+    /// a set too large to scan with, unlisted, lets the rest scan (#305).
+    #[test]
+    fn an_unlisted_set_does_not_count_toward_the_pattern_limit() {
+        let many: Vec<String> = (0..crate::filter::MAX_PATTERNS)
+            .map(|i| format!("p{i}"))
+            .collect();
+        let many: Vec<&str> = many.iter().map(String::as_str).collect();
+        let mut set = ActiveFilters::with_sets(
+            None,
+            &[
+                loaded("big", 10, false, &many),
+                loaded("small", 20, true, &["hit"]),
+            ],
+        );
+        assert!(set.matcher().is_none(), "sanity: over the limit");
+
+        set.unlist_named("big").expect("known set");
+        let small = set.sets().iter().position(|meta| meta.name == "small");
+        let hit = set
+            .filters_in(small.expect("small"))
+            .map(|(index, _)| index)
+            .next();
+        set.set_enabled(hit.expect("hit"), true);
+
+        assert!(set.matcher().is_some(), "the unlisted set still counted");
+        assert_eq!(set.scan_off(), None);
+    }
+
+    /// Colours run over the known list, so a typed filter never takes the
+    /// colour an unlisted set's filter will have when it is listed again.
+    #[test]
+    fn a_typed_filter_does_not_take_an_unlisted_sets_colour() {
+        let mut set = ActiveFilters::with_sets(None, &[loaded("a", 10, false, &["x"])]);
+        let a_colour = set.filters_in(1).map(|(_, f)| f.style).next();
+        set.set_listed(1, false);
+        set.add("typed").expect("valid");
+        let typed = set.filters_in(0).map(|(_, f)| f.style).next();
+        assert_ne!(typed, a_colour);
     }
 
     #[test]
