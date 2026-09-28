@@ -1,7 +1,7 @@
 //! Drawing the filter editor (#312): the file with every match highlighted,
 //! and the panel that holds the pattern.
 
-use super::super::filter_editor::FilterEditor;
+use super::super::filter_editor::{Check, EditorFocus, FilterEditor, Mark};
 use ratatui::prelude::{
     Buffer, Color, Constraint, Layout, Line, Modifier, Rect, Span, Style, Widget,
 };
@@ -10,6 +10,19 @@ use ratatui::widgets::{Block, Clear};
 /// How many columns a tab takes. A raw tab in a cell draws as nothing, and
 /// log lines carry them.
 const TAB: &str = "    ";
+
+/// The columns before each line: the cursor, the mark, and a space (#314).
+const GUTTER: u16 = 3;
+
+/// A marked line the pattern gets wrong: the loudest style on the screen, so
+/// a failed check is seen before anything else.
+const FAIL: Style = Style::new()
+    .fg(Color::White)
+    .bg(Color::Red)
+    .add_modifier(Modifier::BOLD);
+
+/// The mark of a line the pattern gets right.
+const PASS: Style = Style::new().fg(Color::Green).add_modifier(Modifier::BOLD);
 
 impl FilterEditor {
     /// Draw the editor over `area`, which it covers entirely. `dim` is how
@@ -24,8 +37,22 @@ impl FilterEditor {
         let inner = block.inner(file_area);
         block.render(file_area, buf);
         self.page = usize::from(inner.height).max(1);
-        for (y, line) in (inner.y..inner.bottom()).zip(self.lines.iter().skip(self.top)) {
-            Line::from(self.spans(line, dim)).render(
+        self.reveal_cursor();
+        let lines = self.lines.clone();
+        for ((y, line), index) in (inner.y..inner.bottom())
+            .zip(lines.iter().skip(self.top))
+            .zip(self.top..)
+        {
+            let check = self.check(index);
+            let mut spans = self.gutter(index, check);
+            spans.extend(self.spans(line, dim, check));
+            // A failed check fills its whole row, not only its text.
+            let row = if check.is_some_and(|check| !check.passes) {
+                FAIL
+            } else {
+                Style::default()
+            };
+            Line::from(spans).style(row).render(
                 Rect {
                     y,
                     height: 1,
@@ -35,14 +62,22 @@ impl FilterEditor {
             );
         }
 
-        let block =
-            Block::bordered()
-                .title(" Filter editor ")
-                .title_bottom(if self.target.is_some() {
-                    " Enter change · Esc cancel · Up/Down/PgUp/PgDn scroll "
-                } else {
-                    " Enter add · Esc cancel · Up/Down/PgUp/PgDn scroll "
-                });
+        let enter = if self.target.is_some() {
+            "Enter change"
+        } else {
+            "Enter add"
+        };
+        let keys = match self.focus {
+            EditorFocus::Pattern => {
+                format!(" {enter} · Esc cancel · Up/Down/PgUp/PgDn scroll · Tab lines ")
+            }
+            EditorFocus::Lines => format!(
+                " + must match · - must not · = clear · V range · {enter} · Esc cancel · Tab pattern "
+            ),
+        };
+        let block = Block::bordered()
+            .title(" Filter editor ")
+            .title_bottom(keys);
         let inner = block.inner(panel_area);
         block.render(panel_area, buf);
         if inner.height == 0 {
@@ -59,8 +94,11 @@ impl FilterEditor {
             Style::default(),
         );
         // The cursor as the prompt row draws it: the cell in reversed video.
+        // Only while the keys go to the pattern: on the lines, the cursor
+        // line is the one to watch.
         let column = label.chars().count() + self.field.cursor;
-        if let Ok(column) = u16::try_from(column)
+        if self.focus == EditorFocus::Pattern
+            && let Ok(column) = u16::try_from(column)
             && column < width
         {
             buf[(x + column, inner.y)].set_style(Style::default().add_modifier(Modifier::REVERSED));
@@ -78,34 +116,73 @@ impl FilterEditor {
         }
     }
 
+    /// The columns before line `index`: `>` on the cursor line and `|` on
+    /// the rest of a visual range while the keys go to the lines, then the
+    /// line's mark, `+` or `-`, in the style of its check.
+    fn gutter(&self, index: usize, check: Option<Check>) -> Vec<Span<'static>> {
+        let (first, last) = self.range();
+        let cursor = match self.focus {
+            EditorFocus::Lines if index == self.cursor => Span::styled(
+                ">",
+                Style::default().add_modifier(Modifier::BOLD | Modifier::REVERSED),
+            ),
+            EditorFocus::Lines if self.anchor.is_some() && (first..=last).contains(&index) => {
+                Span::styled("|", Style::default().add_modifier(Modifier::REVERSED))
+            }
+            _ => Span::raw(" "),
+        };
+        let mark = match check {
+            None => Span::raw("  "),
+            Some(Check { mark, passes }) => {
+                let symbol = match mark {
+                    Mark::MustMatch => "+ ",
+                    Mark::MustNotMatch => "- ",
+                };
+                Span::styled(symbol, if passes { PASS } else { FAIL })
+            }
+        };
+        debug_assert_eq!(
+            usize::from(GUTTER),
+            cursor.width() + mark.width(),
+            "the gutter is not {GUTTER} columns"
+        );
+        vec![cursor, mark]
+    }
+
     /// One line of the file as spans: a matched line in the new filter's
-    /// colour with each match reversed, a missed line dimmed.
-    fn spans(&self, line: &str, dim: Style) -> Vec<Span<'static>> {
+    /// colour with each match reversed, a missed line dimmed. A line whose
+    /// check fails is in `FAIL` instead, its matches still reversed, so a
+    /// must-not-match line shows what the pattern wrongly matched.
+    fn spans(&self, line: &str, dim: Style, check: Option<Check>) -> Vec<Span<'static>> {
+        let failed = check.is_some_and(|check| !check.passes);
         let Some(regex) = self.regex.as_ref().filter(|regex| regex.is_match(line)) else {
-            let style = if self.regex.is_some() {
+            let style = if failed {
+                FAIL
+            } else if self.regex.is_some() {
                 dim
             } else {
                 Style::default()
             };
             return vec![Span::styled(line.replace('\t', TAB), style)];
         };
+        let style = if failed { FAIL } else { self.style };
         let mut spans = Vec::new();
         let mut at = 0;
         for found in regex.find_iter(line) {
             if found.start() > at {
                 spans.push(Span::styled(
                     line[at..found.start()].replace('\t', TAB),
-                    self.style,
+                    style,
                 ));
             }
             spans.push(Span::styled(
                 found.as_str().replace('\t', TAB),
-                self.style.add_modifier(Modifier::REVERSED),
+                style.add_modifier(Modifier::REVERSED),
             ));
             at = found.end();
         }
         if at < line.len() {
-            spans.push(Span::styled(line[at..].replace('\t', TAB), self.style));
+            spans.push(Span::styled(line[at..].replace('\t', TAB), style));
         }
         spans
     }

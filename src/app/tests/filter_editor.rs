@@ -132,9 +132,10 @@ fn a_matched_line_is_drawn_in_the_new_filter_colour() {
 
     let mut buf = Buffer::empty(AREA);
     app.render(AREA, &mut buf);
-    // Row 0 is the border; the file starts on row 1. `ERROR disk` is the
-    // third line, and `disk` starts at its seventh column.
-    let (x, y) = (1 + 6, 1 + 2);
+    // Row 0 is the border; the file starts on row 1, after the three-column
+    // gutter. `ERROR disk` is the third line, and `disk` starts at its
+    // seventh column.
+    let (x, y) = (1 + 3 + 6, 1 + 2);
     assert_eq!(buf[(x, y)].symbol(), "d");
     assert_eq!(buf[(x, y)].fg, colour.fg.expect("a palette colour"));
     assert!(
@@ -142,7 +143,7 @@ fn a_matched_line_is_drawn_in_the_new_filter_colour() {
         "the match is not marked"
     );
     assert!(
-        !buf[(1, 1)].modifier.contains(Modifier::REVERSED),
+        !buf[(1 + 3, 1)].modifier.contains(Modifier::REVERSED),
         "a missed line is marked"
     );
 }
@@ -439,4 +440,286 @@ fn big_c_outside_the_filter_pane_names_the_chain() {
         message(&app),
         Some("C opens the selected filter in the filter editor · f C")
     );
+}
+
+// ---- line marks (#314) ---------------------------------------------------
+
+use crate::app::filter_editor::{EditorFocus, Mark};
+use ratatui::prelude::Color;
+
+fn marks(app: &App) -> Vec<(usize, Mark)> {
+    editor(app)
+        .marks
+        .iter()
+        .map(|(&line, &mark)| (line, mark))
+        .collect()
+}
+
+/// `f I` with the focus already in the filter pane, so the chain has no
+/// origin: a first `f I` cancelled with Esc leaves the focus there.
+fn open_editor_from_the_filter_pane(app: &mut App) {
+    open_editor(app);
+    key(app, KeyCode::Esc);
+    assert_eq!(app.focus, Focus::Filters);
+    open_editor(app);
+}
+
+#[test]
+fn opened_from_the_file_view_the_cursor_line_is_must_match() {
+    let mut app = app_over_file("marks_from_view", BODY);
+    key(&mut app, KeyCode::Char('t'));
+    key(&mut app, KeyCode::Char('j'));
+    open_editor(&mut app);
+
+    assert_eq!(marks(&app), [(1, Mark::MustMatch)]);
+    assert_eq!(editor(&app).cursor, 1);
+    assert_eq!(
+        status_line(&mut app),
+        "4 lines · 1 check fails",
+        "an empty pattern matches nothing"
+    );
+}
+
+#[test]
+fn f_big_c_from_the_file_view_marks_the_cursor_line_too() {
+    let mut app = app_with_two_filters("marks_c_from_view");
+    key(&mut app, KeyCode::Char('t'));
+    key(&mut app, KeyCode::Char('f'));
+    key(&mut app, KeyCode::Char('C'));
+
+    assert_eq!(marks(&app), [(0, Mark::MustMatch)]);
+}
+
+#[test]
+fn opened_from_the_filter_pane_or_the_explorer_no_line_is_marked() {
+    let mut app = app_over_file("marks_from_pane", BODY);
+    open_editor_from_the_filter_pane(&mut app);
+    assert!(marks(&app).is_empty());
+
+    let mut app = app_over_file("marks_from_explorer", BODY);
+    assert_eq!(app.focus, Focus::Explorer);
+    open_editor(&mut app);
+    assert!(marks(&app).is_empty());
+    assert_eq!(status_line(&mut app), "4 lines", "no checks, no count");
+}
+
+#[test]
+fn plus_minus_and_equals_mark_and_clear_the_cursor_line() {
+    let mut app = app_over_file("marks_keys", BODY);
+    open_editor_from_the_filter_pane(&mut app);
+    key(&mut app, KeyCode::Tab);
+    assert_eq!(editor(&app).focus, EditorFocus::Lines);
+
+    key(&mut app, KeyCode::Char('+'));
+    key(&mut app, KeyCode::Down);
+    key(&mut app, KeyCode::Char('-'));
+    assert_eq!(marks(&app), [(0, Mark::MustMatch), (1, Mark::MustNotMatch)]);
+
+    key(&mut app, KeyCode::Char('+'));
+    assert_eq!(
+        marks(&app),
+        [(0, Mark::MustMatch), (1, Mark::MustMatch)],
+        "a second mark replaces the first"
+    );
+
+    key(&mut app, KeyCode::Up);
+    key(&mut app, KeyCode::Char('='));
+    assert_eq!(marks(&app), [(1, Mark::MustMatch)]);
+    assert_eq!(editor(&app).field.pattern, "", "a mark key was typed");
+}
+
+/// `+` and `-` are pattern characters, so in the pattern they are typed.
+/// On the lines, a character is not typed at all.
+#[test]
+fn the_mark_keys_are_typed_in_the_pattern() {
+    let mut app = app_over_file("marks_typed", BODY);
+    open_editor_from_the_filter_pane(&mut app);
+    typed(&mut app, "a+-=V");
+    assert_eq!(editor(&app).field.pattern, "a+-=V");
+    assert!(marks(&app).is_empty());
+
+    key(&mut app, KeyCode::Tab);
+    typed(&mut app, "x");
+    key(&mut app, KeyCode::Backspace);
+    assert_eq!(editor(&app).field.pattern, "a+-=V");
+
+    key(&mut app, KeyCode::Tab);
+    assert_eq!(editor(&app).focus, EditorFocus::Pattern);
+    typed(&mut app, "x");
+    assert_eq!(editor(&app).field.pattern, "a+-=Vx");
+}
+
+#[test]
+fn a_visual_range_gets_one_mark_on_each_line() {
+    let mut app = app_over_file("marks_range", BODY);
+    open_editor_from_the_filter_pane(&mut app);
+    key(&mut app, KeyCode::Tab);
+    key(&mut app, KeyCode::Down);
+    key(&mut app, KeyCode::Char('V'));
+    key(&mut app, KeyCode::Down);
+    key(&mut app, KeyCode::Down);
+    key(&mut app, KeyCode::Char('-'));
+
+    assert_eq!(
+        marks(&app),
+        [
+            (1, Mark::MustNotMatch),
+            (2, Mark::MustNotMatch),
+            (3, Mark::MustNotMatch)
+        ]
+    );
+    assert!(editor(&app).anchor.is_none(), "the range stayed open");
+
+    // Upwards, and cleared the same way.
+    key(&mut app, KeyCode::Char('V'));
+    key(&mut app, KeyCode::Up);
+    key(&mut app, KeyCode::Char('='));
+    assert_eq!(marks(&app), [(1, Mark::MustNotMatch)]);
+}
+
+/// Esc closes an open range first, as in the file view, and then the
+/// editor, with its marks.
+#[test]
+fn esc_closes_a_range_and_then_discards_the_marks() {
+    let mut app = app_over_file("marks_esc", BODY);
+    open_editor_from_the_filter_pane(&mut app);
+    key(&mut app, KeyCode::Tab);
+    key(&mut app, KeyCode::Char('+'));
+    key(&mut app, KeyCode::Char('V'));
+    key(&mut app, KeyCode::Esc);
+    assert!(editor(&app).anchor.is_none());
+    assert!(app.filter_editor.is_some(), "Esc closed the editor");
+
+    key(&mut app, KeyCode::Esc);
+    assert!(app.filter_editor.is_none());
+    open_editor(&mut app);
+    assert!(marks(&app).is_empty(), "the marks came back");
+}
+
+#[test]
+fn the_failed_count_follows_each_key() {
+    let mut app = app_over_file("marks_count", BODY);
+    open_editor_from_the_filter_pane(&mut app);
+    key(&mut app, KeyCode::Tab);
+    key(&mut app, KeyCode::Char('+')); // ERROR timeout
+    key(&mut app, KeyCode::Down);
+    key(&mut app, KeyCode::Char('-')); // INFO ok
+    key(&mut app, KeyCode::Tab);
+    assert_eq!(status_line(&mut app), "4 lines · 1 check fails");
+
+    typed(&mut app, "ERROR");
+    assert_eq!(status_line(&mut app), "2 of 4 lines match · 0 checks fail");
+
+    ctrl(&mut app, KeyCode::Char('u'));
+    typed(&mut app, "INFO");
+    assert_eq!(status_line(&mut app), "2 of 4 lines match · 2 checks fail");
+
+    // A pattern that does not compile keeps the last count, as the match
+    // count does.
+    typed(&mut app, "(");
+    assert_eq!(editor(&app).failures, 2);
+}
+
+/// The four states, one on each line: must-match passes, must-not-match
+/// passes, must-match fails, must-not-match fails. A failed check fills its
+/// row with red; a passed one only colours its mark.
+#[test]
+fn the_four_states_are_drawn_four_ways() {
+    let mut app = app_over_file("marks_styles", BODY);
+    open_editor_from_the_filter_pane(&mut app);
+    key(&mut app, KeyCode::Tab);
+    for mark in ['+', '-', '+', '-'] {
+        key(&mut app, KeyCode::Char(mark));
+        key(&mut app, KeyCode::Down);
+    }
+    // Back to the first line, so all four are on the screen.
+    for _ in 0..4 {
+        key(&mut app, KeyCode::Up);
+    }
+    key(&mut app, KeyCode::Tab);
+    typed(&mut app, "timeout");
+
+    let area = Rect { height: 20, ..AREA };
+    let mut buf = Buffer::empty(area);
+    app.render(area, &mut buf);
+    // Row 0 is the border. Column 1 is the cursor, column 2 the mark, and
+    // the text starts at column 4.
+    let row = |line: u16| {
+        let y = 1 + line;
+        let text: Vec<_> = (4..20)
+            .map(|x| (buf[(x, y)].fg, buf[(x, y)].bg, buf[(x, y)].modifier))
+            .collect();
+        (buf[(2, y)].symbol().to_string(), buf[(2, y)].bg, text)
+    };
+    let rows: Vec<_> = (0..4).map(row).collect();
+
+    assert_eq!(rows[0].0, "+");
+    assert_eq!(rows[1].0, "-");
+    assert_eq!(rows[2].0, "+");
+    assert_eq!(rows[3].0, "-");
+    for (line, passes) in [(0, true), (1, true), (2, false), (3, false)] {
+        assert_eq!(
+            rows[line].1 == Color::Red,
+            !passes,
+            "line {line}'s mark is not in the style of its check"
+        );
+        assert_eq!(
+            rows[line].2.iter().all(|&(_, bg, _)| bg == Color::Red),
+            !passes,
+            "line {line}'s text is not in the style of its check"
+        );
+    }
+    for a in 0..4 {
+        for b in a + 1..4 {
+            assert_ne!(rows[a], rows[b], "lines {a} and {b} look the same");
+        }
+    }
+    // The must-not-match failure shows what the pattern wrongly matched.
+    assert!(
+        rows[3]
+            .2
+            .iter()
+            .any(|&(_, _, modifier)| modifier.contains(Modifier::REVERSED))
+    );
+}
+
+/// The cursor line opened from far down the file is on the screen.
+#[test]
+fn the_marked_line_is_on_the_screen() {
+    let mut app = app_over_file("marks_reveal", &numbered_lines(100));
+    key(&mut app, KeyCode::Char('t'));
+    for _ in 0..60 {
+        key(&mut app, KeyCode::Char('j'));
+    }
+    open_editor(&mut app);
+    let cursor = editor(&app).cursor;
+    assert_eq!(marks(&app), [(cursor, Mark::MustMatch)]);
+    assert!(cursor > 50, "sanity: the cursor is far down");
+
+    draw(&mut app);
+    let (top, page) = (editor(&app).top, editor(&app).page);
+    assert!(
+        (top..top + page).contains(&cursor),
+        "line {cursor} is not in {top}..{}",
+        top + page
+    );
+    assert!(rendered(&mut app).contains(&format!("+ line {cursor}")));
+}
+
+/// On the lines, the arrows move the cursor line and the screen follows it.
+#[test]
+fn on_the_lines_the_arrows_move_the_cursor() {
+    let mut app = app_over_file("marks_cursor", &numbered_lines(100));
+    open_editor_from_the_filter_pane(&mut app);
+    draw(&mut app);
+    key(&mut app, KeyCode::Tab);
+    let page = editor(&app).page;
+    for _ in 0..page + 2 {
+        key(&mut app, KeyCode::Down);
+    }
+    draw(&mut app);
+
+    let editor = editor(&app);
+    assert_eq!(editor.cursor, page + 2);
+    assert_eq!(editor.top, 3, "the screen did not follow the cursor");
 }

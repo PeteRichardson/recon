@@ -54,6 +54,12 @@ filter's pattern against the open file and sees every line it matches while
 typing. `f I` opens it on a new filter, and `f C` on the selected one.
 _Avoid_: editor alone (that is the external editor `o` and `O` open), regex builder
 
+**Check**:
+A line marked in the filter editor as one the pattern must match (`+`) or
+must not match (`-`). It passes or fails under the pattern as typed. A check
+lasts only while the editor is open.
+_Avoid_: example (the word for a check once it is saved with the filter), test
+
 **Interesting line**:
 A line an enabled including filter matches. `n` and `N` step between
 interesting lines when no search is set, and hide mode keeps only them.
