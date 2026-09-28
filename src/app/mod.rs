@@ -259,6 +259,10 @@ pub struct App<'a> {
     /// The filter editor, while it is open (#312). Takes every key, as the
     /// pickers do.
     filter_editor: Option<FilterEditor>,
+    /// The model that writes a pattern from a request in the filter editor
+    /// (#319), or `None` when this build has none. `main` sets it; a test
+    /// installs a double.
+    model: Option<std::sync::Arc<dyn crate::generate::Model>>,
     /// Where `S` writes (#131): `filters.toml` beside `config.toml`, or
     /// `None` when the environment names no home. A field rather than a
     /// call at save time so tests can point it at a fixture.
@@ -433,6 +437,7 @@ impl App<'_> {
             picker: None,
             set_picker: None,
             filter_editor: None,
+            model: None,
             save_path: filtersets::path(),
             scanner: Box::new(scan::Scanner::new(scan_tx)),
             scan_results: Some(scan_rx),
@@ -450,6 +455,13 @@ impl App<'_> {
         app.sync_document();
         app.refresh_view();
         app
+    }
+
+    /// Give the filter editor a model to write patterns with (#319).
+    #[must_use]
+    pub fn with_model(mut self, model: Option<std::sync::Arc<dyn crate::generate::Model>>) -> Self {
+        self.model = model;
+        self
     }
 
     /// This is the main event loop for the app.

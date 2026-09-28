@@ -1,6 +1,7 @@
 //! Drawing the filter editor (#312): the file with every match highlighted,
 //! and the panel that holds the name, description, prompt, sense and
-//! pattern.
+//! pattern, and with a model the request line and the model's explanation
+//! (#319).
 
 use super::super::filter_editor::{Check, EditorFocus, FilterEditor, Mark};
 use crate::filter::Sense;
@@ -27,6 +28,9 @@ const FAIL: Style = Style::new()
 /// The panel's rows: the five fields and the error line.
 const PANEL_ROWS: u16 = 6;
 
+/// The rows a model adds (#319): the request line and the explanation.
+const MODEL_ROWS: u16 = 2;
+
 /// The width of the longest field label, `description: `, so the fields
 /// start in one column.
 const LABEL_WIDTH: usize = 13;
@@ -44,8 +48,12 @@ impl FilterEditor {
     pub(in crate::app) fn render(&mut self, title: &str, dim: Style, area: Rect, buf: &mut Buffer) {
         use Constraint::{Length, Min};
         Clear.render(area, buf);
-        let [file_area, panel_area] =
-            Layout::vertical([Min(0), Length(PANEL_ROWS + 2)]).areas(area);
+        let rows = if self.model {
+            PANEL_ROWS + MODEL_ROWS
+        } else {
+            PANEL_ROWS
+        };
+        let [file_area, panel_area] = Layout::vertical([Min(0), Length(rows + 2)]).areas(area);
 
         // The focused part's frame is thick and green, as a focused pane's
         // is in the main window.
@@ -92,10 +100,21 @@ impl FilterEditor {
         } else {
             "Enter add"
         };
+        // With a model, the request line is between the pattern and the
+        // lines in the ring.
+        let (after_pattern, before_lines) = if self.model {
+            ("request", "request")
+        } else {
+            ("lines", "pattern")
+        };
         let keys = match self.focus {
             EditorFocus::Pattern => format!(
-                " {enter} · Esc cancel · Up/Down/PgUp/PgDn scroll · Ctrl-z/Ctrl-y undo/redo · Tab lines · Shift-Tab prompt "
+                " {enter} · Esc cancel · Up/Down/PgUp/PgDn scroll · Ctrl-z/Ctrl-y undo/redo · Tab {after_pattern} · Shift-Tab prompt "
             ),
+            EditorFocus::Request => {
+                " Enter send · Esc cancel · Ctrl-z/Ctrl-y undo/redo · Tab lines · Shift-Tab pattern "
+                    .to_string()
+            }
             EditorFocus::Name | EditorFocus::Description | EditorFocus::Prompt => format!(
                 " {enter} · Esc cancel · Up/Down/PgUp/PgDn scroll · Tab/Shift-Tab next/previous field "
             ),
@@ -103,7 +122,7 @@ impl FilterEditor {
                 " Space/Left/Right change · i include · c context · x exclude · {enter} · Esc cancel · Tab/Shift-Tab next/previous field "
             ),
             EditorFocus::Lines => format!(
-                " + must match · - must not · = clear · V range · f/F failed · n/N unmarked · u matches only · {enter} · Esc cancel · Tab name · Shift-Tab pattern "
+                " + must match · - must not · = clear · V range · f/F failed · n/N unmarked · u matches only · {enter} · Esc cancel · Tab name · Shift-Tab {before_lines} "
             ),
         };
         let block =
@@ -112,8 +131,9 @@ impl FilterEditor {
         block.render(panel_area, buf);
         let x = inner.x + 1;
         let width = inner.width.saturating_sub(2);
-        // Row 3 is the sense, which is a choice, not text.
-        let fields = [
+        // Row 3 is the sense, which is a choice, not text. The request line
+        // is row 5, with a model only.
+        let mut fields = vec![
             ("name:", &self.name, EditorFocus::Name, 0),
             (
                 "description:",
@@ -124,6 +144,9 @@ impl FilterEditor {
             ("prompt:", &self.prompt, EditorFocus::Prompt, 2),
             ("pattern:", &self.field, EditorFocus::Pattern, 4),
         ];
+        if self.model {
+            fields.push(("request:", &self.request, EditorFocus::Request, 5));
+        }
         for (label, field, focus, row) in fields {
             let y = inner.y + row;
             if y >= inner.bottom() {
@@ -158,12 +181,25 @@ impl FilterEditor {
                 buf,
             );
         }
-        if let Some(error) = &self.error
-            && inner.height >= PANEL_ROWS
+        // What the model said of the pattern it gave, under the request.
+        if let Some(explanation) = &self.explanation
+            && self.model
+            && inner.height > 6
         {
             buf.set_stringn(
                 x,
-                inner.y + PANEL_ROWS - 1,
+                inner.y + 6,
+                format!("{:LABEL_WIDTH$}{explanation}", "model:"),
+                usize::from(width),
+                Style::default().fg(Color::DarkGray),
+            );
+        }
+        if let Some(error) = &self.error
+            && inner.height >= rows
+        {
+            buf.set_stringn(
+                x,
+                inner.y + rows - 1,
                 error,
                 usize::from(width),
                 Style::default().fg(Color::Red),

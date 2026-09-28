@@ -156,5 +156,17 @@ syntect = { version = "5.3", default-features = false, features = [
 ] }
 two-face = "0.5"
 
+# Pattern generation in the filter editor (#319). Off by default, so a plain
+# `cargo build` has no new dependency on any platform. `fm-rs` compiles a
+# Swift layer over Apple's FoundationModels framework in its build script, so
+# it is a dependency only on Apple-silicon macOS: `--features
+# foundation-models` on Linux builds, and the editor there has no request
+# line, as without the feature.
+[features]
+foundation-models = ["dep:fm-rs"]
+
+[target.'cfg(all(target_os = "macos", target_arch = "aarch64"))'.dependencies]
+fm-rs = { version = "0.3", optional = true }
+
 [patch.crates-io]
 tui-textarea-2 = { path = "vendor/tui-textarea-2" }

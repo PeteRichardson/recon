@@ -90,6 +90,12 @@ text a model will write the pattern from. Without a model it is only text
 kept with the filter; it never changes the pattern.
 _Avoid_: query, request (that is one turn of a talk with the model)
 
+**Request**:
+One turn of a talk with the model in the filter editor: what the user types
+on the request line and sends with `Enter`. The model answers with a pattern
+and an explanation. A request is not kept with the filter; the prompt is.
+_Avoid_: prompt (that is the filter's), query
+
 **Interesting line**:
 A line an enabled including filter matches. `n` and `N` step between
 interesting lines when no search is set, and hide mode keeps only them.

@@ -34,14 +34,24 @@
 //! of the open file is drawn after the file's last line, so it is checked,
 //! counted and reached by `f` as any mark is. A pattern that fails a check
 //! does not go on the filter: Enter names the first failed check instead.
+//!
+//! With a language model (#319), the panel has a request line under the
+//! pattern: `Ctrl-g` moves the keys to it, and Enter there sends the request
+//! to the model on a worker thread. The reply's pattern goes in the pattern
+//! field as a new version, and its explanation under it. Esc cancels a
+//! request while it runs. Without a model the request line is not there,
+//! and nothing else changes. See `crate::generate` for what the model
+//! receives.
 
 use super::App;
 use super::prompt::SearchPrompt;
 use crate::filter::{Details, Example, Sense};
+use crate::generate::{self, Candidate, Running};
 use crossterm::event::{self, KeyCode, KeyModifiers};
 use ratatui::prelude::Style;
 use regex::Regex;
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -51,6 +61,9 @@ pub(super) const VERSION_PAUSE: Duration = Duration::from_secs(1);
 
 /// Shown in the panel when Enter finds no pattern to add.
 pub(super) const NO_PATTERN: &str = "type a pattern first";
+
+/// Shown in the panel when Enter on the request line finds no request.
+pub(super) const NO_REQUEST: &str = "type a request first";
 
 /// Where the filter editor's keys go (#314), in the order Tab moves
 /// through them (#317). Each text field takes the characters typed, and
@@ -68,36 +81,45 @@ pub(super) enum EditorFocus {
     /// The pattern. Where the editor opens.
     #[default]
     Pattern,
+    /// A request to the model (#319). In the ring only with a model.
+    Request,
     /// Up/Down move the cursor line, and the mark keys mark it.
     Lines,
 }
 
 impl EditorFocus {
-    const RING: [Self; 6] = [
+    const RING: [Self; 7] = [
         Self::Name,
         Self::Description,
         Self::Prompt,
         Self::Sense,
         Self::Pattern,
+        Self::Request,
         Self::Lines,
     ];
 
-    /// Tab: the next in the ring, the lines back to the name.
-    fn next(self) -> Self {
-        let at = Self::RING
-            .iter()
-            .position(|&focus| focus == self)
-            .unwrap_or(0);
-        Self::RING[(at + 1) % Self::RING.len()]
+    /// Tab: the next in the ring, the lines back to the name. The request
+    /// line is passed over without a model.
+    fn next(self, model: bool) -> Self {
+        self.step(1, model)
     }
 
     /// Shift-Tab: the previous in the ring.
-    fn prev(self) -> Self {
+    fn prev(self, model: bool) -> Self {
+        self.step(Self::RING.len() - 1, model)
+    }
+
+    fn step(self, by: usize, model: bool) -> Self {
         let at = Self::RING
             .iter()
             .position(|&focus| focus == self)
             .unwrap_or(0);
-        Self::RING[(at + Self::RING.len() - 1) % Self::RING.len()]
+        let next = Self::RING[(at + by) % Self::RING.len()];
+        if next == Self::Request && !model {
+            next.step(by, model)
+        } else {
+            next
+        }
     }
 }
 
@@ -190,6 +212,18 @@ pub(super) struct FilterEditor {
     /// When the pattern was last typed into, while that edit is not yet
     /// kept as a version.
     pub(super) edited_at: Option<Instant>,
+    /// Whether a model was available when the editor opened (#319). Without
+    /// one there is no request line.
+    pub(super) model: bool,
+    /// The request line: what the user asks the model for next.
+    pub(super) request: SearchPrompt,
+    /// The request the model is answering, if one is running.
+    pub(super) running: Option<Running>,
+    /// The whole seconds the running request has taken, as the status row
+    /// last showed them.
+    pub(super) waited: u64,
+    /// What the model said about the last pattern it gave.
+    pub(super) explanation: Option<String>,
 }
 
 /// What a key on the sense field asks for (#317).
@@ -245,6 +279,11 @@ impl FilterEditor {
             versions: Vec::new(),
             version: None,
             edited_at: None,
+            model: false,
+            request: SearchPrompt::default(),
+            running: None,
+            waited: 0,
+            explanation: None,
         }
     }
 
@@ -369,6 +408,7 @@ impl FilterEditor {
             EditorFocus::Name => Some(&mut self.name),
             EditorFocus::Description => Some(&mut self.description),
             EditorFocus::Prompt => Some(&mut self.prompt),
+            EditorFocus::Request => Some(&mut self.request),
             EditorFocus::Sense | EditorFocus::Pattern | EditorFocus::Lines => None,
         }
     }
@@ -568,18 +608,81 @@ impl FilterEditor {
     /// is not a version to go back to.
     fn record(&mut self) {
         self.edited_at = None;
+        if self.field.pattern.is_empty() || self.error.is_some() {
+            return;
+        }
+        self.keep_version();
+    }
+
+    /// Keep the pattern as it stands as a version, unless it is the version
+    /// it already is, and drop the versions an undo left ahead of it.
+    fn keep_version(&mut self) {
         let pattern = &self.field.pattern;
-        if pattern.is_empty()
-            || self.error.is_some()
-            || self
-                .version
-                .is_some_and(|version| self.versions[version] == *pattern)
+        if self
+            .version
+            .is_some_and(|version| self.versions[version] == *pattern)
         {
             return;
         }
         self.versions.truncate(self.version.map_or(0, |at| at + 1));
         self.versions.push(pattern.clone());
         self.version = Some(self.versions.len() - 1);
+    }
+
+    /// The model's reply (#319): its pattern in the field as a new version,
+    /// and its explanation under it. The pattern as it was is kept first,
+    /// so `Ctrl-z` goes back to it — an empty pattern too, as `Ctrl-z`
+    /// must undo what the model did. A pattern that does not compile is not
+    /// a version; it shows its error as a typed one does. The request line
+    /// is cleared for the next request.
+    fn take_candidate(&mut self, candidate: Candidate) {
+        self.error = pattern_error(&self.field.pattern);
+        if self.field.pattern.is_empty() {
+            self.edited_at = None;
+            self.keep_version();
+        } else {
+            self.record();
+        }
+        self.field = SearchPrompt::editing(candidate.pattern, super::prompt::PromptKind::default());
+        self.recompile();
+        self.record();
+        self.explanation = Some(candidate.explanation);
+        self.request = SearchPrompt::default();
+    }
+
+    /// The text the model receives for `request` (#319): the prompt field,
+    /// the marks, and a sample of the unmarked lines. Never the
+    /// description.
+    pub(super) fn request_text(&self, request: &str) -> String {
+        let examples = self.details().examples;
+        let lines = |must_match: bool| -> Vec<&str> {
+            examples
+                .iter()
+                .filter(|example| example.must_match == must_match)
+                .map(|example| example.line.as_str())
+                .collect()
+        };
+        let prompt = self.prompt.pattern.trim();
+        generate::request_text(
+            (!prompt.is_empty()).then_some(prompt),
+            &lines(true),
+            &lines(false),
+            &self.sample(),
+            request,
+        )
+    }
+
+    /// Up to `SAMPLE_LINES` lines of the file with no mark and some text,
+    /// spread from its start to its end.
+    fn sample(&self) -> Vec<&str> {
+        let step = (self.lines.len() / generate::SAMPLE_LINES).max(1);
+        (0..self.lines.len())
+            .step_by(step)
+            .filter(|index| !self.marks.contains_key(index))
+            .map(|index| self.lines[index].as_str())
+            .filter(|line| !line.trim().is_empty())
+            .take(generate::SAMPLE_LINES)
+            .collect()
     }
 
     /// A key that edits the pattern, at `now`. The pattern before it is a
@@ -660,7 +763,8 @@ impl FilterEditor {
             | EditorFocus::Description
             | EditorFocus::Prompt
             | EditorFocus::Sense
-            | EditorFocus::Pattern => self.scroll(delta),
+            | EditorFocus::Pattern
+            | EditorFocus::Request => self.scroll(delta),
             EditorFocus::Lines => {
                 let last = self.rows().saturating_sub(1);
                 let row = self
@@ -682,9 +786,9 @@ impl FilterEditor {
     /// closes a visual range.
     fn move_focus(&mut self, forward: bool) {
         let next = if forward {
-            self.focus.next()
+            self.focus.next(self.model)
         } else {
-            self.focus.prev()
+            self.focus.prev(self.model)
         };
         match self.focus {
             EditorFocus::Pattern => self.record(),
@@ -736,12 +840,18 @@ impl FilterEditor {
     /// many checks it fails once a line is marked, and whether only the
     /// matches are drawn.
     pub(super) fn status(&self) -> String {
-        let status = self.counts();
+        let mut status = self.counts();
         if self.matches_only {
-            format!("{status} · matches only")
-        } else {
-            status
+            status.push_str(" · matches only");
         }
+        if self.running.is_some() {
+            let _ = write!(
+                status,
+                " · asking the model, {} s · Esc cancels",
+                self.waited
+            );
+        }
+        status
     }
 
     fn counts(&self) -> String {
@@ -858,8 +968,15 @@ impl App<'_> {
     pub(super) fn open_filter_editor(&mut self) {
         self.promote_truncated_preview();
         let lines = self.view.source().clone();
-        let mut editor = FilterEditor::new(lines, self.filters.next_style());
+        let editor = FilterEditor::new(lines, self.filters.next_style());
+        self.show_filter_editor(editor);
+    }
+
+    /// Open `editor`: mark the origin line, and ask the model, if this build
+    /// has one, whether it can take a request now (#319).
+    fn show_filter_editor(&mut self, mut editor: FilterEditor) {
         self.mark_origin_line(&mut editor);
+        editor.model = self.model.as_ref().is_some_and(|model| model.available());
         self.filter_editor = Some(editor);
     }
 
@@ -908,9 +1025,8 @@ impl App<'_> {
         };
         self.promote_truncated_preview();
         let lines = self.view.source().clone();
-        let mut editor = FilterEditor::editing(lines, style, index, pattern, details, sense);
-        self.mark_origin_line(&mut editor);
-        self.filter_editor = Some(editor);
+        let editor = FilterEditor::editing(lines, style, index, pattern, details, sense);
+        self.show_filter_editor(editor);
     }
 
     /// Feed a key to the open filter editor. It takes every key: a key
@@ -921,7 +1037,8 @@ impl App<'_> {
     /// field they are typed, since `+` and `-` are pattern characters too;
     /// and with the focus on the lines, a key that would edit a field does
     /// nothing. `Ctrl-z` and `Ctrl-y` are the pattern's versions, so they
-    /// do nothing in the name, the description and the prompt (#317).
+    /// do nothing in the name, the description and the prompt (#317); on
+    /// the request line they undo what the model gave (#319).
     pub(super) fn handle_filter_editor_key(&mut self, key: event::KeyEvent) {
         use crate::keymap::ActionId as A;
         let pressed = crate::keymap::normalise(key);
@@ -933,8 +1050,10 @@ impl App<'_> {
             .keymap
             .resolve(crate::keymap::Scope::FilterEditor, pressed)
             .filter(|action| {
-                matches!(focus, EditorFocus::Pattern | EditorFocus::Lines)
-                    || !matches!(action, A::FilterEditorUndo | A::FilterEditorRedo)
+                matches!(
+                    focus,
+                    EditorFocus::Pattern | EditorFocus::Request | EditorFocus::Lines
+                ) || !matches!(action, A::FilterEditorUndo | A::FilterEditorRedo)
             })
             .filter(|action| {
                 focus == EditorFocus::Lines
@@ -954,7 +1073,21 @@ impl App<'_> {
         if let Some(action) = action {
             let page = |editor: &FilterEditor| isize::try_from(editor.page).unwrap_or(isize::MAX);
             match action {
+                A::FilterEditorCommit if focus == EditorFocus::Request => self.send_request(),
                 A::FilterEditorCommit => self.commit_filter_editor(),
+                // Esc stops a running request first (#319); a second Esc
+                // does what it does without one.
+                A::FilterEditorCancel
+                    if self
+                        .filter_editor
+                        .as_ref()
+                        .is_some_and(|editor| editor.running.is_some()) =>
+                {
+                    // Dropped, it cancels the request, and its reply has
+                    // nowhere to go.
+                    self.edit_filter_editor(|editor| editor.running = None);
+                    self.report("request cancelled", false);
+                }
                 // Esc closes a visual range first, as it does in the file
                 // view; a second Esc closes the editor.
                 A::FilterEditorCancel
@@ -1012,6 +1145,16 @@ impl App<'_> {
                 }
                 A::FilterEditorUndo => self.step_filter_editor_version(FilterEditor::undo),
                 A::FilterEditorRedo => self.step_filter_editor_version(FilterEditor::redo),
+                // Without a model there is no request line to go to.
+                A::FilterEditorRequest => self.edit_filter_editor(|editor| {
+                    if editor.model && editor.focus != EditorFocus::Request {
+                        if editor.focus == EditorFocus::Pattern {
+                            editor.record();
+                        }
+                        editor.anchor = None;
+                        editor.focus = EditorFocus::Request;
+                    }
+                }),
                 // `resolve(Scope::FilterEditor, ..)` answers only with the arms
                 // above; matched rather than left to a panic, as in
                 // `handle_search_key`.
@@ -1114,6 +1257,49 @@ impl App<'_> {
         if let Some(text) = self.filter_editor.as_mut().and_then(step) {
             self.report(text, false);
         }
+    }
+
+    /// Enter on the request line (#319): send the request to the model on a
+    /// worker thread, in place of one still running.
+    fn send_request(&mut self) {
+        let Some(model) = self.model.clone() else {
+            return;
+        };
+        let Some(editor) = self.filter_editor.as_mut() else {
+            return;
+        };
+        let request = editor.request.pattern.trim();
+        if request.is_empty() {
+            editor.error = Some(NO_REQUEST.to_string());
+            return;
+        }
+        let text = editor.request_text(request);
+        editor.running = Some(Running::start(model, text));
+        editor.waited = 0;
+        editor.explanation = None;
+        editor.error = pattern_error(&editor.field.pattern);
+    }
+
+    /// Take the model's reply, if it is here, and say whether the screen
+    /// changed: the reply, or one more second of waiting on the status
+    /// row. Runs on the render loop, and never blocks.
+    pub(super) fn drain_request(&mut self) -> bool {
+        let Some(editor) = self.filter_editor.as_mut() else {
+            return false;
+        };
+        let Some(running) = editor.running.as_ref() else {
+            return false;
+        };
+        let Some(reply) = running.poll() else {
+            let waited = running.started.elapsed().as_secs();
+            return std::mem::replace(&mut editor.waited, waited) != waited;
+        };
+        editor.running = None;
+        match reply {
+            Ok(candidate) => editor.take_candidate(candidate),
+            Err(error) => editor.error = Some(format!("the model gave no pattern: {error}")),
+        }
+        true
     }
 
     /// A jump key: move the cursor line, and say on the status row when it

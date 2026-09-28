@@ -293,6 +293,8 @@ pub(crate) enum ActionId {
     /// `Ctrl-z` / `Ctrl-y`: the pattern's previous / next version (#316).
     FilterEditorUndo,
     FilterEditorRedo,
+    /// `Ctrl-g`: the keys to the request line, with a model (#319).
+    FilterEditorRequest,
     // The help overlay itself has no ActionId: any key dismisses it, so
     // there is nothing to bind or rebind, and Scope::Help carries no DEFAULT
     // rows for the same reason (#59).
@@ -410,6 +412,7 @@ impl ActionId {
             Self::FilterEditorToggleMatchesOnly => "filtereditor.toggle.matchesonly",
             Self::FilterEditorUndo => "filtereditor.undo",
             Self::FilterEditorRedo => "filtereditor.redo",
+            Self::FilterEditorRequest => "filtereditor.request",
             Self::PromptCommit => "prompt.commit",
             Self::PromptCancel => "prompt.cancel",
             Self::PromptLeft => "prompt.left",
@@ -646,6 +649,9 @@ pub(crate) const DEFAULT: &[(Scope, &str, ActionId)] = &[
     // Control keys, so they work in the pattern as well as on the lines.
     (Scope::FilterEditor, "Ctrl-z", ActionId::FilterEditorUndo),
     (Scope::FilterEditor, "Ctrl-y", ActionId::FilterEditorRedo),
+    // A control key, as every printable one is typed into a field. `g` for
+    // "generate".
+    (Scope::FilterEditor, "Ctrl-g", ActionId::FilterEditorRequest),
 ];
 
 /// Keys 1.0 promises to 1.1, bound to nothing.

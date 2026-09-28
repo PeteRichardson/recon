@@ -157,6 +157,15 @@ cargo build --release
 # Binary: ./target/release/recon
 ```
 
+To let the filter editor write patterns with Apple's on-device model
+(macOS 27 on Apple silicon, Apple Intelligence on), build with the
+`foundation-models` feature. It needs Xcode's Swift compiler. On any other
+system the feature builds and does nothing.
+
+```sh
+cargo build --release --features foundation-models
+```
+
 ### Install to your PATH
 
 ```sh
@@ -910,8 +919,8 @@ that compiled left them, so a half-typed `(` does not clear the screen.
 | `Up` / `Down` | Scroll the file a line | `filtereditor.scroll.up` / `filtereditor.scroll.down` |
 | `PageUp` / `PageDown` | Scroll the file a page | `filtereditor.page.up` / `filtereditor.page.down` |
 | `Enter` | Add the pattern as an including filter, or change the selected filter, and close | `filtereditor.commit` |
-| `Esc` | Close and change nothing; with a range open, close the range first | `filtereditor.cancel` |
-| `Tab` / `Shift-Tab` | Move the keys to the next / previous of the name, description, prompt, sense, pattern and lines | `filtereditor.focus` / `filtereditor.focus.prev` |
+| `Esc` | Close and change nothing; with a range open, close the range first; with a request running, cancel it first | `filtereditor.cancel` |
+| `Tab` / `Shift-Tab` | Move the keys to the next / previous of the name, description, prompt, sense, pattern, request and lines | `filtereditor.focus` / `filtereditor.focus.prev` |
 | `Space` / `Left` / `Right` | On the sense: the next / previous sense | — |
 | `i` / `c` / `x` | On the sense: include / context / exclude | — |
 | `+` | On the lines: the pattern must match the cursor line | `filtereditor.mark.match` |
@@ -922,6 +931,7 @@ that compiled left them, so a half-typed `(` does not clear the screen.
 | `n` / `N` | On the lines: go to the next / previous line the pattern matches that has no mark | `filtereditor.unmarked.next` / `filtereditor.unmarked.prev` |
 | `u` | On the lines: show only the lines the pattern matches and the marked lines, or every line again | `filtereditor.toggle.matchesonly` |
 | `Ctrl-z` / `Ctrl-y` | Go back / forward one version of the pattern | `filtereditor.undo` / `filtereditor.redo` |
+| `Ctrl-g` | With a model: move the keys to the request line | `filtereditor.request` |
 
 ##### The name, description, prompt and sense
 
@@ -1051,6 +1061,33 @@ Unlike a prompt, `Backspace` on an empty pattern does not close it. The
 editor takes every key while it is open, so `q` is typed rather than quitting.
 The scope is `filtereditor`, not `editor`, because `[editor]` is the external
 editor's.
+
+##### A pattern from a request
+
+On macOS 27 with Apple Intelligence on, a recon built with the
+`foundation-models` feature (see [From source](#from-source)) can write the
+pattern for you. The panel then has a **request** line under the pattern.
+`Ctrl-g` moves the keys to it, and it is also in the `Tab` ring between the
+pattern and the lines. Type what you want, in plain language — `the timeout
+errors, but not the DEMO runs` — and press `Enter`.
+
+- The request runs in the background. The editor keeps working, and the
+  status row shows `asking the model, 2 s · Esc cancels`. `Esc` cancels the
+  request; a reply that comes after the cancel changes nothing.
+- The model receives the rules of the pattern language, the filter's
+  prompt, the marked lines, a few other lines of the file and your request.
+  It never receives the description.
+- The model's pattern goes in the pattern field as a new version, and its
+  explanation shows under the request line. `Ctrl-z` goes back to the
+  pattern from before, also an empty one, and works on the request line
+  too. The request line is cleared for the next request.
+- The pattern is not checked against the marks before it is shown: look at
+  the failed checks, and change the pattern or ask again.
+
+Without the feature, on Linux, or when the model is not ready (Apple
+Intelligence off, or the model still downloading), there is no request
+line, no error, and everything else in the editor works as before. recon
+asks whether the model is ready each time the editor opens.
 
 #### Definition filters
 
