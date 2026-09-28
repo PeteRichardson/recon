@@ -18,16 +18,27 @@ use crate::filter::Verdict;
 use crate::fixtures::{fixture_dir, fixture_file, fixture_path as fixture_dir_path};
 use crate::panes::PaneSet;
 use clipboard::double::RecordingClipboard;
-use crossterm::event::{KeyEvent, MouseButton, MouseEvent, MouseEventKind};
+use crossterm::event::{
+    self, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+};
 use editor::double::RecordingLauncher;
 use ratatui::layout::Margin;
-use ratatui::prelude::Buffer;
+use ratatui::prelude::{Buffer, Color, Style, Widget};
 use ratatui::style::Modifier; // the tests assert on Modifier::DIM
 use scan::double::RecordingScanner;
 use std::fmt::Write as _;
 use std::fs;
 use std::rc::Rc;
 use std::sync::mpsc::Sender;
+use std::time::Duration;
+use unicode_width::UnicodeWidthStr;
+// What `App` keeps in its topic modules, and the tests read.
+use super::focus::LAST_PANE;
+use super::prompt::{HISTORY_CAP, INVALID_PATTERN, PromptKind};
+use super::search::{WRAPPED_TO_BOTTOM, WRAPPED_TO_TOP};
+use super::viewport::Step;
+use crate::widgets::Action;
+use crate::widgets::explorer::Match;
 
 /// `n` newline-terminated lines, `line 0` through `line n-1`.
 ///

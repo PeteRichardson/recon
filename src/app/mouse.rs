@@ -11,8 +11,9 @@ use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::{Margin, Position, Rect};
 use std::time::Instant;
 
+use super::App;
 use super::layout::DOUBLE_CLICK;
-use super::{App, PromptKind, SearchPrompt};
+use super::prompt::{PromptKind, SearchPrompt};
 use crate::widgets::{Focus, filterlist};
 
 impl App<'_> {
