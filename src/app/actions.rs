@@ -428,7 +428,8 @@ impl App<'_> {
             | A::FilterEditorUnmarkedPrev
             | A::FilterEditorToggleMatchesOnly
             | A::FilterEditorUndo
-            | A::FilterEditorRedo => {
+            | A::FilterEditorRedo
+            | A::FilterEditorRequest => {
                 debug_assert!(
                     false,
                     "{action:?} resolves in its own modal dispatch, never through `perform`"

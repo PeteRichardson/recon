@@ -108,7 +108,9 @@ fn main() -> Result<ExitCode> {
         recon::headless::run(&config)?
     } else {
         let terminal = init_terminal()?;
-        let exit = App::new(&config).run(terminal)?;
+        let exit = App::new(&config)
+            .with_model(recon::generate::system())
+            .run(terminal)?;
         restore_terminal()?;
         exit
     };

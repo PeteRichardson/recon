@@ -22,7 +22,10 @@ impl App<'_> {
     pub(super) fn handle_events(&mut self) -> Result<bool> {
         // Here rather than in `handle_event`: an editor exits on its own
         // schedule, so nothing the user does is guaranteed to arrive after it.
-        let drained = self.drain_editor_outcomes() | self.drain_scan_results() | self.poll_stamps();
+        let drained = self.drain_editor_outcomes()
+            | self.drain_scan_results()
+            | self.poll_stamps()
+            | self.drain_request();
         let timeout = Duration::from_secs_f32(1.0 / 60.0);
         if event::poll(timeout)? {
             let event = event::read()?;

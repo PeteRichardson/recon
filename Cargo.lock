@@ -664,6 +664,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "fm-rs"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f30041f6093aab2b756845e7677854bdf5aa8a35ace72d8219c204f4fd98c195"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "fnv"
 version = "1.0.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1548,6 +1558,7 @@ dependencies = [
  "color-eyre",
  "crossterm 0.29.0",
  "env_logger",
+ "fm-rs",
  "jiff",
  "log",
  "ratatui",

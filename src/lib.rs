@@ -21,6 +21,7 @@ pub mod filter;
 pub mod filtersets;
 #[cfg(test)]
 pub(crate) mod fixtures;
+pub mod generate;
 pub mod headless;
 pub mod help;
 pub mod keymap;

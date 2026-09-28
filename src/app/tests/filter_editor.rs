@@ -1892,3 +1892,302 @@ fn big_s_writes_the_examples_and_a_restart_shows_them_again() {
     open_selected(&mut app);
     assert_eq!(marks(&app), [(0, Mark::MustMatch), (1, Mark::MustNotMatch)]);
 }
+
+// ---- a pattern from a request (#319) --------------------------------------
+
+use crate::app::filter_editor::NO_REQUEST;
+use crate::generate::{Cancel, Candidate, Model};
+use std::sync::mpsc::{Receiver, channel};
+use std::sync::{Arc, Mutex};
+
+/// A model double. It keeps each text it is sent, waits for the test to
+/// release it, answers `reply`, and says it is done.
+struct FakeModel {
+    available: bool,
+    reply: Result<Candidate, String>,
+    sent: Arc<Mutex<Vec<String>>>,
+    release: Mutex<Receiver<()>>,
+    done: Mutex<Sender<()>>,
+}
+
+impl Model for FakeModel {
+    fn available(&self) -> bool {
+        self.available
+    }
+
+    fn generate(&self, text: &str, _cancel: &Cancel) -> Result<Candidate, String> {
+        self.sent.lock().expect("sent").push(text.to_string());
+        let _ = self.release.lock().expect("release").recv();
+        let _ = self.done.lock().expect("done").send(());
+        self.reply.clone()
+    }
+}
+
+/// The test's side of a `FakeModel`.
+struct Harness {
+    sent: Arc<Mutex<Vec<String>>>,
+    release: Sender<()>,
+    done: Receiver<()>,
+}
+
+impl Harness {
+    /// Let the model answer, and wait until it has.
+    fn answer(&self) {
+        self.release.send(()).expect("the model thread");
+        self.done
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the model did not answer");
+    }
+
+    fn sent(&self) -> Vec<String> {
+        self.sent.lock().expect("sent").clone()
+    }
+}
+
+fn candidate(pattern: &str) -> Candidate {
+    Candidate {
+        pattern: pattern.to_string(),
+        explanation: format!("lines with {pattern}"),
+    }
+}
+
+/// An app over `BODY` with a model that answers `reply`.
+fn app_with_model(
+    name: &str,
+    available: bool,
+    reply: Result<Candidate, String>,
+) -> (App<'static>, Harness) {
+    let (release_tx, release_rx) = channel();
+    let (done_tx, done_rx) = channel();
+    let sent = Arc::new(Mutex::new(Vec::new()));
+    let model = FakeModel {
+        available,
+        reply,
+        sent: Arc::clone(&sent),
+        release: Mutex::new(release_rx),
+        done: Mutex::new(done_tx),
+    };
+    let app = app_over_file(name, BODY).with_model(Some(Arc::new(model)));
+    let harness = Harness {
+        sent,
+        release: release_tx,
+        done: done_rx,
+    };
+    (app, harness)
+}
+
+/// Take the reply the model gave. The worker thread sends it just after
+/// the model returns, so it is waited for, not assumed.
+fn take_reply(app: &mut App) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while editor(app).running.is_some() {
+        assert!(std::time::Instant::now() < deadline, "no reply to take");
+        app.drain_request();
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
+/// `Ctrl-g`, the request, and Enter.
+fn ask(app: &mut App, request: &str) {
+    ctrl(app, KeyCode::Char('g'));
+    typed(app, request);
+    key(app, KeyCode::Enter);
+}
+
+#[test]
+fn without_a_model_there_is_no_request_line() {
+    let mut app = app_over_file("fe_no_model", BODY);
+    open_editor(&mut app);
+    ctrl(&mut app, KeyCode::Char('g'));
+    assert_eq!(editor(&app).focus, EditorFocus::Pattern);
+    key(&mut app, KeyCode::Tab);
+    assert_eq!(editor(&app).focus, EditorFocus::Lines);
+    let screen = rendered(&mut app);
+    assert!(!screen.contains("request:"), "{screen}");
+}
+
+/// A build with the model whose model cannot take a request now is the
+/// same as a build without one, and says nothing about it.
+#[test]
+fn a_model_that_is_not_available_shows_no_request_line_and_no_error() {
+    let (mut app, _harness) = app_with_model("fe_unavailable", false, Ok(candidate("x")));
+    open_editor(&mut app);
+    ctrl(&mut app, KeyCode::Char('g'));
+    assert_eq!(editor(&app).focus, EditorFocus::Pattern);
+    let screen = rendered(&mut app);
+    assert!(!screen.contains("request:"), "{screen}");
+    assert!(editor(&app).error.is_none());
+    assert!(app.status_message.is_none());
+}
+
+#[test]
+fn a_request_gives_the_models_pattern_and_explanation() {
+    let (mut app, harness) = app_with_model("fe_request", true, Ok(candidate("ERROR")));
+    open_editor(&mut app);
+    let screen = rendered(&mut app);
+    assert!(screen.contains("request:"), "{screen}");
+
+    ask(&mut app, "the errors");
+    assert!(editor(&app).running.is_some());
+    assert!(
+        status_line(&mut app).contains("asking the model"),
+        "{}",
+        status_line(&mut app)
+    );
+    // The UI works while the model thinks.
+    assert!(!app.drain_request() || editor(&app).running.is_some());
+    key(&mut app, KeyCode::Tab);
+    assert_eq!(editor(&app).focus, EditorFocus::Lines);
+    key(&mut app, KeyCode::Down);
+    assert_eq!(editor(&app).cursor, 1);
+
+    harness.answer();
+    take_reply(&mut app);
+    let editor = editor(&app);
+    assert_eq!(editor.field.pattern, "ERROR");
+    assert_eq!(editor.matches, 2);
+    assert_eq!(editor.explanation.as_deref(), Some("lines with ERROR"));
+    assert_eq!(
+        editor.request.pattern, "",
+        "the request line was not cleared"
+    );
+    let screen = rendered(&mut app);
+    assert!(screen.contains("lines with ERROR"), "{screen}");
+    assert!(!status_line(&mut app).contains("asking the model"));
+}
+
+#[test]
+fn esc_cancels_a_request_and_its_late_reply_changes_nothing() {
+    let (mut app, harness) = app_with_model("fe_cancel", true, Ok(candidate("ERROR")));
+    open_editor(&mut app);
+    typed(&mut app, "INFO");
+    ask(&mut app, "the errors");
+
+    key(&mut app, KeyCode::Esc);
+    assert!(app.filter_editor.is_some(), "Esc closed the editor");
+    assert!(editor(&app).running.is_none());
+
+    harness.answer();
+    // Time for the late reply to be sent, were there anywhere to send it.
+    std::thread::sleep(Duration::from_millis(20));
+    assert!(!app.drain_request());
+    assert_eq!(editor(&app).field.pattern, "INFO");
+    assert!(editor(&app).explanation.is_none());
+
+    key(&mut app, KeyCode::Esc);
+    assert!(
+        app.filter_editor.is_none(),
+        "a second Esc closes the editor"
+    );
+}
+
+/// The description is for people only (#317): the text the model gets has
+/// the prompt, the marks, other lines and the request, and never it.
+#[test]
+fn the_description_is_never_sent_to_the_model() {
+    let (mut app, harness) = app_with_model("fe_description", true, Ok(candidate("ERROR")));
+    open_editor(&mut app);
+    for _ in 0..3 {
+        key(&mut app, KeyCode::BackTab);
+    }
+    assert_eq!(editor(&app).focus, EditorFocus::Description);
+    typed(&mut app, "SECRET REASON");
+    key(&mut app, KeyCode::Tab);
+    typed(&mut app, "timeouts");
+    // Mark `INFO timeout` must-not-match: past the sense, the pattern and
+    // the request line to the lines.
+    for _ in 0..4 {
+        key(&mut app, KeyCode::Tab);
+    }
+    assert_eq!(editor(&app).focus, EditorFocus::Lines);
+    for _ in 0..3 {
+        key(&mut app, KeyCode::Down);
+    }
+    key(&mut app, KeyCode::Char('-'));
+
+    ask(&mut app, "only the errors");
+    harness.answer();
+    take_reply(&mut app);
+
+    let sent = harness.sent();
+    assert_eq!(sent.len(), 1);
+    let text = &sent[0];
+    assert!(!text.contains("SECRET"), "the description was sent: {text}");
+    assert!(!crate::generate::INSTRUCTIONS.contains("SECRET"));
+    assert!(text.contains("timeouts"), "no prompt: {text}");
+    assert!(
+        text.contains("must not match:\nINFO timeout"),
+        "no mark: {text}"
+    );
+    assert!(text.contains("Request: only the errors"), "{text}");
+}
+
+#[test]
+fn undo_goes_back_to_the_pattern_before_the_models() {
+    let (mut app, harness) = app_with_model("fe_undo_model", true, Ok(candidate("ERROR")));
+    open_editor(&mut app);
+    typed(&mut app, "INFO");
+    ask(&mut app, "the errors");
+    harness.answer();
+    take_reply(&mut app);
+    assert_eq!(editor(&app).field.pattern, "ERROR");
+
+    ctrl(&mut app, KeyCode::Char('z'));
+    assert_eq!(editor(&app).field.pattern, "INFO");
+    assert_eq!(editor(&app).matches, 2);
+    ctrl(&mut app, KeyCode::Char('y'));
+    assert_eq!(editor(&app).field.pattern, "ERROR");
+}
+
+#[test]
+fn undo_after_a_first_pattern_from_the_model_empties_the_field() {
+    let (mut app, harness) = app_with_model("fe_undo_empty", true, Ok(candidate("ERROR")));
+    open_editor(&mut app);
+    ask(&mut app, "the errors");
+    harness.answer();
+    take_reply(&mut app);
+
+    ctrl(&mut app, KeyCode::Char('z'));
+    assert_eq!(editor(&app).field.pattern, "");
+    assert!(editor(&app).regex.is_none());
+}
+
+#[test]
+fn enter_with_no_request_sends_nothing() {
+    let (mut app, harness) = app_with_model("fe_empty_request", true, Ok(candidate("ERROR")));
+    open_editor(&mut app);
+    ask(&mut app, "  ");
+    assert!(editor(&app).running.is_none());
+    assert_eq!(editor(&app).error.as_deref(), Some(NO_REQUEST));
+    assert!(harness.sent().is_empty());
+}
+
+#[test]
+fn a_models_error_leaves_the_pattern_and_says_why() {
+    let (mut app, harness) =
+        app_with_model("fe_model_error", true, Err("the model is busy".to_string()));
+    open_editor(&mut app);
+    typed(&mut app, "INFO");
+    ask(&mut app, "the errors");
+    harness.answer();
+    take_reply(&mut app);
+    assert_eq!(editor(&app).field.pattern, "INFO");
+    let error = editor(&app).error.clone().unwrap_or_default();
+    assert!(error.contains("the model is busy"), "{error}");
+}
+
+#[test]
+fn closing_the_editor_cancels_the_request() {
+    let (mut app, harness) = app_with_model("fe_close_cancel", true, Ok(candidate("ERROR")));
+    open_editor(&mut app);
+    typed(&mut app, "INFO");
+    ask(&mut app, "the errors");
+    key(&mut app, KeyCode::BackTab);
+    key(&mut app, KeyCode::Enter);
+    assert!(app.filter_editor.is_none());
+    harness.answer();
+    // Time for the late reply to be sent, were there anywhere to send it.
+    std::thread::sleep(Duration::from_millis(20));
+    assert!(!app.drain_request());
+    assert_eq!(app.filters.len(), 1);
+}
