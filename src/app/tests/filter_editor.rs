@@ -723,3 +723,241 @@ fn on_the_lines_the_arrows_move_the_cursor() {
     assert_eq!(editor.cursor, page + 2);
     assert_eq!(editor.top, 3, "the screen did not follow the cursor");
 }
+
+// ---- jumps and matches only (#315) ---------------------------------------
+
+/// `ERROR timeout` +, `INFO ok` -, `ERROR disk` +, `INFO timeout` - under
+/// `timeout`: the first two checks pass and the last two fail. The cursor
+/// ends on line 0 and the keys on the lines.
+fn app_with_four_checks(name: &str) -> App<'static> {
+    let mut app = app_over_file(name, BODY);
+    open_editor_from_the_filter_pane(&mut app);
+    key(&mut app, KeyCode::Tab);
+    for mark in ['+', '-', '+', '-'] {
+        key(&mut app, KeyCode::Char(mark));
+        key(&mut app, KeyCode::Down);
+    }
+    for _ in 0..4 {
+        key(&mut app, KeyCode::Up);
+    }
+    key(&mut app, KeyCode::Tab);
+    typed(&mut app, "timeout");
+    key(&mut app, KeyCode::Tab);
+    assert_eq!(editor(&app).failures, 2, "sanity: two checks fail");
+    assert_eq!(editor(&app).cursor, 0);
+    app
+}
+
+#[test]
+fn f_and_big_f_go_to_each_failed_check_and_say_when_there_are_no_more() {
+    let mut app = app_with_four_checks("jump_failures");
+
+    key(&mut app, KeyCode::Char('f'));
+    assert_eq!(editor(&app).cursor, 2);
+    key(&mut app, KeyCode::Char('f'));
+    assert_eq!(editor(&app).cursor, 3);
+    key(&mut app, KeyCode::Char('f'));
+    assert_eq!(editor(&app).cursor, 3, "the cursor moved past the last");
+    assert_eq!(message(&app), Some("no failed check below"));
+
+    key(&mut app, KeyCode::Char('F'));
+    assert_eq!(editor(&app).cursor, 2);
+    assert_eq!(message(&app), None, "the message outlived its key");
+    key(&mut app, KeyCode::Char('F'));
+    assert_eq!(editor(&app).cursor, 2, "a passed check stopped the jump");
+    assert_eq!(message(&app), Some("no failed check above"));
+}
+
+#[test]
+fn n_and_big_n_do_not_stop_on_a_marked_line() {
+    let mut app = app_over_file("jump_unmarked", BODY);
+    open_editor_from_the_filter_pane(&mut app);
+    typed(&mut app, "ERROR|INFO");
+    key(&mut app, KeyCode::Tab);
+    key(&mut app, KeyCode::Down);
+    key(&mut app, KeyCode::Char('+'));
+    key(&mut app, KeyCode::Up);
+
+    key(&mut app, KeyCode::Char('n'));
+    assert_eq!(
+        editor(&app).cursor,
+        2,
+        "the jump stopped on the marked line"
+    );
+    key(&mut app, KeyCode::Char('n'));
+    assert_eq!(editor(&app).cursor, 3);
+    key(&mut app, KeyCode::Char('n'));
+    assert_eq!(editor(&app).cursor, 3);
+    assert_eq!(message(&app), Some("no unmarked match below"));
+
+    key(&mut app, KeyCode::Char('N'));
+    key(&mut app, KeyCode::Char('N'));
+    assert_eq!(
+        editor(&app).cursor,
+        0,
+        "the jump stopped on the marked line"
+    );
+    key(&mut app, KeyCode::Char('N'));
+    assert_eq!(message(&app), Some("no unmarked match above"));
+}
+
+/// A line the pattern does not match is not an unmarked match.
+#[test]
+fn n_skips_a_line_the_pattern_misses() {
+    let mut app = app_over_file("jump_misses", BODY);
+    open_editor_from_the_filter_pane(&mut app);
+    typed(&mut app, "timeout");
+    key(&mut app, KeyCode::Tab);
+    key(&mut app, KeyCode::Char('n'));
+    assert_eq!(editor(&app).cursor, 3);
+}
+
+/// In the pattern, the jump keys and `u` are pattern characters.
+#[test]
+fn the_jump_keys_are_typed_in_the_pattern() {
+    let mut app = app_with_four_checks("jump_typed");
+    key(&mut app, KeyCode::Tab);
+    typed(&mut app, "|fFnNu");
+    let editor = editor(&app);
+    assert_eq!(editor.field.pattern, "timeout|fFnNu");
+    assert_eq!(editor.cursor, 0);
+    assert!(!editor.matches_only);
+}
+
+const WORDS: &str = "alpha match\nbravo\ncharlie\ndelta match\necho\n";
+
+/// `match` under `WORDS`, with `bravo` marked must-match (a failed check),
+/// and the keys on the lines at line 0.
+fn app_over_words(name: &str) -> App<'static> {
+    let mut app = app_over_file(name, WORDS);
+    open_editor_from_the_filter_pane(&mut app);
+    typed(&mut app, "match");
+    key(&mut app, KeyCode::Tab);
+    key(&mut app, KeyCode::Down);
+    key(&mut app, KeyCode::Char('+'));
+    key(&mut app, KeyCode::Up);
+    app
+}
+
+#[test]
+fn u_shows_only_the_matched_and_the_marked_lines() {
+    let mut app = app_over_words("matches_only");
+    key(&mut app, KeyCode::Char('u'));
+
+    let screen = rendered(&mut app);
+    for shown in ["alpha match", "bravo", "delta match"] {
+        assert!(screen.contains(shown), "{shown} is hidden:\n{screen}");
+    }
+    assert!(!screen.contains("charlie"), "charlie is drawn:\n{screen}");
+    assert_eq!(editor(&app).rows(), 3, "echo is not hidden");
+    assert!(
+        screen.contains(" + bravo"),
+        "the failed check is not drawn as one:\n{screen}"
+    );
+    assert_eq!(
+        status_line(&mut app),
+        "2 of 5 lines match · 1 check fails · matches only"
+    );
+
+    key(&mut app, KeyCode::Char('u'));
+    assert!(rendered(&mut app).contains("charlie"));
+    assert_eq!(editor(&app).rows(), 5);
+    assert_eq!(status_line(&mut app), "2 of 5 lines match · 1 check fails");
+}
+
+/// The arrows step over a hidden line, and a range marks only the lines
+/// drawn in it.
+#[test]
+fn with_matches_only_the_keys_act_on_the_lines_drawn() {
+    let mut app = app_over_words("matches_only_keys");
+    key(&mut app, KeyCode::Char('u'));
+    key(&mut app, KeyCode::Down);
+    key(&mut app, KeyCode::Down);
+    assert_eq!(
+        editor(&app).cursor,
+        3,
+        "the cursor stopped on a hidden line"
+    );
+
+    key(&mut app, KeyCode::Char('V'));
+    key(&mut app, KeyCode::Up);
+    key(&mut app, KeyCode::Up);
+    key(&mut app, KeyCode::Char('-'));
+    assert_eq!(
+        marks(&app),
+        [
+            (0, Mark::MustNotMatch),
+            (1, Mark::MustNotMatch),
+            (3, Mark::MustNotMatch)
+        ],
+        "a hidden line in the range got a mark"
+    );
+}
+
+/// A mark removed from a line the pattern misses hides the line, and the
+/// cursor goes to the next line drawn.
+#[test]
+fn a_line_that_loses_its_mark_is_hidden() {
+    let mut app = app_over_words("matches_only_unmark");
+    key(&mut app, KeyCode::Char('u'));
+    key(&mut app, KeyCode::Down);
+    key(&mut app, KeyCode::Char('='));
+
+    assert!(!rendered(&mut app).contains("bravo"));
+    assert_eq!(editor(&app).cursor, 3);
+}
+
+/// With no pattern nothing is highlighted, so matches only hides nothing.
+#[test]
+fn matches_only_with_no_pattern_shows_every_line() {
+    let mut app = app_over_file("matches_only_empty", WORDS);
+    open_editor_from_the_filter_pane(&mut app);
+    key(&mut app, KeyCode::Tab);
+    key(&mut app, KeyCode::Char('u'));
+    assert!(rendered(&mut app).contains("charlie"));
+    assert_eq!(status_line(&mut app), "5 lines · matches only");
+}
+
+/// The editor's `u` is its own: the main window's hide mode, and all it
+/// draws, are as they were when the editor opened.
+#[test]
+fn closing_the_editor_leaves_the_main_window_as_it_was() {
+    let mut app = app_over_file("matches_only_close", WORDS);
+    open_editor_from_the_filter_pane(&mut app);
+    key(&mut app, KeyCode::Esc);
+    for hide in [false, true] {
+        if hide {
+            key(&mut app, KeyCode::Char('u'));
+        }
+        let before = rendered(&mut app);
+
+        open_editor(&mut app);
+        typed(&mut app, "match");
+        key(&mut app, KeyCode::Tab);
+        key(&mut app, KeyCode::Char('u'));
+        key(&mut app, KeyCode::Char('n'));
+        key(&mut app, KeyCode::Esc);
+
+        assert!(app.filter_editor.is_none());
+        assert_eq!(rendered(&mut app), before, "hide mode {hide}");
+    }
+}
+
+#[test]
+fn the_help_overlay_shows_the_jump_keys() {
+    let named = |name: &str| {
+        crate::help::KEYMAP
+            .iter()
+            .flat_map(|section| section.bindings)
+            .any(|binding| binding.names.contains(&name))
+    };
+    for name in [
+        "filtereditor.failure.next",
+        "filtereditor.failure.prev",
+        "filtereditor.unmarked.next",
+        "filtereditor.unmarked.prev",
+        "filtereditor.toggle.matchesonly",
+    ] {
+        assert!(named(name), "{name} has no row in the help overlay");
+    }
+}

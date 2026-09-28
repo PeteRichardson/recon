@@ -420,7 +420,12 @@ impl App<'_> {
             | A::FilterEditorMarkMatch
             | A::FilterEditorMarkNoMatch
             | A::FilterEditorMarkClear
-            | A::FilterEditorVisualLine => {
+            | A::FilterEditorVisualLine
+            | A::FilterEditorFailureNext
+            | A::FilterEditorFailurePrev
+            | A::FilterEditorUnmarkedNext
+            | A::FilterEditorUnmarkedPrev
+            | A::FilterEditorToggleMatchesOnly => {
                 debug_assert!(
                     false,
                     "{action:?} resolves in its own modal dispatch, never through `perform`"

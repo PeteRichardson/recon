@@ -12,6 +12,12 @@
 //! `+` and `-` mark a line that the pattern must match or must not match
 //! (#314). Each marked line is a check that passes or fails on each key typed
 //! in the pattern. The marks live only while the editor is open.
+//!
+//! On the lines, `f` and `F` go to the next and previous failed check, `n`
+//! and `N` to the next and previous unmarked match, and `u` shows only the
+//! matched and the marked lines (#315). The editor draws its own lines, so
+//! `u` here is hide mode for the editor alone: the main window's hide mode
+//! does not change.
 
 use super::App;
 use super::prompt::SearchPrompt;
@@ -96,6 +102,29 @@ pub(super) struct FilterEditor {
     /// Set when the cursor moved and the next render must scroll it into
     /// view. The render knows the page height; a key does not.
     pub(super) reveal: bool,
+    /// `u` (#315): show only the lines the pattern matches and the marked
+    /// lines.
+    pub(super) matches_only: bool,
+    /// The lines drawn, by index into `lines`, in file order: `None` when
+    /// every line is drawn. `top` and the page keys count in these rows;
+    /// `cursor` and `marks` stay line indexes.
+    shown: Option<Vec<usize>>,
+}
+
+/// Which way a jump key looks from the cursor line (#315).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Direction {
+    Down,
+    Up,
+}
+
+/// What a jump key looks for (#315).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Target {
+    /// A marked line the pattern gets wrong.
+    Failure,
+    /// A line the pattern matches that has no mark.
+    Unmarked,
 }
 
 impl FilterEditor {
@@ -117,6 +146,8 @@ impl FilterEditor {
             marks: BTreeMap::new(),
             failures: 0,
             reveal: false,
+            matches_only: false,
+            shown: None,
         }
     }
 
@@ -149,7 +180,7 @@ impl FilterEditor {
             self.regex = None;
             self.error = None;
             self.matches = 0;
-            self.count_failures();
+            self.refresh();
             return;
         }
         match Regex::new(pattern) {
@@ -161,7 +192,7 @@ impl FilterEditor {
                     .count();
                 self.regex = Some(regex);
                 self.error = None;
-                self.count_failures();
+                self.refresh();
             }
             Err(error) => self.error = Some(error_line(&error)),
         }
@@ -187,28 +218,130 @@ impl FilterEditor {
         Some(Check { mark, passes })
     }
 
-    /// Count the checks the pattern fails, after the pattern or a mark
-    /// changed.
-    fn count_failures(&mut self) {
+    /// Count the checks the pattern fails, and work out again which lines
+    /// are drawn, after the pattern, a mark or `matches_only` changed.
+    fn refresh(&mut self) {
         self.failures = self
             .marks
             .keys()
             .filter(|&&index| self.check(index).is_some_and(|check| !check.passes))
             .count();
+        self.refresh_shown();
     }
 
-    /// Put `mark` on the cursor line, or on every line of the visual range
-    /// and close the range. `None` removes the mark.
+    /// Work out which lines `matches_only` leaves. With no pattern every
+    /// line is drawn, as no line is highlighted to keep.
+    ///
+    /// The first line drawn stays first where it is still drawn, and the
+    /// cursor line, once hidden, moves to the next line drawn.
+    fn refresh_shown(&mut self) {
+        let first = self.line_at(self.top);
+        self.shown = (self.matches_only && self.regex.is_some()).then(|| {
+            (0..self.lines.len())
+                .filter(|&index| self.marks.contains_key(&index) || self.matches_line(index))
+                .collect()
+        });
+        self.top = first.map_or(0, |line| self.row_of(line));
+        if !self.is_shown(self.cursor)
+            && let Some(line) = self.line_at(self.row_of(self.cursor))
+        {
+            self.cursor = line;
+        }
+    }
+
+    /// How many lines are drawn.
+    pub(super) fn rows(&self) -> usize {
+        self.shown.as_ref().map_or(self.lines.len(), Vec::len)
+    }
+
+    /// The line drawn at `row`, or `None` past the last one.
+    pub(super) fn line_at(&self, row: usize) -> Option<usize> {
+        match &self.shown {
+            None => (row < self.lines.len()).then_some(row),
+            Some(shown) => shown.get(row).copied(),
+        }
+    }
+
+    /// The row of `line`, or of the first line drawn after it when it is
+    /// hidden: the last row when none is.
+    fn row_of(&self, line: usize) -> usize {
+        match &self.shown {
+            None => line,
+            Some(shown) => shown
+                .partition_point(|&drawn| drawn < line)
+                .min(shown.len().saturating_sub(1)),
+        }
+    }
+
+    /// Whether line `index` is drawn.
+    fn is_shown(&self, index: usize) -> bool {
+        self.shown
+            .as_ref()
+            .is_none_or(|shown| shown.binary_search(&index).is_ok())
+    }
+
+    /// Put `mark` on the cursor line, or on every line drawn in the visual
+    /// range and close the range. `None` removes the mark.
     fn set_mark(&mut self, mark: Option<Mark>) {
         let (first, last) = self.range();
-        for index in first..=last {
+        let drawn: Vec<usize> = (first..=last)
+            .filter(|&index| self.is_shown(index))
+            .collect();
+        for index in drawn {
             match mark {
                 Some(mark) => self.marks.insert(index, mark),
                 None => self.marks.remove(&index),
             };
         }
         self.anchor = None;
-        self.count_failures();
+        self.refresh();
+    }
+
+    /// `u`: show only the matched and the marked lines, or every line again.
+    fn toggle_matches_only(&mut self) {
+        self.matches_only = !self.matches_only;
+        self.refresh_shown();
+        self.reveal = true;
+    }
+
+    /// `f`, `F`, `n` and `N`: move the cursor line to the nearest `target`
+    /// line in `direction`, or say why it did not move. A jump does not
+    /// wrap: "no more" is what the user needs to know when all the lines
+    /// are examined.
+    fn jump(&mut self, target: Target, direction: Direction) -> Result<(), &'static str> {
+        let found = match target {
+            Target::Failure => {
+                let failed = |&(&index, _): &(&usize, &Mark)| {
+                    self.check(index).is_some_and(|check| !check.passes)
+                };
+                match direction {
+                    Direction::Down => self.marks.range(self.cursor + 1..).find(failed),
+                    Direction::Up => self.marks.range(..self.cursor).rev().find(failed),
+                }
+                .map(|(&index, _)| index)
+            }
+            Target::Unmarked => {
+                let unmarked =
+                    |&index: &usize| !self.marks.contains_key(&index) && self.matches_line(index);
+                match direction {
+                    Direction::Down => (self.cursor + 1..self.lines.len()).find(unmarked),
+                    Direction::Up => (0..self.cursor).rev().find(unmarked),
+                }
+            }
+        };
+        let Some(line) = found else {
+            return Err(match (target, direction) {
+                (Target::Failure, Direction::Down) => "no failed check below",
+                (Target::Failure, Direction::Up) => "no failed check above",
+                (Target::Unmarked, Direction::Down) => "no unmarked match below",
+                (Target::Unmarked, Direction::Up) => "no unmarked match above",
+            });
+        };
+        // A failed check is marked and an unmarked match matches, so the
+        // line is drawn in either mode.
+        self.cursor = line;
+        self.reveal = true;
+        Ok(())
     }
 
     /// The first and last line of the visual range, or the cursor line twice
@@ -218,9 +351,9 @@ impl FilterEditor {
         (anchor.min(self.cursor), anchor.max(self.cursor))
     }
 
-    /// Move the first line drawn by `delta` lines, kept inside the file.
+    /// Move the first row drawn by `delta` rows, kept inside the file.
     fn scroll(&mut self, delta: isize) {
-        let last = self.lines.len().saturating_sub(1);
+        let last = self.rows().saturating_sub(1);
         self.top = self.top.saturating_add_signed(delta).min(last);
     }
 
@@ -230,8 +363,14 @@ impl FilterEditor {
         match self.focus {
             EditorFocus::Pattern => self.scroll(delta),
             EditorFocus::Lines => {
-                let last = self.lines.len().saturating_sub(1);
-                self.cursor = self.cursor.saturating_add_signed(delta).min(last);
+                let last = self.rows().saturating_sub(1);
+                let row = self
+                    .row_of(self.cursor)
+                    .saturating_add_signed(delta)
+                    .min(last);
+                if let Some(line) = self.line_at(row) {
+                    self.cursor = line;
+                }
                 self.reveal = true;
             }
         }
@@ -244,8 +383,11 @@ impl FilterEditor {
     fn toggle_focus(&mut self) {
         self.focus = match self.focus {
             EditorFocus::Pattern => {
-                if self.cursor < self.top || self.cursor >= self.top + self.page {
-                    self.cursor = self.top;
+                let row = self.row_of(self.cursor);
+                if (row < self.top || row >= self.top + self.page)
+                    && let Some(line) = self.line_at(self.top)
+                {
+                    self.cursor = line;
                 }
                 EditorFocus::Lines
             }
@@ -261,16 +403,27 @@ impl FilterEditor {
         if !std::mem::take(&mut self.reveal) {
             return;
         }
-        if self.cursor < self.top {
-            self.top = self.cursor;
-        } else if self.cursor >= self.top + self.page {
-            self.top = self.cursor + 1 - self.page;
+        let row = self.row_of(self.cursor);
+        if row < self.top {
+            self.top = row;
+        } else if row >= self.top + self.page {
+            self.top = row + 1 - self.page;
         }
     }
 
-    /// What the status row shows: how many lines the pattern matches, and
-    /// how many checks it fails once a line is marked.
+    /// What the status row shows: how many lines the pattern matches, how
+    /// many checks it fails once a line is marked, and whether only the
+    /// matches are drawn.
     pub(super) fn status(&self) -> String {
+        let status = self.counts();
+        if self.matches_only {
+            format!("{status} · matches only")
+        } else {
+            status
+        }
+    }
+
+    fn counts(&self) -> String {
         let total = grouped(self.lines.len());
         let count = if self.regex.is_none() {
             format!("{total} lines")
@@ -348,7 +501,7 @@ impl App<'_> {
         editor.cursor = line;
         editor.reveal = true;
         editor.marks.insert(line, Mark::MustMatch);
-        editor.count_failures();
+        editor.refresh();
     }
 
     /// `f C`: open the filter editor on the filter at `index` (#313). A
@@ -398,6 +551,11 @@ impl App<'_> {
                             | A::FilterEditorMarkNoMatch
                             | A::FilterEditorMarkClear
                             | A::FilterEditorVisualLine
+                            | A::FilterEditorFailureNext
+                            | A::FilterEditorFailurePrev
+                            | A::FilterEditorUnmarkedNext
+                            | A::FilterEditorUnmarkedPrev
+                            | A::FilterEditorToggleMatchesOnly
                     )
             });
         if let Some(action) = action {
@@ -441,6 +599,21 @@ impl App<'_> {
                         None => Some(editor.cursor),
                     };
                 }),
+                A::FilterEditorFailureNext => {
+                    self.jump_in_filter_editor(Target::Failure, Direction::Down);
+                }
+                A::FilterEditorFailurePrev => {
+                    self.jump_in_filter_editor(Target::Failure, Direction::Up);
+                }
+                A::FilterEditorUnmarkedNext => {
+                    self.jump_in_filter_editor(Target::Unmarked, Direction::Down);
+                }
+                A::FilterEditorUnmarkedPrev => {
+                    self.jump_in_filter_editor(Target::Unmarked, Direction::Up);
+                }
+                A::FilterEditorToggleMatchesOnly => {
+                    self.edit_filter_editor(FilterEditor::toggle_matches_only);
+                }
                 // `resolve(Scope::FilterEditor, ..)` answers only with the arms
                 // above; matched rather than left to a panic, as in
                 // `handle_search_key`.
@@ -497,6 +670,18 @@ impl App<'_> {
     fn edit_filter_editor(&mut self, edit: impl FnOnce(&mut FilterEditor)) {
         if let Some(editor) = self.filter_editor.as_mut() {
             edit(editor);
+        }
+    }
+
+    /// A jump key: move the cursor line, or say on the status row that
+    /// there is no more to go to.
+    fn jump_in_filter_editor(&mut self, target: Target, direction: Direction) {
+        let outcome = self
+            .filter_editor
+            .as_mut()
+            .map_or(Ok(()), |editor| editor.jump(target, direction));
+        if let Err(text) = outcome {
+            self.report(text, false);
         }
     }
 
