@@ -163,6 +163,8 @@ pub(crate) enum ActionId {
     GlobalEditorProject,
     GlobalEditorFile,
     GlobalReload,
+    /// Show the file as hex, or as text again (#242).
+    GlobalToggleHex,
     GlobalVisualChar,
     GlobalVisualLine,
     GlobalYank,
@@ -338,6 +340,7 @@ impl ActionId {
             Self::GlobalEditorProject => "global.editor.project",
             Self::GlobalEditorFile => "global.editor.file",
             Self::GlobalReload => "global.reload",
+            Self::GlobalToggleHex => "global.toggle.hex",
             Self::GlobalVisualChar => "global.visual.char",
             Self::GlobalVisualLine => "global.visual.line",
             Self::GlobalYank => "global.yank",
@@ -484,6 +487,9 @@ pub(crate) const DEFAULT: &[(Scope, &str, ActionId)] = &[
     (Scope::Global, "o", ActionId::GlobalEditorProject),
     (Scope::Global, "O", ActionId::GlobalEditorFile),
     (Scope::Global, "r", ActionId::GlobalReload),
+    // Global, not `Scope::View`, so it works while the explorer steps
+    // through files: that is where a binary file is first met (#242).
+    (Scope::Global, "-", ActionId::GlobalToggleHex),
     (Scope::Global, "v", ActionId::GlobalVisualChar),
     (Scope::Global, "V", ActionId::GlobalVisualLine),
     (Scope::Global, "y", ActionId::GlobalYank),
@@ -633,9 +639,9 @@ pub(crate) const DEFAULT: &[(Scope, &str, ActionId)] = &[
         ActionId::FilterEditorFocusPrev,
     ),
     (Scope::FilterEditor, "+", ActionId::FilterEditorMarkMatch),
-    // `-` is a `RESERVED` key, for the hex view in the file view. The
-    // filter editor takes every key while it is open, so the two can never
-    // meet, and #314 asks for `-` by name.
+    // `-` is also the hex view's key (#242). The filter editor takes every
+    // key while it is open, so the two can never meet, and #314 asks for `-`
+    // by name.
     (Scope::FilterEditor, "-", ActionId::FilterEditorMarkNoMatch),
     (Scope::FilterEditor, "=", ActionId::FilterEditorMarkClear),
     (Scope::FilterEditor, "V", ActionId::FilterEditorVisualLine),
@@ -667,12 +673,12 @@ pub(crate) const DEFAULT: &[(Scope, &str, ActionId)] = &[
 
 /// Keys 1.0 promises to 1.1, bound to nothing.
 ///
-/// The keymap reconciliation in #120 left six keys free, and two of them are
+/// The keymap reconciliation in #120 left six keys free, and two of them were
 /// spoken for. Recording them here and in the help overlay is what makes the
 /// promise real: a key 1.1 adds has to be a key 1.0 already said was taken,
-/// or a user who bound it loses it in an upgrade.
-pub(crate) const RESERVED: &[(&str, &str)] =
-    &[("-", "the hex view (#242)"), (":", "a command palette")];
+/// or a user who bound it loses it in an upgrade. `-` was the other one, and
+/// the hex view has it now (#242).
+pub(crate) const RESERVED: &[(&str, &str)] = &[(":", "a command palette")];
 
 /// Actions with no key in `DEFAULT`, each with the scope a `[keymap]` line
 /// binds it in (#300).
@@ -1910,22 +1916,22 @@ mod tests {
     #[test]
     fn binding_a_reserved_key_warns_and_obeys() {
         let mut bindings = std::collections::BTreeMap::new();
-        bindings.insert("global.quit".to_string(), vec!["-".to_string()]);
+        bindings.insert("global.quit".to_string(), vec![":".to_string()]);
         let overlay = crate::config::KeymapConfig { bindings };
 
         // A warning, not a refusal: it is the user's keyboard, and 1.0 only
         // promises that 1.1 will want the key back.
         let (keymap, warnings) = Keymap::new(&overlay).expect("a reserved key is allowed");
-        let dash = normalise(KeyEvent::new(KeyCode::Char('-'), KeyModifiers::empty()));
+        let colon = normalise(KeyEvent::new(KeyCode::Char(':'), KeyModifiers::empty()));
 
         assert_eq!(
-            keymap.resolve(Scope::Global, dash),
+            keymap.resolve(Scope::Global, colon),
             Some(ActionId::GlobalQuit)
         );
         assert_eq!(
             warnings,
             vec![
-                "global.quit binds '-', which is reserved for the hex view (#242); \
+                "global.quit binds ':', which is reserved for a command palette; \
                  a later release will want it back, but recon binds it anyway"
                     .to_string()
             ],
@@ -1946,7 +1952,7 @@ mod tests {
     #[test]
     fn a_two_scope_actions_reserved_key_is_one_hit_not_two() {
         let mut bindings = std::collections::BTreeMap::new();
-        bindings.insert("hit.next".to_string(), vec!["-".to_string()]);
+        bindings.insert("hit.next".to_string(), vec![":".to_string()]);
         let overlay = crate::config::KeymapConfig { bindings };
 
         // The same slice `Keymap::new` would read for this config line —
@@ -1954,7 +1960,7 @@ mod tests {
         let labels = &overlay.bindings["hit.next"];
         assert_eq!(
             reserved_hits(labels),
-            vec![("-", "the hex view (#242)")],
+            vec![(":", "a command palette")],
             "hit.next holds two scopes, but one config line must warn once"
         );
     }
@@ -1962,26 +1968,22 @@ mod tests {
     /// A range that covers a reserved key binds it, so it has to warn about
     /// it.
     ///
-    /// `reserved_hits` compared label text, and no range is spelled `-` or
-    /// `:`, so `'*-/'` took the hex view's key in silence — the one failure
+    /// `reserved_hits` compared label text, and no range is spelled `:`, so
+    /// `'5-<'` took the command palette's key in silence — the one failure
     /// `RESERVED` exists to prevent. The warning names the reserved key that
-    /// was found rather than the label written, because `'*-/'` is not a key.
+    /// was found rather than the label written, because `'5-<'` is not a key.
     #[test]
     fn a_range_covering_a_reserved_key_warns_about_that_key() {
-        // '*' through '/' covers '-'; '5' through '<' covers ':'.
-        assert_eq!(
-            reserved_hits(&["*-/".to_string()]),
-            vec![("-", "the hex view (#242)")],
-            "a range covering '-' binds it, so it must be reported as '-'"
-        );
+        // '5' through '<' covers ':'.
         assert_eq!(
             reserved_hits(&["5-<".to_string()]),
-            vec![(":", "a command palette")]
+            vec![(":", "a command palette")],
+            "a range covering ':' binds it, so it must be reported as ':'"
         );
         // And a line reaching one reserved key two ways is still one warning.
         assert_eq!(
-            reserved_hits(&["-".to_string(), "*-/".to_string()]),
-            vec![("-", "the hex view (#242)")]
+            reserved_hits(&[":".to_string(), "5-<".to_string()]),
+            vec![(":", "a command palette")]
         );
     }
 

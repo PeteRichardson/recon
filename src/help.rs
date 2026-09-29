@@ -520,13 +520,13 @@ pub const KEYMAP: &[Section] = &[
                 action: "Refresh from disk — rescan the listing, reload the file",
                 names: &["global.reload"],
             },
-            // `names: &[]`: reserved for 1.1 (#242), bound to nothing, so
-            // there is no action to name — see `keymap::RESERVED`.
             Binding {
                 keys: &["-"],
-                action: "Reserved — the hex view, in a later release",
-                names: &[],
+                action: "Show the file as hex, or as text",
+                names: &["global.toggle.hex"],
             },
+            // `names: &[]`: reserved for 1.1, bound to nothing, so there is
+            // no action to name — see `keymap::RESERVED`.
             Binding {
                 keys: &[":"],
                 action: "Reserved — a command palette, in a later release",
@@ -1817,16 +1817,12 @@ mod tests {
     }
 
     /// A row that names no action has nothing to look up, and its label is
-    /// the whole point of the row: the reserved keys (#242) are documented as
+    /// the whole point of the row: the reserved key (#242) is documented as
     /// taken and bound to nothing, and `printable` never was a key.
     #[test]
     fn a_row_that_names_no_action_keeps_its_literal_keys() {
         let rows = rows(&keymap(&[("global.reload", &["F5"])]));
 
-        assert_eq!(
-            keys_of(&rows, "Reserved — the hex view, in a later release"),
-            "-"
-        );
         assert_eq!(
             keys_of(&rows, "Reserved — a command palette, in a later release"),
             ":"
