@@ -1353,6 +1353,7 @@ fn f_big_c_shows_the_filters_fields_and_enter_changes_them() {
             description: Some("old".into()),
             prompt: Some("error lines".into()),
             examples: Vec::new(),
+            generated_from: None,
         },
     );
     select_row(&mut app, widgets::filterlist::Row::Filter(0));
@@ -2451,4 +2452,350 @@ fn the_help_says_the_number_of_tries() {
         .map(|binding| binding.action)
         .expect("a help row for the request line");
     assert!(action.contains(&format!("{ATTEMPTS} tries")), "{action}");
+}
+
+// ---- generated filters (#321) ---------------------------------------------
+
+use crate::app::filter_editor::{
+    GENERATED, Generated, NEEDS_EXAMPLES, NO_MODEL, NO_PROMPT, PATTERN_CHANGED, PROMPT_CHANGED,
+    PROMPT_CHANGED_NO_MODEL,
+};
+use crate::filter::generated_hash;
+use crate::widgets::filterlist::GENERATED_MARK;
+
+/// Scratch filter 0 is `ERROR`, generated from the prompt `error lines`,
+/// with `ERROR disk` must-match and `INFO timeout` must-not-match.
+fn make_generated(app: &mut App) {
+    app.filters.set_details(
+        0,
+        crate::filter::Details {
+            prompt: Some("error lines".into()),
+            examples: vec![example("ERROR disk", true), example("INFO timeout", false)],
+            generated_from: Some(generated_hash("error lines", "ERROR")),
+            ..crate::filter::Details::default()
+        },
+    );
+}
+
+fn app_with_generated(name: &str) -> App<'static> {
+    let mut app = app_with_two_filters(name);
+    make_generated(&mut app);
+    app
+}
+
+/// Shift-Tab from the pattern to the prompt.
+fn to_prompt(app: &mut App) {
+    key(app, KeyCode::BackTab);
+    key(app, KeyCode::BackTab);
+    assert_eq!(editor(app).focus, EditorFocus::Prompt);
+}
+
+/// A request with a prompt and a mark of each kind; the model's pattern
+/// and Enter make a generated filter. `S` writes `generated_from`, and a
+/// restart shows the filter as generated, in the pane and in the editor.
+#[test]
+fn a_generated_pattern_is_saved_with_generated_from_and_shown_after_a_restart() {
+    let path = save_fixture("generated_save");
+    let (mut app, harness) = app_with_model("generated_save_file", true, Ok(candidate("ERROR")));
+    app.save_path = Some(path.clone());
+    open_editor_from_the_filter_pane(&mut app);
+    to_prompt(&mut app);
+    typed(&mut app, "error lines");
+    key(&mut app, KeyCode::Tab);
+    key(&mut app, KeyCode::Tab);
+    ask(&mut app, "the errors");
+    harness.answer();
+    take_reply(&mut app);
+    assert_eq!(editor(&app).generated(), Generated::Yes);
+    assert!(rendered(&mut app).contains(GENERATED));
+    // `ERROR timeout` must match and `INFO ok` must not.
+    key(&mut app, KeyCode::Tab);
+    key(&mut app, KeyCode::Char('+'));
+    key(&mut app, KeyCode::Down);
+    key(&mut app, KeyCode::Char('-'));
+    key(&mut app, KeyCode::Enter);
+    assert!(app.filter_editor.is_none(), "{:?}", editor(&app).error);
+
+    let (_, filter) = app.filters.filters_in(0).next().expect("a scratch filter");
+    assert_eq!(
+        filter.generated_from,
+        Some(generated_hash("error lines", "ERROR"))
+    );
+    assert!(filter.is_generated());
+    let screen = rendered(&mut app);
+    assert!(
+        screen.contains(&format!("ERROR{GENERATED_MARK}")),
+        "{screen}"
+    );
+
+    key(&mut app, KeyCode::Char('S'));
+    // Before `definitions`, so it is set 1.
+    typed(&mut app, "ai");
+    key(&mut app, KeyCode::Enter);
+    let text = std::fs::read_to_string(&path).expect("written");
+    let hash = generated_hash("error lines", "ERROR");
+    assert!(
+        text.contains(&format!("pattern = 'ERROR'\ngenerated_from = \"{hash}\"\n")),
+        "{text}"
+    );
+
+    let sets = crate::filtersets::parse(&text, &path).expect("loads again");
+    let mut app = app_over_file("generated_restart", BODY);
+    app.filters = ActiveFilters::with_sets(None, &sets);
+    app.filters.set_enabled_set(1, true);
+    app.refresh_view();
+    let (index, filter) = app.filters.filters_in(1).next().expect("the saved filter");
+    assert!(filter.is_generated());
+    let screen = rendered(&mut app);
+    assert!(
+        screen.contains(&format!("ERROR{GENERATED_MARK}")),
+        "{screen}"
+    );
+    select_row(&mut app, widgets::filterlist::Row::Filter(index));
+    open_selected(&mut app);
+    assert_eq!(editor(&app).generated(), Generated::Yes);
+    assert!(rendered(&mut app).contains(GENERATED));
+}
+
+/// A change to the prompt or the pattern in the file, and the filter is
+/// an ordinary one on the next load (rule 3).
+#[test]
+fn a_prompt_or_pattern_changed_in_the_file_removes_the_marker() {
+    let hash = generated_hash("error lines", "ERROR");
+    let load = |prompt: &str, pattern: &str| {
+        let text = format!(
+            "[[sets.a.filters]]\nprompt = \"{prompt}\"\npattern = '{pattern}'\ngenerated_from = \"{hash}\"\n"
+        );
+        let sets = crate::filtersets::parse(&text, std::path::Path::new("f.toml")).expect("loads");
+        let filters = ActiveFilters::with_sets(None, &sets);
+        let (_, filter) = filters.filters_in(1).next().expect("the filter");
+        filter.is_generated()
+    };
+    assert!(load("error lines", "ERROR"), "the hash agrees");
+    assert!(!load("error lines!", "ERROR"), "the prompt changed");
+    assert!(!load("error lines", "ERROR|WARN"), "the pattern changed");
+}
+
+/// A hand edit of a generated pattern removes the generated state, and the
+/// editor asks about the prompt (rule 4).
+#[test]
+fn a_hand_edit_removes_the_marker_and_asks_about_the_prompt() {
+    let mut app = app_with_generated("generated_hand_edit");
+    let screen = rendered(&mut app);
+    assert!(
+        screen.contains(&format!("ERROR{GENERATED_MARK}")),
+        "{screen}"
+    );
+    select_row(&mut app, widgets::filterlist::Row::Filter(0));
+    open_selected(&mut app);
+    assert_eq!(editor(&app).generated(), Generated::Yes);
+
+    typed(&mut app, "|disk");
+    assert_eq!(editor(&app).generated(), Generated::PatternChanged);
+    let screen = rendered(&mut app);
+    assert!(screen.contains(PATTERN_CHANGED), "{screen}");
+    assert!(!screen.contains(GENERATED), "{screen}");
+
+    key(&mut app, KeyCode::Enter);
+    assert!(app.filter_editor.is_none(), "{:?}", editor(&app).error);
+    let filter = &app.filters.filters()[0];
+    assert_eq!(filter.predicate.display(), "ERROR|disk");
+    assert_eq!(filter.generated_from, None);
+    assert!(!rendered(&mut app).contains(GENERATED_MARK));
+}
+
+/// Without a model the prompt can change; the pattern does not, and the
+/// filter becomes an ordinary one (rule 5). `Ctrl-r` says there is no
+/// model.
+#[test]
+fn without_a_model_the_prompt_changes_and_the_pattern_does_not() {
+    let mut app = app_with_generated("generated_no_model");
+    select_row(&mut app, widgets::filterlist::Row::Filter(0));
+    open_selected(&mut app);
+    to_prompt(&mut app);
+    typed(&mut app, " and disks");
+    assert_eq!(editor(&app).generated(), Generated::PromptChanged);
+    let screen = rendered(&mut app);
+    assert!(screen.contains(PROMPT_CHANGED_NO_MODEL), "{screen}");
+
+    ctrl(&mut app, KeyCode::Char('r'));
+    assert_eq!(
+        app.status_message.as_ref().map(|m| m.text.as_str()),
+        Some(NO_MODEL)
+    );
+    assert_eq!(editor(&app).field.pattern, "ERROR");
+
+    key(&mut app, KeyCode::Enter);
+    assert!(app.filter_editor.is_none(), "{:?}", editor(&app).error);
+    let filter = &app.filters.filters()[0];
+    assert_eq!(filter.prompt.as_deref(), Some("error lines and disks"));
+    assert_eq!(filter.predicate.display(), "ERROR");
+    assert!(!filter.is_generated());
+}
+
+/// With a model, a changed prompt says `Ctrl-r` regenerates the pattern.
+#[test]
+fn with_a_model_a_changed_prompt_names_ctrl_r() {
+    let (mut app, _harness) = app_with_model("generated_prompt_model", true, Ok(candidate("x")));
+    app.add_filter("ERROR").expect("valid");
+    make_generated(&mut app);
+    select_row(&mut app, widgets::filterlist::Row::Filter(0));
+    open_selected(&mut app);
+    to_prompt(&mut app);
+    typed(&mut app, "!");
+    let screen = rendered(&mut app);
+    assert!(screen.contains(PROMPT_CHANGED), "{screen}");
+}
+
+/// Loading generated filters never asks the model anything, also when a
+/// hash no longer agrees, as after a new model (rule 1).
+#[test]
+fn a_load_never_calls_the_model() {
+    let (mut app, harness) = app_with_model("generated_load", true, Ok(candidate("x")));
+    let text = format!(
+        "[sets.a]\nautoload = true\n\n[[sets.a.filters]]\nprompt = \"error lines\"\npattern = 'ERROR'\ngenerated_from = \"{}\"\n\n\
+         [[sets.a.filters]]\nprompt = \"info lines\"\npattern = 'INFO'\ngenerated_from = \"0000000000000000\"\n",
+        generated_hash("error lines", "ERROR")
+    );
+    let sets = crate::filtersets::parse(&text, std::path::Path::new("f.toml")).expect("loads");
+    app.filters = ActiveFilters::with_sets(None, &sets);
+    app.refresh_view();
+    draw(&mut app);
+    std::thread::sleep(Duration::from_millis(20));
+    assert!(!app.drain_request());
+
+    assert!(harness.sent().is_empty(), "{:?}", harness.sent());
+    let generated: Vec<bool> = app
+        .filters
+        .filters_in(1)
+        .map(|(_, filter)| filter.is_generated())
+        .collect();
+    assert_eq!(generated, [true, false]);
+    assert_eq!(
+        app.filters
+            .filters_in(1)
+            .nth(1)
+            .map(|(_, f)| f.predicate.display()),
+        Some("INFO".to_string()),
+        "the pattern changed on load"
+    );
+}
+
+/// A generated filter needs a must-match and a must-not-match line
+/// (rule 7); Enter says why it refuses.
+#[test]
+fn enter_refuses_a_generated_filter_without_an_example_of_each_kind() {
+    let (mut app, harness) = app_with_model("generated_examples", true, Ok(candidate("ERROR")));
+    open_editor_from_the_filter_pane(&mut app);
+    to_prompt(&mut app);
+    typed(&mut app, "error lines");
+    key(&mut app, KeyCode::Tab);
+    key(&mut app, KeyCode::Tab);
+    ask(&mut app, "the errors");
+    harness.answer();
+    take_reply(&mut app);
+    // Only `ERROR timeout`, must match.
+    key(&mut app, KeyCode::Tab);
+    key(&mut app, KeyCode::Char('+'));
+    let before = app.filters.len();
+    key(&mut app, KeyCode::Enter);
+    assert!(app.filter_editor.is_some(), "Enter closed the editor");
+    assert_eq!(editor(&app).error.as_deref(), Some(NEEDS_EXAMPLES));
+    assert_eq!(app.filters.len(), before, "a filter was added");
+
+    key(&mut app, KeyCode::Down);
+    key(&mut app, KeyCode::Char('-'));
+    key(&mut app, KeyCode::Enter);
+    assert!(app.filter_editor.is_none(), "{:?}", editor(&app).error);
+    let (_, filter) = app.filters.filters_in(0).next().expect("a scratch filter");
+    assert!(filter.is_generated());
+}
+
+/// An ordinary filter needs no examples: the rule is for generated ones.
+#[test]
+fn an_ordinary_filter_with_a_prompt_needs_no_examples() {
+    let mut app = app_over_file("generated_ordinary", BODY);
+    open_editor_from_the_filter_pane(&mut app);
+    to_prompt(&mut app);
+    typed(&mut app, "error lines");
+    key(&mut app, KeyCode::Tab);
+    key(&mut app, KeyCode::Tab);
+    typed(&mut app, "ERROR");
+    key(&mut app, KeyCode::Enter);
+    assert!(app.filter_editor.is_none(), "{:?}", editor(&app).error);
+    let (_, filter) = app.filters.filters_in(0).next().expect("a scratch filter");
+    assert_eq!(filter.generated_from, None);
+}
+
+/// `Ctrl-r` sends the prompt and the marks, not the pattern and not the
+/// earlier requests, and its pattern goes through the verify loop, which
+/// tests it against the stored examples too (#320's regression gate).
+#[test]
+fn ctrl_r_regenerates_the_pattern_through_the_verify_loop() {
+    let (mut app, harness) = app_with_replies(
+        "generated_regenerate",
+        true,
+        // Fails the example `INFO timeout`, then passes.
+        vec![
+            Ok(candidate("timeout|disk")),
+            Ok(candidate("ERROR (disk|timeout)")),
+        ],
+    );
+    app.add_filter("ERROR").expect("valid");
+    make_generated(&mut app);
+    select_row(&mut app, widgets::filterlist::Row::Filter(0));
+    open_selected(&mut app);
+    ctrl(&mut app, KeyCode::Char('r'));
+    assert!(editor(&app).running.is_some());
+    answer(&mut app, &harness);
+    assert_eq!(
+        editor(&app).running.as_ref().map(|a| a.attempt),
+        Some(2),
+        "the first pattern fails an example"
+    );
+    answer(&mut app, &harness);
+
+    let sent = harness.sent();
+    assert_eq!(sent.len(), 2);
+    assert!(sent[0].contains("What the lines to match look like: error lines"));
+    assert!(sent[0].contains("Lines the pattern must match:\nERROR disk\n"));
+    assert!(sent[0].contains("Lines the pattern must not match:\nINFO timeout\n"));
+    assert!(!sent[0].contains("Current pattern"), "{}", sent[0]);
+    assert!(sent[0].contains(crate::generate::REGENERATE));
+    assert!(sent[1].contains("Pattern: timeout|disk"), "{}", sent[1]);
+
+    assert_eq!(editor(&app).field.pattern, "ERROR (disk|timeout)");
+    assert_eq!(editor(&app).generated(), Generated::Yes);
+    key(&mut app, KeyCode::Enter);
+    assert!(app.filter_editor.is_none(), "{:?}", editor(&app).error);
+    let filter = &app.filters.filters()[0];
+    assert_eq!(filter.predicate.display(), "ERROR (disk|timeout)");
+    assert!(filter.is_generated());
+}
+
+/// `Ctrl-r` with no prompt has nothing to regenerate from.
+#[test]
+fn ctrl_r_without_a_prompt_says_so() {
+    let (mut app, harness) = app_with_model("generated_no_prompt", true, Ok(candidate("x")));
+    open_editor(&mut app);
+    ctrl(&mut app, KeyCode::Char('r'));
+    assert_eq!(editor(&app).error.as_deref(), Some(NO_PROMPT));
+    assert!(editor(&app).running.is_none());
+    assert!(harness.sent().is_empty());
+}
+
+/// A pattern the model wrote with no prompt is not generated: there is no
+/// prompt to regenerate it from.
+#[test]
+fn a_model_pattern_with_no_prompt_is_ordinary() {
+    let (mut app, harness) = app_with_model("generated_empty_prompt", true, Ok(candidate("ERROR")));
+    open_editor(&mut app);
+    ask(&mut app, "the errors");
+    harness.answer();
+    take_reply(&mut app);
+    assert_eq!(editor(&app).generated(), Generated::No);
+    key(&mut app, KeyCode::BackTab);
+    key(&mut app, KeyCode::Enter);
+    let (_, filter) = app.filters.filters_in(0).next().expect("a scratch filter");
+    assert_eq!(filter.generated_from, None);
 }

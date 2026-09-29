@@ -111,6 +111,9 @@ pub struct LoadedFilter {
     pub prompt: Option<String>,
     /// The file's `must_match` and `must_not_match` lines (#318).
     pub examples: Vec<Example>,
+    /// The file's `generated_from` (#321), carried to the `Filter`
+    /// unchanged. Only read: loading never asks a model anything.
+    pub generated_from: Option<String>,
 }
 
 /// One set as read from `filters.toml`.
@@ -242,6 +245,7 @@ impl ActiveFilters {
                         description: None,
                         prompt: None,
                         examples: Vec::new(),
+                        generated_from: None,
                         set: index,
                     })
                     .collect();
@@ -277,6 +281,7 @@ impl ActiveFilters {
                     description: filter.description.clone(),
                     prompt: filter.prompt.clone(),
                     examples: filter.examples.clone(),
+                    generated_from: filter.generated_from.clone(),
                     set: index,
                 });
             }
@@ -1693,6 +1698,7 @@ mod tests {
                 line: "a line".into(),
                 must_match: true,
             }],
+            generated_from: None,
         };
         assert!(set.set_details(x, details));
         let filter = &set.filters()[x];

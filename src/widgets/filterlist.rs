@@ -49,6 +49,12 @@ const EMPTY_HINTS: [&str; 3] = ["press f i to add", "press f i", "f i"];
 /// Columns a named set's filters are indented under their header.
 const INDENT: &str = "  ";
 
+/// After the name of a filter the model wrote from its prompt (#321): the
+/// filter is generated only while its `generated_from` agrees with the
+/// prompt and the pattern. A star, as a set header's `*` says it has
+/// profiles, but a different one.
+pub(crate) const GENERATED_MARK: &str = " ✦";
+
 /// One row of the pane.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Row {
@@ -377,7 +383,9 @@ impl FilterList {
     }
 
     /// One row's text: its number or `/`, whether it is on, which way it
-    /// filters, and its name — or, for a header, the set's flag and name.
+    /// filters, its name, and `GENERATED_MARK` when the model wrote its
+    /// pattern from its prompt (#321) — or, for a header, the set's flag
+    /// and name.
     ///
     /// The sense is spelled out because excluding filters carry no colour —
     /// nothing else on the row would distinguish them. A header carries `*`
@@ -399,8 +407,13 @@ impl FilterList {
             Row::Filter(index) | Row::BuiltIn(index) => {
                 let filter = &filters.filters()[index];
                 let indent = if filter.set == 0 { "" } else { INDENT };
+                let generated = if filter.is_generated() {
+                    GENERATED_MARK
+                } else {
+                    ""
+                };
                 format!(
-                    "{indent}{number}[{}] {} {}",
+                    "{indent}{number}[{}] {} {}{generated}",
                     mark(filter.enabled),
                     sense_word(filter.sense),
                     filter.display_name()

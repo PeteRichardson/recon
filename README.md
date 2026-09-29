@@ -725,9 +725,16 @@ recon is exactly this model with one set.
   filter exists. It is for people only. The status row shows it while the
   filter pane's selection is on the filter.
 - **`prompt`** — one line of plain text that says what the filter's lines
-  look like. Today it is only text that you keep with the filter; a later
-  version gives it to a model that writes the pattern. Both keys are
+  look like. With a model, the filter editor gives it to the model that
+  writes the pattern (see [A pattern from a request](#a-pattern-from-a-request)).
+  Without one, it is only text that you keep with the filter. Both keys are
   optional, and a description or a prompt of more than one line is refused.
+- **`generated_from`** — recon writes this key when the model wrote the
+  pattern from the prompt: a hash of the prompt and the pattern. The filter
+  shows as generated only while the hash agrees with the two. When you
+  change the prompt or the pattern, here or in recon, the filter is an
+  ordinary filter again. recon never changes a pattern when it loads this
+  file.
 - **`colour`** — a colour for this filter instead of the next palette entry,
   in the same spellings as the palette: a name, `#RRGGBB`, or a 256-colour
   index as a string. A palette position is a poor way to say "errors are
@@ -941,6 +948,7 @@ that compiled left them, so a half-typed `(` does not clear the screen.
 | `u` | On the lines: show only the lines the pattern matches and the marked lines, or every line again | `filtereditor.toggle.matchesonly` |
 | `Ctrl-z` / `Ctrl-y` | Go back / forward one version of the pattern | `filtereditor.undo` / `filtereditor.redo` |
 | `Ctrl-g` | With a model: move the keys to the request line | `filtereditor.request` |
+| `Ctrl-r` | With a model: write the pattern again from the prompt | `filtereditor.regenerate` |
 
 ##### The name, description, prompt and sense
 
@@ -1110,6 +1118,36 @@ Intelligence off, or the model still downloading), there is no request
 line, no error, and everything else in the editor works as before. recon
 asks whether the model is ready each time the editor opens. `recon --version`
 says `foundation-models: on` or `off`, so you can tell the two apart.
+
+##### Generated filters
+
+A filter is **generated** when the model wrote its pattern from its prompt.
+The filter pane shows `✦` after its name, and the editor shows `generated
+from the prompt` after the prompt.
+
+- When you press `Enter` on a pattern that the model wrote from the prompt
+  in the prompt field, the filter becomes generated, and `S` writes
+  `generated_from` with it. A pattern that the model wrote while the prompt
+  field was empty is an ordinary filter: there is no prompt to write it
+  again from.
+- A generated filter must have at least one must-match line and one
+  must-not-match line. Without them, `Enter` does not save it and says why:
+  the model needs both to write the pattern again, and they test what it
+  writes.
+- When you edit a generated pattern by hand, the filter is an ordinary
+  filter again. The editor shows `pattern changed by hand: change the
+  prompt to agree, or delete it`.
+- You can edit the prompt also without a model. The pattern does not change,
+  and the filter is an ordinary filter until the model writes the pattern
+  again. The editor says so after the prompt.
+- `Ctrl-r` writes the pattern again from the prompt. The model receives the
+  prompt, the marked lines and a few other lines of the file, but not the
+  pattern and not the earlier requests. Its pattern goes through the same 3
+  tries and the same tests against the marked lines and the examples as a
+  request, and `Ctrl-z` goes back to the pattern from before.
+- recon changes a pattern only when you send a request or press `Ctrl-r`.
+  It never writes a pattern again when it loads `filters.toml`, and never
+  because a new macOS changed the model.
 
 #### Definition filters
 

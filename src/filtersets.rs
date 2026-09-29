@@ -78,6 +78,10 @@ struct FilterSchema {
     must_match: Option<Vec<String>>,
     /// Lines the pattern must not match (#318), one string each.
     must_not_match: Option<Vec<String>>,
+    /// The hash of `prompt` and `pattern` when the model wrote the pattern
+    /// (#321). Any text loads: one that does not agree with the two only
+    /// means the filter is not shown as generated.
+    generated_from: Option<String>,
 }
 
 /// `sense` as the file spells it. A separate enum rather than deriving
@@ -336,6 +340,7 @@ fn parse_sets(text: &str, path: &Path) -> Result<Vec<LoadedSet>, Error> {
                 description: entry.description,
                 prompt: entry.prompt,
                 examples,
+                generated_from: entry.generated_from,
             });
         }
 
@@ -426,7 +431,8 @@ fn examples(
 ///
 /// What the user gave each filter and nothing else: its pattern and sense,
 /// and its name, description and prompt when the filter editor gave it one
-/// (#317), and its examples (#318). No `priority`, `autoload` or `colour`: each is a one-line hand
+/// (#317), its examples (#318), and `generated_from` for a filter the model
+/// wrote (#321). No `priority`, `autoload` or `colour`: each is a one-line hand
 /// edit to a file `S` has just shown the shape of, and a default the user
 /// did not ask for is a thing to delete later.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -451,6 +457,8 @@ pub struct FilterToSave {
     pub prompt: Option<String>,
     /// Written as `must_match` and `must_not_match`; an empty one is not.
     pub examples: Vec<Example>,
+    /// Written only for a filter the model wrote (#321).
+    pub generated_from: Option<String>,
 }
 
 impl FilterToSave {
@@ -464,6 +472,7 @@ impl FilterToSave {
             description: None,
             prompt: None,
             examples: Vec::new(),
+            generated_from: None,
         }
     }
 }
@@ -534,6 +543,10 @@ pub fn append_set(text: &str, set: &SetToSave<'_>) -> Result<String, String> {
             filter.insert("prompt", value(prompt.as_str()));
         }
         filter.insert("pattern", literal_string(&entry.pattern)?);
+        // Beside the pattern, as it is a hash of the pattern and the prompt.
+        if let Some(hash) = &entry.generated_from {
+            filter.insert("generated_from", value(hash.as_str()));
+        }
         let sense = match entry.sense {
             Sense::Include => None,
             Sense::Context => Some("context"),
@@ -1306,6 +1319,51 @@ sense = "context"
         assert_eq!(s.filters[1].name, "plain");
         assert_eq!(s.filters[1].description, None);
         assert_eq!(s.profiles["default"], vec!["bug57".to_string()]);
+    }
+
+    // ---- generated_from (#321) ---------------------------------------------
+
+    /// `generated_from` goes under the pattern, and loads back unchanged.
+    #[test]
+    fn append_set_writes_generated_from_and_parse_reads_it() {
+        let after = append_set(
+            "",
+            &SetToSave {
+                name: "s",
+                filters: vec![
+                    FilterToSave {
+                        prompt: Some("timeouts".into()),
+                        generated_from: Some("0123456789abcdef".into()),
+                        ..FilterToSave::new("timeout", Sense::Include)
+                    },
+                    FilterToSave::new("plain", Sense::Include),
+                ],
+                default: Vec::new(),
+            },
+        )
+        .expect("edits");
+        assert!(
+            after.contains("pattern = 'timeout'\ngenerated_from = \"0123456789abcdef\"\n"),
+            "{after}"
+        );
+        assert_eq!(after.matches("generated_from").count(), 1, "{after}");
+        let sets = parse(&after, Path::new("t")).expect("round-trips");
+        let s = sets.iter().find(|set| set.name == "s").expect("s");
+        assert_eq!(
+            s.filters[0].generated_from.as_deref(),
+            Some("0123456789abcdef")
+        );
+        assert_eq!(s.filters[1].generated_from, None);
+    }
+
+    /// Any text loads: a hash that does not agree only means the filter is
+    /// not generated.
+    #[test]
+    fn any_generated_from_loads() {
+        let sets =
+            parsed("[sets.a]\n[[sets.a.filters]]\npattern = 'x'\ngenerated_from = 'not a hash'\n");
+        let a = sets.iter().find(|set| set.name == "a").expect("a");
+        assert_eq!(a.filters[0].generated_from.as_deref(), Some("not a hash"));
     }
 
     // ---- a filter's examples (#318) ----------------------------------------

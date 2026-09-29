@@ -46,10 +46,20 @@
 //! cancels a request at any try. Without a model the request line is not
 //! there, and nothing else changes. See `crate::generate` for what the
 //! model receives.
+//!
+//! A filter is generated when the model wrote its pattern from its prompt
+//! (#321): Enter records the hash of the two as the filter's
+//! `generated_from`, and the prompt row says `generated`. A change to the
+//! pattern or the prompt makes it an ordinary filter again, and the prompt
+//! row says what to do about it; see `Generated`. `Ctrl-r` regenerates the
+//! pattern from the prompt and the marks alone, through the same verify
+//! loop. Enter refuses a generated filter without a must-match and a
+//! must-not-match mark. Nothing here, or anywhere, asks the model for a
+//! pattern except `Ctrl-r` and a request.
 
 use super::App;
 use super::prompt::SearchPrompt;
-use crate::filter::{Details, Example, Sense};
+use crate::filter::{Details, Example, Sense, generated_hash};
 use crate::generate::{self, ATTEMPTS, Candidate, Rejection, Running};
 use crossterm::event::{self, KeyCode, KeyModifiers};
 use ratatui::prelude::Style;
@@ -68,6 +78,16 @@ pub(super) const NO_PATTERN: &str = "type a pattern first";
 
 /// Shown in the panel when Enter on the request line finds no request.
 pub(super) const NO_REQUEST: &str = "type a request first";
+
+/// Shown in the panel when `Ctrl-r` finds no prompt to regenerate from.
+pub(super) const NO_PROMPT: &str = "type a prompt first";
+
+/// Shown on the status row when `Ctrl-r` finds no model (#321).
+pub(super) const NO_MODEL: &str = "no model here to regenerate the pattern; edit it by hand";
+
+/// Shown in the panel when Enter finds a generated filter without an
+/// example of each kind (#321, rule 7).
+pub(super) const NEEDS_EXAMPLES: &str = "a generated filter needs a must-match and a must-not-match line: mark one of each with + and -";
 
 /// Where the filter editor's keys go (#314), in the order Tab moves
 /// through them (#317). Each text field takes the characters typed, and
@@ -134,6 +154,37 @@ pub(super) enum Mark {
     MustMatch,
     /// The pattern must not match this line: `-`.
     MustNotMatch,
+}
+
+/// The prompt row's word for a filter the model wrote from its prompt
+/// (#321). The filter pane shows `GENERATED_MARK` for the same state.
+pub(super) const GENERATED: &str = "generated from the prompt";
+
+/// What the prompt row says after a hand edit of a generated pattern
+/// (#321, rule 4).
+pub(super) const PATTERN_CHANGED: &str =
+    "pattern changed by hand: change the prompt to agree, or delete it";
+
+/// What the prompt row says when the prompt of a generated pattern
+/// changed (#321, rule 5), with a model and without one.
+pub(super) const PROMPT_CHANGED: &str =
+    "not generated from this prompt: Ctrl-r regenerates the pattern";
+pub(super) const PROMPT_CHANGED_NO_MODEL: &str =
+    "not generated from this prompt: an ordinary filter";
+
+/// Whether the model wrote the pattern from the prompt (#321), as the
+/// prompt row shows it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Generated {
+    /// The model wrote this pattern from this prompt.
+    Yes,
+    /// The model wrote a pattern from this prompt, and the pattern was
+    /// changed by hand since (rule 4).
+    PatternChanged,
+    /// The model wrote this pattern, but not from this prompt (rule 5).
+    PromptChanged,
+    /// No pattern from the model, or no prompt.
+    No,
 }
 
 /// A marked line's state under the current pattern: the mark, and whether
@@ -232,6 +283,10 @@ pub(super) struct FilterEditor {
     pub(super) waited: u64,
     /// What the model said about the last pattern it gave.
     pub(super) explanation: Option<String>,
+    /// Each prompt, trimmed, and the pattern the model wrote from it
+    /// (#321): the filter's own when it opened as generated, and each
+    /// pattern the model gave since. See `generated`.
+    pub(super) generated: Vec<(String, String)>,
 }
 
 /// A request the model is answering (#319), through each attempt of its
@@ -240,8 +295,12 @@ pub(super) struct FilterEditor {
 pub(super) struct Asking {
     /// The attempt that runs now.
     running: Running,
-    /// The request, as the request line had it.
-    request: String,
+    /// The request, as the request line had it, or `None` for `Ctrl-r`,
+    /// which regenerates from the prompt alone (#321).
+    request: Option<String>,
+    /// The prompt field, trimmed, when the request was sent: what the
+    /// pattern the model gives is generated from.
+    prompt: String,
     /// What the first attempt sent. A later attempt sends it again, with
     /// what was wrong with each pattern before.
     text: String,
@@ -312,6 +371,7 @@ impl FilterEditor {
             requests: Vec::new(),
             waited: 0,
             explanation: None,
+            generated: Vec::new(),
         }
     }
 
@@ -335,6 +395,14 @@ impl FilterEditor {
                 super::prompt::PromptKind::default(),
             )
         };
+        // Generated when the hash agrees with the prompt and the pattern
+        // as they are (#321), the same test the filter pane makes.
+        let generated = match (&details.generated_from, &details.prompt) {
+            (Some(hash), Some(prompt)) if *hash == generated_hash(prompt, &pattern) => {
+                vec![(prompt.trim().to_string(), pattern.clone())]
+            }
+            _ => Vec::new(),
+        };
         let mut editor = Self {
             field: field(Some(pattern)),
             name: field(details.name),
@@ -342,6 +410,7 @@ impl FilterEditor {
             prompt: field(details.prompt),
             sense,
             target: Some(index),
+            generated,
             ..Self::new(lines, style)
         };
         editor.mark_examples(details.examples);
@@ -390,9 +459,11 @@ impl FilterEditor {
         self.lines.len() + self.extra.len()
     }
 
-    /// What the name, description and prompt fields hold, trimmed, and the
-    /// marks as examples (#318). An empty field is `None`: the filter does
-    /// not have that key. A line the file has twice is one example.
+    /// What the name, description and prompt fields hold, trimmed, the
+    /// marks as examples (#318), and the hash of the prompt and the pattern
+    /// when the model wrote the one from the other (#321). An empty field
+    /// is `None`: the filter does not have that key. A line the file has
+    /// twice is one example.
     pub(super) fn details(&self) -> Details {
         let text = |field: &SearchPrompt| {
             let text = field.pattern.trim();
@@ -410,12 +481,57 @@ impl FilterEditor {
                 });
             }
         }
+        let prompt = text(&self.prompt);
+        let generated_from = (self.generated() == Generated::Yes)
+            .then(|| {
+                prompt
+                    .as_deref()
+                    .map(|p| generated_hash(p, &self.field.pattern))
+            })
+            .flatten();
         Details {
             name: text(&self.name),
             description: text(&self.description),
-            prompt: text(&self.prompt),
+            prompt,
             examples,
+            generated_from,
         }
+    }
+
+    /// Whether the model wrote the pattern from the prompt (#321). A
+    /// pattern with no prompt is never generated: there is nothing to
+    /// regenerate it from.
+    pub(super) fn generated(&self) -> Generated {
+        let prompt = self.prompt.pattern.trim();
+        let pattern = self.field.pattern.as_str();
+        if prompt.is_empty() {
+            return Generated::No;
+        }
+        if self
+            .generated
+            .iter()
+            .any(|(p, q)| p == prompt && q == pattern)
+        {
+            Generated::Yes
+        } else if self.generated.iter().any(|(p, _)| p == prompt) {
+            Generated::PatternChanged
+        } else if self.generated.iter().any(|(_, q)| q == pattern) {
+            Generated::PromptChanged
+        } else {
+            Generated::No
+        }
+    }
+
+    /// Why Enter refuses a generated filter (#321, rule 7): it has no
+    /// must-match mark or no must-not-match mark. The model needs both to
+    /// regenerate the pattern, and they are the test of what it gives.
+    fn missing_examples(&self) -> Option<&'static str> {
+        if self.generated() != Generated::Yes {
+            return None;
+        }
+        let examples = self.details().examples;
+        let has = |must_match| examples.iter().any(|e| e.must_match == must_match);
+        (!has(true) || !has(false)).then_some(NEEDS_EXAMPLES)
     }
 
     /// Why Enter refuses the pattern while a check fails (#318): how many
@@ -663,8 +779,10 @@ impl FilterEditor {
     /// must undo what the model did. A pattern that does not compile is not
     /// a version; it shows its error as a typed one does. The request joins
     /// the session's requests, and the request line is cleared for the
-    /// next one.
-    fn take_candidate(&mut self, request: String, candidate: Candidate) {
+    /// next one. A regenerated pattern (#321), with no request, starts the
+    /// session's requests again: it was written from the prompt alone.
+    /// The pattern is generated from `prompt`.
+    fn take_candidate(&mut self, request: Option<String>, prompt: String, candidate: Candidate) {
         self.error = pattern_error(&self.field.pattern);
         if self.field.pattern.is_empty() {
             self.edited_at = None;
@@ -676,8 +794,14 @@ impl FilterEditor {
         self.recompile();
         self.record();
         self.explanation = Some(candidate.explanation);
-        self.requests.push(request);
-        self.request = SearchPrompt::default();
+        self.generated.push((prompt, self.field.pattern.clone()));
+        match request {
+            Some(request) => {
+                self.requests.push(request);
+                self.request = SearchPrompt::default();
+            }
+            None => self.requests.clear(),
+        }
     }
 
     /// The text the model receives for `request` (#319): the prompt field,
@@ -697,6 +821,24 @@ impl FilterEditor {
             sample: &self.sample(),
             earlier: &self.requests,
             request,
+        })
+    }
+
+    /// The text the model receives for `Ctrl-r` (#321): the prompt, the
+    /// marks and a sample of the unmarked lines. Not the pattern and not
+    /// the session's requests: the pattern is written again from the
+    /// prompt.
+    pub(super) fn regenerate_text(&self) -> String {
+        let examples = self.details().examples;
+        let lines = |must_match| marked(&examples, must_match);
+        let prompt = self.prompt.pattern.trim();
+        generate::request_text(&generate::Parts {
+            prompt: (!prompt.is_empty()).then_some(prompt),
+            must_match: &lines(true),
+            must_not_match: &lines(false),
+            sample: &self.sample(),
+            request: generate::REGENERATE,
+            ..generate::Parts::default()
         })
     }
 
@@ -1003,6 +1145,25 @@ pub(super) fn grouped(n: usize) -> String {
     out
 }
 
+impl FilterEditor {
+    /// Send `text` to `model` on a worker thread for `request`, or for
+    /// `Ctrl-r` with `None`, in place of a request still running.
+    fn ask(&mut self, model: Arc<dyn generate::Model>, request: Option<String>, text: String) {
+        self.running = Some(Asking {
+            running: Running::start(model, text.clone()),
+            request,
+            prompt: self.prompt.pattern.trim().to_string(),
+            text,
+            attempt: 1,
+            rejected: Vec::new(),
+            started: Instant::now(),
+        });
+        self.waited = 0;
+        self.explanation = None;
+        self.error = pattern_error(&self.field.pattern);
+    }
+}
+
 impl App<'_> {
     /// `f I`: open the filter editor on the open file, with an empty
     /// pattern.
@@ -1066,6 +1227,7 @@ impl App<'_> {
             description: filter.description.clone(),
             prompt: filter.prompt.clone(),
             examples: filter.examples.clone(),
+            generated_from: filter.generated_from.clone(),
         };
         self.promote_truncated_preview();
         let lines = self.view.source().clone();
@@ -1187,6 +1349,7 @@ impl App<'_> {
                 A::FilterEditorToggleMatchesOnly => {
                     self.edit_filter_editor(FilterEditor::toggle_matches_only);
                 }
+                A::FilterEditorRegenerate => self.regenerate(),
                 A::FilterEditorUndo => self.step_filter_editor_version(FilterEditor::undo),
                 A::FilterEditorRedo => self.step_filter_editor_version(FilterEditor::redo),
                 // Without a model there is no request line to go to.
@@ -1312,23 +1475,38 @@ impl App<'_> {
         let Some(editor) = self.filter_editor.as_mut() else {
             return;
         };
-        let request = editor.request.pattern.trim();
+        let request = editor.request.pattern.trim().to_string();
         if request.is_empty() {
             editor.error = Some(NO_REQUEST.to_string());
             return;
         }
-        let text = editor.request_text(request);
-        editor.running = Some(Asking {
-            running: Running::start(model, text.clone()),
-            request: request.to_string(),
-            text,
-            attempt: 1,
-            rejected: Vec::new(),
-            started: Instant::now(),
+        let text = editor.request_text(&request);
+        editor.ask(model, Some(request), text);
+    }
+
+    /// `Ctrl-r` (#321): write the pattern again from the prompt and the
+    /// marks, through the verify loop, in place of a request still running.
+    /// The one way besides a request that the pattern changes by the model,
+    /// and only when the user presses it.
+    fn regenerate(&mut self) {
+        let model = self.model.clone().filter(|_| {
+            self.filter_editor
+                .as_ref()
+                .is_some_and(|editor| editor.model)
         });
-        editor.waited = 0;
-        editor.explanation = None;
-        editor.error = pattern_error(&editor.field.pattern);
+        let Some(model) = model else {
+            self.report(NO_MODEL, false);
+            return;
+        };
+        let Some(editor) = self.filter_editor.as_mut() else {
+            return;
+        };
+        if editor.prompt.pattern.trim().is_empty() {
+            editor.error = Some(NO_PROMPT.to_string());
+            return;
+        }
+        let text = editor.regenerate_text();
+        editor.ask(model, None, text);
     }
 
     /// Take the model's reply, if it is here, and say whether the screen
@@ -1365,7 +1543,7 @@ impl App<'_> {
             }
         };
         let Err(rejection) = editor.verify(&candidate.pattern) else {
-            editor.take_candidate(asking.request, candidate);
+            editor.take_candidate(asking.request, asking.prompt, candidate);
             return true;
         };
         let reason = rejection.reason();
@@ -1402,11 +1580,12 @@ impl App<'_> {
 
     /// Enter: add the pattern as `f i … Enter` would, or change the target
     /// filter's as `f c … Enter` would, give the filter the name,
-    /// description, prompt and sense in the fields (#317) and the marks as
-    /// its examples (#318), and close. A new excluding filter is added as
-    /// `f x` adds one. A pattern that is empty, does not compile or fails a
-    /// check, or a name another filter in the set has, keeps the editor open
-    /// with the reason in the panel.
+    /// description, prompt and sense in the fields (#317), the marks as
+    /// its examples (#318) and its generated state (#321), and close. A new
+    /// excluding filter is added as `f x` adds one. A pattern that is
+    /// empty, does not compile or fails a check, a generated filter without
+    /// a mark of each kind, or a name another filter in the set has, keeps
+    /// the editor open with the reason in the panel.
     fn commit_filter_editor(&mut self) {
         let Some(editor) = self.filter_editor.as_mut() else {
             return;
@@ -1423,6 +1602,10 @@ impl App<'_> {
         }
         if let Some(message) = editor.failed_checks() {
             editor.error = Some(message);
+            return;
+        }
+        if let Some(message) = editor.missing_examples() {
+            editor.error = Some(message.to_string());
             return;
         }
         let (pattern, target, details, sense) = (

@@ -321,6 +321,11 @@ pub struct Filter {
     /// Lines the pattern must match or must not match (#318): the filter
     /// editor's checks, kept as regression tests. Empty for most filters.
     pub examples: Vec<Example>,
+    /// The `generated_hash` of the prompt and the pattern the model wrote
+    /// from it (#321), as the filter editor or `filters.toml` gave it. Kept
+    /// as it is when the prompt or the pattern changes: `is_generated`
+    /// compares it with the two as they are now.
+    pub generated_from: Option<String>,
     /// Index into `ActiveFilters::sets`. 0 is the scratch set.
     pub set: usize,
 }
@@ -336,6 +341,48 @@ impl Filter {
             .clone()
             .unwrap_or_else(|| self.predicate.display())
     }
+
+    /// Whether the model wrote this filter's pattern from its prompt
+    /// (#321): `generated_from` agrees with the prompt and the pattern as
+    /// they are now. A change to either one, in recon or in the file, makes
+    /// the filter an ordinary one, and nothing asks a model anything.
+    #[must_use]
+    pub fn is_generated(&self) -> bool {
+        match (
+            &self.generated_from,
+            &self.prompt,
+            self.predicate.as_regex(),
+        ) {
+            (Some(hash), Some(prompt), Some(regex)) => {
+                *hash == generated_hash(prompt, regex.as_str())
+            }
+            _ => false,
+        }
+    }
+}
+
+/// What `generated_from` records for a pattern the model wrote from
+/// `prompt` (#321): 16 hex digits of the 64-bit FNV-1a hash of the two.
+///
+/// FNV-1a, not `std`'s `DefaultHasher`, whose output can change from one
+/// Rust release to the next: the hash is kept in `filters.toml` and must
+/// give the same value on each platform and in each build. It is a check
+/// that the two did not change, not a secret, so a short hash with no
+/// crate is enough. Each string goes in after its length, so moving text
+/// from the prompt to the pattern changes the hash.
+#[must_use]
+pub fn generated_hash(prompt: &str, pattern: &str) -> String {
+    const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const PRIME: u64 = 0x0100_0000_01b3;
+    let mut hash = OFFSET;
+    for text in [prompt, pattern] {
+        let length = u64::try_from(text.len()).unwrap_or(u64::MAX);
+        for byte in length.to_le_bytes().iter().chain(text.as_bytes()) {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(PRIME);
+        }
+    }
+    format!("{hash:016x}")
 }
 
 /// A line kept with a filter as a regression test (#318): the pattern must
@@ -365,6 +412,9 @@ pub struct Details {
     pub description: Option<String>,
     pub prompt: Option<String>,
     pub examples: Vec<Example>,
+    /// The hash of the prompt and the pattern when the model wrote the
+    /// pattern from the prompt (#321), else `None`.
+    pub generated_from: Option<String>,
 }
 
 /// Every enabled flag in an [`ActiveFilters`], captured so it can be restored.
@@ -596,6 +646,7 @@ impl ActiveFilters {
             description: None,
             prompt: None,
             examples: Vec::new(),
+            generated_from: None,
             set: 0,
         });
         Ok(())
@@ -617,6 +668,7 @@ impl ActiveFilters {
             description: None,
             prompt: None,
             examples: Vec::new(),
+            generated_from: None,
             set: 0,
         });
         Ok(())
@@ -638,6 +690,7 @@ impl ActiveFilters {
             description: None,
             prompt: None,
             examples: Vec::new(),
+            generated_from: None,
             set: 0,
         });
     }
@@ -859,7 +912,8 @@ impl ActiveFilters {
     }
 
     /// Give the filter at `index` the filter editor's name, description and
-    /// prompt (#317) and its examples (#318), reporting whether it changed
+    /// prompt (#317), its examples (#318) and its generated state (#321),
+    /// reporting whether it changed
     /// anything. A built-in filter is recon's and is left alone, as
     /// `set_pattern` leaves it.
     ///
@@ -882,6 +936,7 @@ impl ActiveFilters {
         filter.description = details.description;
         filter.prompt = details.prompt;
         filter.examples = details.examples;
+        filter.generated_from = details.generated_from;
         let after = filter.display_name();
         let set = filter.set;
         if before != after {
@@ -1215,6 +1270,7 @@ pub(crate) mod test_support {
                     description: None,
                     prompt: None,
                     examples: Vec::new(),
+                    generated_from: None,
                 })
                 .collect(),
             builtin: false,
@@ -1250,6 +1306,47 @@ pub(crate) mod test_support {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ---- generated filters (#321) ------------------------------------------
+
+    /// The hash is kept in `filters.toml`, so it must not change from one
+    /// build to the next. The value is FNV-1a 64 over each string after its
+    /// length as 8 little-endian bytes.
+    #[test]
+    fn generated_hash_is_a_fixed_value() {
+        assert_eq!(generated_hash("error lines", "ERROR"), "067ecc5f30502be0");
+        assert_eq!(generated_hash("", "").len(), 16);
+    }
+
+    #[test]
+    fn generated_hash_changes_with_the_prompt_the_pattern_and_the_split() {
+        let hash = generated_hash("ab", "c");
+        assert_ne!(hash, generated_hash("ab!", "c"));
+        assert_ne!(hash, generated_hash("ab", "c!"));
+        assert_ne!(hash, generated_hash("a", "bc"), "text moved to the pattern");
+    }
+
+    #[test]
+    fn a_filter_is_generated_only_while_its_hash_agrees() {
+        let mut set = set_with(&["ERROR"]);
+        let details = |prompt: Option<&str>, hash: Option<String>| Details {
+            prompt: prompt.map(Into::into),
+            generated_from: hash,
+            ..Details::default()
+        };
+        let hash = || Some(generated_hash("errors", "ERROR"));
+        set.set_details(0, details(Some("errors"), hash()));
+        assert!(set.filters()[0].is_generated());
+        set.set_details(0, details(Some("errors!"), hash()));
+        assert!(!set.filters()[0].is_generated(), "the prompt changed");
+        set.set_details(0, details(None, hash()));
+        assert!(!set.filters()[0].is_generated(), "no prompt");
+        set.set_details(0, details(Some("errors"), None));
+        assert!(!set.filters()[0].is_generated(), "no hash");
+        set.set_details(0, details(Some("errors"), hash()));
+        set.set_pattern(0, "ERROR|WARN").expect("valid");
+        assert!(!set.filters()[0].is_generated(), "the pattern changed");
+    }
 
     pub(super) fn set_with(patterns: &[&str]) -> ActiveFilters {
         let mut set = ActiveFilters::new();

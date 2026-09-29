@@ -51,6 +51,12 @@ Answer with exactly two lines and nothing else:
 pattern: the expression, as it is, with no quotes and no backticks
 explanation: one short sentence about what the expression matches";
 
+/// The request `Ctrl-r` sends in the filter editor (#321), with the
+/// prompt and the marks and no current pattern: write the pattern again
+/// from the prompt.
+pub(crate) const REGENERATE: &str =
+    "Write a new pattern for the lines that the prompt describes. Use the marked lines to test it.";
+
 /// The most times one request goes to the model (#320): the first time,
 /// and again each time its pattern does not compile or fails a mark. The
 /// `?` help and the README say this number.

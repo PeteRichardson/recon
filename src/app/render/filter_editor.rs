@@ -3,13 +3,17 @@
 //! pattern, and with a model the request line and the model's explanation
 //! (#319).
 
-use super::super::filter_editor::{Check, EditorFocus, FilterEditor, Mark};
+use super::super::filter_editor::{
+    Check, EditorFocus, FilterEditor, GENERATED, Generated, Mark, PATTERN_CHANGED, PROMPT_CHANGED,
+    PROMPT_CHANGED_NO_MODEL,
+};
 use crate::filter::Sense;
 use crate::widgets::pane_block;
 use ratatui::prelude::{
     Buffer, Color, Constraint, Layout, Line, Modifier, Rect, Span, Style, Widget,
 };
 use ratatui::widgets::Clear;
+use unicode_width::UnicodeWidthStr;
 
 /// How many columns a tab takes. A raw tab in a cell draws as nothing, and
 /// log lines carry them.
@@ -115,6 +119,9 @@ impl FilterEditor {
                 " Enter send · Esc cancel · Ctrl-z/Ctrl-y undo/redo · Tab lines · Shift-Tab pattern "
                     .to_string()
             }
+            EditorFocus::Prompt if self.model => format!(
+                " {enter} · Esc cancel · Ctrl-r regenerate · Up/Down/PgUp/PgDn scroll · Tab/Shift-Tab next/previous field "
+            ),
             EditorFocus::Name | EditorFocus::Description | EditorFocus::Prompt => format!(
                 " {enter} · Esc cancel · Up/Down/PgUp/PgDn scroll · Tab/Shift-Tab next/previous field "
             ),
@@ -170,6 +177,24 @@ impl FilterEditor {
                 buf[(x + column, y)].set_style(Style::default().add_modifier(Modifier::REVERSED));
             }
         }
+        // After the prompt, whether the model wrote the pattern from it.
+        if let Some((text, style)) = self.generated_note()
+            && inner.height > 2
+        {
+            // Terminal columns, not chars: a wide character takes two.
+            let column = LABEL_WIDTH + UnicodeWidthStr::width(self.prompt.pattern.as_str()) + 2;
+            if let Ok(column) = u16::try_from(column)
+                && column < width
+            {
+                buf.set_stringn(
+                    x + column,
+                    inner.y + 2,
+                    text,
+                    usize::from(width - column),
+                    style,
+                );
+            }
+        }
         if inner.height > 3 {
             Line::from(self.sense_spans()).render(
                 Rect {
@@ -204,6 +229,19 @@ impl FilterEditor {
                 usize::from(width),
                 Style::default().fg(Color::Red),
             );
+        }
+    }
+
+    /// What the prompt row says of the pattern's origin (#321), and how:
+    /// nothing for an ordinary filter.
+    fn generated_note(&self) -> Option<(&'static str, Style)> {
+        let warn = Style::default().fg(Color::Yellow);
+        match self.generated() {
+            Generated::Yes => Some((GENERATED, Style::default().fg(Color::Cyan))),
+            Generated::PatternChanged => Some((PATTERN_CHANGED, warn)),
+            Generated::PromptChanged if self.model => Some((PROMPT_CHANGED, warn)),
+            Generated::PromptChanged => Some((PROMPT_CHANGED_NO_MODEL, warn)),
+            Generated::No => None,
         }
     }
 
