@@ -108,6 +108,19 @@ each later request while the editor is open, so the pattern improves step
 by step. A request is not kept with the filter; the prompt is.
 _Avoid_: prompt (that is the filter's), query
 
+**Consolidated prompt**:
+The one prompt the model writes from all of a session's requests when the
+user saves, in place of the requests. The user can edit it before the save;
+Esc saves with the prompt from before. After it, the session has no
+requests.
+_Avoid_: summary, merged prompt
+
+**Phrase mark**:
+A part of a line the user selected with the mouse in the filter editor. It
+is a hint to the model and never a check: it does not pass or fail, and
+Enter does not keep it with the filter.
+_Avoid_: check (only a line mark is a check), highlight, selection
+
 **Interesting line**:
 A line an enabled including filter matches. `n` and `N` step between
 interesting lines when no search is set, and hide mode keeps only them.

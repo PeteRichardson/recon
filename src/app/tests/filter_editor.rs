@@ -1903,10 +1903,12 @@ use std::sync::{Arc, Mutex};
 
 /// A model double. It keeps each text it is sent, waits for the test to
 /// release it, answers the next of `replies` — the last one again once it
-/// is the only one left — and says it is done.
+/// is the only one left — and says it is done. It answers a consolidation
+/// (#322) with `prompt` in the same way.
 struct FakeModel {
     available: bool,
     replies: Mutex<Vec<Result<Candidate, String>>>,
+    prompt: Arc<Mutex<Result<String, String>>>,
     sent: Arc<Mutex<Vec<String>>>,
     release: Mutex<Receiver<()>>,
     done: Mutex<Sender<()>>,
@@ -1931,11 +1933,21 @@ impl Model for FakeModel {
         let _ = self.done.lock().expect("done").send(());
         reply
     }
+
+    fn consolidate(&self, text: &str, _cancel: &Cancel) -> Result<String, String> {
+        self.sent.lock().expect("sent").push(text.to_string());
+        let _ = self.release.lock().expect("release").recv();
+        let reply = self.prompt.lock().expect("prompt").clone();
+        let _ = self.done.lock().expect("done").send(());
+        reply
+    }
 }
 
 /// The test's side of a `FakeModel`.
 struct Harness {
     sent: Arc<Mutex<Vec<String>>>,
+    /// What the model answers a consolidation with.
+    prompt: Arc<Mutex<Result<String, String>>>,
     release: Sender<()>,
     done: Receiver<()>,
 }
@@ -1953,6 +1965,9 @@ impl Harness {
         self.sent.lock().expect("sent").clone()
     }
 }
+
+/// What a `FakeModel` answers a consolidation with, unless the test says.
+const MODEL_PROMPT: &str = "the timeout errors, not the DEMO runs";
 
 fn candidate(pattern: &str) -> Candidate {
     Candidate {
@@ -1979,9 +1994,11 @@ fn app_with_replies(
     let (release_tx, release_rx) = channel();
     let (done_tx, done_rx) = channel();
     let sent = Arc::new(Mutex::new(Vec::new()));
+    let prompt = Arc::new(Mutex::new(Ok(MODEL_PROMPT.to_string())));
     let model = FakeModel {
         available,
         replies: Mutex::new(replies),
+        prompt: Arc::clone(&prompt),
         sent: Arc::clone(&sent),
         release: Mutex::new(release_rx),
         done: Mutex::new(done_tx),
@@ -1989,6 +2006,7 @@ fn app_with_replies(
     let app = app_over_file(name, BODY).with_model(Some(Arc::new(model)));
     let harness = Harness {
         sent,
+        prompt,
         release: release_tx,
         done: done_rx,
     };
@@ -2514,6 +2532,8 @@ fn a_generated_pattern_is_saved_with_generated_from_and_shown_after_a_restart() 
     key(&mut app, KeyCode::Down);
     key(&mut app, KeyCode::Char('-'));
     key(&mut app, KeyCode::Enter);
+    // The consolidation step (#322); Esc keeps `error lines`.
+    key(&mut app, KeyCode::Esc);
     assert!(app.filter_editor.is_none(), "{:?}", editor(&app).error);
 
     let (_, filter) = app.filters.filters_in(0).next().expect("a scratch filter");
@@ -2706,6 +2726,8 @@ fn enter_refuses_a_generated_filter_without_an_example_of_each_kind() {
     key(&mut app, KeyCode::Down);
     key(&mut app, KeyCode::Char('-'));
     key(&mut app, KeyCode::Enter);
+    // The consolidation step (#322); Esc keeps `error lines`.
+    key(&mut app, KeyCode::Esc);
     assert!(app.filter_editor.is_none(), "{:?}", editor(&app).error);
     let (_, filter) = app.filters.filters_in(0).next().expect("a scratch filter");
     assert!(filter.is_generated());
@@ -2796,6 +2818,351 @@ fn a_model_pattern_with_no_prompt_is_ordinary() {
     assert_eq!(editor(&app).generated(), Generated::No);
     key(&mut app, KeyCode::BackTab);
     key(&mut app, KeyCode::Enter);
+    // The consolidation step (#322); Esc keeps the empty prompt.
+    key(&mut app, KeyCode::Esc);
     let (_, filter) = app.filters.filters_in(0).next().expect("a scratch filter");
     assert_eq!(filter.generated_from, None);
+}
+
+// ---- the consolidated prompt (#322) ---------------------------------------
+
+use crate::app::filter_editor::{CONSOLIDATED, CONSOLIDATING, Phrase};
+
+/// A model session over `BODY`: the prompt `errors`, the request `the
+/// timeouts` answered with `timeout`, and `ERROR timeout` must-match and
+/// `INFO ok` must-not-match. Enter opens the consolidation step.
+fn app_in_a_session(name: &str) -> (App<'static>, Harness) {
+    let (mut app, harness) = app_with_model(name, true, Ok(candidate("timeout")));
+    open_editor_from_the_filter_pane(&mut app);
+    to_prompt(&mut app);
+    typed(&mut app, "errors");
+    key(&mut app, KeyCode::Tab);
+    key(&mut app, KeyCode::Tab);
+    ask(&mut app, "the timeouts");
+    harness.answer();
+    take_reply(&mut app);
+    key(&mut app, KeyCode::Tab);
+    key(&mut app, KeyCode::Char('+'));
+    key(&mut app, KeyCode::Down);
+    key(&mut app, KeyCode::Char('-'));
+    (app, harness)
+}
+
+/// Take the consolidation's reply, waited for as `take_reply` waits.
+fn take_prompt(app: &mut App) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while editor(app)
+        .consolidation
+        .as_ref()
+        .is_some_and(|step| step.running.is_some())
+    {
+        assert!(std::time::Instant::now() < deadline, "no prompt to take");
+        app.drain_request();
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
+#[test]
+fn enter_after_a_request_shows_the_models_prompt_to_edit_before_the_save() {
+    let (mut app, harness) = app_in_a_session("consolidate_edit");
+    let before = app.filters.len();
+    key(&mut app, KeyCode::Enter);
+    assert!(app.filter_editor.is_some(), "Enter saved at once");
+    assert_eq!(app.filters.len(), before);
+    assert_eq!(editor(&app).focus, EditorFocus::Prompt);
+    let status = status_line(&mut app);
+    assert!(status.contains(CONSOLIDATING), "{status}");
+
+    // What the model receives: the prompt before, the request, the pattern.
+    harness.answer();
+    take_prompt(&mut app);
+    let sent = harness.sent();
+    let text = sent.last().expect("a consolidation");
+    assert!(
+        text.contains("The filter's description before the steps: errors"),
+        "{text}"
+    );
+    assert!(
+        text.contains("The steps, oldest first:\nthe timeouts\n"),
+        "{text}"
+    );
+    assert!(
+        text.contains("The regular expression the steps gave: timeout"),
+        "{text}"
+    );
+
+    assert_eq!(editor(&app).prompt.pattern, MODEL_PROMPT);
+    let status = status_line(&mut app);
+    assert!(status.contains("the model's prompt"), "{status}");
+    assert!(CONSOLIDATED.contains("Esc keeps the prompt as it was"));
+    // `f`, `+` and the other keys of the lines are typed into the prompt.
+    typed(&mut app, " of +f");
+    key(&mut app, KeyCode::Enter);
+    assert!(app.filter_editor.is_none(), "{:?}", editor(&app).error);
+    let (_, filter) = app.filters.filters_in(0).next().expect("a scratch filter");
+    let prompt = format!("{MODEL_PROMPT} of +f");
+    assert_eq!(filter.prompt.as_deref(), Some(prompt.as_str()));
+    assert_eq!(filter.predicate.display(), "timeout");
+    // The model wrote the pattern for the requests the prompt now says.
+    assert_eq!(
+        filter.generated_from,
+        Some(generated_hash(&prompt, "timeout"))
+    );
+}
+
+/// Esc keeps the prompt from before the step and still saves the pattern:
+/// after the model's answer, and while the model still writes.
+#[test]
+fn esc_in_the_step_keeps_the_earlier_prompt_and_saves() {
+    let (mut app, harness) = app_in_a_session("consolidate_esc_after");
+    key(&mut app, KeyCode::Enter);
+    harness.answer();
+    take_prompt(&mut app);
+    key(&mut app, KeyCode::Esc);
+    assert!(app.filter_editor.is_none(), "{:?}", editor(&app).error);
+    let (_, filter) = app.filters.filters_in(0).next().expect("a scratch filter");
+    assert_eq!(filter.prompt.as_deref(), Some("errors"));
+    assert_eq!(filter.predicate.display(), "timeout");
+    assert!(filter.is_generated());
+
+    let (mut app, _harness) = app_in_a_session("consolidate_esc_during");
+    key(&mut app, KeyCode::Enter);
+    assert!(editor(&app).consolidation.is_some());
+    key(&mut app, KeyCode::Esc);
+    assert!(app.filter_editor.is_none(), "{:?}", editor(&app).error);
+    let (_, filter) = app.filters.filters_in(0).next().expect("a scratch filter");
+    assert_eq!(filter.prompt.as_deref(), Some("errors"));
+    assert_eq!(filter.predicate.display(), "timeout");
+}
+
+/// While the model writes, Enter and the characters do nothing: the answer
+/// would replace what they did.
+#[test]
+fn while_the_model_writes_only_esc_acts() {
+    let (mut app, harness) = app_in_a_session("consolidate_waiting");
+    key(&mut app, KeyCode::Enter);
+    typed(&mut app, "abc");
+    key(&mut app, KeyCode::Enter);
+    key(&mut app, KeyCode::Tab);
+    assert!(app.filter_editor.is_some());
+    assert_eq!(editor(&app).prompt.pattern, "errors");
+    assert_eq!(editor(&app).focus, EditorFocus::Prompt);
+    harness.answer();
+    take_prompt(&mut app);
+    assert_eq!(editor(&app).prompt.pattern, MODEL_PROMPT);
+}
+
+#[test]
+fn a_session_with_no_request_saves_at_once() {
+    let (mut app, harness) = app_with_model("consolidate_none", true, Ok(candidate("x")));
+    open_editor(&mut app);
+    typed(&mut app, "ERROR");
+    key(&mut app, KeyCode::Enter);
+    assert!(app.filter_editor.is_none(), "{:?}", editor(&app).error);
+    assert!(harness.sent().is_empty(), "{:?}", harness.sent());
+}
+
+/// `Ctrl-r` writes the pattern from the prompt alone and starts the
+/// session's requests again, so there is nothing to consolidate after it.
+#[test]
+fn after_ctrl_r_enter_saves_at_once() {
+    let (mut app, harness) = app_in_a_session("consolidate_after_regenerate");
+    ctrl(&mut app, KeyCode::Char('r'));
+    answer(&mut app, &harness);
+    let asked = harness.sent().len();
+    key(&mut app, KeyCode::Enter);
+    assert!(app.filter_editor.is_none(), "{:?}", editor(&app).error);
+    assert_eq!(harness.sent().len(), asked, "the model was asked again");
+}
+
+/// A model that gives no prompt leaves the prompt as it was, to edit or
+/// save.
+#[test]
+fn a_failed_consolidation_keeps_the_prompt_as_it_was() {
+    let (mut app, harness) = app_in_a_session("consolidate_failed");
+    *harness.prompt.lock().expect("prompt") = Err("busy".to_string());
+    key(&mut app, KeyCode::Enter);
+    harness.answer();
+    take_prompt(&mut app);
+    let error = editor(&app).error.clone().unwrap_or_default();
+    assert!(error.contains("the model gave no prompt: busy"), "{error}");
+    assert_eq!(editor(&app).prompt.pattern, "errors");
+    key(&mut app, KeyCode::Enter);
+    assert!(app.filter_editor.is_none(), "{:?}", editor(&app).error);
+    let (_, filter) = app.filters.filters_in(0).next().expect("a scratch filter");
+    assert_eq!(filter.prompt.as_deref(), Some("errors"));
+}
+
+/// A model's prompt can make a filter generated that was not: one without
+/// a mark of each kind is then refused, and the next Enter, with the
+/// requests spent, does not ask the model again.
+#[test]
+fn a_prompt_that_makes_the_filter_generated_needs_its_examples() {
+    let (mut app, harness) = app_with_model("consolidate_examples", true, Ok(candidate("ERROR")));
+    open_editor(&mut app);
+    ask(&mut app, "the errors");
+    harness.answer();
+    take_reply(&mut app);
+    // Off the request line, where Enter sends a request.
+    key(&mut app, KeyCode::Tab);
+    key(&mut app, KeyCode::Enter);
+    harness.answer();
+    take_prompt(&mut app);
+    key(&mut app, KeyCode::Enter);
+    assert!(app.filter_editor.is_some(), "saved without examples");
+    assert_eq!(editor(&app).error.as_deref(), Some(NEEDS_EXAMPLES));
+    assert!(editor(&app).consolidation.is_none());
+    assert_eq!(editor(&app).prompt.pattern, MODEL_PROMPT);
+
+    focus_field(&mut app, EditorFocus::Lines);
+    key(&mut app, KeyCode::Char('+'));
+    key(&mut app, KeyCode::Down);
+    key(&mut app, KeyCode::Char('-'));
+    let asked = harness.sent().len();
+    key(&mut app, KeyCode::Enter);
+    assert!(app.filter_editor.is_none(), "{:?}", editor(&app).error);
+    assert_eq!(harness.sent().len(), asked);
+    let (_, filter) = app.filters.filters_in(0).next().expect("a scratch filter");
+    assert!(filter.is_generated());
+}
+
+/// A pattern changed by hand after the request is not generated from the
+/// model's prompt.
+#[test]
+fn a_hand_edited_pattern_is_not_generated_from_the_models_prompt() {
+    let (mut app, harness) = app_in_a_session("consolidate_hand_edit");
+    focus_field(&mut app, EditorFocus::Pattern);
+    typed(&mut app, "|x");
+    key(&mut app, KeyCode::Enter);
+    harness.answer();
+    take_prompt(&mut app);
+    key(&mut app, KeyCode::Enter);
+    assert!(app.filter_editor.is_none(), "{:?}", editor(&app).error);
+    let (_, filter) = app.filters.filters_in(0).next().expect("a scratch filter");
+    assert_eq!(filter.prompt.as_deref(), Some(MODEL_PROMPT));
+    assert_eq!(filter.generated_from, None);
+}
+
+// ---- phrase marks (#322) --------------------------------------------------
+
+/// The screen cell of byte `at` of line `line`'s text, as drawn.
+fn cell_of(app: &mut App, line: u16, at: u16) -> (u16, u16) {
+    draw(app);
+    let area = editor(app).lines_area;
+    (area.x + 3 + at, area.y + line)
+}
+
+/// A drag with the left button from byte `from` to byte `to` of line
+/// `line`, as drawn with no scroll.
+fn drag_phrase(app: &mut App, line: u16, from: u16, to: u16) {
+    let (x, y) = cell_of(app, line, from);
+    mouse_at(app, MouseEventKind::Down(MouseButton::Left), x, y);
+    let (x, y) = cell_of(app, line, to);
+    mouse_at(app, MouseEventKind::Drag(MouseButton::Left), x, y);
+    mouse_at(app, MouseEventKind::Up(MouseButton::Left), x, y);
+}
+
+#[test]
+fn a_drag_along_a_line_marks_a_phrase() {
+    let mut app = app_over_file("phrase_drag", BODY);
+    open_editor(&mut app);
+    typed(&mut app, "ERROR");
+    // `timeout` of `ERROR timeout`, dragged from its end to its start.
+    drag_phrase(&mut app, 0, 12, 6);
+    assert_eq!(
+        editor(&app).phrases,
+        [Phrase {
+            line: 0,
+            start: 6,
+            end: 13
+        }]
+    );
+    // A click is not a drag, and marks nothing.
+    let (x, y) = cell_of(&mut app, 1, 2);
+    mouse_at(&mut app, MouseEventKind::Down(MouseButton::Left), x, y);
+    mouse_at(&mut app, MouseEventKind::Up(MouseButton::Left), x, y);
+    assert_eq!(editor(&app).phrases.len(), 1);
+    // A drag over it takes its place.
+    drag_phrase(&mut app, 0, 0, 7);
+    assert_eq!(
+        editor(&app).phrases,
+        [Phrase {
+            line: 0,
+            start: 0,
+            end: 8
+        }]
+    );
+}
+
+/// A phrase mark is underlined in bold over the line's own style, with `~`
+/// in the gutter, so it is not read as a line mark.
+#[test]
+fn a_phrase_mark_is_drawn_other_than_a_line_mark() {
+    let mut app = app_over_file("phrase_style", BODY);
+    open_editor(&mut app);
+    typed(&mut app, "ERROR");
+    drag_phrase(&mut app, 0, 6, 12);
+    let mut buf = Buffer::empty(AREA);
+    app.render(AREA, &mut buf);
+    let area = editor(&app).lines_area;
+    let cell = |x: u16| &buf[(area.x + x, area.y)];
+    assert_eq!(cell(1).symbol(), "~");
+    assert!(cell(3 + 6).modifier.contains(Modifier::UNDERLINED));
+    assert!(!cell(3 + 5).modifier.contains(Modifier::UNDERLINED));
+    // The match is still reversed, and the phrase does not change it.
+    assert!(cell(3).modifier.contains(Modifier::REVERSED));
+    assert!(!cell(3 + 6).modifier.contains(Modifier::REVERSED));
+}
+
+/// Phrase marks are hints: they go to the model and are never checks.
+#[test]
+fn a_phrase_mark_goes_to_the_model_and_is_not_a_check() {
+    let (mut app, harness) = app_with_model("phrase_model", true, Ok(candidate("ERROR")));
+    open_editor(&mut app);
+    typed(&mut app, "INFO");
+    drag_phrase(&mut app, 0, 6, 12);
+    assert_eq!(editor(&app).failures, 0);
+    assert!(editor(&app).marks.is_empty());
+    assert!(!status_line(&mut app).contains("check"));
+    ask(&mut app, "the timeouts");
+    harness.answer();
+    take_reply(&mut app);
+    let sent = harness.sent();
+    assert!(
+        sent[0].contains("\"timeout\" in the line: ERROR timeout"),
+        "{}",
+        sent[0]
+    );
+    // Enter keeps no phrase marks as examples.
+    key(&mut app, KeyCode::Tab);
+    key(&mut app, KeyCode::Enter);
+    harness.answer();
+    take_prompt(&mut app);
+    assert!(
+        harness.sent()[1].contains("\"timeout\" in the line: ERROR timeout"),
+        "the consolidation has the phrase marks too"
+    );
+    // Esc: the model's prompt would make it generated, which needs marks.
+    key(&mut app, KeyCode::Esc);
+    let (_, filter) = app.filters.filters_in(0).next().expect("a scratch filter");
+    assert!(filter.examples.is_empty(), "{:?}", filter.examples);
+}
+
+/// `=` on the lines removes a line's phrase marks with its line mark.
+#[test]
+fn equals_clears_the_phrase_marks_of_the_line() {
+    let mut app = app_over_file("phrase_clear", BODY);
+    open_editor(&mut app);
+    drag_phrase(&mut app, 0, 0, 4);
+    drag_phrase(&mut app, 2, 0, 4);
+    focus_field(&mut app, EditorFocus::Lines);
+    key(&mut app, KeyCode::Char('='));
+    assert_eq!(
+        editor(&app).phrases,
+        [Phrase {
+            line: 2,
+            start: 0,
+            end: 5
+        }]
+    );
 }

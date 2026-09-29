@@ -949,6 +949,7 @@ that compiled left them, so a half-typed `(` does not clear the screen.
 | `Ctrl-z` / `Ctrl-y` | Go back / forward one version of the pattern | `filtereditor.undo` / `filtereditor.redo` |
 | `Ctrl-g` | With a model: move the keys to the request line | `filtereditor.request` |
 | `Ctrl-r` | With a model: write the pattern again from the prompt | `filtereditor.regenerate` |
+| mouse drag | On a line of the file: mark a phrase, a hint to the model | — |
 
 ##### The name, description, prompt and sense
 
@@ -1111,7 +1112,44 @@ errors, but not the DEMO runs` — and press `Enter`.
   goes to the model again with every later request. So you can improve the
   pattern in steps: `the timeout errors`, then `not the DEMO runs`. A
   request that you cancel, or that fails, is not kept. The prompt does not
-  change.
+  change until you save.
+
+##### One prompt for the session
+
+When you press `Enter` to save after one or more requests, the model first
+writes one prompt from all of them — for example `the timeout errors, but
+not the DEMO runs` in place of `the timeout errors` and `not the DEMO
+runs`. The prompt field shows it, the status row shows `the model's prompt
+for the filter`, and the keys edit only the prompt.
+
+- `Enter` saves the filter with the prompt as it is in the field, also after
+  you edit it. A pattern that the model wrote, and that you did not change
+  by hand, is generated from this prompt.
+- `Esc` saves the filter with the prompt from before. It works at any
+  time, also while the model writes. `Esc` does not stop the save: the
+  checks passed already. To change more, open the filter again with `f C`.
+- When the model gives no prompt, the prompt stays as it was, and the panel
+  says why. `Enter` or `Esc` saves.
+- The requests are spent after this step: a second `Enter` does not ask the
+  model again. When the new prompt makes the filter generated and a
+  must-match or a must-not-match line is missing, the editor stays open
+  and says so.
+- A session with no request, or one after `Ctrl-r`, saves at once and does
+  not ask the model.
+
+##### Phrase marks
+
+Drag the mouse along part of a line to mark a phrase: the part of the line
+that is important, for example `timeout` in `ERROR timeout`. A phrase mark
+is underlined in bold, and the line shows `~` before it when it has no line
+mark. The phrase stays on the line where the drag started.
+
+Phrase marks go to the model with each request, with `Ctrl-r` and with the
+consolidation, as hints. recon does not check them: only the `+` and `-`
+line marks are checks, and a phrase mark does not change the count of
+failed checks. `=` on a line removes its line mark and its phrase marks.
+Phrase marks last only while the editor is open; `Enter` does not keep
+them as examples. A drag over a phrase mark replaces it.
 
 Without the feature, on Linux, or when the model is not ready (Apple
 Intelligence off, or the model still downloading), there is no request
