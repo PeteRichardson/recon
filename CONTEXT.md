@@ -189,3 +189,19 @@ _Avoid_: viewport, visible (when the window is meant)
 **Dim mode / Hide mode**:
 The two ways to treat a line that is not interesting: keep it and grey it, or
 remove it from the visible lines. `u` toggles between them.
+
+### Builds and releases
+
+**Release version**:
+The `X.Y.Z` number of recon. Only a release changes it.
+_Avoid_: version on its own (a *version* is a state of a pattern in the
+filter editor)
+
+**Build stamp**:
+The facts that identify one build: its release version, commit, dirty flag,
+branch, checkout path and build time.
+_Avoid_: build info, build ID, build version
+
+**Release**:
+A release version that has a tag `vX.Y.Z` and a GitHub release with notes.
+_Avoid_: milestone (that is a GitHub issue grouping)
