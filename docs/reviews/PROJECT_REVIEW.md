@@ -1,480 +1,507 @@
 # recon — Project Review
 
-Generated 2026-09-06 against `4fb8a74`. Second run. The first run (2026-08-31,
-`eeb3b1b`) minted F1–F33; the git-history scan finds commit messages citing up
-to F29 and the live doc carrying up to F33, so new findings start at **F34**.
-101 commits and ~16,000 added lines separate the two runs: saved filter sets,
-syntax colouring, the navigator scan thread, and five keymap PRs all landed in
-between.
+Generated 2026-09-29 against `199e3a9`. Third run. The second run (2026-09-06,
+`4fb8a74`) minted F34–F88. The git-history scan finds that ID as the highest one
+cited anywhere, so new findings start at **F89**. 214 commits (+59k / −18k lines)
+separate the two runs. In that time these landed: the `App` split into
+`src/app/`, the `filter/` split, the keymap table and `[keymap]`, headless
+`--emit`, visual mode and yank, incremental search, the set picker, listed and
+unlisted sets, the filter editor, pattern generation with Foundation Models, and
+the hex view.
 
-**Status of the first run:** F1–F30 are all `RESOLVED` on `main` (verified in
-code, not just by issue state — the `Vec<AppWidget>` is three named fields and a
-`Focus` enum, `layout.rs`/`viewport.rs` exist, redraws are event-driven,
-`RegexSet` is in use, `read_lines` is lossy with a NUL sniff, logging is real).
-F31, F32 and F33 are carried over unchanged as issues #98, #51 and #99.
+**Status of the second run:**
+- 40 of the 58 findings from F31 to F88 are `RESOLVED` on `main`. This was
+  checked in the code, not only by the state of the issue.
+- 18 are carried over, and 6 of those have changed shape (F44, F46, F48, F54,
+  F72). F75 is resolved for `filters.toml`; its `config.toml` half is now F109.
+- #202 (F85) is open, but F85 was a false positive: `long_help_still_describes_every_flag`
+  has asserted `Bundled themes: ` and `Dracula` since `883da68`, three days before
+  that finding was raised.
 
-No `/code-review` reports exist yet, so Phase 1.5 had nothing to ingest.
+**Tooling at `199e3a9`:**
+- `cargo clippy --all-targets` (pedantic, from `[lints]`) is clean.
+- `cargo test` passes: 1,582 tests, 1 ignored. It also passes with
+  `--features foundation-models`.
+- `cargo audit` shows only RUSTSEC-2025-0141 (`bincode`, unmaintained, through
+  `syntect/dump-load`).
+- `cargo machete` is clean.
+- `cargo-udeps` and a coverage tool are not installed, so no coverage figure is
+  given.
+
+**Method.** Six parallel module audits (app core, filter editor and generation,
+model and scanner, panes, keymap and config, tests/docs/CI). The main agent
+merged, deduplicated and ranked the results. It re-checked F89, F90, F92, F93,
+F108 and F111 against the source.
+
+No `/code-review` scope reports exist in `docs/reviews/`, so Phase 1.5 had
+nothing to ingest.
 
 ---
 
 ## Executive summary
 
-1. **`!` goes inert after one toggle.** `disable_all_remembering` refuses to run
-   while a capture is pending; `App` calls it whenever anything is enabled. So
-   `!`, then `Enter` on any row (or a profile, or `s`), then `!` — nothing,
-   forever, until an add/remove/`S`/`R` drops the capture. The four `bang_*`
-   tests cover add and remove but not a flag change. Reproduced. **F34.**
-2. **Every file load clones the whole file into a `TextArea` that is thrown
-   away unrendered.** `adopt` seeds the textarea with `source.clone()`; every
-   caller replaces that buffer via `show_window` before the first draw. A 2 GB
-   log is momentarily resident three times, and every navigator arrow pays a
-   full copy. **F35.**
-3. **The suite is red on this machine, deterministically.** Six of nine
-   `render_smoke` tests and ~15 widget unit tests use the repo root as their
-   fixture. `nav_pane_renders_directory_entries` now fails because the root has
-   grown past the navigator's row count and `..` scrolls off. It passes in CI
-   only because CI has fewer ignored directories. **F36, F47.**
-4. **The one file recon writes can be destroyed by writing it.** `S` writes
-   `filters.toml` in place with `fs::write` (truncate, then write), and
-   `append_set` uses `Table::insert`, which silently *replaces* a set added by
-   hand since startup — comment and all. **F37, F38.**
-5. **The README's safety claim is false for two templates recon itself
-   emits.** `terminal-nvim` and `iterm-nvim` hand a string to a second shell;
-   a filename with `"` or `$(` breaks out of it. **F39.**
-6. **A `stat` per listed file, on the UI thread, on every filter toggle** and
-   again every two seconds. Fine at a few hundred files; a 20k-file directory or
-   a network mount turns each keystroke into thousands of syscalls. **F40.**
-7. **Fixture management has fragmented into three conventions** since #69: a
-   registry in `lib.rs`, a second one in `fileview.rs`, and bare
-   `remove_dir_all` in `filenav.rs` plus twelve `lib.rs` tests that bypass the
-   registry. The APFS race is one new `O_*` fixture away from returning. **F48.**
-8. **The keymap drift test has blind spots the README doesn't admit:** it does
-   not scan `picker.rs`, and it only sees `Char(..)` arms, so `Home`, `End`,
-   `PageUp`, `BackTab` and every mouse binding are outside its reach. **F46.**
-9. **`filter.rs` is 3,702 lines doing four jobs** — palette, per-line verdicts,
-   the set/solo/reset state machine, and the scan-side `Matcher` — with 72
-   `pub` items and several doc comments now attached to the wrong function.
-   **F44, F63.**
-10. **The README's Development section describes the August codebase:** wrong
-    test counts, a clippy suppression on a type that no longer exists, and a
-    layout table missing nine of the eighteen modules. **F58, F59.**
+1. **A peek corrupts the filter flags if you add a filter during it.**
+   - Cause: the peek (`Space`) restores the flags by list *position*. But a
+     typed filter is now inserted in the middle of the list, before the
+     file-set filters.
+   - Result: `Space`, `i foo Enter`, `Space` turns on the wrong filter in a
+     loaded set and turns the new filter off. `d` and `S` during a peek do the
+     same.
+   - **F89.**
+2. **Work in the filter editor is lost without warning.**
+   - Cause: changes from `f C` to a filter in a named set (pattern, name,
+     examples, prompt, a regeneration) stay in memory only. `S` saves only the
+     scratch set.
+   - Result: `q` discards all of it, and nothing says so.
+   - **F91.**
+3. **Mouse input in the file view is wrong in two ways.**
+   - A click on a directory listing uses the buffer row as the entry index. With
+     an exclude filter or hide mode, recon opens a *different* file from the one
+     you clicked (**F92**).
+   - The wheel does nothing at all. No code path turns a wheel event into a
+     scroll, but the README says "the wheel scrolls the file view" (**F93**).
+4. **`--emit` output can be incomplete, and nothing says so.**
+   - `q` on a previewed 50 MB log emits only the 50k-line preview, and the exit
+     code is 0 (**F94**).
+   - Hide-mode `--emit files` lists files that were never scanned as matches
+     (**F95**).
+   - Headless mode reads stdin even when you give a PATH, so it hangs under
+     `ssh` or in a `while read` loop (**F96**).
+5. **The tests use the developer's real config and clipboard.**
+   - Every test `App` has `save_path = filtersets::path()` (your real
+     `filters.toml`), the real `pbcopy`, and the real launcher. Each test that
+     saves overrides this by hand today.
+   - Config and headless tests read the `RECON_*` environment variables, which
+     the README tells users to export.
+   - **F110, F111.**
+6. **Empty and unreachable input is accepted without a message.**
+   - `f x Enter` adds a match-everything exclude filter, and the view goes blank
+     (**F90**).
+   - If you bind a prompt action to a printable key, you can no longer type that
+     key in any pattern (**F106**).
+   - `Ctrl-G`, `Ctrl-1` and `Ctrl-i` parse as labels, but a legacy terminal
+     cannot send them. The README's own `Ctrl-1-9` example gets 4 of 9 keys
+     (**F107**).
+   - `recon --warnings app.log` reads `app.log` as the flag's value (**F108**).
+7. **`S` breaks a symlinked `filters.toml`.**
+   - Cause: the atomic write from F37 renames over the link.
+   - Result: a dotfiles-managed file becomes a regular file, and a `0600` file
+     becomes `0644` (**F97**).
+   - Also, a line with a `\r` inside it that you mark as an example makes the
+     scratch set impossible to save (**F102**).
+8. **The keymap's 13 open issues have one root cause.**
+   - Cause: labels are stored as `String` and parsed again on every keypress,
+     check and eviction. The parser throws away the function-key number and
+     expands ranges ad hoc.
+   - Fix: one typed parse at load time closes about six of the issues as a
+     class (**F114**).
+9. **Three structures keep growing.**
+   - `App` has 59 fields (**F117**).
+   - `fileview.rs` has 4,074 lines doing six jobs (**F115**).
+   - The `filter/` split separated files but not responsibilities: five
+     alignment invariants still span three files (**F44**).
+10. **Documentation debt from the last run is still open, and it has grown.**
+    - F58–F61, F63 and F64 are still present.
+    - The README's Features list does not name the seven largest features added
+      since August.
+    - The Development section still says "713 unit tests" (the real count is
+      about 1,550).
+    - **F58, F136.**
 
-No new categories were introduced; every finding fits the existing vocabulary.
+No new categories were introduced. Every finding fits the existing vocabulary.
 
 ---
 
 ## Architectural mental model
 
-recon is a single-binary ratatui TUI for reading logs through a stack of regex
-filters. The model layer is still the well-factored core it was in August, but
-it has grown a second axis. `ActiveFilters` (`filter.rs`) now owns *sets*: an
-always-present scratch set plus named sets loaded from `filters.toml`
-(`filtersets.rs`) and one built-in `definitions` set whose filters are
-syntect-scope predicates rather than regexes. A filter takes effect only when
-both its own flag and its set's flag are on; solo, reset, `!` and profiles are
-four independent snapshot-and-restore mechanisms over those flags. `Document`
-(`document.rs`) holds every line and one `Verdict` per line, evaluated in a
-single `RegexSet` pass, and derives the visible set from a `Mode`.
+recon is a single-binary ratatui TUI, and now also a headless filter, for
+reading logs through stacks of regex filters.
 
-Around that, `App` (`lib.rs`) owns three named panes (`FileNav`, `FileView`,
-`FilterList`), a `Focus`, and 33 fields of interaction state: divider drags,
-the prompt, zoom, the peek, the cross-file `Crossing` notice, the chain origin
-for `f i … Enter`, the profile picker, and the scan bookkeeping. `dispatch_event`
-is a 520-line flat match over the global keys; pane keys live in three widget
-handlers plus `viewport::long_range_target`. The README's "four layers" model
-(prompt, global, chain, pane) is real and the code follows it, but it is spread
-across six sites and only the help table is machine-checked against them.
+**The model layer** is `filter/`:
+- `mod.rs` holds `ActiveFilters`, the palette, and per-line verdicts.
+- `sets.rs` holds scratch, file and built-in sets, listing, profiles, solo and
+  reset.
+- `matcher.rs` holds the scan-side `RegexSet` and masks.
 
-Two subsystems are new since the last run and both are asynchronous. The
-**scanner** (`scan.rs`) is a worker thread fed over mpsc: for each listed file
-it records, per line, a 64-bit mask of which patterns hit, so toggling a filter
-re-answers "which files match" from cache with no I/O. The 64-pattern ceiling
-counts every loaded set, enabled or not. The **highlighter** (`syntax.rs`)
-wraps syntect with two-face's grammar bundle, parses forward lazily, and resyncs
-approximately after a jump; the same scope pass feeds the definition filters.
-`FileView` still holds a three-screen window of the visible set with `App`
-translating between source index, visible row and buffer row — that translation
-is now in `viewport.rs` and reads much better than it did.
+`filtersets.rs` loads `filters.toml`, `<name>.filters.toml` and
+`RECON_FILTER_PATH` directories, and it is the one `toml_edit` write path (`S`).
+`Document` holds every line plus one `Verdict` per line, from a single
+`RegexSet` pass, and a `generation` that moves when the visible set changes.
 
-The README's architecture claims match reality except in the Development
-section (F58). What I did not expect: `lib.rs`'s *production* half grew from
-~2,400 to 2,651 lines despite the #73/#74 split, because the chain, crossing,
-peek, picker, save and scan features each added state to `App` rather than to a
-type of their own. That is the shape to watch. The comment discipline noted last
-time has held, and several August findings are now recorded in the code as
-"this used to be X, and here is why it was wrong" — which is exactly how a few
-of this run's findings were found.
+The model keeps several *parallel positional arrays* that must stay aligned:
+- `filters` (contiguous by set)
+- `as_loaded`
+- `remembered` (`!`)
+- the peek's `EnabledFlags`
+- the solo snapshot
+- `compiled`
+
+Every snapshot and restore mechanism relies on that alignment. This is the
+seam where F89 breaks.
+
+**The app layer** is `src/app/`: one `impl App` per topic (actions, events,
+filters, focus, layout, mouse, navigation, prompt, scanning, search, selection,
+sync, viewport, and others), with rendering in `app/render/` and about 30 test
+files in `app/tests/`.
+- `App` owns three named panes (`Explorer`, `FileView`, `FilterList`) and a
+  `Focus`, plus 59 fields of interaction state.
+- Six optional modals (help, warnings, picker, set picker, filter editor,
+  prompt) are ordered only by the order of the guards in `dispatch_event`.
+- Keys resolve through `keymap::DEFAULT` + `[keymap]` into an `ActionId`, and
+  `perform` has one arm per action.
+- The explorer and the filter list take `perform(ActionId)` directly.
+  `FileView` still gets a synthesized `KeyEvent` (F116).
+- The keymap's label grammar lives in `help.rs`, and `keymap/check.rs` runs a
+  multi-pass consistency and eviction check over string labels.
+
+**Asynchronous parts:**
+- The scanner thread (`scan.rs`): 128-bit per-line masks, resumable only after
+  a cancel.
+- The `recon-stamps` poll thread.
+- The editor launcher and the clipboard child processes.
+- The newest one, the Foundation Models worker (`generate.rs`). It exists only
+  on aarch64 macOS with the feature on, is reached through a `Model` trait, and
+  is replaced by a fake in tests.
+
+**The filter editor** (`app/filter_editor.rs`, 2,028 lines) is effectively a
+second application: its own marks, versions, phrase marks, request state and
+renderer. It writes nothing to disk. Its results reach `filters.toml` only
+through a later `S`, and only for the scratch set.
+
+**`headless.rs` + `emit.rs`** re-use `Document` and the matcher. They collect
+all output in memory and write it at the end.
+
+The README still describes a "four layers" key model and a single-module
+layout. Both are out of date (F58, F136).
 
 ---
 
 ## Findings
 
-Severity is maintenance impact except for `IDIOM`, which carries a Medium floor.
-Category values are the Phase 2 vocabulary. F1–F30 are listed once, collapsed,
-as `RESOLVED`; F31–F33 are carried over; everything from F34 is `NEW`.
+Severity is maintenance impact, except for `IDIOM`, which has a Medium floor.
+Category values come from the Phase 2 vocabulary.
 
 | ID | Category | File:Line | Severity | Effort | Description | Recommendation |
 |---|---|---|---|---|---|---|
-| F1–F30 | — | — | RESOLVED | — | All thirty findings from the 2026-08-31 run are closed on `main` (issues #69–#97). Verified in code: named panes + `Focus` (F2), `layout.rs`/`viewport.rs` (F1), no `Widget for AppWidget` (F3), test-only methods `#[cfg(test)]` + `unreachable_pub` (F4), `match_count` gone (F5), `lexical_absolute` everywhere (F6), `OsString` names (F7), `PathBuf` filename (F8), `handle_events` unwrapped (F9), private widget fields (F10), case-insensitive fixture guard (F11), pedantic gated (F12), real logging with `RUST_LOG`/`RECON_LOG` (F13/F14), machete metadata (F15), `mem::take` not clone (F16), cached width (F17), dirty-flag draw (F18), `RegexSet` (F19), lossy read + NUL sniff (F20), `debug_assert` gone with the vec (F21), `try_from` (F22), field access (F23), pedantic clusters cleared (F24), `long_help` split from rationale (F25), README usage pinned by test (F26), stderr section rewritten (F27), keymap sources named (F28), dirs-first case-insensitive sort (F29), `unicode-width` (F30). | — |
-| F31 | Performance & resource hygiene | `src/widgets/fileview.rs:670` | Low | S | Carried over (#98). `apply_pending_scroll` still renders into a scratch `Buffer` to prime the viewport, now gated to rebuilds only. | As #98. |
-| F32 | Data integrity & robustness | `src/widgets/fileview.rs:377`, `src/document.rs` | Medium | L | Carried over (#51). Full loads are still uncapped and `Document` holds every line. F35 makes the transient peak worse than the README's "~1.5×". | Continue with #51; F35 is the cheap half. |
-| F33 | Documentation drift | `.gitignore` | Low | S | Carried over (#99). `docs/reviews/` is still untracked; this file's IDs are cited in commit messages and issues. | As #99. |
-| F34 | Correctness & memory safety / UX & CLI ergonomics | `src/filter.rs:1311`, `src/lib.rs:1099` | High | S | **NEW.** `disable_all_remembering` returns early whenever `remembered.is_some()`. `App` calls it whenever `any_enabled()`. Sequence: `!` (capture, all off) → `Enter` on a row / set header with `default` / `a` profile / `s` solo (re-enables flags, none of which call `forget_capture`) → `!` → early return, nothing happens — and keeps not happening until add/remove/`S`/`R` drops the capture. Confirmed: after `!`, toggle, `!`, `!`, `!` the flags stay `[true, false]`. The `bang_*` tests cover add and remove only. | Guard on the thing the comment actually fears: `if self.remembered.is_some() && !self.any_enabled() { return; }`. Add `toggling_a_filter_during_bang_does_not_leave_bang_inert`. |
-| F35 | Performance & resource hygiene | `src/widgets/fileview.rs:377` | High | S | **NEW.** `adopt` does `TextArea::new(self.source.as_ref().clone())` — a deep copy of every line. Every production caller (`perform` → `load`/`preview` → `sync_document` → `refresh_view` → `apply_view`) then calls `show_window`, which replaces that buffer via `set_lines` before it is ever rendered, because `sync_document` clears `last_visible`/`last_window`. A full load is resident three times at peak; every navigator arrow copies the preview twice. | Seed with `vec![String::new()]` and let `show_window` populate; keep an `App`-level test that a fresh load renders. |
-| F36 | Test debt | `tests/render_smoke.rs:120` (also `68,185,213,329,349,387`) | High | M | **NEW. Failing now, deterministically.** Six of nine tests use the repo root: `nav_pane_renders_directory_entries` asserts `..` is on screen while the cursor sits on `Cargo.toml` in a root that now has 14 entries above it and 13 navigator rows, so `..` has scrolled off. `renders_file_contents_into_buffer` needs `tui-textarea-2` in the first ~22 lines of `Cargo.toml` (it is there only because the machete comment mentions it); two tests need `Cargo.lock` with `[[package]]`; one needs `filenav.rs` longer than a page. The two tests at `238`/`281` already moved to a private fixture after this exact breakage (#82). The file also re-implements `divider_column`/`press`/`rendered` from `lib.rs`'s test module because integration tests cannot see `#[cfg(test)]` helpers. | One `fixture()` helper writing a known file set under `target/test-navdirs/render_smoke/`, used by all nine tests. The `..` failure disappears as a side effect. |
-| F37 | Data integrity & robustness | `src/lib.rs:1662` | Medium | S | **NEW.** `save_scratch_as` writes `filters.toml` with `std::fs::write` — truncate, then write. A crash, `kill`, or full disk between the two leaves the user's hand-edited file empty or partial, and the next start refuses to run on it. The read at `1652` and the write at `1662` also bracket a window in which an external editor's save is overwritten. | Write to `filters.toml.tmp` beside it and `fs::rename` over the original; keep the `parse(&after)` check before the rename. |
-| F38 | Data integrity & robustness | `src/filtersets.rs:342`, `src/lib.rs:1630` | Medium | S | **NEW.** `append_set` uses `Table::insert`, which *replaces* an existing `[sets.<name>]`; `save_scratch_as` checks the name only against in-memory sets. A set added to the file by hand after startup under that name is silently overwritten by `S`, together with the comment above its header. Confirmed: `# my file` + `[sets.bug] ORIGINAL` → `[sets.bug] NEW`, comment gone, `parse` passes. | Before the insert: `if sets.contains_key(name) { return Err("a set named {name:?} is already in {path}; it was added since recon started") }`. |
-| F39 | Security hygiene / Documentation drift | `src/editor.rs:569-580`, `README.md:1122-1127` | Medium | S | **NEW.** The `terminal-nvim` and `iterm-nvim` flavours embed `{file}`/`{project}` inside `do script "cd \"{project}\" && nvim +{line} \"{file}\""` — a string the spawned terminal's shell re-parses. A filename containing `"`, a backtick or `$(` breaks out of the inner quoting and runs in the user's terminal. The README's Safety section says without qualification that a quote or `$` "cannot change how the command is split"; true of recon's own split, false for these two templates recon prints via `--print-editor-config`. | Add a `{file:sh}` placeholder that single-quotes with `'\''` escaping and use it in those two flavours; or scope the README claim and say so in the printed stanza's comment. |
-| F40 | Performance & resource hygiene | `src/lib.rs:1747-1762`, `src/lib.rs:1892`, `src/scan.rs:47` | Medium | M | **NEW.** `refresh_scan` calls `scan::stamp` (a `stat`) for every listed file, synchronously on the event thread, whenever the masks change — every filter toggle, digit, `!`, `&`, `Esc`, directory change. `check_stamps` repeats it for every cached record every two seconds. The comment at `1865` says "a few hundred stat calls … is nothing", which holds for small local directories only; a 20k-file log directory or a network mount pays 20k syscalls per keystroke before the frame draws. | The worker already stats each file it reads (`scan.rs:174`). Have `refresh_scan` trust the cached stamp and let the worker report a changed one; or cap the synchronous pass and defer the rest. |
-| F41 | Correctness & memory safety / UX & CLI ergonomics | `src/lib.rs:444`, `src/lib.rs:1887-1897` | Medium | S | **NEW.** `App::new` loads the CLI argument as typed (relative for `recon app.log`), while `nav.files()` yields `dir.join(name)` from a `lexical_absolute` dir. `check_stamps` compares `path == active` on those two spellings, so the ` changed on disk · r ` badge never fires for a file opened from the command line — the most common way to open one — until it is re-selected through the navigator. The view title also flips from `app.log` to `/abs/app.log` after the first navigation. | Absolutise once in `App::new` with `path::lexical_absolute` before `view.load` — the rule the other three sites share. |
-| F42 | UX & CLI ergonomics | `src/lib.rs:1350-1362`, `src/lib.rs:2359` | Medium | S | **NEW.** A chain commit from the navigator (`f i pat Enter`) runs `refresh_scan(false)` and immediately dispatches a synthetic `n`. Every answer is still `Unknown` — the worker was just started — so `step_to_match` finds nothing and the status row says `no matching file`. That is false: the answer is "not scanned yet". A real `n` or `.` before the first scan lands says the same. | When any listed entry is `Unknown`, report `scanning…` or say nothing and let `drain_scan_results`'s redraw speak; reserve `no matching file` for a listing with no `Unknown`s. |
-| F43 | Performance & resource hygiene | `src/viewport.rs:212-215` | Medium | S | **NEW.** The rebuild-skip key is the whole visible index vector: every `apply_view` (every arrow, every filter change) does an O(visible) slice compare, and every rebuild copies the entire `Vec<usize>` — 8 MB for a 1M-line unfiltered file. | Give `Document` a `generation: u64` bumped in `evaluate`/`recompute_visible` and compare `(generation, window)`. `sync_document` already clears the key, so semantics are unchanged. |
-| F44 | Architectural decay | `src/filter.rs:1-1572` | Medium | M | **NEW.** One module, 72 `pub` items in production, four jobs: the palette (`Palette`, `DEFAULT_PALETTE`, `DIM_STYLE`); the per-line model (`ActiveFilters`, `Verdict`, `Predicate`, `verdict`); the set/solo/reset/adopt state machine (`FilterSet`, `Solo`, `Origin`, `with_sets`, `solo`, `reset`, `adopt_scratch_as`); and the scan-side `Matcher`/`Owner`/`MAX_PATTERNS`, consumed only by `scan.rs` and `refresh_scan`. It is also where three doc comments have drifted off their functions (F63). | File split along the existing `impl` blocks into `filter/{mod,sets,matcher}.rs`. No signature changes. |
-| F45 | UX & CLI ergonomics / Documentation drift | `src/filter.rs:768,779`, `README.md:439` | Medium | S | **NEW.** A set with `autoload = true` and no `profiles.default` starts *enabled with every filter off*: an enabled header and nothing filtering. The spec sanctions "else off" (`saved-filter-sets-design.md:154`); the README says only "the set starts enabled", and its example carries a `default` so the trap never shows. | Either start such a set's filters on (the natural reading of `autoload`), or say in the README's `autoload` and `Reset` paragraphs that an autoload set with no `default` loads with its filters off. |
-| F46 | Test debt / Documentation drift | `src/help.rs:586`, `src/help.rs:611`, `src/help.rs:57`, `README.md:271-290` | Medium | S | **NEW.** `every_bound_key_is_documented` scans five files; `src/widgets/picker.rs` binds `j`/`k` (`picker.rs:60,64`) and is not in `SOURCES`. `bound_chars` reads only `Char(..)` patterns and `Binding::codes` yields only characters, so `Home`/`End`/`PageUp`/`PageDown`/`BackTab`/`Delete`, F-keys and every mouse binding are outside the test's reach. The README presents the test as the thing that stops keys drifting. | Add `picker.rs` to `SOURCES`; extend the scan to `KeyCode::<Ident>` tokens and let `codes` return `Char(c) \| Named(&str)`. |
-| F47 | Test debt | `src/widgets/filenav.rs:1419,1430,1473`, `src/widgets/fileview.rs:1716-1971` (15 sites) | Medium | S | **NEW.** Unit tests construct `FileNav::new("Cargo.toml")` / `FileView::new("Cargo.toml")` against the real repo root; `bare_filename_lists_current_directory` asserts `src` and `Cargo.toml` exist in cwd. Same class of dependence as F36, one level down. | Point them at a `target/test-navdirs` fixture like the rest of `filenav.rs`'s tests, or at `env!("CARGO_MANIFEST_DIR")`. |
-| F48 | Test debt | `src/lib.rs:2719`, `src/widgets/fileview.rs:1569`, `src/widgets/filenav.rs:948-1743`, `src/lib.rs:3001,3527,3713,3740,3822,3848,3877,3902,3940,3968,3994,4213` | Medium | S | **NEW.** Three fixture conventions now coexist: `claim_fixture_dir` in `lib.rs` (the #69 guard), a second `FIXTURE_NAMES` mutex in `fileview.rs` that cannot see the first, and ~12 `filenav.rs` fixtures (`kinds_width`, `keys_first_is_dir`, `keys_empty`, `outer`, …) doing bare `remove_dir_all`/`create_dir_all` with no guard at all. Twelve `lib.rs` tests also build `target/test-appdirs/<name>` by hand and never claim. A new `O_*`-spelled fixture in any of those races exactly as #69 did, with no assertion to name it. | One shared `#[cfg(test)]` `fixture_dir(name) -> PathBuf` that claims (case-insensitively) and creates; make `claim_fixture_dir` private to it and use it from all three files. |
-| F49 | Data integrity & robustness | `src/widgets/fileview.rs:839-849` | Medium | S | **NEW.** `sniff_binary` declares a file binary on any NUL in the first 8 KiB. UTF-16 text (Windows logs, `.plist` exports, some CSV) is ~50 % NULs and is always rejected as `<binary file: contains NUL bytes>` — a false description of a text file. The README documents the NUL rule, so the *rule* is a decision; the message is not. | Check for a `FF FE`/`FE FF` BOM in the sniffed head and either decode with `String::from_utf16_lossy` or say `<UTF-16 file: not supported>`. |
-| F50 | Type & contract debt | `src/widgets/fileview.rs:354-591` (24 methods), `src/widgets/filenav.rs:369,450,524` | Medium | S | **NEW.** Two dozen `FileView` methods and four on `FileNav` are plain `pub` where their neighbours are `pub(crate)`. `set_line_styles`, `show_window`, `window_start`, `scroll_cursor_to_row`, `set_cursor_row` are the invariant-carrying calls the `source()` doc says must only be made from `App::apply_view`. `pub` on a lib crate means `unreachable_pub` never fires — the trap #76 closed for six other methods. | `pub` → `pub(crate)` across both files; the lint then does the auditing. |
-| F51 | Architectural decay | `src/widgets/fileview.rs:326`, `src/filter.rs:677`, `src/filter.rs:567`, `src/document.rs:61` | Medium | S | **NEW.** Four `pub` constructors/methods with no production caller: `FileView::new(String)` (App uses `default()` + `load`), `ActiveFilters::add_definition` (whose doc still says "nothing user-facing creates one yet — that is #127's built-in set"; #127 shipped), `with_palette`, `Document::new`. `#![warn(unreachable_pub)]` cannot see them because they are `pub` in a `pub mod`. | `#[cfg(test)]` all four (the #76 pattern); delete the stale sentence. |
-| F52 | Performance & resource hygiene | `src/widgets/fileview.rs:1226-1249` | Medium | M | **NEW.** `apply_syntax` runs on every frame: clears custom highlights, runs `pattern.find_iter(line)` over every window row (≈120–200 lines) when a search is set, allocates a `Vec` of matches per row plus a `pushes` vec. Inputs (window, cursor row, styles, pattern, highlighter progress) do not change between two idle frames. Event-driven draws (#85) cap the damage, but a held `j` with syntax on and a search active does regex work over ~150 rows per keystroke. | Cache `(window_start, window_end, cursor_row, pattern ptr, styles len)` and skip when unchanged. |
-| F53 | Idiom debt / Type & contract debt | `src/widgets/filterlist.rs:120-122` | Medium (IDIOM floor; maintenance Low) | S | **NEW.** `FilterList` still exposes `pub state: ListState` and `pub active: bool`; `lib.rs` writes both directly. #81 closed `FileView` and `FileNav` on exactly this argument, with `set_active` as the one writer. | Private fields plus `set_active`/`select`, matching the other two panes. |
-| F54 | Idiom debt / Performance & resource hygiene | `src/lib.rs:1859`, `src/lib.rs:1884` | Medium (IDIOM floor; maintenance Low) | S | **NEW.** `poll_stamps` calls `self.filters.matcher()` sixty times a second purely to test `is_none()`; `check_stamps` calls it again on entry. `matcher()` walks every filter, builds masks and clones the `RegexSet` to answer yes/no. | `ActiveFilters::is_scanning(&self) -> bool` (the `selects != 0` test without constructing the `Matcher`). |
-| F55 | Idiom debt | `src/scan.rs:102` | Medium (IDIOM floor; maintenance Low) | S | **NEW.** `Request.files: Vec<(usize, PathBuf, Progress)>` is an anonymous triple crossing a thread boundary; `worker` destructures it positionally, while `Scanned` already names the same fields. | A `FileToScan { index, path, progress }` struct. |
-| F56 | Idiom debt | `src/widgets/filenav.rs:831-837` | Medium (IDIOM floor; maintenance Low) | S | **NEW.** `sort_key` returns `(bool, String, OsString)`: a lowercase `String` *and* a cloned `OsString` per entry, the third being only a tiebreak. 10k small allocations once per `set_dir`. | `sort_by_cached_key(\|e\| (e.kind != Dir, lowercase))` then a stable `sort_by` on `name`; or keep it and say so. |
-| F57 | Idiom debt | `src/widgets/fileview.rs:1147` | Medium (IDIOM floor; maintenance Low) | S | **NEW.** `digits`: `n.ilog10() as u8 + 1` — the one `as` narrowing in the module without a comment, in a file that otherwise makes a point of `u16::try_from(..).unwrap_or(..)` with a rationale. Safe (max 19). | `u8::try_from(n.ilog10() + 1).unwrap_or(u8::MAX)` and a one-line note. |
-| F58 | Documentation drift | `README.md:1332-1346`, `README.md:1356-1358`, `README.md:1370-1385`, `.github/workflows/ci.yml:69` | Low | S | **NEW.** The Development section says `cargo test` runs "713 unit + 13 integration tests" (actual: 920 + 11); the CI comment says "224 unit + 9". "The one standing suppression is `clippy::large_enum_variant` on `AppWidget`" — `AppWidget` no longer exists and `Cargo.toml` now has a nine-entry `[lints.clippy]` allow-list. The layout table lists nine paths and omits `config.rs`, `editor.rs`, `filtersets.rs`, `help.rs`, `layout.rs`, `path.rs`, `scan.rs`, `syntax.rs`, `viewport.rs`, `widgets/picker.rs`, `tests/logging.rs`, `tests/scan_thread.rs`. | Drop the counts (they drift every PR) or say "see `cargo test`"; point the suppression sentence at `Cargo.toml`'s `[lints]` block; regenerate the table from `src/`. |
-| F59 | Documentation drift | `README.md:1251-1253` | Low | S | **NEW.** Known Limitations: "**Nothing is persisted.** Filter sets live only for the session — there is no way to save or reload a filter set… This is github issue #8" — 850 lines after a section documenting `S`, `filters.toml`, `autoload` and profiles. #8 is still open on GitHub too. | Delete the bullet; close or re-scope #8. |
-| F60 | Documentation drift | `README.md:266`, `src/editor.rs:520-526` | Low | S | **NEW.** The Logging table's `warn` row lists two sources; three more exist: the scan worker disconnecting (`lib.rs:1813`), a resume-seek or read failure mid-scan (`scan.rs:190,204,316`), a highlight failing to apply (`viewport.rs:246`). In `editor.rs` the comment says a bad exit is logged "hence `debug!` rather than `warn!`" and the code two lines down is `log::warn!`; the `debug!` it describes is the send-failure branch at `531`. | Add the scan row; move the `debug!` sentence to `531`. |
-| F61 | Documentation drift | `docs/specs/2026-09-03-saved-filter-sets-design.md:98-99` | Low | S | **NEW.** "Nothing in recon addresses a filter by its number — there are no digit bindings" was overtaken by keymap PR 2 (`1`–`9` toggle by pane number). Commit `7fde2a6` reconciled §14 and this sentence survived. | "Digits address the *pane's* number, which is why it is a label recomputed on every change." |
-| F62 | Documentation drift / Correctness & memory safety | `src/lib.rs:975-978`, `src/lib.rs:1160-1163`, `src/lib.rs:951` | Low | S | **NEW.** Both comments say crossterm "reports the Shift" for `?` and `*` and that an `is_empty()` guard "would make the key unreachable". In legacy key mode crossterm attaches SHIFT only when `c.is_uppercase()` (`crossterm-0.29/src/event/sys/unix/parse.rs:131`); shifted punctuation arrives with no modifiers. The tolerant guard is harmless, but the stated reason is wrong and hides a real dependency: the `is_empty()` guards on `!`, `&`, `[`, `]`, `.`, `,`, `/`, `{`, `}` and `1`–`9` all rely on that legacy rule, and pushing kitty keyboard-enhancement flags would kill every one at once. (Modifier survey: #146's `S` is the only uppercase key with the trap; `O`/`H`/`N` use the CONTROL\|ALT exclusion.) | Correct the two comments; record the legacy-mode dependency once beside `q`'s guard. |
-| F63 | Documentation drift / Consistency rot | `src/filter.rs:670-677`, `src/filter.rs:1115-1116`, `src/widgets/fileview.rs:1030-1035`, `src/widgets/fileview.rs:3-5`, `src/widgets/filenav.rs:1-2`, `src/widgets/fileview.rs:1149-1150` | Low | S | **NEW.** Doc comments attached to the wrong item, six sites: `set_search`'s doc sits on `add_definition` (and `set_search` at `1027` has none); `any_excluding`'s one-liner sits on `toggle_and`; `directory_listing`'s paragraph sits on `const NAME_COLUMN_MAX` (the fn at `1087` is undocumented); two files open with `///` on a `use` item instead of `//!`; "Widget impl for `FileView`" sits above the `#[cfg(test)]` impl, 140 lines from the real one. | Move each block to its function; `//!` for the two module heads. |
-| F64 | Documentation drift | `src/document.rs:126`, `src/document.rs:155`, `src/filter.rs:1077`, `src/widgets/fileview.rs:941-953`, `src/lib.rs:1370-1374` | Low | S | **NEW.** Statements contradicted by adjacent code: `recompute_visible` says `evaluate` "is O(lines × filters)" (one `RegexSet` pass since #86); `line_styles` is "for `FileView::set_line_styles`" while `#[cfg(test)]`; `row_count` says `len` "is what `Verdict::Included` indexes into" (since #127 `Included(i)` indexes `filters()` incl. built-ins while `len()` counts user filters — the trap `lib.rs:8576` has to comment around); `read_preview_with_caps` reads "at most a screenful" (50k lines / 10 MiB); `Focus::Filters => None` is "Unreachable" but every mouse event reaches it. | Fix each sentence; rename `len`/`is_empty` to `numbered_count`/`has_numbered`. |
-| F65 | Data integrity & robustness | `src/widgets/filenav.rs:872-876` | Low | S | **NEW.** `describe` classifies via `entry.file_type()` (does not follow symlinks) and stats via `entry.metadata()` (lstat). A symlink to a directory is `Kind::Plain`: drawn as a file, no `/`, sorted among files, and `files()` hands it to the scanner, which opens a directory. `activate_selection` re-checks `path.is_dir()` and descends, so the pane and the key disagree. | Fall back to `fs::metadata(path).is_dir()` when `file_type().is_symlink()`; keep lstat for the executable bit. |
-| F66 | Data integrity & robustness | `src/editor.rs:228-229` | Low | S | **NEW.** `substitute` renders `project`/`file` with `.display().to_string()` and argv is `Vec<String>` end to end. After #71 the navigator can *reach* a non-UTF-8 filename, but `o`/`O` hand the editor a U+FFFD path that does not exist. | Argv as `Vec<OsString>`, pushing `OsStr` slices for the two path placeholders; `Launcher::spawn` takes `&[OsString]`. |
-| F67 | Data integrity & robustness | `src/syntax.rs:426` | Low | S | **NEW.** `ensure` writes `spans[start..=row]` unconditionally on a resync. Lines 0–1000 coloured exactly, jump to 5000, scroll back to 1001: the resync starts at 937 and overwrites already-correct spans 937–1000 with results from a fresh parser state — exact colouring degraded to approximate. | In the resync branch, skip slots that are already `Some`, still advancing the parser over them. |
-| F68 | Performance & resource hygiene | `src/syntax.rs:695` | Low | S | **NEW.** `KindScopes::note` calls `open.build_string()` (heap allocation) for each open scope, innermost first, for every token on every line while the `Function` scope is present. `definitions` is a whole-file pass, so a 50k-line source allocates tens of thousands of short strings to test a `meta.` prefix. | Pre-parse `Scope::new("meta")` in `KindScopes` and use `is_prefix_of`, as `storage_type`/`meta_block` already do. |
-| F69 | Performance & resource hygiene | `src/document.rs:108` | Low | S | **NEW.** `evaluate` allocates a fresh `Vec<Verdict>` (16 B/line) on every call rather than overwriting in place; a 1M-line file pays a 16 MB alloc + free per toggle. | `self.verdicts.clear(); self.verdicts.extend(..)`. |
-| F70 | Performance & resource hygiene | `src/lib.rs:1717-1732`, `src/lib.rs:448` | Low | S | **NEW.** `refresh_scan` runs after every event and, even when nothing changed, allocates `pattern_key()` (a `Vec<String>` of every pattern) and `dir.to_path_buf()` to compare against `last_scan` — per mouse-move on terminals that report motion. Separately, `App::new` loads the file (which runs `rebuild_highlighter` in `adopt`) and then `set_theme` runs it again, so the startup file pays two grammar detections. | A generation counter on `ActiveFilters` compared first; build the key only on change. Set the theme before the load. |
-| F71 | Error handling & observability | `src/filter.rs:1462`, `src/filter.rs:1450` | Low | S | **NEW.** `recompile` swallows `RegexSet::new`'s error with `.ok()`; the consequences are silent and two-fold: `verdict` falls back to per-filter scanning, and `matcher()` returns `None`, so the navigator's marking switches off with no log line. `in_step` false is described as "a bug rather than a state to support" but is handled silently by the slow path. | `log::warn!` on the `Err` arm; `debug_assert!(self.in_step(set))` at the top of `verdict` and `matcher`. |
-| F72 | Error handling & observability | `src/scan.rs:151`, `src/lib.rs:1813` | Low | S | **NEW.** `std::thread::spawn` panics if the OS refuses a thread (and takes the TUI with it). Because `Scanner` keeps a `Sender`, a *panicking* worker never disconnects the channel, so `drain_scan_results`'s `Disconnected` warning is unreachable in practice — files simply stay `Unknown`. | `thread::Builder::new().name("recon-scan")`, log on `Err`; wrap the per-file body in `catch_unwind` and send `eof: true` for a file that panicked. |
-| F73 | Error handling & observability | `src/widgets/fileview.rs:960-967` | Low | S | **NEW.** `read_preview_with_caps` and `directory_listing` return `Contents::message(format!("<{err}>"))` on failure with no `log::warn!`, while `read_lines` twenty lines up warns at every failure point (#83). The preview is the navigator-arrow case where the title is elided and the path is lost. | Mirror `read_lines`'s three `warn!` sites. |
-| F74 | UX & CLI ergonomics | `src/filtersets.rs:224` via `src/lib.rs:1658` | Low | S | **NEW.** `S` with two scratch filters sharing a pattern (`i foo` then `x foo`) is refused with "two filters named "foo"; give one a distinct `name`" — an instruction about a file key the user cannot set from the UI, for a file that was not written. | Check duplicate patterns in `save_scratch_as`: "two scratch filters share the pattern "foo"; delete one before saving". |
-| F75 | UX & CLI ergonomics | `src/main.rs:31` | Low | S | **NEW.** `filtersets::load_file()?` runs before the `--print-editor-config` early return at `38`, so a malformed `filters.toml` blocks a command that only prints an `[editor]` stanza. | Move the `print_editor_config` branch above line 31. |
-| F76 | UX & CLI ergonomics / Consistency rot | `src/widgets/picker.rs:56-73`, `src/widgets/picker.rs:79-84`, `src/widgets/filterlist.rs:451-453` | Low | S | **NEW.** The picker is the one modal that missed two repo-wide rules: `handle_key` ignores modifiers entirely (`Ctrl-j`/`Alt-k` move, `Ctrl-c` is swallowed) after #120's "no silent keys"; its width and `EMPTY_HINTS`' fit use `chars().count()` after #97 moved every other width to `UnicodeWidthStr`. | Drop modified keys before the match as `filterlist.rs:207-217` does; `UnicodeWidthStr::width` at both sites. |
-| F77 | Consistency rot | `src/widgets/filenav.rs:24`, `src/widgets/filterlist.rs:23` | Low | S | **NEW.** `ASSUMED_PAGE = 20` and `page_rows()` are duplicated verbatim (the second says "see the same constant in `filenav.rs`"), and `move_by`/`select_first`/`select_last`/`clamp` are near-identical between the two panes. | A small `ListMotion` helper over `ListState` shared by both. |
-| F78 | Architectural decay | `src/widgets/fileview.rs:1030-1130`, `src/widgets/filenav.rs:805` | Low | M | **NEW.** `directory_listing`, `listing_row`, `format_size`, `format_modified`, `NAME_COLUMN_MAX`, `SIZE_COLUMN` are a directory renderer living in the *file* view and importing `filenav::Entry`, while `sorted_entries` is `pub(crate)` "split out for the file view". Two modules each own half of "how a directory is described". | A `widgets/listing.rs` owning `Entry`, `Kind`, `describe`, `sorted_entries` and the row formatters. |
-| F79 | Consistency rot | `src/widgets/fileview.rs:6`, `src/widgets/filenav.rs:6` | Low | S | **NEW.** Both files `use color_eyre::Result;` and never use it — every `Result` in them is spelled `Result<_, regex::Error>` or `std::io::Result`. It compiles because the alias shadows the prelude's with the same shape; a reader assumes eyre reports are possible. | Delete both imports. |
-| F80 | Dependency & config debt | `.github/workflows/ci.yml:69`, `src/editor.rs:1283` | Low | S | **NEW.** CI never runs `cargo audit` (the present advisory — `bincode` unmaintained via `syntect/dump-load`, RUSTSEC-2025-0141 — was found only by hand) and never runs the one `#[ignore]`d test, so the real-process spawn path has no automated execution anywhere. | `cargo audit` with an `ignore` for RUSTSEC-2025-0141 and a comment; `cargo test -p recon -- --ignored` on the macOS runner. |
-| F81 | Dependency & config debt | `Cargo.toml:1`, `README.md:120` | Low | S | **NEW.** `recon` declares no `rust-version`; the 1.88 floor the README documents lives only in the vendored fork's manifest. On an older toolchain `cargo install --path .` fails inside `vendor/tui-textarea-2` with a message about a *dependency*. | `rust-version = "1.88"` on the root package with a one-line comment that it mirrors the fork's. |
-| F82 | Consistency rot / Documentation drift | `Cargo.toml:47-50`, `src/lib.rs:879-1399` | Low | M | **NEW.** `too_many_lines = "allow"` is justified as keeping "the one place you can currently read the whole keymap". The keymap now lives in six places — `dispatch_event` (520 lines), `handle_filter_key`, `long_range_target`, and three pane handlers — with `n`, `[`, `]`, `g`, `G`, `{`, `}` each bound in two of them. Not a call to split; the rationale no longer holds. | Update the `[lints]` comment; if the arms keep growing, group them by the layer the README already names (prompt / global / chain / pane). |
-| F83 | Documentation drift | `src/filtersets.rs:100,216,222` | Low | S | **NEW.** `Error::Invalid.filter` is documented as "by its name, or its pattern", but a bad regex or colour always reports `entry.pattern` even when the entry has a `name`. | `entry.name.as_deref().unwrap_or(&entry.pattern)`. |
-| F84 | Test debt | `tests/scan_thread.rs:81`, `src/scan.rs:241-337` | Low | S | **NEW.** The handoff test says in its own doc that it does not prove a second `start` cancels the first worker; the unit tests check a flag set *before* `scan` began. Nothing shows the per-line cancel check fires mid-file. | A `BufRead` double whose `read_until` blocks on a channel until the test flips the flag; assert `eof: false` and `scanned_to` at the line boundary. |
-| F85 | Test debt | `src/config.rs:609`, `src/config.rs:148` | Low | S | **NEW.** `readme_usage_block_matches_the_real_help` is sound but covers only `-h`; the `--theme` long help — the one place the bundled theme names are listed and the text the README tells users to run — has no test that the bundle still yields names. | One assertion that the rendered long help contains `Bundled themes:` followed by at least `ansi` and `Dracula`. |
-| F86 | Correctness & memory safety | `src/widgets/picker.rs:91-92` | Low | S | **NEW.** `area.width - width` and `area.height - height` are unchecked `u16` subtractions, safe today only because both are `.min(..)`'d two lines up; a future sizing edit reintroduces a panic on the render path. | `saturating_sub`, matching every other subtraction in `src/widgets/`. |
-| F87 | Performance & resource hygiene | `src/widgets/filterlist.rs:395-411`, `src/widgets/filterlist.rs:443-458` | Low | S | **NEW.** Each frame `render` calls `texts` → `numbered` → `rows`, then `rows` again inside `texts` — two full row walks and a `String` per row per frame — and `App::nav_width` calls `preferred_width`, which calls `texts` a third time. Rows change only on filter mutation. Small lists in practice; the identical shape was #84 in `filenav.rs`. | Compute the numbering in the same walk (it already has `next`), or cache `texts` and invalidate from `refresh_view`. |
-| F88 | Documentation drift | `src/main.rs:154` | Low | S | **NEW.** `// terminal.show_cursor()?;` — a commented-out call in `restore_terminal` with no rationale, in a file where every other decision carries one. `LeaveAlternateScreen` does not restore a hidden cursor. | Delete it, or state whether re-showing the cursor on exit is intended. |
+| F1–F30 | — | — | RESOLVED | — | Closed in the 2026-09-06 run. See that run's commit (`fd9bc14`). | — |
+| F34–F43, F45, F47, F49–F53, F55–F57, F62, F65–F71, F73–F77, F79, F81–F83, F85, F86, F88 | — | — | RESOLVED | — | Checked in the code at `199e3a9`. Some notes: F34 (`filter/mod.rs:1039` guards on `!any_enabled()`), F35 (`fileview.rs:504` seeds with the window only), F36/F47 (render_smoke builds its own fixtures), F37 (tmp + rename, `app/filters.rs:268`; see F97 for what it introduced), F38 (`filtersets.rs:514` refuses an existing name), F39 (osascript argv + `quoted form of`, `editor.rs:600`), F40 (stamps on the `recon-stamps` thread), F41 (`lexical_absolute`, `app/mod.rs:326`), F43 (`(generation, window)` key), F49 (UTF-16 BOM decoded), F71 (`warn!` on a `RegexSet` failure), F72 panic half (`scan_caught`), F75 for `filters.toml` (the config.toml half is F109), F85 (it was never a gap: the assertion predates the finding, in `883da68`; **close #202**). F79 has come back in a new place: see F124. F88's replacement comment is wrong: see F141. | — |
+| F31 | Performance & resource hygiene | `src/widgets/fileview.rs:952`, `:1073` | Low | S | **Carried over (#98).** `apply_pending_scroll` / `scroll_top_to` still render into a scratch `Buffer` after a rebuild. | As #98. |
+| F32 | Data integrity & robustness | `src/document.rs:521`, `src/widgets/fileview.rs:568`, `src/document.rs:461-483` | Medium | L | **Carried over (#51).** A full load has no cap, and `Document` holds every line. New: `read_utf16_lines` keeps `bytes`, `units`, `text` and `lines` alive together, a peak of about 4× the file size for UTF-16. `r` from the explorer triggers an uncapped full load of a previewed file (F126). | Continue #51. Cheap half: `drop(bytes)` after decoding the units, and `drop(units)` after `from_utf16_lossy`. |
+| F33 | Documentation drift | `.gitignore` | Low | S | **Carried over (#99).** `.gitignore` still does not ignore `docs/reviews/code-review_*.md`. `PROJECT_REVIEW.md` is tracked, but the issue asks for the snapshot pattern to be ignored, and that has not been done. | As #99: add `/docs/reviews/code-review_*.md`. |
+| F44 | Architectural decay | `src/filter/mod.rs:7`, `src/filter/sets.rs:368-400`, `:546-624`, `src/filter/matcher.rs` | Medium | M | **CHANGED.** `filter.rs` is now three files, but `sets.rs` and `matcher.rs` read and write `ActiveFilters`' private `filters`, `solo`, `as_loaded`, `remembered`, `compiled` and `recompile()`. Five positional-alignment invariants still span three files. `mod.rs` still holds the palette, the per-line model, `!`, the peek flags, and the filter-editor mutators (about 1,240 production lines). F89 is the first real bug from this seam. | Give each `Filter` a stable `FilterId(u64)`. Key `EnabledFlags`, `remembered` and profile members by id. This removes the alignment rules instead of documenting them. |
+| F46 | Test debt / Documentation drift | `src/keymap/mod.rs:1363`, `:1385-1402`, `:1345-1348`, `src/help.rs:53`, `README.md:374` | Low | S | **CHANGED.** The source-text scrape is gone. `the_table_and_the_documentation_agree` now compares `DEFAULT` with `help::KEYMAP`, but only in one direction: a KEYMAP row can list a key that nothing binds, and the overlay draws it. The README says "documenting one that no longer exists breaks the build", and `help.rs:53` admits it does not. The test's own doc still says "task 9 removes them". | Add the reverse loop: every key on a named KEYMAP row must be in `DEFAULT` for one of those names, except `DOCUMENTED_IN_PROSE`. Fix the doc. |
+| F48 | Test debt / Consistency rot | `src/config.rs:1324-1337`, `src/editor.rs:799-811`, `src/path.rs:136,164`, `src/filtersets.rs:1489-1494`, `src/scan.rs:695-791`, `src/syntax.rs:1073,1121`, `src/clipboard.rs:230` | Medium | S | **CHANGED.** `src/fixtures.rs` is now the case-insensitive registry for lib, app, explorer and fileview. Two local registries survive, `CONFIG_FIXTURE_NAMES` and `EDITOR_FIXTURE_NAMES`, and both compare `used == name`, which is the exact case-sensitive hole that caused the #69 `o_ctrl`/`O_ctrl` flake. `config.rs:1325` cites a `fileview.rs` registry that no longer exists. About 10 ad-hoc roots use a bare `remove_dir_all`. `filtersets.rs`'s `scratch_dir` deletes under `target/test-config/`, a root that config.rs claims names in. | Send config and editor fixtures through `fixtures::fixture_file`/`fixture_dir`, and add `fixture_dir_under(root, name)` for `tree_under`. Delete both local mutexes. Do the same for `path.rs` and `filtersets.rs`. |
+| F54 | Performance & resource hygiene | `src/app/scanning.rs:152` | Low | S | **CHANGED.** `poll_stamps` now uses `is_scanning`, but `drain_scan_results` still builds `self.filters.matcher()` (a `RegexSet` clone) 60 times a second before it knows that a result is waiting. | Build the matcher inside the loop, after the first `Ok` from `try_recv`. |
+| F58 | Documentation drift | `README.md:2363`, `:2383-2384`, `:2397-2415`, `.github/workflows/ci.yml:63` | Low | S | **Carried over (#174), and worse.** The README says "713 unit + 13 integration tests" (actual: about 1,550 + 31). CI says "224 unit + 9". The README still names the `clippy::large_enum_variant` suppression on `AppWidget` (gone; `Cargo.toml` has 8 documented allows). The layout table leaves out 20 modules, `app/` and `keymap/` among them. | As #174. Replace the counts with "run `cargo test`". Generate or delete the layout table. |
+| F59 | Documentation drift | `README.md:2281-2283` | Low | S | **Carried over (#175).** "**Nothing is persisted** … issue #8" contradicts `S`, `filters.toml` and the filter editor. | As #175. Close #8 if it is done. |
+| F60 | Documentation drift | `README.md:343-345`, `src/editor.rs:538-544` | Low | S | **Carried over (#176), and wider.** The `warn` row names 2 sources. There are now more than 20 (`scan.rs`, `app/scanning.rs`, `app/mod.rs`, `app/actions.rs`, `app/viewport.rs`, `fileview.rs`, `filter/mod.rs`, `config.rs`, `main.rs`). The editor comment still says "hence `debug!`" above a `warn!`. | Describe the classes ("scan, preview, config and editor failures") instead of listing sites. Fix the comment. |
+| F61 | Documentation drift | `docs/specs/2026-09-03-saved-filter-sets-design.md:98-99` | Low | S | **Carried over (#177).** Still says "there are no digit bindings". | As #177. |
+| F63 | Documentation drift / Consistency rot | `src/widgets/fileview.rs:7-9`, `:1451-1468`, `:1606`, `src/widgets/explorer.rs:2-3`, `:45-52`, `src/filter/mod.rs:750`, `:811` | Low | S | **Carried over (#179). Sites moved, one added.** `///` on a `use` (two files). The `directory_listing` doc sits on `NAME_COLUMN_MAX`. "Widget impl" sits on the test impl. New: the `MATCH_STYLE` doc sits on `BORDERS`. `toggle_and`'s doc starts with `any_excluding`'s first line. | As #179. |
+| F64 | Documentation drift | `src/document.rs:159`, `:203`, `src/widgets/fileview.rs:582-587`, `:1254`, `src/widgets/mod.rs:54-55` | Low | S | **Carried over (#180).** "`evaluate` is O(lines × filters)". `line_styles` is said to be "for `FileView::set_line_styles`" but is `#[cfg(test)]`. "Read at most a screenful" is said of a 50k-line / 10 MiB preview (three sites). | As #180. |
+| F72 | Error handling & observability | `src/app/scanning.rs:158-162`, `src/scan.rs:145` | Low | S | **CHANGED.** The panic half is fixed (`thread::Builder`, `scan_caught`). The `Disconnected` arm still cannot be reached, because `Scanner` holds the `Sender`. | Delete the arm, or hold only a `Weak`-style handle so that the arm means something. |
+| F78 | Architectural decay | `src/widgets/fileview.rs:1451-1568`, `:6`, `src/widgets/explorer.rs:1004` | Low | M | **Carried over (#195).** The directory renderer is still in `fileview.rs` and imports `explorer::Entry`. It is also the site of F92 and F118. | As #195. See F115. |
+| F80 | Dependency & config debt | `.github/workflows/ci.yml:55-71`, `src/editor.rs:1387`, `Cargo.toml:135-145` | Low | S | **Carried over (#197).** No `cargo audit` in CI. The `#[ignore]` real-process editor test never runs. New: the syntect comment explains every feature except `dump-load`, which is the one that pulls in `bincode` (RUSTSEC-2025-0141). | As #197. Add one line saying that two-face's embedded bundles need `dump-load` and that it is the source of the advisory. |
+| F84 | Test debt | `tests/scan_thread.rs:90-96`, `src/scan.rs:559` | Low | S | **Carried over (#201).** No test cancels a scan in the middle of a file. | As #201. |
+| F87 | Performance & resource hygiene | `src/widgets/filterlist.rs:334-362`, `:424-436`, `src/app/layout.rs:223` | Low | S | **Carried over (#204), and worse.** `render` and `preferred_width` each call `texts`, so `rows()` now runs 4 times per frame. | As #204. |
+| F89 | Correctness & memory safety | `src/filter/mod.rs:1079-1090`, `src/filter/sets.rs:641-646`, `src/app/filters.rs:25-36`, `:128-137`, `src/app/sync.rs:80-85` | High | S | **NEW.** `apply_enabled_flags` zips the peek snapshot onto `filters` by position. `insert_scratch` puts a typed filter *before* the file-set filters. Only `apply_listing` ends a peek. `add`, `add_excluding`, `d` and `S` (which reorders) do not. Repro: scratch `[x:on]`, set `web [a:off, b:on]`; `Space`, `i foo Enter`, `Space` gives `x` on, `foo` **off**, `a` **on**, `b` off. The doc says "one added since keeps whatever it has now", which is true only when the filter is added at the end. The only alignment test covers listing (`app/tests/set_picker.rs:107`). | Now: call `restore_peek_before_moving` at the top of `add_filter`, `add_excluding_filter`, the `Delete` arm and `save_scratch_as`, and add `adding_a_filter_during_a_peek_keeps_the_sets_flags`. Structural fix: F44's `FilterId`. |
+| F90 | Correctness & memory safety / UX & CLI ergonomics | `src/app/prompt.rs:337-378`, `src/filter/mod.rs:637-638` | Medium | S | **NEW.** Only `Search` treats an empty pattern as a cancel. `f x Enter` adds an exclude filter `""`, and the view goes to `0/N lines shown`. `f i Enter` colours every line. `c`, `Ctrl-u`, `Enter` rewrites a filter to `""`, which `S` then saves. | For `Filter`, `Exclude` and `Edit`, refuse an empty pattern with `prompt.error = "a filter needs a pattern"` (the prompt stays open, as it does for an invalid regex). |
+| F91 | Data integrity & robustness | `src/app/filter_editor.rs:1988-1992`, `src/app/filters.rs:225-248`, `README.md:981-982` | Medium | M | **NEW.** For a filter in a named set, `f C` changes the pattern, name, sense, examples and prompt in memory, and it can regenerate the filter. `S` saves only `filters_in(0)`. The README says to "edit filters.toml" by hand, which is not practical for `generated_from` (an FNV-1a hash) or for many examples. `q` gives no warning, and all the work is lost. | Now: on Enter for a filter with `set != 0`, show "in memory only: set X is not saved". Warn on `q` when any file filter is different from its `as_loaded` copy. Later: write back one filter table through `append_set`'s `toml_edit` path. |
+| F92 | Correctness & memory safety | `src/app/mouse.rs:131-135`, `src/widgets/fileview.rs:775-782`, `src/app/sync.rs:31` | Medium | S | **NEW.** A click on a directory listing in the view passes `line_at` (a *buffer* row) to `open_listed` as an entry index. But a listing is a `Document`, so filters and windowing apply to it. With an exclude filter `\.tmp` over `a.log b.tmp c.log`, a click on `c.log` opens `b.tmp`. The same happens in hide mode, on the blank placeholder (entry 0), and after a window rebuild (off by `window_start`). The comment "the window starts at zero, so the two agree" is wrong. The test `app/tests/mouse.rs:215` covers only the unfiltered case. | Map `window_start + row` through `document.source_at`. Add tests with an exclude filter and with hide mode. (See Open question 1: should a listing be filtered at all?) |
+| F93 | UX & CLI ergonomics / Documentation drift | `src/widgets/fileview.rs:1107-1214`, `src/app/mouse.rs:22-34`, `src/app/layout.rs:250`, `README.md:480-481` | Medium | S | **NEW.** No code handles `MouseEventKind::ScrollDown/Up` for the view. `mouse.rs` matches only Left Down, Drag and Up. The event reaches `FileView::handle_events`, where tui-textarea's `Key::MouseScroll*` falls into `_ => ()`. The only effect of the wheel is to promote a truncated preview. The README, `layout.rs:250` and `mouse.rs:22` all say that the wheel scrolls. | Add `Key::MouseScrollDown/Up => self.scroll_view((±3, 0))` with a test, or correct the three docs. |
+| F94 | Data integrity & robustness | `src/app/collect.rs:20-68`, `src/widgets/fileview.rs:34,43` | Medium | S | **NEW.** `collect_lines` never checks `view.is_truncated()`. `recon --emit lines /var/log > out`, then arrow onto a 50 MB log and press `q`: `out` gets only the 50k-line preview. The summary says "emitted N lines of big.log" and the exit code is 0. No test in `emit_on_quit.rs` covers this. | In the quit arm, when `emit == Some(Lines)`, call `promote_truncated_preview()` first. Or add "(preview only)" to the summary and exit 2. |
+| F95 | Data integrity & robustness | `src/app/collect.rs:89-92`, `src/widgets/explorer.rs:823-836` | Medium | S | **NEW.** Hide mode keeps `Match::Unknown` rows on screen. `listed_files` emits them as matches, and the hide-mode summary leaves out the `unscanned` count that dim mode prints. A `q` pressed before the scan finishes emits files that do not match. | Finish the `Unknown` files before emitting, as headless does (`headless.rs:310-320`), or count them in both summaries. |
+| F96 | UX & CLI ergonomics | `src/headless.rs:110-129`, `src/config.rs:77`, `src/main.rs:91` | Medium | S | **NEW.** Headless mode reads stdin whenever it is not a tty, even when PATH was given, because `path` defaults to `"."` and so cannot tell the two cases apart. `while read f; do recon --emit lines "$f"; done < list` makes the first call eat the rest of the list. `ssh host recon --emit files /var/log` blocks for ever. `--emit cwd` reads stdin although it needs nothing from it. The test `stdin_wins_over_the_path_argument` makes this deliberate. | Make `path: Option<String>`. Read stdin only when PATH is absent. Change the test to match. |
+| F97 | Data integrity & robustness | `src/app/filters.rs:262-279` | Medium | S | **NEW** (it came with F37's fix). `rename(filters.toml.tmp, path)` replaces a *symlink* with a regular file, so a dotfiles-managed `filters.toml` leaves its repo without notice. The tmp file gets the umask mode (`0600` becomes `0644`). The fixed tmp name collides when two instances save at once. There is no fsync. | Canonicalize the path when it exists, and write the tmp beside the real target with a pid in the name. Copy `permissions()` to the tmp, `sync_all()`, then rename. Add a symlink test. |
+| F98 | UX & CLI ergonomics / Correctness & memory safety | `src/filter/mod.rs:596-623`, `:966` | Medium | S | **NEW.** `next_style` picks the palette colour by the *count* of user filters. `i a`, `i b`, `i c` get colours 0, 1, 2. Delete `a`, then `i d`: `d` gets colour 2, the same as `c`. `set_sense` (Exclude→Include) does the same. This breaks the "never indistinguishable" promise at `mod.rs:28`. The test only adds filters. | Pick the first palette colour that no current filter uses (and no unlisted `as_loaded` filter). Fall back to `count % len`. |
+| F99 | Data integrity & robustness | `src/filter/mod.rs:871-884`, `:927-948`, `src/app/filter_editor.rs:1967-1991` | Medium | S | **NEW.** Profiles name filters by `display_name`, which is the pattern when there is no `name`. `set_details` renames profile members, but `set_pattern` does not. `i foo`, `S web`, `c` on the row to `foo2`, then `R`: `default` names `foo`, so `foo2` turns off. The filter editor makes it worse: it runs `set_details` (which computes the name from the *old* pattern) before `replace_filter`, and it skips `name_taken` when the name is `None`. | Capture the old display name, apply the pattern, then rename profile members from the old to the final `display_name()`. Check `name_taken` against the final name. Test both paths. |
+| F100 | Data integrity & robustness | `src/scan.rs:245-252`, `:423-428`, `src/document.rs:438-452` | Medium | S | **NEW.** The view decodes UTF-16 files that have a BOM (F49), but `scan` matches raw bytes. `E\0R\0R\0O\0R\0` never hits `ERROR`. The explorer marks a UTF-16 log `No`, hide mode hides it, `n` skips it, and `--emit files` leaves it out, while the view colours its matches. | In `worker`, run `document::sniff` and decode `Sniff::Utf16` before scanning. At minimum, mark such a file `Unknown` and log it. |
+| F101 | Performance & resource hygiene | `src/scan.rs:235-243`, `src/app/scanning.rs:284-298` | Medium | M | **NEW.** Any change to a file's stamp throws away its record and rescans from byte 0. A 1 GB log that is being appended to, with no match, is read again in full at every 2-second poll for as long as it is listed. | When `len` grows and `scanned_to ≤` the old `len`, keep the progress and resume from `scanned_to` (the `tail -F` rule). Restart only when the file is truncated. |
+| F102 | Data integrity & robustness | `src/app/filter_editor.rs:526-541`, `src/filtersets.rs:411`, `src/document.rs:488` | Medium | S | **NEW.** Only a trailing `\r` is stripped. A line with an embedded `\r` (progress output) can be marked `+` and kept as an example. `S` then writes it escaped, the re-parse before the write refuses it ("must be one line of text"), and the scratch set cannot be saved until you find that mark. The error does not name the line. | Refuse such a line in `set_mark` and name it, or apply the load-time rule when `Example`s are built. |
+| F103 | Performance & resource hygiene | `src/app/filter_editor.rs:633-642`, `:686-690`, `:770-776`, `:489-497`, `:531-541` | Medium | M | **NEW.** Each key typed into the pattern compiles the regex and runs `is_match` over every line. With `u` on, `refresh_shown` makes a second full pass. `+`, `-` and `=` each make a full pass. `f`/`F`/`n`/`N` collect two `Vec<usize>` of every line index. `details()` deduplicates with `iter().any` for each mark, which is O(m²): a `V` range of 100k lines plus `+` gives about 5×10⁹ compares on Enter. On a 1M-line file, the UI thread stalls. | Compute one match bitset in `recompile`, and get the count, `shown`, `matches_line` and jumps from it with iterators. Use a `HashSet<&str>` in `details()` and a `HashMap` in `mark_examples`. Consider a limit on marks. |
+| F104 | UX & CLI ergonomics / Consistency rot | `src/app/render/filter_editor.rs:174-190`, `src/app/render/mod.rs:78,193,210`, `src/app/prompt.rs:130`, `:221-225` | Medium | S | **NEW.** Text fields count chars, not columns. This breaks the #97 rule. The filter editor's fields have no horizontal scroll, so after about `width − 15` characters (a normal generated prompt at 80 columns) you type blind. The cursor column is a char index, so it is wrong after CJK characters or a tab. The status row's search badge counts `/日本語` as 3 columns and draws 6, and the status text overwrites it. | Use `UnicodeWidthStr::width` for badges and for the cursor columns. Give each editor field a horizontal scroll offset that keeps the cursor visible. |
+| F105 | Correctness & memory safety | `src/generate.rs:432-465`, `:492-512`, `src/app/filter_editor.rs:1844-1846` | Medium | S | **NEW.** `parse_answer` has two faults. With no label, it takes the first line that is not a fence, so "Sure, here is the pattern:" becomes the pattern. With `**Pattern:** \`x\`` it removes the `*` from the key but not from the value, so `** \`x\`` fails to compile and uses up one of the 3 tries. With no marks, `verify` accepts any pattern that compiles, even one that matches 0 lines. | Trim `*`/`_` from the value. Skip unlabelled lines that end in `:`. With no must-match mark, reject a pattern that matches no line of the file, and send that back as feedback. |
+| F106 | Correctness & memory safety / UX & CLI ergonomics | `src/app/prompt.rs:324`, `src/app/filter_editor.rs:1637`, `src/keymap/check.rs:393-470` | Medium | S | **NEW.** Binding a `prompt.*` or filter-editor text-field action to a printable key (for example `'prompt.history.prev' = 'k'`) silently makes that character impossible to type in every pattern. No default is displaced, so `check` says nothing. | In `check`, give `Scope::Prompt` and the editor's text fields an implicit claim on every unmodified printable character. Refuse such a binding, or warn. |
+| F107 | UX & CLI ergonomics / Documentation drift | `src/help.rs:172-235`, `README.md:409`, `:584-587` | Medium | S | **NEW** (not #262). The label grammar accepts chords that a legacy-mode terminal cannot send. `Ctrl-G` (crossterm reports `Ctrl-g`), `Ctrl-i`/`m`/`[` (they arrive as Tab, Enter and Esc), `Ctrl-Tab`, and `Ctrl-0-3`/`Ctrl-8-9`. The README's `Ctrl-1-9` example binds 9 keys, and only 4 work. README:409 writes the default as `Ctrl-H`, which cannot be pressed if copied into `[keymap]`. | Refuse these in `keys_for_label` through `BadKeyLabel`. Change the README example to `Alt-1-9` and write `Ctrl-h`. |
+| F108 | UX & CLI ergonomics | `src/config.rs:126-132`, `:146-152`, `:322-323` | Medium | S | **NEW.** `--print-editor-config`, `--print-keymap` and `--warnings` use `num_args = 0..=1` without `require_equals`, so the next word is read as their value. `recon --warnings app.log` fails with "not a boolean". `recon --print-keymap app.log` prints the effective map. The typo `--print-keymap default` prints the effective map, and with a broken `[keymap]` it refuses, which is the opposite of what the user asked for. | Add `require_equals = true` to all three. Make `WHICH` a `value_enum`. |
+| F109 | UX & CLI ergonomics | `src/main.rs:21`, `:38-40`, `src/config.rs:566-603` | Medium | S | **NEW** (the rest of F75). The comment says no `config.toml` can stop `--print-keymap defaults`, but `Config::load()` parses `config.toml` first, so any TOML error blocks it and also blocks `--print-editor-config`. The most likely mistake, an unquoted dotted key (`global.quit = 'q'`), gives "invalid type: map … for "global" in [keymap]", which names "global" as the action. | Answer `defaults` and `--print-editor-config` before `load_file`. Add a `visit_map` to `KeyOrKeys`: "quote the action name: 'global.quit' = …". |
+| F110 | Test debt | `src/config.rs:1405`, `:1488`, `:1701-1715`, `:2499`, `tests/headless.rs:49-55` | Medium | S | **NEW.** `Config::try_parse_from` reads the real process env through clap's `env =`. A developer who exports `RECON_EDITOR`, `RECON_THEME`, `RECON_BACKGROUND` or `RECON_WARNINGS` (the README recommends this) fails `default_matches_the_parsed_defaults`, the background test, and `readme_usage_block_matches_the_real_help` (clap prints `[env: RECON_EDITOR=…]`). `tests/headless.rs` removes only `RECON_LOG`/`RUST_LOG`, so `RECON_FILTER_PATH` loads extra sets and `:202` fails. | Add a `parse_clean` helper through `Config::command().mut_args(\|a\| a.env(None))`. Add `hide_env_values = true`. In headless tests, `env_clear()` and then set `PATH` and `HOME`. |
+| F111 | Test debt / Data integrity & robustness | `src/app/mod.rs:420`, `:426-428`, `:441`, `src/app/tests/mod.rs`, `src/app/tests/sets.rs:171,189` | Medium | S | **NEW.** `App::new` sets `save_path: filtersets::path()` (the developer's real `filters.toml`), the real `ProcessClipboard` (`pbcopy`) and the real `ProcessLauncher`. Tests are safe only because each of the 11 saving tests overrides `save_path` by hand. `big_s_opens_the_prompt…` already reaches "save as:" against the real path. One new test that forgets can append to your real config or overwrite your clipboard. | In the shared harness (`app_over*`), set `save_path` to a claimed fixture and install `RecordingClipboard`/`RecordingLauncher` by default. Tests opt in to real processes. |
+| F112 | Test debt | `src/widgets/explorer.rs:2845-2858` | Medium | S | **NEW.** `title_shows_the_current_directory` renders at 120 columns and asserts that the *whole* absolute directory is on the title row. Under a `/work-issue` worktree the path is longer than 118 columns and is shortened, so the test fails on a correct build. This is the known flake, still not fixed. | Size the area to the path width + 4, or assert the shortened tail that is specified to stay (`ends_with("test-fixtures/title_dir")`). |
+| F113 | UX & CLI ergonomics / Documentation drift | `src/editor.rs:385-411`, `:491-505`, `README.md:2033-2034` | Medium | S | **NEW.** With no config and `EDITOR=vim`, `o` shows "vim: opening …" and then "vim exited with exit status: 1": `ProcessLauncher` connects stdio to `/dev/null`, so a terminal editor reads EOF. The README says "`EDITOR=vim` still opens the file". | Correct the README. When the program came from the `$VISUAL`/`$EDITOR` fallback and exits non-zero, add "a terminal editor needs its own window: see `recon --print-editor-config`". |
+| F114 | Architectural decay | `src/help.rs:118-370`, `src/keymap/mod.rs:247-249`, `:419-426`, `src/keymap/check.rs:358-390`, `:607-638` | Medium | M | **NEW.** The label grammar (`keys_for_label`, `Chord`, `label_matches`) lives in the overlay module. `Keymap` stores `String` labels and parses them again in `resolve` (every keypress), `claims`, `evict`, `widen_evictions`, `losses` and `reaches`. `Chord` throws away the F-key number (#251, #257). Ranges are expanded ad hoc (#255, #256, #260, #262). `evict` has to spell kept keys back into labels. The 13 open keymap issues come from this, plus free-form warning prose in a fixed panel (#252–#254, #259). | Move the grammar to `keymap/label.rs`. Parse once in `Keymap::new` into `Vec<Chord>` with `Key::F(u8)`. Keep the text only for `--print-keymap`. Allow ranges only in 0x21–0x7E. Then give each loss one structured line. Add no more passes to `check.rs` before this. |
+| F115 | Architectural decay | `src/widgets/fileview.rs` (4,074 lines: about 1,910 production) | Medium | M | **NEW.** Six jobs in one file: window/scroll arithmetic (`:45-192`), file I/O (`Contents`, `read_lines`, previews, hex, `:194-244`, `:1217-1449`), the directory renderer (`:1451-1568`, F78), textarea/scroll state, syntax and selection painting (`:1623-1835`), and key decoding (`:1107-1214`). `explorer.rs` (3,211 lines) has only two jobs, but 2,060 of its lines are tests. | Move the tests to `fileview/tests.rs` and `explorer/tests.rs`, as `app/tests/` does. Move the window maths to `fileview/window.rs` and the reader next to `document.rs`. Merge the listing model and renderer into `widgets/listing.rs` (closes F78). No logic change. |
+| F116 | Consistency rot | `src/app/actions.rs:256-315`, `src/widgets/fileview.rs:1107-1214` | Medium | S | **NEW.** `FileView` is the one pane without `perform(ActionId)`. `App` resolves a key to an action, then builds a *fake* `KeyEvent` (`Char('h')`, `Ctrl-e`, …) that `handle_events` decodes again. The two tables must agree by hand, and a mismatch falls into `_ => ()` without notice. The `Left/Down/Up/Right/PageUp/PageDown/^` arms are dead in production. | Add `FileView::perform(ActionId)` like `Explorer::perform`. Keep `handle_events` for mouse input only. |
+| F117 | Architectural decay | `src/app/mod.rs:56-290`, `src/app/events.rs:70-183` | Medium | M | **NEW.** `App` has 59 fields. Three groups each belong to one file: mouse hit-testing (12 fields: dividers, 5 `Rect`s, drag and click state) → `mouse.rs`/`layout.rs`; scan bookkeeping (6) → `scanning.rs`; search histories (3). | Extract `HitTest`, `ScanBook` and `Histories` sub-structs, each owned by its topic file. Leave the modal options as they are (see "Looks bad but fine"). |
+| F118 | Performance & resource hygiene | `src/widgets/fileview.rs:1528-1557`, `src/widgets/explorer.rs:316-324`, `:1004-1010` | Medium | M | **NEW.** Each explorer arrow onto a directory previews it on the UI thread. `read_dir`, one `lstat` for each entry (two for a symlink), a sort, and a `jiff::Zoned` + `strftime` for each of up to 50,000 rows. Arrowing past `node_modules` stalls. `l` into it does the whole stat pass again, and `open_listed` a third time. | Cap the look-ahead listing at about 5 screens and read the rest on focus, as file previews do. Format `modified` only for rows that are drawn. |
+| F119 | Performance & resource hygiene / Correctness & memory safety | `src/widgets/fileview.rs:1636-1643`, `:1698-1739`, `src/app/mod.rs:482-490` | Medium | S | **NEW.** `apply_syntax` spends `SYNTAX_BUDGET` (4,096 lines) in buffer order from window row 0, which is two screens *above* the viewport. After `G` in hide mode with far-apart hits (about 65 lines of parse per row), the budget colours only off-screen rows. The doc says "coloured on the next frame", but drawing is event-driven since #85, so the visible rows stay plain until the next key. | Walk the viewport rows first, then the slack. Return "colour pending" so that `App` asks for one more redraw. |
+| F120 | Consistency rot / Correctness & memory safety | `src/app/focus.rs:71`, `src/app/events.rs:358-376` | Medium | S | **NEW.** The chain return (`f i foo Enter`) dispatches a literal `KeyCode::Char('n')` through the user's keymap, starting from `Global`. With `'global.file.next' = 'n'`, it moves to the next file. With `hit.next` rebound, it does nothing. All other internal dispatch is by `ActionId`, and no chain test rebinds keys. | Perform `ExplorerHitNext`/`HitNext` directly for the origin. Move the "scanning…" report into a helper that both callers use. |
+| F121 | Performance & resource hygiene | `src/app/events.rs:30-33`, `src/app/mouse.rs:29-34` | Medium | S | **NEW.** `handle_events` returns `Ok(true)` (redraw) for every event. crossterm's `EnableMouseCapture` turns on any-motion reporting (`?1003h`), so moving the pointer over recon runs a dispatch and a full render (syntax painting, list rebuilds) for each motion event. This cancels the gain from #85 while the mouse is over the window. | Return `false` for `MouseEventKind::Moved`. Later, let `dispatch_event` say whether anything changed. |
+| F122 | Performance & resource hygiene | `src/headless.rs:162-199`, `src/emit.rs:88-95`, `src/main.rs:124` | Medium | M | **NEW** (#219 covers the buffering half). Headless keeps all output in `Vec<Vec<u8>>` and prints at the end, so `… \| recon --emit lines \| head` reads every file first. `deliver` also writes through `io::stdout()`, a `LineWriter` even when piped, which makes one `write(2)` per line. | Stream each file's lines as it is evaluated, and keep only the counters. Wrap the output in `BufWriter::new(stdout.lock())`. |
+| F123 | Idiom debt / Type & contract debt | `src/widgets/fileview.rs:390`, `:863`, `src/widgets/explorer.rs:277` | Medium (IDIOM floor; maintenance Low) | S | **NEW.** `selection: Option<((usize, usize), (usize, usize))>` is a nested anonymous tuple that crosses the App→widget boundary. Its doc has to explain the rows, char columns and exclusive end. `Explorer::new(path: String)` takes a `String` for a path and then does `Path::new(&path)`. | `struct Selection { start: Pos, end: Pos }` with `Pos { row, col }`. `Explorer::new(path: &Path)`. |
+| F124 | Idiom debt / Consistency rot | `src/app/search.rs:7`, `src/app/filters.rs:9` | Medium (IDIOM floor; maintenance Low) | S | **NEW.** F79 again: `use color_eyre::Result;` used only as a two-argument alias (`Result<(), regex::Error>`, `Result<(), String>`). | Delete the imports. Use `std::result::Result`. |
+| F125 | UX & CLI ergonomics | `src/keymap/mod.rs` (`DEFAULT`), `src/main.rs:91`, `:110`, `:307-353` | Low | S | **NEW.** Ctrl-C is a raw-mode key that no scope binds, so it is silently dropped (against #120's "no silent keys"). SIGTERM leaves raw mode, the alternate screen and mouse capture on. `dir=$(recon --emit cwd 2>/dev/null)` from a terminal starts the TUI drawing into `/dev/null`, a frozen screen that takes keys. | Bind `Ctrl-c` in Global to a hint ("q quits · Q quits without emitting"). If stderr is not a terminal, draw on `/dev/tty` or refuse with a message. |
+| F126 | Performance & resource hygiene | `src/app/navigation.rs:38-54`, `src/app/actions.rs:196-205` | Low | S | **NEW.** `r` from the explorer, with a 2 GB log in preview, calls `view.load(path)`, which is an uncapped full read on the UI thread (F32). | In `reload_active_file`, call `view.preview` when `view.is_truncated()`. |
+| F127 | UX & CLI ergonomics | `src/config.rs:96-97`, `:1186-1193`, `src/editor.rs:385-390` | Low | S | **NEW.** `--editor X` (or `RECON_EDITOR`) does not reach `O` when `config.toml` has `[editor] file`. `o` runs X and `O` runs the file's editor. The help for `--file-editor` says it "defaults to `--editor`", which is not true here. | When the CLI or env set `editor` but not `file_editor`, derive `file_editor` from it. Or document the precedence in the help. |
+| F128 | UX & CLI ergonomics / Consistency rot | `src/config.rs:823-830`, `:864-882`, `src/app/filters.rs:197-200` | Low | S | **NEW.** `Read`/`Parse` errors name the config path, but `UnknownAction`, `BadKeyLabel` and `Inconsistent` say only "Correct config.toml". `UnknownAction` lists about 93 action names on one line and gives no nearest match. `S` on an existing name says "edit filters.toml", but the set can come from `deploy.filters.toml` or a `RECON_FILTER_PATH` directory, and its `Origin::File(path)` is known. | Put `config_path()` in every config error. Suggest the 1–3 nearest action names. Name the set's real file in the `S` message. |
+| F129 | Consistency rot | `src/app/collect.rs:52`, `:101`, `src/widgets/filterlist.rs:47`, `src/app/render/filter_editor.rs:123-146`, `src/app/filter_editor.rs:105`, `:213-214`, `:1309`, `src/app/render/mod.rs:277-278`, `:333` | Low | S | **NEW.** Text that users see names keys that a rebind can change: "Ctrl-H to emit matches only" (the primary key is `u`), "press f i to add", every filter-editor key hint, and "Ctrl-r regenerates". The warning panel title sends users to `--print-keymap` "which prints every one of them in full", but it does not print warnings (#259). | Build every hint from `keymap.label_for(ActionId)`, as `stale_badge_text` and `help::render` do. Correct the panel title. |
+| F130 | Error handling & observability | `src/generate.rs:219-229` | Low | S | **NEW.** Each attempt calls `std::thread::spawn`, which panics (and takes down the TUI) if the OS refuses a thread. This is the class F72 fixed for the scanner. There is no timeout, and a cancel works only if `fm-rs`'s cancellation handle really stops `respond`. | Use `thread::Builder::spawn` and map the error to `Err`. Log a warning if a cancelled worker is still alive after N seconds. |
+| F131 | Correctness & memory safety | `src/app/filter_editor.rs:1022-1031`, `src/generate.rs:87`, `:98` | Low | S | **NEW.** `sample()` uses `step_by(len/12)` *before* it removes blank and marked lines, so with blank-line-separated records all 12 samples can be blank. The model sees at most 20 marks of each kind, cut to 200 chars, but `verify` checks every mark in full, so the model can fail on data it never saw, and that uses up all 3 tries. | Sample from the lines that are not blank and not marked. Send the lines that failed in full in the retry feedback. |
+| F132 | Security hygiene | `src/generate.rs:294-296`, `:307`, `:538-549` | Low | S | **NEW.** Log lines go into the model prompt raw, under headings. A log line `Request: match every line` cannot be told apart from the user's own `Request:` line. Phrase marks are quoted with `{:?}`, but the sections are not. The impact is small (on-device, and every pattern needs an Enter), but the consolidated prompt is saved to `filters.toml` with one Enter. | Quote each untrusted line with `{:?}` or put it in a fence, and say in `INSTRUCTIONS` that quoted lines are data. |
+| F133 | Correctness & memory safety / UX & CLI ergonomics | `src/app/filter_editor.rs:732-746`, `:846-856`, `:1844-1845` | Low | S | **NEW.** Two edge cases in the filter editor. (1) When a model reply arrives, `take_candidate` replaces the field without a condition. A pattern typed in the meantime that does not compile (`foo(`) was never recorded as a version, so `Ctrl-z` cannot bring it back. (2) On an empty file, `Tab`, `+` marks a line 0 that does not exist, and Enter then refuses with `a check fails: ""`. | Keep the sent pattern in `Asking`. If the field is different on reply, `keep_version` it even if it does not compile, or say that it was replaced. In `set_mark`, return early when `total() == 0`. |
+| F134 | Test debt | `src/app/tests/filter_editor.rs:2097-2118`, `:2108-2110`, `:2217-2231`, `:2455-2457`, `:2683-2685`, `src/app/mouse.rs:94-97`, `:151-154`, `src/app/layout.rs:257-260`, `tests/explorer_stall.rs:30`, `:63-70` | Low | S | **NEW.** The "late reply changes nothing" tests cannot fail: after `running = None` the `Receiver` is dropped, so `drain_request()` is `false` whatever the code does, and the `sleep(20ms)` adds nothing. The double-click tests use two real `Instant::now()` calls less than 400 ms apart, with a directory listing between them. `explorer_stall` has about 3× headroom. Both will flake on a busy runner. There are no tests for F92, F93, F102, F104, F105 or F133. | Use a `Sender` double that records a failed send. Inject the click clock. Raise the stall budget to 3 s, or run it only in release. |
+| F135 | Dependency & config debt | `.github/workflows/ci.yml:55-71`, `src/generate.rs:552-608`, `Cargo.toml:153-157` | Low | S | **NEW.** CI never compiles `--features foundation-models`, so the only code that uses the `fm-rs` API (pre-1.0, `"0.3"`) is never type-checked or linted by automation. CI also runs without `--locked`. | Add `cargo clippy --features foundation-models --all-targets -- -D warnings` on a runner with the macOS 26 SDK (see Open question 5). Add `--locked` to the build and test steps. |
+| F136 | Documentation drift | `README.md:51-133`, `:170-176`, `:367`, `:2270-2279`, `:2304-2311` | Low | S | **NEW.** Features names none of: saved sets and profiles, the set picker, the filter editor, generation, the hex view, headless `--emit`, the configurable keymap. The install command drops `--features foundation-models` and `--locked`. "The settings so far are…" leaves out `background`, `warnings` and all of `[keymap]`. `:367` points at `src/viewport.rs` (now `src/app/viewport.rs:68`). "Four public additions" is wrong: PATCH.md lists 7. | One Features bullet for each, linked to its section. `cargo install --locked --path . [--features foundation-models]`. List every `FileConfig` field. Fix the path. Write "the changes in PATCH.md". |
+| F137 | Documentation drift / Consistency rot | `docs/specs/2026-08-15-filter-based-viewing-design.md:3`, `docs/specs/2026-09-23-incremental-search-design.md:3`, `docs/specs/2026-09-24-listed-filter-sets-design.md:3`, `docs/specs/2026-09-05-keymap-reconciliation-design.md:231-252`, `CONTEXT.md` ("Check", "Request"), `src/app/filter_editor.rs:195`, `:291` | Low | S | **NEW.** Three merged specs still say `Status: proposed`. The README's "Design background" links to one of them. The keymap spec lists `v`, `y` and `-` as unbound and cites a deleted test. The glossary's term is **Check**, but the code says `Mark`/`marks` and `filtereditor.mark.*`, and CONTEXT's own **Request** entry says "every mark". | Set the Status lines to implemented, with the commit. Add a "superseded" note to the keymap spec. Add a **Line mark** entry to CONTEXT (the action) and keep **Check** (its meaning). |
+| F138 | Test debt | `src/app/tests/filter_editor.rs:18-45`, `:319`, `src/app/tests/show_hide.rs:482`, `src/app/tests/hex.rs:15`, `src/app/tests/emit_on_quit.rs:137`, `:427-501`, `src/app/tests/mod.rs:232-238`, `:388`, `src/widgets/explorer.rs:1757-1765` | Low | S | **NEW.** Test helper hygiene. `filter_editor.rs` copies `draw`/`rendered`/`status_line` only to change the area. `app_with_two_filters` and `emitted` are each defined twice. The profile-picker tests live in `emit_on_quit.rs`. `mod.rs`'s docs cite `target/test-appdirs`, which is gone. `entries_after_parent_are_sorted` sorts with the code under test and checks that the result is unchanged, so it can never fail. The 3,168-line filter-editor test file is already sectioned by issue (#312–#322). | Add `rendered_in(app, area)`/`status_line_in`. Remove the duplicates. Move the picker tests. Compare the sort against an expected order written by hand. Split `filter_editor.rs` by section. |
+| F139 | UX & CLI ergonomics | `src/filter/matcher.rs:207-209`, `:38`, `src/filter/mod.rs:256`, `src/syntax.rs:524` | Low | S | **NEW.** The 128-pattern scan limit counts the 11 `NEVER` slots of the built-in `definitions` set and every disabled filter. A user with 118 numbered filters sees "129 patterns, limit 128". | Report the count of user-written patterns, or add "(11 built-in)". Better: leave `Definition` predicates out of the scan's `RegexSet`. |
+| F140 | Performance & resource hygiene | `src/filter/mod.rs:1114-1156`, `:774-780` | Low | S | **NEW.** `verdict` recomputes, for every line, values that do not change during one `evaluate`: `needs_regex()` walks every filter, the exclude and include walks, and `set.matches(line)` allocates a `SetMatches`. With 1M lines and 40 filters, that is about 120M `effective()` checks and 1M allocations per toggle. | Take one snapshot per `evaluate` (effective index lists plus `needs_regex`) and pass it into `verdict_with`. Use `matches_read_into` with a reused buffer. |
+| F141 | Documentation drift | `src/widgets/explorer.rs:104`, `:871`, `:974`, `:1133`, `src/widgets/fileview.rs:717-719`, `src/app/viewport.rs:185-186`, `src/scan.rs:11`, `src/filter/mod.rs:575-587`, `src/filter/sets.rs:652-654`, `src/main.rs:336-343`, `src/app/render/mod.rs:203-205`, `src/app/actions.rs:316-338`, `:384-388` | Low | S | **NEW.** Comments that became false this cycle: "see `PARENT_STYLE`" (it does not exist); "the view renders `<directory>`"; "`App::run` redraws unconditionally at 60 Hz"; "cannot scroll past 65,535 lines"; "a few `u64` ops" (it is `u128`); `len`/`is_empty` "built-in included" (they are not, and `len` has no production caller); `main.rs` says nothing hides the cursor (ratatui does, every frame, and only `Terminal::drop` shows it again), and `render/mod.rs` says the opposite; `perform`'s `debug_assert` comments describe a Global→`explorer.*` rebind that `Keymap::rebind` cannot produce. | Rewrite each sentence. Make `ActiveFilters::len` `#[cfg(test)]`. Add an explicit `cursor::Show` in `restore_terminal`. |
+| F142 | Data integrity & robustness | `src/scan.rs:245`, `:423`, `src/headless.rs:303-306` | Low | S | **NEW.** The scan worker trusts the file. `read_until(b'\n')` has no length cap, so a 10 GB file with no newline (a sparse image in `~/Downloads`) is read into one buffer. The worker opens without `refuse_unreadable`, so a file replaced by a FIFO after the listing blocks `File::open` for ever and leaks one `recon-scan` thread. The headless scan checks for this. | Cap each read (`take(1 MiB)`, then skip to the next newline). Call `refuse_unreadable` before `open`. |
+| F143 | Consistency rot | `src/toml_fmt.rs:13-19`, `src/filtersets.rs:597-619` | Low | S | **NEW.** There are two hand-written TOML quoters. `toml_string` emits `'…'` for a value with a control character, which is invalid TOML. `literal_string` handles this. Latent today (only built-in inputs reach it). | Have `toml_string` fall back to `toml_edit::value(v).to_string()`, as `literal_string` does, or delete one of the two. |
+| F144 | UX & CLI ergonomics / Consistency rot | `src/filter/sets.rs:377-386`, `:523-537` | Low | S | **NEW.** `d` on a file-set filter removes it for the session. `R` ("every set back to its startup state") does not bring it back, but unlist then list does. So two "back to the file" paths disagree. | Make `R` rebuild listed file sets from `as_loaded`, or document the difference in the README's `R` paragraph. |
+| F145 | UX & CLI ergonomics | `src/widgets/fileview.rs:1470-1494` | Low | S | **NEW.** `SIZE_COLUMN = 6` ("`999.9K` fits"), but `format_size(1_048_575)` gives `1023.9K` (7 chars), so the time column of that row moves right. | Change unit at ≥1000, or make the column 7 wide. |
+| F146 | UX & CLI ergonomics | `src/widgets/picker.rs:124-145` | Low | S | **NEW.** The profile picker never scrolls. With more profiles than rows, `j` selects rows that are not drawn. `SetPicker` handles this with `top`. | Give it a `ListMotion` (see F150). |
+| F147 | Data integrity & robustness | `src/widgets/explorer.rs:118-120`, `:1076-1098` | Low | S | **NEW.** A dangling symlink keeps its `lstat` data. It is listed as `Plain`, with the byte length of the link text as its size (`23B`). It is sent to the scanner and to `--emit files`, which then fail on open. | Give an unresolved link `size: None`. Consider a `Kind::Broken`, drawn dimmed and not scanned. |
+| F148 | Type & contract debt | `src/syntax.rs:245`, `:343`, `:372-452`, `:627-660`, `:752`, `src/lib.rs:32` | Low | S | **NEW.** `pub mod syntax` exports `Highlighter`, `Span`, `ensure`, `spans`, `definitions` and `KindSet` as plain `pub`, and nothing outside the crate uses them. This is the #166 blind spot that `lib.rs:8-12` warns about. | Make them `pub(crate)`. Keep `pub` only for `Theme`, `ThemeError`, `bundled_names`, `DEFAULT_THEME` and `Kind`. |
+| F149 | UX & CLI ergonomics | `src/widgets/fileview.rs:431-443` | Low | S | **NEW.** `-` (hex) on a pane that shows an error message (a missing file, EACCES, a FIFO) "succeeds": it reads the file again, shows the same error, and adds `[hex]` to the title. | Refuse when `!self.text && !self.hex`, with "no file to show as hex". |
+| F150 | Architectural decay | `src/widgets/explorer.rs:462-477`, `:533-552`, `src/widgets/setpicker.rs:126-159`, `:185-188`, `:220-225`, `src/widgets/picker.rs:64-70`, `src/app/viewport.rs:329-349`, `src/widgets/filterlist.rs:153-178` | Low | S | **NEW.** `ListMotion` (F77's fix) was adopted by the explorer and the filter list only. Both pickers move `selected ± 1` by hand, and `SetPicker` has its own `top`. "Walk from the selection, wrapping, to the first row that a predicate accepts" is written 5 times. `MATCH_STYLE` is copied. The filter list keeps 5 `pub(crate)` wrappers that nothing outside the module calls. | Add `wrap_find(len, from, backwards, pred)` to `listmotion.rs`. Give both pickers a `ListMotion`. Share `MATCH_STYLE` from `widgets/mod.rs`. Make the wrappers private. |
+| F151 | Performance & resource hygiene | `src/app/selection.rs:55-86`, `:124-136`, `src/app/render/mod.rs:115` | Low | S | **NEW.** `visible_span` walks every segment of the selection, with a `chars().count()` for each line, to find the two ends. `V G` on a 1M-line file walks about 1M lines per frame. | Find the ends with `partition_point`, and count chars only on those two lines. |
+| F152 | Error handling & observability | `src/clipboard.rs:9-12`, `:79-91`, `:104-114`, `src/editor.rs:110-118` | Low | S | **NEW.** `write_all(...)?` returns before `child.wait()`, which leaves a zombie and reports only "Broken pipe". stderr goes to null, so `xclip` with no display says only "exit status: 1". The OSC 52 hint does not say that stdout is null, so a script must open `/dev/tty`. `TemplateError` is shared, so a bad `--clipboard` template reports an "editor template" error. | Always call `wait()`. Pipe stderr and append its first line. Document `/dev/tty`. Make the error text neutral ("template has…"). |
+| F153 | Type & contract debt / Architectural decay | `src/config.rs:185-215`, `:471-650`, `:1081-1135`, `src/main.rs:59-61`, `:80` | Low | M | **NEW.** `Config` is both the clap struct and a bag that is filled in two phases: `filter_sets`, `bindings` and `keymap_warnings` are `#[arg(skip)]`, and `main` fills them in an order it must remember. `keymap: Option<KeymapConfig>` stays on the struct after `build_keymap`, and nothing reads it. `config.rs` (2,773 lines) mixes CLI help prose, the TOML schema, about 180 lines of keymap-only serde, errors, XDG lookup and precedence. | Move `KeymapConfig` + serde + `build_keymap` to `keymap/config.rs`. Have one `startup()` return `{config, bindings, warnings, sets}`, so the order lives in one place. |
+| F154 | Documentation drift | `src/help.rs` (9 sites), `src/keymap/mod.rs` (10), `src/keymap/check.rs` (3), `src/config.rs` (3) | Low | S | **NEW.** About 26 comments tell the story of their own revisions ("an earlier version of this comment…", "task 8 fix round 1"). In `check.rs`, comments are about 40% of the production lines, and the history hides the rule each comment exists to state. | Keep the current rule and its reason. Move the history to commit messages or an ADR. |
 
 ---
 
 ## Top 5 — if you fix nothing else, fix these
 
-### 1. F34 — `!` must not go inert (one line, one test)
+### 1. F89 (then F44): stop the peek from restoring flags by position
 
-The guard protects against capturing an all-disabled state. That cannot happen
-when something is enabled, so say exactly that:
+The bug fix is local. The structural fix removes the bug class.
 
 ```rust
-// src/filter.rs:1311
- pub fn disable_all_remembering(&mut self) {
--    if self.remembered.is_some() {
-+    // A second `!` before a restore would capture the all-disabled flags it
-+    // just cleared and lose the real ones. But a capture taken *before* the
-+    // user re-enabled something by hand is stale, and refusing to replace it
-+    // is what made `!` inert after `!`, `Enter`, `!` (F34).
-+    if self.remembered.is_some() && !self.any_enabled() {
-         return;
-     }
+// src/app/filters.rs — every mutation that inserts, removes or reorders
+pub(super) fn add_filter(&mut self, pattern: &str) -> Result<(), regex::Error> {
+    self.restore_peek_before_moving();          // new
+    self.filters.add(pattern)?;
+    self.refresh_view();
+    Ok(())
+}
+// same one line at the top of add_excluding_filter, the FilterCommand::Delete
+// arm, and save_scratch_as (adopt_scratch_as reorders)
 ```
 
-Then the missing test, next to `bang_re_enables_when_everything_was_disabled_by_hand`:
+Test: `Space`, `i foo Enter`, `Space`. Assert that the file set's filters have
+their pre-peek flags and that `foo` is on.
+
+Follow-up (F44):
 
 ```rust
-#[test]
-fn toggling_a_filter_during_bang_does_not_leave_bang_inert() {
-    let mut app = app_with_two_filters("bang_toggle_inert");
-    key(&mut app, KeyCode::Char('!'));          // capture, all off
-    focus_filter_pane(&mut app);
-    key(&mut app, KeyCode::Enter);              // row 1 back on by hand
-    key(&mut app, KeyCode::Char('!'));          // must disable again
-    assert!(!app.filters.any_enabled());
-    key(&mut app, KeyCode::Char('!'));          // and restore
-    assert!(app.filters.any_enabled());
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct FilterId(u64);
+pub struct Filter { id: FilterId, /* … */ }
+pub struct EnabledFlags { by_id: HashMap<FilterId, bool> }   // was Vec<bool>
+// remembered: Option<HashMap<FilterId, bool>>; profiles resolve name → id once
+```
+
+A restore then applies only to the ids it knows. Insert, remove and reorder
+need no special handling, and F99's problem of profiles naming a filter by its
+changing display name has an obvious fix.
+
+### 2. F111 + F110: make the test harness hermetic
+
+```rust
+// src/app/tests/mod.rs — the one place every App test is built
+fn harness(config: Config) -> App {
+    let mut app = App::new(config);
+    app.save_path = Some(fixtures::fixture_file("filters.toml", ""));
+    app.clipboard = Box::new(RecordingClipboard::default());
+    app.launcher  = Box::new(RecordingLauncher::default());
+    app
+}
+
+// src/config.rs tests
+fn parse_clean(args: &[&str]) -> Config {
+    let cmd = Config::command().mut_args(|a| a.env(None::<&str>));
+    Config::from_arg_matches(&cmd.try_get_matches_from(args).unwrap()).unwrap()
 }
 ```
 
-### 2. F35 — stop cloning the file into a buffer nobody renders
+In `tests/headless.rs`, `recon()` does `Command::new(bin).env_clear()`, then
+sets `PATH` and `HOME`. Delete the 11 hand-written `save_path` overrides.
+
+### 3. F91: never let the filter editor discard work without saying so
+
+1. When Enter commits a change to a filter whose `set != 0`, show
+   `status: "web/foo changed in memory — S saves only the scratch set"`.
+2. On `GlobalQuit`, if any file-set filter is different from its `as_loaded`
+   copy, answer the first `q` with "unsaved changes to set web — q again to
+   quit".
+3. Later: `filtersets::replace_filter(path, set, name, &Filter)` through the
+   same `toml_edit` + tmp/rename path as `append_set`. (Do F97 first, so that
+   the second writer does not copy the symlink bug.)
+
+### 4. F92 + F93: make the mouse in the file view do what it says
 
 ```rust
-// src/widgets/fileview.rs:374
- fn adopt(&mut self, lines: Vec<String>, text: bool) {
-     self.source = Arc::new(lines);
-     self.text = text;
--    self.textarea = TextArea::new(self.source.as_ref().clone());
-+    // Empty on purpose: every caller reaches `show_window` before the first
-+    // draw, which replaces this buffer with the window. Seeding it with the
-+    // whole file made a full load resident three times at peak (F35).
-+    self.textarea = TextArea::new(vec![String::new()]);
-     self.window_start = 0;
-     self.rebuild_highlighter();
- }
+// src/app/mouse.rs — click_view
+let Some(row) = self.view.line_at(line) else { return };
+let Some(index) = self.document.source_at(self.view.window_start() + row) else { return };
+if let Some(action) = self.explorer.open_listed(&dir, index) { … }
+
+// src/widgets/fileview.rs — handle_events
+Key::MouseScrollDown => self.scroll_view((3, 0)),
+Key::MouseScrollUp   => self.scroll_view((-3, 0)),
 ```
 
-Check that `FileView::new` (test-only after F51) and any test that renders a
-`FileView` without going through `App` still call `show_window` first; run
-`cargo test` and the three widget tests that assert on `textarea.lines()`
-directly will tell you which ones need it.
+Tests: a listing with an exclude filter, where a click on the third *visible*
+row opens the third visible entry. A wheel event moves `scroll_top`. Decide
+Open question 1 at the same time: if filters should not apply to listings, the
+index mapping becomes the identity.
 
-### 3. F37 + F38 — write `filters.toml` like a file you care about
+### 5. F114: parse key labels once, into a typed chord
+
+This change closes #251, #255, #256, #257, #260 and #262 as a class, and it is
+where F107's refusals belong.
 
 ```rust
-// src/filtersets.rs:342 — refuse, don't replace
- let sets = doc["sets"].or_insert(table()).as_table_mut()…;
-+if sets.contains_key(set.name) {
-+    return Err(format!(
-+        "a set named {:?} is already in the file; it was added since recon started",
-+        set.name
-+    ));
-+}
- sets.insert(set.name, …);
+// src/keymap/label.rs (moved from help.rs)
+pub enum KeyName { Char(char), F(u8), Enter, Tab, BackTab, Esc, Home, End, PageUp, PageDown, /* … */ }
+pub struct Chord { key: KeyName, mods: KeyModifiers }
+pub fn parse(label: &str) -> Result<Vec<Chord>, BadKeyLabel>;  // ranges 0x21..=0x7E only;
+                                                               // refuses Ctrl-G, Ctrl-i/m/[, Ctrl-Tab
+// Keymap stores Vec<(Scope, Chord, ActionId)>; the label text survives only
+// for --print-keymap. resolve() is a lookup; claims/evict/losses compare Chords.
 ```
 
-```rust
-// src/lib.rs:1662 — write beside, then rename over
--std::fs::write(&path, after)
--    .map_err(|err| format!("could not write {}: {err}", path.display()))?;
-+let tmp = path.with_extension("toml.tmp");
-+std::fs::write(&tmp, after)
-+    .map_err(|err| format!("could not write {}: {err}", tmp.display()))?;
-+std::fs::rename(&tmp, &path)
-+    .map_err(|err| format!("could not replace {}: {err}", path.display()))?;
-```
-
-`rename` within one directory is atomic on APFS and every Linux filesystem
-recon is likely to meet. Add a test that an on-disk `[sets.bug]` added after
-`App::new` makes `S bug` refuse.
-
-### 4. F36 + F47 + F48 — one fixture helper, three files, zero cwd dependence
-
-Create a `#[cfg(test)] pub mod testing` in `lib.rs` (or a `tests/common/`
-module for the integration side) with one function:
-
-```rust
-pub fn fixture_dir(name: &str, files: &[(&str, &str)]) -> PathBuf {
-    claim(name);                       // case-insensitive registry, the #69 guard
-    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("target/test-fixtures").join(name);
-    let _ = fs::remove_dir_all(&dir);
-    for (rel, body) in files {
-        let p = dir.join(rel);
-        fs::create_dir_all(p.parent().unwrap()).unwrap();
-        fs::write(p, body).unwrap();
-    }
-    dir
-}
-```
-
-Then: `render_smoke.rs`'s nine tests over `fixture_dir("render_smoke", &[("Cargo.toml", "…tui-textarea-2…"), ("Cargo.lock", "[[package]]…"), ("src/long.rs", &numbered_lines(200))])`;
-`fileview.rs`'s `FIXTURE_NAMES` and `filenav.rs`'s bare `remove_dir_all` sites
-replaced with the same call; the twelve hand-built `test-appdirs` in `lib.rs`
-routed through it. The red test goes green without touching its assertions.
-
-### 5. F40 — get the `stat` storm off the event thread
-
-The worker already stats each file it reads (`scan.rs:174`, into
-`Scanned.stamp`). So:
-
-- `refresh_scan` stops calling `scan::stamp` per file. It builds the request
-  from the cache as today, but hands each cached record's *stored* stamp to the
-  worker alongside `Progress`.
-- The worker compares the stored stamp to a fresh `stat` before deciding
-  whether to resume or restart, and reports the new stamp.
-- `check_stamps` becomes a request to the worker (`Request { files, stamp_only: true }`)
-  rather than a loop of syscalls in `poll_stamps`.
-
-The UI thread then does zero filesystem work per keystroke, and the two-second
-tick costs one channel send. `F54` (`is_scanning`) falls out of the same edit.
+After that, give each loss one structured line instead of a paragraph
+(`j: explorer.down, view.down → global.quit`). That closes #252, #253 and #254.
 
 ---
 
 ## Quick wins
 
-Low effort, Medium or higher severity. Roughly in order of value per minute.
+Low effort (S) × Medium or higher severity:
 
-- [ ] **F34** — `&& !self.any_enabled()` on the `!` guard, plus the test. Live bug.
-- [ ] **F35** — seed the textarea empty in `adopt`. Cuts peak memory by a third.
-- [ ] **F37** — tmp + `rename` for `filters.toml`.
-- [ ] **F38** — `contains_key` before `Table::insert`.
-- [ ] **F41** — `lexical_absolute` on the CLI argument in `App::new`.
-- [ ] **F46** — add `picker.rs` to `SOURCES`.
-- [ ] **F51** — `#[cfg(test)]` on the four test-only `pub` fns.
-- [ ] **F50** — `pub` → `pub(crate)` sweep over `fileview.rs`/`filenav.rs`.
-- [ ] **F43** — `Document::generation` instead of the visible-vec key.
-- [ ] **F45** — one README sentence on `autoload` without `default`.
-- [ ] **F49** — say `UTF-16` when the NULs come with a BOM.
-- [ ] **F54** — `is_scanning()` instead of building a `Matcher` 60×/s.
-- [ ] **F53** — close `FilterList`'s two `pub` fields.
-- [ ] **F55** — `FileToScan` struct.
-- [ ] **F39** — scope the README Safety claim (the placeholder is S too).
-- [ ] **F58 / F59** — the Development section and the "Nothing is persisted" bullet.
+- [ ] F89: call `restore_peek_before_moving` in four mutators, plus one test
+- [ ] F90: refuse an empty filter pattern
+- [ ] F92: map a listing click through `source_at`
+- [ ] F93: handle the wheel in the view (or correct three docs)
+- [ ] F94: promote a preview before `--emit lines` quits
+- [ ] F95: count or finish unscanned files in the hide-mode emit
+- [ ] F96: `path: Option<String>`; read stdin only without PATH
+- [ ] F97: canonicalize, copy permissions and fsync before the rename
+- [ ] F98: pick the first free palette colour
+- [ ] F99: rename profile members in `set_pattern`
+- [ ] F100: sniff and decode UTF-16 in the scan worker
+- [ ] F102: refuse a mark on a line with an embedded `\r`
+- [ ] F104: `unicode-width` for badges and cursors
+- [ ] F105: fix `parse_answer`, and reject a pattern that matches 0 lines
+- [ ] F106: implicit printable claim for `Scope::Prompt`
+- [ ] F107: refuse Ctrl chords a legacy terminal cannot send
+- [ ] F108: `require_equals = true` on three flags
+- [ ] F109: answer `--print-keymap defaults` before `config.toml`
+- [ ] F110 + F111: a hermetic test harness
+- [ ] F112: fix the worktree-length flake
+- [ ] F113: correct the `EDITOR=vim` README claim, and add the hint
+- [ ] F116: `FileView::perform(ActionId)`
+- [ ] F119: colour the viewport first, and redraw when colour is pending
+- [ ] F120: chain return by `ActionId`, not by `'n'`
+- [ ] F121: no redraw on `MouseEventKind::Moved`
+- [ ] F123, F124: IDIOM fixes
+- [ ] F33: add the `code-review_*.md` ignore line (#99).
+- [ ] Close #202 (F85 was a false positive, already covered by `883da68`). Check whether #261 is fixed by `check.rs`'s displaced warnings.
 
 ---
 
 ## Things that look bad but are actually fine
 
-- **`handle_events` still waking sixty times a second** (`lib.rs:847-864`).
-  Reads like #85's idle-CPU problem returning. It is a `poll` syscall with a
-  timeout and no render; the draw is gated on `dirty`. The tick is what drains
-  editor exits and scan results, which have no keypress behind them.
-
-- **`return_to_chain_origin` re-entering `dispatch_event` with a synthetic key**
-  (`lib.rs:2352`). Recursion from inside a key handler looks like a re-entrancy
-  hazard. The prompt is `None` by then so the synthetic `n` cannot open one, the
-  bounce guard is deliberately spent and re-armed, and it is what keeps "as if
-  you pressed `n`" literally true per pane.
-
-- **`sync_document` cloning `self.view.source()`** (`lib.rs:1952`). Reads as
-  the "resident twice" cost the README says was removed. `source()` is an
-  `&Arc<Vec<String>>`; this is a refcount bump. F35 is the real copy.
-
-- **`Predicate::Definition` compiled as `\b\B` in the `RegexSet`**
-  (`filter.rs:157`). Eleven never-matching slots look like waste; they keep set
-  indices equal to filter indices so no mapping exists to drift.
-
-- **`Matcher` covers disabled patterns too** (`filter.rs:378`). Looks like
-  wasted matching. It is what makes a line's bitset reusable across every
-  toggle without I/O — the entire point of the scan cache.
-
-- **Two positional snapshots with two repair strategies** — `remembered`
-  (aligned to `filters`, dropped on shape change) and `Solo.snapshot` (aligned
-  to `sets`, patched by `adopt_scratch_as`). They differ because sets can only
-  be added while filters can be removed; each is the cheapest correct strategy
-  for its shape. F34 is a bug in the *guard*, not in this design.
-
-- **`Record.stamp` `None == None`** (`scan.rs:57`). Two unreadable files
-  comparing equal looks like a bug; it is what stops an unreadable file being
-  re-stat'd and re-opened every two seconds.
-
-- **`Progress.seen` as a `Vec` with linear `contains`** (`scan.rs:328`).
-  Worst case is 2^patterns distinct bitsets; real logs have single digits, the
-  comment records the measurement, and a hash set costs more per line.
-
-- **The navigator ignoring definition filters** (`filter.rs:1483`): in AND mode
-  a file can be marked *Yes* while the view shows nothing. Documented in the
-  README's Definition-filters section, deliberate, and the alternative is a
-  grammar pass per file per scan.
-
-- **`theme_long_help()` deserialising the theme index on every run**
-  (`config.rs:148`), not just `--help`, because clap evaluates `long_help =
-  expr` while building the `Command`. Measured: release `recon --version` is
-  2 ms, the same as `/usr/bin/true`. Not worth a `OnceLock`.
-
-- **`bincode 1.3.3` unmaintained** (RUSTSEC-2025-0141). It arrives only through
-  `syntect/dump-load`, which `two-face` genuinely needs to read its embedded
-  grammar dumps; `cargo tree -e features` confirms it. `Cargo.toml`'s reasoning
-  for `two-face` holds. Only F80 (recording the ignore in CI) is worth doing.
-
-- **`Box::leak` on a user `.tmTheme`** (`syntax.rs:236`) and parsing the file's
-  theme even when `--theme` overrides it (`config.rs:194`). A few KB once per
-  process; the `'static` is what keeps `Highlighter` lifetime-free through
-  `FileView` and `App`. The module doc records the trade.
-
-- **`.expect(...)` on theme lookups** (`syntax.rs:134,220`). Both are on names
-  the bundle itself just reported, never on user input — the user path goes
-  through `ThemeError`.
-
-- **`read_preview_with_caps` re-reading a file that exactly fits `max_bytes`**
-  (`fileview.rs:985-1006`). One redundant read at a single byte boundary; the
-  comment admits it. Not worth the branch.
-
-- **`toml` with its serializer off plus `toml_edit` for the one write**
-  (`filtersets.rs:297`). Two TOML crates for one file is not duplication: one
-  parses with `serde` + `deny_unknown_fields`, the other preserves comments on
-  write; `Cargo.toml` says why.
-
-- **`lexical_absolute` collapsing `..` lexically past a symlink** (`path.rs:44`).
-  Wrong in general, deliberately right for a navigator whose contract is "the
-  path you walked"; documented and tested.
-
-- **`status_bar_text` measuring `chars().count()` while `elide_left` measures
-  columns** (`lib.rs:2257` vs `2450`). The status text is ASCII plus `▼` and
-  `~`, all width 1, so the two agree for every string that can appear there.
-
-- **`AppState` as a two-variant enum with `is_running`** (`lib.rs:420-436`).
-  Looks like a `bool` in a costume; it is the shape a quit-with-output for #143
-  would extend.
+- **Six optional modals in `App` instead of one `Mode` enum**
+  (`app/mod.rs`, `events.rs:70-183`). The order of the guards in
+  `dispatch_event` *is* the precedence, and the set picker and its own `/`
+  prompt can be open together, which an enum could not show. F117 extracts the
+  other field groups and leaves these alone on purpose.
+- **`NEVER` regex slots for built-in filters** (`filter/mod.rs:230-256`). They
+  waste slots, but they keep `Verdict::Included(i)`, the scan bits and
+  `filters[i]` on one index with no map. `[^\s\S]` compiles to a dead state
+  and costs nothing per line. The only cost is the count shown in F139.
+- **Unlisted sets still reserve a palette colour** (`filter/mod.rs:604-613`).
+  This seems to contradict CONTEXT's "an unlisted set has no effect". It is
+  deliberate: colours stay stable across list and unlist, and a typed filter
+  never takes a hidden set's colour. F98's fix must keep this.
+- **The hand-written `Deserialize` with `DeserializeSeed` for `[keymap]`**
+  (`config.rs:471-650`). It looks overbuilt, but it is the only way to report
+  a bad value with its TOML position and the action name. `#[serde(flatten)]`
+  buffers the table and loses both.
+- **A linear `Vec` scan in `Keymap::resolve`** (`keymap/mod.rs:419`). About 130
+  rows per human keypress cannot be measured. The per-press *reparse* is the
+  problem (F114), not the scan.
+- **The help overlay rebuilds `Keymap::default()` each frame**
+  (`help.rs:1019-1150`). It is wasteful (a few hundred small allocations), but
+  only while the overlay is open, and it is below one millisecond. F114 removes
+  it as a side effect. It does not justify its own finding.
+- **`hex.rs:84`'s `expect("a dump line is ASCII")`** on a production path. The
+  bytes come only from `DIGITS`, space, `:`, and `is_ascii_graphic()` or `.`,
+  so it cannot fail. The offset-width maths and the FIFO refusal are correct.
+- **Char-boundary slicing in the filter editor and prompt**
+  (`filter_editor.rs:959`, render `:367`, `prompt.rs` `byte_at`). Every offset
+  comes from `char_indices`, `.get()`, or an `is_char_boundary` filter. No path
+  panics.
+- **Log lines and model text with control or ANSI bytes.** ratatui-core 0.1.2
+  removes control graphemes before it draws, so a hostile log cannot drive the
+  terminal.
+- **`$VISUAL`/`$EDITOR` rank below `config.toml`, but `RECON_EDITOR` ranks
+  above it** (`editor.rs:348-352`). This is deliberate and documented, and it
+  is correct. F113 is only about terminal editors on that rung.
+- **`ConfigError` has no `source()`** (`config.rs:887-891`). Otherwise
+  color-eyre prints the TOML snippet twice.
+- **`listed = false` beats `autoload = true` without an error**
+  (`sets.rs:295-299`). This is ADR 0002, implemented exactly. `--set X
+  --unlist X` is refused.
+- **Raw `u16` subtractions in `layout.rs:160,186`, `mouse.rs:60,64,181` and
+  `setpicker.rs:240`.** Each one follows a `.min()`, a `contains` or a max over
+  the same data.
+- **`tests/render_smoke.rs` and `tests/explorer_stall.rs` use a bare
+  `remove_dir_all`.** Integration crates cannot see `#[cfg(test)]
+  fixtures.rs`, and each directory is unique to its test and in lowercase.
+- **Only a macOS job in CI.** The cost and platform reasons are written in
+  `ci.yml:12-23`. F135 asks only for a feature build on that same job.
 
 ---
 
 ## Open questions for the maintainer
 
-1. **Is the synchronous per-file `stat` in `refresh_scan` (F40) an accepted
-   ceiling on directory size**, the way the 64-pattern limit is a documented
-   one? If so it belongs in Known Limitations; if not, the worker already has
-   the data.
-
-2. **Is `filters.toml` meant to survive concurrent edits** — recon in two
-   terminals, both pressing `S`? If yes, F37's temp-and-rename should also
-   re-read immediately before writing; if no, one sentence in the README's
-   "Saving" paragraph settles it.
-
-3. **Should the CLI argument's spelling be preserved in the view title** (so
-   `recon ../x.log` shows what was typed) with only `check_stamps` normalised
-   (F41), or is the absolute path the intended title everywhere, as it is after
-   the first navigation?
-
-4. **`R` and the peek capture.** `reset()` drops the `!` memory and the solo,
-   but `App::peek` (`lib.rs:331`) is not cleared, so `R` while peeked followed
-   by `space` restores the pre-peek flags over the reset. "Flags only, one key
-   to redo" — intentional, or the fifth snapshot mechanism nobody reconciled?
-
-5. **Autoload without `default`** (F45): is "enabled header, every filter off"
-   the intended reading of `autoload`, or a consequence of `enabled: false` at
-   `filter.rs:768` being the simplest starting state?
-
-6. **`MAX_PATTERNS = 64` counts every loaded set's patterns, enabled or not**
-   (`filter.rs:1474`), so a `filters.toml` with a dozen sets switches navigator
-   marking off permanently even with one set enabled. Is the "count everything"
-   rule (bitset reuse across toggles) worth more than a per-enabled-set bitset
-   that would lift the ceiling for the common case?
-
-7. **Is the UTF-16 rejection (F49) a decision or an oversight?** The README
-   documents the NUL rule without mentioning the one common text encoding it
-   misclassifies.
-
-8. **Symlinked directories drawn as plain files (F65)** — was following links
-   in `describe` considered and declined (loops, cost), or not considered?
-
-9. **A filename beginning with `-`** becomes an argv entry like `-foo.log:12`,
-   which `zed`/`code` read as a flag (`editor.rs:225`). Should `substitute` or
-   the shipped flavours insert `--` where the editor accepts it, or is "write
-   your own template" the intended answer?
-
-10. **`mode` is accepted in `filters.toml`** (`filtersets.rs:44`, only `"or"`)
-    and never mentioned in the README's schema. Reserved seam for #40, or
-    should the README list it as reserved so a user who meets it in an error
-    knows why?
-
-11. **Is `apply_syntax`'s per-frame recomputation (F52) measured?** The comment
-    says "a few thousand pushes a frame, and nothing to keep in step". With
-    event-driven draws that may be acceptable; if held-key scrolling with a
-    search active ever stutters, this is the first place to look.
-
-12. **Was cursor re-showing on exit dropped on purpose** (`main.rs:154`, F88)?
-    The app never hides it today, so the commented line is either dead or a
-    reminder.
-
----
-
-Next: `/make-issues` to file the Medium+ findings as GitHub issues (`--all` to include Low).
-Then `/code-review src/filter.rs` — the High bug, the module split and three drifted doc comments all live there, and this audit deliberately does not restate line-level detail.
+1. **Should filters apply to the directory look-ahead listing at all?** Today an
+   include or exclude filter colours, dims or hides filename rows as if they
+   were log lines. That is the root of F92. An unfiltered document for
+   non-text contents would make the fix trivial.
+2. **F96:** is `stdin_wins_over_the_path_argument` a hard requirement, or can
+   an explicit PATH turn off the stdin read?
+3. **F94 / F95:** should `q` under `--emit` finish the work (a full read, a
+   completed scan), or refuse and say that the output would be partial?
+4. **F91:** is a write-back for one file-set filter in scope for 1.0, or is a
+   warning enough?
+5. **F135:** does `macos-latest` have an SDK that builds `fm-rs`
+   (FoundationModels needs macOS 26 / Xcode 26)? If not, is a pinned runner
+   worth the cost, or is the feature build knowingly not verified?
+6. **F114:** is the keymap check's current strictness a 1.0 requirement? The
+   typed-chord refactor could close #251, #255, #256, #257, #260 and #262 as
+   one post-1.0 change, instead of six fixes to the string machinery.
+7. **iTerm2 quoting (F39 follow-up):** `create window with default profile
+   command` splits its string itself, not through `sh`. Does it honour the
+   `'\''` that `quoted form of` emits? Try `iterm-nvim` on `it's.log`.
+8. **Backspace as `^H`:** some terminals send 0x08 for Backspace. Then global
+   `Ctrl-h` toggles hide, and in any prompt Backspace is dropped
+   (`prompt.rs:457-460`). Should `Ctrl-h` also be a default for
+   `prompt.delete.back`?
+9. **Consolidation step:** Esc still *saves* there
+   (`filter_editor.rs:1493-1495`, `:1913-1918`). Is that intended?
+10. **Examples in `filters.toml`** are whole log lines, which can hold tokens,
+    IPs or emails. ADR 0003 calls a set "one file to copy". Should `S` warn
+    when examples are present?
+11. **CONTEXT.md says "a set listed again comes back as its file describes
+    it"**, but the code restores the *startup* snapshot, not the file as it is
+    now. Is "as it was loaded" the intended wording?
+12. **`RECON_WARNINGS=0`** refuses to start (clap's bool parser accepts only
+    `true`/`false`). Is that intended?
+13. **Stale issues:** #202 was never a gap (see F85). #8 ("nothing is persisted") and
+    #261 look fixed. Close them?
