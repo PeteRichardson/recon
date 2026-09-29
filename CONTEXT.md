@@ -90,6 +90,14 @@ text a model will write the pattern from. Without a model it is only text
 kept with the filter; it never changes the pattern.
 _Avoid_: query, request (that is one turn of a talk with the model)
 
+**Generated** (of a filter):
+A filter whose pattern the model wrote from its prompt. It stays generated
+only while its `generated_from` hash agrees with the prompt and the pattern:
+a change to either one, in recon or in the file, makes it an ordinary
+filter. Only a request or `Ctrl-r` in the filter editor changes a generated
+pattern; a load never does.
+_Avoid_: AI filter, model filter, regenerated (that is the act of `Ctrl-r`)
+
 **Request**:
 One turn of a talk with the model in the filter editor: what the user types
 on the request line and sends with `Enter`. The model answers with a pattern

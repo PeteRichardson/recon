@@ -232,6 +232,12 @@ impl App<'_> {
                     description: filter.description.clone(),
                     prompt: filter.prompt.clone(),
                     examples: filter.examples.clone(),
+                    // Only while it agrees (#321): a hash the prompt or the
+                    // pattern no longer matches says nothing.
+                    generated_from: filter
+                        .is_generated()
+                        .then(|| filter.generated_from.clone())
+                        .flatten(),
                     ..filtersets::FilterToSave::new(filter.predicate.display(), filter.sense)
                 })
                 .collect(),

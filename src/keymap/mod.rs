@@ -295,6 +295,9 @@ pub(crate) enum ActionId {
     FilterEditorRedo,
     /// `Ctrl-g`: the keys to the request line, with a model (#319).
     FilterEditorRequest,
+    /// `Ctrl-r`: write the pattern again from the prompt, with a model
+    /// (#321).
+    FilterEditorRegenerate,
     // The help overlay itself has no ActionId: any key dismisses it, so
     // there is nothing to bind or rebind, and Scope::Help carries no DEFAULT
     // rows for the same reason (#59).
@@ -413,6 +416,7 @@ impl ActionId {
             Self::FilterEditorUndo => "filtereditor.undo",
             Self::FilterEditorRedo => "filtereditor.redo",
             Self::FilterEditorRequest => "filtereditor.request",
+            Self::FilterEditorRegenerate => "filtereditor.regenerate",
             Self::PromptCommit => "prompt.commit",
             Self::PromptCancel => "prompt.cancel",
             Self::PromptLeft => "prompt.left",
@@ -652,6 +656,13 @@ pub(crate) const DEFAULT: &[(Scope, &str, ActionId)] = &[
     // A control key, as every printable one is typed into a field. `g` for
     // "generate".
     (Scope::FilterEditor, "Ctrl-g", ActionId::FilterEditorRequest),
+    // `r` for "regenerate". Only the key, never a load or a new model,
+    // changes a generated pattern (#321).
+    (
+        Scope::FilterEditor,
+        "Ctrl-r",
+        ActionId::FilterEditorRegenerate,
+    ),
 ];
 
 /// Keys 1.0 promises to 1.1, bound to nothing.

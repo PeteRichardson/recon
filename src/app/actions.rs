@@ -429,7 +429,8 @@ impl App<'_> {
             | A::FilterEditorToggleMatchesOnly
             | A::FilterEditorUndo
             | A::FilterEditorRedo
-            | A::FilterEditorRequest => {
+            | A::FilterEditorRequest
+            | A::FilterEditorRegenerate => {
                 debug_assert!(
                     false,
                     "{action:?} resolves in its own modal dispatch, never through `perform`"
