@@ -38,6 +38,20 @@ impl App<'_> {
         self.view.load(&path);
     }
 
+    /// `-`: show the file as hex, or as text again (#242).
+    ///
+    /// A new document, as a load is: the dump's lines are not the text's, so
+    /// no line of the one says where to put the cursor in the other, and it
+    /// starts at the top.
+    pub(super) fn toggle_hex(&mut self) {
+        if !self.view.toggle_hex() {
+            self.report("no file to show as hex", false);
+            return;
+        }
+        self.sync_document();
+        self.refresh_view();
+    }
+
     /// Re-read the active file, and put the cursor back on the line it was on.
     ///
     /// `load` rebuilds the buffer from the top, so this remembers the cursor's

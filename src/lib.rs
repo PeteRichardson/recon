@@ -24,6 +24,7 @@ pub(crate) mod fixtures;
 pub mod generate;
 pub mod headless;
 pub mod help;
+mod hex;
 pub mod keymap;
 pub mod panes;
 mod path;

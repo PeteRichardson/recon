@@ -1931,7 +1931,7 @@ mod tests {
     #[test]
     fn no_warnings_silences_the_reserved_key_warning() {
         let mut bindings = std::collections::BTreeMap::new();
-        bindings.insert("global.reload".to_string(), vec!["-".to_string()]);
+        bindings.insert("global.reload".to_string(), vec![":".to_string()]);
         let config = Config {
             keymap: Some(KeymapConfig { bindings }),
             no_warnings: true,
@@ -1946,10 +1946,10 @@ mod tests {
             Vec::<String>::new(),
             "the panel gets nothing either way"
         );
-        let dash =
-            crate::keymap::normalise(KeyEvent::new(KeyCode::Char('-'), KeyModifiers::empty()));
+        let colon =
+            crate::keymap::normalise(KeyEvent::new(KeyCode::Char(':'), KeyModifiers::empty()));
         assert_eq!(
-            keymap.resolve(crate::keymap::Scope::Global, dash),
+            keymap.resolve(crate::keymap::Scope::Global, colon),
             Some(crate::keymap::ActionId::GlobalReload),
             "recon must still obey the user"
         );

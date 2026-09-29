@@ -418,6 +418,7 @@ Global (`src/app/events.rs`), handled before the focused pane sees the key:
 | `o` | Open the selected file's enclosing **project** in your editor, at the line the cursor is on — see [Opening an editor](#opening-an-editor) | `global.editor.project` |
 | `O` | Open the selected **file alone**, at the same line — no project, no walk-up | `global.editor.file` |
 | `r` | **Refresh from disk** — re-list, re-stat and rescan the explorer's listing (so a file created since the listing was built appears), and reload the file in the view with the cursor kept on its line. The status row shows `changed on disk · r` when the open file's size or mtime has moved | `global.reload` |
+| `-` | Show the file in the view as a **hex dump**, or as text again — see [The hex view](#the-hex-view). A binary file opens as hex | `global.toggle.hex` |
 
 `?` used to search backward. `n`/`N` cover both directions now, which is what
 freed it for the overlay — it is the conventional help key in the pagers and
@@ -591,13 +592,14 @@ A key is spelled as one of:
   name, because recon has no spelling for a modified space bar and so could
   not name that key back to you
 
-Two keys, `-` and `:`, are reserved rather than bound: 1.0 promises them to
-1.1 (a hex view and a command palette), so whichever key a later release
-wants has to be one this release already said was taken. Binding a reserved
-key anyway is allowed — it's your keyboard — recon just warns once, on
-startup, and then obeys. The filter editor is the exception: it takes every
-key while it is open, so its own `-` (and any reserved key you bind there)
-can never meet the later release's, and recon does not warn.
+One key, `:`, is reserved rather than bound: 1.0 promises it to a later
+release (a command palette), so the key that release wants is one this
+release already said was taken. `-` was reserved the same way, and the hex
+view has it now. Binding a reserved key anyway is allowed — it's your
+keyboard — recon just warns once, on startup, and then obeys. The filter
+editor is the exception: it takes every key while it is open, so any
+reserved key you bind there can never meet the later release's, and recon
+does not warn.
 
 Giving an action a key can therefore take that key away from a different
 action. recon works out what your file costs before it starts, and it either
@@ -1565,6 +1567,41 @@ and opening a FIFO would block until something wrote to it. The scanner,
 the preview, `--emit files` and a headless run over a directory all skip it,
 and naming one directly is refused with `not a regular file`.
 
+### The hex view
+
+`-` shows the file in the view as a hex dump, sixteen bytes a line, and `-`
+again shows it as text. A binary file — one with a NUL byte in its first
+8 KiB — opens as hex without the key, in place of the old
+`<binary file: contains NUL bytes>`; `-` on it shows that message again.
+
+```
+00000000: 7f 45 4c 46 02 01 01 00  00 00 00 00 00 00 00 00  .ELF............
+00000010: 03 00 3e 00 01 00 00 00  40 10 00 00 00 00 00 00  ..>.....@.......
+```
+
+The offset leads each line, in hex, so the gutter is off while a dump is
+shown. Only printable ASCII shows as itself in the right-hand column; every
+other byte is a `.`. A UTF-16 file shows its raw bytes, byte-order mark
+included. There is no syntax colour.
+
+The choice holds while you stay on the file — `r` and a full read after a
+preview keep it — and a different file starts again from its content: hex if
+it is binary, text if not.
+
+A dump is ordinary lines, so everything that works on lines works on it:
+filters, `/` and `*`, dim and hide, visual mode and `y`, `--emit lines`, and
+the mouse. What they see is the **formatted line**, not the bytes. A filter
+for `ERROR` finds it in the ASCII column, but it can also match hex digits
+that happen to spell it, and it cannot see a match split across two lines.
+The explorer's marks come from the file's raw bytes, so a binary file can be
+marked for a match the dump shows split in two, or not at all. `y` copies
+the dump's text, not the bytes.
+
+A dump costs about six times the file's own size in memory, so a hex view
+reads at most the first 16 MiB of a file and ends with a line that says how
+many bytes it left out. The explorer's preview reads 50,000 lines of dump —
+800 KB — and the rest when you use the view, as it does for text.
+
 ### The directory listing in the view
 
 Selecting a directory renders its contents in the view pane rather than a
@@ -2220,8 +2257,9 @@ needs every line's answer at once — see *Definition filters*.
   costs a millisecond to read. Read, document clone and a filter pass together
   run about 1 ms/MB, so 10 MiB bounds the worst case near 10 ms. This is
   github issue #27.
-- **Binary files are not viewable.** A file with a NUL byte in its first 8 KiB
-  renders as `<binary file: contains NUL bytes>` rather than as bytes. Text
+- **Binary files show as hex, not as text.** A file with a NUL byte in its
+  first 8 KiB opens as a hex dump — see [The hex view](#the-hex-view) — and
+  headless `--emit lines` still refuses it as a `binary file`. Text
   that merely holds an undecodable byte here and there is read normally: each
   bad sequence becomes a `�` in place and every other line survives intact, so
   one corrupt byte in a log costs itself and nothing else. This is github
