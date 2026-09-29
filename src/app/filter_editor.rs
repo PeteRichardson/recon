@@ -56,13 +56,28 @@
 //! loop. Enter refuses a generated filter without a must-match and a
 //! must-not-match mark. Nothing here, or anywhere, asks the model for a
 //! pattern except `Ctrl-r` and a request.
+//!
+//! Enter after one or more requests (#322) first asks the model for one
+//! prompt with all of their intent: the consolidation step. The prompt
+//! field shows the model's prompt, and the keys edit only it. Enter saves
+//! the filter with the prompt as it is then, and Esc saves it with the
+//! prompt from before the step, at any time, also while the model writes.
+//! Either way the session's requests are spent: the prompt holds what they
+//! asked for. A session with no request, or one that `Ctrl-r` started
+//! again, saves at once.
+//!
+//! A mouse drag along a line of the file marks a phrase (#322): the part of
+//! the line that is important. Phrase marks go to the model with each
+//! request, `Ctrl-r` and the consolidation step, as hints. recon never
+//! checks them, so they do not change the failed-check count. `=` removes
+//! them with the line's mark. They last only while the editor is open.
 
 use super::App;
 use super::prompt::SearchPrompt;
 use crate::filter::{Details, Example, Sense, generated_hash};
 use crate::generate::{self, ATTEMPTS, Candidate, Rejection, Running};
-use crossterm::event::{self, KeyCode, KeyModifiers};
-use ratatui::prelude::Style;
+use crossterm::event::{self, KeyCode, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+use ratatui::prelude::{Rect, Style};
 use regex::Regex;
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
@@ -145,6 +160,34 @@ impl EditorFocus {
             next
         }
     }
+}
+
+/// What the status row says while the model writes the prompt (#322).
+pub(super) const CONSOLIDATING: &str = "the model writes one prompt from your requests";
+
+/// What the status row says once the model's prompt is in the field.
+pub(super) const CONSOLIDATED: &str =
+    "the model's prompt for the filter: edit it · Enter saves · Esc keeps the prompt as it was";
+
+/// A part of a line the user selected with the mouse (#322): a hint to the
+/// model, never a check. `start` and `end` are byte offsets into the line's
+/// text, on character boundaries, `start` before `end`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct Phrase {
+    pub(super) line: usize,
+    pub(super) start: usize,
+    pub(super) end: usize,
+}
+
+/// The consolidation step (#322): after Enter, before the save.
+#[derive(Debug)]
+pub(super) struct Consolidation {
+    /// The prompt field before the step: what Esc saves.
+    earlier: String,
+    /// The model writing the prompt, until its answer is here.
+    pub(super) running: Option<Running<String>>,
+    /// When the model started.
+    started: Instant,
 }
 
 /// What a marked line says about the pattern (#314).
@@ -287,6 +330,17 @@ pub(super) struct FilterEditor {
     /// (#321): the filter's own when it opened as generated, and each
     /// pattern the model gave since. See `generated`.
     pub(super) generated: Vec<(String, String)>,
+    /// The phrase marks (#322), in the order they were made.
+    pub(super) phrases: Vec<Phrase>,
+    /// Where the left button went down on a line's text: the line, and the
+    /// byte of the character under the pointer. A drag from it selects.
+    press: Option<(usize, usize)>,
+    /// The phrase a drag has selected so far. The release marks it.
+    pub(super) selection: Option<Phrase>,
+    /// Where the last render drew the lines, for a mouse event.
+    pub(super) lines_area: Rect,
+    /// The consolidation step, while it is open (#322).
+    pub(super) consolidation: Option<Consolidation>,
 }
 
 /// A request the model is answering (#319), through each attempt of its
@@ -372,6 +426,11 @@ impl FilterEditor {
             waited: 0,
             explanation: None,
             generated: Vec::new(),
+            phrases: Vec::new(),
+            press: None,
+            selection: None,
+            lines_area: Rect::default(),
+            consolidation: None,
         }
     }
 
@@ -676,10 +735,12 @@ impl FilterEditor {
             .filter(|&index| self.is_shown(index))
             .collect();
         for index in drawn {
-            match mark {
-                Some(mark) => self.marks.insert(index, mark),
-                None => self.marks.remove(&index),
-            };
+            if let Some(mark) = mark {
+                self.marks.insert(index, mark);
+            } else {
+                self.marks.remove(&index);
+                self.phrases.retain(|phrase| phrase.line != index);
+            }
         }
         self.anchor = None;
         self.refresh();
@@ -819,6 +880,7 @@ impl FilterEditor {
             must_match: &lines(true),
             must_not_match: &lines(false),
             sample: &self.sample(),
+            phrases: &self.phrase_texts(),
             earlier: &self.requests,
             request,
         })
@@ -837,9 +899,115 @@ impl FilterEditor {
             must_match: &lines(true),
             must_not_match: &lines(false),
             sample: &self.sample(),
+            phrases: &self.phrase_texts(),
             request: generate::REGENERATE,
             ..generate::Parts::default()
         })
+    }
+
+    /// The text the model receives in the consolidation step (#322).
+    pub(super) fn consolidate_text(&self) -> String {
+        let prompt = self.prompt.pattern.trim();
+        let pattern = &self.field.pattern;
+        generate::consolidate_text(
+            (!prompt.is_empty()).then_some(prompt),
+            &self.requests,
+            if pattern_error(pattern).is_none() {
+                pattern
+            } else {
+                ""
+            },
+            &self.phrase_texts(),
+        )
+    }
+
+    /// Each phrase mark's text, and the line it is part of (#322).
+    fn phrase_texts(&self) -> Vec<(&str, &str)> {
+        self.phrases
+            .iter()
+            .filter_map(|phrase| {
+                let line = self.text(phrase.line)?;
+                Some((line.get(phrase.start..phrase.end)?, line))
+            })
+            .collect()
+    }
+
+    /// The left button went down at `column`, `row` on the screen. On a
+    /// line's text, a drag from here selects a phrase (#322).
+    fn press_at(&mut self, column: u16, row: u16) {
+        self.selection = None;
+        self.press = self.position_at(column, row).and_then(|(line, column)| {
+            let at = self.byte_at(line, column)?;
+            Some((line, at))
+        });
+    }
+
+    /// The pointer moved with the button down: select from the press to the
+    /// character under the pointer, both in. The phrase stays on the line
+    /// of the press: a pointer on another row, or past the text's end,
+    /// selects to the column it is at.
+    fn drag_to(&mut self, column: u16) {
+        let Some((line, pressed)) = self.press else {
+            return;
+        };
+        let Some(text) = self.text(line) else {
+            return;
+        };
+        let column = self.text_column(line, column).unwrap_or(0);
+        let at = self.byte_at(line, Some(column)).unwrap_or(text.len());
+        let (first, last) = (pressed.min(at), pressed.max(at));
+        let end = text[last..]
+            .chars()
+            .next()
+            .map_or(text.len(), |c| last + c.len_utf8());
+        self.selection = (first < end).then_some(Phrase {
+            line,
+            start: first,
+            end,
+        });
+    }
+
+    /// The button came up: a drag's selection is a phrase mark. One that
+    /// overlaps a phrase mark of the line takes its place.
+    fn release(&mut self) {
+        self.press = None;
+        let Some(new) = self.selection.take() else {
+            return;
+        };
+        self.phrases.retain(|phrase| {
+            phrase.line != new.line || phrase.end <= new.start || new.end <= phrase.start
+        });
+        self.phrases.push(new);
+    }
+
+    /// The line and the column of its text under `column`, `row` on the
+    /// screen: `None` off the lines, and no column over the gutter.
+    fn position_at(&self, column: u16, row: u16) -> Option<(usize, Option<usize>)> {
+        let area = self.lines_area;
+        if !area.contains(ratatui::layout::Position::new(column, row)) {
+            return None;
+        }
+        let line = self.line_at(self.top + usize::from(row - area.y))?;
+        Some((line, self.text_column(line, column)))
+    }
+
+    /// The byte of the character at display column `column` of line
+    /// `line`'s text, or `None` past its end.
+    fn byte_at(&self, line: usize, column: Option<usize>) -> Option<usize> {
+        let column = column?;
+        let mut at = 0;
+        for (byte, c) in self.text(line)?.char_indices() {
+            let width = if c == '\t' {
+                TAB_WIDTH
+            } else {
+                unicode_width::UnicodeWidthChar::width(c).unwrap_or(0)
+            };
+            if column < at + width {
+                return Some(byte);
+            }
+            at += width;
+        }
+        None
     }
 
     /// Whether `pattern` compiles and gets every mark right (#320).
@@ -1028,6 +1196,21 @@ impl FilterEditor {
                 asking.attempt, self.waited
             );
         }
+        match &self.consolidation {
+            Some(Consolidation {
+                running: Some(_), ..
+            }) => {
+                let _ = write!(
+                    status,
+                    " · {CONSOLIDATING}, {} s · Esc keeps the prompt as it was",
+                    self.waited
+                );
+            }
+            Some(_) => {
+                let _ = write!(status, " · {CONSOLIDATED}");
+            }
+            None => {}
+        }
         status
     }
 
@@ -1145,7 +1328,53 @@ pub(super) fn grouped(n: usize) -> String {
     out
 }
 
+/// How many columns a tab takes, as the editor draws it.
+pub(super) const TAB_WIDTH: usize = 4;
+
 impl FilterEditor {
+    /// Start the consolidation step (#322): the keys go to the prompt, and
+    /// the model writes one prompt from the session. A request still
+    /// running is dropped, as the save would drop it.
+    fn consolidate(&mut self, model: Arc<dyn generate::Model>) {
+        let text = self.consolidate_text();
+        self.running = None;
+        self.consolidation = Some(Consolidation {
+            earlier: self.prompt.pattern.clone(),
+            running: Some(Running::consolidate(model, text)),
+            started: Instant::now(),
+        });
+        self.waited = 0;
+        self.error = None;
+        self.anchor = None;
+        self.press = None;
+        self.selection = None;
+        if self.focus == EditorFocus::Pattern {
+            self.record();
+        }
+        self.focus = EditorFocus::Prompt;
+    }
+
+    /// Close the consolidation step (#322): keep the prompt in the field
+    /// with `accept`, or put back the one from before the step. The
+    /// session's requests are spent either way. A pattern the model gave
+    /// and nobody changed since is generated from the prompt it keeps: the
+    /// prompt says what the requests that wrote it asked for.
+    fn end_consolidation(&mut self, accept: bool) {
+        let Some(step) = self.consolidation.take() else {
+            return;
+        };
+        if accept {
+            let prompt = self.prompt.pattern.trim().to_string();
+            let pattern = self.field.pattern.clone();
+            if !prompt.is_empty() && self.generated.last().is_some_and(|(_, q)| *q == pattern) {
+                self.generated.push((prompt, pattern));
+            }
+        } else {
+            self.prompt = SearchPrompt::editing(step.earlier, super::prompt::PromptKind::default());
+        }
+        self.requests.clear();
+    }
+
     /// Send `text` to `model` on a worker thread for `request`, or for
     /// `Ctrl-r` with `None`, in place of a request still running.
     fn ask(&mut self, model: Arc<dyn generate::Model>, request: Option<String>, text: String) {
@@ -1248,6 +1477,27 @@ impl App<'_> {
     pub(super) fn handle_filter_editor_key(&mut self, key: event::KeyEvent) {
         use crate::keymap::ActionId as A;
         let pressed = crate::keymap::normalise(key);
+        // The consolidation step (#322) has two keys of its own; the rest
+        // edit the prompt once the model's prompt is in it.
+        let writing = self.filter_editor.as_ref().and_then(|editor| {
+            editor
+                .consolidation
+                .as_ref()
+                .map(|step| step.running.is_some())
+        });
+        if let Some(writing) = writing {
+            match self
+                .keymap
+                .resolve(crate::keymap::Scope::FilterEditor, pressed)
+            {
+                Some(A::FilterEditorCommit) if !writing => self.finish_consolidation(true),
+                Some(A::FilterEditorCommit) => {}
+                Some(A::FilterEditorCancel) => self.finish_consolidation(false),
+                _ if !writing => self.type_in_filter_editor(key),
+                _ => {}
+            }
+            return;
+        }
         let focus = self
             .filter_editor
             .as_ref()
@@ -1376,6 +1626,14 @@ impl App<'_> {
             self.handle_sense_key(key);
             return;
         }
+        self.type_in_filter_editor(key);
+    }
+
+    /// A key no binding of the editor took, in a text field: a prompt
+    /// editing key, or a character to type.
+    fn type_in_filter_editor(&mut self, key: event::KeyEvent) {
+        use crate::keymap::ActionId as A;
+        let pressed = crate::keymap::normalise(key);
         if let Some(action) = self.keymap.resolve(crate::keymap::Scope::Prompt, pressed) {
             let edit: fn(&mut SearchPrompt) = match action {
                 A::PromptLeft => SearchPrompt::move_left,
@@ -1406,6 +1664,24 @@ impl App<'_> {
                     .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) => {}
             KeyCode::Char(c) if c == '\n' || c == '\r' => {}
             KeyCode::Char(c) => self.edit_filter_editor_field(|field| field.insert(c)),
+            _ => {}
+        }
+    }
+
+    /// A mouse event in the open editor (#322): a drag along a line of the
+    /// file marks a phrase. Any other mouse event does nothing, and nothing
+    /// does in the consolidation step.
+    pub(super) fn handle_filter_editor_mouse(&mut self, mouse: MouseEvent) {
+        let Some(editor) = self.filter_editor.as_mut() else {
+            return;
+        };
+        if editor.consolidation.is_some() {
+            return;
+        }
+        match mouse.kind {
+            MouseEventKind::Down(MouseButton::Left) => editor.press_at(mouse.column, mouse.row),
+            MouseEventKind::Drag(MouseButton::Left) => editor.drag_to(mouse.column),
+            MouseEventKind::Up(MouseButton::Left) => editor.release(),
             _ => {}
         }
     }
@@ -1524,6 +1800,29 @@ impl App<'_> {
         let Some(editor) = self.filter_editor.as_mut() else {
             return false;
         };
+        if let Some(step) = editor.consolidation.as_mut() {
+            let Some(running) = step.running.as_ref() else {
+                return false;
+            };
+            let Some(reply) = running.poll() else {
+                let waited = step.started.elapsed().as_secs();
+                return std::mem::replace(&mut editor.waited, waited) != waited;
+            };
+            step.running = None;
+            match reply {
+                Ok(prompt) => {
+                    editor.prompt =
+                        SearchPrompt::editing(prompt, super::prompt::PromptKind::default());
+                }
+                // The prompt as it was stays in the field, to edit or save.
+                Err(error) => {
+                    editor.error = Some(format!(
+                        "the model gave no prompt: {error}; Enter saves the prompt as it is"
+                    ));
+                }
+            }
+            return true;
+        }
         let Some(asking) = editor.running.as_ref() else {
             return false;
         };
@@ -1586,40 +1885,85 @@ impl App<'_> {
     /// empty, does not compile or fails a check, a generated filter without
     /// a mark of each kind, or a name another filter in the set has, keeps
     /// the editor open with the reason in the panel.
+    ///
+    /// After one or more requests, Enter opens the consolidation step
+    /// (#322) instead, and the save waits for its Enter or Esc.
     fn commit_filter_editor(&mut self) {
+        if !self.filter_editor_ready() {
+            return;
+        }
+        let model = self.model.clone();
         let Some(editor) = self.filter_editor.as_mut() else {
             return;
         };
+        if let Some(model) = model
+            && editor.model
+            && !editor.requests.is_empty()
+        {
+            editor.consolidate(model);
+            return;
+        }
+        self.save_filter_editor();
+    }
+
+    /// Enter or Esc in the consolidation step (#322): keep the model's
+    /// prompt, as edited, with `accept`, or the prompt from before, and
+    /// save. The refusals are made again: the prompt kept can make the
+    /// filter generated, which needs a mark of each kind.
+    fn finish_consolidation(&mut self, accept: bool) {
+        self.edit_filter_editor(|editor| editor.end_consolidation(accept));
+        if self.filter_editor_ready() {
+            self.save_filter_editor();
+        }
+    }
+
+    /// Whether Enter can save: `false`, with the reason in the panel, for a
+    /// pattern that is empty, does not compile or fails a check, a
+    /// generated filter without a mark of each kind, or a name another
+    /// filter in the set has.
+    fn filter_editor_ready(&mut self) -> bool {
+        let Some(editor) = self.filter_editor.as_mut() else {
+            return false;
+        };
         if editor.field.pattern.is_empty() {
             editor.error = Some(NO_PATTERN.to_string());
-            return;
+            return false;
         }
         // Worked out again, not read: a refusal from an earlier Enter may
         // still be showing after the mark it named was cleared.
         editor.error = pattern_error(&editor.field.pattern);
         if editor.error.is_some() {
-            return;
+            return false;
         }
         if let Some(message) = editor.failed_checks() {
             editor.error = Some(message);
-            return;
+            return false;
         }
         if let Some(message) = editor.missing_examples() {
             editor.error = Some(message.to_string());
-            return;
+            return false;
         }
+        if let Some(name) = editor.details().name
+            && self.filters.name_taken(editor.target, &name)
+        {
+            editor.error = Some(format!("another filter in this set is named {name:?}"));
+            return false;
+        }
+        true
+    }
+
+    /// Save what the editor holds, as `commit_filter_editor` says, and
+    /// close. `filter_editor_ready` said yes.
+    fn save_filter_editor(&mut self) {
+        let Some(editor) = self.filter_editor.as_ref() else {
+            return;
+        };
         let (pattern, target, details, sense) = (
             editor.field.pattern.clone(),
             editor.target,
             editor.details(),
             editor.sense,
         );
-        if let Some(name) = &details.name
-            && self.filters.name_taken(target, name)
-        {
-            editor.error = Some(format!("another filter in this set is named {name:?}"));
-            return;
-        }
         // The details go on before a changed pattern: `set_details` renames
         // the filter in its set's profiles from the name they know it by,
         // which for a filter with no name is its pattern as it was.

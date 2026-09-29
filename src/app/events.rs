@@ -173,8 +173,11 @@ impl App<'_> {
         // The filter editor is modal too (#312). It swallows every event —
         // a mouse event as well, since nothing under it is on the screen.
         if self.filter_editor.is_some() {
-            if let event::Event::Key(key) = event {
-                self.handle_filter_editor_key(key);
+            match event {
+                event::Event::Key(key) => self.handle_filter_editor_key(key),
+                // A drag along a line marks a phrase (#322).
+                event::Event::Mouse(mouse) => self.handle_filter_editor_mouse(mouse),
+                _ => {}
             }
             return;
         }

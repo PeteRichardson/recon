@@ -17,6 +17,12 @@
 //! `verify` compiles it and tests it against the marked lines, and a pattern
 //! that fails goes back to the model with `retry_text`, up to `ATTEMPTS`
 //! times in all.
+//!
+//! When the user saves a filter after one or more requests, the model
+//! writes one prompt from all of them (#322), under `PROMPT_INSTRUCTIONS`
+//! and with the text `consolidate_text` builds. Phrase marks, the parts of
+//! lines the user selected with the mouse, go to the model as hints in each
+//! text; they are never a check.
 
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -51,6 +57,21 @@ Answer with exactly two lines and nothing else:
 pattern: the expression, as it is, with no quotes and no backticks
 explanation: one short sentence about what the expression matches";
 
+/// What the model is told before it writes one prompt from a session's
+/// requests (#322).
+pub const PROMPT_INSTRUCTIONS: &str = "\
+You write the description of a filter for a log viewer. A filter keeps the \
+lines of a file that its regular expression matches. The user asked for the \
+filter in steps, and each step changed what the filter keeps.
+
+Write one sentence in plain language that says what the lines the filter \
+keeps look like, with everything that the steps asked for. Later steps win \
+over earlier ones. Do not describe the regular expression and do not write \
+one. Do not mention the steps.
+
+Answer with exactly one line and nothing else:
+prompt: the sentence";
+
 /// The request `Ctrl-r` sends in the filter editor (#321), with the
 /// prompt and the marks and no current pattern: write the pattern again
 /// from the prompt.
@@ -83,7 +104,7 @@ pub struct Candidate {
     pub explanation: String,
 }
 
-/// A language model that writes a pattern.
+/// A language model that writes a pattern, and a filter's prompt.
 pub trait Model: Send + Sync {
     /// Whether the model can take a request now. Asked each time the filter
     /// editor opens: a model can finish its download while recon runs.
@@ -92,6 +113,10 @@ pub trait Model: Send + Sync {
     /// Answer `text` under `INSTRUCTIONS`. Runs on a worker thread and may
     /// take seconds; it stops early, with any error, once `cancel` fires.
     fn generate(&self, text: &str, cancel: &Cancel) -> Result<Candidate, String>;
+
+    /// Answer `text` under `PROMPT_INSTRUCTIONS` with one prompt (#322), on
+    /// a worker thread as `generate` is.
+    fn consolidate(&self, text: &str, cancel: &Cancel) -> Result<String, String>;
 }
 
 /// The model this build has, or `None` when it has none.
@@ -166,23 +191,37 @@ impl Cancel {
     }
 }
 
-/// A request on its worker thread. Dropping it cancels the request, and its
-/// reply then has nowhere to go: a reply that comes after a cancel never
-/// reaches the editor.
+/// A request on its worker thread: a pattern, or with `T` a `String` a
+/// prompt (#322). Dropping it cancels the request, and its reply then has
+/// nowhere to go: a reply that comes after a cancel never reaches the
+/// editor.
 #[derive(Debug)]
-pub(crate) struct Running {
-    reply: Receiver<Result<Candidate, String>>,
+pub(crate) struct Running<T = Candidate> {
+    reply: Receiver<Result<T, String>>,
     cancel: Cancel,
 }
 
 impl Running {
-    /// Send `text` to `model` on a new thread.
+    /// Send `text` to `model` on a new thread, for a pattern.
     pub(crate) fn start(model: Arc<dyn Model>, text: String) -> Self {
+        Running::spawn(move |cancel| model.generate(&text, cancel))
+    }
+}
+
+impl Running<String> {
+    /// Send `text` to `model` on a new thread, for one prompt (#322).
+    pub(crate) fn consolidate(model: Arc<dyn Model>, text: String) -> Self {
+        Running::spawn(move |cancel| model.consolidate(&text, cancel))
+    }
+}
+
+impl<T: Send + 'static> Running<T> {
+    fn spawn(ask: impl FnOnce(&Cancel) -> Result<T, String> + Send + 'static) -> Self {
         let (tx, reply) = mpsc::channel();
         let cancel = Cancel::default();
         let theirs = cancel.clone();
         std::thread::spawn(move || {
-            let result = model.generate(&text, &theirs);
+            let result = ask(&theirs);
             // The editor dropped its end if the request was cancelled.
             let _ = tx.send(result);
         });
@@ -190,7 +229,7 @@ impl Running {
     }
 
     /// The reply, once it is here. Never blocks.
-    pub(crate) fn poll(&self) -> Option<Result<Candidate, String>> {
+    pub(crate) fn poll(&self) -> Option<Result<T, String>> {
         match self.reply.try_recv() {
             Ok(result) => Some(result),
             Err(TryRecvError::Empty) => None,
@@ -199,7 +238,7 @@ impl Running {
     }
 }
 
-impl Drop for Running {
+impl<T> Drop for Running<T> {
     fn drop(&mut self) {
         self.cancel.cancel();
     }
@@ -217,6 +256,8 @@ pub(crate) struct Parts<'a> {
     pub(crate) must_not_match: &'a [&'a str],
     /// Lines of the file with no mark.
     pub(crate) sample: &'a [&'a str],
+    /// The phrase marks (#322): each phrase, and the line it is part of.
+    pub(crate) phrases: &'a [(&'a str, &'a str)],
     /// The requests of this session the model answered, oldest first.
     pub(crate) earlier: &'a [String],
     /// The request to answer.
@@ -244,6 +285,7 @@ pub(crate) fn request_text(parts: &Parts) -> String {
         parts.must_not_match,
     );
     section(&mut text, "Other lines of the file:", parts.sample);
+    phrase_section(&mut text, parts.phrases);
     let earlier: Vec<&str> = parts.earlier[parts.earlier.len().saturating_sub(REQUESTS_MAX)..]
         .iter()
         .map(String::as_str)
@@ -253,6 +295,75 @@ pub(crate) fn request_text(parts: &Parts) -> String {
     text.push_str(parts.request);
     text.push('\n');
     text
+}
+
+/// The phrase marks (#322) under their heading, each as the phrase and the
+/// line it is part of. Nothing when there are none.
+fn phrase_section(text: &mut String, phrases: &[(&str, &str)]) {
+    let phrases: Vec<String> = phrases
+        .iter()
+        .map(|(phrase, line)| {
+            let line: String = line.chars().take(LINE_MAX).collect();
+            format!("{phrase:?} in the line: {}", line.trim_end())
+        })
+        .collect();
+    let phrases: Vec<&str> = phrases.iter().map(String::as_str).collect();
+    section(
+        text,
+        "Important parts of lines, as hints (they are not tests):",
+        &phrases,
+    );
+}
+
+/// The text the model receives with `PROMPT_INSTRUCTIONS` (#322): the
+/// filter's prompt before the session, the session's requests oldest
+/// first, the pattern they gave and the phrase marks.
+pub(crate) fn consolidate_text(
+    prompt: Option<&str>,
+    requests: &[String],
+    pattern: &str,
+    phrases: &[(&str, &str)],
+) -> String {
+    let mut text = String::new();
+    if let Some(prompt) = prompt {
+        text.push_str("The filter's description before the steps: ");
+        text.push_str(prompt);
+        text.push_str("\n\n");
+    }
+    let requests: Vec<&str> = requests.iter().map(String::as_str).collect();
+    section(&mut text, "The steps, oldest first:", &requests);
+    if !pattern.is_empty() {
+        text.push_str("The regular expression the steps gave: ");
+        text.push_str(pattern);
+        text.push_str("\n\n");
+    }
+    phrase_section(&mut text, phrases);
+    text.push_str("Write the one sentence now.\n");
+    text
+}
+
+/// The prompt in the model's answer (#322): its `prompt:` line, or its
+/// first line when it has none, out of the quotes the model put round it.
+pub fn parse_prompt(answer: &str) -> Result<String, String> {
+    let lines = || {
+        answer
+            .lines()
+            .map(|line| line.trim().trim_start_matches(['-', '*', ' ']))
+            .filter(|line| !line.is_empty() && !line.starts_with("```"))
+    };
+    let labelled = lines().find_map(|line| {
+        let (key, value) = line.split_once(':')?;
+        key.trim()
+            .trim_matches('*')
+            .eq_ignore_ascii_case("prompt")
+            .then_some(value)
+    });
+    let prompt = labelled.or_else(|| lines().next()).unwrap_or_default();
+    let prompt = unquote(prompt.trim()).trim().to_string();
+    if prompt.is_empty() {
+        return Err(format!("no prompt in the answer: {:?}", answer.trim()));
+    }
+    Ok(prompt)
 }
 
 /// Why the editor did not take a pattern the model gave (#320).
@@ -444,7 +555,7 @@ fn section(text: &mut String, heading: &str, lines: &[&str]) {
     target_arch = "aarch64"
 ))]
 mod foundation {
-    use super::{Cancel, Candidate, INSTRUCTIONS, Model};
+    use super::{Cancel, Candidate, INSTRUCTIONS, Model, PROMPT_INSTRUCTIONS};
     use fm_rs::{GenerationOptions, Session, SystemLanguageModel};
 
     /// Apple's on-device model, through `fm-rs`.
@@ -463,11 +574,27 @@ mod foundation {
         }
 
         fn generate(&self, text: &str, cancel: &Cancel) -> Result<Candidate, String> {
+            super::parse_answer(&self.respond(INSTRUCTIONS, text, cancel)?)
+        }
+
+        fn consolidate(&self, text: &str, cancel: &Cancel) -> Result<String, String> {
+            super::parse_prompt(&self.respond(PROMPT_INSTRUCTIONS, text, cancel)?)
+        }
+    }
+
+    impl FoundationModel {
+        /// The model's answer to `text` under `instructions`.
+        fn respond(
+            &self,
+            instructions: &str,
+            text: &str,
+            cancel: &Cancel,
+        ) -> Result<String, String> {
             // A new session for each request: the request text carries all
             // the context, and a session's cancel handle stops whatever the
             // session runs, so one per request cannot stop a later one.
             let session =
-                Session::with_instructions(&self.0, INSTRUCTIONS).map_err(|e| e.to_string())?;
+                Session::with_instructions(&self.0, instructions).map_err(|e| e.to_string())?;
             let handle = session.cancellation_handle();
             if !cancel.on_cancel(move || handle.cancel()) {
                 return Err("cancelled".to_string());
@@ -475,7 +602,7 @@ mod foundation {
             let answer = session
                 .respond(text, &GenerationOptions::default())
                 .map_err(|e| e.to_string())?;
-            super::parse_answer(answer.content())
+            Ok(answer.content().to_string())
         }
     }
 }
@@ -493,6 +620,7 @@ mod tests {
             must_match: &["ERROR timeout"],
             must_not_match: &["ERROR timeout DEMO"],
             sample: &["INFO ok"],
+            phrases: &[],
             earlier: &earlier,
             request: "also exclude DEMO",
         });
@@ -639,6 +767,62 @@ mod tests {
              It matches these lines, which it must not match:\na DEMO\n\n\
              Write a pattern that does not have these problems.\n"
         );
+    }
+
+    #[test]
+    fn a_phrase_mark_goes_to_the_model_with_its_line() {
+        let text = request_text(&Parts {
+            phrases: &[("timeout", "ERROR timeout")],
+            request: "x",
+            ..Parts::default()
+        });
+        assert_eq!(
+            text,
+            "Important parts of lines, as hints (they are not tests):\n\
+             \"timeout\" in the line: ERROR timeout\n\n\
+             Request: x\n"
+        );
+    }
+
+    #[test]
+    fn the_consolidate_text_has_the_prompt_the_steps_and_the_pattern() {
+        let requests = ["the timeouts".to_string(), "also exclude DEMO".to_string()];
+        let text = consolidate_text(
+            Some("errors"),
+            &requests,
+            "timeout",
+            &[("DEMO", "ERROR timeout DEMO")],
+        );
+        assert_eq!(
+            text,
+            "The filter's description before the steps: errors\n\n\
+             The steps, oldest first:\nthe timeouts\nalso exclude DEMO\n\n\
+             The regular expression the steps gave: timeout\n\n\
+             Important parts of lines, as hints (they are not tests):\n\
+             \"DEMO\" in the line: ERROR timeout DEMO\n\n\
+             Write the one sentence now.\n"
+        );
+        let bare = consolidate_text(None, &requests, "", &[]);
+        assert!(bare.starts_with("The steps, oldest first:"), "{bare}");
+        assert!(!bare.contains("regular expression the steps"), "{bare}");
+    }
+
+    #[test]
+    fn a_prompt_answer_is_read_with_or_without_its_label() {
+        assert_eq!(
+            parse_prompt("prompt: Timeouts, except in DEMO runs\n").as_deref(),
+            Ok("Timeouts, except in DEMO runs")
+        );
+        assert_eq!(
+            parse_prompt("- **Prompt**: \"Timeouts\"").as_deref(),
+            Ok("Timeouts")
+        );
+        assert_eq!(
+            parse_prompt("```\nTimeout lines\n```\n").as_deref(),
+            Ok("Timeout lines")
+        );
+        assert!(parse_prompt("prompt: \"\"").is_err());
+        assert!(parse_prompt("  \n").is_err());
     }
 
     #[test]

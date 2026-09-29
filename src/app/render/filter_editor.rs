@@ -5,7 +5,7 @@
 
 use super::super::filter_editor::{
     Check, EditorFocus, FilterEditor, GENERATED, Generated, Mark, PATTERN_CHANGED, PROMPT_CHANGED,
-    PROMPT_CHANGED_NO_MODEL,
+    PROMPT_CHANGED_NO_MODEL, TAB_WIDTH,
 };
 use crate::filter::Sense;
 use crate::widgets::pane_block;
@@ -18,6 +18,7 @@ use unicode_width::UnicodeWidthStr;
 /// How many columns a tab takes. A raw tab in a cell draws as nothing, and
 /// log lines carry them.
 const TAB: &str = "    ";
+const _: () = assert!(TAB.len() == TAB_WIDTH);
 
 /// The columns before each line: the cursor, the mark, and a space (#314).
 const GUTTER: u16 = 3;
@@ -45,6 +46,13 @@ const NOT_IN_FILE: &str = "example, not in the file: ";
 /// The mark of a line the pattern gets right.
 const PASS: Style = Style::new().fg(Color::Green).add_modifier(Modifier::BOLD);
 
+/// A phrase mark (#322), added to the style of the text under it: a line
+/// mark colours a whole line, a phrase mark underlines only its part.
+const PHRASE: Modifier = Modifier::UNDERLINED.union(Modifier::BOLD);
+
+/// The gutter of a line with a phrase mark and no line mark.
+const PHRASE_GUTTER: Style = Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD);
+
 impl FilterEditor {
     /// Draw the editor over `area`, which it covers entirely. `dim` is how
     /// the file view draws a line no filter matches, so a line the pattern
@@ -64,6 +72,7 @@ impl FilterEditor {
         let block = pane_block(format!(" {title} "), self.focus == EditorFocus::Lines);
         let inner = block.inner(file_area);
         block.render(file_area, buf);
+        self.lines_area = inner;
         self.page = usize::from(inner.height).max(1);
         self.reveal_cursor();
         // A row, not a line: with matches only (#315), row `top` is not line
@@ -82,7 +91,7 @@ impl FilterEditor {
                     Style::default().fg(Color::DarkGray),
                 ));
             }
-            spans.extend(self.spans(line, dim, check));
+            spans.extend(self.spans(index, line, dim, check));
             // A failed check fills its whole row, not only its text.
             let row = if check.is_some_and(|check| !check.passes) {
                 FAIL
@@ -112,6 +121,9 @@ impl FilterEditor {
             ("lines", "pattern")
         };
         let keys = match self.focus {
+            _ if self.consolidation.is_some() => {
+                " Enter save with this prompt · Esc save with the prompt as it was ".to_string()
+            }
             EditorFocus::Pattern => format!(
                 " {enter} · Esc cancel · Up/Down/PgUp/PgDn scroll · Ctrl-z/Ctrl-y undo/redo · Tab {after_pattern} · Shift-Tab prompt "
             ),
@@ -178,7 +190,10 @@ impl FilterEditor {
             }
         }
         // After the prompt, whether the model wrote the pattern from it.
+        // Not in the consolidation step (#322): the prompt there is the
+        // model's proposal, and the status row says what it is.
         if let Some((text, style)) = self.generated_note()
+            && self.consolidation.is_none()
             && inner.height > 2
         {
             // Terminal columns, not chars: a wide character takes two.
@@ -284,6 +299,9 @@ impl FilterEditor {
             _ => Span::raw(" "),
         };
         let mark = match check {
+            None if self.phrases.iter().any(|phrase| phrase.line == index) => {
+                Span::styled("~ ", PHRASE_GUTTER)
+            }
             None => Span::raw("  "),
             Some(Check { mark, passes }) => {
                 let symbol = match mark {
@@ -301,41 +319,86 @@ impl FilterEditor {
         vec![cursor, mark]
     }
 
-    /// One line of the file as spans: a matched line in the new filter's
+    /// Line `index`, `line`, as spans: a matched line in the new filter's
     /// colour with each match reversed, a missed line dimmed. A line whose
     /// check fails is in `FAIL` instead, its matches still reversed, so a
-    /// must-not-match line shows what the pattern wrongly matched.
-    fn spans(&self, line: &str, dim: Style, check: Option<Check>) -> Vec<Span<'static>> {
+    /// must-not-match line shows what the pattern wrongly matched. Each
+    /// phrase mark, and the selection a drag is making, is underlined in
+    /// bold over that (#322).
+    fn spans(
+        &self,
+        index: usize,
+        line: &str,
+        dim: Style,
+        check: Option<Check>,
+    ) -> Vec<Span<'static>> {
         let failed = check.is_some_and(|check| !check.passes);
-        let Some(regex) = self.regex.as_ref().filter(|regex| regex.is_match(line)) else {
-            let style = if failed {
-                FAIL
-            } else if self.regex.is_some() {
-                dim
-            } else {
-                Style::default()
-            };
-            return vec![Span::styled(line.replace('\t', TAB), style)];
+        let found: Vec<(usize, usize)> = self
+            .regex
+            .as_ref()
+            .map(|regex| {
+                regex
+                    .find_iter(line)
+                    .map(|m| (m.start(), m.end()))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let phrases: Vec<(usize, usize)> = self
+            .phrases
+            .iter()
+            .chain(&self.selection)
+            .filter(|phrase| phrase.line == index)
+            .map(|phrase| (phrase.start, phrase.end))
+            .collect();
+        let style = if failed {
+            FAIL
+        } else if !found.is_empty() {
+            self.style
+        } else if self.regex.is_some() {
+            dim
+        } else {
+            Style::default()
         };
-        let style = if failed { FAIL } else { self.style };
-        let mut spans = Vec::new();
-        let mut at = 0;
-        for found in regex.find_iter(line) {
-            if found.start() > at {
-                spans.push(Span::styled(
-                    line[at..found.start()].replace('\t', TAB),
-                    style,
-                ));
-            }
-            spans.push(Span::styled(
-                found.as_str().replace('\t', TAB),
-                style.add_modifier(Modifier::REVERSED),
-            ));
-            at = found.end();
-        }
-        if at < line.len() {
-            spans.push(Span::styled(line[at..].replace('\t', TAB), style));
+        let mut cuts: Vec<usize> = found
+            .iter()
+            .chain(&phrases)
+            .flat_map(|&(start, end)| [start, end])
+            .chain([0, line.len()])
+            .filter(|&at| at <= line.len() && line.is_char_boundary(at))
+            .collect();
+        cuts.sort_unstable();
+        cuts.dedup();
+        let inside = |ranges: &[(usize, usize)], at: usize| {
+            ranges.iter().any(|&(start, end)| start <= at && at < end)
+        };
+        let mut spans: Vec<Span<'static>> = cuts
+            .windows(2)
+            .map(|pair| {
+                let (start, end) = (pair[0], pair[1]);
+                let mut part = style;
+                if inside(&found, start) {
+                    part = part.add_modifier(Modifier::REVERSED);
+                }
+                if inside(&phrases, start) {
+                    part = part.add_modifier(PHRASE);
+                }
+                Span::styled(line[start..end].replace('\t', TAB), part)
+            })
+            .collect();
+        if spans.is_empty() {
+            spans.push(Span::styled(String::new(), style));
         }
         spans
+    }
+
+    /// The display column of line `index`'s text under screen column
+    /// `column` (#322), past the gutter and the note before an example the
+    /// file does not have: `None` left of the text.
+    pub(in crate::app) fn text_column(&self, index: usize, column: u16) -> Option<usize> {
+        let mut before = usize::from(self.lines_area.x) + usize::from(GUTTER);
+        if index >= self.lines.len() {
+            before += UnicodeWidthStr::width(NOT_IN_FILE);
+        }
+        usize::from(column).checked_sub(before)
     }
 }
