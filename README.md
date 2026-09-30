@@ -248,9 +248,11 @@ Options:
       --print-editor-config [<FLAVOUR>]
           Print a ready-to-paste `[editor]` stanza and exit. Takes a flavour —
           `zed`, `vscode`, `wezterm-nvim`, … — or `auto` to guess from
-          `$TERM_PROGRAM`
+          `$TERM_PROGRAM` [possible values: auto, zed, vscode, sublime, idea,
+          terminal-nvim, iterm-nvim, wezterm-nvim, kitty-nvim, ghostty-nvim]
       --print-keymap [<WHICH>]
           Print the keymap as a ready-to-paste `[keymap]` stanza and exit
+          [possible values: effective, defaults]
       --background <BACKGROUND>
           Whether the terminal background is dark or light: picks the built-in
           filter palette and the grey of dimmed lines. Falls back to a top-level
@@ -283,9 +285,8 @@ Options:
           one pane stays shown [possible values: explorer, view, filters]
   -q, --quiet
           Suppress the summary line on stderr; warnings still print
-      --warnings [<WARNINGS>]
+      --warnings
           Show keymap warnings at startup. On unless something turns them off
-          [env: RECON_WARNINGS=] [possible values: true, false]
       --no-warnings
           Hide the keymap warnings for this run. The opposite of `--warnings`
   -h, --help

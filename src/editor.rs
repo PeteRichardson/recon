@@ -650,6 +650,13 @@ impl std::error::Error for UnknownFlavour {}
 /// The flavour to print when the user asks for `auto`, guessed from the
 /// terminal recon is running in.
 ///
+/// Every name `--print-editor-config` accepts: `auto`, then each flavour.
+/// The flag's closed list is read from here, so it cannot drift from
+/// `FLAVOURS` (#365).
+pub fn flavour_names() -> impl Iterator<Item = &'static str> {
+    std::iter::once("auto").chain(FLAVOURS.iter().map(|(name, _, _)| *name))
+}
+
 /// A guess, and only ever a starting point — the printed snippet is text to
 /// read and edit, not something applied. Falls back to `zed`, which is the
 /// compiled-in default and so the least surprising thing to show.

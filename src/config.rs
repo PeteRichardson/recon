@@ -123,11 +123,22 @@ pub struct Config {
     // decision itself is enforced in `Cargo.toml`, which drops toml's `display`
     // feature so the serializer does not exist in this build — a reader of
     // `--help` needs the promise, not the mechanism.
+    //
+    // A closed list (#365): with any word accepted, `recon
+    // --print-editor-config app.log` took the path for a flavour. The value
+    // stays after a space, as the README shows it, because clap now refuses
+    // a word that is not a flavour and names the ones that are.
+    //
+    // `conflicts_with = "set"` (#247): this command reads no set file, so a
+    // `--set` beside it can have no effect. Refused by clap, before any file
+    // is read, which keeps #191 intact.
     #[arg(
         long,
         value_name = "FLAVOUR",
         num_args = 0..=1,
         default_missing_value = "auto",
+        value_parser = clap::builder::PossibleValuesParser::new(editor::flavour_names()),
+        conflicts_with = "set",
     )]
     pub print_editor_config: Option<String>,
 
@@ -143,13 +154,18 @@ pub struct Config {
     /// into your `config.toml` yourself. The sibling of
     /// `--print-editor-config`, and the other half of "recon never writes
     /// `config.toml`" (#61).
+    //
+    // A closed list for the reason `print_editor_config` has one (#365): the
+    // typo `defaults` → `default` printed the map in force, the opposite of
+    // what was asked.
     #[arg(
         long,
         value_name = "WHICH",
         num_args = 0..=1,
         default_missing_value = "effective",
+        value_enum
     )]
-    pub print_keymap: Option<String>,
+    pub print_keymap: Option<PrintKeymap>,
 
     /// The colours successive filters take, or `None` to use the compiled-in
     /// palette. See [`FiltersConfig::palette`].
@@ -319,17 +335,33 @@ pub struct Config {
     ///
     /// Distinct from `--quiet`, which suppresses the `--emit` summary line
     /// and leaves warnings alone.
-    #[arg(long, env = "RECON_WARNINGS", num_args = 0..=1, default_missing_value = "true")]
-    pub warnings: Option<bool>,
+    ///
+    /// Takes no value: `--no-warnings` is the way to turn them off for a run.
+    /// `RECON_WARNINGS=true|false` sets them in the environment, below both
+    /// flags and above `config.toml`.
+    //
+    // A plain flag (#365). It took an optional value, so `recon --warnings
+    // app.log` read the path as that value and refused it. `--no-warnings` is
+    // the way to say "off" on the command line, which is all the value added.
+    //
+    // No `env =`: clap ties a variable to the flag's own value, and a flag
+    // that takes none cannot say "false". `RECON_WARNINGS` is read into
+    // `warnings_setting` by `load` instead, one rung above the file.
+    #[arg(long)]
+    pub warnings: bool,
+
+    /// `RECON_WARNINGS`, else the file's top-level `warnings`: the answer
+    /// when neither flag is given. `None` is unset — `warnings()` resolves
+    /// it. `#[arg(skip)]` because `load` fills it; see `warnings` above.
+    #[arg(skip)]
+    pub warnings_setting: Option<bool>,
 
     /// Hide the keymap warnings for this run. The opposite of `--warnings`.
     ///
     /// Wins over `--warnings` and over `RECON_WARNINGS` when both are given.
     //
-    // Not `conflicts_with = "warnings"`: clap counts a value from
-    // `RECON_WARNINGS` as `--warnings` being present, so that conflict would
-    // make `--no-warnings` refuse to start recon for anyone who exported the
-    // variable in their shell profile.
+    // Not `conflicts_with = "warnings"`: an alias or a script that adds
+    // `--warnings` must not stop a run that also asks for silence.
     #[arg(long = "no-warnings")]
     pub no_warnings: bool,
 }
@@ -347,6 +379,15 @@ fn theme_long_help() -> String {
          Bundled themes: {names}.",
         default = syntax::DEFAULT_THEME,
     )
+}
+
+/// What `--print-keymap` prints.
+#[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PrintKeymap {
+    /// The keymap in force, `config.toml` folded in. The bare flag.
+    Effective,
+    /// recon's built-in table, whatever `config.toml` says.
+    Defaults,
 }
 
 /// The clap defaults, restated for the tests and callers that build a `Config`
@@ -381,7 +422,8 @@ impl Default for Config {
             hide: false,
             hide_pane: None,
             quiet: false,
-            warnings: None,
+            warnings: false,
+            warnings_setting: None,
             no_warnings: false,
         }
     }
@@ -586,6 +628,41 @@ impl<'de> serde::de::Visitor<'de> for KeyOrKeys<'_> {
         E: serde::de::Error,
     {
         Ok(vec![v])
+    }
+
+    /// A table where a key belongs is almost always an action name written
+    /// without quotes (#366): TOML reads `global.quit = 'q'` as a table
+    /// `global` holding `quit`. Without this the message named "global" as
+    /// the action and "map" as the fault, which points nowhere useful.
+    ///
+    /// Follows the table down while it holds one entry, so the name in the
+    /// message is the one the user wrote: `global.hide.toggle`, not
+    /// `global.hide`.
+    fn visit_map<A>(self, mut map: A) -> Result<Vec<String>, A::Error>
+    where
+        A: serde::de::MapAccess<'de>,
+    {
+        use serde::de::Error;
+
+        let mut name = self.action.to_string();
+        if let Some(key) = map.next_key::<String>()? {
+            name = format!("{name}.{key}");
+            let mut value: toml::Value = map.next_value()?;
+            while let toml::Value::Table(table) = value {
+                let mut entries = table.into_iter();
+                match (entries.next(), entries.next()) {
+                    (Some((key, inner)), None) => {
+                        name = format!("{name}.{key}");
+                        value = inner;
+                    }
+                    _ => break,
+                }
+            }
+        }
+        Err(A::Error::custom(format!(
+            "{:?} in [keymap] is a table, not a key; quote an action name that holds a dot: '{name}' = …",
+            self.action
+        )))
     }
 
     fn visit_seq<A>(self, mut seq: A) -> Result<Vec<String>, A::Error>
@@ -803,6 +880,8 @@ pub enum ConfigError {
     /// Refused rather than corrected: a window with no pane has nothing to
     /// press, and quietly showing one would ignore what was asked.
     AllPanesHidden,
+    /// `RECON_WARNINGS` set to something other than `true` or `false`.
+    BadWarningsVar(String),
     /// `[keymap]` naming an action that does not exist. `known` is every name
     /// that does: the message gives the nearest of them (#385), since a typo
     /// is the common case and the whole list is about 93 names.
@@ -941,6 +1020,9 @@ impl fmt::Display for ConfigError {
                 f,
                 "--hide-pane or [layout] hide_panes hides every pane; at least one must stay shown"
             ),
+            Self::BadWarningsVar(value) => {
+                write!(f, "{WARNINGS_VAR} must be true or false, not {value:?}")
+            }
             Self::SetAndUnlist(name) => {
                 write!(f, "--set and --unlist both name the set {name:?}")
             }
@@ -1088,6 +1170,24 @@ pub fn load_file() -> Result<FileConfig, ConfigError> {
     load_from(&path)
 }
 
+/// The variable that turns keymap warnings on or off, below the flags.
+const WARNINGS_VAR: &str = "RECON_WARNINGS";
+
+/// `RECON_WARNINGS`, read: `true`, `false`, or unset. A value in hand rather
+/// than a read of the environment, so a test never depends on what the
+/// developer exported — the same rule `config_path` follows.
+///
+/// The two spellings clap accepted when the variable was tied to the flag,
+/// and no others: a script that exported one of them still works.
+fn warnings_from_env(value: Option<&str>) -> Result<Option<bool>, ConfigError> {
+    match value {
+        None => Ok(None),
+        Some("true") => Ok(Some(true)),
+        Some("false") => Ok(Some(false)),
+        Some(other) => Err(ConfigError::BadWarningsVar(other.to_string())),
+    }
+}
+
 impl Config {
     /// Refuse flag combinations clap cannot express: `-n` is meaningful only
     /// with `--emit lines`. Here rather than as a clap `requires`, because
@@ -1233,21 +1333,32 @@ impl Config {
         ))
     }
 
-    /// Run the whole precedence chain: parse the CLI (which `clap` has already
-    /// resolved against the environment), read the config file, and fold the
-    /// file in underneath.
+    /// The first half of the precedence chain: parse the CLI, which `clap`
+    /// has already resolved against the environment, and refuse a flag
+    /// combination it cannot express. [`Config::load`] is the second half.
+    ///
+    /// Split from `load` so that `main` can answer `--print-editor-config`
+    /// and `--print-keymap defaults` between the two (#366). Neither reads
+    /// `config.toml`, and a file recon cannot parse must not stop them —
+    /// they are what a user reaches for when recon refuses that file.
+    pub fn from_args() -> Result<Self, ConfigError> {
+        let config = Self::parse();
+        config.check_flags()?;
+        Ok(config)
+    }
+
+    /// The second half of the precedence chain: fold `RECON_WARNINGS` and
+    /// then the config file in under what [`Config::from_args`] parsed.
     ///
     /// Fails rather than warns. recon enters raw mode and the alternate screen
     /// moments after this returns, so a warning printed and then continued is
     /// wiped off the screen before it can be read — "warn and carry on" is
     /// "carry on silently" in practice. Call this **before** the terminal is
     /// initialised.
-    pub fn load() -> Result<Self, ConfigError> {
-        let mut config = Self::parse();
-        config.check_flags()?;
-        config.apply(&load_file()?);
-        config.check_panes()?;
-        Ok(config)
+    pub fn load(&mut self) -> Result<(), ConfigError> {
+        self.warnings_setting = warnings_from_env(std::env::var(WARNINGS_VAR).ok().as_deref())?;
+        self.apply(&load_file()?);
+        self.check_panes()
     }
 
     /// Fold the file layer under the layers already resolved.
@@ -1329,7 +1440,7 @@ impl Config {
         }
 
         if let Some(warnings) = warnings {
-            self.warnings.get_or_insert(*warnings);
+            self.warnings_setting.get_or_insert(*warnings);
         }
     }
 
@@ -1356,15 +1467,15 @@ impl Config {
     /// reason: the default belongs with the rest of the ladder.
     ///
     /// `--no-warnings` is checked first because it is the plain spelling of
-    /// "off for this run" and must win over `--warnings`/`RECON_WARNINGS`
-    /// when both are given — clap does not refuse the combination, since a
-    /// value from `RECON_WARNINGS` counts as `--warnings` being present.
+    /// "off for this run" and must win over `--warnings` when both are given.
+    /// Then `--warnings`, then `RECON_WARNINGS` and the file, which `load`
+    /// has already folded into `warnings_setting` in that order.
     #[must_use]
     pub fn warnings(&self) -> bool {
         if self.no_warnings {
             return false;
         }
-        self.warnings.unwrap_or(true)
+        self.warnings || self.warnings_setting.unwrap_or(true)
     }
 
     /// The terminal background, once the chain has run: dark unless said
@@ -1990,7 +2101,7 @@ mod tests {
     #[test]
     fn a_flag_beats_the_file() {
         let mut config = Config {
-            warnings: Some(true),
+            warnings: true,
             ..Config::default()
         };
         config.apply(&FileConfig {
@@ -2014,6 +2125,55 @@ mod tests {
             ..FileConfig::default()
         });
         assert!(!config.warnings());
+    }
+
+    /// `--warnings` takes no value (#365). With one, `recon --warnings app.log`
+    /// read the path as the value and refused it as "not a boolean".
+    #[test]
+    fn warnings_takes_no_value_so_a_path_after_it_is_the_path() {
+        use clap::Parser;
+        let config = Config::try_parse_from(["recon", "--warnings", "app.log"])
+            .expect("a path after --warnings must parse");
+        assert!(config.warnings);
+        assert_eq!(config.path, "app.log");
+    }
+
+    #[test]
+    fn the_environment_turns_warnings_off_and_the_flag_beats_it() {
+        let mut config = Config {
+            warnings_setting: warnings_from_env(Some("false")).expect("valid"),
+            ..Config::default()
+        };
+        assert!(!config.warnings());
+
+        config.warnings = true;
+        assert!(config.warnings(), "--warnings wins over RECON_WARNINGS");
+    }
+
+    /// The environment beats the file, as every other variable does.
+    #[test]
+    fn the_environment_beats_the_file() {
+        let mut config = Config {
+            warnings_setting: warnings_from_env(Some("true")).expect("valid"),
+            ..Config::default()
+        };
+        config.apply(&FileConfig {
+            warnings: Some(false),
+            ..FileConfig::default()
+        });
+        assert!(config.warnings());
+    }
+
+    #[test]
+    fn warnings_from_env_reads_true_false_or_nothing() {
+        assert_eq!(warnings_from_env(None).unwrap(), None);
+        assert_eq!(warnings_from_env(Some("true")).unwrap(), Some(true));
+        assert_eq!(warnings_from_env(Some("false")).unwrap(), Some(false));
+        let err = warnings_from_env(Some("off")).unwrap_err().to_string();
+        assert!(
+            err.contains("RECON_WARNINGS") && err.contains("\"off\""),
+            "the message names the variable and the value: {err}"
+        );
     }
 
     /// Giving both is not an error: `--no-warnings` wins. The conflict this
@@ -2295,6 +2455,49 @@ mod tests {
 
         let absent = Config::try_parse_from(["recon"]).expect("parses");
         assert_eq!(absent.print_editor_config, None);
+    }
+
+    /// The flavour is a closed list (#365), so a path after the flag is
+    /// refused by name rather than taken for a flavour.
+    #[test]
+    fn print_editor_config_refuses_a_flavour_it_does_not_know() {
+        let err = Config::try_parse_from(["recon", "--print-editor-config", "app.log"])
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("app.log") && err.contains("vscode"), "{err}");
+    }
+
+    /// `--set` can have no effect on a command that reads no set file, so
+    /// clap refuses the pair before any file is read (#247).
+    #[test]
+    fn print_editor_config_refuses_set() {
+        let err = Config::try_parse_from(["recon", "--print-editor-config", "--set", "Bogus"])
+            .unwrap_err();
+        assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
+    }
+
+    // ---- --print-keymap ----------------------------------------------------
+
+    #[test]
+    fn print_keymap_takes_effective_or_defaults() {
+        let bare = Config::try_parse_from(["recon", "--print-keymap"]).expect("parses");
+        assert_eq!(bare.print_keymap, Some(PrintKeymap::Effective));
+
+        let defaults =
+            Config::try_parse_from(["recon", "--print-keymap", "defaults"]).expect("parses");
+        assert_eq!(defaults.print_keymap, Some(PrintKeymap::Defaults));
+    }
+
+    /// #365: `default` and `app.log` used to print the map in force. Both are
+    /// refused now, and the message lists what is accepted.
+    #[test]
+    fn print_keymap_refuses_anything_else() {
+        for word in ["default", "app.log"] {
+            let err = Config::try_parse_from(["recon", "--print-keymap", word])
+                .unwrap_err()
+                .to_string();
+            assert!(err.contains("defaults"), "{word}: {err}");
+        }
     }
 
     // ---- the filter palette ----------------------------------------------
@@ -2750,6 +2953,30 @@ mod tests {
         assert!(message.contains("global.quit"), "{message}");
         assert!(!message.contains("Keys"), "{message}");
         assert!(!message.contains("Raw"), "{message}");
+    }
+
+    /// #366: an unquoted dotted action name is a TOML table, not a key.
+    /// The message used to name the first segment as the action; it says
+    /// what to write now, with the whole name.
+    #[test]
+    fn an_unquoted_dotted_action_name_says_to_quote_it() {
+        for (name, line, full) in [
+            (
+                "keymap-dotted-two.toml",
+                "global.quit = 'q'",
+                "'global.quit' =",
+            ),
+            (
+                "keymap-dotted-three.toml",
+                "global.hide.toggle = 'u'",
+                "'global.hide.toggle' =",
+            ),
+        ] {
+            let path = fixture(name, &format!("[keymap]\n{line}\n"));
+            let message = load_from(&path).expect_err("refused").to_string();
+            assert!(message.contains("quote"), "{message}");
+            assert!(message.contains(full), "{message}");
+        }
     }
 
     #[test]

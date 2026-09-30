@@ -18,12 +18,13 @@ fn main() -> Result<ExitCode> {
     install_error_hooks()?;
 
     setup_logging();
-    let mut config = Config::load()?;
+    let mut config = Config::from_args()?;
 
-    // Before the filter sets are read, not after: this command prints an
-    // `[editor]` stanza and exits, and it uses nothing from `filters.toml`.
-    // A syntax error in that file used to stop a command that does not
-    // consult it (#191).
+    // Before `config.toml` and the filter sets are read, not after: this
+    // command prints an `[editor]` stanza and exits, and it uses nothing from
+    // either file. A syntax error in `filters.toml` used to stop a command
+    // that does not consult it (#191), and one in `config.toml` still did
+    // (#366).
     if let Some(flavour) = &config.print_editor_config {
         print!(
             "{}",
@@ -37,18 +38,21 @@ fn main() -> Result<ExitCode> {
 
     // `--print-keymap defaults` prints the built-in table, which no
     // `config.toml` can change — so no `config.toml` may stop it. Above
-    // `build_keymap` for that reason: this is the command a user reaches for
+    // `config.load` for that reason: this is the command a user reaches for
     // when recon refuses their keymap, and it was being refused by the very
     // file it exists to diagnose. That is #191's shape, moved off
-    // `filters.toml` and onto `config.toml`.
+    // `filters.toml` and onto `config.toml`. It sat above `build_keymap`
+    // alone at first, which still let a TOML syntax error stop it (#366).
     //
     // Plain `--print-keymap` deliberately stays below: it prints the map **in
     // force**, and a file recon cannot obey leaves no map in force to print.
-    if config.print_keymap.as_deref() == Some("defaults") {
+    if config.print_keymap == Some(recon::config::PrintKeymap::Defaults) {
         let defaults = recon::keymap::Keymap::default();
         print!("{}", recon::keymap::print_keymap(&defaults, &defaults));
         return Ok(ExitCode::SUCCESS);
     }
+
+    config.load()?;
 
     // The `[keymap]` table, before `--print-keymap` below, which prints the
     // answer. An unknown action name, an unreadable key spelling or a keymap
