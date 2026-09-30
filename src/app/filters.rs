@@ -259,24 +259,7 @@ impl App<'_> {
             std::fs::create_dir_all(dir)
                 .map_err(|err| format!("could not create {}: {err}", dir.display()))?;
         }
-        // Write beside the file and rename over it (#153): `fs::write`
-        // truncates first, so a crash, a `kill` or a full disk between the
-        // truncate and the write would leave the user's hand-edited file
-        // empty or partial, and the next start refuses to run on it. The
-        // rename is atomic on every filesystem recon runs on, so the file is
-        // always either the old text or the new.
-        let file_name = path
-            .file_name()
-            .map_or_else(|| "filters.toml".into(), std::ffi::OsStr::to_os_string);
-        let mut tmp_name = file_name;
-        tmp_name.push(".tmp");
-        let tmp = path.with_file_name(tmp_name);
-        std::fs::write(&tmp, after)
-            .map_err(|err| format!("could not write {}: {err}", tmp.display()))?;
-        if let Err(err) = std::fs::rename(&tmp, &path) {
-            let _ = std::fs::remove_file(&tmp);
-            return Err(format!("could not replace {}: {err}", path.display()));
-        }
+        replace_file(&path, &after)?;
         self.filters.adopt_scratch_as(name, path);
         self.refresh_view();
         self.report(&format!("saved set {name:?}"), false);
@@ -459,4 +442,52 @@ impl App<'_> {
         // would be a jump the user did not ask for, off a pane still on screen.
         self.refresh_view();
     }
+}
+
+/// Write `text` to `path` through a temporary beside it, then rename the
+/// temporary over the file (#153). `fs::write` truncates first, so a crash,
+/// a `kill` or a full disk between the truncate and the write would leave
+/// the user's hand-edited file empty or partial, and the next start refuses
+/// to run on it. The rename is atomic on every filesystem recon runs on, so
+/// the file is always either the old text or the new.
+///
+/// The rename must not undo what the user set up (#354):
+/// - A symlink is followed, and the temporary goes beside its target. A
+///   rename over the link would replace it with a file, and a dotfiles
+///   repository the link points into would stop getting the changes.
+/// - The temporary takes the file's permissions before the rename, not the
+///   umask's, so a private file stays private.
+/// - The temporary's name has the process id in it, so two recons that
+///   save at once do not write into one temporary.
+/// - The data is on disk before the rename, so a crash cannot leave the new
+///   name on an empty file.
+fn replace_file(path: &std::path::Path, text: &str) -> Result<(), String> {
+    use std::io::Write as _;
+    let target = match std::fs::canonicalize(path) {
+        Ok(target) => target,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => path.to_path_buf(),
+        Err(err) => return Err(format!("could not resolve {}: {err}", path.display())),
+    };
+    let mut tmp_name = target
+        .file_name()
+        .map_or_else(|| "filters.toml".into(), std::ffi::OsStr::to_os_string);
+    tmp_name.push(format!(".{}.tmp", std::process::id()));
+    let tmp = target.with_file_name(tmp_name);
+    let written = (|| {
+        let mut file = std::fs::File::create(&tmp)?;
+        file.write_all(text.as_bytes())?;
+        if let Ok(metadata) = std::fs::metadata(&target) {
+            file.set_permissions(metadata.permissions())?;
+        }
+        file.sync_all()
+    })();
+    if let Err(err) = written {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(format!("could not write {}: {err}", tmp.display()));
+    }
+    if let Err(err) = std::fs::rename(&tmp, &target) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(format!("could not replace {}: {err}", target.display()));
+    }
+    Ok(())
 }
