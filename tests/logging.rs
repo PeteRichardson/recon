@@ -13,6 +13,7 @@
 //! would race for it. Each integration test file gets a process to itself, so
 //! the global slot here is uncontested.
 
+use recon::startup::Startup;
 use recon::{App, Config};
 use std::sync::{Mutex, OnceLock};
 
@@ -60,10 +61,10 @@ fn records_mentioning(needle: &str) -> Vec<(log::Level, String)> {
 }
 
 fn app_over(path: &str) -> App<'static> {
-    App::new(&Config {
+    App::new(&Startup::from(Config {
         path: path.to_string(),
         ..Config::default()
-    })
+    }))
 }
 
 /// A file recon cannot open is reported in the pane *and* in the log. The pane

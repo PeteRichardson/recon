@@ -11,10 +11,10 @@ fn startup_builds_one_highlighter() {
     let file = dir.join("main.rs");
     fs::write(&file, "fn main() {}\n").expect("write fixture");
 
-    let app = App::new(&Config {
+    let app = App::new(&Startup::from(Config {
         path: file.display().to_string(),
         ..Config::default()
-    });
+    }));
 
     assert_eq!(app.view.highlighters_built, 1);
 }
@@ -543,7 +543,7 @@ fn the_stale_badge_names_the_reload_key() {
 ///
 /// This is also the only test that the resolved table reaches `App` at
 /// all: `Keymap::new` is exercised directly in `keymap.rs`, but nothing
-/// there would notice `App::new` ignoring `config.bindings` and keeping
+/// there would notice `App::new` ignoring `startup.bindings` and keeping
 /// the defaults.
 #[test]
 fn the_stale_badge_names_a_rebound_reload_key() {
@@ -551,16 +551,21 @@ fn the_stale_badge_names_a_rebound_reload_key() {
     fs::write(dir.join("a.log"), "x").expect("write fixture");
     let mut bindings = std::collections::BTreeMap::new();
     bindings.insert("global.reload".to_string(), vec!["F5".to_string()]);
-    // Through `build_keymap`, which is what `main` calls, so this covers
-    // the whole path a `config.toml` line takes to the screen.
+    // Through `keymap::config::build`, which is what `startup::start`
+    // calls, so this covers the whole path a `config.toml` line takes to
+    // the screen.
     let config = Config {
         path: dir.join("placeholder").display().to_string(),
-        keymap: Some(crate::config::KeymapConfig { bindings }),
         ..Config::default()
     };
-    let mut app = App::new(&Config {
-        bindings: config.build_keymap().expect("valid").0,
-        ..config
+    let (bindings, _) = crate::keymap::config::build(
+        &crate::keymap::config::KeymapConfig { bindings },
+        config.warnings(),
+    )
+    .expect("valid");
+    let mut app = App::new(&Startup {
+        bindings,
+        ..Startup::from(config)
     });
     app.view_stale = true;
 

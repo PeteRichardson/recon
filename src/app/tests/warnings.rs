@@ -23,16 +23,21 @@ fn app_over_keymap(name: &str, files: &[&str], no_warnings: bool) -> App<'static
     }
     let mut bindings = std::collections::BTreeMap::new();
     bindings.insert("global.quit".to_string(), vec!["j".to_string()]);
-    let mut config = Config {
+    let config = Config {
         path: dir.join("placeholder").display().to_string(),
-        keymap: Some(crate::config::KeymapConfig { bindings }),
         no_warnings,
         ..Config::default()
     };
-    let (map, warnings) = config.build_keymap().expect("valid");
-    config.bindings = map;
-    config.keymap_warnings = warnings;
-    App::new(&config)
+    let (map, warnings) = crate::keymap::config::build(
+        &crate::keymap::config::KeymapConfig { bindings },
+        config.warnings(),
+    )
+    .expect("valid");
+    App::new(&Startup {
+        bindings: map,
+        keymap_warnings: warnings,
+        ..Startup::from(config)
+    })
 }
 
 /// A config that costs a key must say so where the user is looking, not

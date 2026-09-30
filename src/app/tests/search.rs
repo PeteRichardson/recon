@@ -492,19 +492,24 @@ fn the_recall_keys_can_be_rebound() {
         "prompt.history.next".to_string(),
         vec!["Ctrl-j".to_string()],
     );
-    let mut config = Config {
+    let config = Config {
         path: file.display().to_string(),
-        keymap: Some(crate::config::KeymapConfig { bindings }),
         ..Config::default()
     };
-    let (map, warnings) = config.build_keymap().expect("valid");
+    let (map, warnings) = crate::keymap::config::build(
+        &crate::keymap::config::KeymapConfig { bindings },
+        config.warnings(),
+    )
+    .expect("valid");
     assert!(
         warnings.is_empty(),
         "moving the recall keys warned: {warnings:?}"
     );
-    config.bindings = map;
-    config.keymap_warnings = warnings;
-    let mut app = App::new(&config);
+    let mut app = App::new(&Startup {
+        bindings: map,
+        keymap_warnings: warnings,
+        ..Startup::from(config)
+    });
     key(&mut app, KeyCode::Char('t'));
     commit_search(&mut app, "x2");
     key(&mut app, KeyCode::Char('g'));

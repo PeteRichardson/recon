@@ -380,7 +380,7 @@ fn print_keymap_defaults_survives_a_keymap_recon_refuses() {
 ///
 /// They did not: `Displaced` warnings were collected onto the `Config` and
 /// handed to `App::new`, which the headless path never reaches, while the
-/// reserved-key warning was logged inside `build_keymap` and so came through.
+/// reserved-key warning was logged inside `keymap::config::build` and so came through.
 /// Two classes of keymap warning, one switch governing both, and one of them
 /// vanishing is what made it a defect rather than a choice.
 #[test]

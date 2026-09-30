@@ -29,6 +29,7 @@ pub mod keymap;
 pub mod panes;
 mod path;
 pub mod scan;
+pub mod startup;
 pub mod syntax;
 mod toml_fmt;
 mod widgets;

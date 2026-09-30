@@ -273,10 +273,10 @@ fn n_with_no_scan_running_says_no_matching_file() {
     let dir = fixture_dir("n_no_scan");
     fs::write(dir.join("a.log"), "x").expect("write");
     fs::create_dir_all(dir.join("sub")).expect("mkdir");
-    let mut app = App::new(&Config {
+    let mut app = App::new(&Startup::from(Config {
         path: dir.join("placeholder").display().to_string(),
         ..Config::default()
-    });
+    }));
     key(&mut app, KeyCode::Char('e'));
     app.add_excluding_filter("noise").expect("valid pattern");
     app.refresh_view();

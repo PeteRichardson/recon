@@ -24,7 +24,7 @@ mod selection;
 mod sync;
 pub(crate) mod viewport;
 
-use crate::config::Config;
+use crate::startup::Startup;
 use crate::{clipboard, document, editor, emit, filter, filtersets, panes, scan, widgets};
 use color_eyre::Result;
 use ratatui::prelude::{Backend, Rect, Terminal};
@@ -337,7 +337,8 @@ enum AppState {
 
 impl App<'_> {
     #[must_use]
-    pub fn new(config: &Config) -> Self {
+    pub fn new(startup: &Startup) -> Self {
+        let config = &startup.config;
         // Absolute from here on, which is the rule the explorer, the scan
         // cache and `check_stamps` already share. Held as typed, the
         // argument was a second spelling of one path: `check_stamps`
@@ -379,11 +380,12 @@ impl App<'_> {
         // The background's palette, unless the file set one (#231); the
         // background itself follows for the dim grey.
         let mut filters =
-            ActiveFilters::with_sets(Some(config.filter_palette()), &config.filter_sets);
+            ActiveFilters::with_sets(Some(config.filter_palette()), &startup.filter_sets);
         filters.set_background(config.background());
         for (set, profile) in config.sets_to_enable() {
-            // `Config::check_sets` refused an unknown name in `main` before
-            // the terminal came up; a failure here is a hand-built `Config`
+            // `Config::check_sets` refused an unknown name in
+            // `startup::start` before the terminal came up; a failure here
+            // is a hand-built `Startup`
             // in a test, and the set is left off rather than the app brought
             // down over it.
             if let Err(err) = filters.enable_named(&set, profile.as_deref()) {
@@ -434,11 +436,11 @@ impl App<'_> {
             last_generation: None,
             last_window: None,
             editor: config.editor_templates(),
-            // Resolved by `main` before the terminal came up
-            // (`Config::build_keymap`), so nothing fallible happens here —
+            // Resolved by `startup::start` before the terminal came up
+            // (`keymap::config::build`), so nothing fallible happens here —
             // this function returns `Self` and has nowhere to put an error.
-            // A `Config` built by hand in a test carries the defaults.
-            keymap: config.bindings.clone(),
+            // A `Startup` built from a bare `Config` carries the defaults.
+            keymap: startup.bindings.clone(),
             center_jumps: config.center_jumps(),
             emit: config.emit,
             line_numbers: config.line_numbers,
@@ -459,8 +461,8 @@ impl App<'_> {
             chain_origin: None,
             chain_shown_filters: false,
             help: false,
-            keymap_warnings: config.keymap_warnings.clone(),
-            keymap_warnings_open: config.warnings() && !config.keymap_warnings.is_empty(),
+            keymap_warnings: startup.keymap_warnings.clone(),
+            keymap_warnings_open: config.warnings() && !startup.keymap_warnings.is_empty(),
             picker: None,
             set_picker: None,
             filter_editor: None,

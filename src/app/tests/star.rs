@@ -388,10 +388,10 @@ fn n_promotes_a_truncated_preview_before_stepping() {
         .collect();
     fs::write(dir.join("big.log"), &body).expect("write fixture");
 
-    let mut app = App::new(&Config {
+    let mut app = App::new(&Startup::from(Config {
         path: dir.join("placeholder").display().to_string(),
         ..Config::default()
-    });
+    }));
     // The explorer falls back to the first real entry (the log) and
     // previews it, exactly as `upgrading_a_truncated_preview_resyncs_styles_without_reloading`
     // does — the startup argument names a file that does not exist.
@@ -435,10 +435,10 @@ fn slash_promotes_a_truncated_preview_before_landing_on_a_hit() {
         .collect();
     fs::write(dir.join("big.log"), &body).expect("write fixture");
 
-    let mut app = App::new(&Config {
+    let mut app = App::new(&Startup::from(Config {
         path: dir.join("placeholder").display().to_string(),
         ..Config::default()
-    });
+    }));
     key(&mut app, KeyCode::Down);
     focus_file_view(&mut app);
     assert_eq!(cursor_source(&app), 0, "sanity: cursor starts at the top");

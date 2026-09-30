@@ -19,10 +19,10 @@ fn opening_a_file_moves_the_focus_to_the_file_view() {
     fs::write(dir.join("a.log"), "alpha\n").expect("write fixture");
 
     for code in [KeyCode::Char('l'), KeyCode::Right, KeyCode::Enter] {
-        let mut app = App::new(&Config {
+        let mut app = App::new(&Startup::from(Config {
             path: dir.join("placeholder").display().to_string(),
             ..Config::default()
-        });
+        }));
         draw(&mut app);
         assert_eq!(app.focus, Focus::Explorer, "{code:?}");
 
@@ -253,10 +253,10 @@ fn z_in_the_file_view_matches_b() {
     // fixture directories would make `rendered` disagree on the title
     // text alone, regardless of whether the zoom layouts truly match.
     let file = fixture_path("zoom_view_parity", "alpha\n");
-    let config = Config {
+    let config = Startup::from(Config {
         path: file.display().to_string(),
         ..Config::default()
-    };
+    });
 
     let mut with_z = App::new(&config);
     focus_file_view(&mut with_z);

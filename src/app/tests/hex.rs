@@ -4,11 +4,11 @@ use super::*;
 
 fn app_over_bytes(name: &str, bytes: &[u8]) -> App<'static> {
     let file = fixture_file(&format!("{name}.bin"), bytes);
-    App::new(&Config {
+    App::new(&Startup::from(Config {
         path: file.display().to_string(),
         emit: Some(emit::Emit::Lines),
         ..Config::default()
-    })
+    }))
 }
 
 /// The lines `--emit lines` would write.
@@ -60,10 +60,10 @@ fn emit_lines_writes_the_dump() {
 fn minus_on_a_directory_says_there_is_no_file() {
     let dir = fixture_dir("hex_app_dir");
     fs::create_dir(dir.join("sub")).expect("mkdir");
-    let mut app = App::new(&Config {
+    let mut app = App::new(&Startup::from(Config {
         path: dir.join("placeholder").display().to_string(),
         ..Config::default()
-    });
+    }));
     app.perform_widget_action(Action::Load(dir.join("sub")));
 
     key(&mut app, KeyCode::Char('-'));

@@ -2,6 +2,7 @@ use crossterm::event::{
     Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 use ratatui::prelude::{Buffer, Rect, Widget};
+use recon::startup::Startup;
 use recon::{App, Config};
 
 const AREA: Rect = Rect {
@@ -125,10 +126,10 @@ fn fixture(name: &str) -> std::path::PathBuf {
 
 /// An `App` opened on `file` inside a fresh fixture directory named `name`.
 fn app_on(name: &str, file: &str) -> App<'static> {
-    let config = Config {
+    let config = Startup::from(Config {
         path: fixture(name).join(file).display().to_string(),
         ..Config::default()
-    };
+    });
     App::new(&config)
 }
 

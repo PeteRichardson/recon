@@ -75,11 +75,11 @@ fn a_configured_template_is_what_runs() {
     let file = root.join("log.txt");
     fs::write(&file, "alpha\n").expect("write fixture");
 
-    let mut app = App::new(&Config {
+    let mut app = App::new(&Startup::from(Config {
         path: file.display().to_string(),
         editor: Some("code {project} -g {file}:{line}".to_string()),
         ..Config::default()
-    });
+    }));
     let launcher = record_launches(&mut app, RecordingLauncher::default());
 
     key(&mut app, KeyCode::Char('o'));
@@ -124,11 +124,11 @@ fn a_broken_template_is_reported_rather_than_run() {
     let file = root.join("log.txt");
     fs::write(&file, "alpha\n").expect("write fixture");
 
-    let mut app = App::new(&Config {
+    let mut app = App::new(&Startup::from(Config {
         path: file.display().to_string(),
         editor: Some("zed 'unclosed".to_string()),
         ..Config::default()
-    });
+    }));
     let launcher = record_launches(&mut app, RecordingLauncher::default());
 
     key(&mut app, KeyCode::Char('o'));
@@ -145,10 +145,10 @@ fn a_broken_template_is_reported_rather_than_run() {
 fn o_refuses_a_file_that_is_not_there() {
     let dir = fixture_dir("o_missing");
 
-    let mut app = App::new(&Config {
+    let mut app = App::new(&Startup::from(Config {
         path: dir.join("nope.log").display().to_string(),
         ..Config::default()
-    });
+    }));
     let launcher = record_launches(&mut app, RecordingLauncher::default());
 
     key(&mut app, KeyCode::Char('o'));
@@ -370,11 +370,11 @@ fn the_file_template_is_derived_from_the_project_template() {
     let file = root.join("log.txt");
     fs::write(&file, "alpha\n").expect("write fixture");
 
-    let mut app = App::new(&Config {
+    let mut app = App::new(&Startup::from(Config {
         path: file.display().to_string(),
         editor: Some("code {project} -g {file}:{line}".to_string()),
         ..Config::default()
-    });
+    }));
     let launcher = record_launches(&mut app, RecordingLauncher::default());
 
     shift(&mut app, KeyCode::Char('O'));
@@ -397,12 +397,12 @@ fn an_explicit_file_template_beats_the_derived_one() {
     let file = root.join("log.txt");
     fs::write(&file, "alpha\n").expect("write fixture");
 
-    let mut app = App::new(&Config {
+    let mut app = App::new(&Startup::from(Config {
         path: file.display().to_string(),
         editor: Some("code {project} -g {file}:{line}".to_string()),
         file_editor: Some("subl -n {file}:{line}".to_string()),
         ..Config::default()
-    });
+    }));
     let launcher = record_launches(&mut app, RecordingLauncher::default());
 
     shift(&mut app, KeyCode::Char('O'));
@@ -425,12 +425,12 @@ fn the_two_keys_do_not_share_a_template() {
     let file = root.join("log.txt");
     fs::write(&file, "alpha\n").expect("write fixture");
 
-    let mut app = App::new(&Config {
+    let mut app = App::new(&Startup::from(Config {
         path: file.display().to_string(),
         editor: Some("zed {project} {file}:{line}".to_string()),
         file_editor: Some("subl {file}:{line}".to_string()),
         ..Config::default()
-    });
+    }));
     let launcher = record_launches(&mut app, RecordingLauncher::default());
 
     key(&mut app, KeyCode::Char('o'));

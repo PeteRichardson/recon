@@ -14,6 +14,7 @@ use super::layout::{
     DOUBLE_CLICK, MAX_EXPLORER_WIDTH, MAX_FILTER_WIDTH, MIN_AUTO_EXPLORER_WIDTH,
     MIN_AUTO_FILTER_WIDTH, MIN_FILE_VIEW_WIDTH, MIN_PANE_WIDTH,
 };
+use crate::config::Config;
 use crate::filter::Verdict;
 use crate::fixtures::{fixture_dir, fixture_file, fixture_path as fixture_dir_path};
 use crate::panes::PaneSet;
@@ -67,10 +68,10 @@ fn app_over(name: &str, files: &[&str]) -> App<'static> {
     for file in files {
         fs::write(dir.join(file), "x").expect("write fixture");
     }
-    App::new(&Config {
+    App::new(&Startup::from(Config {
         path: dir.join("placeholder").display().to_string(),
         ..Config::default()
-    })
+    }))
 }
 
 /// Put a `[keymap]` in force on a running app: each action gets exactly
@@ -85,11 +86,9 @@ fn rebind(app: &mut App<'_>, lines: &[(&str, &[&str])]) {
             )
         })
         .collect();
-    let config = Config {
-        keymap: Some(crate::config::KeymapConfig { bindings }),
-        ..Config::default()
-    };
-    let (map, _) = config.build_keymap().expect("a keymap recon can obey");
+    let (map, _) =
+        crate::keymap::config::build(&crate::keymap::config::KeymapConfig { bindings }, true)
+            .expect("a keymap recon can obey");
     app.keymap = map;
 }
 
@@ -100,10 +99,10 @@ fn app_over_files(name: &str, files: &[(&str, &str)]) -> App<'static> {
     for (file, body) in files {
         fs::write(dir.join(file), body).expect("write fixture");
     }
-    App::new(&Config {
+    App::new(&Startup::from(Config {
         path: dir.join("placeholder").display().to_string(),
         ..Config::default()
-    })
+    }))
 }
 
 /// Select the `row`th file in the explorer and load it into the view,
@@ -275,10 +274,10 @@ fn fixture_path(name: &str, body: &str) -> std::path::PathBuf {
 
 fn app_over_file(name: &str, body: &str) -> App<'static> {
     let file = fixture_path(name, body);
-    App::new(&Config {
+    App::new(&Startup::from(Config {
         path: file.display().to_string(),
         ..Config::default()
-    })
+    }))
 }
 
 /// The bottom row when no prompt is open.
@@ -439,11 +438,11 @@ fn app_over_project(name: &str, body: &str) -> (App<'static>, std::path::PathBuf
     fs::write(root.join("go.mod"), "module fixture\n").expect("write marker");
     let file = root.join("logs/log.txt");
     fs::write(&file, body).expect("write fixture");
-    let app = App::new(&Config {
+    let app = App::new(&Startup::from(Config {
         path: file.display().to_string(),
         editor: Some(editor::DEFAULT_PROJECT_TEMPLATE.to_string()),
         ..Config::default()
-    });
+    }));
     (
         app,
         std::path::absolute(&root).expect("absolute fixture root"),
@@ -513,10 +512,10 @@ fn app_over_nested(name: &str) -> (App<'static>, std::path::PathBuf) {
     fs::write(dir.join("sub/inner_a.log"), "a\n").expect("write");
     fs::write(dir.join("sub/inner_b.log"), "b\n").expect("write");
     fs::write(dir.join("z.log"), "z\n").expect("write");
-    let app = App::new(&Config {
+    let app = App::new(&Startup::from(Config {
         path: dir.join("placeholder").display().to_string(),
         ..Config::default()
-    });
+    }));
     (app, dir)
 }
 

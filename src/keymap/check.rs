@@ -661,7 +661,7 @@ mod tests {
     use crate::keymap::{ActionId, Keymap, Scope};
 
     /// One `[keymap]` line, as `Keymap::new` takes it.
-    fn overlay(pairs: &[(&str, &[&str])]) -> crate::config::KeymapConfig {
+    fn overlay(pairs: &[(&str, &[&str])]) -> crate::keymap::config::KeymapConfig {
         let mut bindings = std::collections::BTreeMap::new();
         for (action, keys) in pairs {
             bindings.insert(
@@ -669,7 +669,7 @@ mod tests {
                 keys.iter().map(|key| (*key).to_string()).collect(),
             );
         }
-        crate::config::KeymapConfig { bindings }
+        crate::keymap::config::KeymapConfig { bindings }
     }
 
     /// The actions a `[keymap]` table names, resolved to ids — what `check`
@@ -868,7 +868,7 @@ mod tests {
         for (name, keys) in &pairs {
             bindings.insert(name.clone(), keys.clone());
         }
-        let overlay = crate::config::KeymapConfig { bindings };
+        let overlay = crate::keymap::config::KeymapConfig { bindings };
         let (built, _) = Keymap::new(&overlay).expect("valid");
         let written: Vec<ActionId> = crate::keymap::every_action().collect();
 

@@ -7,13 +7,15 @@ use super::*;
 fn app_with_hide_view_key(name: &str) -> App<'static> {
     let mut bindings = std::collections::BTreeMap::new();
     bindings.insert("global.hide.view".to_string(), vec!["T".to_string()]);
-    let (keymap, _) = crate::keymap::Keymap::new(&crate::config::KeymapConfig { bindings })
+    let (keymap, _) = crate::keymap::Keymap::new(&crate::keymap::config::KeymapConfig { bindings })
         .expect("a valid keymap");
     let file = fixture_path(name, "alpha\n");
-    App::new(&Config {
-        path: file.display().to_string(),
+    App::new(&Startup {
         bindings: keymap,
-        ..Config::default()
+        ..Startup::from(Config {
+            path: file.display().to_string(),
+            ..Config::default()
+        })
     })
 }
 
@@ -245,14 +247,14 @@ fn the_status_line_counts_filters_on_while_the_pane_is_hidden() {
 #[test]
 fn hide_pane_at_startup_hides_those_panes() {
     let file = fixture_path("hide_startup", "alpha\n");
-    let app = App::new(&Config {
+    let app = App::new(&Startup::from(Config {
         path: file.display().to_string(),
         hide_pane: Some(vec![
             crate::panes::Pane::Explorer,
             crate::panes::Pane::Filters,
         ]),
         ..Config::default()
-    });
+    }));
 
     assert_eq!(app.panes.shown(), PaneSet::only(Focus::View));
     assert_eq!(app.focus, Focus::View, "focus started on a hidden pane");

@@ -30,10 +30,10 @@ const TALL_TEXT_ROWS: u16 = 33;
 /// focused, rendered once so the pane knows its height.
 fn app_searching(name: &str, body: &str, pattern: &str, config: Config) -> App<'static> {
     let file = fixture_path(name, body);
-    let mut app = App::new(&Config {
+    let mut app = App::new(&Startup::from(Config {
         path: file.display().to_string(),
         ..config
-    });
+    }));
     draw_tall(&mut app);
     key(&mut app, KeyCode::Char('t'));
     app.filters.add(pattern).expect("valid pattern");
@@ -358,10 +358,10 @@ fn n_in_the_explorer_does_not_move_the_file_view_cursor() {
     let dir = fixture_dir("n_explorer");
     fs::write(dir.join("alpha.log"), "alpha\nx\n").expect("write fixture");
 
-    let mut app = App::new(&Config {
+    let mut app = App::new(&Startup::from(Config {
         path: dir.join("placeholder").display().to_string(),
         ..Config::default()
-    });
+    }));
     // The startup argument names a file that does not exist, so `App::new`
     // loads that (an error message, not real content) and the explorer
     // falls back to selecting the one real entry. `Down` is what actually
@@ -640,10 +640,10 @@ fn comma_lands_on_the_last_hit_of_a_file_that_was_only_previewed() {
         .collect();
     fs::write(dir.join("big.log"), &body).expect("write fixture");
 
-    let mut app = App::new(&Config {
+    let mut app = App::new(&Startup::from(Config {
         path: dir.join("placeholder").display().to_string(),
         ..Config::default()
-    });
+    }));
     let (_scanner, tx) = record_scans(&mut app);
     app.add_filter("HIT|hit a").expect("valid pattern");
     app.refresh_scan(false);
@@ -687,10 +687,10 @@ fn comma_centres_the_previous_file_s_last_hit_or_shows_every_hit() {
         .collect();
     fs::write(dir.join("a.log"), &body).expect("write");
     fs::write(dir.join("b.log"), "HIT\n").expect("write");
-    let mut app = App::new(&Config {
+    let mut app = App::new(&Startup::from(Config {
         path: dir.join("b.log").display().to_string(),
         ..Config::default()
-    });
+    }));
     let (_scanner, tx) = record_scans(&mut app);
     app.add_filter("HIT").expect("valid");
     app.refresh_scan(false);

@@ -4,11 +4,11 @@ use super::*;
 
 fn app_emitting(name: &str, emit: Option<emit::Emit>) -> App<'static> {
     let file = fixture_path(name, "alpha\n");
-    App::new(&Config {
+    App::new(&Startup::from(Config {
         path: file.display().to_string(),
         emit,
         ..Config::default()
-    })
+    }))
 }
 
 #[test]
@@ -82,12 +82,14 @@ fn set_and_hide_flags_apply_at_startup() {
     set.profiles
         .insert("only_hit".to_string(), vec!["hit".to_string()]);
 
-    let app = App::new(&Config {
-        path: file.display().to_string(),
+    let app = App::new(&Startup {
         filter_sets: vec![set],
-        set: vec!["Bugs:only_hit".to_string()],
-        hide: true,
-        ..Config::default()
+        ..Startup::from(Config {
+            path: file.display().to_string(),
+            set: vec!["Bugs:only_hit".to_string()],
+            hide: true,
+            ..Config::default()
+        })
     });
 
     assert!(app.filters.sets()[1].enabled, "the set is on");
@@ -115,12 +117,14 @@ fn unlist_flag_applies_at_startup() {
     set.profiles
         .insert("default".to_string(), vec!["hit".to_string()]);
 
-    let app = App::new(&Config {
-        path: file.display().to_string(),
+    let app = App::new(&Startup {
         filter_sets: vec![set],
-        unlist: vec!["Bugs".to_string()],
-        hide: true,
-        ..Config::default()
+        ..Startup::from(Config {
+            path: file.display().to_string(),
+            unlist: vec!["Bugs".to_string()],
+            hide: true,
+            ..Config::default()
+        })
     });
 
     assert!(!app.filters.sets()[1].listed, "the set is unlisted");
@@ -156,12 +160,12 @@ fn emitted(app: &mut App) -> (Vec<String>, String) {
 
 fn app_emitting_lines(name: &str, body: &str, line_numbers: bool) -> App<'static> {
     let file = fixture_path(name, body);
-    let mut app = App::new(&Config {
+    let mut app = App::new(&Startup::from(Config {
         path: file.display().to_string(),
         emit: Some(emit::Emit::Lines),
         line_numbers,
         ..Config::default()
-    });
+    }));
     key(&mut app, KeyCode::Char('t'));
     app
 }
@@ -198,12 +202,12 @@ fn app_emitting_a_large_file(name: &str, line_numbers: bool) -> App<'static> {
     // whole, which is the state `q` has to finish from.
     let dir = fixture_dir(name);
     fs::write(dir.join("big.log"), &body).expect("write fixture");
-    let mut app = App::new(&Config {
+    let mut app = App::new(&Startup::from(Config {
         path: dir.display().to_string(),
         emit: Some(emit::Emit::Lines),
         line_numbers,
         ..Config::default()
-    });
+    }));
     assert!(app.view.is_truncated(), "the fixture must be past the cap");
     app.add_filter("hit").expect("valid");
     app
@@ -349,11 +353,11 @@ fn lines_with_no_filter_still_counts_zero_matches() {
 fn lines_over_a_directory_listing_emits_nothing_and_says_so() {
     let dir = fixture_dir("emit_lines_directory");
     fs::write(dir.join("a.txt"), "x\n").expect("write");
-    let mut app = App::new(&Config {
+    let mut app = App::new(&Startup::from(Config {
         path: dir.display().to_string(),
         emit: Some(emit::Emit::Lines),
         ..Config::default()
-    });
+    }));
     // The explorer starts on `a.txt`; select `..` so the view shows a
     // listing rather than a file.
     key(&mut app, KeyCode::Char('g'));
@@ -371,11 +375,11 @@ fn lines_over_a_directory_listing_emits_nothing_and_says_so() {
 #[test]
 fn lines_over_an_unreadable_file_emits_nothing_and_says_so() {
     let dir = fixture_dir("emit_lines_missing");
-    let mut app = App::new(&Config {
+    let mut app = App::new(&Startup::from(Config {
         path: dir.join("nope.log").display().to_string(),
         emit: Some(emit::Emit::Lines),
         ..Config::default()
-    });
+    }));
     key(&mut app, KeyCode::Char('q'));
 
     let (lines, summary) = emitted(&mut app);
@@ -582,11 +586,11 @@ fn files_writes_a_non_utf8_name_as_its_bytes() {
         eprintln!("skipping: this filesystem rejects non-UTF-8 names ({err})");
         return;
     }
-    let mut app = App::new(&Config {
+    let mut app = App::new(&Startup::from(Config {
         path: dir.join("placeholder").display().to_string(),
         emit: Some(emit::Emit::Files),
         ..Config::default()
-    });
+    }));
     key(&mut app, KeyCode::Char('q'));
 
     let emit::Exit::Emit { lines, .. } = app.exit() else {

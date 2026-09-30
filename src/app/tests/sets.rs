@@ -8,9 +8,11 @@ use super::*;
 fn an_autoload_set_is_live_at_startup() {
     let mut set = filter::test_support::loaded("a", 50, true, &["alpha", "beta"]);
     set.profiles.insert("default".into(), vec!["beta".into()]);
-    let app = App::new(&Config {
+    let app = App::new(&Startup {
         filter_sets: vec![set],
-        ..Config::default()
+        ..Startup::from(Config {
+            ..Config::default()
+        })
     });
     assert!(app.filters.sets()[1].enabled);
     let flags: Vec<bool> = app.filters.filters_in(1).map(|(_, f)| f.enabled).collect();
@@ -24,9 +26,11 @@ fn an_autoload_set_is_live_at_startup() {
 /// A set without `autoload` is known — listed, and coloured — but off.
 #[test]
 fn a_set_without_autoload_is_known_but_off() {
-    let app = App::new(&Config {
+    let app = App::new(&Startup {
         filter_sets: vec![filter::test_support::loaded("a", 50, false, &["alpha"])],
-        ..Config::default()
+        ..Startup::from(Config {
+            ..Config::default()
+        })
     });
     assert!(!app.filters.sets()[1].enabled);
     assert_eq!(app.filters.len(), 1);
@@ -41,10 +45,10 @@ fn app_over_named_file(dir: &str, file: &str, body: &str) -> App<'static> {
     let dir = fixture_dir(dir);
     let path = dir.join(file);
     fs::write(&path, body).expect("write fixture");
-    App::new(&Config {
+    App::new(&Startup::from(Config {
         path: path.display().to_string(),
         ..Config::default()
-    })
+    }))
 }
 
 fn definitions_index(app: &App) -> usize {

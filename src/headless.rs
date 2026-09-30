@@ -6,12 +6,12 @@
 //! TUI session hands back, so `main` prints both the same way.
 
 use crate::app::viewport::is_interesting;
-use crate::config::Config;
 use crate::document::{self, Document, Mode};
 use crate::emit::{Emit, Exit, path_bytes};
 use crate::filter::{ActiveFilters, Matcher};
 use crate::path::lexical_absolute;
 use crate::scan::{self, Progress};
+use crate::startup::Startup;
 use crate::widgets::explorer::sorted_entries;
 use color_eyre::{Result, eyre::eyre};
 use std::fs::File;
@@ -42,12 +42,13 @@ pub(crate) enum Source {
 /// and collect what `--emit` names. Read-failure warnings go to stderr as
 /// they are met; the `Exit` carries the output, the summary and the
 /// failure count for `main` to deliver.
-pub fn run(config: &Config) -> Result<Exit> {
+pub fn run(startup: &Startup) -> Result<Exit> {
+    let config = &startup.config;
     let Some(what) = config.emit else {
         return Err(eyre!("headless mode needs --emit"));
     };
     let inputs = inputs(io::stdin().lock(), Path::new(&config.path))?;
-    let filters = filters_for(config)?;
+    let filters = filters_for(startup)?;
     let mode = if config.hide {
         Mode::FilteredOnly
     } else {
@@ -65,8 +66,9 @@ pub fn run(config: &Config) -> Result<Exit> {
 
 /// The startup filter set: the loaded sets, then each `--set` enabled and
 /// each `--unlist` unlisted — the same steps `App::new` takes.
-fn filters_for(config: &Config) -> Result<ActiveFilters> {
-    let mut filters = ActiveFilters::with_sets(Some(config.filter_palette()), &config.filter_sets);
+fn filters_for(startup: &Startup) -> Result<ActiveFilters> {
+    let config = &startup.config;
+    let mut filters = ActiveFilters::with_sets(Some(config.filter_palette()), &startup.filter_sets);
     filters.set_background(config.background());
     for (set, profile) in config.sets_to_enable() {
         filters
@@ -1096,20 +1098,22 @@ mod tests {
         let mut set = crate::filter::test_support::loaded("Bugs", 50, false, &["hit"]);
         set.profiles
             .insert("p".to_string(), vec!["hit".to_string()]);
-        let config = crate::config::Config {
+        let config = Startup {
             filter_sets: vec![set],
-            set: vec!["Bugs:p".to_string()],
-            ..crate::config::Config::default()
+            ..Startup::from(crate::config::Config {
+                set: vec!["Bugs:p".to_string()],
+                ..crate::config::Config::default()
+            })
         };
 
         let filters = filters_for(&config).expect("known set");
         assert!(filters.sets()[1].enabled);
         assert!(filters.matcher().is_some(), "the profile enabled `hit`");
 
-        let config = crate::config::Config {
+        let config = Startup::from(crate::config::Config {
             set: vec!["Nope".to_string()],
             ..crate::config::Config::default()
-        };
+        });
         let err = filters_for(&config).expect_err("unknown set");
         assert!(err.to_string().contains("unknown set \"Nope\""), "{err}");
     }
@@ -1122,9 +1126,11 @@ mod tests {
         set.listed = false;
         set.profiles
             .insert("default".to_string(), vec!["hit".to_string()]);
-        let config = crate::config::Config {
+        let config = Startup {
             filter_sets: vec![set.clone()],
-            ..crate::config::Config::default()
+            ..Startup::from(crate::config::Config {
+                ..crate::config::Config::default()
+            })
         };
         let filters = filters_for(&config).expect("loads");
         assert!(!filters.sets()[1].enabled);
@@ -1133,10 +1139,12 @@ mod tests {
             "the unlisted set selects nothing"
         );
 
-        let config = crate::config::Config {
+        let config = Startup {
             filter_sets: vec![set],
-            set: vec!["Bugs".to_string()],
-            ..crate::config::Config::default()
+            ..Startup::from(crate::config::Config {
+                set: vec!["Bugs".to_string()],
+                ..crate::config::Config::default()
+            })
         };
         let filters = filters_for(&config).expect("known set");
         assert!(filters.sets()[1].listed);
@@ -1151,16 +1159,20 @@ mod tests {
         let mut set = crate::filter::test_support::loaded("Bugs", 50, true, &["hit"]);
         set.profiles
             .insert("default".to_string(), vec!["hit".to_string()]);
-        let config = crate::config::Config {
+        let config = Startup {
             filter_sets: vec![set.clone()],
-            ..crate::config::Config::default()
+            ..Startup::from(crate::config::Config {
+                ..crate::config::Config::default()
+            })
         };
         assert!(filters_for(&config).expect("loads").matcher().is_some());
 
-        let config = crate::config::Config {
+        let config = Startup {
             filter_sets: vec![set],
-            unlist: vec!["Bugs".to_string()],
-            ..crate::config::Config::default()
+            ..Startup::from(crate::config::Config {
+                unlist: vec!["Bugs".to_string()],
+                ..crate::config::Config::default()
+            })
         };
         let filters = filters_for(&config).expect("known set");
         assert!(!filters.sets()[1].listed);

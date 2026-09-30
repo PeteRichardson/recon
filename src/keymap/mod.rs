@@ -10,6 +10,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::fmt::Write as _;
 
 pub(crate) mod check;
+pub mod config;
 
 /// A key as the table stores it: the code, and the two modifiers that carry
 /// meaning.
@@ -824,12 +825,12 @@ impl Keymap {
     /// keeps what it had. A name no action spells is
     /// [`crate::config::ConfigError::UnknownAction`], and a key spelling the
     /// label grammar cannot read is
-    /// [`crate::config::ConfigError::BadKeyLabel`] — `Config::build_keymap`
-    /// runs this in `main`, before the terminal comes up, so a typo is
+    /// [`crate::config::ConfigError::BadKeyLabel`] — `keymap::config::build`
+    /// runs this from `startup::start`, before the terminal comes up, so a typo is
     /// refused on a screen the message can still reach rather than bound to
     /// nothing.
     pub(crate) fn new(
-        overlay: &crate::config::KeymapConfig,
+        overlay: &config::KeymapConfig,
     ) -> Result<(Self, Vec<String>), crate::config::ConfigError> {
         let mut keymap = Self::default();
         let mut reserved = Vec::new();
@@ -856,7 +857,7 @@ impl Keymap {
             // `reserved_hits` above is what keeps this to one warning per
             // reserved key rather than one per scope. Collected rather than
             // logged here: `Keymap::new` cannot read a `Config`, so it cannot
-            // know whether the user asked for silence. `Config::build_keymap`
+            // know whether the user asked for silence. `keymap::config::build`
             // is the caller that can, and logs each of these with
             // `log::warn!` before `main` brings up the terminal — the same
             // reason `check_sets` is called there rather than from
@@ -1823,20 +1824,20 @@ mod tests {
     // ---- the overlay (#61) ----------------------------------------------
 
     /// The shape one `[keymap]` line parses to.
-    fn overlay(action: &str, keys: &[&str]) -> crate::config::KeymapConfig {
+    fn overlay(action: &str, keys: &[&str]) -> config::KeymapConfig {
         let mut bindings = std::collections::BTreeMap::new();
         bindings.insert(
             action.to_string(),
             keys.iter().map(|key| (*key).to_string()).collect(),
         );
-        crate::config::KeymapConfig { bindings }
+        config::KeymapConfig { bindings }
     }
 
     #[test]
     fn an_override_moves_an_action_and_frees_the_old_key() {
         let mut bindings = std::collections::BTreeMap::new();
         bindings.insert("global.quit".to_string(), vec!["Ctrl-q".to_string()]);
-        let overlay = crate::config::KeymapConfig { bindings };
+        let overlay = config::KeymapConfig { bindings };
 
         let (keymap, _) = Keymap::new(&overlay).expect("valid");
         let ctrl_q = normalise(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL));
@@ -1857,7 +1858,7 @@ mod tests {
     fn an_untouched_action_keeps_its_default() {
         let mut bindings = std::collections::BTreeMap::new();
         bindings.insert("global.quit".to_string(), vec!["Ctrl-q".to_string()]);
-        let overlay = crate::config::KeymapConfig { bindings };
+        let overlay = config::KeymapConfig { bindings };
 
         let (keymap, _) = Keymap::new(&overlay).expect("valid");
         let help = normalise(KeyEvent::new(KeyCode::Char('?'), KeyModifiers::empty()));
@@ -1899,7 +1900,7 @@ mod tests {
         let mut bindings = std::collections::BTreeMap::new();
         bindings.insert("global.visual.char".to_string(), vec!["s".to_string()]);
         bindings.insert("global.focus.view".to_string(), vec!["T".to_string()]);
-        let (keymap, _) = Keymap::new(&crate::config::KeymapConfig { bindings }).expect("valid");
+        let (keymap, _) = Keymap::new(&config::KeymapConfig { bindings }).expect("valid");
 
         assert_eq!(
             keymap.hint_for(
@@ -1942,7 +1943,7 @@ mod tests {
             "filtereditor.mark.nomatch".to_string(),
             vec!["_".to_string()],
         );
-        let overlay = crate::config::KeymapConfig { bindings };
+        let overlay = config::KeymapConfig { bindings };
 
         let (keymap, warnings) = Keymap::new(&overlay).expect("a valid keymap");
         let dash = normalise(KeyEvent::new(KeyCode::Char('-'), KeyModifiers::empty()));
@@ -1958,7 +1959,7 @@ mod tests {
     fn binding_a_reserved_key_warns_and_obeys() {
         let mut bindings = std::collections::BTreeMap::new();
         bindings.insert("global.quit".to_string(), vec![":".to_string()]);
-        let overlay = crate::config::KeymapConfig { bindings };
+        let overlay = config::KeymapConfig { bindings };
 
         // A warning, not a refusal: it is the user's keyboard, and 1.0 only
         // promises that 1.1 will want the key back.
@@ -1994,7 +1995,7 @@ mod tests {
     fn a_two_scope_actions_reserved_key_is_one_hit_not_two() {
         let mut bindings = std::collections::BTreeMap::new();
         bindings.insert("hit.next".to_string(), vec![":".to_string()]);
-        let overlay = crate::config::KeymapConfig { bindings };
+        let overlay = config::KeymapConfig { bindings };
 
         // The same slice `Keymap::new` would read for this config line —
         // one list, regardless of `hit.next` holding two `DEFAULT` scopes.

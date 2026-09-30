@@ -158,10 +158,10 @@ fn upgrading_a_truncated_preview_resyncs_styles_without_reloading() {
         .collect();
     fs::write(dir.join("big.log"), &body).expect("write fixture");
 
-    let mut app = App::new(&Config {
+    let mut app = App::new(&Startup::from(Config {
         path: dir.join("placeholder").display().to_string(),
         ..Config::default()
-    });
+    }));
 
     // The explorer pane previews the log rather than reading the whole
     // 600-line file. The startup argument names a file that does not
@@ -409,10 +409,10 @@ fn an_unbound_modified_key_does_not_promote_a_truncated_preview() {
     let body = numbered_lines(crate::widgets::fileview::PREVIEW_LINES + 100);
     fs::write(dir.join("big.log"), &body).expect("write fixture");
 
-    let mut app = App::new(&Config {
+    let mut app = App::new(&Startup::from(Config {
         path: dir.join("placeholder").display().to_string(),
         ..Config::default()
-    });
+    }));
     // The startup argument names a file that does not exist, so the
     // explorer falls back to the first real entry — the log — and
     // previews it rather than reading the whole thing.

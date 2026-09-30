@@ -233,39 +233,6 @@ pub struct Config {
     )]
     pub filter_path: Option<String>,
 
-    /// Sets read from each `filters.toml`, in pane order (#128, #46). Filled
-    /// by `main` after `load`, so that a file error refuses to start the way
-    /// a `config.toml` error does. `#[arg(skip)]` because `--filter-path`
-    /// names where to look, not the sets.
-    #[arg(skip)]
-    pub filter_sets: Vec<crate::filter::LoadedSet>,
-
-    /// The `[keymap]` table as the file spelled it, parsed but not yet
-    /// resolved against `DEFAULT` — that is `build_keymap`'s job, run by
-    /// `main`, whose answer lands in `bindings` below. Nothing else reads it.
-    /// `#[arg(skip)]` because no flag names a whole table; rebinding is a
-    /// config-file-only preference, the same as `filter_sets`.
-    #[arg(skip)]
-    pub keymap: Option<KeymapConfig>,
-
-    /// Every binding in force: the defaults with `keymap` folded in (#61).
-    ///
-    /// Filled by `main` before any terminal setup, exactly as `filter_sets`
-    /// is and for the same reason — an unknown action or an unreadable key
-    /// has to refuse to start while a message can still be read, and
-    /// `App::new` returns `Self`, so it can carry neither an error nor a
-    /// warning. Left at the defaults when nothing filled it, which is every
-    /// `Config` a test builds by hand.
-    #[arg(skip)]
-    pub bindings: crate::keymap::Keymap,
-
-    /// What the `[keymap]` table cost, for the panel `App` draws on its first
-    /// frame. Filled by `main` beside `bindings`, and for the same reason:
-    /// `App::new` returns `Self`, so it can carry neither an error nor a
-    /// warning. Empty for every `Config` a test builds by hand.
-    #[arg(skip)]
-    pub keymap_warnings: Vec<String>,
-
     /// Whether a jump to a line the pane is not showing — `n`, `N`, `G` —
     /// puts that line in the middle of the pane. Off, it scrolls in by the
     /// minimum and lands on the scroll margin's edge. `None` is unset:
@@ -437,10 +404,6 @@ impl Default for Config {
             filter_palette: None,
             background: None,
             filter_path: None,
-            filter_sets: Vec::new(),
-            keymap: None,
-            bindings: crate::keymap::Keymap::default(),
-            keymap_warnings: Vec::new(),
             center_jumps: None,
             theme: None,
             emit: None,
@@ -486,7 +449,7 @@ pub struct FileConfig {
     /// merged key by key here: a rebind either names a real action and a
     /// parseable key, or the whole file is refused — there is no per-key
     /// "hole" for a lower layer to fill, unlike `editor` or `syntax`.
-    pub keymap: Option<KeymapConfig>,
+    pub keymap: Option<crate::keymap::config::KeymapConfig>,
     /// Top-level `warnings = true | false`. Beside `background` and not under
     /// `[keymap]`: that table's keys are action names, so a setting there
     /// would be read as an action called "warnings" and refused.
@@ -536,222 +499,6 @@ where
         return Ok(None);
     };
     spelling.parse().map(Some).map_err(D::Error::custom)
-}
-
-/// The `[keymap]` table: which keys reach which action.
-///
-/// Action to key, and not the other way round, for two reasons. It is the
-/// direction `--print-keymap` prints, so a pasted line reads as it was
-/// printed. And an action may hold several keys, which a key cannot.
-///
-/// A `BTreeMap` rather than named fields: the keys are action names, there are
-/// about ninety of them, and `deny_unknown_fields` cannot help here — an
-/// unknown action is caught by `Keymap::new`, which can say which names exist.
-///
-/// `Deserialize` is hand-written, not derived, and not via `#[serde(flatten)]`
-/// either (task 3 fix round 1, #61 review). A first attempt flattened a
-/// `BTreeMap<String, Keys>` field with `Keys` an untagged one-or-many enum —
-/// the same shape `keymap::print_keymap`'s own tests parse with. That reads
-/// naturally, but `flatten` buffers the whole table into a generic value
-/// before `Keys` ever sees it, and a malformed entry (`'global.quit' = 42`)
-/// then fails with the position pinned to the `[keymap]` header rather than
-/// the offending line, and a message naming the private `Keys` type instead
-/// of the action. A sibling, unflattened field with the same bad value
-/// reports the right line and a legible message, which is what showed the
-/// buffering was the cause and not `toml` itself.
-///
-/// So this decodes the table directly, one entry at a time, with
-/// [`BindingSeed`] threading the action's name into the value's own error —
-/// see its doc comment for how.
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub struct KeymapConfig {
-    pub bindings: std::collections::BTreeMap<String, Vec<String>>,
-}
-
-impl<'de> Deserialize<'de> for KeymapConfig {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        struct KeymapVisitor;
-
-        impl<'de> serde::de::Visitor<'de> for KeymapVisitor {
-            type Value = KeymapConfig;
-
-            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                f.write_str("a table mapping each action to one key or an array of keys")
-            }
-
-            fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
-            where
-                A: serde::de::MapAccess<'de>,
-            {
-                let mut bindings = std::collections::BTreeMap::new();
-                while let Some(action) = map.next_key::<String>()? {
-                    let keys = map.next_value_seed(BindingSeed { action: &action })?;
-                    bindings.insert(action, keys);
-                }
-                Ok(KeymapConfig { bindings })
-            }
-        }
-
-        deserializer.deserialize_map(KeymapVisitor)
-    }
-}
-
-/// Decodes one `[keymap]` value against the action it belongs to.
-///
-/// A [`serde::de::DeserializeSeed`] rather than a plain `Deserialize` type,
-/// because the action's name has to reach the error — `Deserialize` alone
-/// carries no state, and `map_err`-ing after the fact (the alternative the
-/// review offered) would replace the position-carrying error the deserializer
-/// already built with a fresh, unpositioned one. Threading the name in here
-/// instead means the error `KeyOrKeys::expecting` writes is the one the
-/// deserializer reports natively, position and all.
-struct BindingSeed<'a> {
-    action: &'a str,
-}
-
-impl<'de> serde::de::DeserializeSeed<'de> for BindingSeed<'_> {
-    type Value = Vec<String>;
-
-    fn deserialize<D>(self, deserializer: D) -> Result<Vec<String>, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        deserializer.deserialize_any(KeyOrKeys {
-            action: self.action,
-        })
-    }
-}
-
-/// One `[keymap]` value: a bare string for a single key, or an array for
-/// several. `expecting` names the action, so a value that is neither —
-/// `42`, a table — is refused with a message naming what was wrong and
-/// where, not a Rust type.
-struct KeyOrKeys<'a> {
-    action: &'a str,
-}
-
-impl<'de> serde::de::Visitor<'de> for KeyOrKeys<'_> {
-    type Value = Vec<String>;
-
-    fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "one key or an array of keys for {:?} in [keymap]",
-            self.action
-        )
-    }
-
-    fn visit_str<E>(self, v: &str) -> Result<Vec<String>, E>
-    where
-        E: serde::de::Error,
-    {
-        Ok(vec![v.to_string()])
-    }
-
-    fn visit_string<E>(self, v: String) -> Result<Vec<String>, E>
-    where
-        E: serde::de::Error,
-    {
-        Ok(vec![v])
-    }
-
-    /// A table where a key belongs is almost always an action name written
-    /// without quotes (#366): TOML reads `global.quit = 'q'` as a table
-    /// `global` holding `quit`. Without this the message named "global" as
-    /// the action and "map" as the fault, which points nowhere useful.
-    ///
-    /// Follows the table down while it holds one entry, so the name in the
-    /// message is the one the user wrote: `global.hide.toggle`, not
-    /// `global.hide`.
-    fn visit_map<A>(self, mut map: A) -> Result<Vec<String>, A::Error>
-    where
-        A: serde::de::MapAccess<'de>,
-    {
-        use serde::de::Error;
-
-        let mut name = self.action.to_string();
-        if let Some(key) = map.next_key::<String>()? {
-            name = format!("{name}.{key}");
-            let mut value: toml::Value = map.next_value()?;
-            while let toml::Value::Table(table) = value {
-                let mut entries = table.into_iter();
-                match (entries.next(), entries.next()) {
-                    (Some((key, inner)), None) => {
-                        name = format!("{name}.{key}");
-                        value = inner;
-                    }
-                    _ => break,
-                }
-            }
-        }
-        Err(A::Error::custom(format!(
-            "{:?} in [keymap] is a table, not a key; quote an action name that holds a dot: '{name}' = …",
-            self.action
-        )))
-    }
-
-    fn visit_seq<A>(self, mut seq: A) -> Result<Vec<String>, A::Error>
-    where
-        A: serde::de::SeqAccess<'de>,
-    {
-        let mut keys = Vec::new();
-        while let Some(key) = seq.next_element_seed(KeyLabelSeed {
-            action: self.action,
-        })? {
-            keys.push(key);
-        }
-        Ok(keys)
-    }
-}
-
-/// Decodes one array element of a `[keymap]` value, so an array holding a
-/// non-string (`['u', 5]`) is refused naming the action too, the same as a
-/// bare malformed value is.
-struct KeyLabelSeed<'a> {
-    action: &'a str,
-}
-
-impl<'de> serde::de::DeserializeSeed<'de> for KeyLabelSeed<'_> {
-    type Value = String;
-
-    fn deserialize<D>(self, deserializer: D) -> Result<String, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        deserializer.deserialize_str(KeyLabel {
-            action: self.action,
-        })
-    }
-}
-
-/// One key spelling inside a `[keymap]` array — see [`KeyLabelSeed`].
-struct KeyLabel<'a> {
-    action: &'a str,
-}
-
-impl serde::de::Visitor<'_> for KeyLabel<'_> {
-    type Value = String;
-
-    fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "a key spelling for {:?} in [keymap]", self.action)
-    }
-
-    fn visit_str<E>(self, v: &str) -> Result<String, E>
-    where
-        E: serde::de::Error,
-    {
-        Ok(v.to_string())
-    }
-
-    fn visit_string<E>(self, v: String) -> Result<String, E>
-    where
-        E: serde::de::Error,
-    {
-        Ok(v)
-    }
 }
 
 /// The `[filters]` table.
@@ -916,7 +663,7 @@ pub enum ConfigError {
     ///
     /// `path`, here and in the two variants below, is the config file, for
     /// the message (#385). `None` from `Keymap::new`, which cannot know it;
-    /// `Config::build_keymap` fills it in.
+    /// `keymap::config::build` fills it in.
     UnknownAction {
         name: String,
         known: Vec<String>,
@@ -943,7 +690,7 @@ impl ConfigError {
     /// The same error, naming `path` as the file it came from, when it is
     /// one of the `[keymap]` errors that carry one.
     #[must_use]
-    fn in_file(mut self, file: Option<PathBuf>) -> Self {
+    pub(crate) fn in_file(mut self, file: Option<PathBuf>) -> Self {
         if let Self::UnknownAction { path, .. }
         | Self::BadKeyLabel { path, .. }
         | Self::Inconsistent { path, .. } = &mut self
@@ -1303,64 +1050,6 @@ impl Config {
         Ok(())
     }
 
-    /// Every binding in force, and whatever the file cost that is worth
-    /// saying out loud.
-    ///
-    /// Three steps, in this order. `Keymap::new` folds `[keymap]` over the
-    /// defaults, leaving a contested key claimed by two actions. `check`
-    /// reads that and says which claims are faults, which are costs, and
-    /// which rows must go. Then the rows go, which is what makes a written
-    /// line win — see `Keymap::evict`.
-    ///
-    /// `main` calls this before the terminal comes up, so an error still
-    /// reaches a screen that a user can read, and the warnings are in hand
-    /// before `Muted` starts dropping records (#246).
-    ///
-    /// # Errors
-    ///
-    /// [`ConfigError::UnknownAction`], [`ConfigError::BadKeyLabel`] or
-    /// [`ConfigError::Inconsistent`].
-    pub fn build_keymap(&self) -> Result<(crate::keymap::Keymap, Vec<String>), ConfigError> {
-        let overlay = self.keymap.clone().unwrap_or_default();
-        let (mut keymap, reserved) =
-            crate::keymap::Keymap::new(&overlay).map_err(|err| err.in_file(config_path()))?;
-
-        // Logged here rather than inside `Keymap::new`, which cannot read a
-        // `Config` and so cannot know whether the user asked for silence.
-        // Still on stderr and not in the panel: binding `-` or `:` is a
-        // deliberate choice that no keymap edit answers, so a panel meaning
-        // "correct this" would ask again at every start.
-        if self.warnings() {
-            for warning in reserved {
-                log::warn!("{warning}");
-            }
-        }
-
-        let written: Vec<crate::keymap::ActionId> = overlay
-            .bindings
-            .keys()
-            .filter_map(|name| crate::keymap::action_named(name))
-            .collect();
-        let report = crate::keymap::check::check(&keymap, &written);
-
-        // Rendered here, at the boundary. `ConfigError` is public API and
-        // `check::Problem` is `pub(crate)`, so a variant carrying the type
-        // itself is E0446 — a private type in a public interface — and will
-        // not compile. Rendering also keeps `Problem`'s `Display` the single
-        // place any of this is worded.
-        if !report.errors().is_empty() {
-            return Err(ConfigError::Inconsistent {
-                problems: report.errors().iter().map(ToString::to_string).collect(),
-                path: config_path(),
-            });
-        }
-        keymap.evict(report.evict());
-        Ok((
-            keymap,
-            report.warnings().iter().map(ToString::to_string).collect(),
-        ))
-    }
-
     /// The first half of the precedence chain: parse the CLI, which `clap`
     /// has already resolved against the environment, and refuse a flag
     /// combination it cannot express. [`Config::load`] is the second half.
@@ -1383,10 +1072,16 @@ impl Config {
     /// wiped off the screen before it can be read — "warn and carry on" is
     /// "carry on silently" in practice. Call this **before** the terminal is
     /// initialised.
-    pub fn load(&mut self) -> Result<(), ConfigError> {
+    ///
+    /// Hands back the file's `[keymap]` table, or an empty one: it is an
+    /// overlay for `keymap::config::build`, not a setting, so it is not kept
+    /// on `Config` (#409).
+    pub fn load(&mut self) -> Result<crate::keymap::config::KeymapConfig, ConfigError> {
         self.warnings_setting = warnings_from_env(std::env::var(WARNINGS_VAR).ok().as_deref())?;
-        self.apply(&load_file()?);
-        self.check_panes()
+        let file = load_file()?;
+        self.apply(&file);
+        self.check_panes()?;
+        Ok(file.keymap.unwrap_or_default())
     }
 
     /// Fold the file layer under the layers already resolved.
@@ -1463,9 +1158,9 @@ impl Config {
             self.hide_pane.get_or_insert_with(|| hide_panes.clone());
         }
 
-        if let Some(keymap) = keymap {
-            self.keymap.get_or_insert_with(|| keymap.clone());
-        }
+        // Not folded: `[keymap]` is an overlay for `keymap::config::build`,
+        // not a setting on `Config`, and `load` hands it back (#409).
+        let _ = keymap;
 
         if let Some(warnings) = warnings {
             self.warnings_setting.get_or_insert(*warnings);
@@ -1555,6 +1250,7 @@ impl Config {
 mod tests {
     use super::*;
     use crate::keymap::Keymap;
+    use crate::keymap::config::{KeymapConfig, build};
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use std::fs;
     use std::sync::Mutex;
@@ -2236,14 +1932,14 @@ mod tests {
         let mut bindings = std::collections::BTreeMap::new();
         bindings.insert("global.reload".to_string(), vec![":".to_string()]);
         let config = Config {
-            keymap: Some(KeymapConfig { bindings }),
             no_warnings: true,
             ..Config::default()
         };
 
         // The map still builds and still binds the reserved key: the switch
         // hides the warning, it does not change what recon does.
-        let (keymap, warnings) = config.build_keymap().expect("a reserved key is allowed");
+        let (keymap, warnings) = build(&KeymapConfig { bindings }, config.warnings())
+            .expect("a reserved key is allowed");
         assert_eq!(
             warnings,
             Vec::<String>::new(),
@@ -3049,36 +2745,34 @@ mod tests {
         );
     }
 
-    /// `main` resolves the table through this, so these three pin the path a
-    /// real `config.toml` takes — `Keymap::new` is proven in `keymap.rs`, but
-    /// nothing there would notice `build_keymap` dropping the stanza on the
-    /// floor or swallowing the error `main` propagates with `?`.
+    /// `startup::start` resolves the table through this, so these three pin
+    /// the path a real `config.toml` takes — `Keymap::new` is proven in
+    /// `keymap.rs`, but nothing there would notice `build` dropping the
+    /// stanza on the floor or swallowing the error `start` propagates with `?`.
     #[test]
-    fn build_keymap_folds_the_stanza_in() {
+    fn keymap_build_folds_the_stanza_in() {
         let path = fixture("keymap-build.toml", "[keymap]\n'global.quit' = 'Ctrl-q'\n");
-        let config = Config {
-            keymap: load_from(&path).expect("the file parses").keymap,
-            ..Config::default()
-        };
+        let overlay = load_from(&path)
+            .expect("the file parses")
+            .keymap
+            .unwrap_or_default();
 
         assert_ne!(
-            config.build_keymap().expect("a valid stanza").0,
+            build(&overlay, true).expect("a valid stanza").0,
             Keymap::default(),
             "the overlay never reached the table"
         );
     }
 
     #[test]
-    fn build_keymap_refuses_what_keymap_new_refuses() {
+    fn keymap_build_refuses_what_keymap_new_refuses() {
         let path = fixture("keymap-build-bad.toml", "[keymap]\n'global.qiut' = 'q'\n");
-        let config = Config {
-            keymap: load_from(&path).expect("the file parses").keymap,
-            ..Config::default()
-        };
+        let overlay = load_from(&path)
+            .expect("the file parses")
+            .keymap
+            .unwrap_or_default();
 
-        let err = config
-            .build_keymap()
-            .expect_err("a typo must refuse to start");
+        let err = build(&overlay, true).expect_err("a typo must refuse to start");
         assert!(err.to_string().contains("global.qiut"), "{err}");
     }
 
@@ -3091,16 +2785,13 @@ mod tests {
     }
 
     fn keymap_error(bindings: &[(&str, &str)]) -> String {
-        let config = Config {
-            keymap: Some(KeymapConfig {
-                bindings: bindings
-                    .iter()
-                    .map(|(action, key)| ((*action).to_string(), vec![(*key).to_string()]))
-                    .collect(),
-            }),
-            ..Config::default()
+        let overlay = KeymapConfig {
+            bindings: bindings
+                .iter()
+                .map(|(action, key)| ((*action).to_string(), vec![(*key).to_string()]))
+                .collect(),
         };
-        config.build_keymap().expect_err("must refuse").to_string()
+        build(&overlay, true).expect_err("must refuse").to_string()
     }
 
     /// A typo gets the nearest names, not every name recon has (#385).
@@ -3155,10 +2846,8 @@ mod tests {
     }
 
     #[test]
-    fn build_keymap_without_a_stanza_is_the_defaults() {
-        let built = Config::default()
-            .build_keymap()
-            .expect("saying nothing is valid");
+    fn keymap_build_without_a_stanza_is_the_defaults() {
+        let built = build(&KeymapConfig::default(), true).expect("saying nothing is valid");
         assert_eq!(built.0, Keymap::default());
         assert!(
             built.1.is_empty(),
@@ -3176,12 +2865,7 @@ mod tests {
         bindings.insert("global.reload".to_string(), vec!["x".to_string()]);
         // A pane line under a default global binding.
         bindings.insert("explorer.up".to_string(), vec!["?".to_string()]);
-        let config = Config {
-            keymap: Some(KeymapConfig { bindings }),
-            ..Config::default()
-        };
-
-        let err = config.build_keymap().expect_err("must refuse");
+        let err = build(&KeymapConfig { bindings }, true).expect_err("must refuse");
         let rendered = err.to_string();
 
         assert!(rendered.contains("global.quit"), "{rendered}");

@@ -1724,7 +1724,7 @@ mod tests {
                 )
             })
             .collect();
-        crate::keymap::Keymap::new(&crate::config::KeymapConfig { bindings })
+        crate::keymap::Keymap::new(&crate::keymap::config::KeymapConfig { bindings })
             .expect("the test's own bindings are valid")
             .0
     }

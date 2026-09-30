@@ -261,10 +261,10 @@ fn the_editor_counts_past_a_truncated_preview() {
     let dir = fixture_dir("editor_truncated");
     let total = crate::widgets::fileview::PREVIEW_LINES + 100;
     fs::write(dir.join("big.log"), numbered_lines(total)).expect("write fixture");
-    let mut app = App::new(&Config {
+    let mut app = App::new(&Startup::from(Config {
         path: dir.join("placeholder").display().to_string(),
         ..Config::default()
-    });
+    }));
     key(&mut app, KeyCode::Down);
     assert!(app.file_view_truncated(), "sanity: only a preview");
 
@@ -290,12 +290,14 @@ fn a_rebound_key_opens_the_editor() {
     let file = fixture_path("editor_rebound", BODY);
     let mut bindings = std::collections::BTreeMap::new();
     bindings.insert("filters.editor.new".to_string(), vec!["W".to_string()]);
-    let (keymap, _) = crate::keymap::Keymap::new(&crate::config::KeymapConfig { bindings })
+    let (keymap, _) = crate::keymap::Keymap::new(&crate::keymap::config::KeymapConfig { bindings })
         .expect("valid keymap");
-    let mut app = App::new(&Config {
-        path: file.display().to_string(),
+    let mut app = App::new(&Startup {
         bindings: keymap,
-        ..Config::default()
+        ..Startup::from(Config {
+            path: file.display().to_string(),
+            ..Config::default()
+        })
     });
     key(&mut app, KeyCode::Char('f'));
     key(&mut app, KeyCode::Char('W'));

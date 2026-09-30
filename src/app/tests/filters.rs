@@ -112,11 +112,11 @@ fn a_configured_palette_colours_the_filters() {
     let dir = fixture_dir("configured_palette");
     fs::write(dir.join("a.rs"), "x").expect("write fixture");
 
-    let mut app = App::new(&Config {
+    let mut app = App::new(&Startup::from(Config {
         path: dir.join("placeholder").display().to_string(),
         filter_palette: Some(vec![Color::Rgb(1, 2, 3), Color::Rgb(4, 5, 6)]),
         ..Config::default()
-    });
+    }));
 
     for pattern in ["foo", "bar"] {
         key(&mut app, KeyCode::Char('f'));

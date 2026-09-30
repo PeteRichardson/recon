@@ -9,10 +9,10 @@ fn the_command_line_argument_is_held_absolute() {
     // No fixture file: `lexical_absolute` resolves against the process
     // directory whether or not the file exists, and `App::new` loads the
     // argument either way. What is under test is the spelling, not the read.
-    let app = App::new(&Config {
+    let app = App::new(&Startup::from(Config {
         path: "a.log".to_string(),
         ..Config::default()
-    });
+    }));
 
     assert!(
         app.view.filename().is_absolute(),
@@ -30,10 +30,10 @@ fn a_directory_argument_previews_the_first_entry() {
     fs::write(dir.join("aaa.txt"), "first file contents\n").expect("write");
     fs::write(dir.join("zzz.txt"), "last file contents\n").expect("write");
 
-    let mut app = App::new(&Config {
+    let mut app = App::new(&Startup::from(Config {
         path: dir.display().to_string(),
         ..Config::default()
-    });
+    }));
 
     let shown = rendered(&mut app);
     assert!(
@@ -59,10 +59,10 @@ fn a_directory_argument_previews_rather_than_loads() {
     let body = numbered_lines(lines);
     fs::write(dir.join("big.log"), &body).expect("write");
 
-    let app = App::new(&Config {
+    let app = App::new(&Startup::from(Config {
         path: dir.display().to_string(),
         ..Config::default()
-    });
+    }));
 
     // Asked of the *document*, not the view. Since #7 the textarea holds
     // only a window of what is visible, so its length says how tall the

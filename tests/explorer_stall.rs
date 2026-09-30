@@ -10,6 +10,7 @@
 //! by luck.
 
 use crossterm::event::{Event, KeyCode, KeyEvent};
+use recon::startup::Startup;
 use recon::{App, Config};
 use std::fmt::Write as _;
 use std::time::{Duration, Instant};
@@ -57,10 +58,10 @@ fn fixture() -> std::path::PathBuf {
 
 #[test]
 fn selecting_a_large_file_with_no_filters_active_is_quick() {
-    let config = Config {
+    let config = Startup::from(Config {
         path: fixture().join("aaa.txt").display().to_string(),
         ..Config::default()
-    };
+    });
     let mut app = App::new(&config);
 
     let started = Instant::now();

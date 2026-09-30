@@ -8,7 +8,8 @@ use crossterm::{
     },
 };
 use ratatui::{Terminal, prelude::CrosstermBackend};
-use recon::{App, Config};
+use recon::App;
+use recon::startup::{Start, Startup};
 use std::io::{self, IsTerminal, Stderr};
 use std::panic;
 use std::process::ExitCode;
@@ -18,79 +19,19 @@ fn main() -> Result<ExitCode> {
     install_error_hooks()?;
 
     setup_logging();
-    let mut config = Config::from_args()?;
-
-    // Before `config.toml` and the filter sets are read, not after: this
-    // command prints an `[editor]` stanza and exits, and it uses nothing from
-    // either file. A syntax error in `filters.toml` used to stop a command
-    // that does not consult it (#191), and one in `config.toml` still did
-    // (#366).
-    if let Some(flavour) = &config.print_editor_config {
-        print!(
-            "{}",
-            recon::editor::print_editor_config(
-                flavour,
-                std::env::var("TERM_PROGRAM").ok().as_deref(),
-            )?
-        );
-        return Ok(ExitCode::SUCCESS);
-    }
-
-    // `--print-keymap defaults` prints the built-in table, which no
-    // `config.toml` can change — so no `config.toml` may stop it. Above
-    // `config.load` for that reason: this is the command a user reaches for
-    // when recon refuses their keymap, and it was being refused by the very
-    // file it exists to diagnose. That is #191's shape, moved off
-    // `filters.toml` and onto `config.toml`. It sat above `build_keymap`
-    // alone at first, which still let a TOML syntax error stop it (#366).
-    //
-    // Plain `--print-keymap` deliberately stays below: it prints the map **in
-    // force**, and a file recon cannot obey leaves no map in force to print.
-    if config.print_keymap == Some(recon::config::PrintKeymap::Defaults) {
-        let defaults = recon::keymap::Keymap::default();
-        print!("{}", recon::keymap::print_keymap(&defaults, &defaults));
-        return Ok(ExitCode::SUCCESS);
-    }
-
-    config.load()?;
-
-    // The `[keymap]` table, before `--print-keymap` below, which prints the
-    // answer. An unknown action name, an unreadable key spelling or a keymap
-    // recon cannot obey refuses to start while a message can still be read
-    // (#61), and anything logged here is logged before `Muted` starts
-    // dropping records (#246). Above the filter sets for the same reason the
-    // two print commands are: this reads nothing from `filters.toml`.
-    let (bindings, keymap_warnings) = config.build_keymap()?;
-    config.bindings = bindings;
-    config.keymap_warnings = keymap_warnings;
-
-    // Same reasoning as `--print-editor-config` above: this command reads
-    // nothing from `filters.toml`, so it must not have to survive one to run
-    // (#191). It must stay above `load_file` for that reason, which is why
-    // `build_keymap` moved up rather than this moving down.
-    //
-    // `defaults` never arrives here — it is answered above `build_keymap`, so
-    // what is left is the map in force, which is what `config.bindings` now
-    // holds.
-    //
-    // The keymap warnings go to stderr first (#259), the same warnings a
-    // normal start shows in its panel — which names this command as where
-    // to read them all. stdout keeps the stanza alone, so it still pastes.
-    if config.print_keymap.is_some() {
-        log_keymap_warnings(&config);
-        let defaults = recon::keymap::Keymap::default();
-        print!(
-            "{}",
-            recon::keymap::print_keymap(&config.bindings, &defaults)
-        );
-        return Ok(ExitCode::SUCCESS);
-    }
-
-    config.filter_sets = recon::filtersets::load_file(config.filter_path.as_deref())?;
-    // Needs the loaded sets, which is why it is not inside `Config::load`
-    // with `check_flags`. Still before any terminal setup: the message must
-    // reach a screen that is not about to be replaced (#143).
-    config.check_sets(&config.filter_sets)?;
+    // Everything recon reads before it starts, in the order it must be
+    // read, and every refusal while a message can still be seen (#409).
+    let startup = match recon::startup::start()? {
+        Start::Print { stdout, warnings } => {
+            for warning in warnings {
+                log::warn!("{warning}");
+            }
+            print!("{stdout}");
+            return Ok(ExitCode::SUCCESS);
+        }
+        Start::Run(startup) => startup,
+    };
+    let config = &startup.config;
 
     // Headless (#143): `--emit` with no terminal on stdin. A TUI needs stdin
     // for its keys, so a pipe or `/dev/null` there is not a session that
@@ -101,7 +42,7 @@ fn main() -> Result<ExitCode> {
     let exit = if headless {
         // Headless has no panel, so the keymap warnings that would have filled
         // one go to stderr instead — the channel and the gate the reserved-key
-        // notice in `build_keymap` already uses. Without this they were
+        // notice in `keymap::config::build` already uses. Without this they were
         // collected, handed to `App::new`, and dropped on a path that never
         // builds an `App`: two classes of keymap warning under one switch,
         // one of which silently disappeared.
@@ -109,11 +50,11 @@ fn main() -> Result<ExitCode> {
         // Inside this branch and not above it, because in TUI mode they belong
         // to the panel. A copy on stderr would be drawn over by the alternate
         // screen moments later anyway.
-        log_keymap_warnings(&config);
-        recon::headless::run(&config)?
+        log_keymap_warnings(&startup);
+        recon::headless::run(&startup)?
     } else {
         let terminal = init_terminal()?;
-        let exit = App::new(&config)
+        let exit = App::new(&startup)
             .with_model(recon::generate::system())
             .run(terminal)?;
         restore_terminal()?;
@@ -131,12 +72,12 @@ fn main() -> Result<ExitCode> {
     ))
 }
 
-/// The keymap warnings on stderr, for a path with no panel to show them:
-/// headless, and `--print-keymap` (#259). The switch is the panel's, since
-/// these are the same warnings by another route.
-fn log_keymap_warnings(config: &Config) {
-    if config.warnings() {
-        for warning in &config.keymap_warnings {
+/// The keymap warnings on stderr, for headless mode, which has no panel to
+/// show them. The switch is the panel's, since these are the same warnings
+/// by another route. `--print-keymap` gets its copy from `Start::Print`.
+fn log_keymap_warnings(startup: &Startup) {
+    if startup.config.warnings() {
+        for warning in &startup.keymap_warnings {
             log::warn!("{warning}");
         }
     }
