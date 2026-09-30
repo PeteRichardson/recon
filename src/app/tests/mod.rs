@@ -11,8 +11,8 @@ use super::*;
 // layout tests still assert against them by name, so they are imported
 // here rather than through `use super::*`.
 use super::layout::{
-    MAX_EXPLORER_WIDTH, MAX_FILTER_WIDTH, MIN_AUTO_EXPLORER_WIDTH, MIN_AUTO_FILTER_WIDTH,
-    MIN_FILE_VIEW_WIDTH, MIN_PANE_WIDTH,
+    DOUBLE_CLICK, MAX_EXPLORER_WIDTH, MAX_FILTER_WIDTH, MIN_AUTO_EXPLORER_WIDTH,
+    MIN_AUTO_FILTER_WIDTH, MIN_FILE_VIEW_WIDTH, MIN_PANE_WIDTH,
 };
 use crate::filter::Verdict;
 use crate::fixtures::{fixture_dir, fixture_file, fixture_path as fixture_dir_path};
@@ -129,13 +129,27 @@ fn draw(app: &mut App) {
     app.render(AREA, &mut buf);
 }
 
+/// A mouse event of `kind` at `column`, `row`.
+///
+/// The click clock is frozen on the first event, so two clicks are a
+/// double-click however slow the machine is (#391). A test of a slow second
+/// click moves it on with `later`.
 fn mouse_at(app: &mut App, kind: MouseEventKind, column: u16, row: u16) {
+    if !app.click_clock.is_set() {
+        app.click_clock.set(std::time::Instant::now());
+    }
     app.handle_event(event::Event::Mouse(MouseEvent {
         kind,
         column,
         row,
         modifiers: KeyModifiers::empty(),
     }));
+}
+
+/// Move the click clock `by` on from where it is.
+fn later(app: &mut App, by: Duration) {
+    let now = app.click_clock.now();
+    app.click_clock.set(now + by);
 }
 
 /// Row 3 is inside the panes on every fixture area used here. Both

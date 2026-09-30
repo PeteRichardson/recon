@@ -147,6 +147,23 @@ fn double_clicking_the_divider_restores_automatic_sizing() {
 }
 
 #[test]
+fn a_slow_second_click_on_the_divider_keeps_the_dragged_width() {
+    let mut app = app_over("dblclick_slow", &["a.rs"]);
+    draw(&mut app);
+    let divider = app.divider;
+    drag_to(&mut app, divider, 70);
+    draw(&mut app);
+
+    let divider = app.divider;
+    mouse(&mut app, MouseEventKind::Down(MouseButton::Left), divider);
+    mouse(&mut app, MouseEventKind::Up(MouseButton::Left), divider);
+    later(&mut app, DOUBLE_CLICK + Duration::from_millis(1));
+    mouse(&mut app, MouseEventKind::Down(MouseButton::Left), divider);
+
+    assert_eq!(app.explorer_width(AREA), 70);
+}
+
+#[test]
 fn dragging_cannot_collapse_either_pane() {
     let mut app = app_over("clamp", &["a.rs"]);
     draw(&mut app);

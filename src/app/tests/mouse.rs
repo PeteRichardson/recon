@@ -61,6 +61,21 @@ fn a_double_click_on_the_parent_entry_climbs_out() {
     assert!(!app.explorer.dir().ends_with(&dir));
 }
 
+/// The second click comes after `DOUBLE_CLICK`: two single clicks, so the
+/// directory is only previewed again.
+#[test]
+fn a_slow_second_click_on_a_directory_does_not_descend() {
+    let (mut app, dir) = app_over_nested("click_explorer_slow");
+    draw(&mut app);
+
+    click_pane(&mut app, Focus::Explorer, 1);
+    later(&mut app, DOUBLE_CLICK + Duration::from_millis(1));
+    click_pane(&mut app, Focus::Explorer, 1);
+
+    assert!(app.explorer.dir().ends_with(&dir), "no descent");
+    assert!(app.view.showing_directory(), "still the look-ahead");
+}
+
 #[test]
 fn two_clicks_on_different_rows_are_not_a_double_click() {
     let (mut app, dir) = app_over_nested("click_explorer_two_rows");
