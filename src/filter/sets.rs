@@ -1,7 +1,7 @@
 //! Filter sets: the set, solo, reset and adopt state machine over
 //! [`ActiveFilters`], and the types the loader hands it.
 
-use super::{ActiveFilters, Example, Filter, Predicate, Sense};
+use super::{ActiveFilters, Example, Filter, FilterId, Predicate, Sense};
 use crate::syntax::Kind;
 use ratatui::style::{Color, Style};
 use std::collections::BTreeMap;
@@ -237,6 +237,7 @@ impl ActiveFilters {
                 let filters = Kind::ALL
                     .into_iter()
                     .map(|kind| Filter {
+                        id: FilterId::fresh(),
                         predicate: Predicate::Definition(kind),
                         sense: Sense::Include,
                         enabled: false,
@@ -273,6 +274,7 @@ impl ActiveFilters {
                         .colour(this.known_user_authored_count() + filters.len())),
                 };
                 filters.push(Filter {
+                    id: FilterId::fresh(),
                     predicate: filter.predicate.clone(),
                     sense: filter.sense,
                     enabled: false,
@@ -379,10 +381,16 @@ impl ActiveFilters {
                 .iter()
                 .position(|filter| filter.set > set)
                 .unwrap_or(self.filters.len());
+            // New ids: a copy from the file is a new filter, so a capture
+            // taken before the unlist does not reach it.
             let fresh: Vec<Filter> = self.as_loaded[set]
                 .iter()
                 .cloned()
-                .map(|filter| Filter { set, ..filter })
+                .map(|filter| Filter {
+                    id: FilterId::fresh(),
+                    set,
+                    ..filter
+                })
                 .collect();
             self.filters.splice(at..at, fresh);
         } else {

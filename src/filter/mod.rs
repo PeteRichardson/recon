@@ -24,6 +24,7 @@ use crate::syntax::{Kind, KindSet};
 use ratatui::style::{Color, Modifier, Style};
 use regex::{Regex, RegexSet};
 use sets::Solo;
+use std::collections::HashMap;
 
 /// Colours assigned to successive filters, so two filters are never
 /// indistinguishable. Wraps once exhausted, and is replaced wholesale by
@@ -303,8 +304,28 @@ impl Predicate {
     }
 }
 
+/// A filter's name for itself, which no insert, remove or reorder of the
+/// list changes (#341). What a capture of the enabled flags is keyed on, so
+/// a restore finds each filter wherever it is now.
+///
+/// Drawn from one process-wide counter, so no two filters ever share one —
+/// not even a filter and the copy that a relisted set brings back, which is
+/// a new filter as far as a capture is concerned.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct FilterId(u64);
+
+impl FilterId {
+    fn fresh() -> Self {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        Self(NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Filter {
+    /// Private: only this module makes a filter, and each one gets a fresh
+    /// id when it does.
+    id: FilterId,
     pub predicate: Predicate,
     pub sense: Sense,
     pub enabled: bool,
@@ -421,10 +442,13 @@ pub struct Details {
 ///
 /// Opaque on purpose: it is a token to hand back to
 /// [`ActiveFilters::apply_enabled_flags`], not a structure to read or build.
-/// Positions in it are meaningless without the set it came from.
+///
+/// Keyed by [`FilterId`], not by position (#346). A filter added, deleted or
+/// moved to another set since the capture moves every position after it,
+/// and a capture by position then put each flag on the wrong filter.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EnabledFlags {
-    filters: Vec<bool>,
+    filters: HashMap<FilterId, bool>,
 }
 
 /// The colours successive filters are drawn from, in order.
@@ -490,7 +514,7 @@ pub struct ActiveFilters {
     ///
     /// Held separately from the filters so that a filter removed in the
     /// meantime simply drops out of the restore rather than resurrecting.
-    remembered: Option<Vec<bool>>,
+    remembered: Option<EnabledFlags>,
     /// Every pattern in one automaton: `filters` in order.
     ///
     /// `verdict` used to run one `Regex::is_match` per filter per line, so a
@@ -638,6 +662,7 @@ impl ActiveFilters {
         let compiled = Regex::new(pattern)?;
         let style = self.next_style();
         self.insert_scratch(Filter {
+            id: FilterId::fresh(),
             predicate: Predicate::Regex(compiled),
             sense: Sense::Include,
             enabled: true,
@@ -660,6 +685,7 @@ impl ActiveFilters {
     pub fn add_excluding(&mut self, pattern: &str) -> Result<(), regex::Error> {
         let pattern = Regex::new(pattern)?;
         self.insert_scratch(Filter {
+            id: FilterId::fresh(),
             predicate: Predicate::Regex(pattern),
             sense: Sense::Exclude,
             enabled: true,
@@ -682,6 +708,7 @@ impl ActiveFilters {
     pub(crate) fn add_definition(&mut self, kind: Kind) {
         let style = self.next_style();
         self.insert_scratch(Filter {
+            id: FilterId::fresh(),
             predicate: Predicate::Definition(kind),
             sense: Sense::Include,
             enabled: true,
@@ -836,11 +863,6 @@ impl ActiveFilters {
         }
         self.filters.remove(index);
         self.recompile();
-        if let Some(remembered) = self.remembered.as_mut()
-            && index < remembered.len()
-        {
-            remembered.remove(index);
-        }
         true
     }
 
@@ -857,12 +879,11 @@ impl ActiveFilters {
     /// pattern that will not compile leaves the old one in place, so the
     /// prompt has something intact to stay open over.
     ///
-    /// Deliberately does **not** `forget_capture`. Every other mutator here
-    /// drops a pending `!` capture because it changes the set's *shape* —
-    /// `remembered` is a `Vec<bool>` aligned to `filters` by position, so an
-    /// add or a remove invalidates it. An edit changes neither the length nor
-    /// any enabled flag, so the capture still describes this set exactly and
-    /// dropping it would strand a restore for nothing.
+    /// Deliberately does **not** `forget_capture`. An add drops a pending `!`
+    /// capture because the set it describes is gone — see
+    /// `adding_while_a_restore_is_pending_drops_the_capture`. An edit is the
+    /// same filter with the same flag, so the capture still describes this
+    /// set exactly and dropping it would strand a restore for nothing.
     ///
     /// Callers must re-evaluate: the verdicts cached against the old pattern
     /// are stale. Unlike `remove`, only *this* filter's verdicts can have
@@ -1040,7 +1061,7 @@ impl ActiveFilters {
         if self.remembered.is_some() && !self.any_enabled() {
             return;
         }
-        self.remembered = Some(self.filters.iter().map(|f| f.enabled).collect());
+        self.remembered = Some(self.enabled_flags());
         self.set_all_enabled(false);
     }
 
@@ -1049,11 +1070,8 @@ impl ActiveFilters {
     /// Enabling everything instead would silently switch on filters the user
     /// had deliberately turned off.
     pub fn restore_remembered(&mut self) {
-        let Some(remembered) = self.remembered.take() else {
-            return;
-        };
-        for (filter, was_enabled) in self.filters.iter_mut().zip(remembered) {
-            filter.enabled = was_enabled;
+        if let Some(remembered) = self.remembered.take() {
+            self.apply_enabled_flags(&remembered);
         }
     }
 
@@ -1073,19 +1091,25 @@ impl ActiveFilters {
     #[must_use]
     pub fn enabled_flags(&self) -> EnabledFlags {
         EnabledFlags {
-            filters: self.filters.iter().map(|filter| filter.enabled).collect(),
+            filters: self
+                .filters
+                .iter()
+                .map(|filter| (filter.id, filter.enabled))
+                .collect(),
         }
     }
 
-    /// Put back what [`enabled_flags`](Self::enabled_flags) captured.
+    /// Put back what [`enabled_flags`](Self::enabled_flags) captured, on
+    /// each filter wherever it is now.
     ///
-    /// `zip` rather than an index, and the same tolerance `restore_remembered`
-    /// has: a filter deleted since the capture simply drops out of the restore
-    /// rather than resurrecting, and one added since keeps whatever it has now.
-    /// A snapshot is a convenience, not a transaction.
+    /// A filter deleted since the capture simply drops out of the restore
+    /// rather than resurrecting, and one added since keeps whatever it has
+    /// now. A snapshot is a convenience, not a transaction.
     pub fn apply_enabled_flags(&mut self, flags: &EnabledFlags) {
-        for (filter, was_enabled) in self.filters.iter_mut().zip(&flags.filters) {
-            filter.enabled = *was_enabled;
+        for filter in &mut self.filters {
+            if let Some(&was_enabled) = flags.filters.get(&filter.id) {
+                filter.enabled = was_enabled;
+            }
         }
     }
 
@@ -2439,6 +2463,86 @@ mod tests {
         set.restore_remembered();
         let flags: Vec<bool> = set.filters()[..2].iter().map(|f| f.enabled).collect();
         assert_eq!(flags, vec![true, false], "the real capture was overwritten");
+    }
+
+    /// Scratch `x` on, then set `web` with `a` off and `b` on: the state
+    /// #346's repro starts from.
+    fn scratch_and_web() -> ActiveFilters {
+        let web = test_support::loaded("web", 10, true, &["a", "b"]);
+        let mut set = ActiveFilters::with_sets(None, &[web]);
+        set.add("x").expect("valid pattern");
+        let b = position(&set, "b");
+        set.set_enabled(b, true);
+        set
+    }
+
+    fn position(set: &ActiveFilters, name: &str) -> usize {
+        set.filters()
+            .iter()
+            .position(|filter| filter.display_name() == name)
+            .expect("a filter of that name")
+    }
+
+    fn flag(set: &ActiveFilters, name: &str) -> bool {
+        set.filters()[position(set, name)].enabled
+    }
+
+    /// A typed filter goes in before the file sets' filters, so every one of
+    /// them moves along one place. The capture is by id (#346), and each
+    /// flag comes back on its own filter; the new filter keeps its own.
+    #[test]
+    fn captured_flags_follow_their_filters_past_an_insert() {
+        let mut set = scratch_and_web();
+        let flags = set.enabled_flags();
+        set.set_all_enabled(false);
+
+        set.add("foo").expect("valid pattern");
+        set.apply_enabled_flags(&flags);
+
+        assert!(flag(&set, "x"));
+        assert!(
+            flag(&set, "foo"),
+            "the new filter lost the flag it was added with"
+        );
+        assert!(!flag(&set, "a"), "a took x's flag");
+        assert!(flag(&set, "b"), "b took a's flag");
+    }
+
+    /// `S` moves the scratch filters into a new set and so reorders the
+    /// list (#346). The adopted filters are the same filters, and a capture
+    /// taken before still finds them.
+    #[test]
+    fn captured_flags_follow_their_filters_into_an_adopted_set() {
+        let mut set = scratch_and_web();
+        let flags = set.enabled_flags();
+        set.set_all_enabled(false);
+
+        assert!(set.adopt_scratch_as("zeta", "test/filters.toml".into()));
+        set.apply_enabled_flags(&flags);
+
+        assert!(flag(&set, "x"));
+        assert!(!flag(&set, "a"));
+        assert!(flag(&set, "b"));
+    }
+
+    /// A relisted set's filters are copies from the file, not the filters
+    /// that were unlisted: a capture from before the unlist leaves them
+    /// as the file describes them.
+    #[test]
+    fn a_capture_does_not_reach_a_relisted_sets_filters() {
+        let mut set = scratch_and_web();
+        let web = set
+            .sets()
+            .iter()
+            .position(|s| s.name == "web")
+            .expect("web");
+        let flags = set.enabled_flags();
+
+        set.set_listed(web, false);
+        set.set_listed(web, true);
+        set.apply_enabled_flags(&flags);
+
+        assert!(!flag(&set, "b"), "the capture reached a copy from the file");
     }
 
     /// The whole point of editing in place rather than deleting and retyping:

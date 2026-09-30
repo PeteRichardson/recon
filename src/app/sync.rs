@@ -77,9 +77,10 @@ impl App<'_> {
         if changes.is_empty() {
             return;
         }
-        // A peek holds every filter's flag by position, and a list or an
-        // unlist moves the positions (#305). Put the flags back first, while
-        // they still line up.
+        // A list change ends a peek (#305): the flags come back first, so the
+        // sets are listed and unlisted as they are, not as the peek shows
+        // them. The capture is by filter id (#346), so it would survive the
+        // change; ending the peek is what the picker promises.
         if self.peek.is_some() {
             self.toggle_peek();
         }
