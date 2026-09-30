@@ -550,7 +550,9 @@ action: no key reaches it, and the `?` overlay shows it as `unbound`.
 `--print-keymap` prints the keymap **in force** — your `config.toml` folded
 in, and any key an override took away from another action — in exactly this
 syntax, ready to copy from and edit. A line that still matches its default
-carries no comment; a line that doesn't says what changed:
+carries no comment; a line that doesn't says what changed. The keymap
+warnings a normal start shows in its panel go to stderr, so stdout stays a
+stanza you can paste (`--no-warnings` silences them):
 
 ```console
 $ recon --print-keymap
@@ -1846,8 +1848,8 @@ dir="$(recon --emit cwd)" && cd "$dir"           # where you ended up
 
 | `--emit` | Prints, on `q` | Summary on stderr |
 | --- | --- | --- |
-| `lines` | the file view's visible lines, verbatim, in the current mode — what the filters chose; a search does not affect it | `recon: emitted 812 lines of app.log, dim mode (27 match) — Ctrl-H to emit matches only` |
-| `files` | the explorer's listed files, one absolute path per line, in explorer order | `recon: emitted 14 files from /var/log, dim mode (3 match, 2 unscanned) — Ctrl-H to emit matches only` |
+| `lines` | the file view's visible lines, verbatim, in the current mode — what the filters chose; a search does not affect it | `recon: emitted 812 lines of app.log, dim mode (27 match) — u to emit matches only` |
+| `files` | the explorer's listed files, one absolute path per line, in explorer order | `recon: emitted 14 files from /var/log, dim mode (3 match, 2 unscanned) — u to emit matches only` |
 | `cwd` | the directory the explorer is showing | `recon: emitted /var/log` |
 
 **`q` emits, `Q` doesn't.** `Q` quits without printing and exits 1 when

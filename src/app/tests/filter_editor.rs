@@ -2482,8 +2482,8 @@ fn the_help_says_the_number_of_tries() {
 // ---- generated filters (#321) ---------------------------------------------
 
 use crate::app::filter_editor::{
-    GENERATED, Generated, NEEDS_EXAMPLES, NO_MODEL, NO_PROMPT, PATTERN_CHANGED, PROMPT_CHANGED,
-    PROMPT_CHANGED_NO_MODEL,
+    GENERATED, Generated, NEEDS_EXAMPLES, NO_MODEL, NO_PROMPT, PATTERN_CHANGED,
+    PROMPT_CHANGED_NO_MODEL, prompt_changed,
 };
 use crate::filter::generated_hash;
 use crate::widgets::filterlist::GENERATED_MARK;
@@ -2671,7 +2671,30 @@ fn with_a_model_a_changed_prompt_names_ctrl_r() {
     to_prompt(&mut app);
     typed(&mut app, "!");
     let screen = rendered(&mut app);
-    assert!(screen.contains(PROMPT_CHANGED), "{screen}");
+    assert!(screen.contains(&prompt_changed(Some("Ctrl-r"))), "{screen}");
+}
+
+/// #386: after a rebind, the prompt row names the key that regenerates now.
+#[test]
+fn a_changed_prompt_names_the_regenerate_key_in_force() {
+    let (mut app, _harness) = app_with_model("generated_prompt_rebound", true, Ok(candidate("x")));
+    app.add_filter("ERROR").expect("valid");
+    make_generated(&mut app);
+    rebind(&mut app, &[("filtereditor.regenerate", &["Ctrl-t"])]);
+    select_row(&mut app, widgets::filterlist::Row::Filter(0));
+    open_selected(&mut app);
+    to_prompt(&mut app);
+    typed(&mut app, "!");
+    let screen = rendered(&mut app);
+    assert!(
+        screen.contains("Ctrl-t regenerates the pattern"),
+        "{screen}"
+    );
+    assert!(
+        screen.contains("Ctrl-t regenerate ·"),
+        "the border: {screen}"
+    );
+    assert!(!screen.contains("Ctrl-r"), "{screen}");
 }
 
 /// Loading generated filters never asks the model anything, also when a

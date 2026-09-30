@@ -49,9 +49,10 @@ impl App<'_> {
         let name = self.view.filename().display();
         let summary = match self.document.mode() {
             Mode::Dimmed => format!(
-                "recon: emitted {} lines of {name}, dim mode ({} match) — Ctrl-H to emit matches only",
+                "recon: emitted {} lines of {name}, dim mode ({} match){}",
                 visible.len(),
                 self.interesting_count(),
+                self.matches_only_hint(),
             ),
             Mode::FilteredOnly => {
                 format!(
@@ -98,7 +99,8 @@ impl App<'_> {
                         format!("{matched} match, {unscanned} unscanned")
                     };
                     format!(
-                        "recon: emitted {count} files from {dir}, dim mode ({counts}) — Ctrl-H to emit matches only"
+                        "recon: emitted {count} files from {dir}, dim mode ({counts}){}",
+                        self.matches_only_hint()
                     )
                 }
             }
@@ -114,6 +116,16 @@ impl App<'_> {
             summary,
             failed: 0,
         }
+    }
+
+    /// The end of a dim-mode summary: the key that would have emitted the
+    /// matches alone. Looked up, not spelled (#386): it said `Ctrl-H` whatever
+    /// the keymap bound, and `u` is the key the help names first. Nothing
+    /// when a rebind left hide mode with no key.
+    fn matches_only_hint(&self) -> String {
+        self.keymap
+            .label_for(crate::keymap::ActionId::GlobalToggleHide)
+            .map_or_else(String::new, |key| format!(" — {key} to emit matches only"))
     }
 
     /// `--emit cwd`: the directory the explorer is showing, one line.

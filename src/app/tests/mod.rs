@@ -73,6 +73,26 @@ fn app_over(name: &str, files: &[&str]) -> App<'static> {
     })
 }
 
+/// Put a `[keymap]` in force on a running app: each action gets exactly
+/// the keys given, as a `config.toml` line would give it (#386).
+fn rebind(app: &mut App<'_>, lines: &[(&str, &[&str])]) {
+    let bindings = lines
+        .iter()
+        .map(|(action, keys)| {
+            (
+                (*action).to_string(),
+                keys.iter().map(ToString::to_string).collect(),
+            )
+        })
+        .collect();
+    let config = Config {
+        keymap: Some(crate::config::KeymapConfig { bindings }),
+        ..Config::default()
+    };
+    let (map, _) = config.build_keymap().expect("a keymap recon can obey");
+    app.keymap = map;
+}
+
 /// `app_over`, with real contents. The app starts on a placeholder path
 /// that does not exist, so nothing is loaded until `open_file`.
 fn app_over_files(name: &str, files: &[(&str, &str)]) -> App<'static> {
