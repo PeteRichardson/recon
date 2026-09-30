@@ -27,7 +27,10 @@ const NON_ASCII: &str = "\u{2192}";
 
 /// The worst case this test tolerates for one `j`. The fixed code takes a
 /// few hundred milliseconds in debug; the broken code, about ten seconds.
-const BUDGET: Duration = Duration::from_secs(1);
+/// Three seconds leaves the fixed code about ten times its own time on a
+/// busy runner, and still fails the broken code by a factor of three
+/// (#391).
+const BUDGET: Duration = Duration::from_secs(3);
 
 /// A directory holding a three-line file that sorts first and a large log
 /// after it, so a single `j` from the first entry lands on the log.

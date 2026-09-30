@@ -1899,19 +1899,21 @@ fn big_s_writes_the_examples_and_a_restart_shows_them_again() {
 use crate::app::filter_editor::NO_REQUEST;
 use crate::generate::{Cancel, Candidate, Model};
 use std::sync::mpsc::{Receiver, channel};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 
 /// A model double. It keeps each text it is sent, waits for the test to
 /// release it, answers the next of `replies` — the last one again once it
-/// is the only one left — and says it is done. It answers a consolidation
-/// (#322) with `prompt` in the same way.
+/// is the only one left — and, once the reply is sent, says whether it
+/// reached the editor. It answers a consolidation (#322) with `prompt` in
+/// the same way.
 struct FakeModel {
     available: bool,
     replies: Mutex<Vec<Result<Candidate, String>>>,
     prompt: Arc<Mutex<Result<String, String>>>,
     sent: Arc<Mutex<Vec<String>>>,
     release: Mutex<Receiver<()>>,
-    done: Mutex<Sender<()>>,
+    /// Whether each reply reached the editor, sent after the send.
+    done: Mutex<Sender<bool>>,
 }
 
 impl Model for FakeModel {
@@ -1922,24 +1924,22 @@ impl Model for FakeModel {
     fn generate(&self, text: &str, _cancel: &Cancel) -> Result<Candidate, String> {
         self.sent.lock().expect("sent").push(text.to_string());
         let _ = self.release.lock().expect("release").recv();
-        let reply = {
-            let mut replies = self.replies.lock().expect("replies");
-            if replies.len() > 1 {
-                replies.remove(0)
-            } else {
-                replies[0].clone()
-            }
-        };
-        let _ = self.done.lock().expect("done").send(());
-        reply
+        let mut replies = self.replies.lock().expect("replies");
+        if replies.len() > 1 {
+            replies.remove(0)
+        } else {
+            replies[0].clone()
+        }
     }
 
     fn consolidate(&self, text: &str, _cancel: &Cancel) -> Result<String, String> {
         self.sent.lock().expect("sent").push(text.to_string());
         let _ = self.release.lock().expect("release").recv();
-        let reply = self.prompt.lock().expect("prompt").clone();
-        let _ = self.done.lock().expect("done").send(());
-        reply
+        self.prompt.lock().expect("prompt").clone()
+    }
+
+    fn replied(&self, delivered: bool) {
+        let _ = self.done.lock().expect("done").send(delivered);
     }
 }
 
@@ -1949,20 +1949,30 @@ struct Harness {
     /// What the model answers a consolidation with.
     prompt: Arc<Mutex<Result<String, String>>>,
     release: Sender<()>,
-    done: Receiver<()>,
+    done: Receiver<bool>,
+    model: Weak<FakeModel>,
 }
 
 impl Harness {
-    /// Let the model answer, and wait until it has.
-    fn answer(&self) {
+    /// Let the model answer, and wait until its reply is sent. Whether the
+    /// reply reached the editor: `false` when the request was cancelled
+    /// first, so the reply had nowhere to go.
+    fn answer(&self) -> bool {
         self.release.send(()).expect("the model thread");
         self.done
             .recv_timeout(Duration::from_secs(5))
-            .expect("the model did not answer");
+            .expect("the model did not answer")
     }
 
     fn sent(&self) -> Vec<String> {
         self.sent.lock().expect("sent").clone()
+    }
+
+    /// How many requests are running or waiting to reply. A request holds
+    /// the model from the moment it starts, so unlike `sent` this does not
+    /// wait on the worker thread; the app's own hold is not counted.
+    fn requests(&self) -> usize {
+        self.model.strong_count() - 1
     }
 }
 
@@ -2003,13 +2013,15 @@ fn app_with_replies(
         release: Mutex::new(release_rx),
         done: Mutex::new(done_tx),
     };
-    let app = app_over_file(name, BODY).with_model(Some(Arc::new(model)));
+    let model = Arc::new(model);
     let harness = Harness {
         sent,
         prompt,
         release: release_tx,
         done: done_rx,
+        model: Arc::downgrade(&model),
     };
+    let app = app_over_file(name, BODY).with_model(Some(model));
     (app, harness)
 }
 
@@ -2099,14 +2111,13 @@ fn esc_cancels_a_request_and_its_late_reply_changes_nothing() {
     open_editor(&mut app);
     typed(&mut app, "INFO");
     ask(&mut app, "the errors");
+    assert_eq!(harness.requests(), 1);
 
     key(&mut app, KeyCode::Esc);
     assert!(app.filter_editor.is_some(), "Esc closed the editor");
     assert!(editor(&app).running.is_none());
 
-    harness.answer();
-    // Time for the late reply to be sent, were there anywhere to send it.
-    std::thread::sleep(Duration::from_millis(20));
+    assert!(!harness.answer(), "the late reply reached the editor");
     assert!(!app.drain_request());
     assert_eq!(editor(&app).field.pattern, "INFO");
     assert!(editor(&app).explanation.is_none());
@@ -2222,9 +2233,7 @@ fn closing_the_editor_cancels_the_request() {
     key(&mut app, KeyCode::BackTab);
     key(&mut app, KeyCode::Enter);
     assert!(app.filter_editor.is_none());
-    harness.answer();
-    // Time for the late reply to be sent, were there anywhere to send it.
-    std::thread::sleep(Duration::from_millis(20));
+    assert!(!harness.answer(), "the late reply reached the editor");
     assert!(!app.drain_request());
     assert_eq!(app.filters.len(), 1);
 }
@@ -2451,9 +2460,7 @@ fn esc_cancels_the_loop_at_a_later_attempt_and_keeps_the_pattern() {
     key(&mut app, KeyCode::Esc);
     assert!(app.filter_editor.is_some(), "Esc closed the editor");
     assert!(editor(&app).running.is_none());
-    harness.answer();
-    // Time for the late reply to be sent, were there anywhere to send it.
-    std::thread::sleep(Duration::from_millis(20));
+    assert!(!harness.answer(), "the late reply reached the editor");
     assert!(!app.drain_request());
     assert_eq!(editor(&app).field.pattern, "timeout");
     assert_eq!(harness.sent().len(), 2);
@@ -2681,9 +2688,9 @@ fn a_load_never_calls_the_model() {
     app.filters = ActiveFilters::with_sets(None, &sets);
     app.refresh_view();
     draw(&mut app);
-    std::thread::sleep(Duration::from_millis(20));
     assert!(!app.drain_request());
 
+    assert_eq!(harness.requests(), 0, "the load started a request");
     assert!(harness.sent().is_empty(), "{:?}", harness.sent());
     let generated: Vec<bool> = app
         .filters

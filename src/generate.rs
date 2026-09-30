@@ -117,6 +117,12 @@ pub trait Model: Send + Sync {
     /// Answer `text` under `PROMPT_INSTRUCTIONS` with one prompt (#322), on
     /// a worker thread as `generate` is.
     fn consolidate(&self, text: &str, cancel: &Cancel) -> Result<String, String>;
+
+    /// Told, on the worker thread, whether a reply reached the editor:
+    /// `false` when the request was cancelled first and the reply had
+    /// nowhere to go. The default does nothing; a test double records it,
+    /// so a test of a late reply can see that it was dropped (#391).
+    fn replied(&self, _delivered: bool) {}
 }
 
 /// The model this build has, or `None` when it has none.
@@ -204,26 +210,29 @@ pub(crate) struct Running<T = Candidate> {
 impl Running {
     /// Send `text` to `model` on a new thread, for a pattern.
     pub(crate) fn start(model: Arc<dyn Model>, text: String) -> Self {
-        Running::spawn(move |cancel| model.generate(&text, cancel))
+        Running::spawn(model, move |model, cancel| model.generate(&text, cancel))
     }
 }
 
 impl Running<String> {
     /// Send `text` to `model` on a new thread, for one prompt (#322).
     pub(crate) fn consolidate(model: Arc<dyn Model>, text: String) -> Self {
-        Running::spawn(move |cancel| model.consolidate(&text, cancel))
+        Running::spawn(model, move |model, cancel| model.consolidate(&text, cancel))
     }
 }
 
 impl<T: Send + 'static> Running<T> {
-    fn spawn(ask: impl FnOnce(&Cancel) -> Result<T, String> + Send + 'static) -> Self {
+    fn spawn(
+        model: Arc<dyn Model>,
+        ask: impl FnOnce(&dyn Model, &Cancel) -> Result<T, String> + Send + 'static,
+    ) -> Self {
         let (tx, reply) = mpsc::channel();
         let cancel = Cancel::default();
         let theirs = cancel.clone();
         std::thread::spawn(move || {
-            let result = ask(&theirs);
+            let result = ask(model.as_ref(), &theirs);
             // The editor dropped its end if the request was cancelled.
-            let _ = tx.send(result);
+            model.replied(tx.send(result).is_ok());
         });
         Self { reply, cancel }
     }
