@@ -274,10 +274,12 @@ impl App<'_> {
     ///
     /// Nothing scrolls. "Any key closes it" and a scroll key cannot both be
     /// true, which is the rule the help overlay already keeps. When the
-    /// warnings outrun the space, the border says how many were cut and names
-    /// `--print-keymap`, which prints every one of them in full.
+    /// warnings outrun the space, the body says how many were cut and names
+    /// `--print-keymap`, which writes every one of them to stderr (#259).
+    /// The body and not the title (#252): a title is cut at the border, and
+    /// a narrow terminal kept the count and lost the command.
     fn render_keymap_warnings(&self, area: Rect, buf: &mut Buffer) {
-        use ratatui::widgets::{Block, Clear, Paragraph, Wrap};
+        use ratatui::widgets::{Block, Clear, Padding, Paragraph};
         if !self.keymap_warnings_open || self.keymap_warnings.is_empty() {
             return;
         }
@@ -285,40 +287,17 @@ impl App<'_> {
         if width < 20 || area.height < 5 {
             return;
         }
+        // Two columns of border and one of padding each side.
         let inner_width = usize::from(width - 4);
+        // The rows inside the borders.
+        let budget = usize::from(area.height.min(20)) - 2;
+        let Some(lines) = warning_panel_lines(&self.keymap_warnings, inner_width, budget) else {
+            return;
+        };
 
-        // How many whole warnings fit, each measured at the rendered rows it
-        // will wrap to — not at the count of warnings admitted, which is a
-        // different number from the rows they cost once `Wrap` runs.
-        let budget = usize::from(area.height.min(20)) - 4;
-        let mut lines: Vec<String> = Vec::new();
-        // Rendered rows consumed, not warnings admitted. The two are not the
-        // same number, and conflating them is what let content overflow a box
-        // sized for it.
-        let mut rows = 0usize;
-        let mut shown = 0;
-        for warning in &self.keymap_warnings {
-            let text = format!("• {warning}");
-            let wrapped = text.len().div_ceil(inner_width.max(1));
-            // Every entry after the first also costs the blank row between it
-            // and the one before.
-            let cost = if lines.is_empty() {
-                wrapped
-            } else {
-                wrapped + 1
-            };
-            if !lines.is_empty() && rows + cost > budget {
-                break;
-            }
-            rows += cost;
-            lines.push(text);
-            shown += 1;
-        }
-        let cut = self.keymap_warnings.len() - shown;
-
-        // Two rows for the closing hint and the blank row above it, two for
-        // the borders.
-        let height = u16::try_from(rows + 4).unwrap_or(u16::MAX).min(area.height);
+        let height = u16::try_from(lines.len() + 2)
+            .unwrap_or(u16::MAX)
+            .min(area.height);
         let rect = Rect {
             x: area.x + (area.width - width) / 2,
             y: area.y + (area.height - height) / 2,
@@ -326,20 +305,166 @@ impl App<'_> {
             height,
         };
 
-        let title = if cut == 0 {
-            " Keymap warnings ".to_string()
-        } else {
-            format!(" Keymap warnings ({cut} more — run recon --print-keymap) ")
-        };
-
         Clear.render(rect, buf);
-        Paragraph::new(format!("{}\n\nAny key closes this.", lines.join("\n\n")))
-            .wrap(Wrap { trim: false })
+        // Wrapped here, not by `Wrap`: the rows are counted before they are
+        // drawn, and a row `Wrap` adds is a row the count did not see.
+        Paragraph::new(lines.join("\n"))
             .block(
                 Block::bordered()
-                    .title(title)
+                    .title(" Keymap warnings ")
+                    .padding(Padding::horizontal(1))
                     .border_style(Style::default().fg(Color::Yellow)),
             )
             .render(rect, buf);
+    }
+}
+
+/// The keymap warning panel's rows, wrapped to `width` columns: the
+/// warnings that fit whole in `budget` rows, a blank row between each, then
+/// a blank row, what was not shown, and how to close the panel.
+///
+/// Every warning is measured against the budget, the first one too (#254):
+/// admitting the first one whatever it cost is what clipped its text in a
+/// short terminal while the panel said nothing was cut. So a panel can show
+/// no warning at all, and then it says how many there are.
+///
+/// `None` when not even that fits: half a sentence of advice is worse than
+/// none, which is the rule the rest of the panel keeps for a tiny area.
+fn warning_panel_lines(warnings: &[String], width: usize, budget: usize) -> Option<Vec<String>> {
+    let close = wrap_hanging("Any key closes this.", "", "", width);
+    let note = |cut: usize, shown: usize| {
+        let text = if shown == 0 {
+            format!("{cut} warnings — run recon --print-keymap to read them")
+        } else {
+            format!("{cut} more — run recon --print-keymap to read them all")
+        };
+        wrap_hanging(&text, "", "", width)
+    };
+
+    let mut body: Vec<String> = Vec::new();
+    let mut shown = 0;
+    for (index, warning) in warnings.iter().enumerate() {
+        let rows = wrap_hanging(warning, "• ", "  ", width);
+        let cut = warnings.len() - index - 1;
+        let footer = if cut == 0 {
+            close.len()
+        } else {
+            note(cut, index + 1).len() + close.len()
+        };
+        // The blank row before this warning, and the one before the footer.
+        let gap = usize::from(!body.is_empty());
+        if body.len() + gap + rows.len() + 1 + footer > budget {
+            break;
+        }
+        if gap == 1 {
+            body.push(String::new());
+        }
+        body.extend(rows);
+        shown += 1;
+    }
+
+    let cut = warnings.len() - shown;
+    let mut footer = Vec::new();
+    if cut > 0 {
+        footer.extend(note(cut, shown));
+    }
+    footer.extend(close);
+    if !body.is_empty() {
+        body.push(String::new());
+    }
+    body.extend(footer);
+    if body.len() > budget {
+        // Only the no-warning case can land here: the loop above kept every
+        // other one inside the budget. Drop the closing line before the
+        // count — any key still closes the panel, and the count is the only
+        // sign that anything is missing.
+        body.truncate(budget);
+        let says_what_is_missing = body.iter().any(|row| row.contains("--print-keymap"));
+        if cut > 0 && !says_what_is_missing {
+            return None;
+        }
+    }
+    Some(body)
+}
+
+/// `text` word-wrapped to `width` columns, with `first` before the first
+/// row and `rest` before every row after it (#253): a bullet, and an indent
+/// as wide as the bullet, so a warning that wraps stays visibly one warning.
+/// A word wider than a row is broken where the row ends.
+fn wrap_hanging(text: &str, first: &str, rest: &str, width: usize) -> Vec<String> {
+    let mut rows = Vec::new();
+    let mut row = first.to_string();
+    let mut prefix = first.width();
+    for word in text.split(' ').filter(|word| !word.is_empty()) {
+        let room = width.saturating_sub(prefix).max(1);
+        let mut word = word;
+        loop {
+            let used = row.width() - prefix;
+            let gap = usize::from(used > 0);
+            if used + gap + word.width() <= room {
+                if gap == 1 {
+                    row.push(' ');
+                }
+                row.push_str(word);
+                break;
+            }
+            if used > 0 {
+                rows.push(std::mem::replace(&mut row, rest.to_string()));
+                prefix = rest.width();
+                continue;
+            }
+            // Wider than a whole row: take what fits and go on with the rest.
+            let room = width.saturating_sub(prefix).max(1);
+            let mut taken = 0;
+            let split = word
+                .char_indices()
+                .find(|&(_, c)| {
+                    taken += unicode_width::UnicodeWidthChar::width(c).unwrap_or(0);
+                    taken > room
+                })
+                .map_or(word.len(), |(at, _)| at);
+            let split = if split == 0 {
+                word.chars().next().map_or(word.len(), char::len_utf8)
+            } else {
+                split
+            };
+            row.push_str(&word[..split]);
+            word = &word[split..];
+            if word.is_empty() {
+                break;
+            }
+            rows.push(std::mem::replace(&mut row, rest.to_string()));
+            prefix = rest.width();
+        }
+    }
+    rows.push(row);
+    rows
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{warning_panel_lines, wrap_hanging};
+
+    #[test]
+    fn wrapped_rows_keep_the_indent_and_the_width() {
+        let rows = wrap_hanging("one two three four five", "• ", "  ", 10);
+        assert_eq!(rows, ["• one two", "  three", "  four", "  five"]);
+    }
+
+    #[test]
+    fn a_word_wider_than_a_row_is_broken_where_the_row_ends() {
+        let rows = wrap_hanging("abcdefghij xy", "• ", "  ", 6);
+        assert_eq!(rows, ["• abcd", "  efgh", "  ij", "  xy"]);
+    }
+
+    #[test]
+    fn every_row_the_panel_returns_fits_its_budget() {
+        let warnings = vec!["w ".repeat(40), "x ".repeat(40)];
+        for budget in 0..12 {
+            if let Some(lines) = warning_panel_lines(&warnings, 20, budget) {
+                assert!(lines.len() <= budget, "{budget}: {lines:?}");
+                assert!(lines.iter().all(|row| row.chars().count() <= 20));
+            }
+        }
     }
 }
