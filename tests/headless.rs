@@ -466,3 +466,50 @@ fn print_keymap_emits_a_pasteable_stanza() {
     assert!(printed.contains("[keymap]"), "{printed}");
     assert!(printed.contains("global.quit"), "{printed}");
 }
+
+/// `--print-keymap` writes the keymap warnings to stderr, the same warnings a
+/// normal start shows in its panel (#259), and leaves the stanza on stdout
+/// exactly as it was.
+///
+/// It did not: the command returned before the code that logs them, so the
+/// panel's "recon --print-keymap prints them all" sent the user to a command
+/// that printed none of them.
+#[test]
+fn print_keymap_puts_keymap_warnings_on_stderr() {
+    let dir = fixture("print_keymap_warnings");
+    let home = config_home(&dir);
+    fs::write(
+        home.join("recon/config.toml"),
+        "[keymap]\n'global.quit' = 'j'\n",
+    )
+    .expect("write config.toml");
+
+    let out = recon(&home, &["--print-keymap"], b"");
+
+    assert_eq!(out.status.code(), Some(0), "stderr: {}", text(&out.stderr));
+    let stderr = text(&out.stderr);
+    for loser in ["explorer.down", "view.down", "filters.down"] {
+        assert!(
+            stderr.contains(loser),
+            "{loser}'s warning never reached stderr: {stderr}"
+        );
+    }
+    let printed = text(&out.stdout);
+    assert!(printed.contains("[keymap]"), "{printed}");
+    assert!(
+        !printed.contains("takes 'j' from"),
+        "a warning leaked onto stdout: {printed}"
+    );
+
+    let quiet = recon(&home, &["--print-keymap", "--no-warnings"], b"");
+    assert_eq!(quiet.status.code(), Some(0));
+    assert!(
+        quiet.stderr.is_empty(),
+        "--no-warnings must silence them: {}",
+        text(&quiet.stderr)
+    );
+    assert_eq!(
+        quiet.stdout, out.stdout,
+        "the warnings must not change what stdout carries"
+    );
+}
