@@ -34,7 +34,7 @@ use std::time::Duration;
 use unicode_width::UnicodeWidthStr;
 // What `App` keeps in its topic modules, and the tests read.
 use super::focus::LAST_PANE;
-use super::prompt::{HISTORY_CAP, INVALID_PATTERN, PromptKind};
+use super::prompt::{EMPTY_PATTERN, HISTORY_CAP, INVALID_PATTERN, PromptKind};
 use super::render::status::{AND_BADGE_TEXT, HIDE_BADGE_STYLE, HIDE_BADGE_TEXT, elide_left};
 use super::search::{WRAPPED_TO_BOTTOM, WRAPPED_TO_TOP};
 use super::viewport::Step;

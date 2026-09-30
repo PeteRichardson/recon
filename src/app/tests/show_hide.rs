@@ -659,6 +659,26 @@ fn an_invalid_edit_reports_and_leaves_the_filter_alone() {
     );
 }
 
+/// `Ctrl-u` empties a pre-filled edit without cancelling it, so `Enter`
+/// could commit an empty pattern, which `S` would then save (#347).
+#[test]
+fn an_empty_edit_reports_and_leaves_the_filter_alone() {
+    let mut app = app_with_two_filters("pane_edit_emptied");
+    focus_filter_pane(&mut app);
+
+    key(&mut app, KeyCode::Char('c'));
+    ctrl(&mut app, KeyCode::Char('u'));
+    key(&mut app, KeyCode::Enter);
+
+    let prompt = app.prompt.as_ref().expect("the prompt should stay open");
+    assert_eq!(prompt.error.as_deref(), Some(EMPTY_PATTERN));
+    assert_eq!(
+        app.filters.filters()[0].predicate.display(),
+        "alpha",
+        "an empty pattern overwrote the filter"
+    );
+}
+
 #[test]
 fn escape_abandons_an_edit_and_leaves_the_filter_untouched() {
     let mut app = app_with_two_filters("pane_edit_escape");

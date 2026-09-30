@@ -93,7 +93,9 @@ motions throughout.
   pane draws its border green *and* heavy, so it reads at a glance on a theme
   with weak colour and in a terminal with none.
 - **Regex everywhere** — filters and searches are both regular expressions. An
-  invalid pattern reports `E486: invalid pattern` and leaves the prompt open.
+  invalid pattern reports `E486: invalid pattern` and leaves the prompt open. An
+  empty filter, which would match every line, reports `a filter needs a pattern`
+  the same way.
 - **Vim motions** — `hjkl`, `w`, `0`/`^`/`$`, `{`/`}`, `g`/`G`, `Ctrl-D`/`Ctrl-U`,
   `/` then `n`/`N` to step between matches.
 - **Directories are obvious** — bright blue, bold and slash-suffixed, with
@@ -1662,9 +1664,10 @@ sense and whether it is enabled. That matters because a slot is a precedence —
 the *first* matching filter decides a line's colour — so the only way to change
 a pattern before this existed, `d` followed by a full retype, put the
 replacement at the end and silently reordered the set. `Esc` abandons the edit;
-backspacing past the start does the same, so an edit can never leave an empty
-pattern behind. A pattern that will not compile reports `E486: invalid pattern`
-and leaves the prompt open over the intact filter, exactly as `i` does.
+backspacing past the start does the same. An edit can never leave an empty
+pattern behind: `Enter` on one (after `Ctrl-u`, say) reports `a filter needs a
+pattern`. A pattern that will not compile reports `E486: invalid pattern`. Both
+leave the prompt open over the intact filter, exactly as `i` does.
 
 ### Three senses, and which files the explorer marks
 

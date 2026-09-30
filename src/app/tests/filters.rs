@@ -38,6 +38,30 @@ fn an_invalid_filter_pattern_keeps_the_prompt_open() {
     assert_eq!(app.filters.len(), 0, "a rejected pattern must not be added");
 }
 
+/// An empty regex matches every line (#347): as an including filter it
+/// colours the whole file, and as an excluding one it hides it. The prompt
+/// refuses it, and stays open, as it does for an invalid pattern.
+#[test]
+fn an_empty_filter_pattern_keeps_the_prompt_open() {
+    for (sense, name) in [('i', "filter_empty_in"), ('x', "filter_empty_ex")] {
+        let mut app = app_over(name, &["a.rs"]);
+
+        key(&mut app, KeyCode::Char('f'));
+        key(&mut app, KeyCode::Char(sense));
+        key(&mut app, KeyCode::Enter);
+
+        assert!(
+            app.prompt.is_some(),
+            "`f {sense}` closed on an empty pattern"
+        );
+        assert_eq!(
+            app.prompt.as_ref().unwrap().error.as_deref(),
+            Some(EMPTY_PATTERN)
+        );
+        assert_eq!(app.filters.len(), 0, "`f {sense}` added an empty filter");
+    }
+}
+
 #[test]
 fn esc_cancels_a_filter_prompt_without_adding() {
     let mut app = app_over("filter_esc", &["a.rs"]);
