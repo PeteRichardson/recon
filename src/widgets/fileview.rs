@@ -12,7 +12,7 @@ use std::fs::File;
 use std::io::{BufReader, Cursor, Read};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tui_textarea::{CursorMove, Input, Key, Scrolling, TextArea};
+use tui_textarea::{CursorMove, Scrolling, TextArea};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 /// Lines read for a preview.
@@ -584,7 +584,7 @@ impl FileView<'_> {
     /// Used as the selection moves, where reading whole files on every cursor
     /// key would stutter on large logs. While the explorer pane holds focus the
     /// view cannot be scrolled, so a screenful is all that can be seen; the
-    /// rest is read by `handle_events` as soon as the view is actually used.
+    /// rest is read by `perform` as soon as the view is actually used.
     pub(crate) fn preview(&mut self, path: &Path) {
         self.preview_with_caps(path, PREVIEW_LINES, MAX_PREVIEW_BYTES);
     }
@@ -1025,7 +1025,7 @@ impl FileView<'_> {
     ///
     /// Run from `render`, after `apply_pending_scroll`, because that is the
     /// one place with the pane's real height and the one moment every path
-    /// that moves the cursor — a key in `handle_events`, an `n` landed by
+    /// that moves the cursor — an action in `perform`, an `n` landed by
     /// `App`, a rebuild's restore — has finished with it. The textarea's own
     /// follow rule runs inside its render and only ever scrolls by the
     /// minimum that keeps the cursor on screen; this runs first and keeps it
@@ -1102,10 +1102,24 @@ impl FileView<'_> {
         self.textarea.set_cursor_position((row, col));
     }
 
+    /// Carry out one of the view's own actions (#373), resolved by `App`
+    /// from `Scope::View` or, for `[`/`]`, from `Scope::Global`.
+    ///
+    /// The same shape as `Explorer::perform`: `App` resolves the key and
+    /// hands the action straight here, so the table in `keymap::DEFAULT` is
+    /// the one place a key gets its meaning. Before this, `App` rebuilt a
+    /// canonical key for each action and this pane decoded it again, and a
+    /// key the two tables disagreed on did nothing without a word.
+    ///
+    /// The motions that need the whole document — `g`, `G`, `{`, `}`, `n`,
+    /// `N` — are `App`'s and never arrive here; nor does any other scope's
+    /// action. Either would do nothing.
+    ///
     /// Not a `Result`: every arm is a cursor move or a local toggle, and none
     /// of them can fail (#80). The one genuinely fallible thing this pane does
     /// — `set_highlight` — is called from `App::apply_view`, not from here.
-    pub(crate) fn handle_events(&mut self, input: Input) {
+    pub(crate) fn perform(&mut self, action: crate::keymap::ActionId) {
+        use crate::keymap::ActionId as A;
         // The user is interacting with the view, so a preview is no longer
         // enough: they can now scroll past the end of it.
         if self.truncated {
@@ -1113,103 +1127,24 @@ impl FileView<'_> {
             self.load(&path);
         }
 
-        match input {
-            Input {
-                key: Key::Char('h'),
-                ..
-            }
-            | Input { key: Key::Left, .. } => self.textarea.move_cursor(CursorMove::Back),
-            Input {
-                key: Key::Char('j'),
-                ..
-            }
-            | Input { key: Key::Down, .. } => self.textarea.move_cursor(CursorMove::Down),
-            Input {
-                key: Key::Char('k'),
-                ..
-            }
-            | Input { key: Key::Up, .. } => self.textarea.move_cursor(CursorMove::Up),
-            Input {
-                key: Key::Char('l'),
-                ..
-            }
-            | Input {
-                key: Key::Right, ..
-            } => self.textarea.move_cursor(CursorMove::Forward),
-            Input {
-                key: Key::Char('w'),
-                ..
-            } => self.textarea.move_cursor(CursorMove::WordForward),
-            Input {
-                key: Key::Char('^'),
-                ..
-            }
-            | Input {
-                key: Key::Char('0'),
-                ..
-            } => self.textarea.move_cursor(CursorMove::Head),
-            Input {
-                key: Key::Char('#'),
-                ..
-            } => self.hide_line_numbers = !self.hide_line_numbers,
-            Input {
-                key: Key::Char('$'),
-                ..
-            } => self.textarea.move_cursor(CursorMove::End),
-            Input {
-                key: Key::Char('e'),
-                ctrl: true,
-                ..
-            } => self.scroll_view((1, 0)),
-            Input {
-                key: Key::Char('y'),
-                ctrl: true,
-                ..
-            } => self.scroll_view((-1, 0)),
-            Input {
-                key: Key::Char('d'),
-                ctrl: true,
-                ..
-            } => self.scroll_view(Scrolling::HalfPageDown),
-            Input {
-                key: Key::Char('u'),
-                ctrl: true,
-                ..
-            } => self.scroll_view(Scrolling::HalfPageUp),
-            Input {
-                key: Key::Char('b'),
-                ctrl: true,
-                ..
-            }
-            | Input {
-                key: Key::PageUp, ..
-            } => self.scroll_view(Scrolling::PageUp),
-            // Paired deliberately, and sitting next to the `{`/`}` paragraph
-            // motions above: brackets move by page, braces by paragraph, both
-            // left-is-back and right-is-forward. Neither needs Shift, which is
-            // what `Ctrl-b` costs, and both exist on keyboards with no
-            // `PageUp`/`PageDown`.
-            //
-            // These replaced `space` and `Enter` in #48. `space` became the
-            // global peek and `Enter` the filter pane's toggle, so a file view
-            // that still paged on either would give one key two meanings — the
-            // thing #48 set out to remove.
-            Input {
-                key: Key::Char('['),
-                ..
-            } => self.scroll_view(Scrolling::PageUp),
-            Input {
-                key: Key::Char(']'),
-                ..
-            } => self.scroll_view(Scrolling::PageDown),
-            Input {
-                key: Key::Char('f'),
-                ctrl: true,
-                ..
-            }
-            | Input {
-                key: Key::PageDown, ..
-            } => self.scroll_view(Scrolling::PageDown),
+        match action {
+            A::ViewLeft => self.textarea.move_cursor(CursorMove::Back),
+            A::ViewDown => self.textarea.move_cursor(CursorMove::Down),
+            A::ViewUp => self.textarea.move_cursor(CursorMove::Up),
+            A::ViewRight => self.textarea.move_cursor(CursorMove::Forward),
+            A::ViewWordForward => self.textarea.move_cursor(CursorMove::WordForward),
+            A::ViewLineStart => self.textarea.move_cursor(CursorMove::Head),
+            A::ViewLineEnd => self.textarea.move_cursor(CursorMove::End),
+            A::ViewToggleLineNumbers => self.hide_line_numbers = !self.hide_line_numbers,
+            A::ViewScrollDown => self.scroll_view((1, 0)),
+            A::ViewScrollUp => self.scroll_view((-1, 0)),
+            A::ViewHalfPageDown => self.scroll_view(Scrolling::HalfPageDown),
+            A::ViewHalfPageUp => self.scroll_view(Scrolling::HalfPageUp),
+            // `[`/`]` page like `PageUp`/`PageDown` from every pane (#48,
+            // #120 §3): brackets move by page, braces by paragraph, both
+            // left-is-back and right-is-forward, and neither needs Shift.
+            A::ViewPageDown | A::GlobalPageDown => self.scroll_view(Scrolling::PageDown),
+            A::ViewPageUp | A::GlobalPageUp => self.scroll_view(Scrolling::PageUp),
             _ => (),
         }
     }
@@ -1913,6 +1848,7 @@ impl Widget for &mut FileView<'_> {
 mod tests {
     use super::*;
     use crate::fixtures::{fixture_dir, fixture_file};
+    use crate::keymap::ActionId as A;
     use std::fmt::Write as _;
     use std::fs;
 
@@ -2157,11 +2093,8 @@ mod tests {
         FileView::new(path.display().to_string())
     }
 
-    fn send(view: &mut FileView<'_>, key: Key) {
-        view.handle_events(Input {
-            key,
-            ..Default::default()
-        });
+    fn send(view: &mut FileView<'_>, action: A) {
+        view.perform(action);
     }
 
     fn rendered(view: &mut FileView<'_>) -> String {
@@ -2193,14 +2126,14 @@ mod tests {
     fn hash_toggles_line_numbers_off_and_back_on() {
         let mut view = view_of("numbers_toggle.txt", "alpha\nbeta\n");
 
-        send(&mut view, Key::Char('#'));
+        send(&mut view, A::ViewToggleLineNumbers);
         let without = rendered(&mut view);
         assert!(
             without.contains("alpha") && !without.contains("1 alpha"),
             "gutter still present:\n{without}"
         );
 
-        send(&mut view, Key::Char('#'));
+        send(&mut view, A::ViewToggleLineNumbers);
 
         assert!(
             rendered(&mut view).contains("1 alpha"),
@@ -2211,10 +2144,10 @@ mod tests {
     #[test]
     fn zero_moves_to_the_start_of_the_line() {
         let mut view = view_of("motions_zero.txt", "hello world\n");
-        send(&mut view, Key::Char('$'));
+        send(&mut view, A::ViewLineEnd);
         assert_ne!(view.textarea.cursor().1, 0);
 
-        send(&mut view, Key::Char('0'));
+        send(&mut view, A::ViewLineStart);
 
         assert_eq!(view.textarea.cursor(), (0, 0));
     }
@@ -2227,7 +2160,7 @@ mod tests {
     fn w_moves_to_the_start_of_the_next_word() {
         let mut view = view_of("motions_w.txt", "hello world\n");
 
-        send(&mut view, Key::Char('w'));
+        send(&mut view, A::ViewWordForward);
 
         // On the first character of `world`, not still inside `hello`.
         assert_eq!(view.textarea.cursor(), (0, 6));
@@ -2364,10 +2297,7 @@ mod tests {
         view.preview_with_caps(&path, 10, MAX_PREVIEW_BYTES);
         assert!(view.truncated);
 
-        view.handle_events(Input {
-            key: Key::Down,
-            ..Default::default()
-        });
+        view.perform(A::ViewDown);
 
         // The upgrade goes through `load`, which is uncapped — so the whole
         // file arrives regardless of the cap the preview was taken with.
@@ -2380,7 +2310,7 @@ mod tests {
     /// On Unix a filename is bytes. Storing `Path::display()` — explicitly
     /// lossy — turned an invalid byte into U+FFFD, and every path that
     /// round-tripped the field back into a `Path` to re-read the file then
-    /// addressed something that does not exist: `handle_events` promoting a
+    /// addressed something that does not exist: `perform` promoting a
     /// truncated preview, `App::promote_file_view`, and `App::open_in_editor`
     /// (#79).
     ///
@@ -2414,10 +2344,7 @@ mod tests {
         let mut view = placeholder_view();
         view.preview(&path);
 
-        view.handle_events(Input {
-            key: Key::Down,
-            ..Default::default()
-        });
+        view.perform(A::ViewDown);
 
         assert_eq!(view.textarea.lines().len(), 3);
     }
@@ -2989,39 +2916,15 @@ mod tests {
         let top = |view: &FileView<'_>| view.textarea.scroll_top().0 as usize;
         assert_eq!(top(&view), 0, "sanity: starts at the top of the file");
 
-        send(&mut view, Key::Char(']'));
+        send(&mut view, A::GlobalPageDown);
         (&mut view).render(area, &mut buf);
         assert_eq!(top(&view), page, "`]` did not page down a full screen");
 
-        send(&mut view, Key::Char('['));
+        send(&mut view, A::GlobalPageUp);
         (&mut view).render(area, &mut buf);
         assert_eq!(top(&view), 0, "`[` did not page back up a full screen");
     }
 
-    /// The keys `[` and `]` took over must not still page, or the file view
-    /// would quietly keep a second copy of a binding that now belongs to
-    /// another pane.
-    #[test]
-    fn space_and_enter_no_longer_page() {
-        let body = numbered_lines(200);
-        let mut view = view_of("no_page_keys.txt", &body);
-        let area = Rect::new(0, 0, 40, 10);
-        let mut buf = Buffer::empty(area);
-        (&mut view).render(area, &mut buf);
-        let start = view.textarea.cursor().0;
-
-        send(&mut view, Key::Enter);
-        send(&mut view, Key::Char(' '));
-        (&mut view).render(area, &mut buf);
-
-        assert_eq!(
-            view.textarea.cursor().0,
-            start,
-            "space or Enter still moved the file view"
-        );
-    }
-
-    /// Without line styles, the old behaviour is unchanged.
     #[test]
     fn without_line_styles_the_cursor_line_is_unchanged() {
         let mut view = view_of("cursor_plain.txt", "alpha\nbeta\n");
@@ -3161,8 +3064,8 @@ mod tests {
 
     /// One keypress, then the frame that follows it, so the viewport has
     /// settled before the next key the way it would between real events.
-    fn press(view: &mut FileView<'_>, key: Key) {
-        send(view, key);
+    fn press(view: &mut FileView<'_>, action: A) {
+        send(view, action);
         render_at(view, MARGIN_PANE);
     }
 
@@ -3173,7 +3076,7 @@ mod tests {
         let lowest = MARGIN_INNER - 1 - SCROLL_MARGIN;
 
         for _ in 0..lowest {
-            press(&mut view, Key::Char('j'));
+            press(&mut view, A::ViewDown);
         }
         assert_eq!(
             view.textarea.scroll_top().0,
@@ -3182,7 +3085,7 @@ mod tests {
         );
         assert_eq!(view.cursor_screen_row(), lowest as u16);
 
-        press(&mut view, Key::Char('j'));
+        press(&mut view, A::ViewDown);
         assert_eq!(
             view.textarea.cursor().0,
             lowest + 1,
@@ -3205,11 +3108,7 @@ mod tests {
         let mut view = view_of("margin_ctrl_e.txt", &numbered_lines(200));
         render_at(&mut view, MARGIN_PANE);
 
-        view.handle_events(Input {
-            key: Key::Char('e'),
-            ctrl: true,
-            ..Default::default()
-        });
+        view.perform(A::ViewScrollDown);
         render_at(&mut view, MARGIN_PANE);
 
         assert_eq!(view.textarea.scroll_top().0, 1, "the scroll was undone");
@@ -3221,7 +3120,7 @@ mod tests {
         let mut view = view_of("margin_page_down.txt", &numbered_lines(200));
         render_at(&mut view, MARGIN_PANE);
 
-        press(&mut view, Key::Char(']'));
+        press(&mut view, A::GlobalPageDown);
 
         assert_eq!(
             view.textarea.scroll_top().0 as usize,
@@ -3235,18 +3134,14 @@ mod tests {
     fn ctrl_y_moves_the_cursor_up_out_of_the_bottom_margin() {
         let mut view = view_of("margin_ctrl_y.txt", &numbered_lines(200));
         render_at(&mut view, MARGIN_PANE);
-        press(&mut view, Key::Char(']'));
+        press(&mut view, A::GlobalPageDown);
         // Down to the last row the cursor may occupy without scrolling.
-        press(&mut view, Key::Char('j'));
+        press(&mut view, A::ViewDown);
         let lowest = MARGIN_INNER - 1 - SCROLL_MARGIN;
         assert_eq!(view.cursor_screen_row() as usize, lowest, "sanity");
         let before = view.textarea.cursor().0;
 
-        view.handle_events(Input {
-            key: Key::Char('y'),
-            ctrl: true,
-            ..Default::default()
-        });
+        view.perform(A::ViewScrollUp);
         render_at(&mut view, MARGIN_PANE);
 
         assert_eq!(
@@ -3266,12 +3161,12 @@ mod tests {
         let mut view = view_of("margin_k.txt", &numbered_lines(200));
         render_at(&mut view, MARGIN_PANE);
         // Two pages down: the top margin is real here, not waived by row 0.
-        press(&mut view, Key::Char(']'));
-        press(&mut view, Key::Char(']'));
+        press(&mut view, A::GlobalPageDown);
+        press(&mut view, A::GlobalPageDown);
         let top = view.textarea.scroll_top().0 as usize;
         assert_eq!(view.textarea.cursor().0, top + SCROLL_MARGIN, "sanity");
 
-        press(&mut view, Key::Char('k'));
+        press(&mut view, A::ViewUp);
 
         assert_eq!(view.textarea.cursor().0, top + SCROLL_MARGIN - 1);
         assert_eq!(
@@ -3314,7 +3209,7 @@ mod tests {
     fn the_first_line_reaches_the_top_row() {
         let mut view = view_of("margin_start.txt", &numbered_lines(200));
         render_at(&mut view, MARGIN_PANE);
-        press(&mut view, Key::Char(']'));
+        press(&mut view, A::GlobalPageDown);
 
         view.set_cursor_row(0);
         render_at(&mut view, MARGIN_PANE);
@@ -3440,7 +3335,7 @@ mod tests {
         );
 
         view.preview(&dir);
-        send(&mut view, Key::Char('#'));
+        send(&mut view, A::ViewToggleLineNumbers);
         view.preview(&file);
 
         let text = rendered(&mut view);
@@ -3906,14 +3801,14 @@ mod tests {
         buffer(&mut view);
         assert_eq!(view.syntax_rows_built, 2, "the cursor row is skipped");
 
-        send(&mut view, Key::Down);
+        send(&mut view, A::ViewDown);
         buffer(&mut view);
         assert_eq!(
             view.syntax_rows_built, 3,
             "row 0 is coloured once it is left"
         );
 
-        send(&mut view, Key::Up);
+        send(&mut view, A::ViewUp);
         buffer(&mut view);
         let buf = buffer(&mut view);
         assert_eq!(view.syntax_rows_built, 3, "and nothing after that");

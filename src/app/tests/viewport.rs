@@ -197,7 +197,7 @@ fn upgrading_a_truncated_preview_resyncs_styles_without_reloading() {
 
     // Tab into the file view and press a key: this is exactly what
     // upgrades the truncated preview to a full load inside
-    // `FileView::handle_events`. A filter is already defined here, so a
+    // `FileView::perform`. A filter is already defined here, so a
     // bare `Tab` would no longer land on the file view once the filter
     // pane joins the cycle — `focus_file_view` tabs however many times
     // that takes.
@@ -378,8 +378,8 @@ fn capital_g_goes_to_the_end_of_the_document_not_the_buffer() {
 
 /// The half of #250 the normalising intercept left open. `Scope::View`
 /// normalises a key before resolving it, but an *unresolved* key used to
-/// fall through to `FileView::handle_events`, which matches the character
-/// with the modifier fields ignored — so `Alt-j` moved the cursor as
+/// fall through to the file view's old key dispatch, which matched the
+/// character with the modifier fields ignored — so `Alt-j` moved the cursor as
 /// though the modifier had never been pressed. The explorer and the
 /// filter pane have always dropped what their own scope does not
 /// resolve; the view does too now.
@@ -398,8 +398,8 @@ fn an_unbound_modified_key_does_not_move_the_view_cursor() {
 }
 
 /// The second-order cost of the same gap, and the one a user feels on a
-/// large file: `FileView::handle_events` promotes a truncated preview on
-/// entry, before it matches anything at all. So an unbound modified key
+/// large file: the view's old key dispatch promoted a truncated preview on
+/// entry, before it matched anything at all, as `FileView::perform` does. So an unbound modified key
 /// did not merely move the cursor — it forced a full load of a file the
 /// user had never asked to load.
 #[test]
@@ -430,11 +430,10 @@ fn an_unbound_modified_key_does_not_promote_a_truncated_preview() {
 
 /// The other half of dropping an unresolved key: it must not cost a key
 /// that works. `j` resolves in `Scope::View`. `]` does not — it is the
-/// one key `FileView::handle_events` acts on that has no `Scope::View`
-/// row at all, so it is the most exposed to this change; it resolves in
-/// `Scope::Global`, which is checked first, and reaches the widget
-/// through `GlobalPageDown`'s rebuilt key rather than through the
-/// dropped fallthrough.
+/// one key the view acts on that has no `Scope::View` row at all, so it
+/// is the most exposed to this change; it resolves in `Scope::Global`,
+/// which is checked first, and reaches the widget as `GlobalPageDown`
+/// rather than through the dropped fallthrough.
 #[test]
 fn the_keys_the_view_acts_on_still_reach_the_widget() {
     let area = Rect {
@@ -463,7 +462,7 @@ fn the_keys_the_view_acts_on_still_reach_the_widget() {
 
     assert!(
         top(&app) > before,
-        "] no longer pages the view down (Scope::Global -> forward_to_view)"
+        "] no longer pages the view down (Scope::Global -> FileView::perform)"
     );
 }
 

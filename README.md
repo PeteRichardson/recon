@@ -477,8 +477,9 @@ text puts the cursor on the character under the pointer; dragging from there
 selects, and double-clicking selects the word, both ready for `y` — see
 [Copying text](#copying-text). A click on the status row opens the
 include prompt, exactly as `f i` does, and committing it returns focus to the
-pane you clicked from. The wheel scrolls the file view while it has focus, as
-before.
+pane you clicked from. The wheel moves the pane under the pointer, whichever
+pane has focus, and leaves focus where it is: a notch down does what `j` does in
+that pane, and a notch up what `k` does.
 
 Drag the divider on the explorer's right to set its width; double-click it to
 return to auto-sizing the explorer to its longest entry.

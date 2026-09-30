@@ -400,3 +400,104 @@ fn a_click_on_a_listing_after_its_window_moved_opens_the_entry_it_shows() {
 
     assert_eq!(shown(&app), expected);
 }
+
+// ---- #350: the wheel ------------------------------------------------
+
+/// Turn the wheel one notch over `pane`, one cell in from its corner.
+fn wheel_over(app: &mut App, pane: Focus, kind: MouseEventKind) {
+    let area = app.pane_area(pane);
+    mouse_at(app, kind, area.x + 1, area.y + 1);
+}
+
+#[test]
+fn the_wheel_over_the_explorer_moves_its_selection_like_j_and_k() {
+    let mut app = app_over_files(
+        "wheel_explorer",
+        &[("a.log", "a\n"), ("b.log", "b\n"), ("c.log", "c\n")],
+    );
+    draw(&mut app);
+    assert_eq!(app.focus, Focus::Explorer);
+    let start = app.explorer.selected().expect("a selection");
+
+    wheel_over(&mut app, Focus::Explorer, MouseEventKind::ScrollDown);
+    assert_eq!(app.explorer.selected(), Some(start + 1), "down is `j`");
+    let previewed = shown(&app);
+    assert_eq!(
+        Some(previewed),
+        app.explorer.selected_name(),
+        "and previews, as `j` does"
+    );
+
+    wheel_over(&mut app, Focus::Explorer, MouseEventKind::ScrollUp);
+    assert_eq!(app.explorer.selected(), Some(start), "up is `k`");
+}
+
+#[test]
+fn the_wheel_over_the_focused_view_moves_its_cursor_like_j_and_k() {
+    let mut app = app_over_files("wheel_view", &[("a.log", &numbered_lines(50))]);
+    open_file(&mut app, 0);
+    focus_file_view(&mut app);
+    draw(&mut app);
+    assert_eq!(view_cursor_row(&app), 0);
+
+    for _ in 0..3 {
+        wheel_over(&mut app, Focus::View, MouseEventKind::ScrollDown);
+    }
+    assert_eq!(view_cursor_row(&app), 3, "down is `j`");
+
+    wheel_over(&mut app, Focus::View, MouseEventKind::ScrollUp);
+    assert_eq!(view_cursor_row(&app), 2, "up is `k`");
+    assert_eq!(app.focus, Focus::View);
+}
+
+#[test]
+fn the_wheel_over_the_filter_pane_moves_its_selection_like_j_and_k() {
+    let mut app = app_over_files("wheel_filters", &[("a.log", "x\ny\n")]);
+    open_file(&mut app, 0);
+    app.add_filter("x").expect("valid pattern");
+    app.add_filter("y").expect("valid pattern");
+    focus_filter_pane(&mut app);
+    draw(&mut app);
+    let start = app.filters_pane.selected().expect("a selection");
+
+    wheel_over(&mut app, Focus::Filters, MouseEventKind::ScrollDown);
+    assert_eq!(app.filters_pane.selected(), Some(start + 1), "down is `j`");
+
+    wheel_over(&mut app, Focus::Filters, MouseEventKind::ScrollUp);
+    assert_eq!(app.filters_pane.selected(), Some(start), "up is `k`");
+}
+
+/// The wheel goes to the pane under the pointer, as in most terminal
+/// programs, and leaves focus where it was.
+#[test]
+fn the_wheel_moves_the_pane_under_the_pointer_and_leaves_focus_alone() {
+    let mut app = app_over_files("wheel_unfocused", &[("a.log", &numbered_lines(50))]);
+    open_file(&mut app, 0);
+    draw(&mut app);
+    assert_eq!(app.focus, Focus::Explorer);
+    let selected = app.explorer.selected();
+
+    wheel_over(&mut app, Focus::View, MouseEventKind::ScrollDown);
+    wheel_over(&mut app, Focus::View, MouseEventKind::ScrollDown);
+
+    assert_eq!(view_cursor_row(&app), 2, "the view under the pointer moved");
+    assert_eq!(
+        app.explorer.selected(),
+        selected,
+        "the focused pane did not"
+    );
+    assert_eq!(app.focus, Focus::Explorer, "and focus stayed put");
+}
+
+#[test]
+fn the_wheel_over_the_status_row_does_nothing() {
+    let mut app = app_over_files("wheel_status", &[("a.log", "a\n"), ("b.log", "b\n")]);
+    draw(&mut app);
+    let selected = app.explorer.selected();
+    let status = app.status_area;
+
+    mouse_at(&mut app, MouseEventKind::ScrollDown, status.x + 1, status.y);
+
+    assert_eq!(app.explorer.selected(), selected);
+    assert!(app.prompt.is_none(), "not a click on the status row");
+}

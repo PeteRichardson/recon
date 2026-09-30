@@ -18,7 +18,7 @@ use crate::widgets::{Focus, filterlist};
 impl App<'_> {
     /// Handle a click, reporting whether it was consumed.
     ///
-    /// The left button only: the wheel is the focused pane's, and there is
+    /// The left button only: the wheel is `handle_wheel`'s, and there is
     /// nothing here for the other buttons to mean. A press is a click; a
     /// drag or a release is a selection's (#67) when the press landed on the
     /// view's text, and the divider's otherwise (`handle_divider` runs
@@ -61,6 +61,44 @@ impl App<'_> {
             Focus::Explorer => self.click_explorer(line),
             Focus::Filters => self.click_filter(line),
             Focus::View => self.click_view(line, mouse.column - inner.x),
+        }
+        true
+    }
+
+    /// Turn the wheel over a pane, reporting whether the event was consumed.
+    ///
+    /// The wheel moves the pane under the pointer, not the focused one, as
+    /// most terminal programs do (#350), and leaves focus where it was. A
+    /// notch down is that pane's down-movement key and a notch up its
+    /// up-movement key — `j` and `k` in every pane — so the wheel is the
+    /// pointing-at version of a key, like a click, and never a new verb.
+    /// Anywhere else — the status row, a divider's gap — it does nothing.
+    pub(crate) fn handle_wheel(&mut self, mouse: MouseEvent) -> bool {
+        use crate::keymap::ActionId as A;
+        let down = match mouse.kind {
+            MouseEventKind::ScrollDown => true,
+            MouseEventKind::ScrollUp => false,
+            _ => return false,
+        };
+        let Some(pane) = self.pane_at(Position::new(mouse.column, mouse.row)) else {
+            return true;
+        };
+        match pane {
+            Focus::Explorer => {
+                let action = if down { A::ExplorerDown } else { A::ExplorerUp };
+                if let Some(action) = self.explorer.perform(action) {
+                    self.perform_widget_action(action);
+                }
+                self.ensure_window();
+            }
+            Focus::View => self.perform_on_view(if down { A::ViewDown } else { A::ViewUp }),
+            Focus::Filters => {
+                let action = if down { A::FiltersDown } else { A::FiltersUp };
+                let rows = filterlist::rows(&self.filters);
+                if let Some(command) = self.filters_pane.perform(action, &rows) {
+                    self.apply_filter_command(command);
+                }
+            }
         }
         true
     }

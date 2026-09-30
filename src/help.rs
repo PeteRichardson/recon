@@ -35,15 +35,13 @@
 //! Losing that is accepted, not overlooked, for three reasons. Every key a
 //! user's raw keypress can resolve to now starts at `keymap::DEFAULT`, so an
 //! undocumented binding — a keypress the table does not name, reaching a
-//! pane some other way — cannot occur by construction. That is not the same
-//! as "no `match` arm binds a key any more": `FileView::handle_events` still
-//! has roughly sixteen, but each is a forwarding target `App::perform`
-//! reaches with a canonical key it reconstructs from the table, not a second
-//! place a raw keypress can land. The one exception used to be an unbound
-//! *modified* key falling through to one of those arms directly; that is
-//! closed — `Focus::View` drops a key `Scope::View` does not resolve rather
-//! than forwarding it (see the comment on that intercept in
-//! `App::dispatch_event`). The other remaining non-table
+//! pane some other way — cannot occur by construction. The file view, the
+//! last pane that matched on keys itself, now takes an action from the
+//! table through `FileView::perform` like every other pane (#373); before
+//! that, `App::perform` rebuilt a canonical key for each of its actions and
+//! the widget decoded it again. `Focus::View` drops a key `Scope::View` does
+//! not resolve rather than forwarding it (see the comment on that intercept
+//! in `App::dispatch_event`). The other remaining non-table
 //! arms — the filter pane's `h`/`l` hints, the prompt's three non-binding
 //! arms, the help overlay's any-key dismissal, the bounce guard — are
 //! deliberate and documented the same way. And #162 already records this

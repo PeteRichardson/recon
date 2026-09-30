@@ -4,7 +4,7 @@ use super::prompt::SearchPrompt;
 use super::search::Search;
 use super::{App, AppState, EditorScope};
 use crate::widgets::{self, Action, Focus};
-use crossterm::event::{self, KeyCode, KeyModifiers};
+use crossterm::event::KeyCode;
 
 impl App<'_> {
     /// Run a named action.
@@ -248,13 +248,8 @@ impl App<'_> {
             // `[`/`]` are bound only in `Scope::Global` — there is no
             // `Scope::View` row for them — and Global resolves before any
             // focus check, so this arm fires from every pane, the file view
-            // included (#120 §3). `ActionId` carries no key of its own to
-            // forward, so this rebuilds the canonical key and hands it
-            // straight to `FileView::handle_events`, bypassing `Scope::View`
-            // entirely, where the widget's own raw `[`/`]` arms do the
-            // actual scrolling.
-            A::GlobalPageDown => self.forward_to_view(event::Event::Key(KeyCode::Char(']').into())),
-            A::GlobalPageUp => self.forward_to_view(event::Event::Key(KeyCode::Char('[').into())),
+            // included (#120 §3). `FileView::perform` pages on both.
+            A::GlobalPageDown | A::GlobalPageUp => self.perform_on_view(action),
             // The four long-range motions: only `App` can see the whole
             // document, so `long_range_target` answers "which visible row"
             // and this places the cursor there, promoting a truncated
@@ -270,49 +265,23 @@ impl App<'_> {
             // either widget.
             A::HitNext => self.step_interesting(false),
             A::HitPrev => self.step_interesting(true),
-            // Everything else in the view scope has a live `FileView` arm
-            // already, so this rebuilds the canonical key for that binding
-            // and forwards it — same shape as `GlobalPageDown`/`GlobalPageUp`
-            // above, and for the same reason: an `ActionId` carries no key of
-            // its own. Forwarding the canonical key rather than `pressed`
-            // matters once plan 2b lets a user rebind these — a rebound key
-            // would otherwise reach `FileView` with no arm that matches it.
-            A::ViewLeft => self.forward_to_view(event::Event::Key(KeyCode::Char('h').into())),
-            A::ViewRight => self.forward_to_view(event::Event::Key(KeyCode::Char('l').into())),
-            A::ViewUp => self.forward_to_view(event::Event::Key(KeyCode::Char('k').into())),
-            A::ViewDown => self.forward_to_view(event::Event::Key(KeyCode::Char('j').into())),
-            A::ViewWordForward => {
-                self.forward_to_view(event::Event::Key(KeyCode::Char('w').into()));
-            }
-            A::ViewLineStart => self.forward_to_view(event::Event::Key(KeyCode::Char('0').into())),
-            A::ViewLineEnd => self.forward_to_view(event::Event::Key(KeyCode::Char('$').into())),
-            A::ViewToggleLineNumbers => {
-                self.forward_to_view(event::Event::Key(KeyCode::Char('#').into()));
-            }
-            A::ViewScrollDown => self.forward_to_view(event::Event::Key(event::KeyEvent::new(
-                KeyCode::Char('e'),
-                KeyModifiers::CONTROL,
-            ))),
-            A::ViewScrollUp => self.forward_to_view(event::Event::Key(event::KeyEvent::new(
-                KeyCode::Char('y'),
-                KeyModifiers::CONTROL,
-            ))),
-            A::ViewHalfPageDown => self.forward_to_view(event::Event::Key(event::KeyEvent::new(
-                KeyCode::Char('d'),
-                KeyModifiers::CONTROL,
-            ))),
-            A::ViewHalfPageUp => self.forward_to_view(event::Event::Key(event::KeyEvent::new(
-                KeyCode::Char('u'),
-                KeyModifiers::CONTROL,
-            ))),
-            A::ViewPageDown => self.forward_to_view(event::Event::Key(event::KeyEvent::new(
-                KeyCode::Char('f'),
-                KeyModifiers::CONTROL,
-            ))),
-            A::ViewPageUp => self.forward_to_view(event::Event::Key(event::KeyEvent::new(
-                KeyCode::Char('b'),
-                KeyModifiers::CONTROL,
-            ))),
+            // Everything else in the view scope is the widget's own, carried
+            // out by `FileView::perform` — the same shape as
+            // `Explorer::perform` (#373).
+            A::ViewLeft
+            | A::ViewRight
+            | A::ViewUp
+            | A::ViewDown
+            | A::ViewWordForward
+            | A::ViewLineStart
+            | A::ViewLineEnd
+            | A::ViewToggleLineNumbers
+            | A::ViewScrollDown
+            | A::ViewScrollUp
+            | A::ViewHalfPageDown
+            | A::ViewHalfPageUp
+            | A::ViewPageDown
+            | A::ViewPageUp => self.perform_on_view(action),
             // Not yet wired, listed rather than caught by a wildcard (#199):
             // a wildcard here would strip the exhaustiveness check this
             // match exists to keep, and plan 2b's rebinding can reach a

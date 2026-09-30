@@ -3,7 +3,6 @@
 use super::App;
 use super::search::{WRAPPED_TO_BOTTOM, WRAPPED_TO_TOP};
 use super::viewport::Step;
-use crossterm::event;
 
 /// A cross-file step that just happened, for the notice over the file view
 /// and the accent on its title. Lives exactly as long as a `StatusMessage`:
@@ -29,7 +28,7 @@ impl Crossing {
 
 impl App<'_> {
     /// Force the file view's truncated preview to a full load, the same
-    /// thing its own `handle_events` does on first interaction. Needed by
+    /// thing its own `perform` does on first interaction. Needed by
     /// every path that moves the cursor or evaluates a pattern directly
     /// rather than going through that dispatch — see `promote_truncated_preview`,
     /// which wraps this for those callers.
@@ -80,7 +79,7 @@ impl App<'_> {
     /// Promote a truncated preview to a full load and bring the document up
     /// to date with it. No-op when the preview is not truncated.
     ///
-    /// `n`/`N` and a committed `/` both bypass `FileView::handle_events`,
+    /// `n`/`N` and a committed `/` both bypass `FileView::perform`,
     /// which is where a truncated preview normally promotes itself on first
     /// interaction — one moves the cursor directly, the other evaluates a
     /// pattern via `apply_search`, and neither goes through that dispatch.
@@ -99,13 +98,14 @@ impl App<'_> {
         }
     }
 
-    /// Hand one event to the file view, whichever pane has focus, with the
-    /// same after-care the focused dispatch gives it: a truncated preview
-    /// that promoted itself on this keypress is resynced without re-reading
-    /// the file, and the window is checked after a page at its edge.
-    pub(super) fn forward_to_view(&mut self, event: event::Event) {
+    /// Carry out one of the view's own actions, whichever pane has focus,
+    /// with the after-care the focused dispatch gives the other panes: a
+    /// truncated preview that promoted itself on this action is resynced
+    /// without re-reading the file, and the window is checked after a page
+    /// at its edge.
+    pub(super) fn perform_on_view(&mut self, action: crate::keymap::ActionId) {
         let was_truncated = self.file_view_truncated();
-        self.view.handle_events(event.into());
+        self.view.perform(action);
         if was_truncated && !self.file_view_truncated() {
             self.sync_document();
             self.refresh_view();
@@ -131,7 +131,7 @@ impl App<'_> {
         // and with every filter disabled by the peek the step would find no
         // interesting line and cross files at once. Restore first (#120 §4).
         self.restore_peek_before_moving();
-        // `n`/`N` bypass the widget's own `handle_events`, which is where a
+        // `n`/`N` bypass the widget's own `perform`, which is where a
         // truncated preview normally promotes itself on first interaction —
         // see `promote_truncated_preview`, which `apply_search` also calls
         // for the same reason.
