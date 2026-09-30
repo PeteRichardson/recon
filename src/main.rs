@@ -68,7 +68,12 @@ fn main() -> Result<ExitCode> {
     // `defaults` never arrives here — it is answered above `build_keymap`, so
     // what is left is the map in force, which is what `config.bindings` now
     // holds.
+    //
+    // The keymap warnings go to stderr first (#259), the same warnings a
+    // normal start shows in its panel — which names this command as where
+    // to read them all. stdout keeps the stanza alone, so it still pastes.
     if config.print_keymap.is_some() {
+        log_keymap_warnings(&config);
         let defaults = recon::keymap::Keymap::default();
         print!(
             "{}",
@@ -100,11 +105,7 @@ fn main() -> Result<ExitCode> {
         // Inside this branch and not above it, because in TUI mode they belong
         // to the panel. A copy on stderr would be drawn over by the alternate
         // screen moments later anyway.
-        if config.warnings() {
-            for warning in &config.keymap_warnings {
-                log::warn!("{warning}");
-            }
-        }
+        log_keymap_warnings(&config);
         recon::headless::run(&config)?
     } else {
         let terminal = init_terminal()?;
@@ -124,6 +125,17 @@ fn main() -> Result<ExitCode> {
         &mut io::stdout(),
         &mut io::stderr(),
     ))
+}
+
+/// The keymap warnings on stderr, for a path with no panel to show them:
+/// headless, and `--print-keymap` (#259). The switch is the panel's, since
+/// these are the same warnings by another route.
+fn log_keymap_warnings(config: &Config) {
+    if config.warnings() {
+        for warning in &config.keymap_warnings {
+            log::warn!("{warning}");
+        }
+    }
 }
 
 //===================================================================================
