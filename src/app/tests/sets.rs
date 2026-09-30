@@ -313,27 +313,87 @@ fn big_s_refuses_duplicate_scratch_patterns_with_a_pane_level_message() {
     assert!(!path.exists(), "nothing written");
 }
 
-/// The file is written beside itself and renamed over, so a crash
-/// mid-write leaves the old file, not a truncated one (#153). After a
-/// save the temporary is gone; a stale one from an earlier crash is
-/// simply overwritten.
-#[test]
-fn big_s_writes_through_a_temporary_and_leaves_none_behind() {
-    let path = save_fixture("save_atomic");
-    fs::create_dir_all(path.parent().unwrap()).unwrap();
-    let tmp = path.with_file_name("filters.toml.tmp");
-    fs::write(&tmp, "garbage from a crash").unwrap();
-    let mut app = app_over_file("save_atomic_file", "alpha\n");
-    app.save_path = Some(path.clone());
+/// Save the scratch filter `alpha` as set `a` through `S`, into `path`.
+fn save_alpha_as_a(fixture: &str, path: &std::path::Path) {
+    let mut app = app_over_file(fixture, "alpha\n");
+    app.save_path = Some(path.to_path_buf());
     app.add_filter("alpha").unwrap();
     key(&mut app, KeyCode::Char('f'));
     key(&mut app, KeyCode::Char('S'));
     typed(&mut app, "a");
     key(&mut app, KeyCode::Enter);
     assert!(app.prompt.is_none(), "committed");
+}
+
+/// The file is written beside itself and renamed over, so a crash
+/// mid-write leaves the old file, not a truncated one (#153). After a
+/// save the temporary is gone. A stale temporary from an earlier crash is
+/// not the one this save uses (#354): each save names its own.
+#[test]
+fn big_s_writes_through_a_temporary_and_leaves_none_behind() {
+    let path = save_fixture("save_atomic");
+    let dir = path.parent().unwrap();
+    fs::create_dir_all(dir).unwrap();
+    let stale = path.with_file_name("filters.toml.tmp");
+    fs::write(&stale, "garbage from a crash").unwrap();
+    save_alpha_as_a("save_atomic_file", &path);
     let text = fs::read_to_string(&path).unwrap();
     assert!(text.contains("[sets.a]"), "{text}");
-    assert!(!tmp.exists(), "the temporary was renamed over the file");
+    let mut names: Vec<String> = fs::read_dir(dir)
+        .unwrap()
+        .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    assert_eq!(
+        names,
+        ["filters.toml", "filters.toml.tmp"],
+        "a temporary was left"
+    );
+}
+
+/// A `filters.toml` that is a symlink — into a dotfiles repository,
+/// say — stays one (#354). The save goes to the file it points at, which
+/// a rename over the link itself would have left behind unchanged.
+#[cfg(unix)]
+#[test]
+fn big_s_writes_through_a_symlink_and_keeps_it() {
+    let path = save_fixture("save_symlink");
+    let dir = path.parent().unwrap();
+    let dotfiles = dir.join("dotfiles");
+    fs::create_dir_all(&dotfiles).unwrap();
+    // Absolute: a relative link target is read from the link's directory.
+    let target = fs::canonicalize(&dotfiles).unwrap().join("filters.toml");
+    fs::write(&target, "").unwrap();
+    std::os::unix::fs::symlink(&target, &path).unwrap();
+    save_alpha_as_a("save_symlink_file", &path);
+    assert!(
+        fs::symlink_metadata(&path)
+            .unwrap()
+            .file_type()
+            .is_symlink(),
+        "the link was replaced by a file"
+    );
+    let text = fs::read_to_string(&target).unwrap();
+    assert!(
+        text.contains("[sets.a]"),
+        "the target did not get the set: {text}"
+    );
+}
+
+/// A save keeps the file's permissions (#354). A new file from the
+/// temporary took the umask's mode, so a private `0600` file became
+/// readable by everyone.
+#[cfg(unix)]
+#[test]
+fn big_s_keeps_the_files_permissions() {
+    use std::os::unix::fs::PermissionsExt;
+    let path = save_fixture("save_mode");
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::write(&path, "").unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+    save_alpha_as_a("save_mode_file", &path);
+    let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+    assert_eq!(mode, 0o600, "the mode is now {mode:o}");
 }
 
 // ---- solo and reset (#132) -----------------------------------------------
