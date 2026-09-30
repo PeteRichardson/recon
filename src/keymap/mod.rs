@@ -825,6 +825,7 @@ impl Keymap {
                 action_named(name).ok_or_else(|| crate::config::ConfigError::UnknownAction {
                     name: name.clone(),
                     known: known_action_names(),
+                    path: None,
                 })?;
             // Checked before the rebind rather than left to `resolve`: a
             // spelling nothing can parse would otherwise bind the action to
@@ -836,6 +837,7 @@ impl Keymap {
                 return Err(crate::config::ConfigError::BadKeyLabel {
                     action: name.clone(),
                     label: bad.clone(),
+                    path: None,
                 });
             }
             // `reserved_hits` above is what keeps this to one warning per

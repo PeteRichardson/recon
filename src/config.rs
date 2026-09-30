@@ -804,17 +804,100 @@ pub enum ConfigError {
     /// press, and quietly showing one would ignore what was asked.
     AllPanesHidden,
     /// `[keymap]` naming an action that does not exist. `known` is every name
-    /// that does, for the message — a typo is the common case and the list is
-    /// the fix.
-    UnknownAction { name: String, known: Vec<String> },
+    /// that does: the message gives the nearest of them (#385), since a typo
+    /// is the common case and the whole list is about 93 names.
+    ///
+    /// `path`, here and in the two variants below, is the config file, for
+    /// the message (#385). `None` from `Keymap::new`, which cannot know it;
+    /// `Config::build_keymap` fills it in.
+    UnknownAction {
+        name: String,
+        known: Vec<String>,
+        path: Option<PathBuf>,
+    },
     /// `[keymap]` giving a key spelling that cannot be parsed. Carries the
     /// action so the message names the line, not just the spelling.
-    BadKeyLabel { action: String, label: String },
+    BadKeyLabel {
+        action: String,
+        label: String,
+        path: Option<PathBuf>,
+    },
     /// `[keymap]` asking for something recon cannot do: two lines claiming one
     /// key, or a pane line the global scope would always answer first. Carries
     /// every fault rather than the first, so one run is enough to correct the
     /// file.
-    Inconsistent { problems: Vec<String> },
+    Inconsistent {
+        problems: Vec<String>,
+        path: Option<PathBuf>,
+    },
+}
+
+impl ConfigError {
+    /// The same error, naming `path` as the file it came from, when it is
+    /// one of the `[keymap]` errors that carry one.
+    #[must_use]
+    fn in_file(mut self, file: Option<PathBuf>) -> Self {
+        if let Self::UnknownAction { path, .. }
+        | Self::BadKeyLabel { path, .. }
+        | Self::Inconsistent { path, .. } = &mut self
+        {
+            *path = file;
+        }
+        self
+    }
+}
+
+/// How a `[keymap]` error names the config file: its path, or the file name
+/// alone when there is no config home to find it in.
+fn config_file_name(path: Option<&PathBuf>) -> String {
+    path.map_or_else(
+        || "config.toml".to_string(),
+        |path| path.display().to_string(),
+    )
+}
+
+/// Up to three of `known` nearest to `name`, nearest first (#385): the ones
+/// within three edits, or when there are none, the same action in another
+/// scope — `view.up` for `global.up`. Empty when nothing is near; a far
+/// guess is worse than none.
+fn nearest<'a>(name: &str, known: &'a [String]) -> Vec<&'a str> {
+    let action = |full: &str| full.rsplit('.').next().unwrap_or(full).to_string();
+    let wanted = action(name);
+    let scored = known
+        .iter()
+        .map(|candidate| (edit_distance(name, candidate), candidate.as_str()));
+    let mut near: Vec<(usize, &str)> = scored
+        .clone()
+        .filter(|&(distance, _)| distance <= 3)
+        .collect();
+    if near.is_empty() {
+        near = scored
+            .filter(|&(_, candidate)| action(candidate) == wanted)
+            .collect();
+    }
+    near.sort_unstable();
+    near.into_iter()
+        .take(3)
+        .map(|(_, candidate)| candidate)
+        .collect()
+}
+
+/// Levenshtein distance over characters, with one row of memory.
+fn edit_distance(a: &str, b: &str) -> usize {
+    let b: Vec<char> = b.chars().collect();
+    let mut row: Vec<usize> = (0..=b.len()).collect();
+    for (i, ca) in a.chars().enumerate() {
+        let mut diagonal = row[0];
+        row[0] = i + 1;
+        for (j, cb) in b.iter().enumerate() {
+            let above = row[j + 1];
+            row[j + 1] = (above + 1)
+                .min(row[j] + 1)
+                .min(diagonal + usize::from(ca != *cb));
+            diagonal = above;
+        }
+    }
+    row[b.len()]
 }
 
 impl fmt::Display for ConfigError {
@@ -861,24 +944,38 @@ impl fmt::Display for ConfigError {
             Self::SetAndUnlist(name) => {
                 write!(f, "--set and --unlist both name the set {name:?}")
             }
-            Self::UnknownAction { name, known } => write!(
+            Self::UnknownAction { name, known, path } => {
+                write!(
+                    f,
+                    "unknown action {name:?} in [keymap] of {}; ",
+                    config_file_name(path.as_ref())
+                )?;
+                let near = nearest(name, known);
+                if !near.is_empty() {
+                    let quoted: Vec<String> = near.iter().map(|name| format!("{name:?}")).collect();
+                    write!(f, "did you mean {}? ", quoted.join(" or "))?;
+                }
+                write!(f, "recon --print-keymap lists every action")
+            }
+            Self::BadKeyLabel {
+                action,
+                label,
+                path,
+            } => write!(
                 f,
-                "unknown action {name:?} in [keymap]; recon defines: {}",
-                known_list(known)
-            ),
-            Self::BadKeyLabel { action, label } => write!(
-                f,
-                "cannot read the key {label:?} bound to {action:?} in [keymap]"
+                "cannot read the key {label:?} bound to {action:?} in [keymap] of {}",
+                config_file_name(path.as_ref())
             ),
             // Each fault on its own line, for the reason `Parse` renders
             // multi-line: a list jammed after a colon is unreadable, and this
             // is deliberately a list.
-            Self::Inconsistent { problems } => {
-                writeln!(f, "[keymap] cannot be used as written:")?;
+            Self::Inconsistent { problems, path } => {
+                let file = config_file_name(path.as_ref());
+                writeln!(f, "[keymap] in {file} cannot be used as written:")?;
                 for problem in problems {
                     writeln!(f, "  {problem}")?;
                 }
-                write!(f, "Correct config.toml and start recon again.")
+                write!(f, "Correct {file} and start recon again.")
             }
         }
     }
@@ -1097,7 +1194,8 @@ impl Config {
     /// [`ConfigError::Inconsistent`].
     pub fn build_keymap(&self) -> Result<(crate::keymap::Keymap, Vec<String>), ConfigError> {
         let overlay = self.keymap.clone().unwrap_or_default();
-        let (mut keymap, reserved) = crate::keymap::Keymap::new(&overlay)?;
+        let (mut keymap, reserved) =
+            crate::keymap::Keymap::new(&overlay).map_err(|err| err.in_file(config_path()))?;
 
         // Logged here rather than inside `Keymap::new`, which cannot read a
         // `Config` and so cannot know whether the user asked for silence.
@@ -1125,6 +1223,7 @@ impl Config {
         if !report.errors().is_empty() {
             return Err(ConfigError::Inconsistent {
                 problems: report.errors().iter().map(ToString::to_string).collect(),
+                path: config_path(),
             });
         }
         keymap.evict(report.evict());
@@ -2715,6 +2814,78 @@ mod tests {
             .build_keymap()
             .expect_err("a typo must refuse to start");
         assert!(err.to_string().contains("global.qiut"), "{err}");
+    }
+
+    /// The config file as a keymap error names it (#385).
+    fn config_file() -> String {
+        config_path().map_or_else(
+            || "config.toml".to_string(),
+            |path| path.display().to_string(),
+        )
+    }
+
+    fn keymap_error(bindings: &[(&str, &str)]) -> String {
+        let config = Config {
+            keymap: Some(KeymapConfig {
+                bindings: bindings
+                    .iter()
+                    .map(|(action, key)| ((*action).to_string(), vec![(*key).to_string()]))
+                    .collect(),
+            }),
+            ..Config::default()
+        };
+        config.build_keymap().expect_err("must refuse").to_string()
+    }
+
+    /// A typo gets the nearest names, not every name recon has (#385).
+    #[test]
+    fn an_unknown_action_suggests_the_nearest_names() {
+        let error = keymap_error(&[("global.qiut", "q")]);
+        assert!(error.contains("did you mean \"global.quit\""), "{error}");
+        assert!(error.contains("--print-keymap"), "{error}");
+        assert!(!error.contains("explorer.up"), "the whole list: {error}");
+    }
+
+    #[test]
+    fn an_unknown_action_with_nothing_near_points_at_the_list() {
+        let error = keymap_error(&[("zzzzzzzzzzzz", "q")]);
+        assert!(!error.contains("did you mean"), "{error}");
+        assert!(error.contains("--print-keymap"), "{error}");
+    }
+
+    /// Every `[keymap]` error names the file to correct (#385), as a
+    /// read or parse error already did.
+    #[test]
+    fn every_keymap_error_names_the_config_file() {
+        let file = config_file();
+        for error in [
+            keymap_error(&[("global.qiut", "q")]),
+            keymap_error(&[("global.quit", "not a key!")]),
+            keymap_error(&[("global.quit", "x"), ("global.reload", "x")]),
+        ] {
+            assert!(error.contains(&file), "{file} is not in: {error}");
+        }
+    }
+
+    #[test]
+    fn nearest_names_rank_by_distance_and_stop_at_three() {
+        let known: Vec<String> = [
+            "view.up",
+            "view.down",
+            "explorer.up",
+            "filters.up",
+            "pane.up",
+        ]
+        .iter()
+        .map(|name| (*name).to_string())
+        .collect();
+        assert_eq!(nearest("veiw.up", &known), vec!["view.up"]);
+        assert_eq!(
+            nearest("global.up", &known).len(),
+            3,
+            "same action, other scopes"
+        );
+        assert!(nearest("quit", &known).is_empty());
     }
 
     #[test]
