@@ -91,7 +91,17 @@ pub struct Config {
     // of `editor::Templates::resolve`'s ladder, below `$VISUAL` and `$EDITOR`. A
     // clap default would fill this in before the file layer ever ran and win every
     // argument it was never meant to enter.
-    #[arg(long, env = "RECON_EDITOR", value_name = "TEMPLATE")]
+    //
+    // `hide_env_values` here and on every `env =` below (#367): `--help`
+    // printed the exported value (`[env: RECON_EDITOR=zed …]`), which put a
+    // developer's own shell into the README check, and a user's into any
+    // help text they pasted.
+    #[arg(
+        long,
+        env = "RECON_EDITOR",
+        hide_env_values = true,
+        value_name = "TEMPLATE"
+    )]
     pub editor: Option<String>,
 
     /// Command template `O` runs. Defaults to `--editor` with the `{project}`
@@ -99,6 +109,7 @@ pub struct Config {
     #[arg(
         long = "file-editor",
         env = "RECON_FILE_EDITOR",
+        hide_env_values = true,
         value_name = "TEMPLATE"
     )]
     pub file_editor: Option<String>,
@@ -110,7 +121,12 @@ pub struct Config {
     // `Option` for the same reason `editor` is: the platform default lives at
     // the bottom of the ladder, in `clipboard::default_template`, and a clap
     // default would beat the file layer.
-    #[arg(long, env = "RECON_CLIPBOARD", value_name = "COMMAND")]
+    #[arg(
+        long,
+        env = "RECON_CLIPBOARD",
+        hide_env_values = true,
+        value_name = "COMMAND"
+    )]
     pub clipboard: Option<String>,
 
     /// Print a ready-to-paste `[editor]` stanza and exit. Takes a flavour —
@@ -188,7 +204,13 @@ pub struct Config {
     // before the TUI starts. A `[filters] palette` beats the background's
     // palette; the dim grey still follows the background. `Option` for the
     // usual reason: the default lives in `background()`, below the file.
-    #[arg(long, env = "RECON_BACKGROUND", value_name = "BACKGROUND", value_enum)]
+    #[arg(
+        long,
+        env = "RECON_BACKGROUND",
+        hide_env_values = true,
+        value_name = "BACKGROUND",
+        value_enum
+    )]
     pub background: Option<crate::filter::Background>,
 
     /// More directories to read filter sets from, colon-separated, e.g.
@@ -203,7 +225,12 @@ pub struct Config {
     // live, and a key there naming where *more* of them live is a second
     // indirection nobody has asked for. The flag and the variable are what
     // a project's `.envrc` or a team's shell profile would set.
-    #[arg(long, env = "RECON_FILTER_PATH", value_name = "DIRS")]
+    #[arg(
+        long,
+        env = "RECON_FILTER_PATH",
+        hide_env_values = true,
+        value_name = "DIRS"
+    )]
     pub filter_path: Option<String>,
 
     /// Sets read from each `filters.toml`, in pane order (#128, #46). Filled
@@ -263,6 +290,7 @@ pub struct Config {
     #[arg(
         long,
         env = "RECON_THEME",
+        hide_env_values = true,
         value_name = "THEME",
         long_help = theme_long_help(),
     )]
@@ -1547,6 +1575,24 @@ mod tests {
         names.push(name.to_string());
     }
 
+    /// Parse `args` as the command line, with every `env =` switched off.
+    ///
+    /// Not `Config::try_parse_from`, which reads the real process environment
+    /// through clap's `env =` (#367). The README tells a user to export
+    /// `RECON_EDITOR` and the rest, and a developer who did saw correct code
+    /// fail tests that assume nothing is set.
+    fn parse_clean<I, T>(args: I) -> Result<Config, clap::Error>
+    where
+        I: IntoIterator<Item = T>,
+        T: Into<std::ffi::OsString> + Clone,
+    {
+        use clap::{CommandFactory, FromArgMatches};
+        let matches = Config::command()
+            .mut_args(|arg| arg.env(None))
+            .try_get_matches_from(args)?;
+        Config::from_arg_matches(&matches)
+    }
+
     /// Write a config fixture under `target/` so tests never depend on the
     /// developer's real `~/.config/recon/config.toml`.
     fn fixture(name: &str, contents: &str) -> PathBuf {
@@ -1695,7 +1741,7 @@ mod tests {
     /// bare `recon` is `recon .`.
     #[test]
     fn no_argument_defaults_to_the_current_directory() {
-        let config = Config::try_parse_from(["recon"]).expect("parses with no argument");
+        let config = parse_clean(["recon"]).expect("parses with no argument");
 
         assert_eq!(config.path, ".");
     }
@@ -1714,14 +1760,14 @@ mod tests {
             "off"
         };
         let version = env!("CARGO_PKG_VERSION");
-        let long = Config::try_parse_from(["recon", "--version"])
+        let long = parse_clean(["recon", "--version"])
             .expect_err("--version exits")
             .to_string();
         assert_eq!(
             long,
             format!("recon {version}\nfoundation-models: {expected}\n")
         );
-        let short = Config::try_parse_from(["recon", "-V"])
+        let short = parse_clean(["recon", "-V"])
             .expect_err("-V exits")
             .to_string();
         assert_eq!(short, format!("recon {version}\n"));
@@ -1729,7 +1775,7 @@ mod tests {
 
     #[test]
     fn an_explicit_argument_still_wins() {
-        let config = Config::try_parse_from(["recon", "some/path.log"]).expect("parses");
+        let config = parse_clean(["recon", "some/path.log"]).expect("parses");
 
         assert_eq!(config.path, "some/path.log");
     }
@@ -1909,7 +1955,7 @@ mod tests {
     /// the same thing, and this is what stops them drifting.
     #[test]
     fn default_matches_the_parsed_defaults() {
-        let parsed = Config::try_parse_from(["recon"]).expect("parses with no argument");
+        let parsed = parse_clean(["recon"]).expect("parses with no argument");
         let default = Config::default();
         assert_eq!(parsed.path, default.path);
         assert_eq!(parsed.editor, default.editor);
@@ -1929,28 +1975,28 @@ mod tests {
     #[test]
     fn emit_parses_its_three_values_and_is_unset_by_default() {
         use crate::emit::Emit;
-        assert_eq!(Config::try_parse_from(["recon"]).unwrap().emit, None);
+        assert_eq!(parse_clean(["recon"]).unwrap().emit, None);
         for (flag, kind) in [
             ("lines", Emit::Lines),
             ("files", Emit::Files),
             ("cwd", Emit::Cwd),
         ] {
-            let config = Config::try_parse_from(["recon", "--emit", flag]).unwrap();
+            let config = parse_clean(["recon", "--emit", flag]).unwrap();
             assert_eq!(config.emit, Some(kind), "{flag}");
         }
-        assert!(Config::try_parse_from(["recon", "--emit", "filters"]).is_err());
+        assert!(parse_clean(["recon", "--emit", "filters"]).is_err());
     }
 
     #[test]
     fn line_numbers_has_a_short_and_a_long_spelling() {
-        assert!(!Config::try_parse_from(["recon"]).unwrap().line_numbers);
+        assert!(!parse_clean(["recon"]).unwrap().line_numbers);
         assert!(
-            Config::try_parse_from(["recon", "-n", "--emit", "lines"])
+            parse_clean(["recon", "-n", "--emit", "lines"])
                 .unwrap()
                 .line_numbers
         );
         assert!(
-            Config::try_parse_from(["recon", "--line-numbers", "--emit", "lines"])
+            parse_clean(["recon", "--line-numbers", "--emit", "lines"])
                 .unwrap()
                 .line_numbers
         );
@@ -1994,8 +2040,8 @@ mod tests {
 
     #[test]
     fn set_splits_at_the_first_colon_and_repeats() {
-        let config = Config::try_parse_from(["recon", "--set", "Bugs", "--set", "WiFi:bug:32"])
-            .expect("parses");
+        let config =
+            parse_clean(["recon", "--set", "Bugs", "--set", "WiFi:bug:32"]).expect("parses");
 
         assert_eq!(
             config.sets_to_enable(),
@@ -2008,8 +2054,8 @@ mod tests {
 
     #[test]
     fn unlist_repeats_and_defaults_empty() {
-        let config = Config::try_parse_from(["recon", "--unlist", "Bugs", "--unlist", "WiFi"])
-            .expect("parses");
+        let config =
+            parse_clean(["recon", "--unlist", "Bugs", "--unlist", "WiFi"]).expect("parses");
         assert_eq!(config.unlist, ["Bugs", "WiFi"]);
         assert!(Config::default().unlist.is_empty());
     }
@@ -2071,11 +2117,11 @@ mod tests {
 
     #[test]
     fn hide_and_quiet_parse_and_default_off() {
-        let config = Config::try_parse_from(["recon", "--hide", "-q"]).expect("parses");
+        let config = parse_clean(["recon", "--hide", "-q"]).expect("parses");
         assert!(config.hide);
         assert!(config.quiet);
 
-        let config = Config::try_parse_from(["recon", "--quiet"]).expect("parses");
+        let config = parse_clean(["recon", "--quiet"]).expect("parses");
         assert!(config.quiet);
 
         assert!(!Config::default().hide);
@@ -2131,8 +2177,7 @@ mod tests {
     /// read the path as the value and refused it as "not a boolean".
     #[test]
     fn warnings_takes_no_value_so_a_path_after_it_is_the_path() {
-        use clap::Parser;
-        let config = Config::try_parse_from(["recon", "--warnings", "app.log"])
+        let config = parse_clean(["recon", "--warnings", "app.log"])
             .expect("a path after --warnings must parse");
         assert!(config.warnings);
         assert_eq!(config.path, "app.log");
@@ -2181,8 +2226,7 @@ mod tests {
     /// variable made `--no-warnings` refuse to start recon at all.
     #[test]
     fn no_warnings_wins_when_both_flags_are_given() {
-        use clap::Parser;
-        let config = Config::try_parse_from(["recon", "--warnings", "--no-warnings"])
+        let config = parse_clean(["recon", "--warnings", "--no-warnings"])
             .expect("both flags together must parse");
         assert!(!config.warnings());
     }
@@ -2346,7 +2390,7 @@ mod tests {
 
     #[test]
     fn the_editor_flags_parse() {
-        let config = Config::try_parse_from([
+        let config = parse_clean([
             "recon",
             "--editor",
             "code {project} -g {file}:{line}",
@@ -2446,14 +2490,13 @@ mod tests {
     /// form is the one people will actually type.
     #[test]
     fn print_editor_config_takes_an_optional_flavour() {
-        let bare = Config::try_parse_from(["recon", "--print-editor-config"]).expect("parses");
+        let bare = parse_clean(["recon", "--print-editor-config"]).expect("parses");
         assert_eq!(bare.print_editor_config.as_deref(), Some("auto"));
 
-        let named =
-            Config::try_parse_from(["recon", "--print-editor-config", "vscode"]).expect("parses");
+        let named = parse_clean(["recon", "--print-editor-config", "vscode"]).expect("parses");
         assert_eq!(named.print_editor_config.as_deref(), Some("vscode"));
 
-        let absent = Config::try_parse_from(["recon"]).expect("parses");
+        let absent = parse_clean(["recon"]).expect("parses");
         assert_eq!(absent.print_editor_config, None);
     }
 
@@ -2461,7 +2504,7 @@ mod tests {
     /// refused by name rather than taken for a flavour.
     #[test]
     fn print_editor_config_refuses_a_flavour_it_does_not_know() {
-        let err = Config::try_parse_from(["recon", "--print-editor-config", "app.log"])
+        let err = parse_clean(["recon", "--print-editor-config", "app.log"])
             .unwrap_err()
             .to_string();
         assert!(err.contains("app.log") && err.contains("vscode"), "{err}");
@@ -2471,8 +2514,7 @@ mod tests {
     /// clap refuses the pair before any file is read (#247).
     #[test]
     fn print_editor_config_refuses_set() {
-        let err = Config::try_parse_from(["recon", "--print-editor-config", "--set", "Bogus"])
-            .unwrap_err();
+        let err = parse_clean(["recon", "--print-editor-config", "--set", "Bogus"]).unwrap_err();
         assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
     }
 
@@ -2480,11 +2522,10 @@ mod tests {
 
     #[test]
     fn print_keymap_takes_effective_or_defaults() {
-        let bare = Config::try_parse_from(["recon", "--print-keymap"]).expect("parses");
+        let bare = parse_clean(["recon", "--print-keymap"]).expect("parses");
         assert_eq!(bare.print_keymap, Some(PrintKeymap::Effective));
 
-        let defaults =
-            Config::try_parse_from(["recon", "--print-keymap", "defaults"]).expect("parses");
+        let defaults = parse_clean(["recon", "--print-keymap", "defaults"]).expect("parses");
         assert_eq!(defaults.print_keymap, Some(PrintKeymap::Defaults));
     }
 
@@ -2493,7 +2534,7 @@ mod tests {
     #[test]
     fn print_keymap_refuses_anything_else() {
         for word in ["default", "app.log"] {
-            let err = Config::try_parse_from(["recon", "--print-keymap", word])
+            let err = parse_clean(["recon", "--print-keymap", word])
                 .unwrap_err()
                 .to_string();
             assert!(err.contains("defaults"), "{word}: {err}");
@@ -2635,8 +2676,7 @@ mod tests {
     #[test]
     fn the_hide_pane_flag_replaces_the_file_list() {
         use crate::panes::Pane;
-        let mut config =
-            Config::try_parse_from(["recon", "--hide-pane", "view,filters"]).expect("parses");
+        let mut config = parse_clean(["recon", "--hide-pane", "view,filters"]).expect("parses");
         assert_eq!(config.hide_panes(), [Pane::View, Pane::Filters]);
         config.apply(&FileConfig {
             layout: Some(LayoutConfig {
@@ -2651,15 +2691,14 @@ mod tests {
     /// layer.
     #[test]
     fn hiding_every_pane_is_a_config_error() {
-        let config = Config::try_parse_from(["recon", "--hide-pane", "explorer,view,filters"])
-            .expect("parses");
+        let config =
+            parse_clean(["recon", "--hide-pane", "explorer,view,filters"]).expect("parses");
         let err = config
             .check_panes()
             .expect_err("all three hidden must fail");
         assert!(matches!(err, ConfigError::AllPanesHidden), "{err:?}");
 
-        let two =
-            Config::try_parse_from(["recon", "--hide-pane", "explorer,view"]).expect("parses");
+        let two = parse_clean(["recon", "--hide-pane", "explorer,view"]).expect("parses");
         assert!(two.check_panes().is_ok(), "two hidden is allowed");
     }
 
@@ -2729,7 +2768,7 @@ mod tests {
             "the file did not apply"
         );
 
-        let mut flagged = Config::try_parse_from(["recon", "--clipboard", "pbcopy"]).unwrap();
+        let mut flagged = parse_clean(["recon", "--clipboard", "pbcopy"]).unwrap();
         flagged.apply(&file);
         assert_eq!(
             flagged.clipboard_template(),
@@ -2752,7 +2791,7 @@ mod tests {
 
     #[test]
     fn the_theme_flag_parses_a_bundled_name_a_path_and_none() {
-        let config = Config::try_parse_from(["recon", "--theme", "nord"]).unwrap();
+        let config = parse_clean(["recon", "--theme", "nord"]).unwrap();
         assert_eq!(
             config
                 .theme
@@ -2761,7 +2800,7 @@ mod tests {
             Some("Nord")
         );
 
-        let config = Config::try_parse_from(["recon", "--theme", "none"]).unwrap();
+        let config = parse_clean(["recon", "--theme", "none"]).unwrap();
         assert_eq!(config.theme, Some(syntax::Theme::Off));
         assert_eq!(
             config.syntax_theme(),
@@ -2769,14 +2808,14 @@ mod tests {
             "off is a value, not a hole"
         );
 
-        let unset = Config::try_parse_from(["recon"]).unwrap();
+        let unset = parse_clean(["recon"]).unwrap();
         assert_eq!(unset.theme, None);
         assert_eq!(unset.syntax_theme(), syntax::Theme::builtin());
     }
 
     #[test]
     fn a_bad_theme_flag_is_a_clap_error_that_lists_the_themes() {
-        let err = Config::try_parse_from(["recon", "--theme", "octarine"]).unwrap_err();
+        let err = parse_clean(["recon", "--theme", "octarine"]).unwrap_err();
         let message = err.to_string();
         assert!(message.contains("--theme"), "{message}");
         assert!(message.contains("Dracula"), "{message}");
@@ -2800,17 +2839,17 @@ mod tests {
     #[test]
     fn the_background_flag_parses_and_defaults_to_dark() {
         use crate::filter::{Background, DEFAULT_PALETTE, LIGHT_PALETTE};
-        let config = Config::try_parse_from(["recon", "--background", "light"]).unwrap();
+        let config = parse_clean(["recon", "--background", "light"]).unwrap();
         assert_eq!(config.background, Some(Background::Light));
         assert_eq!(config.background(), Background::Light);
         assert_eq!(config.filter_palette(), LIGHT_PALETTE.to_vec());
 
-        let unset = Config::try_parse_from(["recon"]).unwrap();
+        let unset = parse_clean(["recon"]).unwrap();
         assert_eq!(unset.background, None);
         assert_eq!(unset.background(), Background::Dark);
         assert_eq!(unset.filter_palette(), DEFAULT_PALETTE.to_vec());
 
-        let err = Config::try_parse_from(["recon", "--background", "dim"]).unwrap_err();
+        let err = parse_clean(["recon", "--background", "dim"]).unwrap_err();
         assert!(err.to_string().contains("--background"), "{err}");
     }
 
@@ -2821,11 +2860,11 @@ mod tests {
         let file = load_from(&path).unwrap();
         assert_eq!(file.background, Some(Background::Light));
 
-        let mut config = Config::try_parse_from(["recon"]).unwrap();
+        let mut config = parse_clean(["recon"]).unwrap();
         config.apply(&file);
         assert_eq!(config.background(), Background::Light);
 
-        let mut config = Config::try_parse_from(["recon", "--background", "dark"]).unwrap();
+        let mut config = parse_clean(["recon", "--background", "dark"]).unwrap();
         config.apply(&file);
         assert_eq!(config.background(), Background::Dark, "the flag wins");
 
@@ -2846,7 +2885,7 @@ mod tests {
             "background-with-palette.toml",
             "background = 'light'\n[filters]\npalette = ['#010203']\n",
         );
-        let mut config = Config::try_parse_from(["recon"]).unwrap();
+        let mut config = parse_clean(["recon"]).unwrap();
         config.apply(&load_from(&path).unwrap());
         assert_eq!(config.background(), Background::Light);
         assert_eq!(config.filter_palette(), vec![Color::Rgb(1, 2, 3)]);

@@ -236,15 +236,15 @@ Arguments:
 Options:
       --editor <TEMPLATE>
           Command template `o` runs, e.g. `zed {project} {file}:{line}` [env:
-          RECON_EDITOR=]
+          RECON_EDITOR]
       --file-editor <TEMPLATE>
           Command template `O` runs. Defaults to `--editor` with the `{project}`
           argument dropped, so one setting normally configures both keys [env:
-          RECON_FILE_EDITOR=]
+          RECON_FILE_EDITOR]
       --clipboard <COMMAND>
           Command `y` pipes a selection to, e.g. `pbcopy` or `xclip -selection
           clipboard`. Falls back to `[clipboard] command` in `config.toml`, then
-          to the platform's own tool [env: RECON_CLIPBOARD=]
+          to the platform's own tool [env: RECON_CLIPBOARD]
       --print-editor-config [<FLAVOUR>]
           Print a ready-to-paste `[editor]` stanza and exit. Takes a flavour —
           `zed`, `vscode`, `wezterm-nvim`, … — or `auto` to guess from
@@ -256,16 +256,16 @@ Options:
       --background <BACKGROUND>
           Whether the terminal background is dark or light: picks the built-in
           filter palette and the grey of dimmed lines. Falls back to a top-level
-          `background` in `config.toml`, then to `dark` [env: RECON_BACKGROUND=]
+          `background` in `config.toml`, then to `dark` [env: RECON_BACKGROUND]
           [possible values: dark, light]
       --filter-path <DIRS>
           More directories to read filter sets from, colon-separated, e.g.
           `~/team-filters:./.recon`. recon reads `filters.toml` and each
-          `*.filters.toml` in them [env: RECON_FILTER_PATH=]
+          `*.filters.toml` in them [env: RECON_FILTER_PATH]
       --theme <THEME>
           Colours for the file view's syntax colouring: a bundled theme name, a
           path to a `.tmTheme` file, or `none` to turn colouring off [env:
-          RECON_THEME=]
+          RECON_THEME]
       --emit <WHAT>
           Print the session's result to stdout on `q`; `Q` quits without it
           [possible values: lines, files, cwd]

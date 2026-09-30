@@ -21,9 +21,16 @@ fn broken_config_home(name: &str) -> PathBuf {
 fn recon(home: &Path, args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_recon"))
         .args(args)
+        // A clean environment, not two variables removed (#367): an exported
+        // `RECON_WARNINGS` or `RECON_FILTER_PATH` changed what these runs
+        // print. `PATH` and `HOME` are all a run needs.
+        .env_clear()
+        .envs(
+            ["PATH", "HOME"]
+                .into_iter()
+                .filter_map(|name| std::env::var_os(name).map(|value| (name, value))),
+        )
         .env("XDG_CONFIG_HOME", home)
-        .env_remove("RECON_LOG")
-        .env_remove("RUST_LOG")
         .output()
         .expect("run recon")
 }
