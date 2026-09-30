@@ -79,7 +79,7 @@ use crate::generate::{self, ATTEMPTS, Candidate, Rejection, Running};
 use crossterm::event::{self, KeyCode, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::prelude::{Rect, Style};
 use regex::Regex;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt::Write as _;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -308,6 +308,11 @@ pub(super) struct FilterEditor {
     /// every line is drawn. `top` and the page keys count in these rows;
     /// `cursor` and `marks` stay line indexes.
     shown: Option<Vec<usize>>,
+    /// Whether `regex` matches each line, by index into `lines` and then
+    /// `extra` (#360): empty when there is no pattern. Worked out once when
+    /// the pattern compiles, so a check, `u` and a jump do not run the
+    /// regex over the file again.
+    matched: Vec<bool>,
     /// The pattern's versions, oldest first (#316). Only valid patterns,
     /// and never two the same side by side.
     pub(super) versions: Vec<String>,
@@ -423,6 +428,7 @@ impl FilterEditor {
             reveal: false,
             matches_only: false,
             shown: None,
+            matched: Vec::new(),
             versions: Vec::new(),
             version: None,
             edited_at: None,
@@ -493,12 +499,19 @@ impl FilterEditor {
         if examples.is_empty() {
             return;
         }
+        // Of two examples with the same text, the later gives the mark.
+        let mut by_text: HashMap<&str, Vec<usize>> = HashMap::new();
+        for (at, example) in examples.iter().enumerate() {
+            by_text.entry(example.line.as_str()).or_default().push(at);
+        }
         let mut found = vec![false; examples.len()];
         for (index, line) in self.lines.iter().enumerate() {
-            for (at, example) in examples.iter().enumerate() {
-                if example.line == *line {
+            if let Some(ats) = by_text.get(line.as_str()) {
+                for &at in ats {
                     found[at] = true;
-                    self.marks.insert(index, mark_of(example));
+                }
+                if let Some(&last) = ats.last() {
+                    self.marks.insert(index, mark_of(&examples[last]));
                 }
             }
         }
@@ -536,11 +549,12 @@ impl FilterEditor {
             (!text.is_empty()).then(|| text.to_string())
         };
         let mut examples: Vec<Example> = Vec::new();
+        let mut seen: HashSet<&str> = HashSet::new();
         for (&index, &mark) in &self.marks {
             let Some(line) = self.text(index) else {
                 continue;
             };
-            if !examples.iter().any(|example| example.line == line) {
+            if seen.insert(line) {
                 examples.push(Example {
                     line: line.to_string(),
                     must_match: mark == Mark::MustMatch,
@@ -634,15 +648,21 @@ impl FilterEditor {
             self.regex = None;
             self.error = None;
             self.matches = 0;
+            self.matched = Vec::new();
             self.refresh();
             return;
         }
         match Regex::new(pattern) {
             Ok(regex) => {
-                self.matches = self
+                self.matched = self
                     .lines
                     .iter()
-                    .filter(|line| regex.is_match(line))
+                    .chain(&self.extra)
+                    .map(|line| regex.is_match(line))
+                    .collect();
+                self.matches = self.matched[..self.lines.len()]
+                    .iter()
+                    .filter(|&&matched| matched)
                     .count();
                 self.regex = Some(regex);
                 self.error = None;
@@ -655,10 +675,7 @@ impl FilterEditor {
     /// Whether the highlight's pattern matches line `index`. No pattern
     /// matches nothing, as no line is highlighted.
     fn matches_line(&self, index: usize) -> bool {
-        self.regex
-            .as_ref()
-            .zip(self.text(index))
-            .is_some_and(|(regex, line)| regex.is_match(line))
+        self.matched.get(index).copied().unwrap_or(false)
     }
 
     /// Line `index`'s check, or `None` when it has no mark.
@@ -691,9 +708,24 @@ impl FilterEditor {
     fn refresh_shown(&mut self) {
         let first = self.line_at(self.top);
         self.shown = (self.matches_only && self.regex.is_some()).then(|| {
-            (0..self.total())
-                .filter(|&index| self.marks.contains_key(&index) || self.matches_line(index))
-                .collect()
+            let mut shown: Vec<usize> = self
+                .matched
+                .iter()
+                .enumerate()
+                .filter_map(|(index, &matched)| matched.then_some(index))
+                .collect();
+            // Most lines drawn are matches: add the marks the pattern
+            // misses, and sort once.
+            let missed = self
+                .marks
+                .keys()
+                .filter(|&&index| !self.matches_line(index));
+            let matches = shown.len();
+            shown.extend(missed);
+            if shown.len() > matches {
+                shown.sort_unstable();
+            }
+            shown
         });
         self.top = first.map_or(0, |line| self.row_of(line));
         if !self.is_shown(self.cursor)
@@ -774,24 +806,22 @@ impl FilterEditor {
         let (cursor, len) = (self.cursor, self.total());
         // The cursor line is looked at last, after the wrap: the only
         // target, it is where the jump lands.
-        let (before, after): (Vec<usize>, Vec<usize>) = match direction {
-            Direction::Down => (
-                (cursor + 1..len).collect(),
-                (0..(cursor + 1).min(len)).collect(),
-            ),
-            Direction::Up => ((0..cursor).rev().collect(), (cursor..len).rev().collect()),
+        let found = match direction {
+            Direction::Down => (cursor + 1..len)
+                .map(|index| (index, false))
+                .chain((0..(cursor + 1).min(len)).map(|index| (index, true)))
+                .find(|&(index, _)| is_target(index)),
+            Direction::Up => (0..cursor)
+                .rev()
+                .map(|index| (index, false))
+                .chain((cursor..len).rev().map(|index| (index, true)))
+                .find(|&(index, _)| is_target(index)),
         };
-        let (line, wrapped) = match before.into_iter().find(|&index| is_target(index)) {
-            Some(line) => (line, false),
-            None => match after.into_iter().find(|&index| is_target(index)) {
-                Some(line) => (line, true),
-                None => {
-                    return Some(match target {
-                        Target::Failure => "no failed check",
-                        Target::Unmarked => "no unmarked match",
-                    });
-                }
-            },
+        let Some((line, wrapped)) = found else {
+            return Some(match target {
+                Target::Failure => "no failed check",
+                Target::Unmarked => "no unmarked match",
+            });
         };
         // A failed check is marked and an unmarked match matches, so the
         // line is drawn in either mode.
@@ -2054,5 +2084,119 @@ mod tests {
         let pattern = String::from("foo(");
         let error = Regex::new(&pattern).expect_err("unclosed group");
         assert_eq!(error_line(&error), "error: unclosed group");
+    }
+
+    fn editor_over(lines: &[&str]) -> FilterEditor {
+        let lines = lines.iter().map(ToString::to_string).collect();
+        FilterEditor::new(Arc::new(lines), Style::default())
+    }
+
+    fn example(line: &str, must_match: bool) -> Example {
+        Example {
+            line: line.to_string(),
+            must_match,
+        }
+    }
+
+    fn set_pattern(editor: &mut FilterEditor, pattern: &str) {
+        editor.field = SearchPrompt::editing(
+            pattern.to_string(),
+            super::super::prompt::PromptKind::default(),
+        );
+        editor.recompile();
+    }
+
+    /// #360: an example the file has twice marks both lines, and of two
+    /// examples with the same text the later one gives the mark.
+    #[test]
+    fn an_example_marks_each_line_with_its_text() {
+        let mut editor = editor_over(&["a", "b", "a", "c"]);
+        editor.mark_examples(vec![
+            example("a", true),
+            example("x", true),
+            example("b", true),
+            example("b", false),
+        ]);
+        assert_eq!(
+            editor
+                .marks
+                .iter()
+                .map(|(&i, &m)| (i, m))
+                .collect::<Vec<_>>(),
+            vec![
+                (0, Mark::MustMatch),
+                (1, Mark::MustNotMatch),
+                (2, Mark::MustMatch),
+                (4, Mark::MustMatch),
+            ]
+        );
+        assert_eq!(editor.extra, vec!["x".to_string()]);
+    }
+
+    /// #360: the first mark on a line's text gives the example, in file
+    /// order.
+    #[test]
+    fn details_keeps_the_first_mark_of_each_text() {
+        let mut editor = editor_over(&["b", "a", "b", "a"]);
+        editor.marks.insert(0, Mark::MustNotMatch);
+        editor.marks.insert(1, Mark::MustMatch);
+        editor.marks.insert(2, Mark::MustMatch);
+        editor.marks.insert(3, Mark::MustNotMatch);
+        assert_eq!(
+            editor.details().examples,
+            vec![example("b", false), example("a", true)]
+        );
+    }
+
+    /// #360: the checks, the lines `u` draws and the jumps follow the
+    /// last pattern that compiled, the lines past the file's end too.
+    #[test]
+    fn the_matches_follow_the_last_pattern_that_compiled() {
+        let mut editor = editor_over(&["ERROR a", "INFO b", "ERROR c"]);
+        editor.mark_examples(vec![example("ERROR x", true)]);
+        set_pattern(&mut editor, "ERROR");
+        assert_eq!(editor.matches, 2, "the extra line is not counted");
+        assert!(editor.check(3).is_some_and(|check| check.passes));
+        set_pattern(&mut editor, "ERROR(");
+        assert!(editor.error.is_some());
+        assert!(editor.check(3).is_some_and(|check| check.passes));
+        editor.toggle_matches_only();
+        assert_eq!(editor.rows(), 3);
+        assert_eq!(
+            (0..3).map(|row| editor.line_at(row)).collect::<Vec<_>>(),
+            vec![Some(0), Some(2), Some(3)]
+        );
+        editor.cursor = 2;
+        assert_eq!(
+            editor.jump(Target::Unmarked, Direction::Down),
+            Some(super::super::search::WRAPPED_TO_TOP)
+        );
+        assert_eq!(editor.cursor, 0);
+        assert_eq!(
+            editor.jump(Target::Unmarked, Direction::Up),
+            Some(super::super::search::WRAPPED_TO_BOTTOM)
+        );
+        assert_eq!(editor.cursor, 2);
+        set_pattern(&mut editor, "INFO");
+        assert!(editor.check(3).is_some_and(|check| !check.passes));
+        assert_eq!(
+            editor.jump(Target::Failure, Direction::Up),
+            Some(super::super::search::WRAPPED_TO_BOTTOM)
+        );
+        assert_eq!(editor.cursor, 3);
+    }
+
+    /// #360: a range of many marks gives its examples at once. Each mark
+    /// used to be compared with every example before it.
+    #[test]
+    fn details_of_many_marks_is_fast() {
+        let lines: Vec<String> = (0..200_000).map(|i| format!("line {i}")).collect();
+        let mut editor = FilterEditor::new(Arc::new(lines), Style::default());
+        for index in 0..200_000 {
+            editor.marks.insert(index, Mark::MustMatch);
+        }
+        let started = Instant::now();
+        assert_eq!(editor.details().examples.len(), 200_000);
+        assert!(started.elapsed() < Duration::from_secs(5));
     }
 }
