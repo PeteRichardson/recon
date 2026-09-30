@@ -772,10 +772,11 @@ impl FileView<'_> {
     /// The buffer row drawn `line` rows below the pane's top border, if one
     /// is — for turning a click on a directory listing into an entry (#58).
     ///
-    /// A *buffer* row, not a visible-set row: the caller wants an index into
-    /// the lines this pane built, and for a listing the window starts at
-    /// zero, so the two agree. `None` below the last line, where a click is
-    /// on empty pane rather than on anything.
+    /// A *buffer* row, not a visible-set row and not a source line: add
+    /// `window_start` for the visible row, then ask the document for its
+    /// source line. A filter, hide mode or a moved window makes all three
+    /// differ (#349). `None` below the last line, where a click is on empty
+    /// pane rather than on anything.
     pub(crate) fn line_at(&self, line: u16) -> Option<usize> {
         let row = usize::from(self.textarea.scroll_top().0) + usize::from(line);
         (row < self.textarea.lines().len()).then_some(row)
