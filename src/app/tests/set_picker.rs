@@ -100,8 +100,7 @@ fn a_set_listed_again_comes_back_as_its_file_describes_it() {
     );
 }
 
-/// A peek holds every filter's flag by position, and an unlist moves the
-/// positions (#305). The picker's apply ends the peek first, so the
+/// The picker's apply ends a peek first (#305), so the other sets'
 /// flags come back to the filters they belong to.
 #[test]
 fn listing_during_a_peek_ends_the_peek_first() {

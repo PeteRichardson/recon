@@ -401,3 +401,57 @@ fn reading_the_keymap_spends_the_post_commit_enter_guard() {
         "the guard outlived the key that should have spent it"
     );
 }
+
+// ---- a filter added or deleted during a peek (#346) ------------------
+
+/// Every filter's flag by its name: a capture that restores onto the
+/// wrong filters shows up as a name with the wrong flag, whatever the
+/// order of the list.
+fn flags_by_name(app: &App) -> std::collections::BTreeMap<String, bool> {
+    app.filters
+        .filters()
+        .iter()
+        .map(|filter| (filter.display_name(), filter.enabled))
+        .collect()
+}
+
+/// The repro in #346: a typed filter goes in *before* the file sets'
+/// filters, so a capture restored by position moved every set's flag one
+/// filter along. The end of the peek puts each flag back on its own
+/// filter, and the new filter keeps the flag it was added with.
+#[test]
+fn adding_a_filter_during_a_peek_keeps_the_sets_flags() {
+    let mut app = app_with_three_sets("peek_add_keeps_flags");
+    let mut expected = flags_by_name(&app);
+
+    key(&mut app, KeyCode::Char(' '));
+    key(&mut app, KeyCode::Char('f'));
+    key(&mut app, KeyCode::Char('i'));
+    typed(&mut app, "delta");
+    key(&mut app, KeyCode::Enter);
+    key(&mut app, KeyCode::Char(' '));
+
+    expected.insert("delta".into(), true);
+    assert_eq!(flags_by_name(&app), expected);
+}
+
+/// The other half of #346: a delete moves every later filter up one, and
+/// a capture restored by position gave each the flag of the one before.
+#[test]
+fn deleting_a_filter_during_a_peek_keeps_the_other_flags() {
+    let mut app = app_with_three_sets("peek_delete_keeps_flags");
+    let mut expected = flags_by_name(&app);
+    let scratch = app
+        .filters
+        .filters()
+        .iter()
+        .position(|filter| filter.display_name() == "scratch")
+        .expect("the scratch filter");
+
+    key(&mut app, KeyCode::Char(' '));
+    assert!(app.filters.remove(scratch), "sanity: deleted");
+    key(&mut app, KeyCode::Char(' '));
+
+    expected.remove("scratch");
+    assert_eq!(flags_by_name(&app), expected);
+}
