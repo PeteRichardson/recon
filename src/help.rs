@@ -940,6 +940,17 @@ pub const KEYMAP: &[Section] = &[
         ],
     },
     Section {
+        // After `q` under `--emit`, while recon reads what the output still
+        // needs: the rest of a large file, or the files the scan has not
+        // answered (#351, #352).
+        title: "While finishing an emit",
+        bindings: &[Binding {
+            keys: &["Ctrl-c", "Esc"],
+            action: "Cancel: emit nothing, exit 130",
+            names: &["finishing.cancel"],
+        }],
+    },
+    Section {
         title: "While a prompt is open",
         bindings: &[
             Binding {
@@ -1481,6 +1492,7 @@ mod tests {
                 "Profile picker",
                 "Set picker",
                 "Filter editor",
+                "While finishing an emit",
                 "While a prompt is open",
             ]
         );
@@ -1571,7 +1583,7 @@ mod tests {
     /// any further has nowhere left to go without this area's width growing
     /// past 151 — which would stop the second test here from failing on the
     /// regression it exists to catch — and a row that adds to *either* total
-    /// has to be re-measured against both. The height, 62, is likewise the
+    /// has to be re-measured against both. The height, 64, is likewise the
     /// exact number of rows two columns hold at the current row count (121,
     /// after the two reserved-key rows of #242 raised it from 86 to 88,
     /// the two search-history rows of #274 to 90, the `L` row and the
@@ -1582,14 +1594,15 @@ mod tests {
     /// rows of #315 to 118, the two undo rows of #316 to 120, and the
     /// request row of #319 to 121, the `Ctrl-r` row of #321 to 122, and
     /// the consolidation and phrase rows of #322 to 124, which raised the
-    /// height from 61 to 62); adding a row without
+    /// height from 61 to 62, and the finishing section of #351 and #352,
+    /// its title and its one row, which raised it to 64); adding a row without
     /// raising the height would drop it off the bottom, which is a
     /// `shown(&columns) == rows.len()` failure below, not a width one.
     #[test]
     fn a_normal_terminal_shows_the_whole_keymap() {
         let rows = rows(&crate::keymap::Keymap::default());
 
-        let columns = layout(&rows, inner(150, 62));
+        let columns = layout(&rows, inner(150, 64));
 
         assert_eq!(shown(&columns), rows.len(), "the keymap did not fit");
         assert!(

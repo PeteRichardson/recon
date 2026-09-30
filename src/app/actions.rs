@@ -34,7 +34,7 @@ impl App<'_> {
             // so a modified key — e.g. Ctrl-f, which the file view uses for
             // page-down — never resolves to this action and reaches the
             // focused widget instead.
-            A::GlobalQuit => self.state = AppState::Quit { emit: true },
+            A::GlobalQuit => self.quit_emitting(),
             // `Q` quits without emitting (#143).
             A::GlobalQuitSilent => self.state = AppState::Quit { emit: false },
             A::GlobalFocusNext => self.focus_next(),
@@ -400,7 +400,8 @@ impl App<'_> {
             | A::FilterEditorUndo
             | A::FilterEditorRedo
             | A::FilterEditorRequest
-            | A::FilterEditorRegenerate => {
+            | A::FilterEditorRegenerate
+            | A::FinishingCancel => {
                 debug_assert!(
                     false,
                     "{action:?} resolves in its own modal dispatch, never through `perform`"

@@ -23,7 +23,7 @@ pub enum Emit {
 }
 
 /// What a finished session hands back for `main` to print.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug)]
 pub enum Exit {
     /// `q` with `--emit`: the output and the one-line summary for stderr.
     ///
@@ -38,9 +38,51 @@ pub enum Exit {
         /// The TUI always passes 0.
         failed: usize,
     },
+    /// `Emit`, with the output in a spool file rather than in memory: the
+    /// lines of a file too large to hold, read to its end after `q` (#351).
+    /// The file is already unlinked, so nothing is left behind whatever
+    /// happens to the process.
+    Spooled {
+        spool: std::fs::File,
+        summary: String,
+    },
     /// `Q`, or any quit without `--emit`.
     Silent,
+    /// The user cancelled the work `q` started under `--emit` (#351, #352):
+    /// nothing on stdout, `recon: cancelled` on stderr, exit 130 — the code
+    /// a shell gives a process Ctrl-C stopped. A script never gets partial
+    /// output without a sign.
+    Cancelled,
 }
+
+/// Written out rather than derived, for `Spooled`: a file handle has no
+/// equality short of reading it, so two spools compare by their summary.
+/// Every other variant compares as a derive would.
+impl PartialEq for Exit {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (
+                Self::Emit {
+                    lines,
+                    summary,
+                    failed,
+                },
+                Self::Emit {
+                    lines: other_lines,
+                    summary: other_summary,
+                    failed: other_failed,
+                },
+            ) => lines == other_lines && summary == other_summary && failed == other_failed,
+            (Self::Spooled { summary, .. }, Self::Spooled { summary: other, .. }) => {
+                summary == other
+            }
+            (Self::Silent, Self::Silent) | (Self::Cancelled, Self::Cancelled) => true,
+            _ => false,
+        }
+    }
+}
+
+impl Eq for Exit {}
 
 impl Exit {
     /// Print the session's result and say how the process should exit.
@@ -49,8 +91,10 @@ impl Exit {
     /// |---|---|---|---|---|
     /// | `Emit`, `failed == 0` | yes | every line, newline-terminated | the summary, unless `quiet` | 0 |
     /// | `Emit`, `failed > 0` | yes | every line, newline-terminated | the summary, unless `quiet` | 2 |
+    /// | `Spooled` | yes | the spool, byte for byte | the summary, unless `quiet` | 0 |
     /// | `Silent` | yes | nothing | nothing | 1 |
     /// | `Silent` | no | nothing | nothing | 0 |
+    /// | `Cancelled` | yes | nothing | `recon: cancelled`, even under `quiet` | 130 |
     ///
     /// `Silent` under `--emit` fails because the caller asked for output and
     /// got none: `dir=$(recon --emit cwd) && cd "$dir"` then skips the `cd`
@@ -93,24 +137,69 @@ impl Exit {
                             .and_then(|()| stdout.write_all(b"\n"))
                     })
                     .and_then(|()| stdout.flush());
-                if let Err(err) = written
-                    && err.kind() != std::io::ErrorKind::BrokenPipe
-                {
-                    let _ = writeln!(stderr, "recon: could not write the output: {err}");
-                    return ExitCode::FAILURE;
-                }
-                if !quiet {
-                    let _ = writeln!(stderr, "{summary}");
-                }
-                if failed > 0 {
-                    ExitCode::from(2)
-                } else {
-                    ExitCode::SUCCESS
-                }
+                finish(written, &summary, failed, quiet, stderr)
+            }
+            (Self::Spooled { mut spool, summary }, _) => {
+                use std::io::{Seek, SeekFrom};
+                let written = spool
+                    .seek(SeekFrom::Start(0))
+                    .and_then(|_| std::io::copy(&mut spool, stdout))
+                    .and_then(|_| stdout.flush());
+                finish(written, &summary, 0, quiet, stderr)
+            }
+            (Self::Cancelled, _) => {
+                let _ = writeln!(stderr, "recon: cancelled");
+                ExitCode::from(130)
             }
             (Self::Silent, Some(_)) => ExitCode::FAILURE,
             (Self::Silent, None) => ExitCode::SUCCESS,
         }
+    }
+}
+
+/// A new, empty spool file for `Exit::Spooled`: read and write, in the
+/// temporary directory, and unlinked at once, so that it takes disk only
+/// while this process holds it open and is gone however the process ends.
+///
+/// # Errors
+/// Whatever creating the file reports: no temporary directory, no space.
+pub(crate) fn spool() -> std::io::Result<std::fs::File> {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let path = std::env::temp_dir().join(format!("recon-emit-{}-{n}", std::process::id()));
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .open(&path)?;
+    // Where an open file cannot be unlinked, it stays until the next boot
+    // clears the temporary directory; that is the whole cost.
+    let _ = std::fs::remove_file(&path);
+    Ok(file)
+}
+
+/// The end of an emit, once its output is written or has failed: the
+/// summary and the exit code, by `Exit::deliver`'s table.
+fn finish(
+    written: std::io::Result<()>,
+    summary: &str,
+    failed: usize,
+    quiet: bool,
+    stderr: &mut impl Write,
+) -> ExitCode {
+    if let Err(err) = written
+        && err.kind() != std::io::ErrorKind::BrokenPipe
+    {
+        let _ = writeln!(stderr, "recon: could not write the output: {err}");
+        return ExitCode::FAILURE;
+    }
+    if !quiet {
+        let _ = writeln!(stderr, "{summary}");
+    }
+    if failed > 0 {
+        ExitCode::from(2)
+    } else {
+        ExitCode::SUCCESS
     }
 }
 
@@ -167,6 +256,34 @@ mod tests {
         assert!(out.is_empty());
         assert_eq!(err, b"recon: emitted 0 files from /d, hide mode\n");
         assert_eq!(code, ExitCode::SUCCESS);
+    }
+
+    #[test]
+    fn a_spooled_emit_writes_the_spool_from_its_start() {
+        let mut spool = spool().expect("a spool");
+        spool.write_all(b"one\ntwo\n").expect("write");
+        let exit = Exit::Spooled {
+            spool,
+            summary: "recon: emitted 2 lines of big.log, hide mode".to_string(),
+        };
+
+        let (out, err, code) = deliver(exit, Some(Emit::Lines));
+
+        assert_eq!(out, b"one\ntwo\n");
+        assert_eq!(err, b"recon: emitted 2 lines of big.log, hide mode\n");
+        assert_eq!(code, ExitCode::SUCCESS);
+    }
+
+    /// #351, #352: a cancel writes nothing to stdout, says so on stderr
+    /// even under `-q`, and exits 130.
+    #[test]
+    fn a_cancelled_emit_writes_nothing_says_so_and_exits_130() {
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let code = Exit::Cancelled.deliver(Some(Emit::Lines), true, &mut out, &mut err);
+
+        assert!(out.is_empty());
+        assert_eq!(err, b"recon: cancelled\n");
+        assert_eq!(code, ExitCode::from(130));
     }
 
     #[test]

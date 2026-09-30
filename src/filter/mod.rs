@@ -1217,6 +1217,27 @@ impl ActiveFilters {
         }
     }
 
+    /// A copy to judge lines on another thread (#351): what `q` under
+    /// `--emit lines` reads the rest of a large file with.
+    ///
+    /// Not `Clone`: every set carries a generation no other set shares, and
+    /// a derived clone would share it. This one draws its own.
+    #[must_use]
+    pub(crate) fn snapshot(&self) -> Self {
+        Self {
+            sets: self.sets.clone(),
+            solo: self.solo.clone(),
+            palette: self.palette.clone(),
+            background: self.background,
+            combine: self.combine,
+            filters: self.filters.clone(),
+            remembered: self.remembered.clone(),
+            compiled: self.compiled.clone(),
+            generation: GENERATIONS.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            as_loaded: self.as_loaded.clone(),
+        }
+    }
+
     /// Whether an including filter is enabled — anything marking lines.
     ///
     /// Drives dimming, hiding (including the `u` guard in `Document`) and
