@@ -9,7 +9,6 @@
 
 use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::{Margin, Position, Rect};
-use std::time::Instant;
 
 use super::App;
 use super::layout::DOUBLE_CLICK;
@@ -91,7 +90,7 @@ impl App<'_> {
         let Some(row) = self.explorer.row_at(line) else {
             return;
         };
-        let now = Instant::now();
+        let now = self.click_clock.now();
         let double = self
             .last_explorer_click
             .is_some_and(|(last, at)| last == row && now.duration_since(at) <= DOUBLE_CLICK);
@@ -157,7 +156,7 @@ impl App<'_> {
         self.view.set_cursor(row, col);
         self.end_visual();
         let source = self.cursor_source();
-        let now = Instant::now();
+        let now = self.click_clock.now();
         let double = self
             .last_view_click
             .is_some_and(|(last, at)| last == source && now.duration_since(at) <= DOUBLE_CLICK);

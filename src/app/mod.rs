@@ -37,7 +37,7 @@ use clipboard::Clipboard;
 use document::{Document, Mode};
 use editor::Launcher;
 use filter::ActiveFilters;
-use layout::{Divider, PaneWidth};
+use layout::{ClickClock, Divider, PaneWidth};
 use panes::Panes;
 use widgets::Focus;
 use widgets::explorer::Explorer;
@@ -100,6 +100,8 @@ pub struct App<'a> {
     /// one divider followed quickly by a click on the other reads as a
     /// double-click and resets a pane the user never aimed at.
     last_divider_click: Option<(Divider, Instant)>,
+    /// Where the divider, explorer and view double-clicks read the time.
+    click_clock: ClickClock,
     /// The last click on an explorer row, by visible-row index. Two on the
     /// same row inside `DOUBLE_CLICK` open a directory; the row is part of
     /// the record for the same reason the divider's axis is above.
@@ -398,6 +400,7 @@ impl App<'_> {
             status_area: Rect::ZERO,
             dragging: None,
             last_divider_click: None,
+            click_clock: ClickClock::default(),
             last_explorer_click: None,
             prompt: None,
             search: None,

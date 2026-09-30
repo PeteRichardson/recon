@@ -105,6 +105,33 @@ pub(crate) const MIN_FILE_VIEW_WIDTH: u16 = 2 + (6 + 2) + 20;
 /// Crossterm does not report double-clicks, so they are timed here.
 pub(crate) const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 
+/// The time a click is read at, for telling a double-click from two clicks.
+///
+/// `Instant::now` unless a test has set it. Two real clicks in a test are
+/// two `Instant::now` calls with a render or a directory listing between
+/// them, so a busy machine could make them more than `DOUBLE_CLICK` apart
+/// and turn a double-click into two single ones (#391).
+#[derive(Debug, Default)]
+pub(crate) struct ClickClock(Option<Instant>);
+
+impl ClickClock {
+    pub(crate) fn now(&self) -> Instant {
+        self.0.unwrap_or_else(Instant::now)
+    }
+
+    /// Read every later click at `at`, until set again.
+    #[cfg(test)]
+    pub(crate) fn set(&mut self, at: Instant) {
+        self.0 = Some(at);
+    }
+
+    /// Whether a test has set the time.
+    #[cfg(test)]
+    pub(crate) fn is_set(&self) -> bool {
+        self.0.is_some()
+    }
+}
+
 /// How a side pane's width is decided — the explorer's and the filter
 /// pane's alike.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -254,7 +281,7 @@ impl App<'_> {
                 let Some(divider) = self.divider_at(mouse.column, mouse.row) else {
                     return false;
                 };
-                let now = Instant::now();
+                let now = self.click_clock.now();
                 let double_click = self.last_divider_click.is_some_and(|(last, at)| {
                     last == divider && now.duration_since(at) <= DOUBLE_CLICK
                 });

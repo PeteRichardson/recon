@@ -586,6 +586,22 @@ fn a_double_click_selects_the_word() {
     assert_eq!(clipboard.only_copy(), "_ZN4core3fmt");
 }
 
+/// Two clicks further apart than `DOUBLE_CLICK` only move the cursor.
+#[test]
+fn a_slow_second_click_selects_nothing() {
+    let (mut app, _) = app_for_yank("double_click_slow", "call _ZN4core3fmt(x)\n");
+    draw(&mut app);
+    let inner = app.view_area.inner(Margin::new(1, 1));
+    let at = inner.x + app.view.textarea().gutter_width() + 8;
+    let down = MouseEventKind::Down(MouseButton::Left);
+    mouse_at(&mut app, down, at, inner.y);
+    mouse_at(&mut app, MouseEventKind::Up(MouseButton::Left), at, inner.y);
+    later(&mut app, DOUBLE_CLICK + Duration::from_millis(1));
+    mouse_at(&mut app, down, at, inner.y);
+
+    assert!(app.visual.is_none(), "a slow pair selected a word");
+}
+
 /// A click ends a selection in progress, as it does in vim.
 #[test]
 fn a_click_ends_a_selection() {
