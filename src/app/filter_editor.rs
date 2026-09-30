@@ -210,8 +210,15 @@ pub(super) const PATTERN_CHANGED: &str =
 
 /// What the prompt row says when the prompt of a generated pattern
 /// changed (#321, rule 5), with a model and without one.
-pub(super) const PROMPT_CHANGED: &str =
-    "not generated from this prompt: Ctrl-r regenerates the pattern";
+///
+/// With a model it names the key that regenerates, as the keymap in force
+/// binds it (#386), and names none when a rebind left it without one.
+pub(super) fn prompt_changed(regenerate: Option<&str>) -> String {
+    match regenerate {
+        Some(key) => format!("not generated from this prompt: {key} regenerates the pattern"),
+        None => "not generated from this prompt".to_string(),
+    }
+}
 pub(super) const PROMPT_CHANGED_NO_MODEL: &str =
     "not generated from this prompt: an ordinary filter";
 
@@ -1303,13 +1310,19 @@ fn failure_message(failures: usize, line: &str) -> String {
 
 /// What `f c` says when its pattern fails `failed`, a filter's stored
 /// examples (#318).
-pub(super) fn failed_examples_message(failed: &[&Example]) -> String {
+///
+/// `open` is the keys that open the filter in the editor, where the
+/// examples are, as the keymap in force binds them (#386); `None` leaves
+/// the pointer out rather than naming a key that does nothing.
+pub(super) fn failed_examples_message(failed: &[&Example], open: Option<&str>) -> String {
     let line = failed.first().map_or("", |example| example.line.trim());
+    let one = open.map_or_else(String::new, |keys| format!("; {keys} shows it"));
+    let many = open.map_or_else(String::new, |keys| format!("; {keys} shows them"));
     if failed.len() == 1 {
-        format!("fails an example of the filter; f C shows it: {line:?}")
+        format!("fails an example of the filter{one}: {line:?}")
     } else {
         format!(
-            "fails {} examples of the filter; f C shows them. The first: {line:?}",
+            "fails {} examples of the filter{many}. The first: {line:?}",
             grouped(failed.len())
         )
     }

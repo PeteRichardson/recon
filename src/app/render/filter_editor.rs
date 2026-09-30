@@ -4,10 +4,11 @@
 //! (#319).
 
 use super::super::filter_editor::{
-    Check, EditorFocus, FilterEditor, GENERATED, Generated, Mark, PATTERN_CHANGED, PROMPT_CHANGED,
-    PROMPT_CHANGED_NO_MODEL, TAB_WIDTH,
+    Check, EditorFocus, FilterEditor, GENERATED, Generated, Mark, PATTERN_CHANGED,
+    PROMPT_CHANGED_NO_MODEL, TAB_WIDTH, prompt_changed,
 };
 use crate::filter::Sense;
+use crate::keymap::{ActionId, Keymap};
 use crate::widgets::pane_block;
 use ratatui::prelude::{
     Buffer, Color, Constraint, Layout, Line, Modifier, Rect, Span, Style, Widget,
@@ -57,7 +58,14 @@ impl FilterEditor {
     /// Draw the editor over `area`, which it covers entirely. `dim` is how
     /// the file view draws a line no filter matches, so a line the pattern
     /// misses looks the same here as it will there.
-    pub(in crate::app) fn render(&mut self, title: &str, dim: Style, area: Rect, buf: &mut Buffer) {
+    pub(in crate::app) fn render(
+        &mut self,
+        title: &str,
+        dim: Style,
+        keymap: &Keymap,
+        area: Rect,
+        buf: &mut Buffer,
+    ) {
         use Constraint::{Length, Min};
         Clear.render(area, buf);
         let rows = if self.model {
@@ -108,42 +116,7 @@ impl FilterEditor {
             );
         }
 
-        let enter = if self.target.is_some() {
-            "Enter change"
-        } else {
-            "Enter add"
-        };
-        // With a model, the request line is between the pattern and the
-        // lines in the ring.
-        let (after_pattern, before_lines) = if self.model {
-            ("request", "request")
-        } else {
-            ("lines", "pattern")
-        };
-        let keys = match self.focus {
-            _ if self.consolidation.is_some() => {
-                " Enter save with this prompt · Esc save with the prompt as it was ".to_string()
-            }
-            EditorFocus::Pattern => format!(
-                " {enter} · Esc cancel · Up/Down/PgUp/PgDn scroll · Ctrl-z/Ctrl-y undo/redo · Tab {after_pattern} · Shift-Tab prompt "
-            ),
-            EditorFocus::Request => {
-                " Enter send · Esc cancel · Ctrl-z/Ctrl-y undo/redo · Tab lines · Shift-Tab pattern "
-                    .to_string()
-            }
-            EditorFocus::Prompt if self.model => format!(
-                " {enter} · Esc cancel · Ctrl-r regenerate · Up/Down/PgUp/PgDn scroll · Tab/Shift-Tab next/previous field "
-            ),
-            EditorFocus::Name | EditorFocus::Description | EditorFocus::Prompt => format!(
-                " {enter} · Esc cancel · Up/Down/PgUp/PgDn scroll · Tab/Shift-Tab next/previous field "
-            ),
-            EditorFocus::Sense => format!(
-                " Space/Left/Right change · i include · c context · x exclude · {enter} · Esc cancel · Tab/Shift-Tab next/previous field "
-            ),
-            EditorFocus::Lines => format!(
-                " + must match · - must not · = clear · V range · f/F failed · n/N unmarked · u matches only · {enter} · Esc cancel · Tab name · Shift-Tab {before_lines} "
-            ),
-        };
+        let keys = self.key_hints(keymap);
         let block =
             pane_block(" Filter editor ", self.focus != EditorFocus::Lines).title_bottom(keys);
         let inner = block.inner(panel_area);
@@ -192,7 +165,7 @@ impl FilterEditor {
         // After the prompt, whether the model wrote the pattern from it.
         // Not in the consolidation step (#322): the prompt there is the
         // model's proposal, and the status row says what it is.
-        if let Some((text, style)) = self.generated_note()
+        if let Some((text, style)) = self.generated_note(keymap)
             && self.consolidation.is_none()
             && inner.height > 2
         {
@@ -247,15 +220,136 @@ impl FilterEditor {
         }
     }
 
+    /// The keys the panel's bottom border names for the focused field.
+    ///
+    /// Every key the keymap can move is looked up (#386): the border spelled
+    /// them, so a rebind left it naming keys that no longer did what it
+    /// said. A key a rebind left unbound drops out with its verb. The sense
+    /// row's keys are the field's own, like the characters a text field
+    /// takes, and no `[keymap]` line reaches them.
+    fn key_hints(&self, keymap: &Keymap) -> String {
+        use ActionId::{
+            FilterEditorCancel, FilterEditorCommit, FilterEditorFailureNext,
+            FilterEditorFailurePrev, FilterEditorFocus, FilterEditorFocusPrev,
+            FilterEditorMarkClear, FilterEditorMarkMatch, FilterEditorMarkNoMatch,
+            FilterEditorPageDown, FilterEditorPageUp, FilterEditorRedo, FilterEditorRegenerate,
+            FilterEditorScrollDown, FilterEditorScrollUp, FilterEditorToggleMatchesOnly,
+            FilterEditorUndo, FilterEditorUnmarkedNext, FilterEditorUnmarkedPrev,
+            FilterEditorVisualLine,
+        };
+        // Keys joined by `/`, then the verb: `Ctrl-z/Ctrl-y undo/redo`. All
+        // or nothing, as a pair with one key missing reads as the wrong verb.
+        let hint = |actions: &[ActionId], verb: &str| -> Option<String> {
+            let keys: Option<Vec<&str>> = actions.iter().map(|&a| keymap.label_for(a)).collect();
+            Some(format!("{} {verb}", keys?.join("/")))
+        };
+        // The scroll keys each do their own part, so the ones still bound
+        // are named even when a rebind took another.
+        let scroll = || -> Option<String> {
+            let keys: Vec<&str> = [
+                FilterEditorScrollUp,
+                FilterEditorScrollDown,
+                FilterEditorPageUp,
+                FilterEditorPageDown,
+            ]
+            .iter()
+            .filter_map(|&a| keymap.label_for(a))
+            .collect();
+            (!keys.is_empty()).then(|| format!("{} scroll", keys.join("/")))
+        };
+        let enter = hint(
+            &[FilterEditorCommit],
+            if self.target.is_some() {
+                "change"
+            } else {
+                "add"
+            },
+        );
+        let cancel = hint(&[FilterEditorCancel], "cancel");
+        let undo = hint(&[FilterEditorUndo, FilterEditorRedo], "undo/redo");
+        let fields = hint(
+            &[FilterEditorFocus, FilterEditorFocusPrev],
+            "next/previous field",
+        );
+        // With a model, the request line is between the pattern and the
+        // lines in the ring.
+        let (after_pattern, before_lines) = if self.model {
+            ("request", "request")
+        } else {
+            ("lines", "pattern")
+        };
+        let parts: Vec<Option<String>> = match self.focus {
+            _ if self.consolidation.is_some() => vec![
+                hint(&[FilterEditorCommit], "save with this prompt"),
+                hint(&[FilterEditorCancel], "save with the prompt as it was"),
+            ],
+            EditorFocus::Pattern => vec![
+                enter,
+                cancel,
+                scroll(),
+                undo,
+                hint(&[FilterEditorFocus], after_pattern),
+                hint(&[FilterEditorFocusPrev], "prompt"),
+            ],
+            EditorFocus::Request => vec![
+                hint(&[FilterEditorCommit], "send"),
+                cancel,
+                undo,
+                hint(&[FilterEditorFocus], "lines"),
+                hint(&[FilterEditorFocusPrev], "pattern"),
+            ],
+            EditorFocus::Prompt if self.model => vec![
+                enter,
+                cancel,
+                hint(&[FilterEditorRegenerate], "regenerate"),
+                scroll(),
+                fields,
+            ],
+            EditorFocus::Name | EditorFocus::Description | EditorFocus::Prompt => {
+                vec![enter, cancel, scroll(), fields]
+            }
+            EditorFocus::Sense => vec![
+                Some("Space/Left/Right change · i include · c context · x exclude".to_string()),
+                enter,
+                cancel,
+                fields,
+            ],
+            EditorFocus::Lines => vec![
+                hint(&[FilterEditorMarkMatch], "must match"),
+                hint(&[FilterEditorMarkNoMatch], "must not"),
+                hint(&[FilterEditorMarkClear], "clear"),
+                hint(&[FilterEditorVisualLine], "range"),
+                hint(
+                    &[FilterEditorFailureNext, FilterEditorFailurePrev],
+                    "failed",
+                ),
+                hint(
+                    &[FilterEditorUnmarkedNext, FilterEditorUnmarkedPrev],
+                    "unmarked",
+                ),
+                hint(&[FilterEditorToggleMatchesOnly], "matches only"),
+                enter,
+                cancel,
+                hint(&[FilterEditorFocus], "name"),
+                hint(&[FilterEditorFocusPrev], before_lines),
+            ],
+        };
+        let parts: Vec<String> = parts.into_iter().flatten().collect();
+        format!(" {} ", parts.join(" · "))
+    }
+
     /// What the prompt row says of the pattern's origin (#321), and how:
     /// nothing for an ordinary filter.
-    fn generated_note(&self) -> Option<(&'static str, Style)> {
+    fn generated_note(&self, keymap: &Keymap) -> Option<(String, Style)> {
         let warn = Style::default().fg(Color::Yellow);
         match self.generated() {
-            Generated::Yes => Some((GENERATED, Style::default().fg(Color::Cyan))),
-            Generated::PatternChanged => Some((PATTERN_CHANGED, warn)),
-            Generated::PromptChanged if self.model => Some((PROMPT_CHANGED, warn)),
-            Generated::PromptChanged => Some((PROMPT_CHANGED_NO_MODEL, warn)),
+            Generated::Yes => Some((GENERATED.to_string(), Style::default().fg(Color::Cyan))),
+            Generated::PatternChanged => Some((PATTERN_CHANGED.to_string(), warn)),
+            Generated::PromptChanged if self.model => Some((
+                prompt_changed(keymap.label_for(ActionId::FilterEditorRegenerate)),
+                warn,
+            )),
+            Generated::PromptChanged => Some((PROMPT_CHANGED_NO_MODEL.to_string(), warn)),
             Generated::No => None,
         }
     }

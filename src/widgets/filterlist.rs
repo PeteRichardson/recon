@@ -44,7 +44,17 @@ const BORDERS: u16 = 2;
 /// keys alone keeps the binding visible there rather than trading it away for
 /// the politer wording. Below 3 columns `render` draws none of them: half a
 /// sentence of advice is worse than none.
-const EMPTY_HINTS: [&str; 3] = ["press f i to add", "press f i", "f i"];
+///
+/// `keys` is what the keymap in force binds to the pair, not a literal
+/// `f i` (#386): a hint that names a key a rebind took gives a wrong
+/// instruction.
+fn empty_hints(keys: &str) -> [String; 3] {
+    [
+        format!("press {keys} to add"),
+        format!("press {keys}"),
+        keys.to_string(),
+    ]
+}
 
 /// Columns a named set's filters are indented under their header.
 const INDENT: &str = "  ";
@@ -338,7 +348,7 @@ impl FilterList {
     /// reserve room for — #15 removed it from both panes; #19 brings it back
     /// as a setting.
     ///
-    /// Deliberately does **not** account for `EMPTY_HINTS`: the hint is
+    /// Deliberately does **not** account for `empty_hints`: the hint is
     /// guidance, not content. `App::filter_wanted` floors the automatic width
     /// at `MIN_AUTO_FILTER_WIDTH`, which already holds the longest hint, and
     /// `render` picks a shorter form, or none, when a drag or a narrow
@@ -392,8 +402,8 @@ impl FilterList {
     /// when the set has profiles, so the picker key (#130) is discoverable.
     fn row_text(filters: &ActiveFilters, row: Row, number: &str) -> String {
         match row {
-            // The longest form; `render` swaps in the one that fits.
-            Row::Hint => EMPTY_HINTS[0].to_string(),
+            // `render` swaps in the form that fits the keys in force.
+            Row::Hint => String::new(),
             Row::Header(set) => {
                 let meta = &filters.sets()[set];
                 let star = if meta.profiles.is_empty() { "" } else { " *" };
@@ -451,7 +461,16 @@ impl FilterList {
         }
     }
 
-    pub(crate) fn render(&mut self, filters: &ActiveFilters, area: Rect, buf: &mut Buffer) {
+    /// `add_keys` is the keys that add a filter from anywhere, `f i` by
+    /// default; `None` when a rebind left one of them with no key, and then
+    /// the hint row is blank rather than wrong.
+    pub(crate) fn render(
+        &mut self,
+        filters: &ActiveFilters,
+        add_keys: Option<&str>,
+        area: Rect,
+        buf: &mut Buffer,
+    ) {
         // The hint takes the longest of its forms that fits the column, and
         // is blanked rather than clipped when none does: a drag or a narrow
         // terminal can leave the column narrower than the hint (see
@@ -459,18 +478,18 @@ impl FilterList {
         // and half a sentence of advice is worse than none. `DIM_STYLE`
         // is the same grey the disabled rows use, so it reads as chrome.
         let interior = area.width.saturating_sub(BORDERS) as usize;
-        let hint = EMPTY_HINTS
-            .iter()
-            .find(|hint| UnicodeWidthStr::width(**hint) <= interior)
-            .map_or("", |hint| *hint);
+        let hint = add_keys
+            .map(empty_hints)
+            .and_then(|hints| {
+                hints
+                    .into_iter()
+                    .find(|hint| UnicodeWidthStr::width(hint.as_str()) <= interior)
+            })
+            .unwrap_or_default();
         let items: Vec<ListItem> = Self::texts(filters)
             .into_iter()
             .map(|(row, text)| {
-                let text = if row == Row::Hint {
-                    hint.to_string()
-                } else {
-                    text
-                };
+                let text = if row == Row::Hint { hint.clone() } else { text };
                 ListItem::new(text).style(Self::row_style(filters, row))
             })
             .collect();
@@ -520,6 +539,38 @@ mod tests {
     use super::*;
     use crate::filter::DIM_STYLE;
 
+    /// The keys the default keymap gives the hint.
+    const ADD_KEYS: &str = "f i";
+
+    /// #386: the hint names the keys it is given, so a rebind moves it.
+    #[test]
+    fn the_hint_names_the_keys_in_force() {
+        let mut list = FilterList::default();
+        let filters = ActiveFilters::new();
+        let area = Rect::new(0, 0, 30, 3);
+        let mut buf = Buffer::empty(area);
+
+        list.render(&filters, Some("g a"), area, &mut buf);
+
+        let text: String = (0..area.width).map(|col| buf[(col, 1)].symbol()).collect();
+        assert!(text.contains("press g a to add"), "{text:?}");
+    }
+
+    /// A pair a rebind left without a key draws no hint rather than half of
+    /// one.
+    #[test]
+    fn an_unbound_pair_draws_no_hint() {
+        let mut list = FilterList::default();
+        let filters = ActiveFilters::new();
+        let area = Rect::new(0, 0, 30, 3);
+        let mut buf = Buffer::empty(area);
+
+        list.render(&filters, None, area, &mut buf);
+
+        let text: String = (0..area.width).map(|col| buf[(col, 1)].symbol()).collect();
+        assert!(text.trim_matches(['│', ' ']).is_empty(), "{text:?}");
+    }
+
     fn set_of(includes: &[&str], excludes: &[&str]) -> ActiveFilters {
         let mut set = ActiveFilters::new();
         for pattern in includes {
@@ -542,7 +593,7 @@ mod tests {
     fn rendered(list: &mut FilterList, filters: &ActiveFilters, width: u16) -> Vec<String> {
         let area = Rect::new(0, 0, width, 8);
         let mut buf = Buffer::empty(area);
-        list.render(filters, area, &mut buf);
+        list.render(filters, Some(ADD_KEYS), area, &mut buf);
         (0..area.height)
             .map(|y| {
                 (0..area.width)
@@ -691,7 +742,7 @@ mod tests {
         let area = Rect::new(0, 0, 30, 8);
         let mut buf = Buffer::empty(area);
 
-        list.render(&filters, area, &mut buf);
+        list.render(&filters, Some(ADD_KEYS), area, &mut buf);
 
         assert!(
             (0..area.width).any(|x| buf[(x, 1)].style().fg == DIM_STYLE.fg),
@@ -710,7 +761,7 @@ mod tests {
         let area = Rect::new(0, 0, 30, 8);
         let mut buf = Buffer::empty(area);
 
-        list.render(&filters, area, &mut buf);
+        list.render(&filters, Some(ADD_KEYS), area, &mut buf);
 
         let expected = filters.filters()[0].style.fg;
         assert!(
@@ -814,7 +865,7 @@ mod tests {
         let area = Rect::new(0, 0, 11, 3);
         let mut buf = Buffer::empty(area);
 
-        list.render(&filters, area, &mut buf);
+        list.render(&filters, Some(ADD_KEYS), area, &mut buf);
 
         let row: String = (0..area.width).map(|col| buf[(col, 1)].symbol()).collect();
         assert!(
@@ -836,11 +887,11 @@ mod tests {
         // One column short of the *shortest* hint, derived rather than
         // hard-coded: adding a shorter fallback moves this threshold, and a
         // literal width would quietly start testing a pane that does fit one.
-        let shortest = EMPTY_HINTS[EMPTY_HINTS.len() - 1].chars().count() as u16;
+        let shortest = ADD_KEYS.chars().count() as u16;
         let area = Rect::new(0, 0, shortest + BORDERS - 1, 3);
         let mut buf = Buffer::empty(area);
 
-        list.render(&filters, area, &mut buf);
+        list.render(&filters, Some(ADD_KEYS), area, &mut buf);
 
         let text: String = (0..area.width)
             .map(|col| buf[(col, 1)].symbol())
@@ -858,7 +909,7 @@ mod tests {
         let area = Rect::new(0, 0, 30, 3);
         let mut buf = Buffer::empty(area);
 
-        list.render(&filters, area, &mut buf);
+        list.render(&filters, Some(ADD_KEYS), area, &mut buf);
 
         let text: String = (0..area.height)
             .map(|row| {
@@ -872,7 +923,7 @@ mod tests {
             "no title on an empty pane: {text}"
         );
         assert!(
-            text.contains(EMPTY_HINTS[0]),
+            text.contains(&empty_hints(ADD_KEYS)[0]),
             "no hint on an empty pane: {text}"
         );
     }
@@ -885,7 +936,7 @@ mod tests {
         let area = Rect::new(0, 0, 30, 3);
         let mut buf = Buffer::empty(area);
 
-        list.render(&filters, area, &mut buf);
+        list.render(&filters, Some(ADD_KEYS), area, &mut buf);
 
         let hint_cell = (0..area.width)
             .map(|col| &buf[(col, 1)])
@@ -1057,7 +1108,7 @@ mod tests {
         let mut list = FilterList::default();
         let area = Rect::new(0, 0, 30, 8);
         let mut buf = Buffer::empty(area);
-        list.render(&filters, area, &mut buf);
+        list.render(&filters, Some(ADD_KEYS), area, &mut buf);
         assert_eq!(buf[(1, 5)].style().fg, DIM_STYLE.fg, "[ ] b is dimmed");
         assert_ne!(buf[(1, 2)].style().fg, DIM_STYLE.fg, "[x] a is not");
     }
@@ -1188,7 +1239,7 @@ mod tests {
         // 8 rows tall, 6 inside the border: a page is 6, half is 3.
         let area = Rect::new(0, 0, 40, 8);
         let mut buf = Buffer::empty(area);
-        list.render(&filters, area, &mut buf);
+        list.render(&filters, Some(ADD_KEYS), area, &mut buf);
         list.select(0);
 
         press(&mut list, KeyCode::Char('d'), KeyModifiers::CONTROL, &rows);

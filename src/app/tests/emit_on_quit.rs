@@ -171,10 +171,34 @@ fn lines_in_dim_mode_emits_every_visible_line_and_counts_the_matches() {
     let name = app.view.filename().display().to_string();
     assert_eq!(
         summary,
-        format!(
-            "recon: emitted 3 lines of {name}, dim mode (2 match) — Ctrl-H to emit matches only"
-        )
+        format!("recon: emitted 3 lines of {name}, dim mode (2 match) — u to emit matches only")
     );
+}
+
+/// #386: the summary names the key the keymap in force gives hide mode,
+/// and names none when a rebind left it without one.
+#[test]
+fn the_dim_summary_names_the_hide_key_in_force() {
+    for (keys, name, hint) in [
+        (
+            &["Ctrl-u"][..],
+            "emit_lines_rebound",
+            Some("— Ctrl-u to emit matches only"),
+        ),
+        (&[][..], "emit_lines_unbound", None),
+    ] {
+        let mut app = app_emitting_lines(name, "hit one\nplain\n", false);
+        app.add_filter("hit").expect("valid");
+        rebind(&mut app, &[("global.toggle.hide", keys)]);
+        key(&mut app, KeyCode::Char('q'));
+
+        let (_, summary) = emitted(&app);
+
+        match hint {
+            Some(hint) => assert!(summary.ends_with(hint), "{summary}"),
+            None => assert!(!summary.contains("matches only"), "{summary}"),
+        }
+    }
 }
 
 #[test]
@@ -297,7 +321,7 @@ fn files_in_dim_mode_emits_every_listed_file_with_the_counts() {
     assert_eq!(
         summary,
         format!(
-            "recon: emitted 3 files from {dir}, dim mode (1 match, 1 unscanned) — Ctrl-H to emit matches only"
+            "recon: emitted 3 files from {dir}, dim mode (1 match, 1 unscanned) — u to emit matches only"
         )
     );
 }
@@ -315,9 +339,7 @@ fn files_omits_the_unscanned_count_once_the_scan_is_complete() {
     let dir = app.explorer.dir().display().to_string();
     assert_eq!(
         summary,
-        format!(
-            "recon: emitted 3 files from {dir}, dim mode (2 match) — Ctrl-H to emit matches only"
-        )
+        format!("recon: emitted 3 files from {dir}, dim mode (2 match) — u to emit matches only")
     );
 }
 

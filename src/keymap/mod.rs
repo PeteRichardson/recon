@@ -994,6 +994,16 @@ impl Keymap {
             .map(|(_, label, _)| label.as_str())
     }
 
+    /// The keys that reach `actions` one after the other, joined by a space:
+    /// `f i` for focusing the filter pane and adding an include (#386).
+    ///
+    /// `None` when any of them is unbound, for `hint_for`'s reason: a hint
+    /// with a hole where a key should be tells the user less than none.
+    pub(crate) fn keys_for(&self, actions: &[ActionId]) -> Option<String> {
+        let labels: Option<Vec<&str>> = actions.iter().map(|&a| self.label_for(a)).collect();
+        Some(labels?.join(" "))
+    }
+
     /// Every key bound to `action`, in table order, each once.
     ///
     /// `label_for` answers "which one key should a hint name"; this answers

@@ -140,7 +140,7 @@ impl Widget for &mut App<'_> {
         }
         if let Some(editor) = self.filter_editor.as_mut() {
             let title = self.view.filename().display().to_string();
-            editor.render(&title, self.filters.dim_style(), area, buf);
+            editor.render(&title, self.filters.dim_style(), &self.keymap, area, buf);
         }
         if self.help {
             help::render(area, buf, &self.keymap);
@@ -226,7 +226,14 @@ impl App<'_> {
         match pane {
             Focus::Explorer => self.explorer.render(area, buf),
             Focus::View => self.view.render(area, buf),
-            Focus::Filters => self.filters_pane.render(&self.filters, area, buf),
+            Focus::Filters => {
+                let add = self.keymap.keys_for(&[
+                    crate::keymap::ActionId::GlobalFocusFilters,
+                    crate::keymap::ActionId::FiltersInclude,
+                ]);
+                self.filters_pane
+                    .render(&self.filters, add.as_deref(), area, buf);
+            }
         }
     }
 

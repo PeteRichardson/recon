@@ -362,7 +362,14 @@ impl App<'_> {
                     {
                         let failed = self.filters.failed_examples(index, &regex);
                         if !failed.is_empty() {
-                            let message = super::filter_editor::failed_examples_message(&failed);
+                            let open = self.keymap.keys_for(&[
+                                crate::keymap::ActionId::GlobalFocusFilters,
+                                crate::keymap::ActionId::FiltersEditorOpen,
+                            ]);
+                            let message = super::filter_editor::failed_examples_message(
+                                &failed,
+                                open.as_deref(),
+                            );
                             if let Some(prompt) = self.prompt.as_mut() {
                                 prompt.error = Some(message);
                             }

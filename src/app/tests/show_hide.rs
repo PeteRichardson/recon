@@ -445,6 +445,17 @@ fn an_empty_filter_pane_opens_wide_enough_for_its_hint() {
     assert!(text.contains("press f i to add"), "no full hint: {text}");
 }
 
+/// #386: the hint names the keys the keymap in force binds, not `f i`.
+#[test]
+fn the_empty_filter_hint_follows_a_rebind() {
+    let mut app = app_over("empty_filter_rebound", &["a.rs"]);
+    rebind(&mut app, &[("global.focus.filters", &["g"])]);
+
+    let text = rendered(&mut app);
+
+    assert!(text.contains("press g i to add"), "{text}");
+}
+
 /// On a narrow terminal the filter pane gives way first, then the
 /// explorer, and the file view keeps `MIN_FILE_VIEW_WIDTH`. No pane is
 /// hidden to make room.
