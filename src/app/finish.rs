@@ -59,7 +59,18 @@ pub(super) struct Streamed {
 impl App<'_> {
     /// `q`: quit and emit — after the work the output still needs, if it
     /// needs any.
+    ///
+    /// A file set changed in memory stops the first `q` with a warning
+    /// (#348): nothing saves the change, and the session holds the only
+    /// copy. A second `q` quits. `Q` never asks.
     pub(super) fn quit_emitting(&mut self) {
+        if !self.quit_confirmed
+            && let Some(warning) = self.unsaved_warning()
+        {
+            self.report(&warning, true);
+            self.quit_warned = true;
+            return;
+        }
         let finish = match self.emit {
             Some(emit::Emit::Lines) if self.lines_need_finishing() => {
                 Some(Finish::Lines(LinesJob::start(
@@ -78,6 +89,30 @@ impl App<'_> {
             AppState::Quit { emit: true }
         };
         self.finishing = finish;
+    }
+
+    /// What the first `q` says when a file set has changes no file holds,
+    /// or `None` when every one is as its file has it.
+    fn unsaved_warning(&self) -> Option<String> {
+        let sets = self.filters.unsaved_sets();
+        let names = match sets.as_slice() {
+            [] => return None,
+            [one] => format!("set {one:?} has"),
+            more => format!(
+                "sets {} have",
+                more.iter()
+                    .map(|name| format!("{name:?}"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        };
+        let key = self
+            .keymap
+            .label_for(ActionId::GlobalQuit)
+            .unwrap_or("quit");
+        Some(format!(
+            "{names} changes that are not saved: {key} again to quit"
+        ))
     }
 
     /// Whether `--emit lines` needs more of the file than the view holds:

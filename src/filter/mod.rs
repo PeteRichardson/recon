@@ -352,6 +352,29 @@ pub struct Filter {
 }
 
 impl Filter {
+    /// Take the filter editor's fields (#317, #318, #321).
+    fn apply(&mut self, details: Details) {
+        self.name = details.name;
+        self.description = details.description;
+        self.prompt = details.prompt;
+        self.examples = details.examples;
+        self.generated_from = details.generated_from;
+    }
+
+    /// Whether the two say the same thing in a set file: the pattern, the
+    /// sense and the editor's fields. The switch and the colour are not
+    /// part of it: a switch is session state, and a colour the file did not
+    /// give is the palette's (#348).
+    fn same_text(&self, other: &Self) -> bool {
+        self.predicate.display() == other.predicate.display()
+            && self.sense == other.sense
+            && self.name == other.name
+            && self.description == other.description
+            && self.prompt == other.prompt
+            && self.examples == other.examples
+            && self.generated_from == other.generated_from
+    }
+
     /// What the pane calls this filter: the file's `name`, else the
     /// predicate's own display. Profiles refer to filters by this string,
     /// so it is also the filter's handle — `filtersets::parse` rejects two
@@ -889,19 +912,41 @@ impl ActiveFilters {
     /// are stale. Unlike `remove`, only *this* filter's verdicts can have
     /// changed — the numbering is untouched — but `Document::evaluate` is the
     /// only thing that recomputes them, so a full pass is what a caller owes.
+    ///
+    /// A filter with no `name` answers to its pattern, so a new pattern is
+    /// a new name, and the profiles follow it as `set_details` says (#356).
     pub fn set_pattern(&mut self, index: usize, pattern: &str) -> Result<bool, regex::Error> {
         let compiled = Regex::new(pattern)?;
-        if !self.is_user_authored(index) {
-            return Ok(false);
+        let changed = self.change(index, |filter| {
+            filter.predicate = Predicate::Regex(compiled);
+        });
+        if changed {
+            self.recompile();
         }
-        match self.filters.get_mut(index) {
-            Some(filter) => {
-                filter.predicate = Predicate::Regex(compiled);
-                self.recompile();
-                Ok(true)
-            }
-            None => Ok(false),
+        Ok(changed)
+    }
+
+    /// `set_details` and `set_pattern` as one change, for the filter
+    /// editor's Enter: the profiles go from the name the filter had to the
+    /// name it has now in one step (#356). One after the other, the name
+    /// between the two can be another filter's, and the second rename then
+    /// takes that filter's member too. The caller checks the final name
+    /// with `name_taken` first.
+    pub fn edit(
+        &mut self,
+        index: usize,
+        pattern: &str,
+        details: Details,
+    ) -> Result<bool, regex::Error> {
+        let compiled = Regex::new(pattern)?;
+        let changed = self.change(index, |filter| {
+            filter.predicate = Predicate::Regex(compiled);
+            filter.apply(details);
+        });
+        if changed {
+            self.recompile();
         }
+        Ok(changed)
     }
 
     /// Whether a filter other than the one at `index` — or any filter of
@@ -946,6 +991,14 @@ impl ActiveFilters {
     /// No `recompile` and no `forget_capture`: nothing that matches or is
     /// switched changes.
     pub fn set_details(&mut self, index: usize, details: Details) -> bool {
+        self.change(index, |filter| filter.apply(details))
+    }
+
+    /// Change the user-authored filter at `index` with `change`, and write
+    /// its new `display_name` into every profile of its set that named the
+    /// old one. `false`, and nothing changed, for a built-in filter or no
+    /// filter.
+    fn change(&mut self, index: usize, change: impl FnOnce(&mut Filter)) -> bool {
         if !self.is_user_authored(index) {
             return false;
         }
@@ -953,11 +1006,7 @@ impl ActiveFilters {
             return false;
         };
         let before = filter.display_name();
-        filter.name = details.name;
-        filter.description = details.description;
-        filter.prompt = details.prompt;
-        filter.examples = details.examples;
-        filter.generated_from = details.generated_from;
+        change(filter);
         let after = filter.display_name();
         let set = filter.set;
         if before != after {

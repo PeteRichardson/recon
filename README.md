@@ -395,7 +395,7 @@ Global (`src/app/events.rs`), handled before the focused pane sees the key:
 | Key(s) | Action | Name(s) |
 | --- | --- | --- |
 | `?` | Show the keymap overlay — every binding on one screen. Any key closes it, and that key does nothing else | `global.help` |
-| `q` | Quit | `global.quit` |
+| `q` | Quit. When a named set has changes that are not saved, the first `q` warns and the second quits | `global.quit` |
 | `Q` | Quit without emitting — the same as `q` unless `--emit` was given | `global.quit.silent` |
 | `Tab` / `Shift-Tab` | Move focus to the next / previous shown pane, left to right — explorer, file view, filter pane. A hidden pane is skipped | `global.focus.next` / `global.focus.prev` |
 | `/` | Search as you type. In the file view or the filter pane, set the search: the cursor moves to the first hit at or after the line you started on, wrapping once to the top and saying so, and the hits in the window are highlighted. In the explorer, search filenames: the selection moves to the first name that matches at or after the row you started on, the matching names light up, and the view pane previews the file under the selection as it would for `j`. Each keystroke re-runs from where `/` opened, so a narrowed pattern never walks away from where you started. Esc puts the cursor and the scroll, or the selected row and its preview, back there; Enter keeps the position. Only the visible lines are searched, and none of them changes | `global.search` |
@@ -843,6 +843,15 @@ each is a one-line hand edit to a file `S` has just shown you the shape of.
 `S` writes only to your own `filters.toml`, never to a directory on the
 filter path below.
 
+**Changes to a named set are not saved.** `c`, `d` and the filter editor
+change a named set's filters in memory only, and `S` writes only the scratch
+set. When a change leaves a set different from its file, `Enter` says so on
+the status row (`in memory only: set "web" is not saved`). The first `q`
+after such a change does not quit: it names the sets
+(`set "web" has changes that are not saved: q again to quit`), and a second
+`q` quits. Any other key cancels the warning. `Q` quits at once. To keep a
+change, edit the set's file.
+
 #### More directories of sets
 
 `RECON_FILTER_PATH` (or `--filter-path`) names more directories to read sets
@@ -979,12 +988,18 @@ does nothing there, as the versions are the pattern's. `Enter` gives the
 filter what each field holds, with the spaces at the two ends removed. An
 empty field is a key the filter does not have: an empty name gives the
 filter its pattern as its name again. A name that another filter in the same
-set has keeps the editor open, with the reason under the pattern. When a
-filter in a named set gets a new name, the set's profiles use the new name.
+set has keeps the editor open, with the reason under the pattern. A filter
+with no name answers to its pattern, so this is also true for a pattern that
+another filter has as its name. When a filter in a named set gets a new name,
+the set's profiles use the new name. For a filter with no name, a new
+pattern is a new name too, and the profiles use it.
 `Esc` discards the changes to all five fields.
 
 These changes are in memory, as a changed pattern is. `S` writes them for
-the scratch set; for a filter of a named set, edit `filters.toml`.
+the scratch set. For a filter of a named set, `Enter` tells you that the
+change is in memory only, and the first `q` warns you before the change is
+lost (see [Changes to a named set](#saved-filter-sets)). To keep the change,
+edit the set's file.
 
 ##### Marking lines
 

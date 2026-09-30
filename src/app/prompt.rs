@@ -438,6 +438,11 @@ impl App<'_> {
                         ) {
                             self.return_to_chain_origin();
                         }
+                        // After the chain's `n`, whose keypress clears the
+                        // status row.
+                        if let PromptKind::Edit { index, .. } = kind {
+                            self.report_unsaved_edit(index);
+                        }
                     } else if let Some(prompt) = self.prompt.as_mut() {
                         prompt.error = Some(INVALID_PATTERN.to_string());
                     }

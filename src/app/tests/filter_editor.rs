@@ -3196,3 +3196,203 @@ fn equals_clears_the_phrase_marks_of_the_line() {
         }]
     );
 }
+
+// ---- a filter's handle in its set's profiles (#356) ------------------------
+
+/// The index of the set named `name`.
+fn set_named(app: &App, name: &str) -> usize {
+    app.filters
+        .sets()
+        .iter()
+        .position(|set| set.name == name)
+        .expect("the set exists")
+}
+
+/// `f i foo`, `S web`, then a new pattern from `f C`: `foo` has no name, so
+/// it answers to its pattern, and `web`'s profile follows it. Before, the
+/// profile still named `foo`, and a restore turned the filter off.
+#[test]
+fn f_big_c_renames_an_unnamed_filter_in_its_profiles() {
+    let path = save_fixture("handle_f_big_c");
+    let mut app = app_over_file("handle_f_big_c_file", "foo\nfoo2\n");
+    app.save_path = Some(path);
+    app.add_filter("foo").expect("valid");
+    focus_filter_pane(&mut app);
+    key(&mut app, KeyCode::Char('S'));
+    typed(&mut app, "web");
+    key(&mut app, KeyCode::Enter);
+    let web = set_named(&app, "web");
+    let (foo, _) = app.filters.filters_in(web).next().expect("foo");
+
+    select_row(&mut app, widgets::filterlist::Row::Filter(foo));
+    open_selected(&mut app);
+    typed(&mut app, "2");
+    key(&mut app, KeyCode::Enter);
+
+    assert!(app.filter_editor.is_none());
+    assert_eq!(app.filters.filters()[foo].predicate.display(), "foo2");
+    assert_eq!(app.filters.sets()[web].profiles["default"], ["foo2"]);
+}
+
+/// The same through `f c`, which changes only the pattern.
+#[test]
+fn f_c_renames_an_unnamed_filter_in_its_profiles() {
+    let path = save_fixture("handle_f_c");
+    let mut app = app_over_file("handle_f_c_file", "foo\nfoo2\n");
+    app.save_path = Some(path);
+    app.add_filter("foo").expect("valid");
+    focus_filter_pane(&mut app);
+    key(&mut app, KeyCode::Char('S'));
+    typed(&mut app, "web");
+    key(&mut app, KeyCode::Enter);
+    let web = set_named(&app, "web");
+    let (foo, _) = app.filters.filters_in(web).next().expect("foo");
+
+    select_row(&mut app, widgets::filterlist::Row::Filter(foo));
+    key(&mut app, KeyCode::Char('c'));
+    typed(&mut app, "2");
+    key(&mut app, KeyCode::Enter);
+
+    assert!(app.prompt.is_none());
+    assert_eq!(app.filters.sets()[web].profiles["default"], ["foo2"]);
+}
+
+/// A filter with no name answers to its pattern, so a new pattern that is
+/// another filter's name is refused, as a name would be.
+#[test]
+fn f_big_c_refuses_a_pattern_another_filter_answers_to() {
+    let mut app = app_with_two_filters("handle_taken");
+    select_row(&mut app, widgets::filterlist::Row::Filter(1));
+    open_selected(&mut app);
+    ctrl(&mut app, KeyCode::Char('u'));
+    typed(&mut app, "ERROR");
+    key(&mut app, KeyCode::Enter);
+
+    assert_eq!(
+        editor(&app).error.as_deref(),
+        Some("another filter in this set is named \"ERROR\"; give this one a name")
+    );
+    assert_eq!(app.filters.filters()[1].predicate.display(), "INFO");
+
+    type_in_field(&mut app, EditorFocus::Name, "errors too");
+    key(&mut app, KeyCode::Enter);
+    assert!(app.filter_editor.is_none());
+    assert_eq!(app.filters.filters()[1].predicate.display(), "ERROR");
+}
+
+// ---- file sets changed in memory (#348) -------------------------------------
+
+/// Enter on a filter of a named set says the change is in memory only.
+#[test]
+fn f_big_c_on_a_file_filter_says_the_change_is_in_memory_only() {
+    let mut app = app_with_three_sets("unsaved_f_big_c");
+    let (alpha, _) = app.filters.filters_in(1).next().expect("alpha");
+    select_row(&mut app, widgets::filterlist::Row::Filter(alpha));
+    open_selected(&mut app);
+    typed(&mut app, "!");
+    key(&mut app, KeyCode::Enter);
+
+    assert_eq!(
+        message(&app),
+        Some("in memory only: set \"a\" is not saved")
+    );
+}
+
+/// `f c` says it too.
+#[test]
+fn f_c_on_a_file_filter_says_the_change_is_in_memory_only() {
+    let mut app = app_with_three_sets("unsaved_f_c");
+    let (alpha, _) = app.filters.filters_in(1).next().expect("alpha");
+    select_row(&mut app, widgets::filterlist::Row::Filter(alpha));
+    key(&mut app, KeyCode::Char('c'));
+    typed(&mut app, "!");
+    key(&mut app, KeyCode::Enter);
+
+    assert_eq!(
+        message(&app),
+        Some("in memory only: set \"a\" is not saved")
+    );
+}
+
+/// An Enter that changes nothing, and a scratch filter, say nothing: `S`
+/// saves the scratch set.
+#[test]
+fn an_unchanged_file_filter_and_a_scratch_filter_say_nothing() {
+    let mut app = app_with_three_sets("unsaved_nothing");
+    let (alpha, _) = app.filters.filters_in(1).next().expect("alpha");
+    select_row(&mut app, widgets::filterlist::Row::Filter(alpha));
+    open_selected(&mut app);
+    key(&mut app, KeyCode::Enter);
+    assert_ne!(
+        message(&app),
+        Some("in memory only: set \"a\" is not saved")
+    );
+
+    let (scratch, _) = app.filters.filters_in(0).next().expect("scratch");
+    select_row(&mut app, widgets::filterlist::Row::Filter(scratch));
+    open_selected(&mut app);
+    typed(&mut app, "!");
+    key(&mut app, KeyCode::Enter);
+    assert!(
+        message(&app).is_none_or(|text| !text.starts_with("in memory only")),
+        "{:?}",
+        message(&app)
+    );
+}
+
+/// A changed file set stops the first `q` with a warning; the second
+/// quits.
+#[test]
+fn q_warns_once_about_a_changed_file_set() {
+    let mut app = app_with_three_sets("unsaved_q");
+    let (alpha, _) = app.filters.filters_in(1).next().expect("alpha");
+    app.filters.set_pattern(alpha, "alpha!").expect("valid");
+    app.focus = Focus::View;
+
+    key(&mut app, KeyCode::Char('q'));
+    assert_eq!(app.state, AppState::Running);
+    assert_eq!(
+        message(&app),
+        Some("set \"a\" has changes that are not saved: q again to quit")
+    );
+
+    key(&mut app, KeyCode::Char('q'));
+    assert_eq!(app.state, AppState::Quit { emit: true });
+}
+
+/// Any other key between the two ends the warning, and `q` asks again.
+#[test]
+fn another_key_ends_the_quit_warning() {
+    let mut app = app_with_three_sets("unsaved_q_other_key");
+    let (alpha, _) = app.filters.filters_in(1).next().expect("alpha");
+    let (beta, _) = app.filters.filters_in(2).next().expect("beta");
+    app.filters.set_pattern(alpha, "alpha!").expect("valid");
+    app.filters.set_pattern(beta, "beta!").expect("valid");
+    app.focus = Focus::View;
+
+    key(&mut app, KeyCode::Char('q'));
+    key(&mut app, KeyCode::Char('j'));
+    assert!(message(&app).is_none());
+    key(&mut app, KeyCode::Char('q'));
+    assert_eq!(app.state, AppState::Running);
+    assert_eq!(
+        message(&app),
+        Some("sets \"a\", \"b\" have changes that are not saved: q again to quit")
+    );
+}
+
+/// `Q` quits at once, and no change means no warning.
+#[test]
+fn big_q_and_an_unchanged_session_do_not_warn() {
+    let mut app = app_with_three_sets("unsaved_big_q");
+    let (alpha, _) = app.filters.filters_in(1).next().expect("alpha");
+    app.filters.set_pattern(alpha, "alpha!").expect("valid");
+    app.focus = Focus::View;
+    key(&mut app, KeyCode::Char('Q'));
+    assert_eq!(app.state, AppState::Quit { emit: false });
+
+    let mut app = app_with_three_sets("unsaved_none");
+    app.focus = Focus::View;
+    key(&mut app, KeyCode::Char('q'));
+    assert_eq!(app.state, AppState::Quit { emit: true });
+}
