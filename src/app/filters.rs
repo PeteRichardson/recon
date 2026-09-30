@@ -59,6 +59,22 @@ impl App<'_> {
         Ok(())
     }
 
+    /// After a change to the filter at `index`: say it is in memory only,
+    /// when the change leaves a file set different from its file (#348).
+    /// `S` writes only the scratch set, so nothing in recon saves it.
+    pub(super) fn report_unsaved_edit(&mut self, index: usize) {
+        let Some(set) = self.filters.filters().get(index).map(|filter| filter.set) else {
+            return;
+        };
+        if self.filters.is_unsaved(set) {
+            let text = format!(
+                "in memory only: set {:?} is not saved",
+                self.filters.sets()[set].name
+            );
+            self.report(&text, false);
+        }
+    }
+
     /// The one place the mode is set. `Ctrl-H`/`H` is one key with one meaning
     /// in both panes: non-matching *lines* dim or hide in the view, and
     /// non-matching *files* dim or hide in the explorer (#119).

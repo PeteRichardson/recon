@@ -543,6 +543,37 @@ impl ActiveFilters {
         }
     }
 
+    /// Whether the filters of the file set `set` differ from the ones its
+    /// file loaded (#348): a filter changed with `c` or the filter editor,
+    /// or deleted. Only `S` writes a set, and only the scratch set, so a
+    /// change like this ends with the session. `false` for the scratch set,
+    /// the built-in set and an unlisted set, whose filters are not in
+    /// memory.
+    #[must_use]
+    pub fn is_unsaved(&self, set: usize) -> bool {
+        let Some(meta) = self.sets.get(set) else {
+            return false;
+        };
+        if !matches!(meta.origin, Origin::File(_)) || !meta.listed {
+            return false;
+        }
+        let loaded = &self.as_loaded[set];
+        self.filters_in(set).count() != loaded.len()
+            || !self
+                .filters_in(set)
+                .zip(loaded)
+                .all(|((_, now), then)| now.same_text(then))
+    }
+
+    /// The names of the sets `is_unsaved` says yes to, in the pane's order.
+    #[must_use]
+    pub fn unsaved_sets(&self) -> Vec<&str> {
+        (0..self.sets.len())
+            .filter(|&set| self.is_unsaved(set))
+            .map(|set| self.sets[set].name.as_str())
+            .collect()
+    }
+
     /// Turn the scratch set into a named, enabled set (#131), in memory.
     ///
     /// The new set takes the default priority and a `default` profile of
@@ -1805,5 +1836,162 @@ mod tests {
             set.failed_examples(x, &Regex::new("one|two").expect("valid"))
                 .is_empty()
         );
+    }
+
+    // ---- a filter's handle in its set's profiles (#356) ---------------------
+
+    /// A new pattern is a new name for a filter with no `name`, and the
+    /// set's profiles follow it, as they follow a new `name`.
+    #[test]
+    fn a_new_pattern_renames_an_unnamed_filter_in_its_profiles() {
+        let mut set = set_with(&["foo"]);
+        assert!(set.adopt_scratch_as("web", PathBuf::from("t")));
+        let web = set
+            .sets()
+            .iter()
+            .position(|s| s.name == "web")
+            .expect("web");
+        let (foo, _) = set.filters_in(web).next().expect("foo");
+
+        assert!(set.set_pattern(foo, "foo2").expect("valid"));
+
+        assert_eq!(set.sets()[web].profiles["default"], ["foo2"]);
+    }
+
+    /// A filter the file named keeps its name under a new pattern, so the
+    /// profiles do not change.
+    #[test]
+    fn a_new_pattern_leaves_a_named_filter_in_its_profiles() {
+        let mut set = with_default_profile();
+        let names = |set: &ActiveFilters| set.sets()[1].profiles["default"].clone();
+        let before = names(&set);
+        let (first, _) = set.filters_in(1).next().expect("a filter");
+
+        set.set_pattern(first, "changed").expect("valid");
+
+        assert_eq!(names(&set), before);
+    }
+
+    /// Two filters, `foo` with no name and one named `foo2`, both in the
+    /// profile. `foo` gets the pattern `foo2` and the name `n`: the profile
+    /// names `n` and `foo2`. A rename through the pattern first would make
+    /// both members `foo2` for a moment, and the rename to `n` would then
+    /// take the other filter's member too.
+    #[test]
+    fn an_edit_renames_from_the_old_name_to_the_final_one_in_one_step() {
+        let mut set = set_with(&["foo", "bar"]);
+        set.set_details(
+            1,
+            Details {
+                name: Some("foo2".into()),
+                ..Details::default()
+            },
+        );
+        assert!(set.adopt_scratch_as("web", PathBuf::from("t")));
+        let web = set
+            .sets()
+            .iter()
+            .position(|s| s.name == "web")
+            .expect("web");
+        let (foo, _) = set.filters_in(web).next().expect("foo");
+        assert_eq!(set.sets()[web].profiles["default"], ["foo", "foo2"]);
+
+        let edit = Details {
+            name: Some("n".into()),
+            ..Details::default()
+        };
+        assert!(set.edit(foo, "foo2", edit).expect("valid"));
+
+        assert_eq!(set.sets()[web].profiles["default"], ["n", "foo2"]);
+        assert_eq!(set.filters()[foo].predicate.display(), "foo2");
+    }
+
+    /// The other way round: a filter named `x` loses its name and gets the
+    /// pattern `bar`, next to a filter named `foo`, its old pattern. A
+    /// rename through the name first would pass through `foo`.
+    #[test]
+    fn an_edit_that_drops_a_name_renames_to_the_new_pattern() {
+        let mut a = loaded("a", 50, true, &["foo", "other"]);
+        a.filters[0].name = "x".into();
+        a.filters[1].name = "foo".into();
+        a.profiles
+            .insert("default".into(), vec!["x".into(), "foo".into()]);
+        let mut set = ActiveFilters::with_sets(None, &[a]);
+        let (x, _) = set.filters_in(1).next().expect("x");
+
+        assert!(set.edit(x, "bar", Details::default()).expect("valid"));
+
+        assert_eq!(set.sets()[1].profiles["default"], ["bar", "foo"]);
+    }
+
+    /// A pattern that does not compile changes nothing, the details
+    /// included.
+    #[test]
+    fn an_edit_with_a_bad_pattern_changes_nothing() {
+        let mut set = set_with(&["foo"]);
+        let edit = Details {
+            name: Some("n".into()),
+            ..Details::default()
+        };
+        assert!(set.edit(0, "[", edit).is_err());
+        assert_eq!(set.filters()[0].display_name(), "foo");
+    }
+
+    // ---- file sets changed in memory (#348) ---------------------------------
+
+    /// A file set whose filters differ from what its file loaded is unsaved;
+    /// a switch or a colour is not a difference, and the same text again
+    /// is none.
+    #[test]
+    fn a_file_set_is_unsaved_while_its_filters_differ_from_the_file() {
+        let mut set = ActiveFilters::with_sets(None, &[loaded("a", 50, true, &["x", "y"])]);
+        set.add("typed").expect("valid");
+        assert!(set.unsaved_sets().is_empty(), "a typed filter is scratch");
+        let (x, _) = set.filters_in(1).next().expect("x");
+
+        set.set_enabled(x, false);
+        assert!(set.unsaved_sets().is_empty(), "a switch is not saved");
+
+        set.set_pattern(x, "x2").expect("valid");
+        assert_eq!(set.unsaved_sets(), ["a"]);
+        assert!(set.is_unsaved(1));
+
+        set.set_pattern(x, "x").expect("valid");
+        assert!(set.unsaved_sets().is_empty(), "the same pattern again");
+
+        set.set_details(
+            x,
+            Details {
+                name: Some("x".into()),
+                description: Some("why".into()),
+                ..Details::default()
+            },
+        );
+        assert_eq!(set.unsaved_sets(), ["a"], "a description");
+    }
+
+    /// A deleted file filter is an unsaved change too.
+    #[test]
+    fn a_deleted_file_filter_makes_its_set_unsaved() {
+        let mut set = ActiveFilters::with_sets(None, &[loaded("a", 50, true, &["x", "y"])]);
+        let (y, _) = set.filters_in(1).nth(1).expect("y");
+        assert!(set.remove(y));
+        assert_eq!(set.unsaved_sets(), ["a"]);
+    }
+
+    /// A set `S` just wrote is saved, and a change to it after that is not.
+    #[test]
+    fn a_set_just_saved_is_saved_until_it_changes() {
+        let mut set = set_with(&["foo"]);
+        assert!(set.adopt_scratch_as("web", PathBuf::from("t")));
+        assert!(set.unsaved_sets().is_empty());
+        let web = set
+            .sets()
+            .iter()
+            .position(|s| s.name == "web")
+            .expect("web");
+        let (foo, _) = set.filters_in(web).next().expect("foo");
+        set.set_pattern(foo, "foo2").expect("valid");
+        assert_eq!(set.unsaved_sets(), ["web"]);
     }
 }

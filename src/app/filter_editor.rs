@@ -1956,10 +1956,20 @@ impl App<'_> {
             editor.error = Some(message.to_string());
             return false;
         }
-        if let Some(name) = editor.details().name
-            && self.filters.name_taken(editor.target, &name)
-        {
-            editor.error = Some(format!("another filter in this set is named {name:?}"));
+        // The name the filter will answer to: with no name, the pattern
+        // (#356). Two filters that answer to one name are a set `parse`
+        // refuses, and a profile could not tell them apart.
+        let details = editor.details();
+        let answers_to = details
+            .name
+            .clone()
+            .unwrap_or_else(|| editor.field.pattern.clone());
+        if self.filters.name_taken(editor.target, &answers_to) {
+            editor.error = Some(if details.name.is_some() {
+                format!("another filter in this set is named {answers_to:?}")
+            } else {
+                format!("another filter in this set is named {answers_to:?}; give this one a name")
+            });
             return false;
         }
         true
@@ -1977,10 +1987,7 @@ impl App<'_> {
             editor.details(),
             editor.sense,
         );
-        // The details go on before a changed pattern: `set_details` renames
-        // the filter in its set's profiles from the name they know it by,
-        // which for a filter with no name is its pattern as it was.
-        // The sense goes on before the add or the replace, whose re-evaluate
+        // The sense goes on before the add or the edit, whose re-evaluate
         // is what shows it.
         let outcome = match target {
             None => {
@@ -1998,10 +2005,16 @@ impl App<'_> {
                     }
                 })
             }
+            // The details and the pattern go on as one change: the set's
+            // profiles go from the name the filter had to the one it has
+            // now in one step (#356).
             Some(index) => {
-                self.filters.set_details(index, details);
                 self.filters.set_sense(index, sense);
-                self.replace_filter(index, &pattern)
+                self.filters.edit(index, &pattern, details).map(|changed| {
+                    if changed {
+                        self.refresh_view();
+                    }
+                })
             }
         };
         if let Err(error) = outcome {
@@ -2015,6 +2028,10 @@ impl App<'_> {
         // (#48), and end the chain where it started.
         self.swallow_next_enter = true;
         self.return_to_chain_origin();
+        // After the chain's `n`, whose keypress clears the status row.
+        if let Some(index) = target {
+            self.report_unsaved_edit(index);
+        }
     }
 }
 

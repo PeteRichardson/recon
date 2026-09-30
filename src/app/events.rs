@@ -100,6 +100,8 @@ impl App<'_> {
         if matches!(event, event::Event::Key(_)) {
             self.status_message = None;
             self.crossing = None;
+            // The warning goes with the row it was on (#348).
+            self.quit_confirmed = std::mem::take(&mut self.quit_warned);
         }
 
         // An open prompt takes precedence over every other binding.

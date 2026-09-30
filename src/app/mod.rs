@@ -230,6 +230,13 @@ pub struct App<'a> {
     /// re-arms it for the real `Enter` still pending — see
     /// `return_to_chain_origin`.
     swallow_next_enter: bool,
+    /// Set when `q` found a file set with changes no file holds, and said so
+    /// on the status row instead of quitting (#348). A `q` as the next key
+    /// quits; any other key ends the warning, as it clears the row.
+    quit_warned: bool,
+    /// `quit_warned` as it was before the key being dispatched: whether
+    /// this key is the second `q`. Set from it on each keypress.
+    quit_confirmed: bool,
     /// The pane that had focus when `f` moved it to the filter pane, so a
     /// chain that commits a prompt — `f i … Enter`, `f x … Enter`,
     /// `f c … Enter` — can put focus back and step as `n` would (#120 §8,
@@ -447,6 +454,8 @@ impl App<'_> {
             press: None,
             last_view_click: None,
             swallow_next_enter: false,
+            quit_warned: false,
+            quit_confirmed: false,
             chain_origin: None,
             chain_shown_filters: false,
             help: false,
