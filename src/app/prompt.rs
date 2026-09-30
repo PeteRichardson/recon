@@ -10,6 +10,9 @@ use crossterm::event::{self, KeyCode, KeyModifiers};
 /// Shown in the prompt when a pattern will not compile, after vim's error.
 pub(super) const INVALID_PATTERN: &str = "E486: invalid pattern";
 
+/// Shown in the prompt when a filter is committed with no pattern.
+pub(super) const EMPTY_PATTERN: &str = "a filter needs a pattern";
+
 /// What an open prompt will do with the pattern being typed.
 ///
 /// The `Edit` variants are what makes a filter's pattern changeable at all:
@@ -336,6 +339,20 @@ impl App<'_> {
                     // user is back at the origin, as if Esc.
                     if kind == PromptKind::Search && pattern.is_empty() && prompt.origin.is_some() {
                         self.cancel_prompt();
+                        return;
+                    }
+
+                    // An empty regex matches every line (#347): a filter of
+                    // one colours the whole file, or hides it. Refused like an
+                    // invalid pattern, so the prompt stays open to type into.
+                    if matches!(
+                        kind,
+                        PromptKind::Filter | PromptKind::Exclude | PromptKind::Edit { .. }
+                    ) && pattern.is_empty()
+                    {
+                        if let Some(prompt) = self.prompt.as_mut() {
+                            prompt.error = Some(EMPTY_PATTERN.to_string());
+                        }
                         return;
                     }
 
