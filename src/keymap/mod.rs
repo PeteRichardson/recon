@@ -1416,6 +1416,21 @@ mod tests {
         );
     }
 
+    /// `[` and `]` took over paging from space and Enter (#48). The view
+    /// must not still bind either, or it would keep a second copy of a key
+    /// that now belongs to another pane.
+    #[test]
+    fn space_and_enter_no_longer_page_the_view() {
+        for code in [KeyCode::Char(' '), KeyCode::Enter] {
+            let event = KeyEvent::new(code, KeyModifiers::empty());
+            assert_eq!(
+                Keymap::default().resolve(Scope::View, normalise(event)),
+                None,
+                "{code:?} still means something in the file view"
+            );
+        }
+    }
+
     #[test]
     fn an_unbound_key_resolves_to_nothing() {
         let event = KeyEvent::new(KeyCode::Char('~'), KeyModifiers::empty());

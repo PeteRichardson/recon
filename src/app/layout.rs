@@ -273,8 +273,8 @@ impl App<'_> {
 
     /// Handle divider dragging, reporting whether the event was consumed.
     ///
-    /// Anything not aimed at a divider falls through to the focused widget,
-    /// so the file view keeps its scroll-wheel behaviour.
+    /// Anything not aimed at a divider falls through to `handle_click` and
+    /// `handle_wheel`, so a click and the wheel still reach the panes.
     pub(crate) fn handle_divider(&mut self, mouse: MouseEvent) -> bool {
         match mouse.kind {
             MouseEventKind::Down(MouseButton::Left) => {

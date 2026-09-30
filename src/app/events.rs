@@ -266,6 +266,15 @@ impl App<'_> {
             return;
         }
 
+        // The wheel goes to the pane under the pointer, not the focused one
+        // (#350) — so it is aimed like a click, and never reaches the
+        // focused-pane dispatch below.
+        if let event::Event::Mouse(mouse) = event
+            && self.handle_wheel(mouse)
+        {
+            return;
+        }
+
         // Filter pane keys are routed here rather than through the generic
         // `handle_events` dispatch below: applying them means mutating the
         // `ActiveFilters`, which only `App` owns, so `FilterList` cannot carry
@@ -277,8 +286,8 @@ impl App<'_> {
             return;
         }
 
-        // Every `Scope::View` key resolves here rather than in the widget's
-        // own `handle_events`: a few of these mean "the *document's* top" or
+        // Every `Scope::View` key resolves here rather than in the widget
+        // itself: a few of these mean "the *document's* top" or
         // "the next paragraph anywhere", not "the top of the buffer that
         // happens to be loaded" (#7), and only `App` can see the document to
         // answer that. The rest could be left to the widget, but routing them
@@ -294,13 +303,13 @@ impl App<'_> {
         //
         // An unresolved key is dropped here rather than handed on, and that
         // is what extends the guarantee above from the bound keys to every
-        // key. It used to fall through to `Focus::View =>
-        // self.forward_to_view(event)` below carrying its original,
-        // un-normalised event, and `FileView::handle_events` matches on the
-        // character alone (`..` on the modifier fields) — so an unbound
-        // *modified* key, `Alt-j` for instance, reached the file view and
-        // moved the cursor as if the modifier were never pressed, forcing a
-        // truncated preview to a full load on the way in. The explorer and
+        // key. It used to fall through to the `Focus::View` arm below
+        // carrying its original, un-normalised event, and the widget's old
+        // key dispatch matched on the character alone (`..` on the modifier
+        // fields) — so an unbound *modified* key, `Alt-j` for instance,
+        // reached the file view and moved the cursor as if the modifier were
+        // never pressed, forcing a truncated preview to a full load on the
+        // way in. The explorer and
         // the filter pane never had that gap: both resolve through their own
         // scope and drop an unresolved key rather than forwarding the raw
         // event (`Scope::for_focus` below; `handle_filter_key`). The view
@@ -309,9 +318,8 @@ impl App<'_> {
         // `[`/`]` are untouched by this, though the widget acts on them and
         // `Scope::View` has no row for either: they resolve in
         // `Scope::Global` above, which is checked first, and
-        // `GlobalPageDown`/`GlobalPageUp` hand the widget a rebuilt key
-        // directly. The `Focus::View` arm below is left for mouse events,
-        // which resolve through no scope at all.
+        // `GlobalPageDown`/`GlobalPageUp` hand the widget its action
+        // directly.
         if let event::Event::Key(key) = event
             && self.focus == Focus::View
         {
@@ -376,10 +384,11 @@ impl App<'_> {
                 }
                 action
             }
-            Focus::View => {
-                self.forward_to_view(event);
-                return;
-            }
+            // Every key returned above, and the view has nothing to do with
+            // a mouse event `handle_click` and `handle_wheel` did not take —
+            // a right click, say — so this drops it rather than promoting a
+            // truncated preview on a click that meant nothing.
+            Focus::View => return,
             // Unreachable: filter-pane keys returned above, through
             // `handle_filter_key`. Applying them means mutating the
             // `ActiveFilters`, and the pane only ever borrows one, so it

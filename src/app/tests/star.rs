@@ -367,7 +367,7 @@ fn capital_n_tolerates_the_shift_modifier_a_real_terminal_sends() {
     );
 }
 
-/// `n`/`N` bypass `FileView::handle_events`, which is where a truncated
+/// `n`/`N` bypass `FileView::perform`, which is where a truncated
 /// preview normally promotes itself to a full load on first interaction.
 /// Without repeating that promotion, `n` on a large log would silently
 /// wrap inside the preview and never reach a hit past it.
