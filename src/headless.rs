@@ -559,7 +559,7 @@ mod tests {
                 summary,
                 failed,
             } => (strings(&lines), summary, failed),
-            Exit::Silent => panic!("headless never returns Silent"),
+            other => panic!("headless returns only Emit, not {other:?}"),
         }
     }
 

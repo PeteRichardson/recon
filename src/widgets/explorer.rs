@@ -734,6 +734,21 @@ impl Explorer<'_> {
             .collect()
     }
 
+    /// How many of the listing's files the scan has answered, and how many
+    /// files there are: the progress `q` under `--emit files` shows while it
+    /// waits for the rest (#352).
+    pub(crate) fn answered(&self) -> (usize, usize) {
+        let files = self.entries.iter().filter(|entry| entry.kind.is_readable());
+        let (mut answered, mut total) = (0, 0);
+        for entry in files {
+            total += 1;
+            if !matches!(entry.matched, Match::Unknown) {
+                answered += 1;
+            }
+        }
+        (answered, total)
+    }
+
     /// The files among the rows currently on screen, in row order (#143).
     /// `files` reads every entry, because the scanner needs them all; this
     /// reads the visible rows, so hide mode has already dropped the `No`s.

@@ -1849,7 +1849,7 @@ dir="$(recon --emit cwd)" && cd "$dir"           # where you ended up
 | `--emit` | Prints, on `q` | Summary on stderr |
 | --- | --- | --- |
 | `lines` | the file view's visible lines, verbatim, in the current mode — what the filters chose; a search does not affect it | `recon: emitted 812 lines of app.log, dim mode (27 match) — u to emit matches only` |
-| `files` | the explorer's listed files, one absolute path per line, in explorer order | `recon: emitted 14 files from /var/log, dim mode (3 match, 2 unscanned) — u to emit matches only` |
+| `files` | the explorer's listed files, one absolute path per line, in explorer order | `recon: emitted 14 files from /var/log, dim mode (3 match) — u to emit matches only` |
 | `cwd` | the directory the explorer is showing | `recon: emitted /var/log` |
 
 **`q` emits, `Q` doesn't.** `Q` quits without printing and exits 1 when
@@ -1861,9 +1861,18 @@ the file, every file in the listing; hide mode emits only the matches. The
 output cannot say which, so every emit prints one summary line to stderr
 naming the mode and the counts, and it reaches the terminal even when stdout is
 piped or captured. `dim mode (3 match)` when you wanted the three is the cue to
-press `Ctrl-H` and quit again. `unscanned` appears while the explorer's scan
-is still running: those files might match. Empty output is legitimate — hide
-mode with no matches emits nothing and exits 0.
+press `u` and quit again. Empty output is legitimate — hide mode with no
+matches emits nothing and exits 0.
+
+**`q` finishes the work first.** The view holds only a preview of a large
+file, and the explorer's scan may not have answered every file yet. After `q`,
+recon reads the rest of the file, or waits for the scan, before it emits —
+the output is never the part it happened to have. The status row shows the
+progress (`finishing app.log: 4.1 of 20.0 GB — Ctrl-c to cancel`).
+`Ctrl-c` or `Esc` (`finishing.cancel`) cancels: nothing on stdout, `recon: cancelled` on stderr,
+exit 130. The rest of a large file is read one line at a time into a
+temporary file that is deleted as it is opened, so memory stays flat; the
+disk holds the emitted lines until they are written to stdout.
 
 **`-n` numbers the lines.** With `--emit lines`, `-n` (or `--line-numbers`)
 prefixes each line with its line number in the file and a tab, so hide mode

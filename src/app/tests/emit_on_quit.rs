@@ -49,7 +49,7 @@ fn without_emit_both_quits_are_silent() {
 
 #[test]
 fn a_running_app_has_not_exited() {
-    let app = app_emitting("quit_still_running", Some(emit::Emit::Cwd));
+    let mut app = app_emitting("quit_still_running", Some(emit::Emit::Cwd));
     assert_eq!(app.exit(), emit::Exit::Silent);
 }
 
@@ -134,7 +134,7 @@ fn unlist_flag_applies_at_startup() {
 
 // ---- --emit lines --------------------------------------------------
 
-fn emitted(app: &App) -> (Vec<String>, String) {
+fn emitted(app: &mut App) -> (Vec<String>, String) {
     match app.exit() {
         emit::Exit::Emit { lines, summary, .. } => (
             lines
@@ -143,7 +143,14 @@ fn emitted(app: &App) -> (Vec<String>, String) {
                 .collect(),
             summary,
         ),
-        emit::Exit::Silent => panic!("the session was silent"),
+        emit::Exit::Spooled { mut spool, summary } => {
+            use std::io::{Read, Seek, SeekFrom};
+            let mut text = String::new();
+            spool.seek(SeekFrom::Start(0)).expect("seek the spool");
+            spool.read_to_string(&mut text).expect("utf-8 fixture");
+            (text.lines().map(ToString::to_string).collect(), summary)
+        }
+        other => panic!("the session emitted nothing: {other:?}"),
     }
 }
 
@@ -165,7 +172,7 @@ fn lines_in_dim_mode_emits_every_visible_line_and_counts_the_matches() {
     app.add_filter("hit").expect("valid");
     key(&mut app, KeyCode::Char('q'));
 
-    let (lines, summary) = emitted(&app);
+    let (lines, summary) = emitted(&mut app);
 
     assert_eq!(lines, vec!["hit one", "plain", "hit two"]);
     let name = app.view.filename().display().to_string();
@@ -173,6 +180,101 @@ fn lines_in_dim_mode_emits_every_visible_line_and_counts_the_matches() {
         summary,
         format!("recon: emitted 3 lines of {name}, dim mode (2 match) — u to emit matches only")
     );
+}
+
+/// A file past the preview cap, whose last line is the only hit.
+fn app_emitting_a_large_file(name: &str, line_numbers: bool) -> App<'static> {
+    let lines = crate::widgets::fileview::PREVIEW_LINES + 100;
+    let body: String = (0..lines)
+        .map(|i| {
+            if i == lines - 1 {
+                "hit at the end\n".to_string()
+            } else {
+                format!("line {i}\n")
+            }
+        })
+        .collect();
+    // A directory argument previews its first entry rather than reading it
+    // whole, which is the state `q` has to finish from.
+    let dir = fixture_dir(name);
+    fs::write(dir.join("big.log"), &body).expect("write fixture");
+    let mut app = App::new(&Config {
+        path: dir.display().to_string(),
+        emit: Some(emit::Emit::Lines),
+        line_numbers,
+        ..Config::default()
+    });
+    assert!(app.view.is_truncated(), "the fixture must be past the cap");
+    app.add_filter("hit").expect("valid");
+    app
+}
+
+/// Poll the work `q` started until it ends.
+fn finish(app: &mut App) {
+    let start = std::time::Instant::now();
+    while app.state == AppState::Finishing {
+        app.poll_finish();
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(20),
+            "the work never finished"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+}
+
+/// #351: `q` over a file the view holds a preview of reads the rest, and
+/// emits a line past the preview, with a count over the whole file.
+#[test]
+fn lines_of_a_large_file_are_read_to_its_end() {
+    let mut app = app_emitting_a_large_file("emit_lines_large", true);
+    ctrl(&mut app, KeyCode::Char('h'));
+    key(&mut app, KeyCode::Char('q'));
+    assert_eq!(app.state, AppState::Finishing);
+    let status = app.finishing_text().expect("a progress line");
+    assert!(status.starts_with("finishing "), "{status}");
+    assert!(status.ends_with(" — Ctrl-c to cancel"), "{status}");
+
+    finish(&mut app);
+
+    let (lines, summary) = emitted(&mut app);
+    let last = crate::widgets::fileview::PREVIEW_LINES + 100;
+    assert_eq!(lines, vec![format!("{last}\thit at the end")]);
+    let name = app.view.filename().display().to_string();
+    assert_eq!(
+        summary,
+        format!("recon: emitted 1 lines of {name}, hide mode")
+    );
+}
+
+/// Dim mode emits every line of the whole file, and counts the matches
+/// over all of it.
+#[test]
+fn lines_of_a_large_file_in_dim_mode_count_the_whole_file() {
+    let mut app = app_emitting_a_large_file("emit_lines_large_dim", false);
+    key(&mut app, KeyCode::Char('q'));
+    finish(&mut app);
+
+    let (lines, summary) = emitted(&mut app);
+    let total = crate::widgets::fileview::PREVIEW_LINES + 100;
+    assert_eq!(lines.len(), total);
+    assert_eq!(lines.last().map(String::as_str), Some("hit at the end"));
+    let name = app.view.filename().display().to_string();
+    assert_eq!(
+        summary,
+        format!(
+            "recon: emitted {total} lines of {name}, dim mode (1 match) — u to emit matches only"
+        )
+    );
+}
+
+/// A cancel stops the reading thread and emits nothing.
+#[test]
+fn a_cancelled_large_file_emits_nothing() {
+    let mut app = app_emitting_a_large_file("emit_lines_large_cancel", false);
+    key(&mut app, KeyCode::Char('q'));
+    ctrl(&mut app, KeyCode::Char('c'));
+
+    assert_eq!(app.exit(), emit::Exit::Cancelled);
 }
 
 /// #386: the summary names the key the keymap in force gives hide mode,
@@ -192,7 +294,7 @@ fn the_dim_summary_names_the_hide_key_in_force() {
         rebind(&mut app, &[("global.toggle.hide", keys)]);
         key(&mut app, KeyCode::Char('q'));
 
-        let (_, summary) = emitted(&app);
+        let (_, summary) = emitted(&mut app);
 
         match hint {
             Some(hint) => assert!(summary.ends_with(hint), "{summary}"),
@@ -208,7 +310,7 @@ fn lines_in_hide_mode_emits_only_the_matches() {
     ctrl(&mut app, KeyCode::Char('h'));
     key(&mut app, KeyCode::Char('q'));
 
-    let (lines, summary) = emitted(&app);
+    let (lines, summary) = emitted(&mut app);
 
     assert_eq!(lines, vec!["hit one", "hit two"]);
     let name = app.view.filename().display().to_string();
@@ -227,7 +329,7 @@ fn line_numbers_are_source_numbers_with_a_tab() {
     ctrl(&mut app, KeyCode::Char('h'));
     key(&mut app, KeyCode::Char('q'));
 
-    let (lines, _) = emitted(&app);
+    let (lines, _) = emitted(&mut app);
 
     assert_eq!(lines, vec!["1\thit one", "3\thit two"]);
 }
@@ -237,7 +339,7 @@ fn lines_with_no_filter_still_counts_zero_matches() {
     let mut app = app_emitting_lines("emit_lines_nofilter", "a\nb\n", false);
     key(&mut app, KeyCode::Char('q'));
 
-    let (lines, summary) = emitted(&app);
+    let (lines, summary) = emitted(&mut app);
 
     assert_eq!(lines, vec!["a", "b"]);
     assert!(summary.contains("dim mode (0 match)"), "{summary}");
@@ -257,7 +359,7 @@ fn lines_over_a_directory_listing_emits_nothing_and_says_so() {
     key(&mut app, KeyCode::Char('g'));
     key(&mut app, KeyCode::Char('q'));
 
-    let (lines, summary) = emitted(&app);
+    let (lines, summary) = emitted(&mut app);
 
     assert!(lines.is_empty());
     assert_eq!(
@@ -276,7 +378,7 @@ fn lines_over_an_unreadable_file_emits_nothing_and_says_so() {
     });
     key(&mut app, KeyCode::Char('q'));
 
-    let (lines, summary) = emitted(&app);
+    let (lines, summary) = emitted(&mut app);
 
     assert!(lines.is_empty());
     assert_eq!(
@@ -299,15 +401,30 @@ fn app_emitting_files(name: &str) -> (App<'static>, Sender<scan::Scanned>) {
     (app, tx)
 }
 
+/// #352: `q` before the scan ends waits for it, showing how far it has
+/// got, and then emits the complete answer — no "unscanned" count, since a
+/// completed run has none.
 #[test]
-fn files_in_dim_mode_emits_every_listed_file_with_the_counts() {
+fn files_in_dim_mode_waits_for_the_scan_and_emits_the_counts() {
     let (mut app, tx) = app_emitting_files("emit_files_dim");
     mark(&mut app, &tx, 0, true);
     mark(&mut app, &tx, 1, false);
-    // c.log deliberately unscanned.
+    // c.log not scanned yet.
     key(&mut app, KeyCode::Char('q'));
 
-    let (lines, summary) = emitted(&app);
+    assert_eq!(app.state, AppState::Finishing);
+    assert!(app.is_running());
+    let status = app.finishing_text().expect("a progress line");
+    assert!(
+        status.starts_with("finishing: 2 of 3 files scanned — Ctrl-c to cancel"),
+        "{status}"
+    );
+
+    mark(&mut app, &tx, 2, true);
+    assert!(app.poll_finish());
+    assert_eq!(app.state, AppState::Quit { emit: true });
+
+    let (lines, summary) = emitted(&mut app);
 
     let dir = app.explorer.dir().display().to_string();
     assert_eq!(
@@ -320,10 +437,59 @@ fn files_in_dim_mode_emits_every_listed_file_with_the_counts() {
     );
     assert_eq!(
         summary,
-        format!(
-            "recon: emitted 3 files from {dir}, dim mode (1 match, 1 unscanned) — u to emit matches only"
-        )
+        format!("recon: emitted 3 files from {dir}, dim mode (2 match) — u to emit matches only")
     );
+}
+
+/// #352's defect: hide mode keeps an unscanned row on screen, and `q` used
+/// to emit it as a match. Now it waits, and a file that turns out not to
+/// match is not emitted.
+#[test]
+fn files_in_hide_mode_never_emits_an_unscanned_file() {
+    let (mut app, tx) = app_emitting_files("emit_files_hide_unscanned");
+    mark(&mut app, &tx, 0, true);
+    ctrl(&mut app, KeyCode::Char('h'));
+    key(&mut app, KeyCode::Char('q'));
+    assert_eq!(app.state, AppState::Finishing);
+
+    mark(&mut app, &tx, 1, false);
+    mark(&mut app, &tx, 2, true);
+    app.poll_finish();
+
+    let (lines, summary) = emitted(&mut app);
+
+    let dir = app.explorer.dir().display().to_string();
+    assert_eq!(lines, vec![format!("{dir}/a.log"), format!("{dir}/c.log")]);
+    assert_eq!(
+        summary,
+        format!("recon: emitted 2 files from {dir}, hide mode")
+    );
+}
+
+/// Ctrl-c or Esc while finishing cancels: nothing is emitted, and the exit
+/// says so (#351, #352). Any other key does nothing.
+#[test]
+fn a_cancel_while_finishing_emits_nothing() {
+    for (name, cancel) in [
+        ("emit_files_cancel_ctrl_c", KeyCode::Char('c')),
+        ("emit_files_cancel_esc", KeyCode::Esc),
+    ] {
+        let (mut app, _tx) = app_emitting_files(name);
+        key(&mut app, KeyCode::Char('q'));
+        key(&mut app, KeyCode::Char('Q'));
+        key(&mut app, KeyCode::Char('j'));
+        assert_eq!(app.state, AppState::Finishing, "{name}: another key acted");
+
+        if cancel == KeyCode::Esc {
+            key(&mut app, cancel);
+        } else {
+            ctrl(&mut app, cancel);
+        }
+
+        assert_eq!(app.state, AppState::Cancelled, "{name}");
+        assert!(!app.is_running());
+        assert_eq!(app.exit(), emit::Exit::Cancelled, "{name}");
+    }
 }
 
 #[test]
@@ -334,7 +500,7 @@ fn files_omits_the_unscanned_count_once_the_scan_is_complete() {
     mark(&mut app, &tx, 2, true);
     key(&mut app, KeyCode::Char('q'));
 
-    let (_, summary) = emitted(&app);
+    let (_, summary) = emitted(&mut app);
 
     let dir = app.explorer.dir().display().to_string();
     assert_eq!(
@@ -352,7 +518,7 @@ fn files_in_hide_mode_emits_only_the_matches() {
     ctrl(&mut app, KeyCode::Char('h'));
     key(&mut app, KeyCode::Char('q'));
 
-    let (lines, summary) = emitted(&app);
+    let (lines, summary) = emitted(&mut app);
 
     let dir = app.explorer.dir().display().to_string();
     assert_eq!(lines, vec![format!("{dir}/a.log"), format!("{dir}/c.log")]);
@@ -368,7 +534,7 @@ fn files_with_no_filter_says_so_instead_of_counting() {
     app.emit = Some(emit::Emit::Files);
     key(&mut app, KeyCode::Char('q'));
 
-    let (lines, summary) = emitted(&app);
+    let (lines, summary) = emitted(&mut app);
 
     assert_eq!(lines.len(), 2);
     let dir = app.explorer.dir().display().to_string();
@@ -389,7 +555,7 @@ fn files_with_only_an_excluding_filter_says_no_filter_rather_than_unscanned() {
     app.refresh_scan(false);
     key(&mut app, KeyCode::Char('q'));
 
-    let (_, summary) = emitted(&app);
+    let (_, summary) = emitted(&mut app);
 
     assert!(
         summary.ends_with(", no filter"),
@@ -437,7 +603,7 @@ fn cwd_emits_the_explorer_s_directory() {
     app.emit = Some(emit::Emit::Cwd);
     key(&mut app, KeyCode::Char('q'));
 
-    let (lines, summary) = emitted(&app);
+    let (lines, summary) = emitted(&mut app);
 
     let dir = app.explorer.dir().display().to_string();
     assert_eq!(lines, vec![dir.clone()]);

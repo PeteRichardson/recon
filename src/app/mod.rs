@@ -10,6 +10,7 @@ mod collect;
 mod events;
 mod filter_editor;
 mod filters;
+mod finish;
 mod focus;
 mod launch;
 mod layout;
@@ -55,6 +56,11 @@ use search::Search;
 #[derive(Default)]
 pub struct App<'a> {
     state: AppState,
+    /// The work `q` under `--emit` started, while `state` is `Finishing`
+    /// (#351, #352).
+    finishing: Option<finish::Finish>,
+    /// What that work produced, for `exit` to hand back.
+    finished: Option<emit::Exit>,
     /// The three panes, named rather than collected (#73).
     ///
     /// They were a `Vec<AppWidget>` built once with exactly three entries,
@@ -313,6 +319,13 @@ enum AppState {
     /// or `Q` (no); what that means depends on whether `--emit` was given —
     /// see `App::exit`.
     Quit { emit: bool },
+    /// `q` under `--emit`, and the output needs work first: the rest of a
+    /// large file, or the files the scan has not answered (#351, #352).
+    /// The session is still running; `finishing.cancel` ends it.
+    Finishing,
+    /// The user cancelled that work. Nothing is emitted, and the exit code
+    /// says so.
+    Cancelled,
 }
 
 impl App<'_> {
@@ -384,6 +397,8 @@ impl App<'_> {
 
         let mut app = Self {
             state: AppState::Running,
+            finishing: None,
+            finished: None,
             explorer,
             view,
             filters_pane: FilterList::default(),
@@ -498,15 +513,21 @@ impl App<'_> {
     /// What this session hands back, given how it ended (#143). `Emit`
     /// only when `q` ended it *and* `--emit` was given; a `Q`, a missing
     /// `--emit`, or a session still running is `Silent`.
-    pub(crate) fn exit(&self) -> emit::Exit {
+    ///
+    /// Work `q` finished hands back what it produced; a cancelled one hands
+    /// back `Cancelled` (#351, #352).
+    pub(crate) fn exit(&mut self) -> emit::Exit {
         match (self.state, self.emit) {
-            (AppState::Quit { emit: true }, Some(kind)) => self.collect(kind),
+            (AppState::Cancelled, _) => emit::Exit::Cancelled,
+            (AppState::Quit { emit: true }, Some(kind)) => {
+                self.finished.take().unwrap_or_else(|| self.collect(kind))
+            }
             _ => emit::Exit::Silent,
         }
     }
 
     const fn is_running(&self) -> bool {
-        matches!(self.state, AppState::Running)
+        matches!(self.state, AppState::Running | AppState::Finishing)
     }
 }
 

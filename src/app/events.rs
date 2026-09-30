@@ -25,7 +25,8 @@ impl App<'_> {
         let drained = self.drain_editor_outcomes()
             | self.drain_scan_results()
             | self.poll_stamps()
-            | self.drain_request();
+            | self.drain_request()
+            | self.poll_finish();
         let timeout = Duration::from_secs_f32(1.0 / 60.0);
         if event::poll(timeout)? {
             let event = event::read()?;
@@ -67,6 +68,21 @@ impl App<'_> {
         // Only a *key* closes it, for the reason the help overlay gives: mouse
         // capture is on, and a mouse crossing the terminal would wipe a notice
         // the user is still reading.
+        // While `q` finishes the work `--emit` needs (#351, #352), only the
+        // key that cancels it does anything: every other key and every mouse
+        // event is dropped, so nothing can change what is being emitted.
+        if self.state == super::AppState::Finishing {
+            if let event::Event::Key(key) = event
+                && self.keymap.resolve(
+                    crate::keymap::Scope::Finishing,
+                    crate::keymap::normalise(key),
+                ) == Some(crate::keymap::ActionId::FinishingCancel)
+            {
+                self.cancel_finish();
+            }
+            return;
+        }
+
         if self.keymap_warnings_open {
             if matches!(event, event::Event::Key(_)) {
                 self.keymap_warnings_open = false;

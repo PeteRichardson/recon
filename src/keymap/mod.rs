@@ -53,6 +53,9 @@ pub(crate) fn normalise(event: KeyEvent) -> Key {
 /// cannot silently change which handler sees a key first.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) enum Scope {
+    /// `q` under `--emit` is finishing the work the output needs (#351,
+    /// #352). Only the key that cancels it does anything.
+    Finishing,
     /// A search or filter prompt is open. `handle_search_key` owns every key.
     Prompt,
     /// The help overlay is up, and any key closes it.
@@ -103,6 +106,7 @@ impl Scope {
     /// this instead.
     pub(crate) fn name(self) -> &'static str {
         match self {
+            Self::Finishing => "finishing",
             Self::Prompt => "prompt",
             Self::Help => "help",
             Self::Picker => "picker",
@@ -300,6 +304,10 @@ pub(crate) enum ActionId {
     /// `Ctrl-r`: write the pattern again from the prompt, with a model
     /// (#321).
     FilterEditorRegenerate,
+    // Finishing
+    /// Stop the work `q` started under `--emit`, and emit nothing (#351,
+    /// #352).
+    FinishingCancel,
     // The help overlay itself has no ActionId: any key dismisses it, so
     // there is nothing to bind or rebind, and Scope::Help carries no DEFAULT
     // rows for the same reason (#59).
@@ -420,6 +428,7 @@ impl ActionId {
             Self::FilterEditorRedo => "filtereditor.redo",
             Self::FilterEditorRequest => "filtereditor.request",
             Self::FilterEditorRegenerate => "filtereditor.regenerate",
+            Self::FinishingCancel => "finishing.cancel",
             Self::PromptCommit => "prompt.commit",
             Self::PromptCancel => "prompt.cancel",
             Self::PromptLeft => "prompt.left",
@@ -669,6 +678,10 @@ pub(crate) const DEFAULT: &[(Scope, &str, ActionId)] = &[
         "Ctrl-r",
         ActionId::FilterEditorRegenerate,
     ),
+    // Ctrl-c, which raw mode delivers as a key and not as SIGINT, and Esc,
+    // the key that backs out of everything else.
+    (Scope::Finishing, "Ctrl-c", ActionId::FinishingCancel),
+    (Scope::Finishing, "Esc", ActionId::FinishingCancel),
 ];
 
 /// Keys 1.0 promises to 1.1, bound to nothing.
@@ -1317,6 +1330,7 @@ mod tests {
     fn the_modal_scopes_come_before_the_panes() {
         // The order is the order `dispatch_event` already runs, and the table
         // must not be free to disagree with it.
+        assert!(Scope::Finishing < Scope::Prompt);
         assert!(Scope::Prompt < Scope::Help);
         assert!(Scope::Help < Scope::Picker);
         assert!(Scope::Picker < Scope::Sets);

@@ -46,25 +46,24 @@ impl App<'_> {
                 line
             })
             .collect();
-        let name = self.view.filename().display();
-        let summary = match self.document.mode() {
-            Mode::Dimmed => format!(
-                "recon: emitted {} lines of {name}, dim mode ({} match){}",
-                visible.len(),
-                self.interesting_count(),
-                self.matches_only_hint(),
-            ),
-            Mode::FilteredOnly => {
-                format!(
-                    "recon: emitted {} lines of {name}, hide mode",
-                    visible.len()
-                )
-            }
-        };
         emit::Exit::Emit {
             lines,
-            summary,
+            summary: self.lines_summary(visible.len(), self.interesting_count()),
             failed: 0,
+        }
+    }
+
+    /// `--emit lines`' summary: how many lines of which file, in which mode,
+    /// and in dim mode how many matched. Shared with the lines read to the
+    /// end of a large file after `q` (#351), which the document never held.
+    pub(super) fn lines_summary(&self, emitted: usize, interesting: usize) -> String {
+        let name = self.view.filename().display();
+        match self.document.mode() {
+            Mode::Dimmed => format!(
+                "recon: emitted {emitted} lines of {name}, dim mode ({interesting} match){}",
+                self.matches_only_hint(),
+            ),
+            Mode::FilteredOnly => format!("recon: emitted {emitted} lines of {name}, hide mode"),
         }
     }
 

@@ -176,22 +176,7 @@ impl Document {
             self.verdicts
                 .iter()
                 .enumerate()
-                .filter(|(_, verdict)| match (mode, verdict) {
-                    // Excluded lines are gone in both modes; the toggle governs
-                    // unmatched lines only.
-                    (_, Verdict::Excluded) => false,
-                    (Mode::Dimmed, _) => true,
-                    // A context line stays in hide mode: that is what the sense
-                    // is for. Only `n` treats it differently from an include.
-                    (Mode::FilteredOnly, Verdict::Included(_) | Verdict::Context(_)) => true,
-                    // Issue #36: with nothing including, there is nothing to hide
-                    // *against*, so hiding shows the file rather than blanking the
-                    // pane. Dimming has always had this guard in `style_for`;
-                    // hiding never did, which made `Ctrl-H` with no filters — and
-                    // with only excluding filters — produce an empty view that read
-                    // as "this file is empty".
-                    (Mode::FilteredOnly, Verdict::Unmatched) => !anything_including,
-                })
+                .filter(|(_, verdict)| shows(mode, **verdict, anything_including))
                 .map(|(index, _)| index),
         );
         if self.scratch != self.visible {
@@ -510,6 +495,29 @@ pub(crate) fn read_lossy_line<R: BufRead>(
     ))
 }
 
+/// Whether a line with `verdict` is visible in `mode`, given whether any
+/// including filter is enabled. `Document::recompute_visible`'s rule, and
+/// the one `q` under `--emit lines` applies to a file it streams (#351).
+#[must_use]
+pub(crate) fn shows(mode: Mode, verdict: Verdict, anything_including: bool) -> bool {
+    match (mode, verdict) {
+        // Excluded lines are gone in both modes; the toggle governs
+        // unmatched lines only.
+        (_, Verdict::Excluded) => false,
+        (Mode::Dimmed, _) => true,
+        // A context line stays in hide mode: that is what the sense
+        // is for. Only `n` treats it differently from an include.
+        (Mode::FilteredOnly, Verdict::Included(_) | Verdict::Context(_)) => true,
+        // Issue #36: with nothing including, there is nothing to hide
+        // *against*, so hiding shows the file rather than blanking the
+        // pane. Dimming has always had this guard in `style_for`;
+        // hiding never did, which made `Ctrl-H` with no filters — and
+        // with only excluding filters — produce an empty view that read
+        // as "this file is empty".
+        (Mode::FilteredOnly, Verdict::Unmatched) => !anything_including,
+    }
+}
+
 /// Read `path` whole, as lines.
 ///
 /// `File::open` succeeds on a directory on Unix and only fails when read, so
@@ -519,23 +527,73 @@ pub(crate) fn read_lossy_line<R: BufRead>(
 /// holds undecodable bytes is read anyway, a U+FFFD per bad sequence.
 /// Anything else the OS refuses comes back verbatim.
 pub fn read_lines(path: &Path) -> io::Result<Vec<String>> {
+    let mut lines = Vec::new();
+    each_line(path, &std::sync::atomic::AtomicU64::new(0), |line| {
+        lines.push(line);
+        Ok(true)
+    })?;
+    Ok(lines)
+}
+
+/// `read_lines`, one line at a time: `line` gets each line as it is read
+/// and says whether to go on (#351). Memory stays at one line however
+/// large the file is — except for UTF-16, which is decoded whole, as
+/// `read_lines` decodes it.
+///
+/// `read` counts the bytes taken from the file so far, for a progress
+/// report on another thread. Returns whether the file was read to its end:
+/// `false` when `line` stopped it.
+///
+/// # Errors
+/// `read_lines`' errors, and any `line` returns.
+pub(crate) fn each_line(
+    path: &Path,
+    read: &std::sync::atomic::AtomicU64,
+    mut line: impl FnMut(String) -> io::Result<bool>,
+) -> io::Result<bool> {
     refuse_unreadable(path)?;
-    let mut reader = BufReader::new(File::open(path)?);
+    let mut reader = BufReader::new(Counted {
+        inner: File::open(path)?,
+        read,
+    });
     let head = match sniff(&mut reader)? {
         (Sniff::Text, head) => head,
-        (Sniff::Utf16(endian), head) => return read_utf16_lines(head, &mut reader, endian),
+        (Sniff::Utf16(endian), head) => {
+            for text in read_utf16_lines(head, &mut reader, endian)? {
+                if !line(text)? {
+                    return Ok(false);
+                }
+            }
+            return Ok(true);
+        }
         (Sniff::Binary, _) => {
             return Err(io::Error::new(io::ErrorKind::InvalidData, BINARY_FILE));
         }
     };
     // The sniffed bytes are content, so they go back in front of the rest.
     let mut reader = Cursor::new(head).chain(reader);
-    let mut lines = Vec::new();
     let mut buf = Vec::new();
-    while let Some(line) = read_lossy_line(&mut reader, &mut buf)? {
-        lines.push(line);
+    while let Some(text) = read_lossy_line(&mut reader, &mut buf)? {
+        if !line(text)? {
+            return Ok(false);
+        }
     }
-    Ok(lines)
+    Ok(true)
+}
+
+/// A reader that counts the bytes it hands out, for `each_line`.
+struct Counted<'a, R> {
+    inner: R,
+    read: &'a std::sync::atomic::AtomicU64,
+}
+
+impl<R: Read> Read for Counted<'_, R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        self.read
+            .fetch_add(n as u64, std::sync::atomic::Ordering::Relaxed);
+        Ok(n)
+    }
 }
 
 #[cfg(test)]
