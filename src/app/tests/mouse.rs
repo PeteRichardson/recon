@@ -297,3 +297,91 @@ fn a_click_inside_the_zoomed_pane_keeps_the_zoom() {
     assert_eq!(shown(&app), "b.log");
     assert_eq!(app.panes.shown(), PaneSet::only(Focus::Explorer));
 }
+
+// ---- #349: a click on a filtered listing opens the entry it shows ------
+
+/// A directory holding `sub/` with `files` in it, and the app previewing
+/// `sub/` in the view — the look-ahead a click in the explorer gives.
+fn app_previewing_listing(name: &str, files: &[&str]) -> App<'static> {
+    let dir = fixture_dir(name);
+    fs::create_dir_all(dir.join("sub")).expect("create subdir");
+    for file in files {
+        fs::write(dir.join("sub").join(file), "x\n").expect("write");
+    }
+    let mut app = App::new(&Config {
+        path: dir.join("placeholder").display().to_string(),
+        ..Config::default()
+    });
+    draw(&mut app);
+    click_pane(&mut app, Focus::Explorer, 1); // `sub/`, previewed
+    assert!(app.view.showing_directory());
+    app
+}
+
+/// The entry name the view draws `line` rows below its top border — the
+/// first column of a listing row, before its size and date.
+fn listing_row_name(app: &App, line: u16) -> String {
+    let row = app.view.line_at(line).expect("a row is drawn there");
+    let text = &app.view.textarea().lines()[row];
+    text.split_whitespace()
+        .next()
+        .unwrap_or_default()
+        .to_owned()
+}
+
+#[test]
+fn a_click_below_an_excluded_listing_row_opens_the_entry_it_shows() {
+    let mut app = app_previewing_listing("click_listing_exclude", &["a.log", "b.tmp", "c.log"]);
+    app.add_excluding_filter(r"\.tmp").expect("valid pattern");
+    draw(&mut app);
+    assert_eq!(listing_row_name(&app, 1), "c.log");
+
+    click_pane(&mut app, Focus::View, 1);
+
+    assert_eq!(shown(&app), "c.log");
+}
+
+#[test]
+fn a_click_on_a_listing_in_hide_mode_opens_the_entry_it_shows() {
+    let mut app = app_previewing_listing("click_listing_hide", &["a.log", "b.log", "c.log"]);
+    app.add_filter("c").expect("valid pattern");
+    app.toggle_hiding();
+    draw(&mut app);
+    assert_eq!(listing_row_name(&app, 0), "c.log");
+
+    click_pane(&mut app, Focus::View, 0);
+
+    assert_eq!(shown(&app), "c.log");
+}
+
+#[test]
+fn a_click_on_the_blank_row_of_an_empty_hidden_listing_opens_nothing() {
+    let mut app = app_previewing_listing("click_listing_blank", &["a.log", "b.log"]);
+    app.add_filter("zzz").expect("valid pattern");
+    app.toggle_hiding();
+    draw(&mut app);
+    let dir = app.explorer.dir().to_path_buf();
+
+    click_pane(&mut app, Focus::View, 0);
+
+    assert_eq!(app.explorer.dir(), dir, "the explorer stayed put");
+    assert!(app.view.showing_directory(), "nothing was opened");
+}
+
+#[test]
+fn a_click_on_a_listing_after_its_window_moved_opens_the_entry_it_shows() {
+    let names: Vec<String> = (0..300).map(|i| format!("f{i:03}.log")).collect();
+    let names: Vec<&str> = names.iter().map(String::as_str).collect();
+    let mut app = app_previewing_listing("click_listing_window", &names);
+    key(&mut app, KeyCode::Tab);
+    assert_eq!(app.focus, Focus::View);
+    draw(&mut app);
+    key(&mut app, KeyCode::Char('G'));
+    draw(&mut app);
+    assert!(app.view.window_start() > 0, "the window moved off zero");
+    let expected = listing_row_name(&app, 0);
+
+    click_pane(&mut app, Focus::View, 0);
+
+    assert_eq!(shown(&app), expected);
+}

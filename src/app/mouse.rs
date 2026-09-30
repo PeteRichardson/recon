@@ -128,7 +128,16 @@ impl App<'_> {
     /// mean there.
     fn click_view(&mut self, line: u16, column: u16) {
         if self.view.showing_directory() {
-            let Some(index) = self.view.line_at(line) else {
+            // The buffer row is not the entry: filters and hide mode apply to
+            // a listing like any document, and the buffer holds only the
+            // window. The row goes into the visible set, then back to the
+            // source line, which is the entry's index in the listing (#349).
+            // An empty hidden listing draws one blank row that maps to none.
+            let Some(index) = self
+                .view
+                .line_at(line)
+                .and_then(|row| self.document.source_at(self.view.window_start() + row))
+            else {
                 return;
             };
             let dir = self.view.filename().to_path_buf();
