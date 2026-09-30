@@ -194,10 +194,18 @@ impl App<'_> {
         if name.is_empty() {
             return Err("a set needs a name".into());
         }
-        if self.filters.sets().iter().any(|set| set.name == name) {
-            return Err(format!(
-                "a set named {name:?} already exists; edit filters.toml to change it"
-            ));
+        // Name the set's own file (#385): it can come from any set file,
+        // not only `filters.toml`, and the built-in set has none.
+        if let Some(taken) = self.filters.sets().iter().find(|set| set.name == name) {
+            return Err(match &taken.origin {
+                filter::Origin::File(file) => format!(
+                    "a set named {name:?} already exists; edit {} to change it",
+                    file.display()
+                ),
+                filter::Origin::BuiltIn | filter::Origin::Scratch => {
+                    format!("a set named {name:?} is built in; choose another name")
+                }
+            });
         }
         let Some(path) = self.save_path.clone() else {
             return Err("no config home ($XDG_CONFIG_HOME, $HOME unset); nowhere to save".into());

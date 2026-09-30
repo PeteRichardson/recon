@@ -223,6 +223,48 @@ fn big_s_refuses_an_existing_name_and_keeps_the_prompt_open() {
     assert_eq!(app.filters.filters_in(0).count(), 1, "scratch intact");
 }
 
+/// The refusal names the file the taken set came from (#385): a set can
+/// come from `deploy.filters.toml` or a `RECON_FILTER_PATH` directory, and
+/// "edit filters.toml" then sent the user to the wrong file.
+#[test]
+fn big_s_names_the_file_of_the_set_it_refuses() {
+    let mut taken = filter::test_support::loaded("taken", 50, false, &["x"]);
+    taken.path = "sets/deploy.filters.toml".into();
+    let mut app = app_over_file("save_taken_path_file", "alpha\n");
+    app.save_path = Some(save_fixture("save_taken_path"));
+    app.filters = ActiveFilters::with_sets(None, &[taken]);
+    app.add_filter("alpha").unwrap();
+    key(&mut app, KeyCode::Char('f'));
+    key(&mut app, KeyCode::Char('S'));
+    typed(&mut app, "taken");
+    key(&mut app, KeyCode::Enter);
+    let error = app
+        .prompt
+        .as_ref()
+        .and_then(|p| p.error.clone())
+        .expect("refused");
+    assert!(error.contains("sets/deploy.filters.toml"), "{error}");
+}
+
+/// The built-in set has no file to edit (#385).
+#[test]
+fn big_s_says_a_built_in_name_is_built_in() {
+    let mut app = app_over_file("save_taken_builtin_file", "alpha\n");
+    app.save_path = Some(save_fixture("save_taken_builtin"));
+    app.add_filter("alpha").unwrap();
+    key(&mut app, KeyCode::Char('f'));
+    key(&mut app, KeyCode::Char('S'));
+    typed(&mut app, filter::DEFINITIONS_SET);
+    key(&mut app, KeyCode::Enter);
+    let error = app
+        .prompt
+        .as_ref()
+        .and_then(|p| p.error.clone())
+        .expect("refused");
+    assert!(error.contains("built in"), "{error}");
+    assert!(!error.contains("filters.toml"), "{error}");
+}
+
 /// The file keeps its comments and other sets; the new set is appended.
 #[test]
 fn big_s_appends_to_an_existing_file_without_disturbing_it() {
