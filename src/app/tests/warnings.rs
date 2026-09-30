@@ -151,7 +151,7 @@ fn two_wrapping_warnings_both_render_in_full() {
         "the third warning was cut though the box had room for it:\n{screen}"
     );
     assert!(
-        !screen.contains("more — run recon --print-keymap"),
+        !screen.contains("more — run recon --print-keymap to read them all"),
         "the box reported a cut though everything fit:\n{screen}"
     );
 }
@@ -184,7 +184,107 @@ fn a_cramped_panel_reports_what_it_could_not_show() {
         .join("\n");
 
     assert!(
-        screen.contains("more — run recon --print-keymap"),
+        screen.contains("more — run recon --print-keymap to read them all"),
         "a box too short for all three warnings claimed to have cut none:\n{screen}"
+    );
+}
+
+/// The screen as rows of text, for the panel tests below.
+fn warning_screen(app: &mut App<'_>, width: u16, height: u16) -> Vec<String> {
+    let area = Rect {
+        x: 0,
+        y: 0,
+        width,
+        height,
+    };
+    let mut buf = Buffer::empty(area);
+    app.render(area, &mut buf);
+    (0..area.height)
+        .map(|y| {
+            (0..area.width)
+                .map(|x| buf[(x, y)].symbol())
+                .collect::<String>()
+        })
+        .collect()
+}
+
+/// The panel's text with the borders taken off and the rows joined by a
+/// space, so a sentence that wraps reads as one.
+fn panel_text(screen: &[String]) -> String {
+    screen
+        .iter()
+        .filter_map(|row| {
+            let start = row.find('│')?;
+            let end = row.rfind('│')?;
+            (end > start).then(|| row[start + '│'.len_utf8()..end].trim().to_string())
+        })
+        .filter(|row| !row.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// #252: in a narrow terminal the title cut the command off and kept the
+/// count, so the user saw that warnings were missing and not how to read
+/// them. The command must be there in full at any width the panel draws at.
+#[test]
+fn a_narrow_panel_still_names_the_command_in_full() {
+    let mut app = app_with_warnings("warning_panel_narrow", &["a.rs"]);
+    let screen = warning_screen(&mut app, 40, 12);
+    let text = panel_text(&screen);
+
+    assert!(
+        text.contains("run recon --print-keymap to read them"),
+        "the command was cut:\n{}",
+        screen.join("\n")
+    );
+}
+
+/// #253: the rows a warning wraps to are indented under its bullet, so
+/// where one warning ends and the next starts is visible.
+#[test]
+fn a_wrapped_warning_is_indented_under_its_bullet() {
+    let mut app = app_with_warnings("warning_panel_indent", &["a.rs"]);
+    let screen = warning_screen(&mut app, 40, 20);
+    let rows: Vec<&str> = screen
+        .iter()
+        .filter_map(|row| {
+            let start = row.find('│')? + '│'.len_utf8();
+            let end = row.rfind('│')?;
+            (end > start).then(|| &row[start..end])
+        })
+        .collect();
+    let first = rows
+        .iter()
+        .position(|row| row.trim_start().starts_with('•'))
+        .unwrap_or_else(|| panic!("no warning drawn:\n{}", screen.join("\n")));
+    let bullet_column = rows[first].find('•').expect("bullet");
+
+    let next = rows[first + 1];
+    assert!(
+        next[..bullet_column + 2].trim().is_empty() && !next.trim().is_empty(),
+        "the second row of a wrapped warning is not under its text:\n{}",
+        screen.join("\n")
+    );
+}
+
+/// #254: at five rows for the panel — six for the terminal, less the
+/// status row — the budget was one row, the first warning needs more,
+/// and the panel admitted it anyway — so the text clipped and the panel
+/// said it had cut nothing. It must now say what it did not show.
+#[test]
+fn a_very_short_panel_says_it_showed_no_warning() {
+    let mut app = app_with_warnings("warning_panel_short", &["a.rs"]);
+    let screen = warning_screen(&mut app, 80, 6);
+    let text = panel_text(&screen);
+
+    assert!(
+        text.contains("3 warnings — run recon --print-keymap to read them"),
+        "the panel hid every warning and did not say so:\n{}",
+        screen.join("\n")
+    );
+    assert!(
+        !text.contains('•'),
+        "a warning was drawn in a box with no room for it:\n{}",
+        screen.join("\n")
     );
 }
