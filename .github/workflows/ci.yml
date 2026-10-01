@@ -60,8 +60,8 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
 
       # --workspace, not plain `cargo test`. The workspace's default members
-      # are recon alone, so plain `cargo test` runs recon's 224 unit + 9
-      # integration tests and skips the vendored fork entirely — including
+      # are recon alone, so plain `cargo test` runs recon's own tests and
+      # skips the vendored fork entirely — including
       # vendor/tui-textarea-2/tests/line_presentation.rs, which pins the whole
       # contract of our patch. A CI job on plain `cargo test` would let a
       # broken fork go green, which defeats the point of having CI at all.

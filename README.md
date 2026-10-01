@@ -374,8 +374,14 @@ What gets recorded:
 
 | Level | What |
 | --- | --- |
-| `warn` | a file or directory that could not be read, and why; an editor that exited badly or could not be waited on |
-| `debug` | which `config.toml` was read, or where `recon` looked and found none |
+| `error` | a panic on one of recon's worker threads |
+| `warn` | a file or directory that could not be read, previewed or listed, and why |
+| `warn` | an editor that exited badly or could not be waited on |
+| `warn` | the scan that marks files in the explorer: its thread could not start or panicked, a file it could not read or resume in, a scan that stopped early, a worker that went away; and the same for the check that watches for changes on disk |
+| `warn` | filter patterns that do not compile together, so the explorer stops marking files until they change |
+| `warn` | a search highlight that could not be applied, or a search that could not become a filter |
+| `warn` | a `config.toml` warning, a reserved key in `[keymap]`, or a `--set` or `--unlist` that could not be applied |
+| `debug` | which `config.toml` and `filters.toml` were read, or where `recon` looked and found none |
 
 ---
 
@@ -2339,9 +2345,6 @@ needs every line's answer at once — see *Definition filters*.
   against github issue #18; see
   `docs/specs/2026-08-22-configuration-mechanism.md` for the rules and the list
   of candidates.
-- **Nothing is persisted.** Filter sets live only for the session — there is no
-  way to save or reload a filter set. Re-typing them is the only option after a
-  restart.   This is github issue #8
 - `n` and `N` are line-oriented: a line the search matches three times is one
   hit and one stop, not three. `recon` is a line-focused tool, and one rule
   for hit lines and interesting lines alike beats two.
@@ -2421,7 +2424,7 @@ entry can both be deleted.
 
 ```sh
 cargo build              # debug build
-cargo test               # recon's suite: 713 unit + 13 integration tests
+cargo test               # recon's suite: unit and integration tests
 cargo test --workspace   # also runs the vendored fork's tests — see above
 cargo clippy
 cargo fmt -p recon       # -p recon, not plain `cargo fmt` — see below
@@ -2440,9 +2443,9 @@ verify.
 warnings`, `cargo test --workspace`, then `cargo build --release`. Running
 those four locally reproduces CI exactly.
 
-Clippy is a hard gate — `-D warnings` — so a new warning fails the build. The
-one standing suppression is `clippy::large_enum_variant` on `AppWidget`, which
-carries its reasoning in `src/widgets/mod.rs`.
+Clippy is a hard gate — `-D warnings` — so a new warning fails the build.
+`Cargo.toml`'s `[lints.clippy]` block turns on `pedantic` and allows a short
+list of its lints; each one carries its reasoning there.
 
 **Toolchain: stable, unpinned.** There is no `rust-toolchain.toml`, so local
 builds use whatever you have and CI uses current stable. The floor that matters
@@ -2460,18 +2463,36 @@ Layout:
 | --- | --- |
 | `src/main.rs` | Entry point: terminal setup, error hooks, logging |
 | `src/lib.rs` | The module list, and the public `App` and `Config` |
+| `src/startup.rs` | What recon reads before it starts, and in which order |
+| `src/config.rs` | `config.toml` and the flags: where each setting's value comes from |
+| `src/keymap/` | Keypress to named action: the default table, the `[keymap]` table, its checks |
+| `src/help.rs` | The in-app keymap overlay and the table it draws |
 | `src/app/mod.rs` | `App` — its state, `new` and the event loop |
 | `src/app/*.rs` | One topic of `App` each: events, actions, prompt, search, filters, focus, layout… |
 | `src/app/render/` | Drawing `App`: the panes and the status row |
 | `src/app/tests/` | The tests of `App`, one file for each topic |
 | `src/document.rs` | The loaded file and its visible-line set |
+| `src/syntax.rs` | Syntax colouring for the file view |
+| `src/hex.rs` | The hex view of a binary file |
+| `src/scan.rs` | Which files would show a line under the active filters |
+| `src/panes.rs` | Which panes are shown, and the rules that change it |
+| `src/path.rs` | Turning a user-supplied path into an absolute one |
+| `src/editor.rs` | Handing the selected file off to an editor |
+| `src/clipboard.rs` | Putting yanked text on the system clipboard |
+| `src/generate.rs` | A pattern from a request in plain language |
+| `src/filtersets.rs` | `filters.toml`: its schema, validation and location |
+| `src/headless.rs`, `src/emit.rs` | Headless `--emit`, and what a session hands back on quit |
+| `src/toml_fmt.rs` | Quoting values for a TOML stanza recon prints |
+| `src/fixtures.rs` | Fixture names shared by every test module |
 | `src/filter/mod.rs` | `ActiveFilters` — the filter stack, its evaluation and the palette |
 | `src/filter/sets.rs` | Filter sets: enable, solo, reset, adopt the scratch set |
 | `src/filter/matcher.rs` | `Matcher` — the snapshot the explorer's scan matches with |
 | `src/widgets/explorer.rs` | Directory explorer pane |
 | `src/widgets/fileview.rs` | File view pane |
 | `src/widgets/filterlist.rs` | Filter list pane |
-| `tests/render_smoke.rs` | End-to-end render tests |
+| `src/widgets/setpicker.rs`, `src/widgets/picker.rs` | The set picker and the profile picker |
+| `src/widgets/listmotion.rs` | Selection and paging shared by the list panes |
+| `tests/` | Integration tests: render smoke tests, headless mode, logging, the scan thread, … |
 | `docs/specs/`, `docs/plans/` | Design specs and implementation plans |
 
 Design background lives in
