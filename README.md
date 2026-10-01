@@ -83,6 +83,23 @@ motions throughout.
   along with the `u` hide toggle. `!` disables everything at once and
   remembers what was on, so it's one keystroke back to an unfiltered view
   without discarding your work.
+- **Saved sets and profiles** — `~/.config/recon/filters.toml` holds named
+  sets of filters, defined once and loaded at startup; `S` in the filter pane
+  saves the ones you typed as a new set. A set's profiles turn on a chosen
+  few of its filters in one step. See [Saved filter sets](#saved-filter-sets).
+- **Choose which sets are listed** — `L` opens the set picker: every known
+  set on one screen, searchable by name or description, to list or unlist
+  without quitting. See [The set picker](#the-set-picker).
+- **Build a pattern against the file** — `f I` opens the filter editor, which
+  highlights every line the pattern matches as you type and counts them.
+  Mark lines the pattern must or must not match, and it checks them on every
+  key. See [The filter editor](#the-filter-editor).
+- **Ask for a pattern in plain language** — built with the
+  `foundation-models` feature on Apple silicon, the filter editor sends a
+  request to Apple's on-device model and tests the pattern it writes against
+  your marked lines before it shows it. See
+  [A pattern from a request](#a-pattern-from-a-request) and
+  [Generated filters](#generated-filters).
 - **Skim a directory for hits** — with a filter set and `u` hiding, move
   down the explorer and each file draws only its matching lines. A file that
   comes up blank has none, which makes a directory of logs answerable by
@@ -104,6 +121,9 @@ motions throughout.
 - **Look before you enter** — selecting a directory lists its contents in the
   view pane, with size and modification time, so you can see what is inside
   without going in. `l` on that selection makes the listing the explorer's.
+- **Binary files as hex** — a file with a NUL byte in its first 8 KiB
+  opens as a hex dump, and
+  `-` switches any file between hex and text. See [The hex view](#the-hex-view).
 - **Cheap navigation** — moving through the explorer renders a bounded preview
   (50,000 lines / 10 MiB), so scrolling a directory of very large logs doesn't
   stutter. Ordinary files are well inside those bounds and are simply read.
@@ -131,6 +151,13 @@ motions throughout.
   a hard-coded list, so zed, VS Code, Sublime, IntelliJ and even
   `nvim`-in-a-new-terminal-window are all one line of config; run
   `recon --print-editor-config` for a ready-made one.
+- **Send the result down a pipe** — `--emit lines`, `files` or `cwd` prints
+  what you found on stdout when you quit. With stdin not a terminal, recon
+  skips the TUI and applies `--set` filters straight to the input. See
+  [Emitting the result](#emitting-the-result) and [Headless mode](#headless-mode).
+- **Your keys, not ours** — any key can be rebound in a `[keymap]` stanza of
+  `config.toml`, and `--print-keymap` prints the keymap in force, ready to
+  edit. See [Configuring the keymap](#configuring-the-keymap).
 
 ---
 
@@ -172,8 +199,11 @@ cargo build --release --features foundation-models
 ### Install to your PATH
 
 ```sh
-cargo install --path .
+cargo install --locked --path .
+cargo install --locked --path . --features foundation-models   # with the on-device model
 ```
+
+`--locked` builds with the versions in `Cargo.lock`, the versions CI tests.
 
 `recon` is not published to crates.io, so `cargo install recon` will not work.
 
@@ -367,7 +397,7 @@ arm per action.
 `g`, `G`, `{` and `}` still answer to the *whole* document rather than only
 the window the file view has loaded, because only `App` can see it: the arm
 for those four actions in `perform` calls `long_range_target`
-(`src/viewport.rs`) to find the target row before moving the cursor there.
+(`src/app/viewport.rs`) to find the target row before moving the cursor there.
 That is a call one arm makes, not a second place the four keys are bound (#7).
 
 This section and the in-app overlay both describe that table. They would
@@ -2301,11 +2331,11 @@ needs every line's answer at once — see *Definition filters*.
 - **Almost nothing is configurable yet.** recon reads
   `$XDG_CONFIG_HOME/recon/config.toml`, falling back to
   `~/.config/recon/config.toml` on every platform including macOS, under a
-  `CLI > env > file > defaults` precedence chain. The settings so far are the
-  two editor templates below, `[clipboard] command`, `[filters] palette`,
-  `[layout] hide_panes`, `[syntax] theme` and `[view] center_jumps`; every
-  other key in the
-  file is reported as an unknown key. Settings land one issue at a time
+  `CLI > env > file > defaults` precedence chain. The settings so far are
+  `background` and `warnings` at the top level, the two editor templates
+  below, `[clipboard] command`, `[filters] palette`, `[layout] hide_panes`,
+  `[syntax] theme`, `[view] center_jumps`, and the action names in
+  `[keymap]`; every other key in the file is reported as an unknown key. Settings land one issue at a time
   against github issue #18; see
   `docs/specs/2026-08-22-configuration-mechanism.md` for the rules and the list
   of candidates.
@@ -2332,8 +2362,8 @@ needs every line's answer at once — see *Definition filters*.
 
 `vendor/tui-textarea-2` is a patched copy of
 [tui-textarea-2](https://github.com/srothgan/tui-textarea) 0.12.1, wired in
-via `[patch.crates-io]`. The patch adds four public additions — setters for
-per-line styles and gutter number overrides, which the file view needs in
+via `[patch.crates-io]`. The patch makes the changes listed in its
+`PATCH.md`, chief among them setters for per-line styles and gutter number overrides, which the file view needs in
 order to dim lines that do not match a filter and to show original line
 numbers while filtered; a `scroll_top` getter that reports the viewport's
 position so the cursor's screen row can be held steady across a buffer
