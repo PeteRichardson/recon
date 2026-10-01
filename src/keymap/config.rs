@@ -20,16 +20,12 @@ use std::fmt;
 /// unknown action is caught by `Keymap::new`, which can say which names exist.
 ///
 /// `Deserialize` is hand-written, not derived, and not via `#[serde(flatten)]`
-/// either (task 3 fix round 1, #61 review). A first attempt flattened a
-/// `BTreeMap<String, Keys>` field with `Keys` an untagged one-or-many enum —
-/// the same shape `keymap::print_keymap`'s own tests parse with. That reads
-/// naturally, but `flatten` buffers the whole table into a generic value
-/// before `Keys` ever sees it, and a malformed entry (`'global.quit' = 42`)
-/// then fails with the position pinned to the `[keymap]` header rather than
-/// the offending line, and a message naming the private `Keys` type instead
-/// of the action. A sibling, unflattened field with the same bad value
-/// reports the right line and a legible message, which is what showed the
-/// buffering was the cause and not `toml` itself.
+/// either (#61). `flatten` buffers the whole table into a generic value
+/// before `Keys` ever sees it, so a malformed entry (`'global.quit' = 42`)
+/// fails with the position pinned to the `[keymap]` header rather than the
+/// offending line, and a message naming the private `Keys` type instead of
+/// the action. An unflattened field with the same bad value reports the
+/// right line and a legible message.
 ///
 /// So this decodes the table directly, one entry at a time, with
 /// [`BindingSeed`] threading the action's name into the value's own error —

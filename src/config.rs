@@ -445,7 +445,7 @@ pub struct FileConfig {
     pub view: Option<ViewConfig>,
     /// `[layout]`. Same again.
     pub layout: Option<LayoutConfig>,
-    /// `[keymap]`. Same again. Handed to `Keymap::new` (task 4) rather than
+    /// `[keymap]`. Same again. Handed to `Keymap::new` rather than
     /// merged key by key here: a rebind either names a real action and a
     /// parseable key, or the whole file is refused — there is no per-key
     /// "hole" for a lower layer to fill, unlike `editor` or `syntax`.
@@ -2227,8 +2227,8 @@ mod tests {
         assert_eq!(defaults.print_keymap, Some(PrintKeymap::Defaults));
     }
 
-    /// #365: `default` and `app.log` used to print the map in force. Both are
-    /// refused now, and the message lists what is accepted.
+    /// #365: `default` and `app.log` are refused, not read as "the map in
+    /// force", and the message lists what is accepted.
     #[test]
     fn print_keymap_refuses_anything_else() {
         for word in ["default", "app.log"] {
@@ -2678,10 +2678,9 @@ mod tests {
         );
     }
 
-    /// Task 3 fix round 1 (#61 review): a malformed value used to fail with
-    /// the position pinned to the `[keymap]` header and a message naming the
-    /// private `Keys` enum instead of the action. See `KeymapConfig`'s
-    /// `Deserialize` doc comment for why.
+    /// A malformed value is named by its action, not by the private `Keys`
+    /// enum, and not at the `[keymap]` header (#61). See `KeymapConfig`'s
+    /// `Deserialize` doc comment for why that takes a hand-written impl.
     #[test]
     fn a_malformed_keymap_value_is_named_by_its_action() {
         let path = fixture("keymap-bad-value.toml", "[keymap]\n'global.quit' = 42\n");
@@ -2693,8 +2692,8 @@ mod tests {
     }
 
     /// #366: an unquoted dotted action name is a TOML table, not a key.
-    /// The message used to name the first segment as the action; it says
-    /// what to write now, with the whole name.
+    /// The message says what to write, with the whole name, rather than
+    /// naming the first segment as the action.
     #[test]
     fn an_unquoted_dotted_action_name_says_to_quote_it() {
         for (name, line, full) in [

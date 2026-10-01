@@ -4,9 +4,8 @@
 //! folded in. The keymap in force, its warnings and the filter sets are
 //! answers computed *from* it, in an order that matters: each print command
 //! must be answered before the first file it does not need, and every
-//! refusal must happen before the terminal is taken. That order used to be
-//! a sequence of assignments in `main` that it had to remember. It lives
-//! here now, and [`start`] hands back everything at once.
+//! refusal must happen before the terminal is taken. The order lives here,
+//! not in `main`, and [`start`] hands back everything at once.
 
 use crate::config::{Config, PrintKeymap};
 use crate::filter::LoadedSet;
@@ -69,9 +68,8 @@ pub fn start() -> Result<Start> {
 
     // Before `config.toml` and the filter sets are read, not after: this
     // command prints an `[editor]` stanza and exits, and it uses nothing from
-    // either file. A syntax error in `filters.toml` used to stop a command
-    // that does not consult it (#191), and one in `config.toml` still did
-    // (#366).
+    // either file, so a syntax error in either must not stop it (#191,
+    // #366).
     if let Some(flavour) = &config.print_editor_config {
         return Ok(Start::Print {
             stdout: crate::editor::print_editor_config(

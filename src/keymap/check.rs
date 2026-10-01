@@ -262,11 +262,11 @@ impl fmt::Display for Problem {
 /// can be read back.
 ///
 /// The three fields are **private**, which constrains the rest of the crate:
-/// three `pub` fields become read-only accessors, and a `Report` can no longer
-/// be built by struct literal outside this module.
+/// the fields are read through accessors, and a `Report` cannot be built by
+/// struct literal outside this module.
 ///
-/// That is defence in depth, and not what makes the pairing true — an earlier
-/// version of this comment claimed it was. Privacy is only module-deep: the
+/// That is defence in depth, and not what makes the pairing true. Privacy is
+/// only module-deep: the
 /// `tests` child module below still reaches these fields directly, and the
 /// writer most likely to break the pairing is a new checking pass added beside
 /// `check`, `widen_evictions` and `fill_scopes`, which is precisely where
@@ -278,10 +278,8 @@ impl fmt::Display for Problem {
 /// assert is debug-only, which is why the emptiness test in `Display` matters:
 /// it is a release build's whole protection against the malformed sentence.
 ///
-/// The qualifier is load-bearing, and an earlier version of this sentence left
-/// it out — contradicting the paragraph above, which says this module's tests
-/// reach these fields directly. They do, and they build `Displaced` values by
-/// struct literal on purpose: that is the only way to hand `Display` a state
+/// The qualifier "non-test" is load-bearing: this module's tests reach these
+/// fields directly, and build `Displaced` values by struct literal on purpose: that is the only way to hand `Display` a state
 /// the passes cannot produce, which is exactly what
 /// `an_empty_taken_in_prints_no_scope_phrase` and
 /// `an_empty_lost_in_prints_no_second_clause` exist to pin. The exception is
@@ -1076,8 +1074,8 @@ mod tests {
     /// routes that reach the collapse.
     ///
     /// A panel that truncates must not spend two rows on one loss, so the
-    /// merge matters; and it is reached by two different pieces of code, only
-    /// one of which used to be guarded.
+    /// merge matters; and it is reached by two different pieces of code, each
+    /// of which must be guarded.
     ///
     /// **Pass two** meets a global line against each pane separately, so
     /// `'global.quit' = 'n'` raises `hit.next` once in the file view and again
@@ -1225,11 +1223,10 @@ mod tests {
     ///
     /// The state is unreachable — `Report::displace` gives every warning its
     /// eviction — and the `debug_assert!` in `fill_scopes` records that. This
-    /// pins what a **release** build does if the fact ever stops being true,
-    /// which is the half that was wrong: the guard originally sat beside the
-    /// assignment, where skipping it left `lost_in` at the very same empty
-    /// value `displace` had built it with, so both branches ended identical
-    /// and the malformed sentence printed anyway.
+    /// pins what a **release** build does if the fact ever stops being true.
+    /// The guard must be in `Display`, not beside the assignment: skipping the
+    /// assignment leaves `lost_in` at the same empty value `displace` built
+    /// it with, so the malformed sentence would print anyway.
     #[test]
     fn an_empty_lost_in_prints_no_second_clause() {
         let problem = Problem::Displaced {
@@ -1335,17 +1332,14 @@ mod tests {
     /// The property holds by an argument that lives in `help.rs` and is easy to
     /// lose, which is why it is pinned here, beside the code that relies on it.
     ///
-    /// An earlier version of this comment said two collisions existed inside
-    /// `Chord::label` and both were unconstructible. **There was a third and it
-    /// was constructible**, which is why the corpus below now carries the
-    /// labels that reach it rather than only the shapes the argument had
-    /// already considered. `Char(' ')` renders `"space"` whatever its prefix,
-    /// and a prefixed label could reach that arm two ways: `Ctrl- -!` through
-    /// the range arm, and `Ctrl- ` through the single character arm.
-    /// `keys_for_label` now refuses `Char(' ')` to any prefixed label, so the
-    /// collision is gone — by a carve-out, not by luck.
+    /// Three collisions exist inside `Chord::label`. One is closed by a
+    /// carve-out, not by luck: `Char(' ')` renders `"space"` whatever its
+    /// prefix, and a prefixed label would reach that arm two ways — `Ctrl- -!`
+    /// through the range arm, and `Ctrl- ` through the single character arm.
+    /// `keys_for_label` refuses `Char(' ')` to any prefixed label, and the
+    /// corpus below carries those two labels so the carve-out stays pinned.
     ///
-    /// The two that really were unconstructible: `Ctrl-space` is unreadable,
+    /// The other two are unconstructible: `Ctrl-space` is unreadable,
     /// because `"space"` is matched as a whole word before any prefix is
     /// stripped; and a chord with both modifiers cannot be built, because
     /// `chords_for_label` reads both flags with `starts_with` and no string
@@ -1388,10 +1382,10 @@ mod tests {
             "*-/",
             "5-<",
             // The bare range that must keep its space. The two prefixed
-            // spellings that once broke injectivity are no longer here:
-            // `keys_for_label` now refuses them outright, so they expand to no
-            // chords at all and this loop would never compare them. They moved
-            // to the `unreadable` list below, which is the assertion that still
+            // spellings that would break injectivity are not here:
+            // `keys_for_label` refuses them outright, so they expand to no
+            // chords at all and this loop would never compare them. They are
+            // in the `unreadable` list below, which is the assertion that
             // bites if either ever parses again.
             " -!",
         ] {

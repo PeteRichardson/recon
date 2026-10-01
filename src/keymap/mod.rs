@@ -88,7 +88,7 @@ impl Scope {
     /// The pane scope for the focused pane.
     ///
     /// `App`'s per-focus dispatch derives `Scope::Explorer` from this at the
-    /// explorer's key site (task 6, #199): the focus is the thing that
+    /// explorer's key site (#199): the focus is the thing that
     /// decides, so reading it from the focus is the honest spelling.
     pub(crate) fn for_focus(focus: crate::widgets::Focus) -> Self {
         match focus {
@@ -485,8 +485,7 @@ pub(crate) const DEFAULT: &[(Scope, &str, ActionId)] = &[
     // `i`/`x`/`c`/`d`/`m`/`a`/`s` outside the filter pane, and `h`/`l`
     // inside it, are deliberately not entries here: they are not bindings,
     // only the second key of a chain (`f i`, `f x`, …) or, inside the
-    // filter pane, keys the pane simply doesn't rebind. Task 8 replaces the
-    // help text that currently spells this out by hand with generated text.
+    // filter pane, keys the pane simply doesn't rebind.
     (Scope::Global, "u", ActionId::GlobalToggleHide),
     (Scope::Global, "H", ActionId::GlobalToggleHide),
     (Scope::Global, "Ctrl-h", ActionId::GlobalToggleHide),
@@ -572,12 +571,10 @@ pub(crate) const DEFAULT: &[(Scope, &str, ActionId)] = &[
     (Scope::Filters, "Home", ActionId::FiltersGotoStart),
     (Scope::Filters, "G", ActionId::FiltersGotoEnd),
     (Scope::Filters, "End", ActionId::FiltersGotoEnd),
-    // `Ctrl-d` used to read as plain `d` and delete the selected filter,
-    // which is the whole reason `FilterList` once dropped every CONTROL key
-    // outright before looking at its code. Exact matching retires that
-    // guard: `Ctrl-d` and `d` are distinct rows here, so the half-page
-    // motion below claims the modified key and `FiltersDelete`'s plain `d`
-    // row (below) never sees it.
+    // Matching is exact: `Ctrl-d` and `d` are distinct rows here, so the
+    // half-page motion below claims the modified key and `FiltersDelete`'s
+    // plain `d` row (below) never sees it. A `Ctrl-d` that read as plain `d`
+    // would delete the selected filter.
     (Scope::Filters, "Ctrl-d", ActionId::FiltersHalfPageDown),
     (Scope::Filters, "Ctrl-u", ActionId::FiltersHalfPageUp),
     (Scope::Filters, "PageDown", ActionId::FiltersPageDown),
@@ -992,12 +989,12 @@ impl Keymap {
     /// the one a hint should show. Under an overlay that is the first key the
     /// user listed, which is what makes a hint track a rebind.
     ///
-    /// `Option` rather than the `expect` this replaced (#61): a `[keymap]`
+    /// `Option`, not an `expect` (#61): a `[keymap]`
     /// line can leave an action with no key at all, so an absent label is a
     /// config file's doing and must not crash the TUI — the same rule
     /// `App::perform`'s `debug_assert!` arms record.
     ///
-    /// `pub(crate)` rather than private (task 8 fix round 1, #199): the
+    /// `pub(crate)` rather than private (#199): the
     /// "nothing selected" hint in `selection.rs` names only a key, with no
     /// verb of its own to attach to it — `hint_for` would say too much — so
     /// it calls this directly instead of going through `hint_for`.
@@ -1044,10 +1041,9 @@ impl Keymap {
     /// Build a key hint: the key that reaches `action`, the verb describing
     /// what it does, and the key that reaches `opener`.
     ///
-    /// Task 8 (#199): the callers used to spell the key inside their own hint
-    /// text, so a rebind that changed which key reached `action` left the hint
-    /// naming the wrong one. Looking the key up here instead means the hint
-    /// tracks a rebind for free.
+    /// The key is looked up here, not spelled in the caller's hint text, so
+    /// the hint tracks a rebind for free; a spelled key names the wrong one
+    /// after a rebind (#199).
     ///
     /// The verb is not looked up here: the table holds no prose, and
     /// `help::KEYMAP`'s `action` text is both the wrong register for a
@@ -1069,8 +1065,7 @@ impl Keymap {
     }
 
     /// `hint_for`, widened for the one hint whose trailing key names a
-    /// different action than the one the hint explains (task 8 fix round 1,
-    /// #199): `y`'s hint reads "then press v", not "then press y", because
+    /// different action than the one the hint explains (#199): `y`'s hint reads "then press v", not "then press y", because
     /// copying needs a selection first, and a selection is started with `v`
     /// (`GlobalVisualChar`), not `y` (`GlobalYank`). `hint_for` is this with
     /// `trailing` pinned to `action`, which is what every other hint wants.
@@ -1179,11 +1174,9 @@ fn first_scope_of(defaults: &Keymap, action: ActionId) -> Scope {
 /// Every key `action` no longer answers to, and what holds each one now.
 ///
 /// Asked scope by scope, and in concrete keys. `Keymap::evict` removes one
-/// `(scope, key, action)` row, and that is what first lets an action holding
-/// a row in two scopes lose a key in one of them: before eviction existed,
-/// only `rebind` could remove a row, and `rebind` replaces an action's list
-/// in every scope it holds at once, so an action's scopes could never fall
-/// out of step.
+/// `(scope, key, action)` row, so an action holding a row in two scopes can
+/// lose a key in one of them and keep it in the other. (`rebind` replaces an
+/// action's list in every scope at once, so it alone could not do this.)
 ///
 /// `labels_for` merges an action's scopes into one list, so comparing merged
 /// lists cannot see any of this. It reports a key as still held when only one
@@ -1370,10 +1363,9 @@ mod tests {
     const DOCUMENTED_IN_PROSE: &[&str] = &["Home", "End"];
 
     /// Every documented binding resolves, and every entry in the table is
-    /// documented. Will replace the two text-scraping drift tests in
-    /// `help.rs` (task 9 removes them), which compared labels against
-    /// `Char('x')` literals grepped out of seven source files (#162 records
-    /// how that scan silently stopped working once).
+    /// documented. It compares tables rather than grepping `Char('x')`
+    /// literals out of source files, a scan that can silently stop working
+    /// (#162).
     ///
     /// The set comparison alone cannot see a `names` entry sitting on the
     /// *wrong* row — two sets can agree while a name is attached to a key
@@ -1548,14 +1540,13 @@ mod tests {
         }
     }
 
-    /// Task 7 fix round 1: the thief lookup used to scan every scope for the
-    /// lost label and take the first action that was not the one
-    /// being annotated. `j` is also `explorer.down`'s, `view.down`'s and
-    /// `picker.down`'s default key, so a same-scope eviction — one write in
-    /// `Scope::Filters` taking `Scope::Filters`'s own `j` — was misreported
-    /// as `explorer.down`'s doing, purely because `Scope::Explorer` sorts first in the
-    /// table. The thief must be searched for in the scope the key was lost
-    /// in (and `Scope::Global`, which can shadow it), never a peer pane.
+    /// The thief must be searched for in the scope the key was lost in (and
+    /// `Scope::Global`, which can shadow it), never a peer pane. `j` is also
+    /// `explorer.down`'s, `view.down`'s and `picker.down`'s default key, so a
+    /// lookup across every scope would report a same-scope eviction — one
+    /// write in `Scope::Filters` taking `Scope::Filters`'s own `j` — as
+    /// `explorer.down`'s doing, because `Scope::Explorer` sorts first in the
+    /// table.
     #[test]
     fn a_same_scope_taken_key_names_the_real_thief() {
         let defaults = Keymap::default();
@@ -1716,19 +1707,18 @@ mod tests {
     }
 
     /// A local, test-only mirror of the `[keymap]` table rather than
-    /// `crate::config::FileConfig` — Task 3 has not added `FileConfig::keymap`
-    /// yet, and this needs only `serde`, which the pinned `toml` build always
+    /// `crate::config::FileConfig`: this needs only `serde`, which the pinned
+    /// `toml` build always
     /// carries (`display`, the serializer, is the one feature dropped).
     #[derive(serde::Deserialize)]
     struct Parsed {
         keymap: std::collections::BTreeMap<String, Keys>,
     }
 
-    /// Parses as TOML (Task 2 fix round 1, #61 review) — a `contains` check
-    /// cannot prove this and previously let a syntax the parser rejects ship
-    /// as "printed" — and every printed action's keys match `DEFAULT`
-    /// exactly: same set of names, same labels in the same order,
-    /// deduplicated. A plain substring check on the action name cannot tell
+    /// Parses as TOML — a `contains` check cannot prove this, and would let a
+    /// syntax the parser rejects ship as "printed" — and every printed
+    /// action's keys match `DEFAULT` exactly: same set of names, same labels
+    /// in the same order, deduplicated. A plain substring check on the action name cannot tell
     /// `global.quit` from `global.quit.silent`, so this compares the parsed
     /// structure instead.
     #[test]
