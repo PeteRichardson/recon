@@ -95,9 +95,10 @@ the next start, as reordering filters by hand does today.
 red". Its value takes the same spellings as `[filters] palette` in
 `config.toml`: a name, a hex triple, or a 256-colour index as a string.
 
-**Numbers are labels, not addresses.** Nothing in recon addresses a filter by
-its number — there are no digit bindings — so the pane numbers what it shows,
-top to bottom, continuously across sets. Enabling a set renumbers the filters
+**Numbers are labels, not stored addresses.** The pane numbers what it shows,
+top to bottom, continuously across sets. Digits `1`–`9` address the *pane's*
+number ([keymap reconciliation](2026-09-05-keymap-reconciliation-design.md) §14), which is why it is a label recomputed on
+every change and never kept with a filter. Enabling a set renumbers the filters
 below it in the pane and nothing else, the same way deleting a filter renumbers
 today.
 
