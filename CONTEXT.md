@@ -54,6 +54,13 @@ filter's pattern against the open file and sees every line it matches while
 typing. `f I` opens it on a new filter, and `f C` on the selected one.
 _Avoid_: editor alone (that is the external editor `o` and `O` open), regex builder
 
+**Line mark**:
+The act of marking a line in the filter editor: `+` marks it as one the
+pattern must match, `-` as one it must not match, and `=` clears the mark.
+A marked line is a check. The code calls it `Mark` and its keymap actions
+`filtereditor.mark.*`.
+_Avoid_: check (that is what a marked line is, not the act), tag
+
 **Check**:
 A line marked in the filter editor as one the pattern must match (`+`) or
 must not match (`-`). It passes or fails under the pattern as typed. `Enter`
@@ -102,7 +109,7 @@ _Avoid_: AI filter, model filter, regenerated (that is the act of `Ctrl-r`)
 One turn of a talk with the model in the filter editor: what the user types
 on the request line and sends with `Enter`. The model answers with a pattern
 and an explanation. recon shows the pattern only when it compiles and passes
-every mark; otherwise it sends the failure back and asks again, up to 3
+every check; otherwise it sends the failure back and asks again, up to 3
 tries. The requests the model answered go to it again with
 each later request while the editor is open, so the pattern improves step
 by step. A request is not kept with the filter; the prompt is.

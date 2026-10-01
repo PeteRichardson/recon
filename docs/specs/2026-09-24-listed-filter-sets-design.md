@@ -1,6 +1,8 @@
 # Listed and unlisted filter sets — design
 
-**Status:** proposed
+**Status:** implemented in `c9ed3c2`. `ee25142` (#305) later changed what unlisting does:
+an unlisted set's filters now leave the filter list, and a set listed again comes back as
+its file describes it.
 **Date:** 2026-09-24
 **Issue:** #281
 **Decision record:** [ADR 0002](../adr/0002-listed-is-a-startup-value.md)
