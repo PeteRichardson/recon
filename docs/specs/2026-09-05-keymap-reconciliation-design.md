@@ -233,8 +233,9 @@ shared with it so the two cannot disagree.
 `KEYMAP` in `src/help.rs` and the README's *Keybindings* section regroup by layer: Global ·
 Chains · Shared motions · Navigator · File view · Filter pane. A shared motion appears once,
 with a note on any pane it is absent from. `every_bound_key_is_documented` keeps the overlay
-and the code agreeing. The README's "three places a key can be bound" paragraph stays; it
-describes the code, and that isn't changing.
+and the code agreeing. (That test is gone: `keymap::the_table_and_the_documentation_agree`
+does its job now. See the module comment in `src/help.rs`.) The README's "three places a
+key can be bound" paragraph stays; it describes the code, and that isn't changing.
 
 The README's reasoning paragraphs gain three entries beside the existing `space` and
 `h`/`l` ones: why `n` crosses files, why `space` peeks rather than toggles, and why `u`.
@@ -247,6 +248,10 @@ The README's reasoning paragraphs gain three entries beside the existing `space`
 - `p`, `a`, `s`, `m`, `R`, `S`, `!`, `&`, `b`, `z`, `o`, `O`, `r`, `q`, `?`, `e`, `t`, `f`.
 
 ## Keys after this change
+
+> **Superseded.** This list was true when the spec merged. Since then `v` and `y` are bound
+> (visual mode and yank, #67) and `-` toggles the hex view (#242). `keymap::DEFAULT` in
+> `src/keymap/mod.rs` is the current list.
 
 Unbound in every pane: `-`, `=`, `;`, `'`, `` ` ``, `\`. Every lowercase letter and every
 digit is bound or reserved.

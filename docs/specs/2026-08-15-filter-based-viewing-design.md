@@ -1,6 +1,9 @@
 # Filter-based viewing — design
 
-**Status:** proposed
+**Status:** implemented for phases 1 and 2 (`c8d5b90` to `bcc5cf4`, 2026-08-15 to
+2026-08-17). Phase 3's filter sets came from the
+[saved filter sets](2026-09-03-saved-filter-sets-design.md) design. Markers and
+phase 4 are not built.
 **Date:** 2026-08-15
 
 ## Motivation

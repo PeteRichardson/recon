@@ -1,6 +1,6 @@
 # Incremental search over the visible lines — design
 
-**Status:** proposed
+**Status:** implemented, from `6f7187c` (#270) to `3a65ec5` (#274)
 **Date:** 2026-09-23
 **Decision record:** [ADR 0001](../adr/0001-search-is-a-motion-not-a-filter.md)
 **Supersedes:** [Search as a filter](2026-08-21-search-as-a-filter-design.md)
