@@ -792,7 +792,6 @@ impl ActiveFilters {
         self.remembered = None;
     }
 
-    /// Whether any enabled filter removes lines.
     /// Flip between OR and AND (#39), reporting whether AND is now on.
     ///
     /// Only a flag read at verdict time, like `enabled`: no recompile, and
@@ -858,6 +857,7 @@ impl ActiveFilters {
         }
     }
 
+    /// Whether any enabled filter removes lines.
     #[must_use]
     pub fn any_excluding(&self) -> bool {
         self.filters

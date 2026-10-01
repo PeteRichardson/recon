@@ -1,12 +1,11 @@
+//! The file view pane: the `FileView` widget.
+
 #[cfg(test)]
 use crate::document::BINARY_SNIFF_BYTES;
 use crate::document::{self, Sniff, read_lossy_line, read_utf16_lines, sniff};
 use crate::hex;
 use crate::syntax::{Highlighter, Span, Theme};
 use crate::widgets::explorer::Entry;
-/// `FileView` Widget
-///
-///
 use ratatui::prelude::{Buffer, Color, Modifier, Rect, Style, Widget};
 use std::fs::File;
 use std::io::{BufReader, Cursor, Read};
@@ -1384,16 +1383,6 @@ fn capped(
     }
 }
 
-/// A directory rendered as its contents, bounded by `max_lines`.
-///
-/// The view is the widest pane on screen and was spending all of it on the
-/// word `<directory>`. Listing what is actually there turns a selected
-/// directory into a look-ahead — and `l` on that selection makes the listing
-/// the explorer's own, which is what stops it being a navigable-looking list
-/// that cannot be navigated.
-///
-/// `..` is absent deliberately: it is the explorer's way back out, and there
-/// is nothing here that could act on it.
 /// Widest a name column grows before long names are allowed to push the
 /// metadata out of line on their own row.
 ///
@@ -1461,6 +1450,16 @@ fn listing_row(entry: &Entry, name_width: usize) -> String {
         .to_string()
 }
 
+/// A directory rendered as its contents, bounded by `max_lines`.
+///
+/// The view is the widest pane on screen and was spending all of it on the
+/// word `<directory>`. Listing what is actually there turns a selected
+/// directory into a look-ahead — and `l` on that selection makes the listing
+/// the explorer's own, which is what stops it being a navigable-looking list
+/// that cannot be navigated.
+///
+/// `..` is absent deliberately: it is the explorer's way back out, and there
+/// is nothing here that could act on it.
 fn directory_listing(path: &Path, max_lines: usize) -> Contents {
     let entries = match crate::widgets::explorer::sorted_entries(path) {
         Ok(entries) => entries,
@@ -1539,7 +1538,6 @@ fn digits(n: usize) -> u8 {
     }
 }
 
-/// Widget impl for `FileView`
 /// Test-only reach into the textarea, for assertions about styles, scroll
 /// position and line numbers — none of which `App` has any business reading.
 ///
@@ -1770,6 +1768,7 @@ fn around(span: Span, holes: &[(usize, usize)]) -> impl Iterator<Item = Span> + 
     pieces.into_iter()
 }
 
+/// Widget impl for `FileView`
 impl Widget for &mut FileView<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         // Recorded for the *next* `apply_view`, which runs outside render and
