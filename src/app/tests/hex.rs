@@ -70,3 +70,19 @@ fn minus_on_a_directory_says_there_is_no_file() {
 
     assert_eq!(status(&app), Some("no file to show as hex"));
 }
+
+/// An error in the pane is not a file: `-` says so rather than read it
+/// again and show the same error (#405).
+#[test]
+fn minus_on_an_error_says_there_is_no_file() {
+    let dir = fixture_dir("hex_app_error");
+    let mut app = App::new(&Startup::from(Config {
+        path: dir.join("placeholder").display().to_string(),
+        ..Config::default()
+    }));
+    app.perform_widget_action(Action::Load(dir.join("absent.txt")));
+
+    key(&mut app, KeyCode::Char('-'));
+
+    assert_eq!(status(&app), Some("no file to show as hex"));
+}
