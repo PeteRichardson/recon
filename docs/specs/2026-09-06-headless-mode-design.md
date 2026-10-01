@@ -216,6 +216,9 @@ recon: cannot read core.dump: binary file
 ```
 
 and is skipped: not emitted, not counted, not listed. The run continues.
+The `binary file` refusal is `--emit lines` only (#218): `--emit files` scans
+a NUL-bearing file like any other, as the navigator does, and lists it when
+the filters say so.
 `Exit::Emit` gains a field `failed: usize`; `deliver` returns exit **2** when
 it is non-zero, after writing the output and the summary for what was read.
 The TUI path always passes 0.
