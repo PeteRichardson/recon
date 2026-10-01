@@ -855,7 +855,8 @@ mod tests {
             "the scratch set has no name and is never enabled this way"
         );
         assert!(!set.sets()[1].enabled, "a refused call enables nothing");
-        assert!(enabled_names(&set).is_empty());
+        let names = enabled_names(&set);
+        assert!(names.is_empty(), "{names:?}");
     }
 
     #[test]
@@ -1832,10 +1833,8 @@ mod tests {
             .map(|example| example.line.as_str())
             .collect();
         assert_eq!(failed, ["two", "x three"]);
-        assert!(
-            set.failed_examples(x, &Regex::new("one|two").expect("valid"))
-                .is_empty()
-        );
+        let failed = set.failed_examples(x, &Regex::new("one|two").expect("valid"));
+        assert!(failed.is_empty(), "{failed:?}");
     }
 
     // ---- a filter's handle in its set's profiles (#356) ---------------------
@@ -1984,7 +1983,8 @@ mod tests {
     fn a_set_just_saved_is_saved_until_it_changes() {
         let mut set = set_with(&["foo"]);
         assert!(set.adopt_scratch_as("web", PathBuf::from("t")));
-        assert!(set.unsaved_sets().is_empty());
+        let unsaved = set.unsaved_sets();
+        assert!(unsaved.is_empty(), "{unsaved:?}");
         let web = set
             .sets()
             .iter()

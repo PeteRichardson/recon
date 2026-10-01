@@ -1479,7 +1479,11 @@ sense = "context"
         let sets = parse(&after, Path::new("t")).expect("round-trips");
         let s = sets.iter().find(|set| set.name == "s").expect("s");
         assert_eq!(s.filters[0].examples, lines);
-        assert!(s.filters[1].examples.is_empty());
+        assert!(
+            s.filters[1].examples.is_empty(),
+            "{:?}",
+            s.filters[1].examples
+        );
     }
 
     // ---- RECON_FILTER_PATH (#46) -------------------------------------------
@@ -1508,8 +1512,10 @@ sense = "context"
             search_path_from(Some("/team:/proj/.recon"), Some("/h")),
             [PathBuf::from("/team"), PathBuf::from("/proj/.recon")]
         );
-        assert!(search_path_from(None, Some("/h")).is_empty());
-        assert!(search_path_from(Some(""), Some("/h")).is_empty());
+        let path = search_path_from(None, Some("/h"));
+        assert!(path.is_empty(), "{path:?}");
+        let path = search_path_from(Some(""), Some("/h"));
+        assert!(path.is_empty(), "{path:?}");
     }
 
     /// An empty entry means the current directory to `PATH`. Here it means
@@ -1633,7 +1639,7 @@ sense = "context"
     fn a_missing_directory_on_the_path_is_no_files() {
         let root = scratch_dir("missing");
         let files = set_files(None, &[root.join("nowhere")]).expect("not an error");
-        assert!(files.is_empty());
+        assert!(files.is_empty(), "{files:?}");
     }
 
     #[test]

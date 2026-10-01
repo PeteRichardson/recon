@@ -1753,7 +1753,8 @@ mod tests {
         let config =
             parse_clean(["recon", "--unlist", "Bugs", "--unlist", "WiFi"]).expect("parses");
         assert_eq!(config.unlist, ["Bugs", "WiFi"]);
-        assert!(Config::default().unlist.is_empty());
+        let unlist = Config::default().unlist;
+        assert!(unlist.is_empty(), "{unlist:?}");
     }
 
     /// `--unlist` names a set the way `--set` does (#283): a known one,
@@ -1822,7 +1823,8 @@ mod tests {
 
         assert!(!Config::default().hide);
         assert!(!Config::default().quiet);
-        assert!(Config::default().set.is_empty());
+        let set = Config::default().set;
+        assert!(set.is_empty(), "{set:?}");
     }
 
     #[test]
@@ -2842,7 +2844,8 @@ mod tests {
             3,
             "same action, other scopes"
         );
-        assert!(nearest("quit", &known).is_empty());
+        let suggestions = nearest("quit", &known);
+        assert!(suggestions.is_empty(), "{suggestions:?}");
     }
 
     #[test]

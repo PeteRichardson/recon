@@ -946,7 +946,8 @@ func main() {}
         assert_eq!(rows_of(Kind::Type, "a.go", GO), vec![1, 2]);
         assert_eq!(rows_of(Kind::Struct, "a.go", GO), vec![1]);
         assert_eq!(rows_of(Kind::Trait, "a.go", GO), vec![2]);
-        assert!(rows_of(Kind::Module, "a.go", GO).is_empty());
+        let rows = rows_of(Kind::Module, "a.go", GO);
+        assert!(rows.is_empty(), "{rows:?}");
         assert_eq!(rows_of(Kind::Constant, "a.go", GO), vec![3]);
         // The interface's method requirement is a function declaration too,
         // as a one-line Rust trait's is.
@@ -985,7 +986,8 @@ prose
     #[test]
     fn markdown_headings_are_sections() {
         assert_eq!(rows_of(Kind::Section, "README.md", MARKDOWN), vec![0, 2, 5]);
-        assert!(rows_of(Kind::Function, "README.md", MARKDOWN).is_empty());
+        let rows = rows_of(Kind::Function, "README.md", MARKDOWN);
+        assert!(rows.is_empty(), "{rows:?}");
     }
 
     const C_MORE: &str = "\
@@ -1242,7 +1244,8 @@ int main(void) { return 0; }
     fn a_line_that_needs_no_colour_has_no_spans_but_counts_as_coloured() {
         let (mut highlighter, lines) = rust(Theme::builtin(), "\nmain();");
         assert!(highlighter.ensure(&lines, 0, &mut 10));
-        assert!(highlighter.spans(0).is_empty());
+        let spans = highlighter.spans(0);
+        assert!(spans.is_empty(), "{spans:?}");
         assert!(highlighter.ensure(&lines, 1, &mut 10));
     }
 
@@ -1282,7 +1285,8 @@ int main(void) { return 0; }
             highlighter.spans(far - RESYNC_LOOKBACK - 1).is_empty(),
             "the gap was skipped"
         );
-        assert!(!highlighter.spans(far).is_empty());
+        let spans = highlighter.spans(far);
+        assert!(!spans.is_empty(), "{spans:?}");
     }
 
     #[test]
@@ -1293,7 +1297,8 @@ int main(void) { return 0; }
         assert!(highlighter.ensure(&lines, RESYNC_GAP * 3, &mut budget));
         let back = RESYNC_GAP * 2;
         assert!(highlighter.ensure(&lines, back, &mut budget));
-        assert!(!highlighter.spans(back).is_empty());
+        let spans = highlighter.spans(back);
+        assert!(!spans.is_empty(), "{spans:?}");
         assert_eq!(usize::MAX - budget, 2 * (RESYNC_LOOKBACK + 1));
     }
 
@@ -1364,7 +1369,8 @@ int main(void) { return 0; }
             "six lines wanted, three allowed"
         );
         assert_eq!(budget, 3, "nothing spent");
-        assert!(highlighter.spans(5).is_empty());
+        let spans = highlighter.spans(5);
+        assert!(spans.is_empty(), "{spans:?}");
         assert!(highlighter.ensure(&lines, 2, &mut budget));
         assert_eq!(budget, 0);
     }
@@ -1373,7 +1379,8 @@ int main(void) { return 0; }
     fn a_row_past_the_end_is_refused() {
         let (mut highlighter, lines) = rust(Theme::builtin(), "fn a() {}");
         assert!(!highlighter.ensure(&lines, 1, &mut 10));
-        assert!(highlighter.spans(1).is_empty());
+        let spans = highlighter.spans(1);
+        assert!(spans.is_empty(), "{spans:?}");
     }
 
     #[test]
@@ -1381,7 +1388,8 @@ int main(void) { return 0; }
         let long = format!("let x = \"{}\";", "a".repeat(MAX_LINE_BYTES));
         let (mut highlighter, lines) = rust(Theme::builtin(), &long);
         assert!(highlighter.ensure(&lines, 0, &mut 10));
-        assert!(highlighter.spans(0).is_empty());
+        let spans = highlighter.spans(0);
+        assert!(spans.is_empty(), "{spans:?}");
     }
 
     #[test]

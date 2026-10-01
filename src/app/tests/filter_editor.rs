@@ -535,12 +535,14 @@ fn f_big_c_from_the_file_view_marks_the_cursor_line_too() {
 fn opened_from_the_filter_pane_or_the_explorer_no_line_is_marked() {
     let mut app = app_over_file("marks_from_pane", BODY);
     open_editor_from_the_filter_pane(&mut app);
-    assert!(marks(&app).is_empty());
+    let marked = marks(&app);
+    assert!(marked.is_empty(), "{marked:?}");
 
     let mut app = app_over_file("marks_from_explorer", BODY);
     assert_eq!(app.focus, Focus::Explorer);
     open_editor(&mut app);
-    assert!(marks(&app).is_empty());
+    let marked = marks(&app);
+    assert!(marked.is_empty(), "{marked:?}");
     assert_eq!(status_line(&mut app), "4 lines", "no checks, no count");
 }
 
@@ -577,7 +579,8 @@ fn the_mark_keys_are_typed_in_the_pattern() {
     open_editor_from_the_filter_pane(&mut app);
     typed(&mut app, "a+-=V");
     assert_eq!(editor(&app).field.pattern, "a+-=V");
-    assert!(marks(&app).is_empty());
+    let marked = marks(&app);
+    assert!(marked.is_empty(), "{marked:?}");
 
     key(&mut app, KeyCode::Tab);
     typed(&mut app, "x");
@@ -1211,7 +1214,8 @@ fn the_history_goes_with_the_editor() {
     let mut app = app_with_three_versions("undo_close");
     key(&mut app, KeyCode::Esc);
     open_editor(&mut app);
-    assert!(versions(&app).is_empty());
+    let versions = versions(&app);
+    assert!(versions.is_empty(), "{versions:?}");
 }
 
 #[test]
@@ -1695,7 +1699,7 @@ fn a_filter_without_marks_has_no_examples() {
     key(&mut app, KeyCode::Enter);
 
     let (_, filter) = app.filters.filters_in(0).next().expect("a scratch filter");
-    assert!(filter.examples.is_empty());
+    assert!(filter.examples.is_empty(), "{:?}", filter.examples);
 }
 
 /// Scratch filter 0 is `ERROR`, with `ERROR disk` must-match,
@@ -2209,7 +2213,8 @@ fn enter_with_no_request_sends_nothing() {
     ask(&mut app, "  ");
     assert!(editor(&app).running.is_none());
     assert_eq!(editor(&app).error.as_deref(), Some(NO_REQUEST));
-    assert!(harness.sent().is_empty());
+    let sent = harness.sent();
+    assert!(sent.is_empty(), "{sent:?}");
 }
 
 #[test]
@@ -2290,7 +2295,8 @@ fn a_cancelled_or_failed_request_is_not_kept() {
     key(&mut app, KeyCode::Enter);
     harness.answer();
     take_reply(&mut app);
-    assert!(editor(&app).requests.is_empty());
+    let requests = &editor(&app).requests;
+    assert!(requests.is_empty(), "{requests:?}");
 }
 
 /// A pattern that does not compile is not sent as the current pattern.
@@ -2415,7 +2421,7 @@ fn the_loop_stops_at_the_last_attempt_and_says_why() {
     assert_eq!(harness.sent().len(), ATTEMPTS);
     let editor = editor(&app);
     assert_eq!(editor.field.pattern, "ERROR", "the pattern changed");
-    assert!(editor.requests.is_empty());
+    assert!(editor.requests.is_empty(), "{:?}", editor.requests);
     let error = editor.error.clone().unwrap_or_default();
     assert!(
         error.contains(&format!("in {ATTEMPTS} tries"))
@@ -2466,7 +2472,8 @@ fn esc_cancels_the_loop_at_a_later_attempt_and_keeps_the_pattern() {
     assert!(!app.drain_request());
     assert_eq!(editor(&app).field.pattern, "timeout");
     assert_eq!(harness.sent().len(), 2);
-    assert!(editor(&app).requests.is_empty());
+    let requests = &editor(&app).requests;
+    assert!(requests.is_empty(), "{requests:?}");
 }
 
 /// The `?` help says how many tries a request has.
@@ -2716,7 +2723,8 @@ fn a_load_never_calls_the_model() {
     assert!(!app.drain_request());
 
     assert_eq!(harness.requests(), 0, "the load started a request");
-    assert!(harness.sent().is_empty(), "{:?}", harness.sent());
+    let sent = harness.sent();
+    assert!(sent.is_empty(), "{sent:?}");
     let generated: Vec<bool> = app
         .filters
         .filters_in(1)
@@ -2835,7 +2843,8 @@ fn ctrl_r_without_a_prompt_says_so() {
     ctrl(&mut app, KeyCode::Char('r'));
     assert_eq!(editor(&app).error.as_deref(), Some(NO_PROMPT));
     assert!(editor(&app).running.is_none());
-    assert!(harness.sent().is_empty());
+    let sent = harness.sent();
+    assert!(sent.is_empty(), "{sent:?}");
 }
 
 /// A pattern the model wrote with no prompt is not generated: there is no
@@ -2991,7 +3000,8 @@ fn a_session_with_no_request_saves_at_once() {
     typed(&mut app, "ERROR");
     key(&mut app, KeyCode::Enter);
     assert!(app.filter_editor.is_none(), "{:?}", editor(&app).error);
-    assert!(harness.sent().is_empty(), "{:?}", harness.sent());
+    let sent = harness.sent();
+    assert!(sent.is_empty(), "{sent:?}");
 }
 
 /// `Ctrl-r` writes the pattern from the prompt alone and starts the

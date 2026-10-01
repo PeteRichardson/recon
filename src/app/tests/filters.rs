@@ -306,7 +306,8 @@ fn loading_a_file_that_every_filter_excludes_leaves_a_blank_view() {
         Mode::Dimmed,
         "sanity: the hide toggle plays no part in this one"
     );
-    assert!(app.document.visible().is_empty());
+    let visible = app.document.visible();
+    assert!(visible.is_empty(), "{visible:?}");
     assert!(
         view_lines(&app).iter().all(String::is_empty),
         "the excluded lines came back on screen: {:?}",

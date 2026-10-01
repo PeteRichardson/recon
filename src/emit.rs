@@ -253,7 +253,7 @@ mod tests {
 
         let (out, err, code) = deliver(exit, Some(Emit::Files));
 
-        assert!(out.is_empty());
+        assert!(out.is_empty(), "{out:?}");
         assert_eq!(err, b"recon: emitted 0 files from /d, hide mode\n");
         assert_eq!(code, ExitCode::SUCCESS);
     }
@@ -281,7 +281,7 @@ mod tests {
         let (mut out, mut err) = (Vec::new(), Vec::new());
         let code = Exit::Cancelled.deliver(Some(Emit::Lines), true, &mut out, &mut err);
 
-        assert!(out.is_empty());
+        assert!(out.is_empty(), "{out:?}");
         assert_eq!(err, b"recon: cancelled\n");
         assert_eq!(code, ExitCode::from(130));
     }
@@ -290,8 +290,8 @@ mod tests {
     fn a_silent_quit_under_emit_writes_nothing_and_fails() {
         let (out, err, code) = deliver(Exit::Silent, Some(Emit::Cwd));
 
-        assert!(out.is_empty());
-        assert!(err.is_empty());
+        assert!(out.is_empty(), "{out:?}");
+        assert!(err.is_empty(), "{err:?}");
         assert_eq!(code, ExitCode::FAILURE);
     }
 
@@ -299,8 +299,8 @@ mod tests {
     fn a_silent_quit_without_emit_writes_nothing_and_succeeds() {
         let (out, err, code) = deliver(Exit::Silent, None);
 
-        assert!(out.is_empty());
-        assert!(err.is_empty());
+        assert!(out.is_empty(), "{out:?}");
+        assert!(err.is_empty(), "{err:?}");
         assert_eq!(code, ExitCode::SUCCESS);
     }
 
@@ -425,7 +425,7 @@ mod tests {
 
         let code = exit.deliver(Some(Emit::Lines), true, &mut out, &mut err);
 
-        assert!(err.is_empty());
+        assert!(err.is_empty(), "{err:?}");
         assert_eq!(code, ExitCode::from(2));
     }
 }

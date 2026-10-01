@@ -218,7 +218,8 @@ fn y_with_nothing_selected_says_so_and_copies_nothing() {
         message(&app),
         Some("nothing selected · v starts a selection")
     );
-    assert!(clipboard.copies().is_empty());
+    let copies = clipboard.copies();
+    assert!(copies.is_empty(), "{copies:?}");
 }
 
 /// `v`, `V` and `y` outside the view hint rather than acting: there is no
@@ -235,7 +236,8 @@ fn v_and_y_outside_the_view_hint() {
         message(&app),
         Some("y copies a selection in the file view · t v")
     );
-    assert!(clipboard.copies().is_empty());
+    let copies = clipboard.copies();
+    assert!(copies.is_empty(), "{copies:?}");
 }
 
 /// A clipboard that fails reports on the status row in red, the way a

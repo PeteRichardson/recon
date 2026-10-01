@@ -802,7 +802,8 @@ mod tests {
     fn visible_lines_range_clamps_a_start_past_the_end() {
         let document = shown(&["a", "b"]);
 
-        assert!(document.visible_lines_range(9, 999).is_empty());
+        let lines = document.visible_lines_range(9, 999);
+        assert!(lines.is_empty(), "{lines:?}");
     }
 
     #[test]
@@ -967,7 +968,8 @@ mod tests {
         document.set_mode(Mode::FilteredOnly);
         document.evaluate(&set_with(&["ERROR"]));
 
-        assert!(document.visible().is_empty());
+        let visible = document.visible();
+        assert!(visible.is_empty(), "{visible:?}");
     }
 
     /// The guard is cached at `evaluate` time precisely so that the mode toggle
@@ -1110,7 +1112,8 @@ mod tests {
         document.set_mode(Mode::FilteredOnly);
         document.evaluate(&set_with(&["zzz"]));
 
-        assert!(document.visible().is_empty());
+        let visible = document.visible();
+        assert!(visible.is_empty(), "{visible:?}");
         assert_eq!(document.nearest_visible(0), None);
     }
 

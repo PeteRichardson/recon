@@ -488,7 +488,7 @@ mod tests {
         let Exit::Emit { lines, failed, .. } = exit else {
             panic!("silent");
         };
-        assert!(lines.is_empty());
+        assert!(lines.is_empty(), "{lines:?}");
         assert_eq!(failed, 1);
         assert_eq!(
             String::from_utf8_lossy(&warnings),
@@ -617,7 +617,7 @@ mod tests {
             "recon: emitted 3 lines of headless_lines_dim.log, dim mode (2 match) — pass --hide to emit matches only"
         );
         assert_eq!(failed, 0);
-        assert!(warnings.is_empty());
+        assert!(warnings.is_empty(), "{warnings:?}");
     }
 
     #[test]
@@ -769,7 +769,7 @@ mod tests {
                 lexical_absolute(&dir).display(),
             )
         );
-        assert!(lines.is_empty());
+        assert!(lines.is_empty(), "{lines:?}");
         assert_eq!(
             summary,
             "recon: emitted 0 lines of 0 files, dim mode (0 match) — pass --hide to emit matches only"
@@ -850,7 +850,7 @@ mod tests {
         assert_eq!(lines, [all[0].clone(), all[2].clone()]);
         assert_eq!(summary, "recon: emitted 2 files of 3 inputs, hide mode");
         assert_eq!(failed, 0);
-        assert!(warnings.is_empty());
+        assert!(warnings.is_empty(), "{warnings:?}");
     }
 
     #[test]
@@ -1025,7 +1025,7 @@ mod tests {
         ));
         assert_eq!(lines, [binary.display().to_string()], "files lists it");
         assert_eq!(failed, 0);
-        assert!(warnings.is_empty());
+        assert!(warnings.is_empty(), "{warnings:?}");
 
         let mut warnings = Vec::new();
         let (lines, _, failed) = emitted(collect_lines(
@@ -1087,7 +1087,7 @@ mod tests {
                 .display()
                 .to_string()]
         );
-        assert!(warnings.is_empty());
+        assert!(warnings.is_empty(), "{warnings:?}");
     }
 
     /// `run` reads real stdin, so its wiring is exercised by

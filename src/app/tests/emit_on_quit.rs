@@ -365,7 +365,7 @@ fn lines_over_a_directory_listing_emits_nothing_and_says_so() {
 
     let (lines, summary) = emitted(&mut app);
 
-    assert!(lines.is_empty());
+    assert!(lines.is_empty(), "{lines:?}");
     assert_eq!(
         summary,
         "recon: emitted 0 lines — the view is showing a directory"
@@ -384,7 +384,7 @@ fn lines_over_an_unreadable_file_emits_nothing_and_says_so() {
 
     let (lines, summary) = emitted(&mut app);
 
-    assert!(lines.is_empty());
+    assert!(lines.is_empty(), "{lines:?}");
     assert_eq!(
         summary,
         "recon: emitted 0 lines — the view is showing an error, not a file"

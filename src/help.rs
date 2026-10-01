@@ -1415,7 +1415,8 @@ mod tests {
     fn a_prefixed_lone_space_is_not_a_readable_label() {
         assert!(!label_is_readable("Ctrl- "), "Ctrl- must not parse");
         assert!(!label_is_readable("Alt- "), "Alt- must not parse either");
-        assert!(chords_for_label("Ctrl- ").is_empty());
+        let chords = chords_for_label("Ctrl- ");
+        assert!(chords.is_empty(), "{chords:?}");
 
         // The bare one is a key, and still reads.
         assert!(label_is_readable("space"));
@@ -1440,7 +1441,8 @@ mod tests {
             !label_is_readable("Ctrl- -!"),
             "a prefixed range over the space bar must not parse"
         );
-        assert!(chords_for_label("Ctrl- -!").is_empty());
+        let chords = chords_for_label("Ctrl- -!");
+        assert!(chords.is_empty(), "{chords:?}");
         assert!(!label_is_readable("Alt- -!"), "the same for Alt-");
 
         // A bare range keeps its space: that chord renders `space` correctly

@@ -2795,9 +2795,12 @@ mod tests {
 
         view.load(&path);
 
-        assert!(view.textarea.line_styles().is_empty());
-        assert!(view.textarea.line_numbers().is_empty());
-        assert!(view.textarea.line_number_styles().is_empty());
+        let line_styles = view.textarea.line_styles();
+        assert!(line_styles.is_empty(), "{line_styles:?}");
+        let line_numbers = view.textarea.line_numbers();
+        assert!(line_numbers.is_empty(), "{line_numbers:?}");
+        let line_number_styles = view.textarea.line_number_styles();
+        assert!(line_number_styles.is_empty(), "{line_number_styles:?}");
     }
 
     /// The cursor line must not escape dimming: the textarea replaces rather

@@ -204,7 +204,7 @@ fn an_unknown_set_is_refused_before_anything_is_read() {
 
     let out = recon(&home, &["--emit", "files", "--set", "Nope"], b"");
 
-    assert!(out.stdout.is_empty());
+    assert_eq!(out.stdout, b"");
     assert!(
         text(&out.stderr).contains("unknown set \"Nope\"; the set files define: Bugs"),
         "stderr: {}",
@@ -263,7 +263,7 @@ fn set_and_unlist_of_one_set_is_refused_before_anything_is_read() {
         b"",
     );
 
-    assert!(out.stdout.is_empty());
+    assert_eq!(out.stdout, b"");
     assert!(
         text(&out.stderr).contains("--set and --unlist both name the set \"Bugs\""),
         "stderr: {}",
@@ -291,7 +291,7 @@ fn an_unknown_action_in_the_keymap_is_refused_before_anything_is_read() {
 
     let out = recon(&home, &["--emit", "files"], b"");
 
-    assert!(out.stdout.is_empty());
+    assert_eq!(out.stdout, b"");
     assert!(
         text(&out.stderr).contains("unknown action \"global.qiut\" in [keymap]"),
         "stderr: {}",
