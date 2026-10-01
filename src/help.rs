@@ -10,48 +10,29 @@
 //!
 //! So `KEYMAP` below is the one list this crate keeps.
 //!
-//! # The drift test used to scrape source text; now it compares tables
+//! # The drift test compares tables, not source text
 //!
-//! Earlier phases of #25 had a test, `every_bound_key_is_documented`, that
-//! read the *source files* back at test time and failed when a key bound in
-//! a `KeyCode::…` / `Key::…` arm — a character in `Char(..)`, or a named key
-//! such as `PageDown` or `BackTab` — was not named by any row here. That
-//! scan could only see a key spelled as a literal `match` arm, which is
-//! exactly what this phase (moving every binding into `keymap::DEFAULT`)
-//! stopped doing: after the match arms were replaced there was nothing left
-//! for the scrape to find, so task 9 deleted it along with the tests that
-//! only existed to prove the scrape itself worked.
+//! `keymap::the_table_and_the_documentation_agree` (`src/keymap/mod.rs`)
+//! compares `keymap::DEFAULT` against `KEYMAP` entry by entry. It also checks
+//! that a name sits on the *right* row (#59's `n`/`N`-in-two-scopes bug).
 //!
-//! `keymap::the_table_and_the_documentation_agree` (`src/keymap/mod.rs`) is what
-//! replaces it: it compares `keymap::DEFAULT` against `KEYMAP` directly,
-//! entry by entry, rather than grepping source text. That is a stronger
-//! check in one respect the scrape never covered — it also verifies a name
-//! sits on the *right* row (#59's `n`/`N`-in-two-scopes bug is what proved
-//! that gap) — but it gives up something the scrape could see: a key bound
-//! in code but missing from the table entirely, since a table-to-table
-//! comparison cannot notice an absence that never became a row on either
-//! side.
+//! A table-to-table comparison cannot see a key bound in code and missing
+//! from both tables. That gap is accepted, for two reasons. Every key a raw
+//! keypress can resolve to starts at `keymap::DEFAULT`, so an undocumented
+//! binding cannot occur by construction: the file view takes an action from
+//! the table through `FileView::perform` like every other pane (#373), and
+//! `Focus::View` drops a key `Scope::View` does not resolve rather than
+//! forwarding it (see the comment on that intercept in
+//! `App::dispatch_event`). The remaining non-table arms — the filter pane's
+//! `h`/`l` hints, the prompt's three non-binding arms, the help overlay's
+//! any-key dismissal, the bounce guard — are deliberate and documented the
+//! same way. And a test that scrapes source text for `match` arms finds
+//! nothing once the arms are gone, silently (#162).
 //!
-//! Losing that is accepted, not overlooked, for three reasons. Every key a
-//! user's raw keypress can resolve to now starts at `keymap::DEFAULT`, so an
-//! undocumented binding — a keypress the table does not name, reaching a
-//! pane some other way — cannot occur by construction. The file view, the
-//! last pane that matched on keys itself, now takes an action from the
-//! table through `FileView::perform` like every other pane (#373); before
-//! that, `App::perform` rebuilt a canonical key for each of its actions and
-//! the widget decoded it again. `Focus::View` drops a key `Scope::View` does
-//! not resolve rather than forwarding it (see the comment on that intercept
-//! in `App::dispatch_event`). The other remaining non-table
-//! arms — the filter pane's `h`/`l` hints, the prompt's three non-binding
-//! arms, the help overlay's any-key dismissal, the bounce guard — are
-//! deliberate and documented the same way. And #162 already records this
-//! exact scan silently finding nothing once before, so its guarantee was
-//! weaker in practice than it looked on paper.
-//!
-//! It still does not catch the reverse (a row describing a key that no
-//! longer exists), and it deliberately says nothing about the README — that
-//! stays hand-maintained. Generating the README section from `KEYMAP` is the
-//! obvious next step and is not taken here.
+//! The test does not catch the reverse (a row describing a key that does not
+//! exist), and it says nothing about the README — that stays hand-maintained.
+//! Generating the README section from `KEYMAP` is the obvious next step and
+//! is not taken here.
 
 use ratatui::prelude::{Buffer, Color, Modifier, Rect, Style};
 use ratatui::widgets::{Block, Clear, Widget};
@@ -110,8 +91,8 @@ pub struct Binding {
 /// agree on. `F` stands for every function key: `KeyCode::F(n)` is one arm
 /// whichever `n` it matches.
 ///
-/// No longer test-only (#59): `label_matches` needs it too, to answer whether
-/// a `DEFAULT` label names the key that was pressed.
+/// Not test-only: `label_matches` needs it too (#59), to answer whether a
+/// `DEFAULT` label names the key that was pressed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Key {
     Char(char),
@@ -192,13 +173,10 @@ fn keys_for_label(label: &str) -> Vec<Key> {
         // `Ctrl-*-/` is `Ctrl-*` through `Ctrl-/` — that is `*` `+` `,` `-`
         // `.` `/`, six keys, and the `-` among them is a `RESERVED` key. `!`
         // is 0x21 and sits below `*` at 0x2A, so it is *not* in this range; it
-        // belongs to the `Ctrl- -!` example below, and an earlier version of
-        // this comment confused the two.
+        // belongs to the `Ctrl- -!` example below.
         //
-        // This comment also used to say ranges were bare-only, which the code
-        // had never obeyed. A prefixed range that would yield the space bar is
-        // refused outright — the whole label, not just that key — below rather
-        // than here.
+        // A prefixed range that would yield the space bar is refused outright
+        // — the whole label, not just that key — below rather than here.
         [a, '-', b] if a < b => (*a..=*b).map(Key::Char).collect(),
         _ => Vec::new(),
     };
@@ -293,11 +271,9 @@ impl Chord {
             // prefix because it has nowhere to put it.
             //
             // That is safe only because `keys_for_label` refuses to hand a
-            // prefixed label a `Char(' ')` at all. An earlier version of this
-            // comment claimed no readable label could produce one, which was
-            // false: `Ctrl- -!` and `Ctrl- ` both did, and both rendered as
-            // the plain space chord. The claim is true now because the
-            // carve-out makes it true, not on its own.
+            // prefixed label a `Char(' ')` at all. Without that carve-out,
+            // `Ctrl- -!` and `Ctrl- ` would each produce one, and render as
+            // the plain space chord.
             Key::Char(' ') => "space".to_string(),
             Key::Named("BackTab") if prefix.is_empty() => "Shift-Tab".to_string(),
             Key::Named("F") if prefix.is_empty() => "any function key".to_string(),
@@ -1083,7 +1059,7 @@ fn keys_for(
     // of the row's own list has no literal to replace. `global.reload`'s row
     // carries one key, so `global.reload = ['r', 'F5']` would show `r` alone
     // and `F5` would appear nowhere a user could see it — the README is static
-    // text and `--print-keymap` prints the defaults (task 7 fix round 1).
+    // text and `--print-keymap` prints the defaults.
     //
     // Only a label the defaults do not already hold is appended, which is what
     // keeps the curated list curated: `Home` and `End` are in
@@ -1578,10 +1554,8 @@ mod tests {
     /// regression but passes on the correct layout.
     ///
     /// There is no margin left below: 150 is what the correct layout fills
-    /// the 150-column area with, exactly — the "Profile picker" section (#59)
-    /// used up the two columns of slack this area used to have below the
-    /// correct fill (it was 148). The one column of slack above, before the
-    /// regression's 151, is unchanged. So a `KEYMAP` row that widens a column
+    /// the 150-column area with, exactly. The one column of slack above is
+    /// the regression's 151. So a `KEYMAP` row that widens a column
     /// any further has nowhere left to go without this area's width growing
     /// past 151 — which would stop the second test here from failing on the
     /// regression it exists to catch — and a row that adds to *either* total
@@ -1780,7 +1754,7 @@ mod tests {
     /// `global.reload`'s row carries one key, so a second key the config gives
     /// it has no literal to replace — and a row that dropped it would leave it
     /// visible nowhere at all: the README is static text and `--print-keymap`
-    /// prints the defaults (task 7 fix round 1).
+    /// prints the defaults.
     #[test]
     fn a_key_the_row_has_no_label_for_is_still_shown() {
         let rows = rows(&keymap(&[("global.reload", &["r", "F5"])]));
