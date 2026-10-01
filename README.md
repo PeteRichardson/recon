@@ -168,8 +168,10 @@ motions throughout.
   fork's own floor is what sets 1.88. `Cargo.toml` declares the same
   `rust-version`, so an older toolchain is refused with an error that names
   `recon` rather than one that fails inside the fork.
-- **A terminal.** `recon` enters raw mode and the alternate screen; it exits
-  with `Device not configured (os error 6)` if stderr isn't a TTY. stdout may be a pipe or a capture — see [Emitting the result](#emitting-the-result).
+- **A terminal.** `recon` enters raw mode and the alternate screen, on
+  stderr. When stderr is not a terminal (`2>/dev/null`, `2>log`), it draws on
+  `/dev/tty` instead, as `fzf` does. With no terminal at all (cron, `ssh`
+  without `-t`), it refuses with a message and exits 1. stdout may be a pipe or a capture — see [Emitting the result](#emitting-the-result).
 
 Developed and tested on macOS.
 
@@ -358,7 +360,9 @@ RUST_LOG=recon=debug recon app.log
 
 Log output goes to **stderr** by default, and `recon` draws its interface on
 stderr too, so `recon` drops any record logged while the TUI holds the
-screen — only the startup and shutdown records reach you. Set `RECON_LOG`
+screen — only the startup and shutdown records reach you. When stderr is
+redirected, the TUI draws on `/dev/tty` and nothing is dropped: every record
+goes to the redirect. Set `RECON_LOG`
 to a file to avoid losing the rest, and to see the in-session messages at
 all:
 
@@ -434,6 +438,7 @@ Global (`src/app/events.rs`), handled before the focused pane sees the key:
 | `?` | Show the keymap overlay — every binding on one screen. Any key closes it, and that key does nothing else | `global.help` |
 | `q` | Quit. When a named set has changes that are not saved, the first `q` warns and the second quits | `global.quit` |
 | `Q` | Quit without emitting — the same as `q` unless `--emit` was given | `global.quit.silent` |
+| `Ctrl-c` | Quit from anywhere — an open prompt, a picker or the help included — emitting nothing: `recon: cancelled` on stderr, exit 130. A SIGTERM also restores the terminal, then exits 143 with `recon: terminated` | `global.interrupt` |
 | `Tab` / `Shift-Tab` | Move focus to the next / previous shown pane, left to right — explorer, file view, filter pane. A hidden pane is skipped | `global.focus.next` / `global.focus.prev` |
 | `/` | Search as you type. In the file view or the filter pane, set the search: the cursor moves to the first hit at or after the line you started on, wrapping once to the top and saying so, and the hits in the window are highlighted. In the explorer, search filenames: the selection moves to the first name that matches at or after the row you started on, the matching names light up, and the view pane previews the file under the selection as it would for `j`. Each keystroke re-runs from where `/` opened, so a narrowed pattern never walks away from where you started. Esc puts the cursor and the scroll, or the selected row and its preview, back there; Enter keeps the position. Only the visible lines are searched, and none of them changes | `global.search` |
 | `p` | Promote the search into a numbered include filter and clear it; the filter's colour replaces the highlight | `global.search.promote` |
@@ -1895,7 +1900,8 @@ which is enforced in `Document::recompute_visible` and predates this key.
 
 recon is good at finding things; `--emit` is how the result leaves with the
 process. The TUI draws on stderr, so stdout is free for it — pipe it, capture
-it, or read it off the terminal.
+it, or read it off the terminal. With stderr redirected too, the TUI draws on
+`/dev/tty`.
 
 ```sh
 recon --emit lines app.log | sort | uniq -c      # the visible lines
@@ -1911,7 +1917,8 @@ dir="$(recon --emit cwd)" && cd "$dir"           # where you ended up
 
 **`q` emits, `Q` doesn't.** `Q` quits without printing and exits 1 when
 `--emit` was given, so an aborted browse never `cd`s anywhere and a pipeline
-under `set -e` stops. Without `--emit`, `Q` is `q`.
+under `set -e` stops. Without `--emit`, `Q` is `q`. `Ctrl-c` quits like `Q`
+and exits 130, with `recon: cancelled` on stderr.
 
 **The mode is the trap.** Dim mode emits everything on screen — every line of
 the file, every file in the listing; hide mode emits only the matches. The

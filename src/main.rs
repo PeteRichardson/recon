@@ -10,10 +10,12 @@ use crossterm::{
 use ratatui::{Terminal, prelude::CrosstermBackend};
 use recon::App;
 use recon::startup::{Start, Startup};
-use std::io::{self, IsTerminal, Stderr};
+use std::fs::File;
+use std::io::{self, IsTerminal, Write};
 use std::panic;
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, OnceLock};
 
 fn main() -> Result<ExitCode> {
     install_error_hooks()?;
@@ -53,9 +55,16 @@ fn main() -> Result<ExitCode> {
         log_keymap_warnings(&startup);
         recon::headless::run(&startup)?
     } else {
+        // Registered before the terminal is set up, so no SIGTERM can find
+        // it raw with nothing to undo it (#382). The handler only sets the
+        // flag; the loop sees it and leaves the way a quit key does, and the
+        // restore below runs as for any other exit.
+        let terminate = Arc::new(AtomicBool::new(false));
+        signal_hook::flag::register(signal_hook::consts::SIGTERM, Arc::clone(&terminate))?;
         let terminal = init_terminal()?;
         let exit = App::new(&startup)
             .with_model(recon::generate::system())
+            .with_terminate(terminate)
             .run(terminal)?;
         restore_terminal()?;
         exit
@@ -228,9 +237,12 @@ fn setup_logging() {
     let installed = if to_file {
         log::set_boxed_logger(Box::new(logger))
     } else {
+        // Held only while the TUI draws on stderr. On `/dev/tty` (#382) a
+        // record goes to wherever stderr was sent, and the screen never sees
+        // it.
         log::set_boxed_logger(Box::new(Muted {
             inner: logger,
-            hold: || TERMINAL_UP.load(Ordering::Relaxed),
+            hold: || TERMINAL_UP.load(Ordering::Relaxed) && TTY.get().is_none(),
         }))
     };
 
@@ -242,10 +254,77 @@ fn setup_logging() {
     }
 }
 
+/// `/dev/tty`, opened once when stderr is not a terminal (#382). Unset means
+/// the TUI draws on stderr. `init_terminal`, `restore_terminal` and so the
+/// error and panic hooks all write through `screen`, which reads this, so
+/// none of them can undo the setup on a different handle than the one that
+/// did it.
+static TTY: OnceLock<File> = OnceLock::new();
+
+/// Where the TUI draws: stderr, or `/dev/tty` in its place.
+enum Screen {
+    Stderr(io::Stderr),
+    Tty(&'static File),
+}
+
+impl Write for Screen {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        match self {
+            Self::Stderr(stderr) => stderr.write(buf),
+            Self::Tty(tty) => tty.write(buf),
+        }
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        match self {
+            Self::Stderr(stderr) => stderr.flush(),
+            Self::Tty(tty) => tty.flush(),
+        }
+    }
+}
+
+/// The screen the TUI draws on, as `open_screen` chose it.
+fn screen() -> Screen {
+    TTY.get()
+        .map_or_else(|| Screen::Stderr(io::stderr()), Screen::Tty)
+}
+
+/// Choose the screen: stderr when it is a terminal, `/dev/tty` when it is
+/// not (#382).
+///
+/// `dir=$(recon --emit cwd 2>/dev/null)` used to draw the whole TUI into
+/// `/dev/null`: a blank terminal that still took keys, with no way to see
+/// what they did. fzf answers the same case the same way. With stderr a
+/// terminal nothing changes.
+///
+/// No `/dev/tty` — cron, `ssh` without `-t` — refuses with a message, before
+/// raw mode, so there is nothing to undo.
+fn open_screen() -> Result<()> {
+    if io::stderr().is_terminal() {
+        return Ok(());
+    }
+    let tty = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open("/dev/tty")
+        .map_err(|err| {
+            eyre::eyre!(
+                "stderr is not a terminal and /dev/tty cannot be opened ({err}); \
+                 the TUI needs a terminal to draw on. \
+                 For a result without one, use --emit with stdin from a file or a pipe"
+            )
+        })?;
+    // Set once: this is the only caller, and it runs once.
+    let _ = TTY.set(tty);
+    Ok(())
+}
+
 /// The TUI draws on **stderr** (#143), so stdout carries nothing but what
 /// `--emit` asks for and can be piped or captured while the TUI is up — the
 /// same arrangement fzf uses. Unconditional rather than switched on whether
 /// stdout is a terminal: one code path, and a difference nobody could see.
+/// When stderr is not a terminal, `/dev/tty` takes its place (#382) — see
+/// `open_screen`.
 ///
 /// The writer is a `BufWriter`: unlike `Stdout`, `Stderr` carries no
 /// buffering of its own, so every `queue!`'d cell write during a redraw would
@@ -261,7 +340,8 @@ fn setup_logging() {
 /// `recon --emit cwd | xargs …` then sat on a black screen for two seconds
 /// and died with "the cursor position could not be read". Nothing else in
 /// the draw path asks where the cursor is.
-fn init_terminal() -> Result<Terminal<CrosstermBackend<io::BufWriter<Stderr>>>> {
+fn init_terminal() -> Result<Terminal<CrosstermBackend<io::BufWriter<Screen>>>> {
+    open_screen()?;
     enable_raw_mode()?;
     // Set as soon as raw mode is on, not after the rest of setup below: the
     // hooks call `restore_terminal` the moment any `?` past this point turns
@@ -269,12 +349,12 @@ fn init_terminal() -> Result<Terminal<CrosstermBackend<io::BufWriter<Stderr>>>> 
     // when the alternate screen and mouse capture were never reached.
     TERMINAL_UP.store(true, Ordering::Relaxed);
     execute!(
-        io::stderr(),
+        screen(),
         EnterAlternateScreen,
         EnableMouseCapture,
         Clear(ClearType::All)
     )?;
-    let backend = CrosstermBackend::new(io::BufWriter::new(io::stderr()));
+    let backend = CrosstermBackend::new(io::BufWriter::new(screen()));
     let terminal = Terminal::new(backend)?;
     Ok(terminal)
 }
@@ -305,8 +385,7 @@ fn restore_terminal() -> Result<()> {
         return Ok(());
     }
     disable_raw_mode()?;
-    let mut stderr = io::stderr();
-    execute!(stderr, LeaveAlternateScreen, DisableMouseCapture)?;
+    execute!(screen(), LeaveAlternateScreen, DisableMouseCapture)?;
     Ok(())
 }
 

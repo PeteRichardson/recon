@@ -83,6 +83,22 @@ impl App<'_> {
             return;
         }
 
+        // The terminal's interrupt (#382), before every modal: raw mode turns
+        // Ctrl-c into a key, and a prompt, a picker or the filter editor would
+        // otherwise swallow it. Below the finishing guard, whose own
+        // `finishing.cancel` ends the session the same way. A key rebound to
+        // `global.interrupt` gets the same precedence, so a printable one is
+        // never typed into a prompt.
+        if let event::Event::Key(key) = event
+            && self
+                .keymap
+                .resolve(crate::keymap::Scope::Global, crate::keymap::normalise(key))
+                == Some(crate::keymap::ActionId::GlobalInterrupt)
+        {
+            self.state = super::AppState::Cancelled;
+            return;
+        }
+
         if self.keymap_warnings_open {
             if matches!(event, event::Event::Key(_)) {
                 self.keymap_warnings_open = false;

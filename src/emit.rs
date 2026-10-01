@@ -51,8 +51,14 @@ pub enum Exit {
     /// The user cancelled the work `q` started under `--emit` (#351, #352):
     /// nothing on stdout, `recon: cancelled` on stderr, exit 130 — the code
     /// a shell gives a process Ctrl-C stopped. A script never gets partial
-    /// output without a sign.
+    /// output without a sign. Ctrl-c in the TUI ends the session the same
+    /// way, with or without `--emit` (#382).
     Cancelled,
+    /// A SIGTERM ended the session (#382): nothing on stdout,
+    /// `recon: terminated` on stderr, exit 143 — the code a shell gives a
+    /// process SIGTERM stopped. recon catches the signal only to restore the
+    /// terminal first.
+    Terminated,
 }
 
 /// Written out rather than derived, for `Spooled`: a file handle has no
@@ -76,7 +82,9 @@ impl PartialEq for Exit {
             (Self::Spooled { summary, .. }, Self::Spooled { summary: other, .. }) => {
                 summary == other
             }
-            (Self::Silent, Self::Silent) | (Self::Cancelled, Self::Cancelled) => true,
+            (Self::Silent, Self::Silent)
+            | (Self::Cancelled, Self::Cancelled)
+            | (Self::Terminated, Self::Terminated) => true,
             _ => false,
         }
     }
@@ -94,7 +102,8 @@ impl Exit {
     /// | `Spooled` | yes | the spool, byte for byte | the summary, unless `quiet` | 0 |
     /// | `Silent` | yes | nothing | nothing | 1 |
     /// | `Silent` | no | nothing | nothing | 0 |
-    /// | `Cancelled` | yes | nothing | `recon: cancelled`, even under `quiet` | 130 |
+    /// | `Cancelled` | either | nothing | `recon: cancelled`, even under `quiet` | 130 |
+    /// | `Terminated` | either | nothing | `recon: terminated`, even under `quiet` | 143 |
     ///
     /// `Silent` under `--emit` fails because the caller asked for output and
     /// got none: `dir=$(recon --emit cwd) && cd "$dir"` then skips the `cd`
@@ -150,6 +159,10 @@ impl Exit {
             (Self::Cancelled, _) => {
                 let _ = writeln!(stderr, "recon: cancelled");
                 ExitCode::from(130)
+            }
+            (Self::Terminated, _) => {
+                let _ = writeln!(stderr, "recon: terminated");
+                ExitCode::from(143)
             }
             (Self::Silent, Some(_)) => ExitCode::FAILURE,
             (Self::Silent, None) => ExitCode::SUCCESS,
@@ -284,6 +297,19 @@ mod tests {
         assert!(out.is_empty(), "{out:?}");
         assert_eq!(err, b"recon: cancelled\n");
         assert_eq!(code, ExitCode::from(130));
+    }
+
+    /// #382: a SIGTERM writes nothing to stdout, says so on stderr even
+    /// under `-q`, and exits 143, the code a shell gives a process SIGTERM
+    /// stopped.
+    #[test]
+    fn a_terminated_session_writes_nothing_says_so_and_exits_143() {
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let code = Exit::Terminated.deliver(Some(Emit::Lines), true, &mut out, &mut err);
+
+        assert!(out.is_empty(), "{out:?}");
+        assert_eq!(err, b"recon: terminated\n");
+        assert_eq!(code, ExitCode::from(143));
     }
 
     #[test]
