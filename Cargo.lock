@@ -1564,6 +1564,7 @@ dependencies = [
  "ratatui",
  "regex",
  "serde",
+ "signal-hook",
  "syntect",
  "toml",
  "toml_edit",

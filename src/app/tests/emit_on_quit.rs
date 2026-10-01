@@ -705,3 +705,57 @@ fn the_open_picker_is_visible() {
     assert!(screen.contains("Profiles"), "{screen}");
     assert!(screen.contains("only-beta"), "{screen}");
 }
+
+// ---- Ctrl-c and SIGTERM (#382) --------------------------------------
+
+/// Ctrl-c quits like `Q` and exits 130, with `--emit` or without: raw mode
+/// turns the terminal's interrupt into a key, and a key no scope bound was
+/// dropped without a sign (#382).
+#[test]
+fn ctrl_c_quits_emitting_nothing() {
+    for (name, emit) in [
+        ("interrupt_with_emit", Some(emit::Emit::Cwd)),
+        ("interrupt_without_emit", None),
+    ] {
+        let mut app = app_emitting(name, emit);
+
+        ctrl(&mut app, KeyCode::Char('c'));
+
+        assert!(!app.is_running(), "{name}");
+        assert_eq!(app.exit(), emit::Exit::Cancelled, "{name}");
+    }
+}
+
+/// A terminal's interrupt works whatever has the keys, so Ctrl-c is read
+/// before every modal: an open prompt, the help overlay, a picker.
+#[test]
+fn ctrl_c_quits_from_a_modal() {
+    for (name, open) in [
+        ("interrupt_prompt", KeyCode::Char('/')),
+        ("interrupt_help", KeyCode::Char('?')),
+        ("interrupt_sets", KeyCode::Char('L')),
+    ] {
+        let mut app = app_emitting(name, None);
+        key(&mut app, open);
+        assert!(app.is_running(), "{name}: the modal key quit");
+
+        ctrl(&mut app, KeyCode::Char('c'));
+
+        assert!(!app.is_running(), "{name}: Ctrl-c did not quit");
+        assert_eq!(app.exit(), emit::Exit::Cancelled, "{name}");
+    }
+}
+
+/// A SIGTERM ends the loop the way a key would, so `main` restores the
+/// terminal on its normal path, and the exit says why.
+#[test]
+fn a_terminate_request_ends_the_session() {
+    let terminate = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(true));
+    let app = app_emitting("terminate_flag", Some(emit::Emit::Cwd)).with_terminate(terminate);
+    let terminal =
+        ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24)).expect("a terminal");
+
+    let exit = app.run(terminal).expect("the loop");
+
+    assert_eq!(exit, emit::Exit::Terminated);
+}

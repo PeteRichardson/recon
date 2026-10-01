@@ -378,6 +378,11 @@ pub const KEYMAP: &[Section] = &[
                 names: &["global.quit.silent"],
             },
             Binding {
+                keys: &["Ctrl-c"],
+                action: "Quit from anywhere, emitting nothing, exit 130",
+                names: &["global.interrupt"],
+            },
+            Binding {
                 keys: &["Tab", "Shift-Tab"],
                 action: "Focus the next / previous shown pane",
                 names: &["global.focus.next", "global.focus.prev"],

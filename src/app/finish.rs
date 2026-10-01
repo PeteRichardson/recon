@@ -165,11 +165,17 @@ impl App<'_> {
 
     /// `finishing.cancel`: stop the work and emit nothing.
     pub(super) fn cancel_finish(&mut self) {
+        self.stop_finishing();
+        self.state = AppState::Cancelled;
+    }
+
+    /// Stop the work `q` started, if any is running. The caller says what
+    /// state the session ends in.
+    pub(super) fn stop_finishing(&mut self) {
         if let Some(Finish::Lines(job)) = &self.finishing {
             job.cancel.store(true, Ordering::Relaxed);
         }
         self.finishing = None;
-        self.state = AppState::Cancelled;
     }
 
     /// What the status row says while the work runs: how far it has got,

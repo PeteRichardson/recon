@@ -61,6 +61,9 @@ pub struct App<'a> {
     finishing: Option<finish::Finish>,
     /// What that work produced, for `exit` to hand back.
     finished: Option<emit::Exit>,
+    /// Set from outside the loop when a SIGTERM arrives (#382). `main`
+    /// installs it; `None` in a test that does not ask for one.
+    terminate: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     /// The three panes, named rather than collected (#73).
     ///
     /// They were a `Vec<AppWidget>` built once with exactly three entries,
@@ -330,9 +333,12 @@ enum AppState {
     /// large file, or the files the scan has not answered (#351, #352).
     /// The session is still running; `finishing.cancel` ends it.
     Finishing,
-    /// The user cancelled that work. Nothing is emitted, and the exit code
-    /// says so.
+    /// The user cancelled that work, or pressed Ctrl-c (#382). Nothing is
+    /// emitted, and the exit code says so.
     Cancelled,
+    /// A SIGTERM arrived (#382). Nothing is emitted, and the exit code says
+    /// so.
+    Terminated,
 }
 
 impl App<'_> {
@@ -408,6 +414,7 @@ impl App<'_> {
             state: AppState::Running,
             finishing: None,
             finished: None,
+            terminate: None,
             explorer,
             view,
             filters_pane: FilterList::default(),
@@ -493,6 +500,17 @@ impl App<'_> {
         self
     }
 
+    /// Watch `flag`, and end the session once it is set (#382). `main` sets
+    /// it from a SIGTERM handler, which can do nothing safer than store a
+    /// flag. The loop looks at it on every wake, at most 1/60 s apart, and
+    /// leaves the way a quit key does, so the terminal is restored on the
+    /// normal path rather than from inside the handler.
+    #[must_use]
+    pub fn with_terminate(mut self, flag: std::sync::Arc<std::sync::atomic::AtomicBool>) -> Self {
+        self.terminate = Some(flag);
+        self
+    }
+
     /// This is the main event loop for the app.
     ///
     /// Draw once, then only when something happened. It used to redraw
@@ -509,7 +527,18 @@ impl App<'_> {
         B::Error: std::error::Error + Send + Sync + 'static,
     {
         let mut dirty = true;
-        while self.is_running() {
+        loop {
+            if self
+                .terminate
+                .as_ref()
+                .is_some_and(|flag| flag.load(std::sync::atomic::Ordering::Relaxed))
+            {
+                self.stop_finishing();
+                self.state = AppState::Terminated;
+            }
+            if !self.is_running() {
+                break;
+            }
             if dirty {
                 terminal.draw(|frame| {
                     let area = frame.area();
@@ -530,6 +559,7 @@ impl App<'_> {
     pub(crate) fn exit(&mut self) -> emit::Exit {
         match (self.state, self.emit) {
             (AppState::Cancelled, _) => emit::Exit::Cancelled,
+            (AppState::Terminated, _) => emit::Exit::Terminated,
             (AppState::Quit { emit: true }, Some(kind)) => {
                 self.finished.take().unwrap_or_else(|| self.collect(kind))
             }

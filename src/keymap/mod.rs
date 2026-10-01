@@ -141,6 +141,10 @@ pub(crate) enum ActionId {
     // Global
     GlobalQuit,
     GlobalQuitSilent,
+    /// Ctrl-c (#382): quit, emitting nothing, exit 130. Read before every
+    /// modal, as a terminal's own interrupt would be — see
+    /// `App::dispatch_event`.
+    GlobalInterrupt,
     GlobalFocusNext,
     GlobalFocusPrev,
     GlobalFocusExplorer,
@@ -324,6 +328,7 @@ impl ActionId {
         match self {
             Self::GlobalQuit => "global.quit",
             Self::GlobalQuitSilent => "global.quit.silent",
+            Self::GlobalInterrupt => "global.interrupt",
             Self::GlobalFocusNext => "global.focus.next",
             Self::GlobalFocusPrev => "global.focus.prev",
             Self::GlobalFocusExplorer => "global.focus.explorer",
@@ -466,6 +471,9 @@ impl ActionId {
 pub(crate) const DEFAULT: &[(Scope, &str, ActionId)] = &[
     (Scope::Global, "q", ActionId::GlobalQuit),
     (Scope::Global, "Q", ActionId::GlobalQuitSilent),
+    // Raw mode delivers Ctrl-c as a key, not as SIGINT, so recon has to give
+    // it the meaning the terminal would have (#382).
+    (Scope::Global, "Ctrl-c", ActionId::GlobalInterrupt),
     (Scope::Global, "Tab", ActionId::GlobalFocusNext),
     (Scope::Global, "Shift-Tab", ActionId::GlobalFocusPrev),
     (Scope::Global, "e", ActionId::GlobalFocusExplorer),
