@@ -2006,6 +2006,12 @@ line with its path and a tab, and `-n` puts the line number and a tab after
 that — `path<TAB>N<TAB>line` — so `cut -f1` is the paths and `cut -f3-` the
 text. One input is exactly the TUI's output.
 
+**Streaming.** Output is written as each file is answered, not held until
+the end, so memory holds one file at a time. When the reader stops —
+`recon --emit lines big.log | head -2` — recon stops reading too: no later
+file is opened, and the summary counts the lines recon produced before the pipe
+closed. A closed pipe is not an error; the exit code is unchanged.
+
 **Summaries and exit codes.** The summary names the mode as it does in the
 TUI, with `pass --hide to emit matches only` in place of the key:
 

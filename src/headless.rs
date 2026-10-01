@@ -2,8 +2,10 @@
 //!
 //! The pieces `App` composes — `ActiveFilters`, `Document`, `scan::scan` —
 //! with no explorer, no view and no terminal. Files come from stdin or
-//! from the `PATH` argument; the result leaves through the same `Exit` a
-//! TUI session hands back, so `main` prints both the same way.
+//! from the `PATH` argument. The output goes to stdout as it is made
+//! (#219, #379); the end of the run — summary, failure count, how the
+//! writing went — leaves through the same `Exit` a TUI session hands back,
+//! so `main` finishes both the same way.
 
 use crate::app::viewport::is_interesting;
 use crate::document::{self, Document, Mode};
@@ -39,10 +41,10 @@ pub(crate) enum Source {
 }
 
 /// Run headless: read the input list, build the filters `--set` asks for,
-/// and collect what `--emit` names. Read-failure warnings go to stderr as
-/// they are met; the `Exit` carries the output, the summary and the
-/// failure count for `main` to deliver.
-pub fn run(startup: &Startup) -> Result<Exit> {
+/// and write what `--emit` names to `out`. Read-failure warnings go to
+/// stderr as they are met; the `Exit` carries the summary, the failure
+/// count and any write error for `main` to deliver.
+pub fn run(startup: &Startup, out: &mut impl Write) -> Result<Exit> {
     let config = &startup.config;
     let Some(what) = config.emit else {
         return Err(eyre!("headless mode needs --emit"));
@@ -60,6 +62,7 @@ pub fn run(startup: &Startup) -> Result<Exit> {
         &filters,
         mode,
         config.line_numbers,
+        out,
         &mut io::stderr(),
     ))
 }
@@ -83,20 +86,27 @@ fn filters_for(startup: &Startup) -> Result<ActiveFilters> {
     Ok(filters)
 }
 
-/// What `--emit` names, over `inputs`. `warnings` gets one line per input
-/// that could not be read.
+/// What `--emit` names, over `inputs`, written to `out` one line at a time
+/// as each input is answered. `warnings` gets one line per input that could
+/// not be read.
+///
+/// The first write error stops the run: no later input is read, so
+/// `recon --emit lines big.log | head -2` ends when `head` does (#219). The
+/// error goes back in `Exit::Streamed` for `deliver` to judge, and the
+/// summary counts the lines handed to `out` before it.
 pub(crate) fn collect(
     what: Emit,
     inputs: &Inputs,
     filters: &ActiveFilters,
     mode: Mode,
     line_numbers: bool,
+    out: &mut impl Write,
     warnings: &mut impl Write,
 ) -> Exit {
     match what {
-        Emit::Lines => collect_lines(inputs, filters, mode, line_numbers, warnings),
-        Emit::Files => collect_files(inputs, filters, mode, warnings),
-        Emit::Cwd => collect_cwd(inputs),
+        Emit::Lines => collect_lines(inputs, filters, mode, line_numbers, out, warnings),
+        Emit::Files => collect_files(inputs, filters, mode, out, warnings),
+        Emit::Cwd => collect_cwd(inputs, out),
     }
 }
 
@@ -153,19 +163,24 @@ pub(crate) fn inputs(mut stdin: impl BufRead, path: &Path) -> io::Result<Inputs>
 /// `N<TAB>` under `-n` — so `path<TAB>N<TAB>line`, and with one input
 /// exactly what the TUI emits. The match count is the TUI's: interesting
 /// verdicts, summed over the files that were read.
+///
+/// Each file's lines are written once it is evaluated, so memory holds one
+/// file at a time, not the whole output.
 fn collect_lines(
     inputs: &Inputs,
     filters: &ActiveFilters,
     mode: Mode,
     line_numbers: bool,
+    out: &mut impl Write,
     warnings: &mut impl Write,
 ) -> Exit {
     let several = inputs.files.len() > 1;
-    let mut lines = Vec::new();
+    let mut emitted = 0;
     let mut read = 0;
     let mut failed = 0;
     let mut interesting = 0;
-    for path in &inputs.files {
+    let mut written = Ok(());
+    'files: for path in &inputs.files {
         let mut document = match Document::read(path) {
             Ok(document) => document,
             Err(err) => {
@@ -187,19 +202,16 @@ fn collect_lines(
             .filter(|v| is_interesting(v))
             .count();
         let text = document.lines();
+        let prefix = several.then(|| path_bytes(path));
         for &source in document.visible() {
-            let mut line = Vec::new();
-            if several {
-                line.extend_from_slice(&path_bytes(path));
-                line.push(b'\t');
+            written = write_line(out, prefix.as_deref(), line_numbers, source, &text[source]);
+            if written.is_err() {
+                break 'files;
             }
-            if line_numbers {
-                line.extend_from_slice(format!("{}\t", source + 1).as_bytes());
-            }
-            line.extend_from_slice(text[source].as_bytes());
-            lines.push(line);
+            emitted += 1;
         }
     }
+    let written = written.and_then(|()| out.flush());
     let subject = match inputs.files.as_slice() {
         [only] => only.file_name().map_or_else(
             || only.display().to_string(),
@@ -207,18 +219,38 @@ fn collect_lines(
         ),
         _ => count(read, "file"),
     };
-    let emitted = lines.len();
     let summary = match mode {
         Mode::Dimmed => format!(
             "recon: emitted {emitted} lines of {subject}, dim mode ({interesting} match) — pass --hide to emit matches only"
         ),
         Mode::FilteredOnly => format!("recon: emitted {emitted} lines of {subject}, hide mode"),
     };
-    Exit::Emit {
-        lines,
+    Exit::Streamed {
         summary,
         failed,
+        written,
     }
+}
+
+/// One `--emit lines` line: `path<TAB>` when there is a `path`, `N<TAB>`
+/// under `-n`, the text, a newline. Straight to `out`, with no line built
+/// in between.
+fn write_line(
+    out: &mut impl Write,
+    path: Option<&[u8]>,
+    line_numbers: bool,
+    source: usize,
+    text: &str,
+) -> io::Result<()> {
+    if let Some(path) = path {
+        out.write_all(path)?;
+        out.write_all(b"\t")?;
+    }
+    if line_numbers {
+        write!(out, "{}\t", source + 1)?;
+    }
+    out.write_all(text.as_bytes())?;
+    out.write_all(b"\n")
 }
 
 /// `--emit files`: every readable input in dim mode; in hide mode, the
@@ -230,11 +262,12 @@ fn collect_lines(
 /// opened, so an unreadable one is warned about and skipped in every mode.
 /// The summary's `from <dir>` / `of N inputs` follows where the list came
 /// from; there is no `unscanned` here, since every scan runs to its answer
-/// before anything prints.
+/// before its file's line prints.
 fn collect_files(
     inputs: &Inputs,
     filters: &ActiveFilters,
     mode: Mode,
+    out: &mut impl Write,
     warnings: &mut impl Write,
 ) -> Exit {
     let matcher = filters.matcher();
@@ -244,9 +277,10 @@ fn collect_files(
     if let Some(off) = filters.scan_off() {
         let _ = writeln!(warnings, "recon: {off}; no file is matched");
     }
-    let mut lines = Vec::new();
+    let mut emitted = 0;
     let mut matched = 0;
     let mut failed = 0;
+    let mut written = Ok(());
     for path in &inputs.files {
         let answer = match &matcher {
             Some(matcher) => file_matches(path, matcher),
@@ -268,10 +302,16 @@ fn collect_files(
             Mode::FilteredOnly => yes || matcher.is_none(),
         };
         if listed {
-            lines.push(path_bytes(path));
+            written = out
+                .write_all(&path_bytes(path))
+                .and_then(|()| out.write_all(b"\n"));
+            if written.is_err() {
+                break;
+            }
+            emitted += 1;
         }
     }
-    let emitted = lines.len();
+    let written = written.and_then(|()| out.flush());
     let origin = match &inputs.from {
         Source::Directory(dir) => format!("from {}", dir.display()),
         Source::Stdin | Source::File => format!("of {}", count(inputs.files.len(), "input")),
@@ -290,10 +330,10 @@ fn collect_files(
             format!("recon: emitted {emitted} files {origin}, hide mode, no filter")
         }
     };
-    Exit::Emit {
-        lines,
+    Exit::Streamed {
         summary,
         failed,
+        written,
     }
 }
 
@@ -323,7 +363,7 @@ fn file_matches(path: &Path, matcher: &Matcher) -> io::Result<bool> {
 
 /// `--emit cwd`: the directory `PATH` named, or the first input's. Nothing
 /// is read.
-fn collect_cwd(inputs: &Inputs) -> Exit {
+fn collect_cwd(inputs: &Inputs, out: &mut impl Write) -> Exit {
     let dir = match &inputs.from {
         Source::Directory(dir) => dir.clone(),
         Source::Stdin | Source::File => inputs
@@ -332,10 +372,14 @@ fn collect_cwd(inputs: &Inputs) -> Exit {
             .and_then(|file| file.parent())
             .map_or_else(|| PathBuf::from("/"), Path::to_path_buf),
     };
-    Exit::Emit {
-        lines: vec![path_bytes(&dir)],
+    let written = out
+        .write_all(&path_bytes(&dir))
+        .and_then(|()| out.write_all(b"\n"))
+        .and_then(|()| out.flush());
+    Exit::Streamed {
         summary: format!("recon: emitted {}", dir.display()),
         failed: 0,
+        written,
     }
 }
 
@@ -474,6 +518,7 @@ mod tests {
         assert_eq!(reason(&err), "not a regular file");
 
         let mut warnings = Vec::new();
+        let mut out = Vec::new();
         let exit = collect(
             Emit::Lines,
             &Inputs {
@@ -483,11 +528,10 @@ mod tests {
             &ActiveFilters::new(),
             Mode::Dimmed,
             false,
+            &mut out,
             &mut warnings,
         );
-        let Exit::Emit { lines, failed, .. } = exit else {
-            panic!("silent");
-        };
+        let (lines, _, failed) = emitted(exit, &out);
         assert!(lines.is_empty(), "{lines:?}");
         assert_eq!(failed, 1);
         assert_eq!(
@@ -546,22 +590,22 @@ mod tests {
         filters
     }
 
-    fn strings(lines: &[Vec<u8>]) -> Vec<String> {
-        lines
-            .iter()
-            .map(|line| String::from_utf8(line.clone()).expect("utf-8 fixture"))
-            .collect()
-    }
-
-    /// The parts of an `Exit::Emit`, as strings.
-    fn emitted(exit: Exit) -> (Vec<String>, String, usize) {
+    /// The lines written to `out`, and the summary and failure count of
+    /// the `Exit::Streamed` that ended the run — which wrote every line.
+    fn emitted(exit: Exit, out: &[u8]) -> (Vec<String>, String, usize) {
         match exit {
-            Exit::Emit {
-                lines,
+            Exit::Streamed {
                 summary,
                 failed,
-            } => (strings(&lines), summary, failed),
-            other => panic!("headless returns only Emit, not {other:?}"),
+                written,
+            } => {
+                written.expect("every line written");
+                let out = String::from_utf8(out.to_vec()).expect("utf-8 fixture");
+                assert!(out.is_empty() || out.ends_with('\n'), "{out:?}");
+                let lines = out.lines().map(str::to_string).collect();
+                (lines, summary, failed)
+            }
+            other => panic!("headless returns only Streamed, not {other:?}"),
         }
     }
 
@@ -602,15 +646,17 @@ mod tests {
         let inputs = one_file("headless_lines_dim.log", b"hit\nmiss\nhit again\n");
         let mut warnings = Vec::new();
 
+        let mut out = Vec::new();
         let exit = collect_lines(
             &inputs,
             &filters_matching("hit"),
             Mode::Dimmed,
             false,
+            &mut out,
             &mut warnings,
         );
 
-        let (lines, summary, failed) = emitted(exit);
+        let (lines, summary, failed) = emitted(exit, &out);
         assert_eq!(lines, ["hit", "miss", "hit again"]);
         assert_eq!(
             summary,
@@ -624,15 +670,17 @@ mod tests {
     fn lines_over_one_file_in_hide_mode_is_the_matches() {
         let inputs = one_file("headless_lines_hide.log", b"hit\nmiss\nhit again\n");
 
+        let mut out = Vec::new();
         let exit = collect_lines(
             &inputs,
             &filters_matching("hit"),
             Mode::FilteredOnly,
             false,
+            &mut out,
             &mut Vec::new(),
         );
 
-        let (lines, summary, _) = emitted(exit);
+        let (lines, summary, _) = emitted(exit, &out);
         assert_eq!(lines, ["hit", "hit again"]);
         assert_eq!(
             summary,
@@ -644,15 +692,17 @@ mod tests {
     fn line_numbers_are_the_file_s_own_with_a_tab() {
         let inputs = one_file("headless_lines_numbered.log", b"hit\nmiss\nhit again\n");
 
+        let mut out = Vec::new();
         let exit = collect_lines(
             &inputs,
             &filters_matching("hit"),
             Mode::FilteredOnly,
             true,
+            &mut out,
             &mut Vec::new(),
         );
 
-        let (lines, _, _) = emitted(exit);
+        let (lines, _, _) = emitted(exit, &out);
         assert_eq!(lines, ["1\thit", "3\thit again"]);
     }
 
@@ -666,15 +716,17 @@ mod tests {
             panic!("two inputs")
         };
 
+        let mut out = Vec::new();
         let exit = collect_lines(
             &inputs,
             &filters_matching("hit"),
             Mode::FilteredOnly,
             true,
+            &mut out,
             &mut Vec::new(),
         );
 
-        let (lines, summary, _) = emitted(exit);
+        let (lines, summary, _) = emitted(exit, &out);
         assert_eq!(
             lines,
             [
@@ -693,15 +745,17 @@ mod tests {
             &[("a.log", "hit\n"), ("b.log", "hit\n")],
         );
 
+        let mut out = Vec::new();
         let exit = collect_lines(
             &inputs,
             &filters_matching("hit"),
             Mode::Dimmed,
             false,
+            &mut out,
             &mut Vec::new(),
         );
 
-        let (lines, summary, _) = emitted(exit);
+        let (lines, summary, _) = emitted(exit, &out);
         assert_eq!(
             lines,
             [
@@ -723,15 +777,17 @@ mod tests {
         inputs.files.insert(0, missing.clone());
         let mut warnings = Vec::new();
 
+        let mut out = Vec::new();
         let exit = collect_lines(
             &inputs,
             &filters_matching("hit"),
             Mode::FilteredOnly,
             false,
+            &mut out,
             &mut warnings,
         );
 
-        let (lines, summary, failed) = emitted(exit);
+        let (lines, summary, failed) = emitted(exit, &out);
         assert_eq!(
             warnings_of(&warnings),
             format!("recon: cannot read {}: no such file\n", missing.display())
@@ -752,15 +808,17 @@ mod tests {
         };
         let mut warnings = Vec::new();
 
+        let mut out = Vec::new();
         let exit = collect_lines(
             &inputs,
             &filters_matching("x"),
             Mode::Dimmed,
             false,
+            &mut out,
             &mut warnings,
         );
 
-        let (lines, summary, failed) = emitted(exit);
+        let (lines, summary, failed) = emitted(exit, &out);
         assert_eq!(
             warnings_of(&warnings),
             format!(
@@ -788,7 +846,8 @@ mod tests {
             files: Vec::new(),
             from: Source::Directory(dir.clone()),
         };
-        let (lines, summary, failed) = emitted(collect_cwd(&from_dir));
+        let mut out = Vec::new();
+        let (lines, summary, failed) = emitted(collect_cwd(&from_dir, &mut out), &out);
         assert_eq!(lines, [dir.display().to_string()]);
         assert_eq!(summary, format!("recon: emitted {}", dir.display()));
         assert_eq!(failed, 0);
@@ -797,7 +856,8 @@ mod tests {
             files: vec![dir.join("a.log"), dir.join("b.log")],
             from: Source::Stdin,
         };
-        let (lines, _, _) = emitted(collect_cwd(&from_stdin));
+        let mut out = Vec::new();
+        let (lines, _, _) = emitted(collect_cwd(&from_stdin, &mut out), &out);
         assert_eq!(
             lines,
             [dir.display().to_string()],
@@ -808,7 +868,8 @@ mod tests {
             files: vec![dir.join("a.log")],
             from: Source::File,
         };
-        let (lines, _, _) = emitted(collect_cwd(&from_file));
+        let mut out = Vec::new();
+        let (lines, _, _) = emitted(collect_cwd(&from_file, &mut out), &out);
         assert_eq!(lines, [dir.display().to_string()]);
     }
 
@@ -838,14 +899,16 @@ mod tests {
         let inputs = three_logs("headless_files_hide");
         let mut warnings = Vec::new();
 
+        let mut out = Vec::new();
         let exit = collect_files(
             &inputs,
             &filters_matching("hit"),
             Mode::FilteredOnly,
+            &mut out,
             &mut warnings,
         );
 
-        let (lines, summary, failed) = emitted(exit);
+        let (lines, summary, failed) = emitted(exit, &out);
         let all = displayed(&inputs);
         assert_eq!(lines, [all[0].clone(), all[2].clone()]);
         assert_eq!(summary, "recon: emitted 2 files of 3 inputs, hide mode");
@@ -857,14 +920,16 @@ mod tests {
     fn files_in_dim_mode_lists_every_input_with_the_match_count() {
         let inputs = three_logs("headless_files_dim");
 
+        let mut out = Vec::new();
         let exit = collect_files(
             &inputs,
             &filters_matching("hit"),
             Mode::Dimmed,
+            &mut out,
             &mut Vec::new(),
         );
 
-        let (lines, summary, _) = emitted(exit);
+        let (lines, summary, _) = emitted(exit, &out);
         assert_eq!(lines, displayed(&inputs));
         assert_eq!(
             summary,
@@ -878,14 +943,16 @@ mod tests {
         let dir = lexical_absolute(&fixture_path("headless_files_from_dir"));
         inputs.from = Source::Directory(dir.clone());
 
+        let mut out = Vec::new();
         let exit = collect_files(
             &inputs,
             &filters_matching("hit"),
             Mode::FilteredOnly,
+            &mut out,
             &mut Vec::new(),
         );
 
-        let (_, summary, _) = emitted(exit);
+        let (_, summary, _) = emitted(exit, &out);
         assert_eq!(
             summary,
             format!("recon: emitted 2 files from {}, hide mode", dir.display())
@@ -904,7 +971,8 @@ mod tests {
             filters.add(&format!("p{i}")).expect("valid pattern");
         }
         let mut warnings = Vec::new();
-        collect_files(&inputs, &filters, Mode::Dimmed, &mut warnings);
+        let mut out = Vec::new();
+        collect_files(&inputs, &filters, Mode::Dimmed, &mut out, &mut warnings);
         let text = String::from_utf8(warnings).expect("utf-8");
         assert!(
             text.contains("recon: file matching off: ") && text.contains("no file is matched"),
@@ -914,7 +982,14 @@ mod tests {
         let mut exclude_only = ActiveFilters::new();
         exclude_only.add_excluding("x").expect("valid pattern");
         let mut warnings = Vec::new();
-        collect_files(&inputs, &exclude_only, Mode::Dimmed, &mut warnings);
+        let mut out = Vec::new();
+        collect_files(
+            &inputs,
+            &exclude_only,
+            Mode::Dimmed,
+            &mut out,
+            &mut warnings,
+        );
         assert!(warnings.is_empty(), "nothing selects is not a failure");
     }
 
@@ -925,21 +1000,30 @@ mod tests {
         exclude_only.add_excluding("x").expect("valid pattern");
         assert!(exclude_only.matcher().is_none(), "sanity: nothing selects");
 
-        let exit = collect_files(&inputs, &exclude_only, Mode::FilteredOnly, &mut Vec::new());
-        let (lines, summary, _) = emitted(exit);
+        let mut out = Vec::new();
+        let exit = collect_files(
+            &inputs,
+            &exclude_only,
+            Mode::FilteredOnly,
+            &mut out,
+            &mut Vec::new(),
+        );
+        let (lines, summary, _) = emitted(exit, &out);
         assert_eq!(lines, displayed(&inputs), "nothing to hide against");
         assert_eq!(
             summary,
             "recon: emitted 3 files of 3 inputs, hide mode, no filter"
         );
 
+        let mut out = Vec::new();
         let exit = collect_files(
             &inputs,
             &ActiveFilters::new(),
             Mode::Dimmed,
+            &mut out,
             &mut Vec::new(),
         );
-        let (lines, summary, _) = emitted(exit);
+        let (lines, summary, _) = emitted(exit, &out);
         assert_eq!(lines, displayed(&inputs));
         assert_eq!(
             summary,
@@ -961,13 +1045,15 @@ mod tests {
         );
 
         let mut warnings = Vec::new();
+        let mut out = Vec::new();
         let exit = collect_files(
             &inputs,
             &filters_matching("hit"),
             Mode::Dimmed,
+            &mut out,
             &mut warnings,
         );
-        let (lines, summary, failed) = emitted(exit);
+        let (lines, summary, failed) = emitted(exit, &out);
         assert_eq!(warnings_of(&warnings), expected_warnings);
         assert_eq!(lines.len(), 3, "the three readable files: {lines:?}");
         assert_eq!(
@@ -977,13 +1063,15 @@ mod tests {
         assert_eq!(failed, 2);
 
         let mut warnings = Vec::new();
+        let mut out = Vec::new();
         let exit = collect_files(
             &inputs,
             &ActiveFilters::new(),
             Mode::FilteredOnly,
+            &mut out,
             &mut warnings,
         );
-        let (lines, summary, failed) = emitted(exit);
+        let (lines, summary, failed) = emitted(exit, &out);
         assert_eq!(
             warnings_of(&warnings),
             expected_warnings,
@@ -1018,12 +1106,17 @@ mod tests {
         };
 
         let mut warnings = Vec::new();
-        let (lines, _, failed) = emitted(collect_files(
-            &inputs,
-            &filters_matching("hit"),
-            Mode::FilteredOnly,
-            &mut warnings,
-        ));
+        let mut out = Vec::new();
+        let (lines, _, failed) = emitted(
+            collect_files(
+                &inputs,
+                &filters_matching("hit"),
+                Mode::FilteredOnly,
+                &mut out,
+                &mut warnings,
+            ),
+            &out,
+        );
 
         assert_eq!(lines, [log.display().to_string()]);
         assert_eq!(failed, 0);
@@ -1045,29 +1138,118 @@ mod tests {
         let filters = filters_matching("hit");
 
         let mut warnings = Vec::new();
-        let (lines, _, failed) = emitted(collect_files(
-            &inputs,
-            &filters,
-            Mode::FilteredOnly,
-            &mut warnings,
-        ));
+        let mut out = Vec::new();
+        let (lines, _, failed) = emitted(
+            collect_files(
+                &inputs,
+                &filters,
+                Mode::FilteredOnly,
+                &mut out,
+                &mut warnings,
+            ),
+            &out,
+        );
         assert_eq!(lines, [binary.display().to_string()], "files lists it");
         assert_eq!(failed, 0);
         assert!(warnings.is_empty(), "{warnings:?}");
 
         let mut warnings = Vec::new();
-        let (lines, _, failed) = emitted(collect_lines(
-            &inputs,
-            &filters,
-            Mode::FilteredOnly,
-            false,
-            &mut warnings,
-        ));
+        let mut out = Vec::new();
+        let (lines, _, failed) = emitted(
+            collect_lines(
+                &inputs,
+                &filters,
+                Mode::FilteredOnly,
+                false,
+                &mut out,
+                &mut warnings,
+            ),
+            &out,
+        );
         assert!(lines.is_empty(), "lines refuses it");
         assert_eq!(failed, 1);
         assert_eq!(
             warnings_of(&warnings),
             format!("recon: cannot read {}: binary file\n", binary.display())
+        );
+    }
+
+    // ---- streaming ---------------------------------------------------------
+
+    /// A consumer that has closed its end: every write fails as
+    /// `recon … | head` sees once `head` exits.
+    struct ClosedPipe;
+
+    impl Write for ClosedPipe {
+        fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+            Err(io::ErrorKind::BrokenPipe.into())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// The parts of an `Exit::Streamed` whose writing failed.
+    fn stopped(exit: Exit) -> (String, usize, io::ErrorKind) {
+        match exit {
+            Exit::Streamed {
+                summary,
+                failed,
+                written: Err(err),
+            } => (summary, failed, err.kind()),
+            other => panic!("a stopped run, not {other:?}"),
+        }
+    }
+
+    /// #219: the first failed write ends the run. The second input does not
+    /// exist, so a run that went on to read it would warn about it.
+    #[test]
+    fn a_closed_pipe_stops_lines_before_the_next_input_is_read() {
+        let mut inputs = from_stdin("headless_stream_lines", &[("a.log", "hit\nhit\n")]);
+        inputs
+            .files
+            .push(inputs.files[0].with_file_name("missing.log"));
+        let mut warnings = Vec::new();
+
+        let exit = collect_lines(
+            &inputs,
+            &filters_matching("hit"),
+            Mode::FilteredOnly,
+            false,
+            &mut ClosedPipe,
+            &mut warnings,
+        );
+
+        let (summary, failed, kind) = stopped(exit);
+        assert_eq!(kind, io::ErrorKind::BrokenPipe);
+        assert!(warnings.is_empty(), "{}", warnings_of(&warnings));
+        assert_eq!(failed, 0);
+        assert_eq!(summary, "recon: emitted 0 lines of 1 file, hide mode");
+    }
+
+    #[test]
+    fn a_closed_pipe_stops_files_before_the_next_input_is_read() {
+        let mut inputs = three_logs("headless_stream_files");
+        inputs
+            .files
+            .insert(1, inputs.files[0].with_file_name("missing.log"));
+        let mut warnings = Vec::new();
+
+        let exit = collect_files(
+            &inputs,
+            &filters_matching("hit"),
+            Mode::Dimmed,
+            &mut ClosedPipe,
+            &mut warnings,
+        );
+
+        let (summary, failed, kind) = stopped(exit);
+        assert_eq!(kind, io::ErrorKind::BrokenPipe);
+        assert!(warnings.is_empty(), "{}", warnings_of(&warnings));
+        assert_eq!(failed, 0);
+        assert!(
+            summary.starts_with("recon: emitted 0 files of 4 inputs"),
+            "{summary}"
         );
     }
 
@@ -1079,34 +1261,49 @@ mod tests {
         let filters = filters_matching("hit");
         let mut warnings = Vec::new();
 
-        let (lines, _, _) = emitted(collect(
-            Emit::Lines,
-            &inputs,
-            &filters,
-            Mode::FilteredOnly,
-            false,
-            &mut warnings,
-        ));
+        let mut out = Vec::new();
+        let (lines, _, _) = emitted(
+            collect(
+                Emit::Lines,
+                &inputs,
+                &filters,
+                Mode::FilteredOnly,
+                false,
+                &mut out,
+                &mut warnings,
+            ),
+            &out,
+        );
         assert_eq!(lines, ["hit"]);
 
-        let (lines, _, _) = emitted(collect(
-            Emit::Files,
-            &inputs,
-            &filters,
-            Mode::FilteredOnly,
-            false,
-            &mut warnings,
-        ));
+        let mut out = Vec::new();
+        let (lines, _, _) = emitted(
+            collect(
+                Emit::Files,
+                &inputs,
+                &filters,
+                Mode::FilteredOnly,
+                false,
+                &mut out,
+                &mut warnings,
+            ),
+            &out,
+        );
         assert_eq!(lines, [inputs.files[0].display().to_string()]);
 
-        let (lines, _, _) = emitted(collect(
-            Emit::Cwd,
-            &inputs,
-            &filters,
-            Mode::FilteredOnly,
-            false,
-            &mut warnings,
-        ));
+        let mut out = Vec::new();
+        let (lines, _, _) = emitted(
+            collect(
+                Emit::Cwd,
+                &inputs,
+                &filters,
+                Mode::FilteredOnly,
+                false,
+                &mut out,
+                &mut warnings,
+            ),
+            &out,
+        );
         assert_eq!(
             lines,
             [inputs.files[0]

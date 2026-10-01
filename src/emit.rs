@@ -46,6 +46,17 @@ pub enum Exit {
         spool: std::fs::File,
         summary: String,
     },
+    /// `Emit`, with the output already written: a headless run (#219,
+    /// #379) writes each line as it is made, so `| head` stops the work
+    /// and no input's output waits in memory for the others. What is left
+    /// to deliver is the end — the summary and the exit code — and how the
+    /// writing went: `written` is the first write error, which stopped the
+    /// run, or `Ok`.
+    Streamed {
+        summary: String,
+        failed: usize,
+        written: std::io::Result<()>,
+    },
     /// `Q`, or any quit without `--emit`.
     Silent,
     /// The user cancelled the work `q` started under `--emit` (#351, #352):
@@ -63,7 +74,8 @@ pub enum Exit {
 
 /// Written out rather than derived, for `Spooled`: a file handle has no
 /// equality short of reading it, so two spools compare by their summary.
-/// Every other variant compares as a derive would.
+/// `Streamed` compares its write result by error kind, since `io::Error`
+/// has no equality. Every other variant compares as a derive would.
 impl PartialEq for Exit {
     fn eq(&self, other: &Self) -> bool {
         match (self, other) {
@@ -81,6 +93,23 @@ impl PartialEq for Exit {
             ) => lines == other_lines && summary == other_summary && failed == other_failed,
             (Self::Spooled { summary, .. }, Self::Spooled { summary: other, .. }) => {
                 summary == other
+            }
+            (
+                Self::Streamed {
+                    summary,
+                    failed,
+                    written,
+                },
+                Self::Streamed {
+                    summary: other_summary,
+                    failed: other_failed,
+                    written: other_written,
+                },
+            ) => {
+                summary == other_summary
+                    && failed == other_failed
+                    && written.as_ref().map_err(std::io::Error::kind)
+                        == other_written.as_ref().map_err(std::io::Error::kind)
             }
             (Self::Silent, Self::Silent)
             | (Self::Cancelled, Self::Cancelled)
@@ -100,6 +129,7 @@ impl Exit {
     /// | `Emit`, `failed == 0` | yes | every line, newline-terminated | the summary, unless `quiet` | 0 |
     /// | `Emit`, `failed > 0` | yes | every line, newline-terminated | the summary, unless `quiet` | 2 |
     /// | `Spooled` | yes | the spool, byte for byte | the summary, unless `quiet` | 0 |
+    /// | `Streamed` | yes | nothing more: already written | the summary, unless `quiet` | 0, or 2 when `failed > 0` |
     /// | `Silent` | yes | nothing | nothing | 1 |
     /// | `Silent` | no | nothing | nothing | 0 |
     /// | `Cancelled` | either | nothing | `recon: cancelled`, even under `quiet` | 130 |
@@ -115,7 +145,8 @@ impl Exit {
     /// `quiet` (`-q`) drops the summary and nothing else — the read-failure
     /// warnings were written as they happened, before this runs.
     ///
-    /// A write error on stdout is reported on stderr and is a failure, with
+    /// A write error on stdout — met here, or met by a headless run and
+    /// carried in `Streamed` — is reported on stderr and is a failure, with
     /// one exception: `BrokenPipe`, which means the consumer closed its end
     /// (`recon --emit lines big.log | head`) and already got what it asked
     /// for. That is not this process's failure, so the summary is still
@@ -156,6 +187,14 @@ impl Exit {
                     .and_then(|_| stdout.flush());
                 finish(written, &summary, 0, quiet, stderr)
             }
+            (
+                Self::Streamed {
+                    summary,
+                    failed,
+                    written,
+                },
+                _,
+            ) => finish(written, &summary, failed, quiet, stderr),
             (Self::Cancelled, _) => {
                 let _ = writeln!(stderr, "recon: cancelled");
                 ExitCode::from(130)
@@ -269,6 +308,45 @@ mod tests {
         assert!(out.is_empty(), "{out:?}");
         assert_eq!(err, b"recon: emitted 0 files from /d, hide mode\n");
         assert_eq!(code, ExitCode::SUCCESS);
+    }
+
+    /// #219, #379: the lines are already out, so only the end is left —
+    /// the summary, and exit 2 for an input that could not be read.
+    #[test]
+    fn a_streamed_emit_writes_only_the_summary_and_keeps_the_failure_code() {
+        let exit = Exit::Streamed {
+            summary: "recon: emitted 2 lines of 1 file, hide mode".to_string(),
+            failed: 1,
+            written: Ok(()),
+        };
+
+        let (out, err, code) = deliver(exit, Some(Emit::Lines));
+
+        assert!(out.is_empty(), "{out:?}");
+        assert_eq!(err, b"recon: emitted 2 lines of 1 file, hide mode\n");
+        assert_eq!(code, ExitCode::from(2));
+    }
+
+    /// A consumer that closed its end got what it asked for; any other
+    /// write error is the process's failure, the same rule as `Emit`.
+    #[test]
+    fn a_streamed_write_error_fails_unless_the_pipe_was_closed() {
+        let streamed = |kind| Exit::Streamed {
+            summary: "recon: emitted 9 lines".to_string(),
+            failed: 0,
+            written: Err(std::io::Error::from(kind)),
+        };
+
+        let (_, err, code) = deliver(streamed(std::io::ErrorKind::BrokenPipe), Some(Emit::Lines));
+        assert_eq!(err, b"recon: emitted 9 lines\n");
+        assert_eq!(code, ExitCode::SUCCESS);
+
+        let (_, err, code) = deliver(streamed(std::io::ErrorKind::StorageFull), Some(Emit::Lines));
+        assert!(
+            String::from_utf8_lossy(&err).starts_with("recon: could not write the output: "),
+            "{err:?}"
+        );
+        assert_eq!(code, ExitCode::FAILURE);
     }
 
     #[test]

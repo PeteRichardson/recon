@@ -53,7 +53,12 @@ fn main() -> Result<ExitCode> {
         // to the panel. A copy on stderr would be drawn over by the alternate
         // screen moments later anyway.
         log_keymap_warnings(&startup);
-        recon::headless::run(&startup)?
+        // Buffered, and written as the run goes (#219, #379): `io::stdout()`
+        // alone is a `LineWriter`, one `write(2)` per line even into a pipe.
+        // Dropped at the end of this block, so the lock is gone before
+        // `deliver` takes stdout again.
+        let mut out = io::BufWriter::new(io::stdout().lock());
+        recon::headless::run(&startup, &mut out)?
     } else {
         // Registered before the terminal is set up, so no SIGTERM can find
         // it raw with nothing to undo it (#382). The handler only sets the
@@ -73,10 +78,12 @@ fn main() -> Result<ExitCode> {
     // Only now, with the alternate screen gone (or never entered), does
     // anything reach stdout: the result, if `--emit` asked for one, and the
     // summary that names its mode on stderr (#143).
+    // Buffered for the reason the headless writer is (#379); `deliver`
+    // flushes before it writes the summary.
     Ok(exit.deliver(
         config.emit,
         config.quiet,
-        &mut io::stdout(),
+        &mut io::BufWriter::new(io::stdout().lock()),
         &mut io::stderr(),
     ))
 }
