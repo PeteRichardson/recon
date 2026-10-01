@@ -663,6 +663,66 @@ fn a_result_with_a_new_stamp_replaces_one_that_read_further() {
     ));
 }
 
+/// A log that grew keeps its record under the new stamp, and the request
+/// resumes it where the last scan stopped (#358).
+#[test]
+fn a_file_that_grew_is_resumed_from_where_it_stopped() {
+    let mut app = app_over_logs("poll_grew");
+    let (scanner, tx) = record_scans(&mut app);
+    app.add_filter("alpha").expect("valid pattern");
+    app.refresh_scan(false);
+    tx.send(scanned(&app, 0, vec![0], true)).expect("send");
+    app.drain_scan_results();
+    let (_, path) = app.explorer.files()[0].clone();
+    let mut file = fs::OpenOptions::new()
+        .append(true)
+        .open(&path)
+        .expect("open to append");
+    std::io::Write::write_all(&mut file, b"alpha appended\n").expect("append");
+
+    assert!(app.check_stamps());
+
+    let last = scanner.requests().last().expect("a rescan").clone();
+    let resumed = last
+        .files
+        .iter()
+        .find(|file| file.path == path)
+        .expect("the grown file is in the request");
+    assert_eq!(resumed.progress.scanned_to, 1, "{resumed:?}");
+    assert_eq!(resumed.progress.seen, vec![0]);
+    assert_eq!(resumed.stamp, scan::stamp(&path).ok());
+}
+
+/// An appended line cannot take a match away, so a matched file that grew
+/// keeps its answer and is not scanned again.
+#[test]
+fn a_matched_file_that_grew_keeps_its_answer() {
+    let mut app = app_over_logs("poll_grew_yes");
+    let (scanner, tx) = record_scans(&mut app);
+    app.add_filter("alpha").expect("valid pattern");
+    app.refresh_scan(false);
+    tx.send(scanned(&app, 0, vec![0b1], false)).expect("send");
+    app.drain_scan_results();
+    let (_, path) = app.explorer.files()[0].clone();
+    let mut file = fs::OpenOptions::new()
+        .append(true)
+        .open(&path)
+        .expect("open to append");
+    std::io::Write::write_all(&mut file, b"more\n").expect("append");
+
+    assert!(app.check_stamps());
+
+    assert!(matches!(
+        app.explorer.entries()[app.explorer.files()[0].0].matched,
+        Match::Yes(_)
+    ));
+    let last = scanner.requests().last().expect("a rescan").clone();
+    assert!(
+        last.files.iter().all(|file| file.path != path),
+        "a matched file was scanned again: {last:?}"
+    );
+}
+
 /// The check ran on a snapshot. A record that already carries the new
 /// stamp by the time its answer lands is kept, not thrown away.
 #[test]

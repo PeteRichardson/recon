@@ -2341,8 +2341,8 @@ needs every line's answer at once — see *Definition filters*.
   one corrupt byte in a log costs itself and nothing else. This is github
   issue #70. The one exception to the NUL rule is UTF-16 with a byte-order
   mark (`FF FE` or `FE FF`), which is text made of NULs: it is decoded and
-  shown as text. UTF-16 without a mark still reads as binary (github issue
-  #165).
+  shown as text, and the explorer's file matching and `--emit files` decode
+  it too. UTF-16 without a mark still reads as binary (github issue #165).
 - **Almost nothing is configurable yet.** recon reads
   `$XDG_CONFIG_HOME/recon/config.toml`, falling back to
   `~/.config/recon/config.toml` on every platform including macOS, under a
