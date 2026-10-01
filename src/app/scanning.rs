@@ -16,7 +16,8 @@ const POLL_INTERVAL: Duration = Duration::from_secs(2);
 /// `key` changing shifts bit positions, so every record means something
 /// else; the whole cache is dropped and `id` bumped so in-flight results from
 /// the old one are ignored on arrival. `dir` changing means different files.
-/// A single file's record is dropped alone when its stamp moves.
+/// A single file's record is dropped alone when its stamp moves, unless the
+/// file only grew: then the record is kept and its scan resumed (#358).
 #[derive(Debug, Default)]
 pub(super) struct ScanCache {
     pub(super) id: u64,
@@ -254,19 +255,26 @@ impl App<'_> {
             .collect()
     }
 
-    /// Drop and forget the records of files that moved on disk, then hand off
-    /// to `refresh_scan(true)` to rescan them. The active file moving also
+    /// Bring the records of files that moved on disk up to date, then hand
+    /// off to `refresh_scan(true)` to scan them. The active file moving also
     /// raises the badge.
     ///
+    /// A file that only grew (`scan::grew`, #358) keeps its record under its
+    /// new stamp, open again at `scanned_to`, so the scan reads only what was
+    /// added. An answer of yes stands: an appended line cannot take a match
+    /// away. Any other change drops the record, and the file is read from
+    /// the top.
+    ///
     /// The check ran on a snapshot, so each record is compared again before
-    /// it is dropped: a scan result that arrived in the meantime may already
+    /// it is changed: a scan result that arrived in the meantime may already
     /// carry the new stamp, and that record is kept.
     ///
     /// Deliberately does not issue its own request: `refresh_scan`'s `pending`
     /// is every file without a usable answer, which already covers the files
-    /// this drops. Issuing a narrower request here would hand `Scanner::start`
-    /// a file list that cancels an in-flight full scan without covering the
-    /// files it had not reached yet, stranding them `Unknown` until `r`.
+    /// this opens or drops. Issuing a narrower request here would hand
+    /// `Scanner::start` a file list that cancels an in-flight full scan
+    /// without covering the files it had not reached yet, stranding them
+    /// `Unknown` until `r`.
     pub(super) fn apply_moved(&mut self, moved: Vec<scan::Moved>) -> bool {
         if !self.filters.is_scanning() {
             return false;
@@ -275,20 +283,32 @@ impl App<'_> {
             .into_iter()
             .map(|scan::Moved { path, stamp }| (path, stamp))
             .collect();
+        let matcher = self.filters.matcher();
         let active = self.view.filename().to_path_buf();
         let mut changed = false;
         for (index, path) in self.explorer.files() {
-            let Some(stamp) = moved.get(&path) else {
+            let Some(&stamp) = moved.get(&path) else {
                 continue;
             };
-            let Some(held) = self.scan_cache.records.get(&path) else {
+            let Some(held) = self.scan_cache.records.get_mut(&path) else {
                 continue;
             };
-            if held.stamp == *stamp {
+            if held.stamp == stamp {
                 continue;
             }
-            self.scan_cache.records.remove(&path);
-            self.explorer.set_answer(index, Match::Unknown);
+            if scan::grew(held.stamp, stamp, &held.progress) {
+                held.stamp = stamp;
+                held.progress.eof = false;
+                let still_yes = matcher
+                    .as_ref()
+                    .is_some_and(|m| held.answer(m) == Some(true));
+                if !still_yes {
+                    self.explorer.set_answer(index, Match::Unknown);
+                }
+            } else {
+                self.scan_cache.records.remove(&path);
+                self.explorer.set_answer(index, Match::Unknown);
+            }
             if path == active {
                 self.view_stale = true;
             }

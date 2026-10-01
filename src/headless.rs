@@ -15,7 +15,7 @@ use crate::startup::Startup;
 use crate::widgets::explorer::sorted_entries;
 use color_eyre::{Result, eyre::eyre};
 use std::fs::File;
-use std::io::{self, BufRead, BufReader, Write};
+use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 
@@ -308,11 +308,11 @@ fn open_input(path: &Path) -> io::Result<File> {
 }
 
 /// Whether any line of `path` selects under `matcher` — `Record::answer`'s
-/// rule, over a scan run to its answer.
+/// rule, over a scan run to its answer. The same read as the explorer's, so a
+/// UTF-16 log is decoded here too (#357).
 fn file_matches(path: &Path, matcher: &Matcher) -> io::Result<bool> {
-    let reader = BufReader::new(open_input(path)?);
-    let progress = scan::scan(
-        reader,
+    let progress = scan::scan_file(
+        open_input(path)?,
         matcher,
         Progress::default(),
         &AtomicBool::new(false),
@@ -999,6 +999,34 @@ mod tests {
             "recon: emitted 3 files of 5 inputs, hide mode, no filter"
         );
         assert_eq!(failed, 2);
+    }
+
+    /// A UTF-16 log is decoded before it is matched, as the explorer's scan
+    /// decodes it: matched as bytes, `E\0R\0R\0O\0R\0` never hits (#357).
+    #[test]
+    fn a_utf16_input_that_matches_is_listed_by_files() {
+        let dir = fixture_dir("headless_files_utf16");
+        let log = lexical_absolute(&dir.join("app.log"));
+        let bytes: Vec<u8> = std::iter::once(0xfeff_u16)
+            .chain("ok\r\nhit here\r\n".encode_utf16())
+            .flat_map(u16::to_le_bytes)
+            .collect();
+        fs::write(&log, bytes).expect("write");
+        let inputs = Inputs {
+            files: vec![log.clone()],
+            from: Source::Stdin,
+        };
+
+        let mut warnings = Vec::new();
+        let (lines, _, failed) = emitted(collect_files(
+            &inputs,
+            &filters_matching("hit"),
+            Mode::FilteredOnly,
+            &mut warnings,
+        ));
+
+        assert_eq!(lines, [log.display().to_string()]);
+        assert_eq!(failed, 0);
     }
 
     /// A NUL-bearing file is a read failure for `lines` (`Document::read`

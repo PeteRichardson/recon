@@ -12,9 +12,11 @@
 //! filter toggle re-answers a whole folder with no I/O. See the design at
 //! `docs/specs/2026-09-02-explorer-filter-matches-design.md`.
 
+use crate::document::{self, Endian, Sniff};
 use crate::filter::{Matcher, Owner};
+use std::borrow::Cow;
 use std::fs::File;
-use std::io::{BufRead, BufReader, Seek, SeekFrom};
+use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
@@ -37,8 +39,27 @@ pub struct Progress {
 }
 
 /// `(mtime, len)` of a file when it was scanned. A mismatch on re-stat means
-/// the record is for a file that no longer exists in that form.
+/// the file changed; [`grew`] says whether the record can still be resumed.
 pub type Stamp = (SystemTime, u64);
+
+/// The most bytes of one line that are read and matched. The rest of the
+/// line, up to its newline, is skipped and never held in memory, so a huge file
+/// with no newline costs a pass over the disk, not its size in memory (#399).
+pub const LINE_MAX_BYTES: u64 = 1 << 20;
+
+/// Whether a file stamped `held` when `progress` was read, and `now` on disk,
+/// only grew: its length went up, and the read stopped inside the old length.
+///
+/// That is the `tail -F` rule (#358): a log is appended to, so the bytes
+/// already read are still there and the scan resumes at `scanned_to`. A
+/// shorter file, or one of the same length with a new mtime, was rewritten
+/// and is read from the top. A file rewritten to a greater length looks the
+/// same as one that grew; `resume_at_line` catches the case where that
+/// leaves `scanned_to` inside a line, and the rest is the price of the rule.
+#[must_use]
+pub fn grew(held: Option<Stamp>, now: Option<Stamp>, progress: &Progress) -> bool {
+    matches!((held, now), (Some((_, old)), Some((_, new))) if new > old && progress.scanned_to <= old)
+}
 
 /// Read a file's [`Stamp`].
 ///
@@ -190,16 +211,16 @@ impl Scan for Scanner {
 /// caught panic is reported as `eof: true` instead — the file is answered,
 /// wrongly but finitely, and the explorer stops waiting (#188).
 fn scan_caught(
-    reader: impl BufRead,
+    lines: impl Lines,
     matcher: &Matcher,
     progress: Progress,
     cancel: &AtomicBool,
 ) -> Progress {
-    // `scan` takes `progress` by value, so the closure moves it — leaving
-    // nothing behind to fall back to once it has panicked. Clone first so
-    // the caller's progress survives the unwind.
+    // `scan_lines` takes `progress` by value, so the closure moves it —
+    // leaving nothing behind to fall back to once it has panicked. Clone
+    // first so the caller's progress survives the unwind.
     let fallback = progress.clone();
-    let guarded = std::panic::AssertUnwindSafe(|| scan(reader, matcher, progress, cancel));
+    let guarded = std::panic::AssertUnwindSafe(|| scan_lines(lines, matcher, progress, cancel));
     std::panic::catch_unwind(guarded).unwrap_or_else(|_| {
         log::warn!("a file's scan panicked; it is reported as read to the end");
         Progress {
@@ -236,33 +257,23 @@ fn worker(request: Request, tx: &Sender<Scanned>, cancel: &AtomicBool) {
         // Resuming a file that changed since `progress` was read would add
         // new bytes to old bitsets at an offset that may no longer be a line
         // boundary. `refresh_scan` no longer stats to catch this (#156), so
-        // it is caught here, where the stat is already paid for.
+        // it is caught here, where the stat is already paid for. A file that
+        // only grew keeps what was read, and its new end is read (#358).
         let progress = if stamp == held {
             progress
+        } else if grew(held, stamp, &progress) {
+            Progress {
+                eof: false,
+                ..progress
+            }
         } else {
             Progress::default()
         };
-        let progress = match File::open(&path) {
-            Ok(mut file) => {
-                // A seek failure leaves the file positioned who-knows-where,
-                // so scanning from `progress.scanned_to` as if the seek had
-                // worked would let `scan` add to an offset that no longer
-                // matches where the read actually started — overshooting the
-                // true `scanned_to` and reporting `eof: true` too early, a
-                // confident wrong answer. Starting over with
-                // `Progress::default()` costs a re-read but stays correct.
-                let progress = if let Err(err) = file.seek(SeekFrom::Start(progress.scanned_to)) {
-                    log::warn!(
-                        "{}: cannot resume at {}: {err}",
-                        path.display(),
-                        progress.scanned_to
-                    );
-                    Progress::default()
-                } else {
-                    progress
-                };
-                scan_caught(BufReader::new(file), &matcher, progress, cancel)
-            }
+        // `refuse_unreadable` first: a file replaced by a FIFO since the
+        // listing would block `File::open` for ever and hold this thread
+        // (#399).
+        let progress = match document::refuse_unreadable(&path).and_then(|()| File::open(&path)) {
+            Ok(file) => scan_file(file, &matcher, progress, cancel),
             // Unreadable answers "no", complete: it will show nothing. Not
             // retried until its stamp changes.
             Err(err) => {
@@ -284,6 +295,117 @@ fn worker(request: Request, tx: &Sender<Scanned>, cancel: &AtomicBool) {
             return;
         }
     }
+}
+
+/// Scan an open file from where `progress` stopped, and return how far it
+/// got. The explorer's worker and `--emit files` both read a file this way.
+///
+/// The head is sniffed first, as the view sniffs it. A UTF-16 file with a
+/// byte-order mark is decoded before it is matched: matched as raw bytes,
+/// `E\0R\0R\0O\0R\0` never hits `ERROR`, and the explorer would say no
+/// to a file the view colours (#357). Everything else is read as bytes, a
+/// binary file included.
+///
+/// A read error ends the file: `eof`, with what was read so far.
+pub fn scan_file<F: Read + Seek>(
+    mut file: F,
+    matcher: &Matcher,
+    progress: Progress,
+    cancel: &AtomicBool,
+) -> Progress {
+    let sniffed = file
+        .seek(SeekFrom::Start(0))
+        .and_then(|_| document::sniff(&mut file));
+    let endian = match sniffed {
+        Ok((Sniff::Utf16(endian), _)) => Some(endian),
+        Ok((Sniff::Text | Sniff::Binary, _)) => None,
+        Err(err) => {
+            log::warn!("scan stopped early: {err}");
+            return Progress {
+                eof: true,
+                ..progress
+            };
+        }
+    };
+    let newline: &[u8] = match endian {
+        Some(Endian::Little) => &[b'\n', 0],
+        Some(Endian::Big) => &[0, b'\n'],
+        None => b"\n",
+    };
+    let progress = match resume_at_line(&mut file, progress, newline) {
+        Ok(progress) => progress,
+        Err(err) => {
+            log::warn!("scan stopped early: {err}");
+            return Progress {
+                eof: true,
+                ..Progress::default()
+            };
+        }
+    };
+    let reader = BufReader::new(file);
+    match endian {
+        Some(endian) => {
+            let from_top = progress.scanned_to == 0;
+            scan_caught(
+                Utf16Lines::new(reader, endian, from_top),
+                matcher,
+                progress,
+                cancel,
+            )
+        }
+        None => scan_caught(ByteLines::new(reader), matcher, progress, cancel),
+    }
+}
+
+/// Position `file` where the scan goes on: at `progress.scanned_to` when the
+/// bytes just before it are a line end, else at the top with nothing kept.
+///
+/// `scanned_to` is a line boundary when it was read, but a file that grew
+/// (#358) may have grown a line that was cut short: a last line written
+/// without its newline yet. Resuming there would match its second half as a
+/// line of its own, so the file is read again from the top. A seek or read
+/// that fails also starts over: that costs a re-read but stays correct,
+/// where a scan from an unknown position would give a wrong `scanned_to`.
+fn resume_at_line<F: Read + Seek>(
+    file: &mut F,
+    progress: Progress,
+    newline: &[u8],
+) -> io::Result<Progress> {
+    let at = progress.scanned_to;
+    let ends_a_line = |file: &mut F| -> io::Result<bool> {
+        let width = newline.len() as u64;
+        if at < width {
+            return Ok(false);
+        }
+        file.seek(SeekFrom::Start(at - width))?;
+        let mut end = [0; 2];
+        let end = &mut end[..newline.len()];
+        Ok(read_up_to(file, end)? == end.len() && end == newline)
+    };
+    if at > 0 {
+        match ends_a_line(file) {
+            Ok(true) => return Ok(progress),
+            Ok(false) => {}
+            Err(err) => log::warn!("cannot resume at {at}: {err}"),
+        }
+    }
+    file.seek(SeekFrom::Start(0))?;
+    Ok(Progress::default())
+}
+
+/// Read into `buf` until it is full or the reader ends; how many bytes were
+/// read.
+fn read_up_to(reader: &mut impl Read, buf: &mut [u8]) -> io::Result<usize> {
+    let mut filled = 0;
+    while filled < buf.len() {
+        match reader.read(&mut buf[filled..]) {
+            Ok(0) => break,
+            Ok(read) => filled += read,
+            Err(err) if err.kind() == io::ErrorKind::Interrupted => {}
+            Err(err) => return Err(err),
+        }
+    }
+    Ok(filled)
 }
 
 /// A listed file whose stamp on disk is not the one its record holds, with
@@ -395,46 +517,165 @@ pub(crate) mod double {
 
 /// Read lines from `reader` — already positioned at `from.scanned_to` — and
 /// record what each one matched, stopping at the first line that selects the
-/// file, at EOF, or when `cancel` is set.
-///
-/// Early exit is why a matching file is free: a 2 GB log that matches on line
-/// three costs three lines. The price is that `seen` is only complete at
-/// `eof`, which `Record::answer` accounts for.
+/// file, at EOF, or when `cancel` is set. [`scan_file`] is the same over a
+/// file, with the sniff and the resume check.
+#[must_use]
+pub fn scan<R: BufRead>(
+    reader: R,
+    matcher: &Matcher,
+    progress: Progress,
+    cancel: &AtomicBool,
+) -> Progress {
+    scan_lines(ByteLines::new(reader), matcher, progress, cancel)
+}
+
+/// One line at a time from a file, in the encoding it was sniffed as.
+trait Lines {
+    /// The next line, without its line end, and how many bytes of the file
+    /// it took. `None` at the end of the file.
+    fn next_line(&mut self) -> io::Result<Option<(u64, Cow<'_, str>)>>;
+}
+
+/// Lines as bytes, decoded lossily from UTF-8.
 ///
 /// Bytes, not `str`: a log with one bad byte on line 40,000 must still get an
 /// answer. `from_utf8_lossy` is a `Cow` that allocates only on an invalid line,
-/// the same tolerance `read_lines` got in 7d6e587. The newline is stripped so
+/// the same tolerance `read_lines` got in 7d6e587.
+///
+/// A line longer than [`LINE_MAX_BYTES`] is matched on its first
+/// `LINE_MAX_BYTES` and the rest skipped to its newline (#399).
+struct ByteLines<R> {
+    reader: R,
+    buf: Vec<u8>,
+}
+
+impl<R> ByteLines<R> {
+    fn new(reader: R) -> Self {
+        Self {
+            reader,
+            buf: Vec::new(),
+        }
+    }
+}
+
+impl<R: BufRead> Lines for ByteLines<R> {
+    fn next_line(&mut self) -> io::Result<Option<(u64, Cow<'_, str>)>> {
+        self.buf.clear();
+        let mut read = (&mut self.reader)
+            .take(LINE_MAX_BYTES)
+            .read_until(b'\n', &mut self.buf)? as u64;
+        if read == 0 {
+            return Ok(None);
+        }
+        if read == LINE_MAX_BYTES && self.buf.last() != Some(&b'\n') {
+            read += self.reader.skip_until(b'\n')? as u64;
+        }
+        let line = match String::from_utf8_lossy(&self.buf) {
+            Cow::Borrowed(line) => Cow::Borrowed(line.trim_end_matches(['\n', '\r'])),
+            Cow::Owned(line) => Cow::Owned(line.trim_end_matches(['\n', '\r']).to_string()),
+        };
+        Ok(Some((read, line)))
+    }
+}
+
+/// Lines of a UTF-16 file, decoded one line at a time in `endian`'s order.
+///
+/// Streamed, unlike `document::read_utf16_lines`: a scan stops at the first
+/// line that selects, and resumes at a line end, which here is the two-byte
+/// unit `0A 00` (or `00 0A`). The byte-order mark is dropped from the first
+/// line, an unpaired surrogate becomes U+FFFD, and so does an odd byte at
+/// the end. A line is cut at [`LINE_MAX_BYTES`] of the file, as `ByteLines`
+/// cuts it.
+struct Utf16Lines<R> {
+    reader: R,
+    endian: Endian,
+    units: Vec<u16>,
+    line: String,
+    from_top: bool,
+}
+
+impl<R> Utf16Lines<R> {
+    fn new(reader: R, endian: Endian, from_top: bool) -> Self {
+        Self {
+            reader,
+            endian,
+            units: Vec::new(),
+            line: String::new(),
+            from_top,
+        }
+    }
+}
+
+impl<R: BufRead> Lines for Utf16Lines<R> {
+    fn next_line(&mut self) -> io::Result<Option<(u64, Cow<'_, str>)>> {
+        self.units.clear();
+        let mut read = 0;
+        loop {
+            let mut pair = [0; 2];
+            let got = read_up_to(&mut self.reader, &mut pair)?;
+            read += got as u64;
+            if got < pair.len() {
+                if got == 1 {
+                    self.units.push(0xfffd);
+                }
+                break;
+            }
+            let unit = match self.endian {
+                Endian::Little => u16::from_le_bytes(pair),
+                Endian::Big => u16::from_be_bytes(pair),
+            };
+            if read <= LINE_MAX_BYTES {
+                self.units.push(unit);
+            }
+            if unit == u16::from(b'\n') {
+                break;
+            }
+        }
+        if read == 0 {
+            return Ok(None);
+        }
+        self.line = String::from_utf16_lossy(&self.units);
+        let mut line = self.line.trim_end_matches(['\n', '\r']);
+        if std::mem::take(&mut self.from_top) {
+            line = line.strip_prefix('\u{feff}').unwrap_or(line);
+        }
+        Ok(Some((read, Cow::Borrowed(line))))
+    }
+}
+
+/// The scan itself, over lines in any encoding.
+///
+/// Early exit is why a matching file is free: a 2 GB log that matches on line
+/// three costs three lines. The price is that `seen` is only complete at
+/// `eof`, which `Record::answer` accounts for. The line end is stripped so
 /// `foo$` matches the way it does against a `Document` line.
 ///
 /// `cancel` is checked per line — an atomic load, not a syscall — and a
 /// cancelled scan returns what it has. Nothing read is ever thrown away.
-pub fn scan<R: BufRead>(
-    mut reader: R,
+fn scan_lines(
+    mut lines: impl Lines,
     matcher: &Matcher,
     mut progress: Progress,
     cancel: &AtomicBool,
 ) -> Progress {
-    let mut buf = Vec::new();
     loop {
         if cancel.load(Ordering::Relaxed) {
             return progress;
         }
-        buf.clear();
-        let read = match reader.read_until(b'\n', &mut buf) {
-            Ok(read) => read,
+        let (read, line) = match lines.next_line() {
+            Ok(Some(next)) => next,
+            Ok(None) => {
+                progress.eof = true;
+                return progress;
+            }
             Err(err) => {
                 log::warn!("scan stopped early: {err}");
                 progress.eof = true;
                 return progress;
             }
         };
-        if read == 0 {
-            progress.eof = true;
-            return progress;
-        }
-        progress.scanned_to += read as u64;
-        let line = String::from_utf8_lossy(&buf);
-        let bits = matcher.bits(line.trim_end_matches(['\n', '\r']));
+        progress.scanned_to += read;
+        let bits = matcher.bits(&line);
         if !progress.seen.contains(&bits) {
             progress.seen.push(bits);
         }
@@ -685,7 +926,12 @@ mod tests {
         let matcher = matcher(&["hit"], &[]);
         let cancel = never();
 
-        let progress = scan_caught(Panicking, &matcher, Progress::default(), &cancel);
+        let progress = scan_caught(
+            ByteLines::new(Panicking),
+            &matcher,
+            Progress::default(),
+            &cancel,
+        );
 
         assert!(progress.eof, "a panicked file must not stay unanswered");
     }
@@ -797,6 +1043,226 @@ mod tests {
         let answer = rx.recv().expect("an answer");
         assert_eq!(answer.len(), 1);
         assert_eq!(answer[0].path, path);
+    }
+
+    // ---- growth, encodings and hostile files (#358, #357, #399) -----------
+
+    /// `matcher(&["alpha"])` sets bit 0 only, so a `seen` that still holds
+    /// this was kept from the progress the worker was handed, not re-read.
+    const KEPT: crate::filter::Bits = 0b100;
+
+    fn fixture(name: &str, content: &[u8]) -> PathBuf {
+        let dir = std::path::Path::new("target/test-scan");
+        std::fs::create_dir_all(dir).expect("fixture dir");
+        let path = dir.join(name);
+        std::fs::write(&path, content).expect("write");
+        path
+    }
+
+    fn append(path: &Path, content: &[u8]) {
+        use std::io::Write as _;
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(path)
+            .expect("open to append")
+            .write_all(content)
+            .expect("append");
+    }
+
+    fn read_to(scanned_to: u64) -> Progress {
+        Progress {
+            seen: vec![KEPT],
+            scanned_to,
+            eof: true,
+        }
+    }
+
+    #[test]
+    fn only_a_longer_file_read_inside_its_old_length_grew() {
+        let at = |len| Some((SystemTime::UNIX_EPOCH, len));
+        let to = |scanned_to| Progress {
+            scanned_to,
+            ..Progress::default()
+        };
+
+        assert!(grew(at(10), at(20), &to(10)));
+        assert!(!grew(at(10), at(5), &to(5)), "a shorter file was rewritten");
+        assert!(!grew(at(10), at(10), &to(10)), "same length, new mtime");
+        assert!(!grew(at(10), at(20), &to(15)), "read past the old length");
+        assert!(!grew(None, at(20), &to(0)), "no stamp to compare");
+        assert!(!grew(at(10), None, &to(0)), "gone from disk");
+    }
+
+    /// A log that grew is read from where the last scan stopped, not from
+    /// byte 0 (#358).
+    #[test]
+    fn a_file_that_grew_is_resumed_not_restarted() {
+        let path = fixture("grew.txt", b"noise\n");
+        let held = stamp(&path).ok();
+        append(&path, b"alpha\n");
+
+        let result = work(&path, held, read_to(6));
+
+        assert!(
+            result.progress.seen.contains(&KEPT),
+            "{:?}",
+            result.progress
+        );
+        assert!(result.progress.seen.contains(&0b1), "{:?}", result.progress);
+        assert_eq!(result.progress.scanned_to, 12);
+        assert_eq!(result.stamp, stamp(&path).ok());
+    }
+
+    /// The last scan ended inside a line written without its newline yet.
+    /// Its second half is not a line of its own, so the file is read again.
+    #[test]
+    fn a_file_that_grew_a_cut_line_is_read_from_the_top() {
+        let path = fixture("grew-cut.txt", b"noise alp");
+        let held = stamp(&path).ok();
+        append(&path, b"ha\n");
+
+        let result = work(&path, held, read_to(9));
+
+        assert!(
+            !result.progress.seen.contains(&KEPT),
+            "{:?}",
+            result.progress
+        );
+        assert!(result.progress.seen.contains(&0b1), "missed `noise alpha`");
+    }
+
+    #[test]
+    fn a_shorter_file_is_read_from_the_top() {
+        let path = fixture("shrank.txt", b"alpha\nnoise\n");
+
+        let result = work(&path, Some((SystemTime::UNIX_EPOCH, 100)), read_to(40));
+
+        assert!(
+            !result.progress.seen.contains(&KEPT),
+            "{:?}",
+            result.progress
+        );
+        assert!(result.progress.seen.contains(&0b1));
+    }
+
+    fn utf16(text: &str, endian: Endian) -> Vec<u8> {
+        std::iter::once(0xfeff)
+            .chain(text.encode_utf16())
+            .flat_map(|unit| match endian {
+                Endian::Little => unit.to_le_bytes(),
+                Endian::Big => unit.to_be_bytes(),
+            })
+            .collect()
+    }
+
+    /// Matched as bytes, `E\0R\0R\0O\0R\0` never hits `ERROR` (#357).
+    #[test]
+    fn a_utf16_file_is_decoded_before_it_is_matched() {
+        let m = matcher(&["^ERROR$"], &[]);
+        for endian in [Endian::Little, Endian::Big] {
+            let bytes = utf16("ok\r\nERROR\r\n", endian);
+
+            let progress = scan_file(Cursor::new(&bytes), &m, Progress::default(), &never());
+
+            assert_eq!(progress.seen, vec![0, 0b1], "{endian:?}");
+            assert_eq!(progress.scanned_to, bytes.len() as u64, "{endian:?}");
+        }
+    }
+
+    /// The byte-order mark is not part of the first line.
+    #[test]
+    fn a_utf16_first_line_loses_its_byte_order_mark() {
+        let bytes = utf16("alpha\n", Endian::Little);
+
+        let progress = scan_file(
+            Cursor::new(&bytes),
+            &matcher(&["^alpha"], &[]),
+            Progress::default(),
+            &never(),
+        );
+
+        assert_eq!(progress.seen, vec![0b1]);
+    }
+
+    #[test]
+    fn a_utf16_file_resumes_at_its_line_end() {
+        let first = utf16("noise\n", Endian::Little);
+        let mut bytes = first.clone();
+        bytes.extend(utf16("alpha\n", Endian::Little).into_iter().skip(2));
+
+        let progress = scan_file(
+            Cursor::new(&bytes),
+            &matcher(&["alpha"], &[]),
+            read_to(first.len() as u64),
+            &never(),
+        );
+
+        assert!(progress.seen.contains(&KEPT), "{progress:?}");
+        assert!(progress.seen.contains(&0b1), "{progress:?}");
+        assert_eq!(progress.scanned_to, bytes.len() as u64);
+    }
+
+    /// A line past the cap is matched on its head, and the scan goes on at
+    /// the next line rather than reading the rest into memory (#399).
+    #[test]
+    fn a_line_longer_than_the_cap_is_cut_and_the_next_line_is_read() {
+        let cap = usize::try_from(LINE_MAX_BYTES).expect("fits");
+        let mut text = "x".repeat(cap + 10);
+        text.push_str(" alpha\nalpha\n");
+
+        let progress = scan(
+            Cursor::new(&text),
+            &matcher(&["alpha"], &[]),
+            Progress::default(),
+            &never(),
+        );
+
+        assert_eq!(progress.seen, vec![0, 0b1], "alpha past the cut was seen");
+        assert_eq!(progress.scanned_to, text.len() as u64);
+    }
+
+    #[test]
+    fn a_utf16_line_longer_than_the_cap_is_cut_and_the_next_line_is_read() {
+        let cap = usize::try_from(LINE_MAX_BYTES).expect("fits");
+        let mut text = "x".repeat(cap);
+        text.push_str(" alpha\nalpha\n");
+        let bytes = utf16(&text, Endian::Little);
+
+        let progress = scan_file(
+            Cursor::new(&bytes),
+            &matcher(&["alpha"], &[]),
+            Progress::default(),
+            &never(),
+        );
+
+        assert_eq!(progress.seen, vec![0, 0b1], "alpha past the cut was seen");
+        assert_eq!(progress.scanned_to, bytes.len() as u64);
+    }
+
+    /// A file replaced by a FIFO after the listing is refused, not opened:
+    /// the open would block for ever with no writer (#399).
+    #[cfg(unix)]
+    #[test]
+    fn a_fifo_is_refused_without_blocking() {
+        let path = std::path::Path::new("target/test-scan/fifo");
+        let _ = std::fs::remove_file(path);
+        std::fs::create_dir_all("target/test-scan").expect("fixture dir");
+        let made = std::process::Command::new("mkfifo")
+            .arg(path)
+            .status()
+            .expect("run mkfifo");
+        assert!(made.success());
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let path = path.to_path_buf();
+        std::thread::spawn(move || {
+            let _ = tx.send(work(&path, None, Progress::default()));
+        });
+
+        let result = rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("the worker blocked on the FIFO");
+        assert!(result.progress.eof);
     }
 
     // ---- the recording double --------------------------------------------
