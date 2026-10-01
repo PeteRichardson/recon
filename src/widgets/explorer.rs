@@ -1,6 +1,6 @@
+//! The directory explorer pane: the `Explorer` widget.
+
 use super::listmotion::ListMotion;
-/// `Explorer`
-///
 use crate::document::Mode;
 use crate::filter::Background;
 use crate::widgets::Action;
