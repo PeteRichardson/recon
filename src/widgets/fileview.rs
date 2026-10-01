@@ -426,9 +426,10 @@ impl FileView<'_> {
 
     /// Show the file as hex if it is shown as text, or the other way round
     /// (#242). A preview stays a preview. `false`, with nothing changed, when
-    /// the pane holds no file to show either way: a directory, or nothing.
+    /// the pane holds no file to show either way: a directory, nothing, or a
+    /// message that stands in for a file that could not be read (#405).
     pub(crate) fn toggle_hex(&mut self) -> bool {
-        if self.showing_directory || self.filename.as_os_str().is_empty() {
+        if !self.shows_file_content() {
             return false;
         }
         self.hex = !self.hex;
@@ -439,6 +440,14 @@ impl FileView<'_> {
             self.load(&path);
         }
         true
+    }
+
+    /// Whether the pane shows the file's content in some form: its text, its
+    /// dump, or the refusal that a binary file shows as text. The refusal is
+    /// a message, but `-` turns it back into the dump, so it counts. Every
+    /// other message is an error, and an error has no other form to show.
+    fn shows_file_content(&self) -> bool {
+        self.text || self.hex || self.source.as_slice() == [BINARY_MESSAGE]
     }
 
     /// What `load` and `preview` ask for: the choice already made for this
@@ -2632,6 +2641,23 @@ mod tests {
         view.preview(&other);
         assert!(!view.is_hex(), "another text file shows as text");
         assert_eq!(contents(&view), "bravo");
+    }
+
+    /// A message that stands in for a file has no dump to show: `-`
+    /// refuses, and does not read the file again (#405).
+    #[test]
+    fn an_error_message_has_no_hex_view() {
+        let dir = fixture_dir("hex_no_error");
+        let mut view = placeholder_view();
+        view.load(&dir.join("absent.txt"));
+        let before = Arc::clone(view.source());
+
+        assert!(!view.toggle_hex());
+        assert!(!view.is_hex());
+        assert!(
+            Arc::ptr_eq(&before, view.source()),
+            "the file was read again"
+        );
     }
 
     #[test]

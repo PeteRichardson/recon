@@ -1630,6 +1630,8 @@ and naming one directly is refused with `not a regular file`.
 again shows it as text. A binary file — one with a NUL byte in its first
 8 KiB — opens as hex without the key, in place of the old
 `<binary file: contains NUL bytes>`; `-` on it shows that message again.
+`-` on a directory, or on a file that recon cannot read, shows
+`no file to show as hex` and changes nothing.
 
 ```
 00000000: 7f 45 4c 46 02 01 01 00  00 00 00 00 00 00 00 00  .ELF............
