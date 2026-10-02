@@ -269,7 +269,7 @@ pub struct Config {
     /// capture it. Every emit also prints one summary line to stderr naming
     /// the mode and the counts. With `--batch`, or with stdin that is not a
     /// terminal, the TUI is skipped and the result is computed in batch mode.
-    #[arg(long, value_name = "WHAT", value_enum)]
+    #[arg(short = 'e', long, value_name = "WHAT", value_enum)]
     pub emit: Option<crate::emit::Emit>,
 
     /// Batch mode: no TUI. Print the result of `--emit` (`lines` if not
@@ -294,7 +294,7 @@ pub struct Config {
     /// The list's filters are the union of every member of each profile and
     /// each named filter; the set's other filters are off. A filter with no
     /// `name` in its file cannot be in the list.
-    #[arg(long = "set", value_name = "NAME[:LIST]")]
+    #[arg(short = 's', long = "set", value_name = "NAME[:LIST]")]
     pub set: Vec<String>,
 
     /// Unlist a saved filter set at startup: no row in the filter pane and
@@ -303,7 +303,7 @@ pub struct Config {
     /// It wins over `listed` and `autoload` in `filters.toml`, so a run can
     /// use your usual sets without one of them. `--set` and `--unlist` on
     /// the same set are refused.
-    #[arg(long = "unlist", value_name = "NAME")]
+    #[arg(short = 'u', long = "unlist", value_name = "NAME")]
     pub unlist: Vec<String>,
 
     /// Start in hide mode: only matching lines and files.
@@ -354,7 +354,7 @@ pub struct Config {
     // No `env =`: clap ties a variable to the flag's own value, and a flag
     // that takes none cannot say "false". `RECON_WARNINGS` is read into
     // `warnings_setting` by `load` instead, one rung above the file.
-    #[arg(long)]
+    #[arg(short = 'w', long)]
     pub warnings: bool,
 
     /// `RECON_WARNINGS`, else the file's top-level `warnings`: the answer
@@ -1778,6 +1778,53 @@ mod tests {
             Config::default().check_flags().is_ok(),
             "neither flag is fine"
         );
+    }
+
+    // ---- -e, -s, -u, -w (#440) ------------------------------------------
+
+    /// Each short form parses to what its long form does. The fields are
+    /// compared through `Debug` because `Config` has no `PartialEq`, and
+    /// the whole struct is compared so a short form that set some other
+    /// field too would show.
+    #[test]
+    fn short_flags_parse_to_the_same_config_as_their_long_forms() {
+        let parsed = |args: &[&str]| {
+            let mut argv = vec!["recon"];
+            argv.extend_from_slice(args);
+            format!("{:?}", parse_clean(argv).unwrap())
+        };
+        for (short, long) in [
+            (&["-e", "files"][..], &["--emit", "files"][..]),
+            (&["-s", "WiFi:retry"], &["--set", "WiFi:retry"]),
+            (&["-s", "a", "-s", "b"], &["--set", "a", "--set", "b"]),
+            (&["-u", "WiFi"], &["--unlist", "WiFi"]),
+            (&["-w"], &["--warnings"]),
+        ] {
+            assert_eq!(parsed(short), parsed(long), "{short:?} vs {long:?}");
+        }
+        assert_ne!(parsed(&["-w"]), parsed(&[]), "-w must set something");
+    }
+
+    /// The issue's example line, all short forms together.
+    #[test]
+    fn short_flags_combine() {
+        use crate::emit::Emit;
+        let config =
+            parse_clean(["recon", "-b", "-s", "errors", "-e", "files", "/var/log"]).unwrap();
+        assert!(config.batch);
+        assert_eq!(config.set, ["errors"]);
+        assert_eq!(config.emit, Some(Emit::Files));
+    }
+
+    /// `--hide-pane` and `--no-warnings` deliberately have no short form.
+    #[test]
+    fn hide_pane_and_no_warnings_have_no_short_form() {
+        use clap::CommandFactory;
+        let command = Config::command();
+        for id in ["hide_pane", "no_warnings"] {
+            let arg = command.get_arguments().find(|a| a.get_id() == id).unwrap();
+            assert_eq!(arg.get_short(), None, "{id}");
+        }
     }
 
     // ---- -b, --batch (#439) ----------------------------------------------
