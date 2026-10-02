@@ -267,11 +267,18 @@ pub struct Config {
     ///
     /// The TUI draws on stderr, so stdout carries only this — pipe it or
     /// capture it. Every emit also prints one summary line to stderr naming
-    /// the mode and the counts. With stdin that is not a terminal — a pipe,
-    /// or `< /dev/null` — the TUI is skipped and the result is computed
-    /// batch from the files on stdin or under PATH.
+    /// the mode and the counts. With `--batch`, or with stdin that is not a
+    /// terminal, the TUI is skipped and the result is computed in batch mode.
     #[arg(long, value_name = "WHAT", value_enum)]
     pub emit: Option<crate::emit::Emit>,
+
+    /// Batch mode: no TUI. Print the result of `--emit` (`lines` if not
+    /// given) for the files on stdin or under PATH, then exit.
+    ///
+    /// Batch mode also starts without this flag when `--emit` is given and
+    /// stdin is not a terminal — a pipe, a cron job, or `< /dev/null`.
+    #[arg(short = 'b', long)]
+    pub batch: bool,
 
     /// With `--emit lines`: prefix each line with its line number and a tab.
     ///
@@ -407,6 +414,7 @@ impl Default for Config {
             center_jumps: None,
             theme: None,
             emit: None,
+            batch: false,
             line_numbers: false,
             set: Vec::new(),
             unlist: Vec::new(),
@@ -964,6 +972,24 @@ fn warnings_from_env(value: Option<&str>) -> Result<Option<bool>, ConfigError> {
 }
 
 impl Config {
+    /// `--batch` with no `--emit` asks for `lines`, the common case (#439).
+    /// Called before [`Config::check_flags`], so `-b -n` is accepted.
+    pub fn default_batch_emit(&mut self) {
+        if self.batch && self.emit.is_none() {
+            self.emit = Some(crate::emit::Emit::Lines);
+        }
+    }
+
+    /// Whether this run is in batch mode, with no TUI: `--batch`, or
+    /// `--emit` with stdin that is not a terminal (#143, #439). A TUI needs
+    /// stdin for its keys, so a pipe or `/dev/null` there is not a session
+    /// that could have been driven anyway. `--emit` from a terminal still
+    /// gets the TUI and prints its result on `q`.
+    #[must_use]
+    pub fn batch_mode(&self, stdin_is_terminal: bool) -> bool {
+        self.batch || (self.emit.is_some() && !stdin_is_terminal)
+    }
+
     /// Refuse flag combinations clap cannot express: `-n` is meaningful only
     /// with `--emit lines`. Here rather than as a clap `requires`, because
     /// `requires` can name a flag but not a flag's *value*.
@@ -1059,7 +1085,8 @@ impl Config {
     /// `config.toml`, and a file recon cannot parse must not stop them —
     /// they are what a user reaches for when recon refuses that file.
     pub fn from_args() -> Result<Self, ConfigError> {
-        let config = Self::parse();
+        let mut config = Self::parse();
+        config.default_batch_emit();
         config.check_flags()?;
         Ok(config)
     }
@@ -1730,6 +1757,71 @@ mod tests {
             Config::default().check_flags().is_ok(),
             "neither flag is fine"
         );
+    }
+
+    // ---- -b, --batch (#439) ----------------------------------------------
+
+    #[test]
+    fn batch_has_a_short_and_a_long_spelling_and_is_off_by_default() {
+        assert!(!parse_clean(["recon"]).unwrap().batch);
+        assert!(!Config::default().batch);
+        assert!(parse_clean(["recon", "-b"]).unwrap().batch);
+        assert!(parse_clean(["recon", "--batch"]).unwrap().batch);
+    }
+
+    /// `lines` is the common case, so `-b` alone asks for it. `-n` is
+    /// accepted with it: the default is in place before `check_flags`.
+    #[test]
+    fn batch_without_emit_emits_lines() {
+        use crate::emit::Emit;
+        let mut config = parse_clean(["recon", "-b", "-n"]).unwrap();
+        config.default_batch_emit();
+        assert_eq!(config.emit, Some(Emit::Lines));
+        assert!(config.check_flags().is_ok());
+    }
+
+    #[test]
+    fn batch_keeps_an_emit_that_was_given() {
+        use crate::emit::Emit;
+        for (flag, kind) in [("files", Emit::Files), ("cwd", Emit::Cwd)] {
+            let mut config = parse_clean(["recon", "-b", "--emit", flag]).unwrap();
+            config.default_batch_emit();
+            assert_eq!(config.emit, Some(kind), "{flag}");
+        }
+    }
+
+    #[test]
+    fn no_batch_leaves_emit_unset() {
+        let mut config = parse_clean(["recon"]).unwrap();
+        config.default_batch_emit();
+        assert_eq!(config.emit, None);
+    }
+
+    /// Two triggers: `--batch`, or `--emit` with stdin that is not a
+    /// terminal. The second is kept so a pipe or a cron job needs no flag.
+    #[test]
+    fn batch_mode_starts_on_the_flag_or_on_emit_without_a_terminal() {
+        use crate::emit::Emit;
+        let config = |batch, emit| Config {
+            emit,
+            batch,
+            ..Config::default()
+        };
+        // (batch, emit, stdin is a terminal) => batch mode
+        for (batch, emit, tty, expected) in [
+            (false, None, true, false),
+            (false, None, false, false),
+            (false, Some(Emit::Lines), true, false),
+            (false, Some(Emit::Lines), false, true),
+            (true, Some(Emit::Lines), true, true),
+            (true, Some(Emit::Files), false, true),
+        ] {
+            assert_eq!(
+                config(batch, emit).batch_mode(tty),
+                expected,
+                "batch {batch}, emit {emit:?}, tty {tty}"
+            );
+        }
     }
 
     // ---- --set, --hide, -q (#143, batch) -------------------------------

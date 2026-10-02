@@ -35,13 +35,9 @@ fn main() -> Result<ExitCode> {
     };
     let config = &startup.config;
 
-    // Batch (#143): `--emit` with no terminal on stdin. A TUI needs stdin
-    // for its keys, so a pipe or `/dev/null` there is not a session that
-    // could have been driven anyway; the result is computed and printed
-    // instead. `recon --emit lines app.log` from a terminal still gets the
-    // TUI, and `< /dev/null` forces batch from one.
-    let batch = config.emit.is_some() && !io::stdin().is_terminal();
-    let exit = if batch {
+    // Batch mode (#143, #439): `--batch`, or `--emit` with no terminal on
+    // stdin. The result is computed and printed, with no TUI.
+    let exit = if config.batch_mode(io::stdin().is_terminal()) {
         // Batch mode has no panel, so the keymap warnings that would have filled
         // one go to stderr instead — the channel and the gate the reserved-key
         // notice in `keymap::config::build` already uses. Without this they were

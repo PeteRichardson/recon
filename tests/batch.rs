@@ -188,6 +188,35 @@ fn a_path_file_with_empty_stdin_is_read_in_batch_mode_and_quiet_drops_the_summar
     assert_eq!(out.status.code(), Some(0));
 }
 
+/// #439: `-b` with no `--emit` is a batch run that emits lines. Before it,
+/// this run had no `--emit`, so it tried to open the TUI.
+#[test]
+fn batch_without_emit_emits_the_matching_lines() {
+    let dir = fixture("batch_flag");
+    let home = config_home(&dir);
+    let a = dir.join("a.log");
+    fs::write(&a, "hit\nmiss\nhit again\n").expect("write");
+
+    let out = recon(
+        &home,
+        &[
+            "-b",
+            "--set",
+            "Bugs:only_hit",
+            "--hide",
+            a.to_str().expect("utf-8 path"),
+        ],
+        b"",
+    );
+
+    assert_eq!(text(&out.stdout), "hit\nhit again\n");
+    assert_eq!(
+        text(&out.stderr),
+        "recon: emitted 2 lines of a.log, hide mode\n"
+    );
+    assert_eq!(out.status.code(), Some(0));
+}
+
 #[test]
 fn an_unreadable_input_warns_skips_and_exits_2() {
     let dir = fixture("unreadable");

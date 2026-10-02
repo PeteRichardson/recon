@@ -152,8 +152,8 @@ motions throughout.
   `nvim`-in-a-new-terminal-window are all one line of config; run
   `recon --print-editor-config` for a ready-made one.
 - **Send the result down a pipe** — `--emit lines`, `files` or `cwd` prints
-  what you found on stdout when you quit. With stdin not a terminal, recon
-  skips the TUI and applies `--set` filters straight to the input. See
+  what you found on stdout when you quit. With `-b`, recon skips the TUI
+  and applies `--set` filters straight to the input. See
   [Emitting the result](#emitting-the-result) and [Batch mode](#batch-mode).
 - **Your keys, not ours** — any key can be rebound in a `[keymap]` stanza of
   `config.toml`, and `--print-keymap` prints the keymap in force, ready to
@@ -301,6 +301,9 @@ Options:
       --emit <WHAT>
           Print the session's result to stdout on `q`; `Q` quits without it
           [possible values: lines, files, cwd]
+  -b, --batch
+          Batch mode: no TUI. Print the result of `--emit` (`lines` if not
+          given) for the files on stdin or under PATH, then exit
   -n, --line-numbers
           With `--emit lines`: prefix each line with its line number and a tab
       --set <NAME[:PROFILE]>
@@ -1972,24 +1975,28 @@ file's matching filter in the output — both are follow-ups to #143.
 
 ### Batch mode
 
-`--emit` with stdin that is not a terminal skips the TUI altogether: the
-files come from stdin or the argument, the filters from `--set`, and the
-result goes to stdout exactly as `q` would have sent it.
+`-b` (or `--batch`) skips the TUI altogether: the files come from stdin or
+the argument, the filters from `--set`, and the result goes to stdout exactly
+as `q` would have sent it. Without `--emit`, it emits `lines`; `--emit files`
+and `--emit cwd` ask for the other two.
 
 ```sh
-ls -1 *.log | recon --emit files --set BugFilters:Bug57 --hide
-find . -name '*.log' | recon --emit lines -n --set BugFilters --hide | cut -f1,2
-recon --emit files --hide /var/log < /dev/null
+recon -b --set errors --hide server.log          # the matching lines
+ls -1 *.log | recon -b --emit files --set BugFilters:Bug57 --hide
+find . -name '*.log' | recon -b -n --set BugFilters --hide | cut -f1,2
+recon -b --emit files --hide /var/log
 ```
 
-Batch is inferred, never flagged. A pipe on stdin, a cron job, a script
-with stdin closed all get it; `recon --emit lines app.log` from a terminal
-still opens the TUI, because the terminal is where its keys come from. From
-a terminal, `< /dev/null` forces it.
+**When it starts.** `-b` starts batch mode, from a terminal too. `--emit`
+with stdin that is not a terminal starts it with no flag: a pipe on stdin, a
+cron job and a script with stdin closed all get it. `recon --emit lines
+app.log` from a terminal still opens the TUI, because the terminal is where
+its keys come from. `< /dev/null` from a terminal also forces batch mode.
 
 **Inputs.** Each non-blank line of stdin is a path — what `ls -1` and `find`
-print. With nothing on stdin, a `PATH` directory means its files,
-non-recursive, in the explorer's order, and a `PATH` file means itself.
+print — with `-b` or without it. With nothing on stdin, a `PATH` directory
+means its files, non-recursive, in the explorer's order, and a `PATH` file
+means itself.
 
 **Flags.** `--set NAME` enables a saved set with its `default` profile;
 `--set NAME:PROFILE` applies another profile instead. Repeat it for several
