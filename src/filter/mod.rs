@@ -590,7 +590,7 @@ impl ActiveFilters {
     }
 
     /// A set with no file sets and a palette of its own. Test-only (#167):
-    /// `App` and headless mode go through `with_sets` with the loaded sets.
+    /// `App` and batch mode go through `with_sets` with the loaded sets.
     #[cfg(test)]
     #[must_use]
     pub(crate) fn with_palette(palette: Vec<Color>) -> Self {

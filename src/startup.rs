@@ -47,7 +47,7 @@ pub enum Start {
         stdout: String,
         warnings: Vec<String>,
     },
-    /// Start a session, in the TUI or headless. Boxed because it is the
+    /// Start a session, in the TUI or in batch mode. Boxed because it is the
     /// large one, and `Print` would otherwise be as big.
     Run(Box<Startup>),
 }

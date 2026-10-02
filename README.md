@@ -154,7 +154,7 @@ motions throughout.
 - **Send the result down a pipe** — `--emit lines`, `files` or `cwd` prints
   what you found on stdout when you quit. With stdin not a terminal, recon
   skips the TUI and applies `--set` filters straight to the input. See
-  [Emitting the result](#emitting-the-result) and [Headless mode](#headless-mode).
+  [Emitting the result](#emitting-the-result) and [Batch mode](#batch-mode).
 - **Your keys, not ours** — any key can be rebound in a `[keymap]` stanza of
   `config.toml`, and `--print-keymap` prints the keymap in force, ready to
   edit. See [Configuring the keymap](#configuring-the-keymap).
@@ -838,7 +838,7 @@ set without a `default` profile comes on with every filter off, exactly as
 be used this way. `--unlist WiFi_debug` does the opposite for one run: the
 set has no row and no effect, whatever its `listed` and `autoload` say. It
 repeats too, and `--set` and `--unlist` on the same set are refused. The same
-flags drive a run with no TUI at all; see [Headless mode](#headless-mode).
+flags drive a run with no TUI at all; see [Batch mode](#batch-mode).
 
 A header carries `*` when its set has profiles. `a` on that row opens a small
 picker over the panes listing the set's profile names; `j`/`k` move, `Enter`
@@ -1300,7 +1300,7 @@ enables it with every filter off, like any set with no `default`.
 On a log file the rows exist and are inert. The explorer's file matching does
 not evaluate definition filters — it reads text it never parses — so they
 affect only the viewed file, and `q` with `--emit files` follows the explorer.
-A [headless](#headless-mode) `--emit files` does parse: with a definition filter
+A [batch](#batch-mode) `--emit files` does parse: with a definition filter
 on, each file is read whole and answered by every filter, regex ones too. Turning one on costs one whole-file grammar pass,
 about ten microseconds a line, paid once per file; a file with no grammar
 never pays it.
@@ -1628,7 +1628,7 @@ A symlink is drawn as what it points at: a link to a directory wears the
 plain row that reports *not found* when opened. A FIFO, socket or device is
 listed but dimmed, like `..`, and never opened: it has no end to read to,
 and opening a FIFO would block until something wrote to it. The scanner,
-the preview, `--emit files` and a headless run over a directory all skip it,
+the preview, `--emit files` and a batch run over a directory all skip it,
 and naming one directly is refused with `not a regular file`.
 
 ### The hex view
@@ -1970,7 +1970,7 @@ part of the output that is byte-for-byte verbatim. Not emitted yet: the
 filter set itself, and a structured format that carries the mode and each
 file's matching filter in the output — both are follow-ups to #143.
 
-### Headless mode
+### Batch mode
 
 `--emit` with stdin that is not a terminal skips the TUI altogether: the
 files come from stdin or the argument, the filters from `--set`, and the
@@ -1982,7 +1982,7 @@ find . -name '*.log' | recon --emit lines -n --set BugFilters --hide | cut -f1,2
 recon --emit files --hide /var/log < /dev/null
 ```
 
-Headless is inferred, never flagged. A pipe on stdin, a cron job, a script
+Batch is inferred, never flagged. A pipe on stdin, a cron job, a script
 with stdin closed all get it; `recon --emit lines app.log` from a terminal
 still opens the TUI, because the terminal is where its keys come from. From
 a terminal, `< /dev/null` forces it.
@@ -2044,7 +2044,7 @@ otherwise, empty output included; exit 1 for a refused flag or an unreadable
 `filters.toml`.
 
 Not in the first version: ad-hoc patterns (`-i PATTERN`) and a search —
-`grep` covers the one-off case, and saved sets are what headless is for.
+`grep` covers the one-off case, and saved sets are what batch is for.
 
 ## Opening an editor
 
@@ -2352,7 +2352,7 @@ needs every line's answer at once — see *Definition filters*.
   github issue #27.
 - **Binary files show as hex, not as text.** A file with a NUL byte in its
   first 8 KiB opens as a hex dump — see [The hex view](#the-hex-view) — and
-  headless `--emit lines` still refuses it as a `binary file`. Text
+  batch `--emit lines` still refuses it as a `binary file`. Text
   that merely holds an undecodable byte here and there is read normally: each
   bad sequence becomes a `�` in place and every other line survives intact, so
   one corrupt byte in a log costs itself and nothing else. This is github
@@ -2507,7 +2507,7 @@ Layout:
 | `src/clipboard.rs` | Putting yanked text on the system clipboard |
 | `src/generate.rs` | A pattern from a request in plain language |
 | `src/filtersets.rs` | `filters.toml`: its schema, validation and location |
-| `src/headless.rs`, `src/emit.rs` | Headless `--emit`, and what a session hands back on quit |
+| `src/batch.rs`, `src/emit.rs` | Batch `--emit`, and what a session hands back on quit |
 | `src/toml_fmt.rs` | Quoting values for a TOML stanza recon prints |
 | `src/fixtures.rs` | Fixture names shared by every test module |
 | `src/filter/mod.rs` | `ActiveFilters` — the filter stack, its evaluation and the palette |
@@ -2518,7 +2518,7 @@ Layout:
 | `src/widgets/filterlist.rs` | Filter list pane |
 | `src/widgets/setpicker.rs`, `src/widgets/picker.rs` | The set picker and the profile picker |
 | `src/widgets/listmotion.rs` | Selection and paging shared by the list panes |
-| `tests/` | Integration tests: render smoke tests, headless mode, logging, the scan thread, … |
+| `tests/` | Integration tests: render smoke tests, batch mode, logging, the scan thread, … |
 | `docs/specs/`, `docs/plans/` | Design specs and implementation plans |
 
 Design background lives in

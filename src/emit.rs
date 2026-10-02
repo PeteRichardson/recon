@@ -33,7 +33,7 @@ pub enum Exit {
     Emit {
         lines: Vec<Vec<u8>>,
         summary: String,
-        /// Inputs a headless run could not read (#143): warned about as
+        /// Inputs a batch run could not read (#143): warned about as
         /// they were met and skipped, and the reason the exit code is 2.
         /// The TUI always passes 0.
         failed: usize,
@@ -46,7 +46,7 @@ pub enum Exit {
         spool: std::fs::File,
         summary: String,
     },
-    /// `Emit`, with the output already written: a headless run (#219,
+    /// `Emit`, with the output already written: a batch run (#219,
     /// #379) writes each line as it is made, so `| head` stops the work
     /// and no input's output waits in memory for the others. What is left
     /// to deliver is the end — the summary and the exit code — and how the
@@ -145,7 +145,7 @@ impl Exit {
     /// `quiet` (`-q`) drops the summary and nothing else — the read-failure
     /// warnings were written as they happened, before this runs.
     ///
-    /// A write error on stdout — met here, or met by a headless run and
+    /// A write error on stdout — met here, or met by a batch run and
     /// carried in `Streamed` — is reported on stderr and is a failure, with
     /// one exception: `BrokenPipe`, which means the consumer closed its end
     /// (`recon --emit lines big.log | head`) and already got what it asked

@@ -12,6 +12,7 @@
 // should be `pub(crate)`; the lint then sees every method on it.
 #![warn(unreachable_pub)]
 
+pub mod batch;
 pub mod clipboard;
 pub mod config;
 pub mod document;
@@ -22,7 +23,6 @@ pub mod filtersets;
 #[cfg(test)]
 pub(crate) mod fixtures;
 pub mod generate;
-pub mod headless;
 pub mod help;
 mod hex;
 pub mod keymap;

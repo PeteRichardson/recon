@@ -35,14 +35,14 @@ fn main() -> Result<ExitCode> {
     };
     let config = &startup.config;
 
-    // Headless (#143): `--emit` with no terminal on stdin. A TUI needs stdin
+    // Batch (#143): `--emit` with no terminal on stdin. A TUI needs stdin
     // for its keys, so a pipe or `/dev/null` there is not a session that
     // could have been driven anyway; the result is computed and printed
     // instead. `recon --emit lines app.log` from a terminal still gets the
-    // TUI, and `< /dev/null` forces headless from one.
-    let headless = config.emit.is_some() && !io::stdin().is_terminal();
-    let exit = if headless {
-        // Headless has no panel, so the keymap warnings that would have filled
+    // TUI, and `< /dev/null` forces batch from one.
+    let batch = config.emit.is_some() && !io::stdin().is_terminal();
+    let exit = if batch {
+        // Batch mode has no panel, so the keymap warnings that would have filled
         // one go to stderr instead — the channel and the gate the reserved-key
         // notice in `keymap::config::build` already uses. Without this they were
         // collected, handed to `App::new`, and dropped on a path that never
@@ -58,7 +58,7 @@ fn main() -> Result<ExitCode> {
         // Dropped at the end of this block, so the lock is gone before
         // `deliver` takes stdout again.
         let mut out = io::BufWriter::new(io::stdout().lock());
-        recon::headless::run(&startup, &mut out)?
+        recon::batch::run(&startup, &mut out)?
     } else {
         // Registered before the terminal is set up, so no SIGTERM can find
         // it raw with nothing to undo it (#382). The handler only sets the
@@ -78,7 +78,7 @@ fn main() -> Result<ExitCode> {
     // Only now, with the alternate screen gone (or never entered), does
     // anything reach stdout: the result, if `--emit` asked for one, and the
     // summary that names its mode on stderr (#143).
-    // Buffered for the reason the headless writer is (#379); `deliver`
+    // Buffered for the reason the batch writer is (#379); `deliver`
     // flushes before it writes the summary.
     Ok(exit.deliver(
         config.emit,
@@ -88,7 +88,7 @@ fn main() -> Result<ExitCode> {
     ))
 }
 
-/// The keymap warnings on stderr, for headless mode, which has no panel to
+/// The keymap warnings on stderr, for batch mode, which has no panel to
 /// show them. The switch is the panel's, since these are the same warnings
 /// by another route. `--print-keymap` gets its copy from `Start::Print`.
 fn log_keymap_warnings(startup: &Startup) {
@@ -373,7 +373,7 @@ fn init_terminal() -> Result<Terminal<CrosstermBackend<io::BufWriter<Screen>>>> 
 /// `filters.toml` does not define, an unreadable `filters.toml`, `-n`
 /// without `--emit lines`. Without this flag they wrote `LeaveAlternateScreen`
 /// and `DisableMouseCapture` to stderr anyway, which put about 30 bytes of
-/// control characters in front of the message. Headless mode makes that
+/// control characters in front of the message. Batch mode makes that
 /// script-facing: a redirected stderr holds them verbatim (#222).
 static TERMINAL_UP: AtomicBool = AtomicBool::new(false);
 
