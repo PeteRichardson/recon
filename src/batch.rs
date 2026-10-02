@@ -1,4 +1,5 @@
-//! Batch mode (#143): `--emit` with stdin that is not a terminal.
+//! Batch mode (#143, #439): `--batch`, or `--emit` with stdin that is not a
+//! terminal.
 //!
 //! The pieces `App` composes — `ActiveFilters`, `Document`, `scan::scan` —
 //! with no explorer, no view and no terminal. Files come from stdin or
@@ -17,7 +18,7 @@ use crate::startup::Startup;
 use crate::widgets::explorer::sorted_entries;
 use color_eyre::{Result, eyre::eyre};
 use std::fs::File;
-use std::io::{self, BufRead, Write};
+use std::io::{self, BufRead, IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 
@@ -49,7 +50,8 @@ pub fn run(startup: &Startup, out: &mut impl Write) -> Result<Exit> {
     let Some(what) = config.emit else {
         return Err(eyre!("batch mode needs --emit"));
     };
-    let inputs = inputs(io::stdin().lock(), Path::new(&config.path))?;
+    let stdin = io::stdin();
+    let inputs = stdin_or_path(stdin.is_terminal(), stdin.lock(), Path::new(&config.path))?;
     let filters = filters_for(startup)?;
     let mode = if config.hide {
         Mode::FilteredOnly
@@ -107,6 +109,17 @@ pub(crate) fn collect(
         Emit::Lines => collect_lines(inputs, filters, mode, line_numbers, out, warnings),
         Emit::Files => collect_files(inputs, filters, mode, out, warnings),
         Emit::Cwd => collect_cwd(inputs, out),
+    }
+}
+
+/// The input list, with stdin read only when it is not a terminal (#439).
+/// `-b` from a terminal is a batch run with the keyboard on stdin: reading
+/// it would wait for Ctrl-D, so `PATH` is the input.
+fn stdin_or_path(stdin_is_terminal: bool, stdin: impl BufRead, path: &Path) -> io::Result<Inputs> {
+    if stdin_is_terminal {
+        inputs(io::empty(), path)
+    } else {
+        inputs(stdin, path)
     }
 }
 
@@ -593,6 +606,45 @@ mod tests {
         fs::write(dir.join("ignored.log"), "x").expect("write");
 
         let got = inputs(Cursor::new(&b"/only/this.log\n"[..]), &dir).expect("reads");
+
+        assert_eq!(got.from, Source::Stdin);
+        assert_eq!(got.files, vec![PathBuf::from("/only/this.log")]);
+    }
+
+    /// Stdin that fails the test if anything reads it.
+    struct Unread;
+
+    impl io::Read for Unread {
+        fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+            panic!("a terminal on stdin must not be read");
+        }
+    }
+
+    impl BufRead for Unread {
+        fn fill_buf(&mut self) -> io::Result<&[u8]> {
+            panic!("a terminal on stdin must not be read");
+        }
+        fn consume(&mut self, _: usize) {}
+    }
+
+    /// #439: `-b` from a terminal. Stdin is the keyboard, not a file list:
+    /// a read there waits for Ctrl-D. `PATH` is the input.
+    #[test]
+    fn a_terminal_on_stdin_is_not_read_and_path_is_the_input() {
+        let file = fixture_file("batch_inputs_terminal.log", b"x\n");
+
+        let got = stdin_or_path(true, Unread, &file).expect("reads");
+
+        assert_eq!(got.from, Source::File);
+        assert_eq!(got.files, vec![lexical_absolute(&file)]);
+    }
+
+    #[test]
+    fn a_pipe_on_stdin_is_read() {
+        let file = fixture_file("batch_inputs_pipe.log", b"x\n");
+
+        let got =
+            stdin_or_path(false, Cursor::new(&b"/only/this.log\n"[..]), &file).expect("reads");
 
         assert_eq!(got.from, Source::Stdin);
         assert_eq!(got.files, vec![PathBuf::from("/only/this.log")]);
