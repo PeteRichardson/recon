@@ -388,13 +388,13 @@ impl App<'_> {
         let mut filters =
             ActiveFilters::with_sets(Some(config.filter_palette()), &startup.filter_sets);
         filters.set_background(config.background());
-        for (set, profile) in config.sets_to_enable() {
+        for (set, items) in config.sets_to_enable() {
             // `Config::check_sets` refused an unknown name in
             // `startup::start` before the terminal came up; a failure here
             // is a hand-built `Startup`
             // in a test, and the set is left off rather than the app brought
             // down over it.
-            if let Err(err) = filters.enable_named(&set, profile.as_deref()) {
+            if let Err(err) = filters.enable_named(&set, items.as_deref()) {
                 log::warn!("--set {set}: {err}");
             }
         }

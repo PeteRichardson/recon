@@ -66,6 +66,11 @@ pub struct FilterSet {
     pub description: Option<String>,
     /// Named subsets of this set's filters, by `Filter::display_name`.
     pub profiles: BTreeMap<String, Vec<String>>,
+    /// The names `--set NAME:LIST` may give for single filters (#441): each
+    /// filter's own `name`, and none for a filter that has no `name`, so a
+    /// pattern never has to go on a command line. See
+    /// [`LoadedSet::item_filter_names`].
+    pub filter_names: Vec<String>,
 }
 
 impl FilterSet {
@@ -79,6 +84,7 @@ impl FilterSet {
             enabled: true,
             description: None,
             profiles: BTreeMap::new(),
+            filter_names: Vec::new(),
         }
     }
 }
@@ -101,6 +107,9 @@ pub(super) struct Solo {
 #[derive(Debug, Clone)]
 pub struct LoadedFilter {
     pub name: String,
+    /// The file gave a `name` (#441). `false` when `name` is the pattern,
+    /// and then `--set` cannot name the filter.
+    pub named: bool,
     pub predicate: Predicate,
     pub sense: Sense,
     /// The file's `colour`, or `None` for the next palette colour.
@@ -157,6 +166,46 @@ impl LoadedSet {
             builtin: true,
         }
     }
+
+    /// The names `--set NAME:LIST` may give for single filters (#441): the
+    /// kinds' plural names for the built-in set, and every filter that has
+    /// its own `name` for a file set.
+    #[must_use]
+    pub fn item_filter_names(&self) -> Vec<String> {
+        if self.builtin {
+            return Kind::ALL
+                .iter()
+                .map(|kind| kind.plural().to_string())
+                .collect();
+        }
+        self.filters
+            .iter()
+            .filter(|filter| filter.named)
+            .map(|filter| filter.name.clone())
+            .collect()
+    }
+}
+
+/// The filters `--set NAME:LIST` turns on (#441): the union of each item's,
+/// where an item is a profile name — all its members — or one of
+/// `filter_names`. A loaded set never has a name that is both. `Err` holds
+/// the first item that is neither.
+pub fn list_members(
+    profiles: &BTreeMap<String, Vec<String>>,
+    filter_names: &[String],
+    items: &[String],
+) -> Result<Vec<String>, String> {
+    let mut members = Vec::new();
+    for item in items {
+        if let Some(profile) = profiles.get(item) {
+            members.extend(profile.iter().cloned());
+        } else if filter_names.contains(item) {
+            members.push(item.clone());
+        } else {
+            return Err(item.clone());
+        }
+    }
+    Ok(members)
 }
 
 /// Why [`ActiveFilters::enable_named`] could not apply a `--set` (#143).
@@ -164,16 +213,20 @@ impl LoadedSet {
 pub enum EnableError {
     /// No set of that name — or the scratch set, which has none.
     UnknownSet(String),
-    /// The set exists but defines no such profile.
-    UnknownProfile { set: String, profile: String },
+    /// An item of `--set NAME:LIST` that is neither a profile of the set
+    /// nor one of its named filters (#441).
+    UnknownItem { set: String, item: String },
 }
 
 impl std::fmt::Display for EnableError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::UnknownSet(name) => write!(f, "unknown set {name:?}"),
-            Self::UnknownProfile { set, profile } => {
-                write!(f, "unknown profile {profile:?} for set {set:?}")
+            Self::UnknownItem { set, item } => {
+                write!(
+                    f,
+                    "{item:?} is not a profile or a named filter of set {set:?}"
+                )
             }
         }
     }
@@ -231,6 +284,7 @@ impl ActiveFilters {
                             .unwrap_or_else(|| DEFINITIONS_DESCRIPTION.to_string()),
                     ),
                     profiles: loaded.profiles.clone(),
+                    filter_names: loaded.item_filter_names(),
                 });
                 // No palette colour: a built-in filter wears the terminal's
                 // default, so the pane's colours stay the user's own.
@@ -262,6 +316,7 @@ impl ActiveFilters {
                 enabled: false,
                 description: loaded.description.clone(),
                 profiles: loaded.profiles.clone(),
+                filter_names: loaded.item_filter_names(),
             });
             // Colours are given over the known list, listed or not, so a
             // filter's colour never depends on which sets are listed.
@@ -426,32 +481,42 @@ impl ActiveFilters {
         else {
             return false;
         };
-        for filter in self.filters.iter_mut().filter(|f| f.set == set) {
-            filter.enabled = members.contains(&filter.display_name());
-        }
+        self.apply_members(set, &members);
         true
     }
 
-    /// List and enable the set called `set` — `default` profile and all,
-    /// exactly as `set_enabled_set` does — then apply `profile` when one is named
-    /// (#143). Both names are checked before anything moves, so a refused
-    /// call changes nothing. `Config::check_sets` refuses the same names in
-    /// `main` before the terminal comes up; this is the same lookup, so a
-    /// name that passed there cannot fail here.
-    pub fn enable_named(&mut self, set: &str, profile: Option<&str>) -> Result<(), EnableError> {
-        let index = self.named(set)?;
-        if let Some(profile) = profile
-            && !self.sets[index].profiles.contains_key(profile)
-        {
-            return Err(EnableError::UnknownProfile {
-                set: set.to_string(),
-                profile: profile.to_string(),
-            });
+    /// Enable exactly the filters of `set` whose display names are in
+    /// `members`, and disable the set's others.
+    fn apply_members(&mut self, set: usize, members: &[String]) {
+        for filter in self.filters.iter_mut().filter(|f| f.set == set) {
+            filter.enabled = members.contains(&filter.display_name());
         }
+    }
+
+    /// List and enable the set called `set` — `default` profile and all,
+    /// exactly as `set_enabled_set` does — then, when `items` is given,
+    /// enable the union of its profiles and named filters and disable the
+    /// set's others (#143, #441). Every name is checked before anything
+    /// moves, so a refused call changes nothing. `Config::check_sets`
+    /// refuses the same names in `main` before the terminal comes up; this
+    /// is the same lookup, so a name that passed there cannot fail here.
+    pub fn enable_named(&mut self, set: &str, items: Option<&[String]>) -> Result<(), EnableError> {
+        let index = self.named(set)?;
+        let members = items
+            .map(|items| {
+                let meta = &self.sets[index];
+                list_members(&meta.profiles, &meta.filter_names, items).map_err(|item| {
+                    EnableError::UnknownItem {
+                        set: set.to_string(),
+                        item,
+                    }
+                })
+            })
+            .transpose()?;
         self.set_listed(index, true);
         self.set_enabled_set(index, true);
-        if let Some(profile) = profile {
-            self.apply_profile(index, profile);
+        if let Some(members) = members {
+            self.apply_members(index, &members);
         }
         Ok(())
     }
@@ -593,6 +658,12 @@ impl ActiveFilters {
             .filter(|filter| filter.enabled)
             .map(Filter::display_name)
             .collect();
+        // What `S` writes a `name` for, and so what the file will give
+        // `--set` when it is read again.
+        let filter_names: Vec<String> = self.filters[..count]
+            .iter()
+            .filter_map(|filter| filter.name.clone())
+            .collect();
         let mut profiles = BTreeMap::new();
         if !default.is_empty() {
             profiles.insert("default".to_string(), default);
@@ -618,6 +689,7 @@ impl ActiveFilters {
                 // `S` writes no description (#284), so the session has none.
                 description: None,
                 profiles,
+                filter_names,
             },
         );
         if let Some(solo) = self.solo.as_mut() {
@@ -827,11 +899,56 @@ mod tests {
     fn enable_named_applies_the_named_profile_instead_of_default() {
         let mut set = with_profiles();
 
-        set.enable_named("a", Some("p"))
+        set.enable_named("a", Some(&items(&["p"])))
             .expect("known set and profile");
 
         assert!(set.sets()[1].enabled);
         assert_eq!(enabled_names(&set), ["y", "z"]);
+    }
+
+    fn items(names: &[&str]) -> Vec<String> {
+        names.iter().map(|name| (*name).to_string()).collect()
+    }
+
+    /// `--set a:default,z` turns on the union of a profile and a filter,
+    /// and nothing else (#441).
+    #[test]
+    fn enable_named_applies_the_union_of_profiles_and_filters() {
+        let mut set = with_profiles();
+
+        set.enable_named("a", Some(&items(&["default", "z"])))
+            .expect("known items");
+
+        assert_eq!(enabled_names(&set), ["x", "z"]);
+    }
+
+    /// A single filter needs no profile (#441), and the list replaces the
+    /// `default` profile rather than adding to it.
+    #[test]
+    fn enable_named_applies_one_filter_alone() {
+        let mut set = with_profiles();
+
+        set.enable_named("a", Some(&items(&["y"])))
+            .expect("known filter");
+
+        assert_eq!(enabled_names(&set), ["y"]);
+    }
+
+    /// A filter whose name is its pattern cannot be a list item (#441).
+    #[test]
+    fn enable_named_refuses_a_filter_that_has_no_name() {
+        let mut loaded = loaded("a", 50, false, &["x"]);
+        loaded.filters[0].named = false;
+        let mut set = ActiveFilters::with_sets(None, &[loaded]);
+
+        assert_eq!(
+            set.enable_named("a", Some(&items(&["x"]))),
+            Err(EnableError::UnknownItem {
+                set: "a".to_string(),
+                item: "x".to_string(),
+            })
+        );
+        assert!(!set.sets()[1].enabled, "a refused call enables nothing");
     }
 
     #[test]
@@ -843,10 +960,10 @@ mod tests {
             Err(EnableError::UnknownSet("b".to_string()))
         );
         assert_eq!(
-            set.enable_named("a", Some("nope")),
-            Err(EnableError::UnknownProfile {
+            set.enable_named("a", Some(&items(&["p", "nope"]))),
+            Err(EnableError::UnknownItem {
                 set: "a".to_string(),
-                profile: "nope".to_string(),
+                item: "nope".to_string(),
             })
         );
         assert_eq!(
@@ -1316,7 +1433,7 @@ mod tests {
                 true,
                 &[
                     ("default", &["functions"]),
-                    ("types", &["types", "structs", "enums"]),
+                    ("typedefs", &["types", "structs", "enums"]),
                 ],
             )],
         );
@@ -1329,19 +1446,25 @@ mod tests {
                 .collect()
         };
         assert_eq!(on(&set), ["functions"], "autoload applied `default`");
-        assert!(set.apply_profile(index, "types"));
+        assert!(set.apply_profile(index, "typedefs"));
         assert_eq!(
             on(&set),
             ["structs", "enums", "types"],
             "in Kind::ALL order"
         );
         assert_eq!(
-            set.enable_named(DEFINITIONS_SET, Some("nope")),
-            Err(EnableError::UnknownProfile {
+            set.enable_named(DEFINITIONS_SET, Some(&["nope".to_string()])),
+            Err(EnableError::UnknownItem {
                 set: DEFINITIONS_SET.to_string(),
-                profile: "nope".to_string(),
+                item: "nope".to_string(),
             })
         );
+        set.enable_named(
+            DEFINITIONS_SET,
+            Some(&["functions".to_string(), "structs".to_string()]),
+        )
+        .expect("kinds are the built-in set's filter names (#441)");
+        assert_eq!(on(&set), ["functions", "structs"]);
     }
 
     /// The grammar pass is paid only once a definition filter takes effect.
