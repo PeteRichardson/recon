@@ -1994,9 +1994,9 @@ app.log` from a terminal still opens the TUI, because the terminal is where
 its keys come from. `< /dev/null` from a terminal also forces batch mode.
 
 **Inputs.** Each non-blank line of stdin is a path — what `ls -1` and `find`
-print — with `-b` or without it. With nothing on stdin, a `PATH` directory
-means its files, non-recursive, in the explorer's order, and a `PATH` file
-means itself.
+print — with `-b` or without it. A terminal on stdin is not read. With
+nothing on stdin, a `PATH` directory means its files, non-recursive, in the
+explorer's order, and a `PATH` file means itself.
 
 **Flags.** `--set NAME` enables a saved set with its `default` profile;
 `--set NAME:PROFILE` applies another profile instead. Repeat it for several
