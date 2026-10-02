@@ -306,9 +306,10 @@ Options:
           given) for the files on stdin or under PATH, then exit
   -n, --line-numbers
           With `--emit lines`: prefix each line with its line number and a tab
-      --set <NAME[:PROFILE]>
+      --set <NAME[:LIST]>
           Enable a saved filter set at startup, as `NAME` for its `default`
-          profile or `NAME:PROFILE` for another. Repeatable
+          profile or `NAME:LIST` for the filters a comma-separated list of
+          profiles and filter names turns on. Repeatable
       --unlist <NAME>
           Unlist a saved filter set at startup: no row in the filter pane and no
           effect on the view or on `--emit`. Repeatable
@@ -772,7 +773,10 @@ recon is exactly this model with one set.
   The pane is short, so the top rows are a setting rather than an accident of
   naming.
 - **`name`** — what the pane calls a filter, and what profiles refer to. It
-  defaults to the pattern itself.
+  defaults to the pattern itself. Only a filter with a `name` can be given
+  to `--set` (see below), so a pattern never has to go on a command line. A
+  `name` must not contain a comma, and must not be the name of a profile of
+  the same set.
 - **`description`** (of a filter) — one line of plain text that says why the
   filter exists. It is for people only. The status row shows it while the
   filter pane's selection is on the filter.
@@ -802,7 +806,8 @@ recon is exactly this model with one set.
 The file is validated before the terminal is taken, with the same
 refuse-to-start policy as `config.toml`: a pattern that does not compile, a
 colour that does not parse, two filters answering to one name, a profile
-naming a filter the set lacks, a set with no filters, or a key the schema does
+naming a filter the set lacks, a name that is both a profile and a filter of
+one set, a comma in a profile or filter name, a set with no filters, or a key the schema does
 not know each stop recon with a message naming the file, the set and the
 filter. A `description` or a `prompt` that is not a string, or an example that
 is not a string, stops recon in the same way. A missing file is not an error. recon writes this file in exactly one
@@ -835,7 +840,14 @@ Sets can also be switched on from the command line: `--set WiFi_debug`
 lists and enables the set at startup with its `default` profile, whatever its
 `listed` and `autoload` say, `--set
 WiFi_debug:WiFi_bug_32` applies that profile instead, and the flag repeats
-for several sets. `--hide` alongside it starts the session in hide mode. A
+for several sets; for one set, the last `--set` wins. After the colon goes a
+comma-separated list of profiles and filter names, and the filters it turns
+on are the union: `--set WiFi_debug:retry` turns on one filter with no
+profile for it, and `--set WiFi_debug:default,retry` adds `retry` to the
+`default` profile's filters. The set's other filters are off, as with a
+profile. Each filter in the list must have a `name`; a filter that has only
+a pattern is reached through a profile. An unknown item is refused at
+startup, and the message lists the set's profiles and its named filters. `--hide` alongside it starts the session in hide mode. A
 set without a `default` profile comes on with every filter off, exactly as
 `Enter` on its header would leave it — give it a `default` if it is meant to
 be used this way. `--unlist WiFi_debug` does the opposite for one run: the
@@ -1288,15 +1300,17 @@ autoload = true
 
 [sets.definitions.profiles]
 default = ["functions"]
-types = ["types", "structs", "enums"]
+typedefs = ["types", "structs", "enums"]
 ```
 
 A profile's members are the eleven filter names above — `functions`,
 `classes`, `structs`, `enums`, `types`, `traits`, `modules`, `impls`,
 `constants`, `macros`, `sections` — and naming anything else is refused at
-startup, as a file set's profile naming a missing filter is. With `autoload`
-and a `default` the set starts with that subset on; `--set definitions:types`
-applies a profile from the command line, the same as for any set. The set is
+startup, as a file set's profile naming a missing filter is. A profile must
+not take one of these names. With `autoload`
+and a `default` the set starts with that subset on; `--set definitions:typedefs`
+applies a profile from the command line, the same as for any set, and
+`--set definitions:functions,structs` turns on those kinds with no profile. The set is
 always known to `--set`, table or no table: without one, `--set definitions`
 enables it with every filter off, like any set with no `default`.
 
@@ -1999,19 +2013,20 @@ nothing on stdin, a `PATH` directory means its files, non-recursive, in the
 explorer's order, and a `PATH` file means itself.
 
 **Flags.** `--set NAME` enables a saved set with its `default` profile;
-`--set NAME:PROFILE` applies another profile instead. Repeat it for several
+`--set NAME:LIST` turns on the filters of a comma-separated list of profiles
+and filter names instead — `--set errors:default,INFO`. Repeat it for several
 sets. `--unlist NAME` takes a set out of the filters that decide the output
 — your usual sets without one of them — and repeats the same way. `--hide`
 starts in hide mode, so only matches are emitted; without it
 the run is in dim mode and emits everything, with the match count in the
 summary. `-n` numbers lines as in the TUI. `-q` drops the summary; warnings
-still print. All five work in the TUI too. An unknown set or profile is
-refused before anything is read, and the error lists the names the set
+still print. All five work in the TUI too. An unknown set, profile or
+filter name is refused before anything is read, and the error lists the names the set
 files define, with the built-in `definitions` set named apart. So is
 `--set` together with `--unlist` on the same set.
 
 **Definition filters.** `--emit files` with a definition filter on —
-`--set definitions:types` — parses each file and lists those that define the
+`--set definitions:structs` — parses each file and lists those that define the
 kinds asked for. That is one whole read and one grammar pass per file, which
 the navigator cannot afford for its marks, so `q` from a session lists every
 file. A file with no grammar, such as a log, defines nothing and drops out

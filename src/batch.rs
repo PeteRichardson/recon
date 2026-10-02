@@ -75,9 +75,9 @@ fn filters_for(startup: &Startup) -> Result<ActiveFilters> {
     let config = &startup.config;
     let mut filters = ActiveFilters::with_sets(Some(config.filter_palette()), &startup.filter_sets);
     filters.set_background(config.background());
-    for (set, profile) in config.sets_to_enable() {
+    for (set, items) in config.sets_to_enable() {
         filters
-            .enable_named(&set, profile.as_deref())
+            .enable_named(&set, items.as_deref())
             .map_err(|err| eyre!("--set {set}: {err}"))?;
     }
     for set in &config.unlist {

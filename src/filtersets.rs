@@ -272,7 +272,7 @@ fn parse_sets(text: &str, path: &Path) -> Result<Vec<LoadedSet>, Error> {
                     ));
                 }
             }
-            sets.push(LoadedSet {
+            let set = LoadedSet {
                 name,
                 path: path.to_path_buf(),
                 priority: schema.priority.unwrap_or(DEFAULT_PRIORITY),
@@ -282,7 +282,9 @@ fn parse_sets(text: &str, path: &Path) -> Result<Vec<LoadedSet>, Error> {
                 profiles: schema.profiles,
                 filters: Vec::new(),
                 builtin: true,
-            });
+            };
+            check_item_names(&set).map_err(|message| invalid(&set.name, None, message))?;
+            sets.push(set);
             continue;
         }
         if schema.filters.is_empty() {
@@ -297,6 +299,7 @@ fn parse_sets(text: &str, path: &Path) -> Result<Vec<LoadedSet>, Error> {
         for entry in schema.filters {
             // What the pane will call it, and so what a message calls it
             // (#200): the `name` when there is one, the pattern otherwise.
+            let named = entry.name.is_some();
             let display = entry.name.unwrap_or_else(|| entry.pattern.clone());
             let regex = Regex::new(&entry.pattern)
                 .map_err(|err| invalid(&name, Some(&display), err.to_string()))?;
@@ -332,8 +335,18 @@ fn parse_sets(text: &str, path: &Path) -> Result<Vec<LoadedSet>, Error> {
                     format!("two filters named {display:?}; give one a distinct `name`"),
                 ));
             }
+            // `--set NAME:A,B` splits on the comma (#441). A pattern is not
+            // a name `--set` reads, so it may hold one.
+            if named && display.contains(',') {
+                return Err(invalid(
+                    &name,
+                    Some(&display),
+                    "a filter's `name` cannot contain a comma".into(),
+                ));
+            }
             filters.push(LoadedFilter {
                 name: display,
+                named,
                 predicate: Predicate::Regex(regex),
                 sense: entry.sense.map_or(Sense::Include, Into::into),
                 colour,
@@ -359,7 +372,7 @@ fn parse_sets(text: &str, path: &Path) -> Result<Vec<LoadedSet>, Error> {
             }
         }
 
-        sets.push(LoadedSet {
+        let set = LoadedSet {
             name,
             path: path.to_path_buf(),
             priority: schema.priority.unwrap_or(DEFAULT_PRIORITY),
@@ -369,9 +382,42 @@ fn parse_sets(text: &str, path: &Path) -> Result<Vec<LoadedSet>, Error> {
             profiles: schema.profiles,
             filters,
             builtin: false,
-        });
+        };
+        check_item_names(&set).map_err(|message| invalid(&set.name, None, message))?;
+        sets.push(set);
     }
     Ok(sets)
+}
+
+/// Refuse a set whose names `--set NAME:A,B` could not read (#441): a
+/// profile name with a comma, or a name that is both a profile and a named
+/// filter of this set — every such name, so one edit fixes them all. The
+/// built-in set's filter names are its kinds'. Names in other sets never
+/// clash, and run on every set, whether or not a `--set` names it.
+fn check_item_names(set: &LoadedSet) -> Result<(), String> {
+    if let Some(profile) = set.profiles.keys().find(|profile| profile.contains(',')) {
+        return Err(format!(
+            "profile {profile:?}: a profile name cannot contain a comma"
+        ));
+    }
+    let filters = set.item_filter_names();
+    let clashes: Vec<String> = set
+        .profiles
+        .keys()
+        .filter(|profile| filters.contains(profile))
+        .map(|profile| format!("{profile:?}"))
+        .collect();
+    if clashes.is_empty() {
+        return Ok(());
+    }
+    Err(format!(
+        "{} both a profile and a filter in this set; rename one so `--set` can tell them apart",
+        if clashes.len() == 1 {
+            format!("{} is", clashes[0])
+        } else {
+            format!("{} are each", clashes.join(", "))
+        }
+    ))
 }
 
 /// Make a list of loaded sets the pane's list: the built-in set present
@@ -835,6 +881,92 @@ mod tests {
 
     const MINIMAL: &str = "[sets.a]\n[[sets.a.filters]]\npattern = 'foo'\n";
 
+    // ---- names `--set NAME:LIST` reads (#441) -------------------------------
+
+    /// Only a filter given a `name` can be named on the command line.
+    #[test]
+    fn a_filter_is_named_only_when_the_file_gives_a_name() {
+        let sets = parsed(
+            "[sets.a]\n[[sets.a.filters]]\npattern = 'x'\n\
+             [[sets.a.filters]]\nname = 'warm'\npattern = 'y'\n",
+        );
+        assert!(!sets[0].filters[0].named);
+        assert!(sets[0].filters[1].named);
+        assert_eq!(sets[0].item_filter_names(), ["warm"]);
+    }
+
+    #[test]
+    fn a_comma_in_a_filter_name_is_rejected() {
+        let message = rejected("[sets.a]\n[[sets.a.filters]]\nname = 'a,b'\npattern = 'x'\n");
+        assert_eq!(
+            message,
+            "invalid filter sets file t/filters.toml: [sets.a] filter 'a,b': \
+             a filter's `name` cannot contain a comma"
+        );
+    }
+
+    /// A pattern is not a name `--set` reads, so a comma in it is fine.
+    #[test]
+    fn a_comma_in_a_pattern_is_accepted() {
+        let sets = parsed("[sets.a]\n[[sets.a.filters]]\npattern = 'x{1,2}'\n");
+        assert_eq!(sets[0].filters[0].name, "x{1,2}");
+    }
+
+    #[test]
+    fn a_comma_in_a_profile_name_is_rejected() {
+        let message = rejected(
+            "[sets.a]\n[sets.a.profiles]\n'p,q' = ['x']\n[[sets.a.filters]]\nname = 'x'\npattern = 'x'\n",
+        );
+        assert!(message.contains("[sets.a]"), "{message}");
+        assert!(
+            message.contains("profile \"p,q\": a profile name cannot contain a comma"),
+            "{message}"
+        );
+    }
+
+    /// Every name that is both a profile and a named filter of one set is
+    /// listed, with the set and the file.
+    #[test]
+    fn a_profile_and_a_filter_of_one_name_are_rejected() {
+        let message = rejected(
+            "[sets.a]\n[sets.a.profiles]\nINFO = ['INFO']\nWARN = ['WARN']\nok = ['INFO']\n\
+             [[sets.a.filters]]\nname = 'INFO'\npattern = 'i'\n\
+             [[sets.a.filters]]\nname = 'WARN'\npattern = 'w'\n",
+        );
+        assert_eq!(
+            message,
+            "invalid filter sets file t/filters.toml: [sets.a]: \"INFO\", \"WARN\" are each \
+             both a profile and a filter in this set; rename one so `--set` can tell them apart"
+        );
+    }
+
+    /// A filter with no `name` is not a candidate: its pattern may equal a
+    /// profile name. Names in different sets never clash, and case counts.
+    #[test]
+    fn only_a_named_filter_of_the_same_set_clashes() {
+        let sets = parsed(
+            "[sets.a]\n[sets.a.profiles]\ntriage = ['triage']\n\
+             [[sets.a.filters]]\npattern = 'triage'\n\
+             [sets.b]\n[sets.b.profiles]\nwarning = ['WARNING']\n\
+             [[sets.b.filters]]\nname = 'triage'\npattern = 't'\n\
+             [[sets.b.filters]]\nname = 'WARNING'\npattern = 'w'\n",
+        );
+        assert_eq!(sets.len(), 3, "a, b and the built-in set");
+    }
+
+    /// The built-in set's profiles must not reuse a kind name.
+    #[test]
+    fn a_builtin_profile_named_for_a_kind_is_rejected() {
+        let message = rejected(
+            "[sets.definitions]\n[sets.definitions.profiles]\nfunctions = ['functions']\n",
+        );
+        assert!(message.contains("[sets.definitions]"), "{message}");
+        assert!(
+            message.contains("\"functions\" is both a profile and a filter"),
+            "{message}"
+        );
+    }
+
     /// The built-in set is the loader's to supply (#220): a file that never
     /// names it still yields it, at its defaults, so `--set definitions` is
     /// validated against the same list `with_sets` builds from.
@@ -965,11 +1097,11 @@ sense = "context"
         );
         let sets = parsed(
             "[sets.definitions]\n[sets.definitions.profiles]\ndefault = ['functions']\n\
-             types = ['types', 'structs', 'enums']\n",
+             typedefs = ['types', 'structs', 'enums']\n",
         );
         assert_eq!(sets.len(), 1);
         assert_eq!(sets[0].profiles["default"], vec!["functions".to_string()]);
-        assert_eq!(sets[0].profiles["types"].len(), 3);
+        assert_eq!(sets[0].profiles["typedefs"].len(), 3);
         // An empty table is fine: it names the set and changes nothing.
         assert!(parsed("[sets.definitions]\n")[0].builtin);
     }
@@ -980,10 +1112,10 @@ sense = "context"
     #[test]
     fn a_builtin_profile_must_name_definition_kinds() {
         let message = rejected(
-            "[sets.definitions]\n[sets.definitions.profiles]\ntypes = ['types', 'nope']\n",
+            "[sets.definitions]\n[sets.definitions.profiles]\ntypedefs = ['types', 'nope']\n",
         );
         assert!(message.contains("[sets.definitions]"), "{message}");
-        assert!(message.contains("profile \"types\""), "{message}");
+        assert!(message.contains("profile \"typedefs\""), "{message}");
         assert!(message.contains("\"nope\""), "{message}");
         assert!(message.contains("functions"), "lists the kinds: {message}");
         assert!(message.contains("sections"), "lists the kinds: {message}");

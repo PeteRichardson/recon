@@ -113,7 +113,7 @@ fn files_hide_with_a_definitions_profile_lists_the_files_that_define_it() {
         home.join("recon/filters.toml"),
         "[sets.definitions]\n\n\
          [sets.definitions.profiles]\n\
-         types = [\"structs\"]\n",
+         typedefs = [\"structs\"]\n",
     )
     .expect("write filters.toml");
     let a = dir.join("a.rs");
@@ -126,7 +126,7 @@ fn files_hide_with_a_definitions_profile_lists_the_files_that_define_it() {
 
     let out = recon(
         &home,
-        &["--emit", "files", "--set", "definitions:types", "--hide"],
+        &["--emit", "files", "--set", "definitions:typedefs", "--hide"],
         list.as_bytes(),
     );
 
@@ -135,6 +135,62 @@ fn files_hide_with_a_definitions_profile_lists_the_files_that_define_it() {
         text(&out.stderr),
         "recon: emitted 1 files of 3 inputs, hide mode\n"
     );
+    assert_eq!(out.status.code(), Some(0));
+}
+
+/// #441: `--set NAME:LIST` turns on the union of a profile and a named
+/// filter, with no profile for the combination.
+#[test]
+fn set_with_a_list_emits_the_union_of_a_profile_and_a_filter() {
+    let dir = fixture("set_list_union");
+    let home = config_home(&dir);
+    let a = dir.join("a.log");
+    fs::write(&a, "hit\nother\nmiss\n").expect("write");
+
+    let out = recon(
+        &home,
+        &[
+            "--emit",
+            "lines",
+            "-q",
+            "--set",
+            "Bugs:only_hit,other",
+            "--hide",
+        ],
+        format!("{}\n", a.display()).as_bytes(),
+    );
+
+    assert_eq!(text(&out.stdout), "hit\nother\n");
+    assert_eq!(text(&out.stderr), "");
+    assert_eq!(out.status.code(), Some(0));
+}
+
+/// #441: a kind of the built-in set is named alone, with no profile in
+/// any file.
+#[test]
+fn set_names_a_definition_kind_without_a_profile() {
+    let dir = fixture("set_list_kind");
+    let home = dir.join("config");
+    fs::create_dir_all(&home).expect("create config dir");
+    let a = dir.join("a.rs");
+    let b = dir.join("b.rs");
+    fs::write(&a, "struct Point;\n").expect("write");
+    fs::write(&b, "fn main() {}\n").expect("write");
+
+    let out = recon(
+        &home,
+        &[
+            "--emit",
+            "files",
+            "-q",
+            "--set",
+            "definitions:structs",
+            "--hide",
+        ],
+        format!("{}\n{}\n", a.display(), b.display()).as_bytes(),
+    );
+
+    assert_eq!(text(&out.stdout), format!("{}\n", a.display()));
     assert_eq!(out.status.code(), Some(0));
 }
 

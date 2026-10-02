@@ -288,8 +288,13 @@ pub struct Config {
     pub line_numbers: bool,
 
     /// Enable a saved filter set at startup, as `NAME` for its `default`
-    /// profile or `NAME:PROFILE` for another. Repeatable.
-    #[arg(long = "set", value_name = "NAME[:PROFILE]")]
+    /// profile or `NAME:LIST` for the filters a comma-separated list of
+    /// profiles and filter names turns on. Repeatable.
+    ///
+    /// The list's filters are the union of every member of each profile and
+    /// each named filter; the set's other filters are off. A filter with no
+    /// `name` in its file cannot be in the list.
+    #[arg(long = "set", value_name = "NAME[:LIST]")]
     pub set: Vec<String>,
 
     /// Unlist a saved filter set at startup: no row in the filter pane and
@@ -650,11 +655,14 @@ pub enum ConfigError {
     /// `--set` naming a set `filters.toml` does not define (#143). `known`
     /// is every set it does define, for the message.
     UnknownSet { name: String, known: Vec<String> },
-    /// `--set SET:NAME` naming a profile `set` does not define (#143).
-    UnknownProfile {
+    /// An item of `--set SET:LIST` that is neither a profile of `set` nor
+    /// one of its named filters (#143, #441). `profiles` and `filters` are
+    /// what it does define, for the message.
+    UnknownSetItem {
         set: String,
         name: String,
-        known: Vec<String>,
+        profiles: Vec<String>,
+        filters: Vec<String>,
     },
     /// `--set` and `--unlist` naming the same set (#283): one asks for it
     /// enabled, the other for it gone, and neither wins silently.
@@ -794,10 +802,17 @@ impl fmt::Display for ConfigError {
                 }
                 Ok(())
             }
-            Self::UnknownProfile { set, name, known } => write!(
+            Self::UnknownSetItem {
+                set,
+                name,
+                profiles,
+                filters,
+            } => write!(
                 f,
-                "unknown profile {name:?}; set {set:?} defines: {}",
-                known_list(known)
+                "{name:?} is not a profile or a named filter of set {set:?}; \
+                 profiles: {}; named filters: {}",
+                known_list(profiles),
+                known_list(filters)
             ),
             Self::AllPanesHidden => write!(
                 f,
@@ -1023,42 +1038,48 @@ impl Config {
     }
 
     /// `--set` as the pairs `App::new` and batch mode apply: the set's
-    /// name and, after the first colon, the profile to apply instead of
-    /// `default`. A set name holding a colon is misparsed here; the
-    /// unknown-set error then lists the real names, so it is found rather
-    /// than hidden.
+    /// name and, after the first colon, the comma-separated profiles and
+    /// filter names to apply instead of `default` (#441). A set name
+    /// holding a colon is misparsed here; the unknown-set error then lists
+    /// the real names, so it is found rather than hidden. The loader
+    /// refuses a comma in a profile or filter name, so the split is exact.
     #[must_use]
-    pub fn sets_to_enable(&self) -> Vec<(String, Option<String>)> {
+    pub fn sets_to_enable(&self) -> Vec<(String, Option<Vec<String>>)> {
         self.set
             .iter()
             .map(|spec| match spec.split_once(':') {
-                Some((set, profile)) => (set.to_string(), Some(profile.to_string())),
+                Some((set, list)) => (
+                    set.to_string(),
+                    Some(list.split(',').map(str::to_string).collect()),
+                ),
                 None => (spec.clone(), None),
             })
             .collect()
     }
 
-    /// Refuse a `--set` naming a set `sets` does not hold, or a profile its
-    /// set does not define; and an `--unlist` naming an unknown set, or one
+    /// Refuse a `--set` naming a set `sets` does not hold, or a list item
+    /// that is neither a profile nor a named filter of its set; and an `--unlist` naming an unknown set, or one
     /// a `--set` also names. Needs the loaded sets, so it runs in `main`
     /// right after `filtersets::load_file`, where `check_flags` did not
     /// have to wait.
     pub fn check_sets(&self, sets: &[crate::filter::LoadedSet]) -> Result<(), ConfigError> {
-        for (name, profile) in self.sets_to_enable() {
+        for (name, items) in self.sets_to_enable() {
             let Some(set) = sets.iter().find(|set| set.name == name) else {
                 return Err(ConfigError::UnknownSet {
                     name,
                     known: sets.iter().map(|set| set.name.clone()).collect(),
                 });
             };
-            if let Some(profile) = profile
-                && !set.profiles.contains_key(&profile)
-            {
-                return Err(ConfigError::UnknownProfile {
-                    set: name,
-                    name: profile,
-                    known: set.profiles.keys().cloned().collect(),
-                });
+            if let Some(items) = items {
+                let filters = set.item_filter_names();
+                if let Err(item) = crate::filter::list_members(&set.profiles, &filters, &items) {
+                    return Err(ConfigError::UnknownSetItem {
+                        set: name,
+                        name: item,
+                        profiles: set.profiles.keys().cloned().collect(),
+                        filters,
+                    });
+                }
             }
         }
         let to_enable = self.sets_to_enable();
@@ -1835,8 +1856,23 @@ mod tests {
             config.sets_to_enable(),
             vec![
                 ("Bugs".to_string(), None),
-                ("WiFi".to_string(), Some("bug:32".to_string())),
+                ("WiFi".to_string(), Some(vec!["bug:32".to_string()])),
             ]
+        );
+    }
+
+    /// After the colon, a comma-separated list of profiles and filter
+    /// names (#441).
+    #[test]
+    fn set_splits_its_list_at_each_comma() {
+        let config = parse_clean(["recon", "--set", "errors:default,INFO"]).expect("parses");
+
+        assert_eq!(
+            config.sets_to_enable(),
+            vec![(
+                "errors".to_string(),
+                Some(vec!["default".to_string(), "INFO".to_string()])
+            )]
         );
     }
 
@@ -2084,10 +2120,10 @@ mod tests {
     fn check_sets_accepts_the_builtin_set_and_its_profiles() {
         let sets = [crate::filter::test_support::builtin_with_profiles(
             false,
-            &[("types", &["types"])],
+            &[("typedefs", &["types"])],
         )];
 
-        for spec in ["definitions", "definitions:types"] {
+        for spec in ["definitions", "definitions:typedefs", "definitions:types"] {
             let config = Config {
                 set: vec![spec.to_string()],
                 ..Config::default()
@@ -2102,7 +2138,9 @@ mod tests {
         let err = config.check_sets(&sets).expect_err("refused");
         assert_eq!(
             err.to_string(),
-            "unknown profile \"nope\"; set \"definitions\" defines: types"
+            "\"nope\" is not a profile or a named filter of set \"definitions\"; \
+             profiles: typedefs; named filters: functions, classes, structs, enums, types, \
+             traits, modules, impls, constants, macros, sections"
         );
     }
 
@@ -2169,11 +2207,56 @@ mod tests {
 
         let err = config.check_sets(&sets).expect_err("refused");
 
-        assert!(matches!(err, ConfigError::UnknownProfile { .. }), "{err:?}");
+        assert!(matches!(err, ConfigError::UnknownSetItem { .. }), "{err:?}");
         assert_eq!(
             err.to_string(),
-            "unknown profile \"nope\"; set \"Bugs\" defines: p"
+            "\"nope\" is not a profile or a named filter of set \"Bugs\"; \
+             profiles: p; named filters: x"
         );
+    }
+
+    /// A list item may be a profile or a named filter, in any mix (#441).
+    #[test]
+    fn check_sets_accepts_profiles_and_named_filters_in_a_list() {
+        let sets = [set_with_profile("Bugs", "p")];
+        for spec in ["Bugs:x", "Bugs:p,x", "Bugs:p,p"] {
+            let config = Config {
+                set: vec![spec.to_string()],
+                ..Config::default()
+            };
+            assert!(config.check_sets(&sets).is_ok(), "{spec}");
+        }
+    }
+
+    /// Only a filter with its own `name` can be a list item (#441): one
+    /// named by its pattern is refused, and the message leaves it out.
+    #[test]
+    fn check_sets_refuses_a_filter_that_has_no_name() {
+        let mut set = set_with_profile("Bugs", "p");
+        set.filters[0].named = false;
+        let config = Config {
+            set: vec!["Bugs:x".to_string()],
+            ..Config::default()
+        };
+
+        let err = config.check_sets(&[set]).expect_err("refused");
+
+        assert_eq!(
+            err.to_string(),
+            "\"x\" is not a profile or a named filter of set \"Bugs\"; \
+             profiles: p; named filters: none"
+        );
+    }
+
+    /// The built-in set's filters are named by kind (#441).
+    #[test]
+    fn check_sets_accepts_a_kind_name_for_the_builtin_set() {
+        let sets = [crate::filter::test_support::builtin_override(50, false)];
+        let config = Config {
+            set: vec!["definitions:functions,structs".to_string()],
+            ..Config::default()
+        };
+        assert!(config.check_sets(&sets).is_ok());
     }
 
     // ---- the editor settings --------------------------------------------

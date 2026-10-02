@@ -17,7 +17,7 @@ mod sets;
 pub use matcher::{Bits, MAX_PATTERNS, Matcher, Owner, ScanOff, ScanStamp};
 pub use sets::{
     DEFINITIONS_DESCRIPTION, DEFINITIONS_SET, EnableError, FilterSet, LoadedFilter, LoadedSet,
-    Origin, is_builtin_name,
+    Origin, is_builtin_name, list_members,
 };
 
 use crate::syntax::{Kind, KindSet};
@@ -1358,6 +1358,7 @@ pub(crate) mod test_support {
                 .iter()
                 .map(|pattern| LoadedFilter {
                     name: (*pattern).to_string(),
+                    named: true,
                     predicate: Predicate::Regex(Regex::new(pattern).expect("valid")),
                     sense: Sense::Include,
                     colour: None,
