@@ -298,7 +298,7 @@ Options:
           Colours for the file view's syntax colouring: a bundled theme name, a
           path to a `.tmTheme` file, or `none` to turn colouring off [env:
           RECON_THEME]
-      --emit <WHAT>
+  -e, --emit <WHAT>
           Print the session's result to stdout on `q`; `Q` quits without it
           [possible values: lines, files, cwd]
   -b, --batch
@@ -306,11 +306,11 @@ Options:
           given) for the files on stdin or under PATH, then exit
   -n, --line-numbers
           With `--emit lines`: prefix each line with its line number and a tab
-      --set <NAME[:LIST]>
+  -s, --set <NAME[:LIST]>
           Enable a saved filter set at startup, as `NAME` for its `default`
           profile or `NAME:LIST` for the filters a comma-separated list of
           profiles and filter names turns on. Repeatable
-      --unlist <NAME>
+  -u, --unlist <NAME>
           Unlist a saved filter set at startup: no row in the filter pane and no
           effect on the view or on `--emit`. Repeatable
       --hide
@@ -321,7 +321,7 @@ Options:
           one pane stays shown [possible values: explorer, view, filters]
   -q, --quiet
           Suppress the summary line on stderr; warnings still print
-      --warnings
+  -w, --warnings
           Show keymap warnings at startup. On unless something turns them off
       --no-warnings
           Hide the keymap warnings for this run. The opposite of `--warnings`
