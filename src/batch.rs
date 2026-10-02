@@ -1,4 +1,4 @@
-//! Headless mode (#143): `--emit` with stdin that is not a terminal.
+//! Batch mode (#143): `--emit` with stdin that is not a terminal.
 //!
 //! The pieces `App` composes — `ActiveFilters`, `Document`, `scan::scan` —
 //! with no explorer, no view and no terminal. Files come from stdin or
@@ -21,7 +21,7 @@ use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 
-/// The files a headless run reads, and where the list came from.
+/// The files a batch run reads, and where the list came from.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Inputs {
     /// Absolute, in the order they were given.
@@ -40,14 +40,14 @@ pub(crate) enum Source {
     File,
 }
 
-/// Run headless: read the input list, build the filters `--set` asks for,
+/// Run in batch mode: read the input list, build the filters `--set` asks for,
 /// and write what `--emit` names to `out`. Read-failure warnings go to
 /// stderr as they are met; the `Exit` carries the summary, the failure
 /// count and any write error for `main` to deliver.
 pub fn run(startup: &Startup, out: &mut impl Write) -> Result<Exit> {
     let config = &startup.config;
     let Some(what) = config.emit else {
-        return Err(eyre!("headless mode needs --emit"));
+        return Err(eyre!("batch mode needs --emit"));
     };
     let inputs = inputs(io::stdin().lock(), Path::new(&config.path))?;
     let filters = filters_for(startup)?;
@@ -268,7 +268,7 @@ fn write_line(
 /// text, so the matcher skips it. When one is effective, every file is
 /// answered by `file_defines` instead — every filter, regex ones too, from
 /// one read and one grammar pass per file. The navigator's marks cannot
-/// afford that per frame; a batch run can, so headless differs from `q`
+/// afford that per frame; a batch run can, so batch mode differs from `q`
 /// here.
 fn collect_files(
     inputs: &Inputs,
@@ -493,7 +493,7 @@ mod tests {
 
     #[test]
     fn a_path_directory_lists_its_files_in_explorer_order_without_directories() {
-        let dir = fixture_dir("headless_inputs_dir");
+        let dir = fixture_dir("batch_inputs_dir");
         fs::write(dir.join("b.log"), "x").expect("write");
         fs::write(dir.join("A.log"), "x").expect("write");
         fs::create_dir(dir.join("sub")).expect("mkdir");
@@ -511,7 +511,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_path_directory_skips_sockets_and_fifos() {
-        let dir = fixture_dir("headless_inputs_special");
+        let dir = fixture_dir("batch_inputs_special");
         fs::write(dir.join("a.log"), "x").expect("write");
         let _listener = std::os::unix::net::UnixListener::bind(dir.join("sock")).expect("bind");
         // `mkfifo` rather than libc, which is not a dependency; a system
@@ -532,7 +532,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn a_fifo_named_directly_is_a_read_failure_not_a_hang() {
-        let dir = fixture_dir("headless_fifo_direct");
+        let dir = fixture_dir("batch_fifo_direct");
         let fifo = dir.join("fifo");
         if !std::process::Command::new("mkfifo")
             .arg(&fifo)
@@ -574,14 +574,14 @@ mod tests {
 
     #[test]
     fn a_path_file_is_the_one_input_even_when_it_does_not_exist() {
-        let file = fixture_file("headless_inputs_file.log", b"x\n");
+        let file = fixture_file("batch_inputs_file.log", b"x\n");
 
         let got = inputs(Cursor::new(&b"\n"[..]), &file).expect("reads");
 
         assert_eq!(got.from, Source::File);
         assert_eq!(got.files, vec![lexical_absolute(&file)]);
 
-        let missing = Path::new("target/headless_inputs_no_such_file.log");
+        let missing = Path::new("target/batch_inputs_no_such_file.log");
         let got = inputs(Cursor::new(&b""[..]), missing).expect("reads");
         assert_eq!(got.from, Source::File);
         assert_eq!(got.files, vec![lexical_absolute(missing)]);
@@ -589,7 +589,7 @@ mod tests {
 
     #[test]
     fn stdin_wins_over_the_path_argument() {
-        let dir = fixture_dir("headless_inputs_stdin_wins");
+        let dir = fixture_dir("batch_inputs_stdin_wins");
         fs::write(dir.join("ignored.log"), "x").expect("write");
 
         let got = inputs(Cursor::new(&b"/only/this.log\n"[..]), &dir).expect("reads");
@@ -634,7 +634,7 @@ mod tests {
                 let lines = out.lines().map(str::to_string).collect();
                 (lines, summary, failed)
             }
-            other => panic!("headless returns only Streamed, not {other:?}"),
+            other => panic!("batch returns only Streamed, not {other:?}"),
         }
     }
 
@@ -672,7 +672,7 @@ mod tests {
 
     #[test]
     fn lines_over_one_file_in_dim_mode_is_the_whole_file_with_the_match_count() {
-        let inputs = one_file("headless_lines_dim.log", b"hit\nmiss\nhit again\n");
+        let inputs = one_file("batch_lines_dim.log", b"hit\nmiss\nhit again\n");
         let mut warnings = Vec::new();
 
         let mut out = Vec::new();
@@ -689,7 +689,7 @@ mod tests {
         assert_eq!(lines, ["hit", "miss", "hit again"]);
         assert_eq!(
             summary,
-            "recon: emitted 3 lines of headless_lines_dim.log, dim mode (2 match) — pass --hide to emit matches only"
+            "recon: emitted 3 lines of batch_lines_dim.log, dim mode (2 match) — pass --hide to emit matches only"
         );
         assert_eq!(failed, 0);
         assert!(warnings.is_empty(), "{warnings:?}");
@@ -697,7 +697,7 @@ mod tests {
 
     #[test]
     fn lines_over_one_file_in_hide_mode_is_the_matches() {
-        let inputs = one_file("headless_lines_hide.log", b"hit\nmiss\nhit again\n");
+        let inputs = one_file("batch_lines_hide.log", b"hit\nmiss\nhit again\n");
 
         let mut out = Vec::new();
         let exit = collect_lines(
@@ -713,13 +713,13 @@ mod tests {
         assert_eq!(lines, ["hit", "hit again"]);
         assert_eq!(
             summary,
-            "recon: emitted 2 lines of headless_lines_hide.log, hide mode"
+            "recon: emitted 2 lines of batch_lines_hide.log, hide mode"
         );
     }
 
     #[test]
     fn line_numbers_are_the_file_s_own_with_a_tab() {
-        let inputs = one_file("headless_lines_numbered.log", b"hit\nmiss\nhit again\n");
+        let inputs = one_file("batch_lines_numbered.log", b"hit\nmiss\nhit again\n");
 
         let mut out = Vec::new();
         let exit = collect_lines(
@@ -738,7 +738,7 @@ mod tests {
     #[test]
     fn several_files_prefix_each_line_with_its_path_in_input_order() {
         let inputs = from_stdin(
-            "headless_lines_several",
+            "batch_lines_several",
             &[("b.log", "miss\nhit\n"), ("a.log", "hit\n")],
         );
         let [b, a] = inputs.files.as_slice() else {
@@ -770,7 +770,7 @@ mod tests {
     #[test]
     fn several_files_without_n_still_prefix_the_path() {
         let inputs = from_stdin(
-            "headless_lines_several_no_n",
+            "batch_lines_several_no_n",
             &[("a.log", "hit\n"), ("b.log", "hit\n")],
         );
 
@@ -800,9 +800,8 @@ mod tests {
 
     #[test]
     fn an_unreadable_input_is_warned_about_skipped_and_counted() {
-        let mut inputs = from_stdin("headless_lines_unreadable", &[("a.log", "hit\n")]);
-        let missing =
-            lexical_absolute(&fixture_path("headless_lines_unreadable").join("missing.log"));
+        let mut inputs = from_stdin("batch_lines_unreadable", &[("a.log", "hit\n")]);
+        let missing = lexical_absolute(&fixture_path("batch_lines_unreadable").join("missing.log"));
         inputs.files.insert(0, missing.clone());
         let mut warnings = Vec::new();
 
@@ -828,7 +827,7 @@ mod tests {
 
     #[test]
     fn a_binary_input_and_a_directory_input_are_read_failures() {
-        let dir = fixture_dir("headless_lines_binary_and_dir");
+        let dir = fixture_dir("batch_lines_binary_and_dir");
         let binary = dir.join("core.bin");
         fs::write(&binary, b"ab\0cd\n").expect("write");
         let inputs = Inputs {
@@ -868,7 +867,7 @@ mod tests {
 
     #[test]
     fn cwd_is_the_path_directory_or_the_first_input_s_parent() {
-        let dir = fixture_dir("headless_cwd");
+        let dir = fixture_dir("batch_cwd");
         let dir = lexical_absolute(&dir);
 
         let from_dir = Inputs {
@@ -925,7 +924,7 @@ mod tests {
 
     #[test]
     fn files_in_hide_mode_lists_the_inputs_the_matcher_selects() {
-        let inputs = three_logs("headless_files_hide");
+        let inputs = three_logs("batch_files_hide");
         let mut warnings = Vec::new();
 
         let mut out = Vec::new();
@@ -947,7 +946,7 @@ mod tests {
 
     #[test]
     fn files_in_dim_mode_lists_every_input_with_the_match_count() {
-        let inputs = three_logs("headless_files_dim");
+        let inputs = three_logs("batch_files_dim");
 
         let mut out = Vec::new();
         let exit = collect_files(
@@ -968,8 +967,8 @@ mod tests {
 
     #[test]
     fn files_from_a_path_directory_says_from() {
-        let mut inputs = three_logs("headless_files_from_dir");
-        let dir = lexical_absolute(&fixture_path("headless_files_from_dir"));
+        let mut inputs = three_logs("batch_files_from_dir");
+        let dir = lexical_absolute(&fixture_path("batch_files_from_dir"));
         inputs.from = Source::Directory(dir.clone());
 
         let mut out = Vec::new();
@@ -994,7 +993,7 @@ mod tests {
     /// not a failure and says nothing.
     #[test]
     fn files_warns_when_file_matching_is_off() {
-        let inputs = three_logs("headless_files_scan_off");
+        let inputs = three_logs("batch_files_scan_off");
         let mut filters = ActiveFilters::new();
         for i in 0..=crate::filter::MAX_PATTERNS {
             filters.add(&format!("p{i}")).expect("valid pattern");
@@ -1024,7 +1023,7 @@ mod tests {
 
     #[test]
     fn files_in_hide_mode_with_no_matcher_lists_everything() {
-        let inputs = three_logs("headless_files_no_matcher");
+        let inputs = three_logs("batch_files_no_matcher");
         let mut exclude_only = ActiveFilters::new();
         exclude_only.add_excluding("x").expect("valid pattern");
         assert!(exclude_only.matcher().is_none(), "sanity: nothing selects");
@@ -1062,8 +1061,8 @@ mod tests {
 
     #[test]
     fn files_warns_about_and_skips_an_unreadable_input_in_both_modes() {
-        let mut inputs = three_logs("headless_files_unreadable");
-        let dir = lexical_absolute(&fixture_path("headless_files_unreadable"));
+        let mut inputs = three_logs("batch_files_unreadable");
+        let dir = lexical_absolute(&fixture_path("batch_files_unreadable"));
         let missing = dir.join("missing.log");
         inputs.files.insert(1, missing.clone());
         inputs.files.push(dir.clone());
@@ -1122,7 +1121,7 @@ mod tests {
     /// decodes it: matched as bytes, `E\0R\0R\0O\0R\0` never hits (#357).
     #[test]
     fn a_utf16_input_that_matches_is_listed_by_files() {
-        let dir = fixture_dir("headless_files_utf16");
+        let dir = fixture_dir("batch_files_utf16");
         let log = lexical_absolute(&dir.join("app.log"));
         let bytes: Vec<u8> = std::iter::once(0xfeff_u16)
             .chain("ok\r\nhit here\r\n".encode_utf16())
@@ -1157,7 +1156,7 @@ mod tests {
     /// record, not an accident.
     #[test]
     fn a_binary_input_is_listed_by_files_but_refused_by_lines() {
-        let dir = fixture_dir("headless_files_binary");
+        let dir = fixture_dir("batch_files_binary");
         let binary = lexical_absolute(&dir.join("core.bin"));
         fs::write(&binary, b"hit\0\n").expect("write");
         let inputs = Inputs {
@@ -1238,7 +1237,7 @@ mod tests {
 
     #[test]
     fn files_in_hide_mode_lists_only_the_inputs_that_define_a_function() {
-        let inputs = sources("headless_files_defs_hide");
+        let inputs = sources("batch_files_defs_hide");
         let mut out = Vec::new();
 
         let exit = collect_files(
@@ -1261,7 +1260,7 @@ mod tests {
 
     #[test]
     fn files_in_dim_mode_counts_the_inputs_that_define_a_function() {
-        let inputs = sources("headless_files_defs_dim");
+        let inputs = sources("batch_files_defs_dim");
         let mut out = Vec::new();
 
         let exit = collect_files(
@@ -1284,7 +1283,7 @@ mod tests {
     /// parse, so a file the regex alone selects is still listed.
     #[test]
     fn files_answers_a_regex_and_a_definition_filter_together() {
-        let inputs = sources("headless_files_defs_regex");
+        let inputs = sources("batch_files_defs_regex");
         let mut out = Vec::new();
 
         let exit = collect_files(
@@ -1305,7 +1304,7 @@ mod tests {
     /// in hide mode, no warning, no exit 2.
     #[test]
     fn files_takes_a_binary_input_as_defining_nothing() {
-        let dir = fixture_dir("headless_files_defs_binary");
+        let dir = fixture_dir("batch_files_defs_binary");
         let binary = lexical_absolute(&dir.join("core.rs"));
         fs::write(&binary, b"fn main() {}\0\n").expect("write");
         let inputs = Inputs {
@@ -1362,7 +1361,7 @@ mod tests {
     /// exist, so a run that went on to read it would warn about it.
     #[test]
     fn a_closed_pipe_stops_lines_before_the_next_input_is_read() {
-        let mut inputs = from_stdin("headless_stream_lines", &[("a.log", "hit\nhit\n")]);
+        let mut inputs = from_stdin("batch_stream_lines", &[("a.log", "hit\nhit\n")]);
         inputs
             .files
             .push(inputs.files[0].with_file_name("missing.log"));
@@ -1386,7 +1385,7 @@ mod tests {
 
     #[test]
     fn a_closed_pipe_stops_files_before_the_next_input_is_read() {
-        let mut inputs = three_logs("headless_stream_files");
+        let mut inputs = three_logs("batch_stream_files");
         inputs
             .files
             .insert(1, inputs.files[0].with_file_name("missing.log"));
@@ -1414,7 +1413,7 @@ mod tests {
 
     #[test]
     fn collect_dispatches_on_the_emit_kind() {
-        let inputs = one_file("headless_collect.log", b"hit\n");
+        let inputs = one_file("batch_collect.log", b"hit\n");
         let filters = filters_matching("hit");
         let mut warnings = Vec::new();
 
@@ -1473,7 +1472,7 @@ mod tests {
     }
 
     /// `run` reads real stdin, so its wiring is exercised by
-    /// `tests/headless.rs`; the filter construction it delegates to is
+    /// `tests/batch.rs`; the filter construction it delegates to is
     /// checked here.
     #[test]
     fn filters_for_enables_each_set_and_refuses_an_unknown_one() {

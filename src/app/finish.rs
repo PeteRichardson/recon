@@ -213,7 +213,7 @@ impl App<'_> {
             // session before its answer is read.
             Ok(None) => emit::Exit::Cancelled,
             // Nothing on stdout: part of a file is not the file. Exit 2 is
-            // headless mode's code for an input that could not be read.
+            // batch mode's code for an input that could not be read.
             Err(err) => emit::Exit::Emit {
                 lines: Vec::new(),
                 summary: format!("recon: cannot read {}: {err}", path.display()),

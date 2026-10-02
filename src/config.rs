@@ -269,7 +269,7 @@ pub struct Config {
     /// capture it. Every emit also prints one summary line to stderr naming
     /// the mode and the counts. With stdin that is not a terminal — a pipe,
     /// or `< /dev/null` — the TUI is skipped and the result is computed
-    /// headless from the files on stdin or under PATH.
+    /// batch from the files on stdin or under PATH.
     #[arg(long, value_name = "WHAT", value_enum)]
     pub emit: Option<crate::emit::Emit>,
 
@@ -996,7 +996,7 @@ impl Config {
         self.hide_pane.as_deref().unwrap_or_default()
     }
 
-    /// `--set` as the pairs `App::new` and headless mode apply: the set's
+    /// `--set` as the pairs `App::new` and batch mode apply: the set's
     /// name and, after the first colon, the profile to apply instead of
     /// `default`. A set name holding a colon is misparsed here; the
     /// unknown-set error then lists the real names, so it is found rather
@@ -1210,7 +1210,7 @@ impl Config {
 
     /// The colours successive filters take: `[filters] palette` when the
     /// file sets one, else the built-in palette for the background. The
-    /// one place the two settings meet, so `App::new` and headless mode
+    /// one place the two settings meet, so `App::new` and batch mode
     /// cannot disagree about it.
     #[must_use]
     pub fn filter_palette(&self) -> Vec<Color> {
@@ -1732,7 +1732,7 @@ mod tests {
         );
     }
 
-    // ---- --set, --hide, -q (#143, headless) -------------------------------
+    // ---- --set, --hide, -q (#143, batch) -------------------------------
 
     #[test]
     fn set_splits_at_the_first_colon_and_repeats() {

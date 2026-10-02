@@ -95,8 +95,8 @@ pub(crate) enum Kind {
     /// A FIFO, socket or device (#221): listed, since it is there, but not a
     /// file with an end to read to — `File::open` on a FIFO blocks until a
     /// writer appears, which would hang the scanner, a preview and a
-    /// headless run alike. Nothing that reads is ever handed one: `files`,
-    /// `listed_files` and `headless::inputs` all skip it, and the readers
+    /// batch run alike. Nothing that reads is ever handed one: `files`,
+    /// `listed_files` and `batch::inputs` all skip it, and the readers
     /// refuse one named directly. Drawn dimmed, like `..`: present, not
     /// content.
     Special,
@@ -112,7 +112,7 @@ pub(crate) enum Kind {
 
 impl Kind {
     /// Whether an entry of this kind is a file something may read to its
-    /// end — what the scanner, `--emit files` and a headless `PATH`
+    /// end — what the scanner, `--emit files` and a batch `PATH`
     /// directory hand on. Directories are listings, not files; `Special`
     /// has no end to read to.
     pub(crate) fn is_readable(self) -> bool {
@@ -1920,7 +1920,7 @@ mod tests {
 
     /// A socket, FIFO or device is not a file that can be read to its end:
     /// `File::open` on a FIFO blocks until a writer appears, which hangs the
-    /// scanner and a headless run alike (#221). It is listed, dimmed, and
+    /// scanner and a batch run alike (#221). It is listed, dimmed, and
     /// handed to nothing that reads.
     #[cfg(unix)]
     #[test]

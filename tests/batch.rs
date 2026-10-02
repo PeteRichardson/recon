@@ -1,6 +1,6 @@
-//! Headless mode (#143) end to end: the built binary, a piped stdin, real
-//! files and a real `filters.toml`. `src/headless.rs` tests the pieces;
-//! this is the one place `main`'s headless decision, the flags, the
+//! Batch mode (#143) end to end: the built binary, a piped stdin, real
+//! files and a real `filters.toml`. `src/batch.rs` tests the pieces;
+//! this is the one place `main`'s batch decision, the flags, the
 //! summary on stderr and the exit code are exercised together — with no
 //! tty, so it runs in CI.
 
@@ -13,7 +13,7 @@ use std::process::{Command, Output, Stdio};
 /// parallel tests never share one.
 fn fixture(name: &str) -> PathBuf {
     let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("target/test-fixtures-headless")
+        .join("target/test-fixtures-batch")
         .join(name);
     fs::remove_dir_all(&dir).ok();
     fs::create_dir_all(&dir).expect("create fixture dir");
@@ -44,8 +44,8 @@ fn config_home(dir: &Path) -> PathBuf {
 }
 
 /// Run recon with `args`, `stdin` piped in and closed, and the config home
-/// at `home`. Stdin is a pipe even when empty, which is what makes the run
-/// headless.
+/// at `home`. Stdin is a pipe even when empty, which is what puts the run
+/// in batch mode.
 fn recon(home: &Path, args: &[&str], stdin: &[u8]) -> Output {
     let mut child = Command::new(env!("CARGO_BIN_EXE_recon"))
         .args(args)
@@ -167,7 +167,7 @@ fn lines_n_over_two_files_prefixes_path_and_line_number() {
 }
 
 #[test]
-fn a_path_file_with_empty_stdin_is_read_headless_and_quiet_drops_the_summary() {
+fn a_path_file_with_empty_stdin_is_read_in_batch_mode_and_quiet_drops_the_summary() {
     let dir = fixture("quiet");
     let home = config_home(&dir);
     let a = dir.join("a.log");
@@ -412,17 +412,17 @@ fn print_keymap_defaults_survives_a_keymap_recon_refuses() {
     );
 }
 
-/// Headless has no warning panel, so the keymap warnings that would have
+/// Batch mode has no warning panel, so the keymap warnings that would have
 /// filled one must reach stderr instead.
 ///
 /// They did not: `Displaced` warnings were collected onto the `Config` and
-/// handed to `App::new`, which the headless path never reaches, while the
+/// handed to `App::new`, which the batch path never reaches, while the
 /// reserved-key warning was logged inside `keymap::config::build` and so came through.
 /// Two classes of keymap warning, one switch governing both, and one of them
 /// vanishing is what made it a defect rather than a choice.
 #[test]
-fn headless_puts_keymap_warnings_on_stderr() {
-    let dir = fixture("headless_keymap_warnings");
+fn batch_puts_keymap_warnings_on_stderr() {
+    let dir = fixture("batch_keymap_warnings");
     let home = config_home(&dir);
     // 'j' is explorer.down, view.down and filters.down by default, so one line
     // costs three panes their key and raises three warnings.
@@ -461,8 +461,8 @@ fn headless_puts_keymap_warnings_on_stderr() {
 /// The same switch that hides the panel hides these, since they are the same
 /// warnings by another route.
 #[test]
-fn headless_keymap_warnings_obey_no_warnings() {
-    let dir = fixture("headless_keymap_warnings_off");
+fn batch_keymap_warnings_obey_no_warnings() {
+    let dir = fixture("batch_keymap_warnings_off");
     let home = config_home(&dir);
     fs::write(
         home.join("recon/config.toml"),

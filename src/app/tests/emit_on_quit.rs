@@ -70,11 +70,11 @@ fn the_global_scope_is_consulted_before_the_pane() {
     assert_eq!(app.state, AppState::Quit { emit: true });
 }
 
-// ---- --set and --hide at startup (#143, headless) ----------------------
+// ---- --set and --hide at startup (#143, batch) ----------------------
 
 /// `recon --set Bugs:only_hit --hide app.log` opens the TUI with the set
 /// on, the profile applied, and hide mode live on the loaded file — the
-/// same flags headless mode takes, applied the same way.
+/// same flags batch mode takes, applied the same way.
 #[test]
 fn set_and_hide_flags_apply_at_startup() {
     let file = fixture_file("startup_set_hide.log", b"hit\nmiss\n");

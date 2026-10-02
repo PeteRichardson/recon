@@ -102,7 +102,7 @@ impl Document {
     /// A document over the whole of `path`, read the way the file view reads
     /// a file (#143): the same NUL sniff, the same lossy decoding, the same
     /// line-end stripping — and the error instead of a placeholder message,
-    /// which is what headless mode needs and the widget wraps.
+    /// which is what batch mode needs and the widget wraps.
     pub fn read(path: &Path) -> io::Result<Self> {
         Ok(Self::for_file(path, read_lines(path)?))
     }
@@ -353,7 +353,7 @@ pub(crate) const BINARY_SNIFF_BYTES: usize = 8 << 10;
 
 /// The message on the `InvalidData` error `read_lines` returns for a file
 /// whose head holds a NUL. `is_binary` recognises it; the file view turns it
-/// into its own `<binary file>` message and headless mode prints it as is.
+/// into its own `<binary file>` message and batch mode prints it as is.
 pub(crate) const BINARY_FILE: &str = "binary file";
 
 /// The message for a FIFO, socket or device named as a file (#221).
