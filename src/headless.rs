@@ -263,6 +263,13 @@ fn write_line(
 /// The summary's `from <dir>` / `of N inputs` follows where the list came
 /// from; there is no `unscanned` here, since every scan runs to its answer
 /// before its file's line prints.
+///
+/// A definition filter takes a parse, not a scan (#224): a scan reads only
+/// text, so the matcher skips it. When one is effective, every file is
+/// answered by `file_defines` instead — every filter, regex ones too, from
+/// one read and one grammar pass per file. The navigator's marks cannot
+/// afford that per frame; a batch run can, so headless differs from `q`
+/// here.
 fn collect_files(
     inputs: &Inputs,
     filters: &ActiveFilters,
@@ -270,11 +277,15 @@ fn collect_files(
     out: &mut impl Write,
     warnings: &mut impl Write,
 ) -> Exit {
-    let matcher = filters.matcher();
+    let parse = filters.needs_kinds();
+    let matcher = if parse { None } else { filters.matcher() };
+    // Whether some filter decides the answer. `false` is the explorer's
+    // "nothing to mark", and the summary's `no filter`.
+    let live = parse || matcher.is_some();
     // An include asked for matching and there is none, so every file reads
     // as unmatched. Said once, on the warnings channel, so a script does not
-    // take the result for a real answer (#306).
-    if let Some(off) = filters.scan_off() {
+    // take the result for a real answer (#306). Only a scan has the limit.
+    if !parse && let Some(off) = filters.scan_off() {
         let _ = writeln!(warnings, "recon: {off}; no file is matched");
     }
     let mut emitted = 0;
@@ -283,6 +294,7 @@ fn collect_files(
     let mut written = Ok(());
     for path in &inputs.files {
         let answer = match &matcher {
+            _ if parse => file_defines(path, filters),
             Some(matcher) => file_matches(path, matcher),
             None => open_input(path).map(|_| false),
         };
@@ -299,7 +311,7 @@ fn collect_files(
         }
         let listed = match mode {
             Mode::Dimmed => true,
-            Mode::FilteredOnly => yes || matcher.is_none(),
+            Mode::FilteredOnly => yes || !live,
         };
         if listed {
             written = out
@@ -316,7 +328,7 @@ fn collect_files(
         Source::Directory(dir) => format!("from {}", dir.display()),
         Source::Stdin | Source::File => format!("of {}", count(inputs.files.len(), "input")),
     };
-    let summary = match (matcher.is_some(), mode) {
+    let summary = match (live, mode) {
         (true, Mode::FilteredOnly) => {
             format!("recon: emitted {emitted} files {origin}, hide mode")
         }
@@ -359,6 +371,23 @@ fn file_matches(path: &Path, matcher: &Matcher) -> io::Result<bool> {
     );
     // The positive half of `scan::Record::answer`: a selecting bitmask was seen.
     Ok(progress.seen.iter().any(|&bits| matcher.selects(bits)))
+}
+
+/// Whether any line of `path` is included by `filters`, read and evaluated
+/// as `--emit lines` does it — the rule its match count uses. The whole file
+/// is read: a kind the grammar never names anywhere in the file falls back
+/// to keywords (`syntax::definitions`), so no line can answer early.
+///
+/// A file `Document::read` refuses as binary has no grammar to parse, so
+/// it defines nothing: `Ok(false)`, not a failure.
+fn file_defines(path: &Path, filters: &ActiveFilters) -> io::Result<bool> {
+    let mut document = match Document::read(path) {
+        Ok(document) => document,
+        Err(err) if document::is_binary(&err) => return Ok(false),
+        Err(err) => return Err(err),
+    };
+    document.evaluate(filters);
+    Ok(document.verdicts().iter().any(is_interesting))
 }
 
 /// `--emit cwd`: the directory `PATH` named, or the first input's. Nothing
@@ -1172,6 +1201,134 @@ mod tests {
             warnings_of(&warnings),
             format!("recon: cannot read {}: binary file\n", binary.display())
         );
+    }
+
+    // ---- files, answered by a parse (#224) ---------------------------------
+
+    /// The built-in `definitions` set enabled with only `functions` on —
+    /// what `--set definitions:functions` gives a run.
+    fn functions_only(mut filters: ActiveFilters) -> ActiveFilters {
+        let builtin = filters
+            .sets()
+            .iter()
+            .position(|meta| meta.origin == crate::filter::Origin::BuiltIn)
+            .expect("the built-in set is always present");
+        let functions = filters
+            .filters_in(builtin)
+            .find(|(_, filter)| filter.display_name() == "functions")
+            .map(|(index, _)| index)
+            .expect("a functions filter");
+        filters.set_enabled(functions, true);
+        filters.set_enabled_set(builtin, true);
+        assert!(filters.needs_kinds());
+        filters
+    }
+
+    /// A Rust file that defines a function, one that does not, and a log.
+    fn sources(name: &str) -> Inputs {
+        from_stdin(
+            name,
+            &[
+                ("a.rs", "fn main() {}\n"),
+                ("b.rs", "// only a comment\n"),
+                ("c.log", "fn main() {}\nhit\n"),
+            ],
+        )
+    }
+
+    #[test]
+    fn files_in_hide_mode_lists_only_the_inputs_that_define_a_function() {
+        let inputs = sources("headless_files_defs_hide");
+        let mut out = Vec::new();
+
+        let exit = collect_files(
+            &inputs,
+            &functions_only(ActiveFilters::new()),
+            Mode::FilteredOnly,
+            &mut out,
+            &mut Vec::new(),
+        );
+
+        let (lines, summary, failed) = emitted(exit, &out);
+        assert_eq!(
+            lines,
+            [displayed(&inputs)[0].clone()],
+            "a log has no grammar"
+        );
+        assert_eq!(summary, "recon: emitted 1 files of 3 inputs, hide mode");
+        assert_eq!(failed, 0);
+    }
+
+    #[test]
+    fn files_in_dim_mode_counts_the_inputs_that_define_a_function() {
+        let inputs = sources("headless_files_defs_dim");
+        let mut out = Vec::new();
+
+        let exit = collect_files(
+            &inputs,
+            &functions_only(ActiveFilters::new()),
+            Mode::Dimmed,
+            &mut out,
+            &mut Vec::new(),
+        );
+
+        let (lines, summary, _) = emitted(exit, &out);
+        assert_eq!(lines, displayed(&inputs));
+        assert_eq!(
+            summary,
+            "recon: emitted 3 files of 3 inputs, dim mode (1 match) — pass --hide to emit matches only"
+        );
+    }
+
+    /// A regex filter beside a definition filter is answered by the same
+    /// parse, so a file the regex alone selects is still listed.
+    #[test]
+    fn files_answers_a_regex_and_a_definition_filter_together() {
+        let inputs = sources("headless_files_defs_regex");
+        let mut out = Vec::new();
+
+        let exit = collect_files(
+            &inputs,
+            &functions_only(filters_matching("hit")),
+            Mode::FilteredOnly,
+            &mut out,
+            &mut Vec::new(),
+        );
+
+        let (lines, _, _) = emitted(exit, &out);
+        let all = displayed(&inputs);
+        assert_eq!(lines, [all[0].clone(), all[2].clone()]);
+    }
+
+    /// `Document::read` refuses a NUL-bearing file. On the parse path that
+    /// is "no definitions", not a read failure: listed in dim mode, dropped
+    /// in hide mode, no warning, no exit 2.
+    #[test]
+    fn files_takes_a_binary_input_as_defining_nothing() {
+        let dir = fixture_dir("headless_files_defs_binary");
+        let binary = lexical_absolute(&dir.join("core.rs"));
+        fs::write(&binary, b"fn main() {}\0\n").expect("write");
+        let inputs = Inputs {
+            files: vec![binary.clone()],
+            from: Source::Stdin,
+        };
+
+        for (mode, listed) in [(Mode::Dimmed, 1), (Mode::FilteredOnly, 0)] {
+            let mut out = Vec::new();
+            let mut warnings = Vec::new();
+            let exit = collect_files(
+                &inputs,
+                &functions_only(ActiveFilters::new()),
+                mode,
+                &mut out,
+                &mut warnings,
+            );
+
+            let (lines, _, failed) = emitted(exit, &out);
+            assert_eq!(lines.len(), listed, "{mode:?}");
+            assert_eq!(failed, 0, "{mode:?}");
+            assert!(warnings.is_empty(), "{}", warnings_of(&warnings));
+        }
     }
 
     // ---- streaming ---------------------------------------------------------

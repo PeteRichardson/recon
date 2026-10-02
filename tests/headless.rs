@@ -101,6 +101,43 @@ fn files_hide_lists_the_matching_inputs_from_stdin() {
     assert_eq!(out.status.code(), Some(0));
 }
 
+/// #224: a definition filter is answered by parsing each file, so
+/// `--emit files` lists only the files that define the kinds asked for,
+/// and the summary does not say `no filter`.
+#[test]
+fn files_hide_with_a_definitions_profile_lists_the_files_that_define_it() {
+    let dir = fixture("files_definitions");
+    let home = dir.join("config");
+    fs::create_dir_all(home.join("recon")).expect("create config dir");
+    fs::write(
+        home.join("recon/filters.toml"),
+        "[sets.definitions]\n\n\
+         [sets.definitions.profiles]\n\
+         types = [\"structs\"]\n",
+    )
+    .expect("write filters.toml");
+    let a = dir.join("a.rs");
+    let b = dir.join("b.rs");
+    let c = dir.join("c.log");
+    fs::write(&a, "struct Point;\n").expect("write");
+    fs::write(&b, "fn main() {}\n").expect("write");
+    fs::write(&c, "struct Point;\n").expect("write");
+    let list = format!("{}\n{}\n{}\n", a.display(), b.display(), c.display());
+
+    let out = recon(
+        &home,
+        &["--emit", "files", "--set", "definitions:types", "--hide"],
+        list.as_bytes(),
+    );
+
+    assert_eq!(text(&out.stdout), format!("{}\n", a.display()));
+    assert_eq!(
+        text(&out.stderr),
+        "recon: emitted 1 files of 3 inputs, hide mode\n"
+    );
+    assert_eq!(out.status.code(), Some(0));
+}
+
 #[test]
 fn lines_n_over_two_files_prefixes_path_and_line_number() {
     let dir = fixture("lines_two_files");

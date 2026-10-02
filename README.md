@@ -1299,7 +1299,9 @@ enables it with every filter off, like any set with no `default`.
 
 On a log file the rows exist and are inert. The explorer's file matching does
 not evaluate definition filters — it reads text it never parses — so they
-affect only the viewed file. Turning one on costs one whole-file grammar pass,
+affect only the viewed file, and `q` with `--emit files` follows the explorer.
+A [headless](#headless-mode) `--emit files` does parse: with a definition filter
+on, each file is read whole and answered by every filter, regex ones too. Turning one on costs one whole-file grammar pass,
 about ten microseconds a line, paid once per file; a file with no grammar
 never pays it.
 
@@ -2001,6 +2003,13 @@ refused before anything is read, and the error lists the names the set
 files define, with the built-in `definitions` set named apart. So is
 `--set` together with `--unlist` on the same set.
 
+**Definition filters.** `--emit files` with a definition filter on —
+`--set definitions:types` — parses each file and lists those that define the
+kinds asked for. That is one whole read and one grammar pass per file, which
+the navigator cannot afford for its marks, so `q` from a session lists every
+file. A file with no grammar, such as a log, defines nothing and drops out
+in hide mode.
+
 **Several files.** With more than one input, `--emit lines` prefixes each
 line with its path and a tab, and `-n` puts the line number and a tab after
 that — `path<TAB>N<TAB>line` — so `cut -f1` is the paths and `cut -f3-` the
@@ -2027,7 +2036,9 @@ TUI, with `pass --hide to emit matches only` in place of the key:
 A file that cannot be read is reported as it is met — `recon: cannot read
 /var/log/secure: permission denied`, `… is a directory`, and for `--emit
 lines` `… binary file` (`--emit files` scans a binary like any other file, as
-the explorer does) — and skipped: not emitted, not counted. The run
+the explorer does; with a definition filter on it parses instead, and a
+binary file defines nothing, with no warning) — and skipped: not emitted, not
+counted. The run
 continues and exits **2**, grep's convention for an input that failed. Exit 0
 otherwise, empty output included; exit 1 for a refused flag or an unreadable
 `filters.toml`.
