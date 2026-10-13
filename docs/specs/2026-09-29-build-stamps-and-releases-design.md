@@ -84,7 +84,7 @@ recon's `Cargo.toml` needs `publish = false` in `[package]`. Without it, `cargo-
 
 Each repo keeps two files:
 
-- `release.toml`: a copy of [vrsn's `release.toml`](https://github.com/PeteRichardson/vrsn/blob/main/release.toml), which has no repo-specific values. It releases only from `main`, with tag `v{{version}}`, commit `chore(release): v{{version}}`, `publish = false`, and a pre-release hook that writes `CHANGELOG.md` with `git-cliff`.
+- `release.toml`: a copy of [vrsn's `release.toml`](https://github.com/PeteRichardson/vrsn/blob/main/release.toml), which has no repo-specific values. It releases only from `main`, with tag `v{{version}}`, commit `chore(release): v{{version}}`, `publish = false`, and a pre-release hook that writes `CHANGELOG.md` with `git-cliff`. recon adds `consolidate-commits = false`: in a workspace, cargo-release otherwise makes one consolidated commit whose message leaves `{{version}}` unrendered (found in the rehearsal for #338).
 - `cliff.toml`: a copy of [vrsn's `cliff.toml`](https://github.com/PeteRichardson/vrsn/blob/main/cliff.toml), with the issue link URL changed from vrsn to recon. Keep its whitespace settings: `header = "# Changelog\n"`, `trim = false`, and a body that ends with `{% endfor %}\`. With other settings, `--prepend` gives zero or two blank lines between entries.
 
 recon's CI needs no change. It runs on `push: branches: [main]` and on pull requests, so a tag push does not start a run.
