@@ -1,9 +1,9 @@
 //! Which pane has the focus, the zoom, and showing and hiding panes.
 
 use super::App;
+use crate::keymap::ActionId;
 use crate::panes;
 use crate::widgets::Focus;
-use crossterm::event::{self, KeyCode};
 
 /// What `E`, `F` or `global.hide.view` says when the pane is the last one
 /// shown (#300).
@@ -93,10 +93,12 @@ impl App<'_> {
     }
 
     /// End a chain that just committed: focus goes back to where `f` was
-    /// pressed, and the app behaves as if `n` were pressed there — the
-    /// first `fn` after `f i fn Enter` from the view, the next matching
-    /// file from the explorer. Dispatching a real `n` rather than calling
-    /// either step directly is what keeps "as if `n`" true per pane.
+    /// pressed, and that pane takes its next-hit step — the first `fn`
+    /// after `f i fn Enter` from the view, the next matching file from the
+    /// explorer. The step is the action, not a key (#377): a literal `n`
+    /// went through the user's keymap, so with `n` bound to another action
+    /// the return did that action instead, and with the step moved off `n`
+    /// it did nothing.
     ///
     /// Nothing to do when `f` was not what brought focus here.
     pub(super) fn return_to_chain_origin(&mut self) {
@@ -106,20 +108,22 @@ impl App<'_> {
         self.reveal_and_focus(origin);
         // `f` showed the filter pane to start this chain; the chain is over,
         // so it goes back to hidden. A chain does not change the layout.
-        if std::mem::take(&mut self.chain_shown_filters) && origin != Focus::Filters {
+        if std::mem::take(&mut self.chain_shown_filters) {
             let _ = self.panes.hide(Focus::Filters, self.focus);
         }
         // The commit that got us here changed the filter set, but the
         // outer `handle_event` loop has not run `refresh_scan` yet — this
         // is still inside the same `dispatch_event` that is doing the
         // committing. Re-key the marks to `Unknown` now, before the
-        // synthetic `n` below reads them, or it would step to (or fail to
+        // step below reads them, or it would step to (or fail to
         // find) a match against the filter set the user just replaced.
         self.refresh_scan(false);
-        self.dispatch_event(event::Event::Key(event::KeyEvent::from(KeyCode::Char('n'))));
-        // The synthetic `n` spent the bounce guard; re-arm it, since the
-        // `Enter` that committed is still the last key the user pressed.
-        self.swallow_next_enter = true;
+        match origin {
+            Focus::View => self.step_interesting(false),
+            Focus::Explorer => self.perform_on_explorer(ActionId::ExplorerHitNext),
+            // `start_filter_chain` records no origin from the filter pane.
+            Focus::Filters => {}
+        }
     }
 
     /// Mark each pane as focused or not, before drawing.

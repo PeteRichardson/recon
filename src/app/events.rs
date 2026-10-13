@@ -364,76 +364,80 @@ impl App<'_> {
             return;
         }
 
-        // The file view upgrades its own truncated preview to a full load on
-        // first interaction, which rebuilds the textarea and clears its line
-        // styles. That happens inside the widget, so it never reaches
-        // `perform` — resync here instead, without re-reading the file.
-        let was_truncated = self.file_view_truncated();
-        let action = match self.focus {
+        match self.focus {
+            // The only call site `Scope::for_focus` has (#199): the
+            // explorer's key resolves in its own scope here, then
+            // `perform_on_explorer` carries out whatever it named.
             Focus::Explorer => {
-                // The only call site `Scope::for_focus` has (#199): the
-                // explorer's key resolves in its own scope here, then
-                // `Explorer::perform` carries out whatever it named.
-                let resolved = match event {
-                    event::Event::Key(key) => {
-                        let pressed = crate::keymap::normalise(key);
-                        self.keymap
-                            .resolve(crate::keymap::Scope::for_focus(self.focus), pressed)
-                    }
-                    _ => None,
-                };
-                // `n`/`N` land here whether they came from the user or from
-                // `return_to_chain_origin`'s synthetic `n`; either way, a
-                // `None` back means there was nothing to step to, and the
-                // status row is the only way that reaches the user — the
-                // key otherwise does nothing at all. `j`/`k` and every other
-                // key that can also return `None` say nothing, so this is
-                // gated on the action rather than on the result.
-                let is_step_key = matches!(
-                    resolved,
-                    Some(
-                        crate::keymap::ActionId::ExplorerHitNext
-                            | crate::keymap::ActionId::ExplorerHitPrev
+                if let event::Event::Key(key) = event
+                    && let Some(action) = self.keymap.resolve(
+                        crate::keymap::Scope::for_focus(self.focus),
+                        crate::keymap::normalise(key),
                     )
-                );
-                let action = resolved.and_then(|action| self.explorer.perform(action));
-                if action.is_none() && is_step_key {
-                    // "No matching file" is a claim about every file, and
-                    // it is false while the worker is still out (#158):
-                    // the chain's synthetic `n` arrives one line after
-                    // `refresh_scan` started it, when every mark is still
-                    // `Unknown`. Say what is true instead, and let the
-                    // redraw `drain_scan_results` asks for land the answer.
-                    // With no matcher there is no worker and the marks
-                    // stay `Unknown` for good, so that case keeps the
-                    // plain answer.
-                    let text = if self.explorer.has_search() {
-                        "no more matches"
-                    } else if self.filters.is_scanning() && self.explorer.any_unscanned() {
-                        "scanning…"
-                    } else {
-                        "no matching file"
-                    };
-                    self.report(text, false);
+                {
+                    self.perform_on_explorer(action);
                 }
-                action
             }
             // Every key returned above, and the view has nothing to do with
             // a mouse event `handle_click` and `handle_wheel` did not take —
             // a right click, say — so this drops it rather than promoting a
             // truncated preview on a click that meant nothing.
-            Focus::View => return,
+            Focus::View => {}
             // Unreachable: filter-pane keys returned above, through
             // `handle_filter_key`. Applying them means mutating the
             // `ActiveFilters`, and the pane only ever borrows one, so it
             // cannot carry out its own commands.
-            Focus::Filters => None,
-        };
-        if let Some(action) = action {
-            self.perform_widget_action(action);
-        } else if was_truncated && !self.file_view_truncated() {
-            self.sync_document();
-            self.refresh_view();
+            Focus::Filters => {}
+        }
+    }
+
+    /// Carry out one of the explorer's actions, with the after-care the
+    /// other panes get, and say why when a step found nothing.
+    ///
+    /// Shared by the explorer's key dispatch and `return_to_chain_origin`,
+    /// so a chain's step does and reports exactly what a pressed `n` does.
+    pub(super) fn perform_on_explorer(&mut self, action: crate::keymap::ActionId) {
+        // The file view upgrades its own truncated preview to a full load on
+        // first interaction, which rebuilds the textarea and clears its line
+        // styles. That happens inside the widget, so it never reaches
+        // `perform` — resync here instead, without re-reading the file.
+        let was_truncated = self.file_view_truncated();
+        // A step lands here whether it came from the user's key or from
+        // `return_to_chain_origin`; either way, a `None` back means there
+        // was nothing to step to, and the status row is the only way that
+        // reaches the user — the key otherwise does nothing at all. `j`/`k`
+        // and every other action that can also return `None` say nothing,
+        // so this is gated on the action rather than on the result.
+        let is_step = matches!(
+            action,
+            crate::keymap::ActionId::ExplorerHitNext | crate::keymap::ActionId::ExplorerHitPrev
+        );
+        if let Some(widget_action) = self.explorer.perform(action) {
+            self.perform_widget_action(widget_action);
+        } else {
+            if is_step {
+                // "No matching file" is a claim about every file, and
+                // it is false while the worker is still out (#158):
+                // a chain's step arrives one line after
+                // `refresh_scan` started it, when every mark is still
+                // `Unknown`. Say what is true instead, and let the
+                // redraw `drain_scan_results` asks for land the answer.
+                // With no matcher there is no worker and the marks
+                // stay `Unknown` for good, so that case keeps the
+                // plain answer.
+                let text = if self.explorer.has_search() {
+                    "no more matches"
+                } else if self.filters.is_scanning() && self.explorer.any_unscanned() {
+                    "scanning…"
+                } else {
+                    "no matching file"
+                };
+                self.report(text, false);
+            }
+            if was_truncated && !self.file_view_truncated() {
+                self.sync_document();
+                self.refresh_view();
+            }
         }
         // Ordinary movement stays inside the window by design, but a page at
         // the edge of the middle third does not — see `window_holds`.

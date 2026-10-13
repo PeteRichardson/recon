@@ -399,3 +399,57 @@ fn a_filter_verb_in_the_filter_pane_is_not_a_hint() {
     assert!(app.prompt.is_some(), "i did not open the prompt");
     assert_eq!(status(&app), None);
 }
+
+// ---- the return acts, it does not press a key (#377) -----------------
+
+/// `f i fn Enter` from the view, with `n` given to another action and
+/// `hit.next` moved off it: the return still steps to the first hit.
+fn chain_from_the_view_steps_with(name: &str, lines: &[(&str, &[&str])]) {
+    let mut app = app_over_file(name, "plain\nfn one\nplain\nfn two\n");
+    rebind(&mut app, lines);
+    key(&mut app, KeyCode::Char('t'));
+
+    key(&mut app, KeyCode::Char('f'));
+    key(&mut app, KeyCode::Char('i'));
+    typed(&mut app, "fn");
+    key(&mut app, KeyCode::Enter);
+
+    assert_eq!(app.focus, Focus::View, "focus did not return");
+    assert_eq!(cursor_source(&app), 1, "did not step to the first hit");
+}
+
+#[test]
+fn the_view_return_steps_when_n_belongs_to_another_action() {
+    chain_from_the_view_steps_with(
+        "chain_rebound_n",
+        &[("global.file.next", &["n"]), ("hit.next", &["Ctrl-n"])],
+    );
+}
+
+#[test]
+fn the_view_return_steps_when_hit_next_is_rebound() {
+    chain_from_the_view_steps_with("chain_rebound_hit_next", &[("hit.next", &["Ctrl-n"])]);
+}
+
+/// The explorer's own step is rebound too: the return still repeats it.
+#[test]
+fn the_explorer_return_steps_when_its_hit_next_is_rebound() {
+    let mut app = app_over("chain_rebound_explorer", &["a.log", "b.log", "c.log"]);
+    rebind(&mut app, &[("explorer.hit.next", &["Ctrl-n"])]);
+    key(&mut app, KeyCode::Char('e'));
+    key(&mut app, KeyCode::Char('/'));
+    typed(&mut app, "log");
+    key(&mut app, KeyCode::Enter);
+
+    key(&mut app, KeyCode::Char('f'));
+    key(&mut app, KeyCode::Char('i'));
+    typed(&mut app, "x");
+    key(&mut app, KeyCode::Enter);
+
+    assert_eq!(app.focus, Focus::Explorer, "focus did not return");
+    assert_eq!(
+        app.explorer.selected_name().as_deref(),
+        Some("b.log"),
+        "the return did not step the explorer"
+    );
+}
