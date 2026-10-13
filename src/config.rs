@@ -38,11 +38,16 @@ const CONFIG_DIR: &str = "recon";
 /// The one file recon reads. Never written — see `Cargo.toml`.
 const CONFIG_FILE: &str = "config.toml";
 
-/// What `recon --version` prints after the name (#331): the version, and
-/// whether this build can ask Foundation Models for a pattern (#319). The
-/// filter editor has no request line both in a build without it and on a
-/// Mac whose model is not ready, so this is the way to tell the two apart.
-/// `-V` prints the version alone.
+/// What `recon -V` prints after the name: the build stamp (#337), such as
+/// `0.2.3+5.g1a2b3c4.dirty (branch)`. `build.rs` makes it; see
+/// `src/stamp.rs` for the format.
+pub(crate) const VERSION: &str = env!("RECON_VERSION");
+
+/// What `recon --version` prints after the name: the `-V` line, the
+/// `checkout:` and `built:` lines of the build stamp (#337), and whether this
+/// build can ask Foundation Models for a pattern (#331, #319). The filter
+/// editor has no request line both in a build without it and on a Mac whose
+/// model is not ready, so this is the way to tell the two apart.
 ///
 /// `on` under the same `cfg` that gives `generate::system` a model.
 #[cfg(all(
@@ -50,13 +55,19 @@ const CONFIG_FILE: &str = "config.toml";
     target_os = "macos",
     target_arch = "aarch64"
 ))]
-const LONG_VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "\nfoundation-models: on");
+pub(crate) const LONG_VERSION: &str = concat!(
+    include_str!(concat!(env!("OUT_DIR"), "/long_version.txt")),
+    "\nfoundation-models: on"
+);
 #[cfg(not(all(
     feature = "foundation-models",
     target_os = "macos",
     target_arch = "aarch64"
 )))]
-const LONG_VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "\nfoundation-models: off");
+pub(crate) const LONG_VERSION: &str = concat!(
+    include_str!(concat!(env!("OUT_DIR"), "/long_version.txt")),
+    "\nfoundation-models: off"
+);
 
 /// The fully resolved configuration the app runs on.
 ///
@@ -70,7 +81,7 @@ const LONG_VERSION: &str = concat!(env!("CARGO_PKG_VERSION"), "\nfoundation-mode
 // description line of `--help`. The prose below is for whoever maintains the
 // precedence chain, not for someone running `recon --help`.
 #[derive(Parser, Debug)]
-#[command(version, long_version = LONG_VERSION, about = None, long_about = None)]
+#[command(version = VERSION, long_version = LONG_VERSION, about = None, long_about = None)]
 pub struct Config {
     /// File or directory to open. A directory is listed with its first entry
     /// selected; a file is opened with its own directory listed alongside.
@@ -1490,10 +1501,15 @@ mod tests {
         assert_eq!(config.path, ".");
     }
 
-    /// `--version` says whether this build has Foundation Models (#331),
-    /// and `-V` is the version alone, as before.
+    /// `-V` is the build stamp (#337), and `--version` adds the `built:`
+    /// line and says whether this build has Foundation Models (#331).
+    ///
+    /// The stamp depends on where the test runs, so this checks its shape
+    /// only. CI makes a shallow clone with no tags and a detached `HEAD`, so
+    /// nothing here may expect a tag or a branch name. `src/stamp.rs` tests
+    /// the exact format.
     #[test]
-    fn version_says_if_foundation_models_is_built_in() {
+    fn version_shows_the_build_stamp() {
         let expected = if cfg!(all(
             feature = "foundation-models",
             target_os = "macos",
@@ -1503,18 +1519,28 @@ mod tests {
         } else {
             "off"
         };
-        let version = env!("CARGO_PKG_VERSION");
-        let long = parse_clean(["recon", "--version"])
-            .expect_err("--version exits")
-            .to_string();
-        assert_eq!(
-            long,
-            format!("recon {version}\nfoundation-models: {expected}\n")
-        );
         let short = parse_clean(["recon", "-V"])
             .expect_err("-V exits")
             .to_string();
-        assert_eq!(short, format!("recon {version}\n"));
+        assert_eq!(short, format!("recon {VERSION}\n"));
+        assert!(
+            VERSION.starts_with(env!("CARGO_PKG_VERSION")),
+            "the stamp {VERSION:?} does not start with the release version"
+        );
+
+        let long = parse_clean(["recon", "--version"])
+            .expect_err("--version exits")
+            .to_string();
+        let lines: Vec<&str> = long.lines().collect();
+        assert_eq!(lines.first(), Some(&short.trim_end()));
+        assert!(
+            lines.iter().any(|line| line.starts_with("built: ")),
+            "no built: line in {long:?}"
+        );
+        assert_eq!(
+            lines.last(),
+            Some(&format!("foundation-models: {expected}").as_str())
+        );
     }
 
     #[test]

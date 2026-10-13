@@ -215,16 +215,40 @@ cargo install --locked --path . --features foundation-models   # with the on-dev
 recon --version
 ```
 ```
-recon 0.1.0
+recon 0.1.0+5.g1a2b3c4.dirty (my-branch)
+checkout: /Users/pete/projects/recon
+built: 2026-10-13T11:32:07-07:00
 foundation-models: off
 ```
 
-The second line says whether this build can ask Apple's on-device model
+The first line is the build stamp. `recon -V` prints it alone, and the
+keymap overlay (`?`) shows all four lines at the bottom.
+
+| Part | Meaning |
+|---|---|
+| `0.1.0` | The version in `Cargo.toml` |
+| `+5.g1a2b3c4` | 5 commits after the last `vX.Y.Z` tag, at commit `1a2b3c4`. With no tag before it: `+g1a2b3c4` |
+| `.dirty` | Tracked files have changes that are not committed |
+| `(my-branch)` | The branch, or `(detached)` |
+| `checkout:` | The directory the build came from |
+| `built:` | Local time of the last real rebuild |
+
+A release build — clean, and exactly on a `vX.Y.Z` tag — shows only
+`recon 0.1.0`. So does a build with no git, which also has no `checkout:`
+line. If `-V` shows a `+` or a branch, the build is not a release. Two
+dirty builds of the same commit have the same first line; the `built:`
+time tells them apart.
+
+The stamp changes at the next `cargo build` after an edit, a commit, a
+checkout, a `git add` or a new tag. A `cargo build` with no changes stays
+instant.
+
+The last line says whether this build can ask Apple's on-device model
 for a pattern in the filter editor: `on` for a `--features
 foundation-models` build on Apple-silicon macOS, `off` for every other
 build. With `off`, the filter editor has no request line. With `on` and no
 request line, the model is not ready: turn on Apple Intelligence, or wait
-for the model to download. `recon -V` prints the first line only.
+for the model to download.
 
 ---
 

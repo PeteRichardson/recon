@@ -172,5 +172,10 @@ foundation-models = ["dep:fm-rs"]
 [target.'cfg(all(target_os = "macos", target_arch = "aarch64"))'.dependencies]
 fm-rs = { version = "0.3", optional = true }
 
+# The build stamp (#337): `build.rs` writes the build time. Already a
+# dependency of recon, so this adds no crate.
+[build-dependencies]
+jiff = "0.2.35"
+
 [patch.crates-io]
 tui-textarea-2 = { path = "vendor/tui-textarea-2" }

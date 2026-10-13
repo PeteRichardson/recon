@@ -36,6 +36,7 @@
 
 use ratatui::prelude::{Buffer, Color, Modifier, Rect, Style};
 use ratatui::widgets::{Block, Clear, Widget};
+use unicode_width::UnicodeWidthStr;
 
 /// Columns between two rendered columns of the overlay.
 const GUTTER: usize = 3;
@@ -1145,19 +1146,53 @@ fn replacements(
 /// A terminal too small even for the widest layout gets a truncated list and a
 /// count of what was cut, in the bottom border. Silently dropping rows from a
 /// reference would be the worse failure of the two.
+///
+/// Under the columns, a footer shows the build: the same lines as
+/// `recon --version` (#337). It is outside the rows, so the column layout
+/// does not depend on the length of a checkout path.
 pub fn render(area: Rect, buf: &mut Buffer, keymap: &crate::keymap::Keymap) {
     let rows = rows(keymap);
+    let build = build_lines();
+    // The footer and one blank line above it.
+    let footer = build.len() + 1;
     // Laid out against everything available, then the panel shrunk to what the
     // layout actually used. Doing it the other way round — sizing the panel
     // first — would make the column count depend on a height chosen before the
     // rows were flowed into it.
-    let columns = layout(&rows, Block::bordered().inner(area));
-    let area = panel(area, &columns);
+    let mut room = Block::bordered().inner(area);
+    room.height = room
+        .height
+        .saturating_sub(u16::try_from(footer).unwrap_or(u16::MAX));
+    let columns = layout(&rows, room);
+    let area = panel(area, &columns, &build);
 
     // The panes are already drawn underneath; without this their borders and
     // text show through wherever the overlay writes nothing.
     Clear.render(area, buf);
     let inner = Block::bordered().inner(area);
+
+    // The footer takes the bottom of the panel, and the columns get the rest.
+    let footer_y = inner
+        .bottom()
+        .saturating_sub(u16::try_from(build.len()).unwrap_or(u16::MAX));
+    for (offset, line) in build.iter().enumerate() {
+        let y = footer_y + u16::try_from(offset).unwrap_or(u16::MAX);
+        if y >= inner.y && y < inner.bottom() {
+            buf.set_stringn(
+                inner.x,
+                y,
+                line,
+                usize::from(inner.width),
+                Style::new().fg(Color::DarkGray),
+            );
+        }
+    }
+    let inner = Rect {
+        height: inner
+            .height
+            .saturating_sub(u16::try_from(footer).unwrap_or(u16::MAX)),
+        ..inner
+    };
 
     let mut block = Block::bordered().title(" Keys ");
     let shown = shown(&columns);
@@ -1209,12 +1244,17 @@ pub fn render(area: Rect, buf: &mut Buffer, keymap: &crate::keymap::Keymap) {
 /// The title has no say in the width. `" Keys "` is six columns and the
 /// narrowest useful panel is far wider, so a clamp for it would be dead code
 /// everywhere except a terminal where the keymap is unreadable anyway.
-fn panel(area: Rect, columns: &[Column]) -> Rect {
+///
+/// The footer `build` adds its lines and one blank line to the height, and is
+/// as wide as its widest line.
+fn panel(area: Rect, columns: &[Column], build: &[String]) -> Rect {
+    let build_width = build.iter().map(|line| line.width()).max().unwrap_or(0);
     // Two for the borders on each axis.
-    let width = u16::try_from(total_width(columns) + 2)
+    let width = u16::try_from(total_width(columns).max(build_width) + 2)
         .unwrap_or(u16::MAX)
         .min(area.width);
-    let height = u16::try_from(columns.iter().map(|column| column.len).max().unwrap_or(0) + 2)
+    let rows = columns.iter().map(|column| column.len).max().unwrap_or(0);
+    let height = u16::try_from(rows + build.len() + 1 + 2)
         .unwrap_or(u16::MAX)
         .min(area.height);
     Rect {
@@ -1223,6 +1263,14 @@ fn panel(area: Rect, columns: &[Column]) -> Rect {
         width,
         height,
     }
+}
+
+/// The footer lines: what `recon --version` prints (#337).
+fn build_lines() -> Vec<String> {
+    format!("recon {}", crate::config::LONG_VERSION)
+        .lines()
+        .map(str::to_string)
+        .collect()
 }
 
 /// One rendered column: which slice of the rows it holds, and how wide that
@@ -1674,6 +1722,44 @@ mod tests {
         let panel = border_box(&buf, area);
         assert_eq!(panel.width, area.width);
         assert_eq!(panel.height, area.height);
+    }
+
+    /// The overlay shows the same lines as `recon --version` (#337), at the
+    /// bottom of the panel, and still has room for the whole keymap.
+    #[test]
+    fn the_overlay_shows_the_build_stamp() {
+        let rows = rows(&crate::keymap::Keymap::default());
+        let build = build_lines();
+        let height = u16::try_from(rows.len() + build.len() + 10).expect("a keymap of sane size");
+        let area = inner(400, height);
+        let mut buf = Buffer::empty(area);
+
+        render(area, &mut buf, &crate::keymap::Keymap::default());
+
+        let panel = border_box(&buf, area);
+        let line = |y: u16| -> String {
+            (panel.x + 1..panel.right() - 1)
+                .map(|x| buf[(x, y)].symbol())
+                .collect::<String>()
+                .trim_end()
+                .to_string()
+        };
+        let bottom = panel.bottom() - 1;
+        let shown: Vec<String> = (bottom - u16::try_from(build.len()).unwrap()..bottom)
+            .map(line)
+            .collect();
+        assert_eq!(shown, build);
+        assert_eq!(
+            build.first(),
+            Some(&format!("recon {}", crate::config::VERSION))
+        );
+        let border: String = (panel.x..panel.right())
+            .map(|x| buf[(x, panel.bottom() - 1)].symbol())
+            .collect();
+        assert!(
+            !border.contains("more rows"),
+            "rows were cut from the keymap"
+        );
     }
 
     /// The narrow case: one column, and the rows past the bottom are dropped
