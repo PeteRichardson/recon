@@ -83,8 +83,7 @@ pub(crate) const LONG_VERSION: &str = concat!(
 //
 // `Default` is the parsed defaults for the tests and callers that build a
 // `Config` directly. Derived, because every field's clap default is its
-// type's default — `path` is `None`, not `.` (#353). Keep them in step:
-// `default_matches_the_parsed_defaults` pins it.
+// type's default. `default_matches_the_parsed_defaults` pins it.
 #[derive(Parser, Debug, Default)]
 #[command(version = VERSION, long_version = LONG_VERSION, about = None, long_about = None)]
 pub struct Config {
@@ -98,7 +97,7 @@ pub struct Config {
     //
     // `None` rather than a default of `.`: batch mode reads stdin only when
     // no PATH was given, and a default cannot tell `recon` from `recon .`
-    // (#353). [`Config::path_or_current_dir`] is the `.` the TUI opens.
+    // (#353). [`Config::path_or_current_dir`] gives the TUI its `.`.
     #[arg(value_name = "PATH")]
     pub path: Option<String>,
 
@@ -975,12 +974,15 @@ fn warnings_from_env(value: Option<&str>) -> Result<Option<bool>, ConfigError> {
     }
 }
 
+/// What no `PATH` stands for: the TUI's start, and batch mode's input
+/// when stdin has no list.
+pub(crate) const CURRENT_DIR: &str = ".";
+
 impl Config {
-    /// What `PATH` names, or `.` when it was not given: the file or
-    /// directory the TUI opens.
+    /// What `PATH` names, or [`CURRENT_DIR`] when it was not given.
     #[must_use]
     pub fn path_or_current_dir(&self) -> &str {
-        self.path.as_deref().unwrap_or(".")
+        self.path.as_deref().unwrap_or(CURRENT_DIR)
     }
 
     /// `--batch` with no `--emit` asks for `lines`, the common case (#439).

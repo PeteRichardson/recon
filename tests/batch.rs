@@ -267,6 +267,21 @@ fn a_path_argument_leaves_the_list_on_stdin_unread() {
     assert_eq!(out.status.code(), Some(0));
 }
 
+/// #353: `--emit cwd` needs no list, so a list on stdin is not read: with
+/// no `PATH`, the answer is recon's own directory, not the list's.
+#[test]
+fn emit_cwd_leaves_the_list_on_stdin_unread() {
+    let dir = fixture("cwd_ignores_stdin");
+    let home = config_home(&dir);
+    let list = format!("{}\n", dir.join("a.log").display());
+
+    let out = recon(&home, &["--emit", "cwd", "-q"], list.as_bytes());
+
+    let cwd = std::env::current_dir().expect("cwd");
+    assert_eq!(text(&out.stdout), format!("{}\n", cwd.display()));
+    assert_eq!(out.status.code(), Some(0));
+}
+
 /// #439: `-b` with no `--emit` is a batch run that emits lines. Before it,
 /// this run had no `--emit`, so it tried to open the TUI.
 #[test]

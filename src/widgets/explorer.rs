@@ -96,7 +96,7 @@ pub(crate) enum Kind {
     /// file with an end to read to — `File::open` on a FIFO blocks until a
     /// writer appears, which would hang the scanner, a preview and a
     /// batch run alike. Nothing that reads is ever handed one: `files`,
-    /// `listed_files` and `batch::inputs` all skip it, and the readers
+    /// `listed_files` and `batch::path_inputs` all skip it, and the readers
     /// refuse one named directly. Drawn dimmed, like `..`: present, not
     /// content.
     Special,
