@@ -1043,11 +1043,7 @@ impl FilterEditor {
         let column = column?;
         let mut at = 0;
         for (byte, c) in self.text(line)?.char_indices() {
-            let width = if c == '\t' {
-                TAB_WIDTH
-            } else {
-                unicode_width::UnicodeWidthChar::width(c).unwrap_or(0)
-            };
+            let width = super::prompt::columns(c);
             if column < at + width {
                 return Some(byte);
             }
@@ -1379,9 +1375,6 @@ pub(super) fn grouped(n: usize) -> String {
     }
     out
 }
-
-/// How many columns a tab takes, as the editor draws it.
-pub(super) const TAB_WIDTH: usize = 4;
 
 impl FilterEditor {
     /// Start the consolidation step (#322): the keys go to the prompt, and

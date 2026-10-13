@@ -11,11 +11,10 @@ use unicode_width::UnicodeWidthChar;
 /// How a tab is drawn in a text row and in the filter editor's lines: a
 /// raw tab in a cell draws as nothing, and log lines carry them.
 pub(super) const TAB: &str = "    ";
-const _: () = assert!(TAB.len() == super::filter_editor::TAB_WIDTH);
 
 /// The columns `c` takes on the screen (#361): two for a wide character,
 /// `TAB`'s for a tab, and none for what draws as nothing.
-fn columns(c: char) -> usize {
+pub(super) fn columns(c: char) -> usize {
     if c == '\t' {
         TAB.len()
     } else {
