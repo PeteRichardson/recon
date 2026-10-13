@@ -1,0 +1,14 @@
+# cargo-release configuration. Run releases with the `/release` skill, which
+# checks the tree and CI first, proposes the level, and publishes the GitHub
+# release. Design: https://github.com/PeteRichardson/recon/blob/main/docs/specs/2026-09-29-build-stamps-and-releases-design.md
+
+allow-branch = ["main"]
+tag-name = "v{{version}}"
+tag-message = "v{{version}}"
+pre-release-commit-message = "chore(release): v{{version}}"
+
+# Writes the new CHANGELOG.md entry before the release commit, so the entry is
+# part of that commit. Only the commits after the last tag are read.
+pre-release-hook = [
+    "git", "cliff", "--unreleased", "--tag", "v{{version}}", "--prepend", "CHANGELOG.md",
+]

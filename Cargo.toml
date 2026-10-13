@@ -7,6 +7,9 @@ edition = "2024"
 # recon. Keep the two in step.
 rust-version = "1.88.0"
 license = "MIT"
+# Not published to crates.io. cargo-release reads this too: without it, it
+# requires `description` and `repository` and stops with an error (#338).
+publish = false
 
 # `cargo machete` reports `tui-textarea-2` as unused. It is a false positive
 # (#94), and the obvious "fix" is to delete a dependency the build needs.

@@ -1,0 +1,47 @@
+# git-cliff configuration: the CHANGELOG.md entries and GitHub release notes.
+#
+# Only commits that change what a user sees go in the notes: breaking changes
+# (first), feat, fix and perf. docs, test, refactor, style, chore, build, ci
+# and commits that do not follow Conventional Commits are left out.
+
+[changelog]
+header = "# Changelog\n"
+# The number in each group name sets the order of the groups. The template
+# removes it with `striptags`.
+body = """
+## {% if version %}{{ version }} — {{ timestamp | date(format="%Y-%m-%d") }}{% else %}Unreleased{% endif %}
+{% for group, commits in commits | group_by(attribute="group") %}
+### {{ group | striptags | trim }}
+{% for commit in commits %}
+- {% if commit.scope %}**{{ commit.scope }}:** {% endif %}{{ commit.message | upper_first }}{% endfor %}
+{% else %}
+No changes that affect the user.
+{% endfor %}\
+"""
+# Not trimmed: the blank line at the end of each entry separates it from the
+# older entries when git-cliff prepends it to CHANGELOG.md.
+trim = false
+
+[git]
+conventional_commits = true
+filter_unconventional = true
+filter_commits = true
+tag_pattern = "v[0-9].*"
+sort_commits = "oldest"
+commit_preprocessors = [
+    { pattern = '#(\d+)', replace = "[#${1}](https://github.com/PeteRichardson/recon/issues/${1})" },
+]
+commit_parsers = [
+    { field = "breaking", pattern = "true", group = "<!-- 0 -->Breaking changes" },
+    { message = "^feat", group = "<!-- 1 -->Features" },
+    { message = "^fix", group = "<!-- 2 -->Fixes" },
+    { message = "^perf", group = "<!-- 3 -->Performance" },
+    { message = ".*", skip = true },
+]
+
+[bump]
+# feat proposes minor, also before 1.0.
+features_always_bump_minor = true
+# Before 1.0, a breaking change proposes minor, not major: 1.0 has its own
+# exit criteria. From 1.0, a breaking change proposes major.
+breaking_always_bump_major = false
