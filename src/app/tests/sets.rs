@@ -46,7 +46,7 @@ fn app_over_named_file(dir: &str, file: &str, body: &str) -> App<'static> {
     let path = dir.join(file);
     fs::write(&path, body).expect("write fixture");
     App::new(&Startup::from(Config {
-        path: path.display().to_string(),
+        path: Some(path.display().to_string()),
         ..Config::default()
     }))
 }

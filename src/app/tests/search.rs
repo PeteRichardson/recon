@@ -493,7 +493,7 @@ fn the_recall_keys_can_be_rebound() {
         vec!["Ctrl-j".to_string()],
     );
     let config = Config {
-        path: file.display().to_string(),
+        path: Some(file.display().to_string()),
         ..Config::default()
     };
     let (map, warnings) = crate::keymap::config::build(

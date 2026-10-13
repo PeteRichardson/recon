@@ -31,7 +31,7 @@ const TALL_TEXT_ROWS: u16 = 33;
 fn app_searching(name: &str, body: &str, pattern: &str, config: Config) -> App<'static> {
     let file = fixture_path(name, body);
     let mut app = App::new(&Startup::from(Config {
-        path: file.display().to_string(),
+        path: Some(file.display().to_string()),
         ..config
     }));
     draw_tall(&mut app);
@@ -359,7 +359,7 @@ fn n_in_the_explorer_does_not_move_the_file_view_cursor() {
     fs::write(dir.join("alpha.log"), "alpha\nx\n").expect("write fixture");
 
     let mut app = App::new(&Startup::from(Config {
-        path: dir.join("placeholder").display().to_string(),
+        path: Some(dir.join("placeholder").display().to_string()),
         ..Config::default()
     }));
     // The startup argument names a file that does not exist, so `App::new`
@@ -641,7 +641,7 @@ fn comma_lands_on_the_last_hit_of_a_file_that_was_only_previewed() {
     fs::write(dir.join("big.log"), &body).expect("write fixture");
 
     let mut app = App::new(&Startup::from(Config {
-        path: dir.join("placeholder").display().to_string(),
+        path: Some(dir.join("placeholder").display().to_string()),
         ..Config::default()
     }));
     let (_scanner, tx) = record_scans(&mut app);
@@ -688,7 +688,7 @@ fn comma_centres_the_previous_file_s_last_hit_or_shows_every_hit() {
     fs::write(dir.join("a.log"), &body).expect("write");
     fs::write(dir.join("b.log"), "HIT\n").expect("write");
     let mut app = App::new(&Startup::from(Config {
-        path: dir.join("b.log").display().to_string(),
+        path: Some(dir.join("b.log").display().to_string()),
         ..Config::default()
     }));
     let (_scanner, tx) = record_scans(&mut app);

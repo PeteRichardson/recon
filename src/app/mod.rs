@@ -352,9 +352,10 @@ impl App<'_> {
         // matched, so the changed-on-disk badge never fired for a file
         // opened from the command line, and the title changed from
         // `app.log` to the full path after the first navigation (#157).
-        let argument = crate::path::lexical_absolute(std::path::Path::new(&config.path));
+        let argument =
+            crate::path::lexical_absolute(std::path::Path::new(config.path_or_current_dir()));
         let argument = argument.as_path();
-        let mut explorer = Explorer::new(config.path.clone());
+        let mut explorer = Explorer::new(config.path_or_current_dir().to_string());
         explorer.set_background(config.background());
         let mut view = FileView::default();
         // Before the load, not after: `load` looks up the file's grammar, and

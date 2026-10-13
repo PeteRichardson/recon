@@ -69,7 +69,7 @@ fn app_over(name: &str, files: &[&str]) -> App<'static> {
         fs::write(dir.join(file), "x").expect("write fixture");
     }
     App::new(&Startup::from(Config {
-        path: dir.join("placeholder").display().to_string(),
+        path: Some(dir.join("placeholder").display().to_string()),
         ..Config::default()
     }))
 }
@@ -100,7 +100,7 @@ fn app_over_files(name: &str, files: &[(&str, &str)]) -> App<'static> {
         fs::write(dir.join(file), body).expect("write fixture");
     }
     App::new(&Startup::from(Config {
-        path: dir.join("placeholder").display().to_string(),
+        path: Some(dir.join("placeholder").display().to_string()),
         ..Config::default()
     }))
 }
@@ -275,7 +275,7 @@ fn fixture_path(name: &str, body: &str) -> std::path::PathBuf {
 fn app_over_file(name: &str, body: &str) -> App<'static> {
     let file = fixture_path(name, body);
     App::new(&Startup::from(Config {
-        path: file.display().to_string(),
+        path: Some(file.display().to_string()),
         ..Config::default()
     }))
 }
@@ -439,7 +439,7 @@ fn app_over_project(name: &str, body: &str) -> (App<'static>, std::path::PathBuf
     let file = root.join("logs/log.txt");
     fs::write(&file, body).expect("write fixture");
     let app = App::new(&Startup::from(Config {
-        path: file.display().to_string(),
+        path: Some(file.display().to_string()),
         editor: Some(editor::DEFAULT_PROJECT_TEMPLATE.to_string()),
         ..Config::default()
     }));
@@ -513,7 +513,7 @@ fn app_over_nested(name: &str) -> (App<'static>, std::path::PathBuf) {
     fs::write(dir.join("sub/inner_b.log"), "b\n").expect("write");
     fs::write(dir.join("z.log"), "z\n").expect("write");
     let app = App::new(&Startup::from(Config {
-        path: dir.join("placeholder").display().to_string(),
+        path: Some(dir.join("placeholder").display().to_string()),
         ..Config::default()
     }));
     (app, dir)

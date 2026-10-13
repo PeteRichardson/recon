@@ -24,7 +24,7 @@ fn app_over_keymap(name: &str, files: &[&str], no_warnings: bool) -> App<'static
     let mut bindings = std::collections::BTreeMap::new();
     bindings.insert("global.quit".to_string(), vec!["j".to_string()]);
     let config = Config {
-        path: dir.join("placeholder").display().to_string(),
+        path: Some(dir.join("placeholder").display().to_string()),
         no_warnings,
         ..Config::default()
     };

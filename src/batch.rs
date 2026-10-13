@@ -51,7 +51,12 @@ pub fn run(startup: &Startup, out: &mut impl Write) -> Result<Exit> {
         return Err(eyre!("batch mode needs --emit"));
     };
     let stdin = io::stdin();
-    let inputs = stdin_or_path(stdin.is_terminal(), stdin.lock(), Path::new(&config.path))?;
+    let inputs = stdin_or_path(
+        what,
+        config.path.as_deref().map(Path::new),
+        stdin.is_terminal(),
+        stdin.lock(),
+    )?;
     let filters = filters_for(startup)?;
     let mode = if config.hide {
         Mode::FilteredOnly
@@ -112,40 +117,38 @@ pub(crate) fn collect(
     }
 }
 
-/// The input list, with stdin read only when it is not a terminal (#439).
-/// `-b` from a terminal is a batch run with the keyboard on stdin: reading
-/// it would wait for Ctrl-D, so `PATH` is the input.
-fn stdin_or_path(stdin_is_terminal: bool, stdin: impl BufRead, path: &Path) -> io::Result<Inputs> {
-    if stdin_is_terminal {
-        inputs(io::empty(), path)
-    } else {
-        inputs(stdin, path)
+/// The input list. An explicit `PATH` wins, and stdin is not read (#353):
+/// a shell loop's list is not eaten, and a run over ssh does not wait on a
+/// stdin nobody writes. `-` is the exception, and means stdin, as for `cat`.
+/// With no `PATH`, stdin is read when it is not a terminal (#439): `-b` from
+/// a terminal has the keyboard on stdin, and a read would wait for Ctrl-D.
+/// `--emit cwd` needs no list, so it never reads stdin.
+fn stdin_or_path(
+    what: Emit,
+    path: Option<&Path>,
+    stdin_is_terminal: bool,
+    stdin: impl BufRead,
+) -> io::Result<Inputs> {
+    let current_dir = Path::new(".");
+    if what == Emit::Cwd {
+        return inputs(io::empty(), path.unwrap_or(current_dir));
+    }
+    match path {
+        Some(path) if path == Path::new("-") => Ok(Inputs {
+            files: stdin_files(stdin)?,
+            from: Source::Stdin,
+        }),
+        Some(path) => inputs(io::empty(), path),
+        None if stdin_is_terminal => inputs(io::empty(), current_dir),
+        None => inputs(stdin, current_dir),
     }
 }
 
 /// Read the input list: every non-blank line of `stdin` as a path, or, when
 /// stdin held none, what `path` names — a directory's files in the
 /// explorer's order, or the file itself.
-///
-/// Lines are bytes, not `String`s, for the reason `Entry::name` is an
-/// `OsString`: a Unix filename need not be UTF-8, and `ls -1` writes it
-/// verbatim. A trailing `\r` is dropped so a CRLF list works; nothing else
-/// is trimmed, since a name can end in a space. A line that is only
-/// whitespace is skipped.
-pub(crate) fn inputs(mut stdin: impl BufRead, path: &Path) -> io::Result<Inputs> {
-    let mut files = Vec::new();
-    let mut line = Vec::new();
-    loop {
-        line.clear();
-        if stdin.read_until(b'\n', &mut line)? == 0 {
-            break;
-        }
-        let bytes = strip_line_end(&line);
-        if bytes.iter().all(u8::is_ascii_whitespace) {
-            continue;
-        }
-        files.push(lexical_absolute(&path_from_bytes(bytes)));
-    }
+pub(crate) fn inputs(stdin: impl BufRead, path: &Path) -> io::Result<Inputs> {
+    let files = stdin_files(stdin)?;
     if !files.is_empty() {
         return Ok(Inputs {
             files,
@@ -169,6 +172,30 @@ pub(crate) fn inputs(mut stdin: impl BufRead, path: &Path) -> io::Result<Inputs>
         files: vec![path],
         from: Source::File,
     })
+}
+
+/// Every non-blank line of `stdin`, as an absolute path.
+///
+/// Lines are bytes, not `String`s, for the reason `Entry::name` is an
+/// `OsString`: a Unix filename need not be UTF-8, and `ls -1` writes it
+/// verbatim. A trailing `\r` is dropped so a CRLF list works; nothing else
+/// is trimmed, since a name can end in a space. A line that is only
+/// whitespace is skipped.
+fn stdin_files(mut stdin: impl BufRead) -> io::Result<Vec<PathBuf>> {
+    let mut files = Vec::new();
+    let mut line = Vec::new();
+    loop {
+        line.clear();
+        if stdin.read_until(b'\n', &mut line)? == 0 {
+            break;
+        }
+        let bytes = strip_line_end(&line);
+        if bytes.iter().all(u8::is_ascii_whitespace) {
+            continue;
+        }
+        files.push(lexical_absolute(&path_from_bytes(bytes)));
+    }
+    Ok(files)
 }
 
 /// `--emit lines`: every input's visible lines in `mode`, in input order,
@@ -600,54 +627,105 @@ mod tests {
         assert_eq!(got.files, vec![lexical_absolute(missing)]);
     }
 
-    #[test]
-    fn stdin_wins_over_the_path_argument() {
-        let dir = fixture_dir("batch_inputs_stdin_wins");
-        fs::write(dir.join("ignored.log"), "x").expect("write");
-
-        let got = inputs(Cursor::new(&b"/only/this.log\n"[..]), &dir).expect("reads");
-
-        assert_eq!(got.from, Source::Stdin);
-        assert_eq!(got.files, vec![PathBuf::from("/only/this.log")]);
-    }
-
-    /// Stdin that fails the test if anything reads it.
+    /// Stdin that fails the test if anything reads it: a terminal, or a
+    /// pipe that belongs to someone else.
     struct Unread;
 
     impl io::Read for Unread {
         fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
-            panic!("a terminal on stdin must not be read");
+            panic!("stdin must not be read here");
         }
     }
 
     impl BufRead for Unread {
         fn fill_buf(&mut self) -> io::Result<&[u8]> {
-            panic!("a terminal on stdin must not be read");
+            panic!("stdin must not be read here");
         }
         fn consume(&mut self, _: usize) {}
     }
 
-    /// #439: `-b` from a terminal. Stdin is the keyboard, not a file list:
-    /// a read there waits for Ctrl-D. `PATH` is the input.
+    /// #439: `-b` from a terminal with no `PATH`. Stdin is the keyboard,
+    /// not a file list: a read there waits for Ctrl-D. The current
+    /// directory is the input.
     #[test]
-    fn a_terminal_on_stdin_is_not_read_and_path_is_the_input() {
-        let file = fixture_file("batch_inputs_terminal.log", b"x\n");
+    fn a_terminal_on_stdin_is_not_read_and_the_current_directory_is_the_input() {
+        let got = stdin_or_path(Emit::Files, None, true, Unread).expect("reads");
 
-        let got = stdin_or_path(true, Unread, &file).expect("reads");
+        assert_eq!(
+            got.from,
+            Source::Directory(lexical_absolute(Path::new(".")))
+        );
+    }
+
+    /// #353: with no `PATH`, a pipe on stdin is the input list.
+    #[test]
+    fn with_no_path_a_pipe_on_stdin_is_read() {
+        let got = stdin_or_path(
+            Emit::Lines,
+            None,
+            false,
+            Cursor::new(&b"/only/this.log\n"[..]),
+        )
+        .expect("reads");
+
+        assert_eq!(got.from, Source::Stdin);
+        assert_eq!(got.files, vec![PathBuf::from("/only/this.log")]);
+    }
+
+    /// #353: an explicit `PATH` wins. `while read f; do recon --emit lines
+    /// "$f"; done < list` must not let the first run eat the list, and
+    /// `ssh host recon --emit files /var/log` must not wait on stdin.
+    #[test]
+    fn a_path_argument_leaves_a_pipe_on_stdin_unread() {
+        let file = fixture_file("batch_inputs_path_given.log", b"x\n");
+
+        let got = stdin_or_path(Emit::Lines, Some(&file), false, Unread).expect("reads");
 
         assert_eq!(got.from, Source::File);
         assert_eq!(got.files, vec![lexical_absolute(&file)]);
     }
 
+    /// #353: `-` as `PATH` is stdin, as for `cat`, `grep` and `diff`.
     #[test]
-    fn a_pipe_on_stdin_is_read() {
-        let file = fixture_file("batch_inputs_pipe.log", b"x\n");
-
-        let got =
-            stdin_or_path(false, Cursor::new(&b"/only/this.log\n"[..]), &file).expect("reads");
+    fn a_dash_path_reads_stdin() {
+        let got = stdin_or_path(
+            Emit::Lines,
+            Some(Path::new("-")),
+            false,
+            Cursor::new(&b"/only/this.log\n"[..]),
+        )
+        .expect("reads");
 
         assert_eq!(got.from, Source::Stdin);
         assert_eq!(got.files, vec![PathBuf::from("/only/this.log")]);
+    }
+
+    /// An explicit `-` names no file to fall back on: an empty stdin is an
+    /// empty list, not a file called `-`.
+    #[test]
+    fn a_dash_path_with_an_empty_stdin_is_no_input() {
+        let got = stdin_or_path(
+            Emit::Files,
+            Some(Path::new("-")),
+            false,
+            Cursor::new(&b""[..]),
+        )
+        .expect("reads");
+
+        assert_eq!(got.from, Source::Stdin);
+        assert!(got.files.is_empty(), "{:?}", got.files);
+    }
+
+    /// #353: `--emit cwd` needs nothing from stdin, so it never reads it —
+    /// with no `PATH`, the current directory is the answer.
+    #[test]
+    fn emit_cwd_leaves_a_pipe_on_stdin_unread() {
+        let got = stdin_or_path(Emit::Cwd, None, false, Unread).expect("reads");
+
+        assert_eq!(
+            got.from,
+            Source::Directory(lexical_absolute(Path::new(".")))
+        );
     }
 
     /// The README's promise: a filename is carried as the bytes the

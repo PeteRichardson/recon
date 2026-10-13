@@ -80,13 +80,27 @@ pub(crate) const LONG_VERSION: &str = concat!(
 // now carries a doc comment, and a bare `about` would promote it to the
 // description line of `--help`. The prose below is for whoever maintains the
 // precedence chain, not for someone running `recon --help`.
-#[derive(Parser, Debug)]
+//
+// `Default` is the parsed defaults for the tests and callers that build a
+// `Config` directly. Derived, because every field's clap default is its
+// type's default — `path` is `None`, not `.` (#353). Keep them in step:
+// `default_matches_the_parsed_defaults` pins it.
+#[derive(Parser, Debug, Default)]
 #[command(version = VERSION, long_version = LONG_VERSION, about = None, long_about = None)]
 pub struct Config {
     /// File or directory to open. A directory is listed with its first entry
     /// selected; a file is opened with its own directory listed alongside.
-    #[arg(default_value = ".")]
-    pub path: String,
+    /// With none, the current directory.
+    ///
+    /// In batch mode, PATH is the input and stdin is not read. `-` as PATH
+    /// reads the file list from stdin; so does no PATH, when stdin is not a
+    /// terminal. `--emit cwd` never reads stdin.
+    //
+    // `None` rather than a default of `.`: batch mode reads stdin only when
+    // no PATH was given, and a default cannot tell `recon` from `recon .`
+    // (#353). [`Config::path_or_current_dir`] is the `.` the TUI opens.
+    #[arg(value_name = "PATH")]
+    pub path: Option<String>,
 
     /// Command template `o` runs, e.g. `zed {project} {file}:{line}`.
     ///
@@ -406,42 +420,6 @@ pub enum PrintKeymap {
     Effective,
     /// recon's built-in table, whatever `config.toml` says.
     Defaults,
-}
-
-/// The clap defaults, restated for the tests and callers that build a `Config`
-/// directly rather than parsing one.
-///
-/// The two must agree, which `default_matches_the_parsed_defaults` pins. A
-/// hand-written impl rather than `#[derive(Default)]` because `String::default`
-/// is `""` and clap's default for `path` is `"."` — deriving would silently
-/// introduce a second, different notion of "no arguments".
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            path: ".".to_string(),
-            editor: None,
-            file_editor: None,
-            clipboard: None,
-            print_editor_config: None,
-            print_keymap: None,
-            filter_palette: None,
-            background: None,
-            filter_path: None,
-            center_jumps: None,
-            theme: None,
-            emit: None,
-            batch: false,
-            line_numbers: false,
-            set: Vec::new(),
-            unlist: Vec::new(),
-            hide: false,
-            hide_pane: None,
-            quiet: false,
-            warnings: false,
-            warnings_setting: None,
-            no_warnings: false,
-        }
-    }
 }
 
 /// The config file's contents, as parsed.
@@ -998,6 +976,13 @@ fn warnings_from_env(value: Option<&str>) -> Result<Option<bool>, ConfigError> {
 }
 
 impl Config {
+    /// What `PATH` names, or `.` when it was not given: the file or
+    /// directory the TUI opens.
+    #[must_use]
+    pub fn path_or_current_dir(&self) -> &str {
+        self.path.as_deref().unwrap_or(".")
+    }
+
     /// `--batch` with no `--emit` asks for `lines`, the common case (#439).
     /// Called before [`Config::check_flags`], so `-b -n` is accepted.
     pub fn default_batch_emit(&mut self) {
@@ -1492,13 +1477,15 @@ mod tests {
 
     // ---- the CLI layer -------------------------------------------------
 
-    /// The argument is optional and defaults to the current directory, so
-    /// bare `recon` is `recon .`.
+    /// The argument is optional and the TUI opens the current directory
+    /// without it, so bare `recon` opens what `recon .` does. The two still
+    /// differ to batch mode, which reads stdin only without one (#353).
     #[test]
-    fn no_argument_defaults_to_the_current_directory() {
+    fn no_argument_opens_the_current_directory() {
         let config = parse_clean(["recon"]).expect("parses with no argument");
 
-        assert_eq!(config.path, ".");
+        assert_eq!(config.path, None);
+        assert_eq!(config.path_or_current_dir(), ".");
     }
 
     /// `-V` is the build stamp (#337), and `--version` adds the `built:`
@@ -1547,7 +1534,8 @@ mod tests {
     fn an_explicit_argument_still_wins() {
         let config = parse_clean(["recon", "some/path.log"]).expect("parses");
 
-        assert_eq!(config.path, "some/path.log");
+        assert_eq!(config.path.as_deref(), Some("some/path.log"));
+        assert_eq!(config.path_or_current_dir(), "some/path.log");
     }
 
     // ---- path resolution ----------------------------------------------
@@ -1714,15 +1702,16 @@ mod tests {
     #[test]
     fn apply_leaves_the_cli_layer_alone() {
         let mut config = Config {
-            path: "src/lib.rs".to_string(),
+            path: Some("src/lib.rs".to_string()),
             ..Config::default()
         };
         config.apply(&FileConfig::default());
-        assert_eq!(config.path, "src/lib.rs");
+        assert_eq!(config.path.as_deref(), Some("src/lib.rs"));
     }
 
-    /// The clap defaults and the hand-written `Default` are two statements of
-    /// the same thing, and this is what stops them drifting.
+    /// The clap defaults and the derived `Default` are two statements of the
+    /// same thing, and this is what stops them drifting: a `default_value`
+    /// added to a field breaks their agreement.
     #[test]
     fn default_matches_the_parsed_defaults() {
         let parsed = parse_clean(["recon"]).expect("parses with no argument");
@@ -2079,7 +2068,7 @@ mod tests {
         let config = parse_clean(["recon", "--warnings", "app.log"])
             .expect("a path after --warnings must parse");
         assert!(config.warnings);
-        assert_eq!(config.path, "app.log");
+        assert_eq!(config.path.as_deref(), Some("app.log"));
     }
 
     #[test]

@@ -244,6 +244,29 @@ fn a_path_file_with_empty_stdin_is_read_in_batch_mode_and_quiet_drops_the_summar
     assert_eq!(out.status.code(), Some(0));
 }
 
+/// #353: an explicit `PATH` wins over a pipe on stdin, so the list a shell
+/// loop reads from is left for the loop: `while read f; do recon --emit
+/// lines "$f"; done < list`.
+#[test]
+fn a_path_argument_leaves_the_list_on_stdin_unread() {
+    let dir = fixture("path_wins");
+    let home = config_home(&dir);
+    let a = dir.join("a.log");
+    let b = dir.join("b.log");
+    fs::write(&a, "from a\n").expect("write");
+    fs::write(&b, "from b\n").expect("write");
+    let list = format!("{}\n", b.display());
+
+    let out = recon(
+        &home,
+        &["--emit", "lines", "-q", a.to_str().expect("utf-8 path")],
+        list.as_bytes(),
+    );
+
+    assert_eq!(text(&out.stdout), "from a\n");
+    assert_eq!(out.status.code(), Some(0));
+}
+
 /// #439: `-b` with no `--emit` is a batch run that emits lines. Before it,
 /// this run had no `--emit`, so it tried to open the TUI.
 #[test]

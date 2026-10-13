@@ -62,7 +62,7 @@ fn records_mentioning(needle: &str) -> Vec<(log::Level, String)> {
 
 fn app_over(path: &str) -> App<'static> {
     App::new(&Startup::from(Config {
-        path: path.to_string(),
+        path: Some(path.to_string()),
         ..Config::default()
     }))
 }

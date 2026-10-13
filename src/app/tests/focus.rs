@@ -20,7 +20,7 @@ fn opening_a_file_moves_the_focus_to_the_file_view() {
 
     for code in [KeyCode::Char('l'), KeyCode::Right, KeyCode::Enter] {
         let mut app = App::new(&Startup::from(Config {
-            path: dir.join("placeholder").display().to_string(),
+            path: Some(dir.join("placeholder").display().to_string()),
             ..Config::default()
         }));
         draw(&mut app);
@@ -254,7 +254,7 @@ fn z_in_the_file_view_matches_b() {
     // text alone, regardless of whether the zoom layouts truly match.
     let file = fixture_path("zoom_view_parity", "alpha\n");
     let config = Startup::from(Config {
-        path: file.display().to_string(),
+        path: Some(file.display().to_string()),
         ..Config::default()
     });
 

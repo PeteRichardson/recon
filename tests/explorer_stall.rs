@@ -59,7 +59,7 @@ fn fixture() -> std::path::PathBuf {
 #[test]
 fn selecting_a_large_file_with_no_filters_active_is_quick() {
     let config = Startup::from(Config {
-        path: fixture().join("aaa.txt").display().to_string(),
+        path: Some(fixture().join("aaa.txt").display().to_string()),
         ..Config::default()
     });
     let mut app = App::new(&config);

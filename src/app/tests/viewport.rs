@@ -159,7 +159,7 @@ fn upgrading_a_truncated_preview_resyncs_styles_without_reloading() {
     fs::write(dir.join("big.log"), &body).expect("write fixture");
 
     let mut app = App::new(&Startup::from(Config {
-        path: dir.join("placeholder").display().to_string(),
+        path: Some(dir.join("placeholder").display().to_string()),
         ..Config::default()
     }));
 
@@ -410,7 +410,7 @@ fn an_unbound_modified_key_does_not_promote_a_truncated_preview() {
     fs::write(dir.join("big.log"), &body).expect("write fixture");
 
     let mut app = App::new(&Startup::from(Config {
-        path: dir.join("placeholder").display().to_string(),
+        path: Some(dir.join("placeholder").display().to_string()),
         ..Config::default()
     }));
     // The startup argument names a file that does not exist, so the

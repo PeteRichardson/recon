@@ -127,7 +127,7 @@ fn fixture(name: &str) -> std::path::PathBuf {
 /// An `App` opened on `file` inside a fresh fixture directory named `name`.
 fn app_on(name: &str, file: &str) -> App<'static> {
     let config = Startup::from(Config {
-        path: fixture(name).join(file).display().to_string(),
+        path: Some(fixture(name).join(file).display().to_string()),
         ..Config::default()
     });
     App::new(&config)

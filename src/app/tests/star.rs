@@ -389,7 +389,7 @@ fn n_promotes_a_truncated_preview_before_stepping() {
     fs::write(dir.join("big.log"), &body).expect("write fixture");
 
     let mut app = App::new(&Startup::from(Config {
-        path: dir.join("placeholder").display().to_string(),
+        path: Some(dir.join("placeholder").display().to_string()),
         ..Config::default()
     }));
     // The explorer falls back to the first real entry (the log) and
@@ -436,7 +436,7 @@ fn slash_promotes_a_truncated_preview_before_landing_on_a_hit() {
     fs::write(dir.join("big.log"), &body).expect("write fixture");
 
     let mut app = App::new(&Startup::from(Config {
-        path: dir.join("placeholder").display().to_string(),
+        path: Some(dir.join("placeholder").display().to_string()),
         ..Config::default()
     }));
     key(&mut app, KeyCode::Down);

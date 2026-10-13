@@ -286,8 +286,8 @@ Usage: recon [OPTIONS] [PATH]
 
 Arguments:
   [PATH]  File or directory to open. A directory is listed with its first entry
-          selected; a file is opened with its own directory listed alongside
-          [default: .]
+          selected; a file is opened with its own directory listed alongside.
+          With none, the current directory
 
 Options:
       --editor <TEMPLATE>
@@ -2031,10 +2031,14 @@ cron job and a script with stdin closed all get it. `recon --emit lines
 app.log` from a terminal still opens the TUI, because the terminal is where
 its keys come from. `< /dev/null` from a terminal also forces batch mode.
 
-**Inputs.** Each non-blank line of stdin is a path — what `ls -1` and `find`
-print — with `-b` or without it. A terminal on stdin is not read. With
-nothing on stdin, a `PATH` directory means its files, non-recursive, in the
-explorer's order, and a `PATH` file means itself.
+**Inputs.** A `PATH` directory means its files, non-recursive, in the
+explorer's order, and a `PATH` file means itself. With a `PATH`, stdin is
+not read, so `while read f; do recon --emit lines "$f"; done < list` works,
+and `ssh host recon --emit files /var/log` does not wait. With no `PATH`,
+each non-blank line of stdin is a path — what `ls -1` and `find` print —
+with `-b` or without it; a terminal on stdin is not read, and with nothing
+on stdin the current directory is the input. `-` as `PATH` reads the list
+from stdin, as with `cat`. `--emit cwd` never reads stdin.
 
 **Flags.** `--set NAME` enables a saved set with its `default` profile;
 `--set NAME:LIST` turns on the filters of a comma-separated list of profiles

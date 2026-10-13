@@ -10,7 +10,7 @@ fn the_command_line_argument_is_held_absolute() {
     // directory whether or not the file exists, and `App::new` loads the
     // argument either way. What is under test is the spelling, not the read.
     let app = App::new(&Startup::from(Config {
-        path: "a.log".to_string(),
+        path: Some("a.log".to_string()),
         ..Config::default()
     }));
 
@@ -31,7 +31,7 @@ fn a_directory_argument_previews_the_first_entry() {
     fs::write(dir.join("zzz.txt"), "last file contents\n").expect("write");
 
     let mut app = App::new(&Startup::from(Config {
-        path: dir.display().to_string(),
+        path: Some(dir.display().to_string()),
         ..Config::default()
     }));
 
@@ -60,7 +60,7 @@ fn a_directory_argument_previews_rather_than_loads() {
     fs::write(dir.join("big.log"), &body).expect("write");
 
     let app = App::new(&Startup::from(Config {
-        path: dir.display().to_string(),
+        path: Some(dir.display().to_string()),
         ..Config::default()
     }));
 

@@ -253,7 +253,7 @@ fn clicking_a_listed_subdirectory_in_the_view_descends_into_it() {
     fs::create_dir_all(dir.join("outer/deeper")).expect("create dirs");
     fs::write(dir.join("outer/deeper/leaf.log"), "l\n").expect("write");
     let mut app = App::new(&Startup::from(Config {
-        path: dir.join("placeholder").display().to_string(),
+        path: Some(dir.join("placeholder").display().to_string()),
         ..Config::default()
     }));
     draw(&mut app);
@@ -324,7 +324,7 @@ fn app_previewing_listing(name: &str, files: &[&str]) -> App<'static> {
         fs::write(dir.join("sub").join(file), "x\n").expect("write");
     }
     let mut app = App::new(&Startup::from(Config {
-        path: dir.join("placeholder").display().to_string(),
+        path: Some(dir.join("placeholder").display().to_string()),
         ..Config::default()
     }));
     draw(&mut app);

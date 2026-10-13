@@ -12,7 +12,7 @@ fn startup_builds_one_highlighter() {
     fs::write(&file, "fn main() {}\n").expect("write fixture");
 
     let app = App::new(&Startup::from(Config {
-        path: file.display().to_string(),
+        path: Some(file.display().to_string()),
         ..Config::default()
     }));
 
@@ -555,7 +555,7 @@ fn the_stale_badge_names_a_rebound_reload_key() {
     // calls, so this covers the whole path a `config.toml` line takes to
     // the screen.
     let config = Config {
-        path: dir.join("placeholder").display().to_string(),
+        path: Some(dir.join("placeholder").display().to_string()),
         ..Config::default()
     };
     let (bindings, _) = crate::keymap::config::build(

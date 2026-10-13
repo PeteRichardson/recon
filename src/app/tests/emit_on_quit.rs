@@ -5,7 +5,7 @@ use super::*;
 fn app_emitting(name: &str, emit: Option<emit::Emit>) -> App<'static> {
     let file = fixture_path(name, "alpha\n");
     App::new(&Startup::from(Config {
-        path: file.display().to_string(),
+        path: Some(file.display().to_string()),
         emit,
         ..Config::default()
     }))
@@ -85,7 +85,7 @@ fn set_and_hide_flags_apply_at_startup() {
     let app = App::new(&Startup {
         filter_sets: vec![set],
         ..Startup::from(Config {
-            path: file.display().to_string(),
+            path: Some(file.display().to_string()),
             set: vec!["Bugs:only_hit".to_string()],
             hide: true,
             ..Config::default()
@@ -120,7 +120,7 @@ fn unlist_flag_applies_at_startup() {
     let app = App::new(&Startup {
         filter_sets: vec![set],
         ..Startup::from(Config {
-            path: file.display().to_string(),
+            path: Some(file.display().to_string()),
             unlist: vec!["Bugs".to_string()],
             hide: true,
             ..Config::default()
@@ -161,7 +161,7 @@ fn emitted(app: &mut App) -> (Vec<String>, String) {
 fn app_emitting_lines(name: &str, body: &str, line_numbers: bool) -> App<'static> {
     let file = fixture_path(name, body);
     let mut app = App::new(&Startup::from(Config {
-        path: file.display().to_string(),
+        path: Some(file.display().to_string()),
         emit: Some(emit::Emit::Lines),
         line_numbers,
         ..Config::default()
@@ -203,7 +203,7 @@ fn app_emitting_a_large_file(name: &str, line_numbers: bool) -> App<'static> {
     let dir = fixture_dir(name);
     fs::write(dir.join("big.log"), &body).expect("write fixture");
     let mut app = App::new(&Startup::from(Config {
-        path: dir.display().to_string(),
+        path: Some(dir.display().to_string()),
         emit: Some(emit::Emit::Lines),
         line_numbers,
         ..Config::default()
@@ -354,7 +354,7 @@ fn lines_over_a_directory_listing_emits_nothing_and_says_so() {
     let dir = fixture_dir("emit_lines_directory");
     fs::write(dir.join("a.txt"), "x\n").expect("write");
     let mut app = App::new(&Startup::from(Config {
-        path: dir.display().to_string(),
+        path: Some(dir.display().to_string()),
         emit: Some(emit::Emit::Lines),
         ..Config::default()
     }));
@@ -376,7 +376,7 @@ fn lines_over_a_directory_listing_emits_nothing_and_says_so() {
 fn lines_over_an_unreadable_file_emits_nothing_and_says_so() {
     let dir = fixture_dir("emit_lines_missing");
     let mut app = App::new(&Startup::from(Config {
-        path: dir.join("nope.log").display().to_string(),
+        path: Some(dir.join("nope.log").display().to_string()),
         emit: Some(emit::Emit::Lines),
         ..Config::default()
     }));
@@ -587,7 +587,7 @@ fn files_writes_a_non_utf8_name_as_its_bytes() {
         return;
     }
     let mut app = App::new(&Startup::from(Config {
-        path: dir.join("placeholder").display().to_string(),
+        path: Some(dir.join("placeholder").display().to_string()),
         emit: Some(emit::Emit::Files),
         ..Config::default()
     }));

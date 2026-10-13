@@ -13,7 +13,7 @@ fn app_with_hide_view_key(name: &str) -> App<'static> {
     App::new(&Startup {
         bindings: keymap,
         ..Startup::from(Config {
-            path: file.display().to_string(),
+            path: Some(file.display().to_string()),
             ..Config::default()
         })
     })
@@ -248,7 +248,7 @@ fn the_status_line_counts_filters_on_while_the_pane_is_hidden() {
 fn hide_pane_at_startup_hides_those_panes() {
     let file = fixture_path("hide_startup", "alpha\n");
     let app = App::new(&Startup::from(Config {
-        path: file.display().to_string(),
+        path: Some(file.display().to_string()),
         hide_pane: Some(vec![
             crate::panes::Pane::Explorer,
             crate::panes::Pane::Filters,

@@ -262,7 +262,7 @@ fn the_editor_counts_past_a_truncated_preview() {
     let total = crate::widgets::fileview::PREVIEW_LINES + 100;
     fs::write(dir.join("big.log"), numbered_lines(total)).expect("write fixture");
     let mut app = App::new(&Startup::from(Config {
-        path: dir.join("placeholder").display().to_string(),
+        path: Some(dir.join("placeholder").display().to_string()),
         ..Config::default()
     }));
     key(&mut app, KeyCode::Down);
@@ -295,7 +295,7 @@ fn a_rebound_key_opens_the_editor() {
     let mut app = App::new(&Startup {
         bindings: keymap,
         ..Startup::from(Config {
-            path: file.display().to_string(),
+            path: Some(file.display().to_string()),
             ..Config::default()
         })
     });
