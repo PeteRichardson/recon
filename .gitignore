@@ -1,3 +1,4 @@
 /target
 /.claude/worktrees
 /.superpowers/
+/docs/reviews/code-review*.md
