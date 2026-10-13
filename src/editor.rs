@@ -321,6 +321,10 @@ pub struct Templates {
     pub project: String,
     /// `O` — the file-only template (#41).
     pub file: String,
+    /// The program `$VISUAL`/`$EDITOR` named, when either template above came
+    /// from it. A non-zero exit from it gets a hint (#370): a terminal editor
+    /// is the usual thing found there, and it cannot run without a terminal.
+    pub fallback: Option<String>,
 }
 
 /// Nothing configured anywhere: the bottom rung of both ladders. Written
@@ -388,7 +392,17 @@ impl Templates {
                     .unwrap_or_else(|| DEFAULT_PROJECT_TEMPLATE.to_string())
             });
 
-        Self { project, file }
+        // Only the program, as the launcher names it: the first word of the
+        // template, which is what `editor_command` puts in `argv[0]`.
+        let fallback = generic
+            .filter(|generic| *generic == project || *generic == file)
+            .and_then(|generic| split_template(&generic).ok()?.into_iter().next());
+
+        Self {
+            project,
+            file,
+            fallback,
+        }
     }
 }
 
@@ -476,15 +490,38 @@ pub struct ProcessLauncher {
     /// reaper thread sends a ready-to-display message and `App` drains it onto
     /// the status row on its next poll.
     outcomes: Option<Sender<String>>,
+    /// [`Templates::fallback`]: the program whose failure gets a hint.
+    fallback: Option<String>,
 }
 
 impl ProcessLauncher {
     #[must_use]
-    pub fn new(outcomes: Sender<String>) -> Self {
+    pub fn new(outcomes: Sender<String>, fallback: Option<String>) -> Self {
         Self {
             outcomes: Some(outcomes),
+            fallback,
         }
     }
+}
+
+/// What the status row says when `program` exits non-zero.
+///
+/// The `fallback` program gets a hint (#370). recon gives every editor a null
+/// stdin, so a terminal editor such as `vim` reads end-of-file and exits 1;
+/// `$VISUAL`/`$EDITOR` is where such an editor usually comes from, and a
+/// template from `--print-editor-config` is the fix — it opens the editor in
+/// a new window.
+pub fn exit_report(
+    program: &str,
+    status: impl std::fmt::Display,
+    fallback: Option<&str>,
+) -> String {
+    let hint = if fallback == Some(program) {
+        " — a terminal editor needs its own window: see `recon --print-editor-config`"
+    } else {
+        ""
+    };
+    format!("{program} exited with {status}{hint}")
 }
 
 impl Launcher for ProcessLauncher {
@@ -509,6 +546,7 @@ impl Launcher for ProcessLauncher {
             .spawn()?;
 
         let outcomes = self.outcomes.clone();
+        let fallback = self.fallback.clone();
         // Lossy is right here: this is a name for a status message, not a
         // path anything will open.
         let name = program.to_string_lossy().into_owned();
@@ -538,11 +576,9 @@ impl Launcher for ProcessLauncher {
                     // Logged because "the editor exited badly and recon said
                     // nothing" is otherwise indistinguishable from "recon never
                     // launched it".
-                    log::warn!("{name} exited with {status}");
-                    if outcomes
-                        .send(format!("{name} exited with {status}"))
-                        .is_err()
-                    {
+                    let report = exit_report(&name, status, fallback.as_deref());
+                    log::warn!("{report}");
+                    if outcomes.send(report).is_err() {
                         // A closed receiver means recon is shutting down, which is
                         // not worth reporting to anyone — hence `debug!` rather
                         // than `warn!` (#83).
@@ -1306,6 +1342,53 @@ mod tests {
         assert_eq!(templates.project, DEFAULT_PROJECT_TEMPLATE);
     }
 
+    /// #370: the program `$VISUAL`/`$EDITOR` named is remembered, so its
+    /// failure can say why a terminal editor fails under recon.
+    #[test]
+    fn the_fallback_program_is_remembered_when_a_template_uses_it() {
+        let templates = Templates::resolve(None, None, None, Some("vim -u NONE"));
+        assert_eq!(templates.fallback.as_deref(), Some("vim"));
+    }
+
+    /// A config template outranks the variable on both keys, so nothing that
+    /// `o` or `O` runs came from it.
+    #[test]
+    fn no_fallback_program_when_the_config_outranks_the_variable() {
+        let templates = Templates::resolve(Some("subl {project} {file}"), None, None, Some("vim"));
+        assert_eq!(templates.fallback, None);
+    }
+
+    #[test]
+    fn no_fallback_program_when_nothing_is_set() {
+        assert_eq!(Templates::default().fallback, None);
+    }
+
+    /// #370: `vim` from `$EDITOR` reads end-of-file on its null stdin and
+    /// exits 1. The report says what to do about it.
+    #[test]
+    fn the_fallback_program_exit_points_at_print_editor_config() {
+        let report = exit_report("vim", "exit status: 1", Some("vim"));
+        assert_eq!(
+            report,
+            "vim exited with exit status: 1 — a terminal editor needs its own window: \
+             see `recon --print-editor-config`"
+        );
+    }
+
+    /// Any other program is one the user configured for recon on purpose, so
+    /// the hint would only be noise.
+    #[test]
+    fn a_configured_program_exit_gets_no_hint() {
+        assert_eq!(
+            exit_report("zed", "exit status: 1", Some("vim")),
+            "zed exited with exit status: 1"
+        );
+        assert_eq!(
+            exit_report("zed", "exit status: 1", None),
+            "zed exited with exit status: 1"
+        );
+    }
+
     // ---- --print-editor-config -------------------------------------------
 
     #[test]
@@ -1394,7 +1477,7 @@ mod tests {
     #[ignore = "spawns a real process; run with `cargo test -- --ignored`"]
     fn a_real_process_spawns_and_is_reaped() {
         let (tx, rx) = std::sync::mpsc::channel();
-        let launcher = ProcessLauncher::new(tx);
+        let launcher = ProcessLauncher::new(tx, None);
         launcher
             .spawn(&["true".into()])
             .expect("`true` exists on every Unix");
@@ -1412,7 +1495,7 @@ mod tests {
     #[test]
     fn a_missing_program_is_an_error_rather_than_a_panic() {
         let (tx, _rx) = std::sync::mpsc::channel();
-        let launcher = ProcessLauncher::new(tx);
+        let launcher = ProcessLauncher::new(tx, None);
         let err = launcher
             .spawn(&["recon-definitely-not-a-real-program".into()])
             .expect_err("a missing program cannot spawn");

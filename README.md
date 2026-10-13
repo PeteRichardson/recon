@@ -2174,7 +2174,12 @@ zed {project} {file}:{line}                  zed {file}:{line}
 `$VISUAL`/`$EDITOR` sit below the file on purpose: they are not recon's
 variables, and someone with a global `EDITOR=vim` who has *also* written a recon
 editor template plainly meant the template to win. A bare command name found
-there gains a `{file}`, so `EDITOR=vim` still opens the file.
+there gains a `{file}`, so `EDITOR=code` still opens the file.
+
+A terminal editor found there does not: recon starts every editor with no
+terminal (its stdin, stdout and stderr go to `/dev/null`), so `EDITOR=vim`
+exits at once and the status row says so, with a pointer to
+`recon --print-editor-config`. Give it its own window, as below.
 
 ### Terminal editors
 

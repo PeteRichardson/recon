@@ -382,6 +382,8 @@ impl App<'_> {
         // outlive every launcher clone, and a channel built on demand would
         // need a second field to remember whether it already existed.
         let (outcomes_tx, outcomes_rx) = std::sync::mpsc::channel();
+        let editor = config.editor_templates();
+        let launcher = editor::ProcessLauncher::new(outcomes_tx, editor.fallback.clone());
         let (scan_tx, scan_rx) = std::sync::mpsc::channel();
 
         // The background's palette, unless the file set one (#231); the
@@ -443,7 +445,7 @@ impl App<'_> {
             document: Document::default(),
             last_generation: None,
             last_window: None,
-            editor: config.editor_templates(),
+            editor,
             // Resolved by `startup::start` before the terminal came up
             // (`keymap::config::build`), so nothing fallible happens here —
             // this function returns `Self` and has nowhere to put an error.
@@ -452,7 +454,7 @@ impl App<'_> {
             center_jumps: config.center_jumps(),
             emit: config.emit,
             line_numbers: config.line_numbers,
-            launcher: Box::new(editor::ProcessLauncher::new(outcomes_tx)),
+            launcher: Box::new(launcher),
             status_message: None,
             editor_outcomes: Some(outcomes_rx),
             peek: None,
