@@ -488,3 +488,57 @@ fn shift_o_typed_into_a_prompt_is_text_not_the_open_key() {
     assert!(launcher.is_empty(), "`O` fired from inside a prompt");
     assert_eq!(prompt_line(&mut app), "/O");
 }
+
+// ---- a terminal editor from $VISUAL/$EDITOR (#370) -------------------
+
+/// recon gives an editor no terminal, so `nvim` from `$EDITOR` would run
+/// hidden and never exit, and `vim` would exit 1 at once. `o` does not start
+/// either; it says why, short enough to fit an 80-column row.
+#[test]
+fn a_terminal_editor_from_the_variable_is_not_started() {
+    for (fixture, program) in [
+        ("o_terminal_nvim", "nvim"),
+        ("o_terminal_vim", "vim"),
+        ("o_terminal_vi_path", "/usr/bin/vi"),
+    ] {
+        let (mut app, _root) = app_over_project(fixture, "alpha\n");
+        app.editor = editor::Templates::resolve(None, None, None, Some(program));
+        let launcher = record_launches(&mut app, RecordingLauncher::default());
+
+        key(&mut app, KeyCode::Char('o'));
+
+        assert!(launcher.is_empty(), "{program} was started");
+        let row = status_line(&mut app);
+        assert!(
+            row.contains("recon --print-editor-config"),
+            "{program}: {row}"
+        );
+        let message = app.status_message.as_ref().expect("a message").text.clone();
+        assert!(message.chars().count() <= 80, "{message}");
+    }
+}
+
+/// A GUI editor from the variable starts as before.
+#[test]
+fn a_gui_editor_from_the_variable_is_started() {
+    let (mut app, _root) = app_over_project("o_gui_editor", "alpha\n");
+    app.editor = editor::Templates::resolve(None, None, None, Some("code -w"));
+    let launcher = record_launches(&mut app, RecordingLauncher::default());
+
+    key(&mut app, KeyCode::Char('o'));
+
+    assert_eq!(launcher.only_command()[0], "code");
+}
+
+/// A terminal editor in a recon template is the user's own choice — a
+/// wrapper script, say — and is started as written.
+#[test]
+fn a_terminal_editor_in_a_recon_template_is_started() {
+    let (mut app, _root) = app_over_project("o_configured_vim", "alpha\n");
+    app.editor = editor::Templates::resolve(Some("vim {file}"), None, None, Some("nvim"));
+    let launcher = record_launches(&mut app, RecordingLauncher::default());
+
+    key(&mut app, KeyCode::Char('o'));
+
+    assert_eq!(launcher.only_command()[0], "vim");
+}

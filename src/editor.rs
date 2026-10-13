@@ -322,8 +322,10 @@ pub struct Templates {
     /// `O` — the file-only template (#41).
     pub file: String,
     /// The program `$VISUAL`/`$EDITOR` named, when either template above came
-    /// from it. A non-zero exit from it gets a hint (#370): a terminal editor
-    /// is the usual thing found there, and it cannot run without a terminal.
+    /// from it (#370). A terminal editor found there is not started, and any
+    /// other program from there gets a hint when it exits non-zero: a
+    /// terminal editor is the usual thing found there, and it cannot run
+    /// without a terminal.
     pub fallback: Option<String>,
 }
 
@@ -504,24 +506,53 @@ impl ProcessLauncher {
     }
 }
 
+/// Where a hint about a terminal editor sends the user. Plain text, not a
+/// code span: the status row draws it literally. Short, so the whole hint
+/// fits an 80-column row.
+const PRINT_EDITOR_CONFIG_HINT: &str = "see recon --print-editor-config";
+
+/// Editors that draw in the terminal they were started from (#370).
+///
+/// recon starts an editor with stdin, stdout and stderr on `/dev/null`, so
+/// none of these can run: `vim` exits 1 at once, and `nvim` runs on, hidden,
+/// and never exits. Matched on the program's file name, so `/usr/bin/vi`
+/// counts. `emacs` is not here: it opens its own window when it can.
+const TERMINAL_EDITORS: &[&str] = &[
+    "vi", "vim", "nvim", "view", "ex", "nano", "pico", "hx", "helix", "micro", "kak", "vis", "joe",
+    "mg", "ne", "ed",
+];
+
+/// Whether `program` is one of [`TERMINAL_EDITORS`].
+#[must_use]
+pub fn is_terminal_editor(program: &str) -> bool {
+    std::path::Path::new(program)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| TERMINAL_EDITORS.contains(&name))
+}
+
+/// What the status row says instead of starting a terminal editor that
+/// `$VISUAL`/`$EDITOR` named.
+#[must_use]
+pub fn terminal_editor_refusal(program: &str) -> String {
+    format!("{program} needs a terminal window: {PRINT_EDITOR_CONFIG_HINT}")
+}
+
 /// What the status row says when `program` exits non-zero.
 ///
-/// The `fallback` program gets a hint (#370). recon gives every editor a null
-/// stdin, so a terminal editor such as `vim` reads end-of-file and exits 1;
-/// `$VISUAL`/`$EDITOR` is where such an editor usually comes from, and a
-/// template from `--print-editor-config` is the fix — it opens the editor in
-/// a new window.
+/// The `fallback` program gets a hint (#370). A terminal editor that
+/// [`is_terminal_editor`] knows is never started from the fallback, but one
+/// it does not know is, and fails the same way: recon gives it a null stdin.
 pub fn exit_report(
     program: &str,
     status: impl std::fmt::Display,
     fallback: Option<&str>,
 ) -> String {
-    let hint = if fallback == Some(program) {
-        " — a terminal editor needs its own window: see `recon --print-editor-config`"
+    if fallback == Some(program) {
+        format!("{program} exited with {status}: {PRINT_EDITOR_CONFIG_HINT}")
     } else {
-        ""
-    };
-    format!("{program} exited with {status}{hint}")
+        format!("{program} exited with {status}")
+    }
 }
 
 impl Launcher for ProcessLauncher {
@@ -1370,9 +1401,10 @@ mod tests {
         let report = exit_report("vim", "exit status: 1", Some("vim"));
         assert_eq!(
             report,
-            "vim exited with exit status: 1 — a terminal editor needs its own window: \
-             see `recon --print-editor-config`"
+            "vim exited with exit status: 1: see recon --print-editor-config"
         );
+        // The command is the part that matters, so it must fit 80 columns.
+        assert!(report.chars().count() <= 80, "{report}");
     }
 
     /// Any other program is one the user configured for recon on purpose, so

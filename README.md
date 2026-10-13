@@ -2176,10 +2176,13 @@ variables, and someone with a global `EDITOR=vim` who has *also* written a recon
 editor template plainly meant the template to win. A bare command name found
 there gains a `{file}`, so `EDITOR=code` still opens the file.
 
-A terminal editor found there does not: recon starts every editor with no
-terminal (its stdin, stdout and stderr go to `/dev/null`), so `EDITOR=vim`
-exits at once and the status row says so, with a pointer to
-`recon --print-editor-config`. Give it its own window, as below.
+A terminal editor found there (`vi`, `vim`, `nvim`, `nano`, `hx`, `micro`,
+`kak` and a few more) is not started. recon starts every editor with no
+terminal (its stdin, stdout and stderr go to `/dev/null`), where `vim` exits
+at once and `nvim` runs on, hidden. The status row says
+`nvim needs a terminal window: see recon --print-editor-config` instead.
+Give it its own window, as below. A terminal editor in a recon template is
+started as written.
 
 ### Terminal editors
 

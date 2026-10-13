@@ -80,6 +80,16 @@ impl App<'_> {
             .first()
             .map(|program| program.to_string_lossy().into_owned())
             .unwrap_or_default();
+        // A terminal editor from `$VISUAL`/`$EDITOR` cannot run without a
+        // terminal, and `nvim` would stay alive, hidden (#370). One in a recon
+        // template is started as written: that is the user's own choice, and
+        // may be a wrapper that opens a window.
+        if self.editor.fallback.as_deref() == Some(program.as_str())
+            && editor::is_terminal_editor(&program)
+        {
+            self.report(&editor::terminal_editor_refusal(&program), true);
+            return;
+        }
         match self.launcher.spawn(&argv) {
             // Reported rather than silent: a GUI editor can take seconds to
             // raise a window, and a key that appears to have done nothing is a
