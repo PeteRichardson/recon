@@ -334,3 +334,60 @@ fn the_prompt_row_appears_only_while_searching() {
 
     assert_ne!(idle, prompt_line(&mut app));
 }
+
+/// A wide character takes two columns of the row, so the cursor after
+/// `/日本` is in column 5, not 3 (#361).
+#[test]
+fn the_prompt_cursor_counts_columns_not_characters() {
+    let mut app = app_over_file("prompt_cursor_wide", "x\n");
+    key(&mut app, KeyCode::Char('/'));
+    typed(&mut app, "日本");
+    let y = AREA.height - 1;
+    let mut buf = Buffer::empty(AREA);
+    app.render(AREA, &mut buf);
+    let reversed: Vec<u16> = (0..AREA.width)
+        .filter(|&x| {
+            buf[(x, y)]
+                .modifier
+                .contains(ratatui::style::Modifier::REVERSED)
+        })
+        .collect();
+    assert_eq!(reversed, [5]);
+}
+
+/// The search badge is as wide as it is drawn: `/日本語` takes six
+/// columns for three characters, and the status text after it must not
+/// cover its end (#361).
+#[test]
+fn the_search_badge_is_measured_in_columns() {
+    let mut app = app_over_file("badge_wide", "日本語\nother\n");
+    app.focus = Focus::View;
+    key(&mut app, KeyCode::Char('/'));
+    typed(&mut app, "日本語");
+    key(&mut app, KeyCode::Enter);
+    assert!(app.prompt.is_none(), "sanity: the search was committed");
+    let y = AREA.height - 1;
+    let mut buf = Buffer::empty(AREA);
+    app.render(AREA, &mut buf);
+    // ` /日本語 ` is 1 + 1 + 6 + 1 columns. The second column of a wide
+    // character is hidden behind it, and ratatui resets its style.
+    for x in [0, 1, 2, 4, 6, 8] {
+        let cell = &buf[(x, y)];
+        assert_eq!(
+            cell.fg,
+            HIDE_BADGE_STYLE.fg.expect("a foreground"),
+            "column {x}"
+        );
+        assert_eq!(
+            cell.bg,
+            HIDE_BADGE_STYLE.bg.expect("a background"),
+            "column {x}"
+        );
+    }
+    let symbols: Vec<&str> = (0..10).map(|x| buf[(x, y)].symbol()).collect();
+    assert_eq!(
+        symbols,
+        [" ", "/", "日", " ", "本", " ", "語", " ", " ", " "]
+    );
+    assert_ne!(buf[(9, y)].bg, HIDE_BADGE_STYLE.bg.expect("a background"));
+}

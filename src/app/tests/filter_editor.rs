@@ -3408,3 +3408,133 @@ fn big_q_and_an_unchanged_session_do_not_warn() {
     key(&mut app, KeyCode::Char('q'));
     assert_eq!(app.state, AppState::Quit { emit: true });
 }
+
+// ---- display columns in the fields (#361) ---------------------------------
+
+/// Where `label` starts on `buf`, by column: a border cell is one column
+/// and three bytes, so a byte offset in the row's text is not a column.
+fn label_at(buf: &Buffer, label: &str) -> (u16, u16) {
+    let symbols: Vec<String> = label.chars().map(String::from).collect();
+    for y in 0..AREA.height {
+        for x in 0..AREA.width.saturating_sub(symbols.len() as u16) {
+            if (0..symbols.len()).all(|i| buf[(x + i as u16, y)].symbol() == symbols[i]) {
+                return (x, y);
+            }
+        }
+    }
+    panic!("no {label:?} on the screen");
+}
+
+/// The columns of row `y` in reversed video: in a field row, the cursor.
+fn reversed_in_row(buf: &Buffer, y: u16) -> Vec<u16> {
+    (0..AREA.width)
+        .filter(|&x| buf[(x, y)].modifier.contains(Modifier::REVERSED))
+        .collect()
+}
+
+/// The pattern field's row drawn, where its label starts, and its cursor.
+fn pattern_row(app: &mut App) -> (Buffer, u16, u16, Vec<u16>) {
+    let mut buf = Buffer::empty(AREA);
+    app.render(AREA, &mut buf);
+    let (x, y) = label_at(&buf, "pattern:");
+    let cursor = reversed_in_row(&buf, y);
+    (buf, x, y, cursor)
+}
+
+/// The width of `description: `, where every field's text starts.
+const FIELD_TEXT: u16 = 13;
+
+/// A wide character takes two columns, so the cursor after two of them is
+/// four columns in, not two.
+#[test]
+fn the_field_cursor_counts_columns_not_characters() {
+    let mut app = app_over_file("field_wide", BODY);
+    open_editor(&mut app);
+    typed(&mut app, "日本");
+    let (_, x, _, cursor) = pattern_row(&mut app);
+    assert_eq!(cursor, [x + FIELD_TEXT + 4]);
+
+    key(&mut app, KeyCode::Left);
+    let (_, x, _, cursor) = pattern_row(&mut app);
+    assert_eq!(cursor, [x + FIELD_TEXT + 2], "on `本`, not past it");
+}
+
+/// A tab in a field is drawn as the lines draw one, four blanks, and the
+/// cursor after it is past all four.
+#[test]
+fn a_tab_in_a_field_takes_four_columns() {
+    let mut app = app_over_file("field_tab", BODY);
+    open_editor(&mut app);
+    typed(&mut app, "a");
+    let field = &mut app.filter_editor.as_mut().expect("open").field;
+    field.pattern = "a\tb".to_string();
+    field.move_to_end();
+    let (buf, x, y, cursor) = pattern_row(&mut app);
+    let text = x + FIELD_TEXT;
+    assert_eq!(buf[(text + 5, y)].symbol(), "b");
+    assert_eq!(cursor, [text + 6]);
+}
+
+/// A pattern wider than the field scrolls, so what is typed is on the
+/// screen; going back to the start scrolls back.
+#[test]
+fn a_long_pattern_scrolls_to_keep_the_cursor_on_the_screen() {
+    let mut app = app_over_file("field_scroll", BODY);
+    open_editor(&mut app);
+    typed(&mut app, &"a".repeat(200));
+    typed(&mut app, "Z");
+    let (buf, x, y, cursor) = pattern_row(&mut app);
+    let [column] = cursor[..] else {
+        panic!("no cursor on the row: {cursor:?}");
+    };
+    assert!(column < AREA.width - 1, "the cursor is on the border");
+    assert_eq!(
+        buf[(column - 1, y)].symbol(),
+        "Z",
+        "the typed text is not shown"
+    );
+    assert_eq!(buf[(x, y)].symbol(), "p", "the label scrolled away");
+
+    // Back to the start: the text there comes back, and moving right in the
+    // middle does not scroll.
+    key(&mut app, KeyCode::Home);
+    let (buf, x, y, cursor) = pattern_row(&mut app);
+    assert_eq!(cursor, [x + FIELD_TEXT]);
+    assert_eq!(buf[(x + FIELD_TEXT, y)].symbol(), "a");
+    key(&mut app, KeyCode::Right);
+    let (_, x, _, cursor) = pattern_row(&mut app);
+    assert_eq!(cursor, [x + FIELD_TEXT + 1]);
+}
+
+/// The other fields scroll the same way.
+#[test]
+fn a_long_name_scrolls_too() {
+    let mut app = app_over_file("field_scroll_name", BODY);
+    open_editor_from_the_filter_pane(&mut app);
+    focus_field(&mut app, EditorFocus::Name);
+    typed(&mut app, &format!("{}Z", "n".repeat(200)));
+    let mut buf = Buffer::empty(AREA);
+    app.render(AREA, &mut buf);
+    let (_, y) = label_at(&buf, "name:");
+    let [column] = reversed_in_row(&buf, y)[..] else {
+        panic!("no cursor on the name row");
+    };
+    assert_eq!(buf[(column - 1, y)].symbol(), "Z");
+}
+
+/// A wide character under the cursor at the right edge is shown whole: the
+/// field scrolls one more column for it.
+#[test]
+fn a_wide_character_under_the_cursor_at_the_edge_is_shown_whole() {
+    let mut app = app_over_file("field_wide_edge", BODY);
+    open_editor(&mut app);
+    // The field's text is 103 columns wide on the 120-column screen.
+    typed(&mut app, &"a".repeat(102));
+    typed(&mut app, "日");
+    key(&mut app, KeyCode::Left);
+    let (buf, _, y, cursor) = pattern_row(&mut app);
+    let [column] = cursor[..] else {
+        panic!("no cursor on the row: {cursor:?}");
+    };
+    assert_eq!(buf[(column, y)].symbol(), "日");
+}

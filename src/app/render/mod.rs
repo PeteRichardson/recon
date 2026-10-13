@@ -75,7 +75,11 @@ impl Widget for &mut App<'_> {
         // to the row, so `status_bar_text`'s existing priority order — filter
         // state first, then whatever the path can elide itself into — still
         // has an accurate width to work with on a narrow terminal.
-        let badge_width: usize = badges.iter().map(|text| text.chars().count() + 1).sum();
+        // Columns, not chars (#361): `/日本語` draws six.
+        let badge_width: usize = badges
+            .iter()
+            .map(|text| UnicodeWidthStr::width(text.as_ref()) + 1)
+            .sum();
         let room = (prompt_area.width as usize).saturating_sub(badge_width);
         // The filter editor's count takes the row's text (#312): the
         // panes it describes are all under the editor.
@@ -197,7 +201,7 @@ impl Widget for &mut App<'_> {
                 prompt_area.width as usize,
                 HIDE_BADGE_STYLE,
             );
-            x += u16::try_from(badge.chars().count() + 1).unwrap_or(u16::MAX);
+            x += u16::try_from(UnicodeWidthStr::width(badge.as_ref()) + 1).unwrap_or(u16::MAX);
         }
         buf.set_stringn(
             prompt_area.x + badge_width as u16,
