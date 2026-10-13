@@ -629,11 +629,20 @@ impl FilterEditor {
     /// only one with versions.
     fn detail_field(&mut self) -> Option<&mut SearchPrompt> {
         match self.focus {
+            EditorFocus::Pattern => None,
+            focus => self.text_field(focus),
+        }
+    }
+
+    /// The text field `focus` names, or `None` for the sense and the lines.
+    pub(super) fn text_field(&mut self, focus: EditorFocus) -> Option<&mut SearchPrompt> {
+        match focus {
             EditorFocus::Name => Some(&mut self.name),
             EditorFocus::Description => Some(&mut self.description),
             EditorFocus::Prompt => Some(&mut self.prompt),
+            EditorFocus::Pattern => Some(&mut self.field),
             EditorFocus::Request => Some(&mut self.request),
-            EditorFocus::Sense | EditorFocus::Pattern | EditorFocus::Lines => None,
+            EditorFocus::Sense | EditorFocus::Lines => None,
         }
     }
 

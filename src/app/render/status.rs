@@ -60,7 +60,8 @@ pub(in crate::app) fn stale_badge_text(keymap: &crate::keymap::Keymap) -> Option
 /// and is easy to forget while moving fast.
 pub(in crate::app) const AND_BADGE_TEXT: &str = " AND ";
 
-/// The longest pattern the search badge shows before eliding the tail. The
+/// The most columns of pattern the search badge shows before eliding the
+/// tail. The
 /// badge shares the status row with the filter summary and the path; a
 /// regex this long is still recognisable from its head.
 const SEARCH_BADGE_MAX: usize = 32;
@@ -141,10 +142,17 @@ pub(in crate::app) fn elide_right(text: &str, width: usize) -> String {
 }
 
 /// The search badge: `/pattern`, padded like the other badges, with the
-/// tail elided past `SEARCH_BADGE_MAX` characters.
+/// tail elided past `SEARCH_BADGE_MAX` columns (#361).
 pub(in crate::app) fn search_badge_text(pattern: &str) -> String {
-    let shown: String = pattern.chars().take(SEARCH_BADGE_MAX).collect();
-    let ellipsis = if pattern.chars().count() > SEARCH_BADGE_MAX {
+    let mut taken = 0;
+    let shown: String = pattern
+        .chars()
+        .take_while(|&ch| {
+            taken += UnicodeWidthChar::width(ch).unwrap_or(0);
+            taken <= SEARCH_BADGE_MAX
+        })
+        .collect();
+    let ellipsis = if shown.len() < pattern.len() {
         "…"
     } else {
         ""

@@ -6,6 +6,27 @@ use super::search::{Search, WRAPPED_TO_TOP};
 use crate::filter;
 use crate::widgets::Focus;
 use crossterm::event::{self, KeyCode, KeyModifiers};
+use unicode_width::UnicodeWidthChar;
+
+/// How a tab is drawn in a text row and in the filter editor's lines: a
+/// raw tab in a cell draws as nothing, and log lines carry them.
+pub(super) const TAB: &str = "    ";
+const _: () = assert!(TAB.len() == super::filter_editor::TAB_WIDTH);
+
+/// The columns `c` takes on the screen (#361): two for a wide character,
+/// `TAB`'s for a tab, and none for what draws as nothing.
+fn columns(c: char) -> usize {
+    if c == '\t' {
+        TAB.len()
+    } else {
+        c.width().unwrap_or(0)
+    }
+}
+
+/// The columns `text` takes on the screen, as `columns` counts them.
+fn text_columns(text: &str) -> usize {
+    text.chars().map(columns).sum()
+}
 
 /// Shown in the prompt when a pattern will not compile, after vim's error.
 pub(super) const INVALID_PATTERN: &str = "E486: invalid pattern";
@@ -163,6 +184,10 @@ pub(super) struct SearchPrompt {
     /// off the end to an empty prompt. Typing after a recall leaves it
     /// where it is, so the next Up still goes to the entry before.
     pub(super) recall: Option<usize>,
+    /// How many columns of the pattern are scrolled off the left of a
+    /// filter editor field (#361), which `window` moves to keep the cursor
+    /// on the screen. The bottom row does not scroll.
+    pub(super) scroll: usize,
 }
 
 impl SearchPrompt {
@@ -195,7 +220,7 @@ impl SearchPrompt {
     pub(super) fn line(&self) -> String {
         match &self.error {
             Some(error) => error.clone(),
-            None => format!("{}{}", self.sigil(), self.pattern),
+            None => format!("{}{}", self.sigil(), self.pattern.replace('\t', TAB)),
         }
     }
 
@@ -220,12 +245,62 @@ impl SearchPrompt {
     }
 
     /// Where the row draws the cursor: the column after the sigil and the
-    /// characters before the cursor. `None` while an error is showing, which
+    /// text before the cursor. Columns, not characters (#361): a wide
+    /// character takes two. `None` while an error is showing, which
     /// replaces the pattern on the row and has no cursor in it.
     pub(super) fn cursor_column(&self) -> Option<usize> {
         self.error
             .is_none()
-            .then(|| self.sigil().chars().count() + self.cursor)
+            .then(|| text_columns(self.sigil()) + self.columns_before_cursor())
+    }
+
+    /// The columns the pattern takes before the cursor.
+    fn columns_before_cursor(&self) -> usize {
+        text_columns(&self.pattern[..self.byte_at(self.cursor)])
+    }
+
+    /// The part of the pattern a field `width` columns wide shows, tabs
+    /// drawn as blanks, and the cursor's column in it (#361).
+    ///
+    /// The field scrolls as little as it can: only when the cursor would go
+    /// off one side, and back when the text no longer fills the field, so
+    /// moving inside what is shown moves the cursor and not the text. The
+    /// cursor at the end takes a column of its own. A wide character cut by
+    /// the left edge is drawn as a blank.
+    pub(super) fn window(&mut self, width: usize) -> (String, usize) {
+        let cursor = self.columns_before_cursor();
+        // A wide character under the cursor is shown whole.
+        let under = self.pattern[self.byte_at(self.cursor)..]
+            .chars()
+            .next()
+            .map_or(1, |c| columns(c).max(1));
+        let end = text_columns(&self.pattern) + 1;
+        self.scroll = self.scroll.min(end.saturating_sub(width));
+        if cursor < self.scroll {
+            self.scroll = cursor;
+        } else if cursor + under > self.scroll + width {
+            self.scroll = (cursor + under).saturating_sub(width);
+        }
+        let mut shown = String::new();
+        let mut at = 0;
+        for c in self.pattern.chars() {
+            let (start, next) = (at, at + columns(c));
+            at = next;
+            if next <= self.scroll {
+                continue;
+            }
+            if next > self.scroll + width {
+                break;
+            }
+            if start < self.scroll {
+                shown.push_str(&" ".repeat(next - self.scroll));
+            } else if c == '\t' {
+                shown.push_str(TAB);
+            } else {
+                shown.push(c);
+            }
+        }
+        (shown, cursor.saturating_sub(self.scroll))
     }
 
     /// Byte offset of character `index` — `cursor` is a character index,

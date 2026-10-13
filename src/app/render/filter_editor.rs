@@ -5,8 +5,9 @@
 
 use super::super::filter_editor::{
     Check, EditorFocus, FilterEditor, GENERATED, Generated, Mark, PATTERN_CHANGED,
-    PROMPT_CHANGED_NO_MODEL, TAB_WIDTH, prompt_changed,
+    PROMPT_CHANGED_NO_MODEL, prompt_changed,
 };
+use super::super::prompt::TAB;
 use crate::filter::Sense;
 use crate::keymap::{ActionId, Keymap};
 use crate::widgets::pane_block;
@@ -15,11 +16,6 @@ use ratatui::prelude::{
 };
 use ratatui::widgets::Clear;
 use unicode_width::UnicodeWidthStr;
-
-/// How many columns a tab takes. A raw tab in a cell draws as nothing, and
-/// log lines carry them.
-const TAB: &str = "    ";
-const _: () = assert!(TAB.len() == TAB_WIDTH);
 
 /// The columns before each line: the cursor, the mark, and a space (#314).
 const GUTTER: u16 = 3;
@@ -126,36 +122,44 @@ impl FilterEditor {
         // Row 3 is the sense, which is a choice, not text. The request line
         // is row 5, with a model only.
         let mut fields = vec![
-            ("name:", &self.name, EditorFocus::Name, 0),
-            (
-                "description:",
-                &self.description,
-                EditorFocus::Description,
-                1,
-            ),
-            ("prompt:", &self.prompt, EditorFocus::Prompt, 2),
-            ("pattern:", &self.field, EditorFocus::Pattern, 4),
+            ("name:", EditorFocus::Name, 0),
+            ("description:", EditorFocus::Description, 1),
+            ("prompt:", EditorFocus::Prompt, 2),
+            ("pattern:", EditorFocus::Pattern, 4),
         ];
         if self.model {
-            fields.push(("request:", &self.request, EditorFocus::Request, 5));
+            fields.push(("request:", EditorFocus::Request, 5));
         }
-        for (label, field, focus, row) in fields {
+        // How many columns of the prompt are drawn, for the note after it.
+        let mut prompt_shown = 0;
+        // The text of a field starts after its label, and scrolls in the
+        // columns left (#361).
+        let text_width = usize::from(width).saturating_sub(LABEL_WIDTH);
+        for (label, focus, row) in fields {
             let y = inner.y + row;
             if y >= inner.bottom() {
                 continue;
             }
+            let focused = self.focus == focus;
+            let Some(field) = self.text_field(focus) else {
+                continue;
+            };
+            let (shown, cursor) = field.window(text_width);
+            if focus == EditorFocus::Prompt {
+                prompt_shown = UnicodeWidthStr::width(shown.as_str());
+            }
             buf.set_stringn(
                 x,
                 y,
-                format!("{label:LABEL_WIDTH$}{}", field.pattern),
+                format!("{label:LABEL_WIDTH$}{shown}"),
                 usize::from(width),
                 Style::default(),
             );
             // The cursor as the prompt row draws it: the cell in reversed
             // video. Only in the field the keys go to: on the lines, the
             // cursor line is the one to watch.
-            let column = LABEL_WIDTH + field.cursor;
-            if self.focus == focus
+            let column = LABEL_WIDTH + cursor;
+            if focused
                 && let Ok(column) = u16::try_from(column)
                 && column < width
             {
@@ -170,7 +174,7 @@ impl FilterEditor {
             && inner.height > 2
         {
             // Terminal columns, not chars: a wide character takes two.
-            let column = LABEL_WIDTH + UnicodeWidthStr::width(self.prompt.pattern.as_str()) + 2;
+            let column = LABEL_WIDTH + prompt_shown + 2;
             if let Ok(column) = u16::try_from(column)
                 && column < width
             {
