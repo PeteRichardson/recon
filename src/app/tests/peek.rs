@@ -340,14 +340,15 @@ fn the_key_that_closes_help_does_nothing_else() {
     assert!(app.is_running(), "the key that closed help also quit");
 }
 
-/// A mouse moving across the terminal must not wipe the overlay away — the
-/// same reasoning `handle_event` already applies to the status message.
+/// A mouse event must not wipe the overlay away — the same reasoning
+/// `handle_event` already applies to the status message. A right click,
+/// because motion never reaches dispatch at all (#378).
 #[test]
 fn a_mouse_event_does_not_close_the_help_overlay() {
     let mut app = app_over("help_mouse", &["a.rs"]);
     key(&mut app, KeyCode::Char('?'));
 
-    mouse(&mut app, MouseEventKind::Moved, 10);
+    mouse(&mut app, MouseEventKind::Down(MouseButton::Right), 10);
 
     assert!(app.help, "a mouse event closed the help overlay");
 }

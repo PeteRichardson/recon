@@ -153,7 +153,7 @@ fn draw(app: &mut App) {
 /// The click clock is frozen on the first event, so two clicks are a
 /// double-click however slow the machine is (#391). A test of a slow second
 /// click moves it on with `later`.
-fn mouse_at(app: &mut App, kind: MouseEventKind, column: u16, row: u16) {
+fn mouse_at(app: &mut App, kind: MouseEventKind, column: u16, row: u16) -> bool {
     if !app.click_clock.is_set() {
         app.click_clock.set(std::time::Instant::now());
     }
@@ -162,7 +162,7 @@ fn mouse_at(app: &mut App, kind: MouseEventKind, column: u16, row: u16) {
         column,
         row,
         modifiers: KeyModifiers::empty(),
-    }));
+    }))
 }
 
 /// Move the click clock `by` on from where it is.
@@ -173,8 +173,8 @@ fn later(app: &mut App, by: Duration) {
 
 /// Row 3 is inside the panes on every fixture area used here. Both
 /// dividers run the full height, so any such row hits them.
-fn mouse(app: &mut App, kind: MouseEventKind, column: u16) {
-    mouse_at(app, kind, column, 3);
+fn mouse(app: &mut App, kind: MouseEventKind, column: u16) -> bool {
+    mouse_at(app, kind, column, 3)
 }
 
 /// Press a key, as a real terminal would report it.
@@ -182,12 +182,12 @@ fn mouse(app: &mut App, kind: MouseEventKind, column: u16) {
 /// `SHIFT` on an uppercase letter is not decoration: crossterm attaches it
 /// in legacy mode, and a helper that omitted it hid #250 for the life of
 /// the test suite.
-fn key(app: &mut App, code: KeyCode) {
+fn key(app: &mut App, code: KeyCode) -> bool {
     let modifiers = match code {
         KeyCode::Char(c) if c.is_uppercase() => KeyModifiers::SHIFT,
         _ => KeyModifiers::empty(),
     };
-    app.handle_event(event::Event::Key(KeyEvent::new(code, modifiers)));
+    app.handle_event(event::Event::Key(KeyEvent::new(code, modifiers)))
 }
 
 /// `key`, with Control held.

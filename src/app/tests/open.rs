@@ -228,15 +228,16 @@ fn the_status_message_lasts_until_the_next_keypress() {
     );
 }
 
-/// A mouse move must *not* clear it. Mouse capture is on, so anything less
-/// deliberate than a keypress would wipe the message before it was read.
+/// A mouse event must *not* clear it. Mouse capture is on, so anything less
+/// deliberate than a keypress would wipe the message before it was read. A
+/// right click, because motion never reaches dispatch at all (#378).
 #[test]
 fn a_mouse_event_does_not_clear_the_status_message() {
     let (mut app, _root) = app_over_project("o_mouse", "alpha\n");
     record_launches(&mut app, RecordingLauncher::failing("boom"));
 
     key(&mut app, KeyCode::Char('o'));
-    mouse(&mut app, MouseEventKind::Moved, 60);
+    mouse(&mut app, MouseEventKind::Down(MouseButton::Right), 60);
 
     assert!(status_line(&mut app).contains("boom"));
 }

@@ -83,14 +83,15 @@ fn the_dismissing_key_does_not_also_act() {
     );
 }
 
-/// Mouse capture is on, so a mouse crossing the terminal must not wipe a
-/// panel mid-read. The help overlay makes the same distinction.
+/// Mouse capture is on, so a click must not wipe a panel mid-read. The help
+/// overlay makes the same distinction. A right click, because motion never
+/// reaches dispatch at all (#378).
 #[test]
 fn a_mouse_event_does_not_dismiss_the_panel() {
     let mut app = app_with_warnings("warning_panel_mouse", &["a.rs"]);
 
     app.handle_event(event::Event::Mouse(event::MouseEvent {
-        kind: event::MouseEventKind::Moved,
+        kind: event::MouseEventKind::Down(event::MouseButton::Right),
         column: 1,
         row: 1,
         modifiers: KeyModifiers::empty(),

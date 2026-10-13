@@ -53,7 +53,7 @@ impl App<'_> {
     ///
     /// Cheap-idempotent unless `force`: it compares the pattern generation, the
     /// masks and the directory to what it saw last time and returns at once
-    /// if nothing moved. Runs after every event, so that guard is what keeps a
+    /// if nothing moved. Runs after every dispatched event, so that guard is what keeps a
     /// keystroke in the file view from walking the listing at all.
     ///
     /// When it proceeds, every file the explorer lists is answered from the

@@ -274,7 +274,7 @@ impl App<'_> {
     }
 
     /// The one rule for where a selection can live: in the view, over the
-    /// document it was started on. Run after every event, so leaving the
+    /// document it was started on. Run after every dispatched event, so leaving the
     /// view by any route — `e`, `f`, `Tab`, a click — ends it without each
     /// route having to remember to.
     pub(crate) fn drop_visual_outside_the_view(&mut self) {

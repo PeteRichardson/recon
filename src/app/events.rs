@@ -30,25 +30,37 @@ impl App<'_> {
         let timeout = Duration::from_secs_f32(1.0 / 60.0);
         if event::poll(timeout)? {
             let event = event::read()?;
-            self.handle_event(event);
-            return Ok(true);
+            return Ok(self.handle_event(event) || drained);
         }
         Ok(drained)
     }
 
-    /// Dispatch a single event, then let the explorer's scan catch up.
+    /// Dispatch a single event, then let the explorer's scan catch up, and
+    /// say whether the screen needs drawing again.
     ///
     /// Split out from the polling loop so that it can be driven directly. The
     /// one thing added around `dispatch_event` is `refresh_scan`: the dispatch
     /// has two dozen early returns, and the scan guard has to run after every
     /// one of them.
-    pub fn handle_event(&mut self, event: event::Event) {
+    ///
+    /// Mouse motion is dropped here, unseen (#378). Mouse capture turns on
+    /// any-motion reporting, so a pointer crossing the window sends a stream
+    /// of these, and nothing in recon reacts to one: a click, a drag and the
+    /// wheel each have their own kind. Dispatching them cost a full frame
+    /// each. Every other event still redraws.
+    pub fn handle_event(&mut self, event: event::Event) -> bool {
+        if let event::Event::Mouse(mouse) = event
+            && mouse.kind == event::MouseEventKind::Moved
+        {
+            return false;
+        }
         self.dispatch_event(event);
         // Here, beside `refresh_scan`, for the same reason: the dispatch has
         // two dozen early returns and every one of them may have moved
         // focus (#67).
         self.drop_visual_outside_the_view();
         self.refresh_scan(false);
+        true
     }
 
     /// Dispatch a single event: app-wide keys first, then the focused widget.
@@ -107,12 +119,13 @@ impl App<'_> {
         }
 
         // The status message lasts until the next *keypress*, and deliberately
-        // not until the next event: mouse capture is on, so a mouse moving
-        // across the terminal would wipe "zed: No such file or directory" off
-        // the row before it could be read. `crossing` follows the same rule
-        // for the same reason: its notice and the accent on the title are
-        // read at a glance, and a mouse move must not wipe either before that
-        // glance happens.
+        // not until the next event: mouse capture is on, so a click or a turn
+        // of the wheel would wipe "zed: No such file or directory" off the row
+        // before it could be read. (Motion never gets this far — see
+        // `handle_event`.) `crossing` follows the same rule for the same
+        // reason: its notice and the accent on the title are read at a
+        // glance, and a mouse event must not wipe either before that glance
+        // happens.
         if matches!(event, event::Event::Key(_)) {
             self.status_message = None;
             self.crossing = None;
@@ -137,8 +150,8 @@ impl App<'_> {
         // acted on, and before every other binding, so the dismissing key
         // cannot also quit, move a cursor, or open an editor.
         //
-        // Only a *key* closes it. Mouse capture is on, so a mouse crossing the
-        // terminal would otherwise wipe the overlay mid-read — the same
+        // Only a *key* closes it. Mouse capture is on, so a click or the
+        // wheel would otherwise wipe the overlay mid-read — the same
         // reasoning `status_message` gets above.
         if self.help {
             if matches!(event, event::Event::Key(_)) {

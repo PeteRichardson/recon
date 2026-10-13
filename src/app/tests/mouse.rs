@@ -501,3 +501,21 @@ fn the_wheel_over_the_status_row_does_nothing() {
     assert_eq!(app.explorer.selected(), selected);
     assert!(app.prompt.is_none(), "not a click on the status row");
 }
+
+// ---- #378: motion is not a change -----------------------------------
+
+/// Mouse capture reports every motion, and nothing in recon reacts to one,
+/// so a pointer moving over the window must not cost a frame each.
+#[test]
+fn mouse_motion_asks_for_no_redraw() {
+    let (mut app, _root) = app_over_project("motion_no_redraw", "alpha\n");
+    assert!(!mouse(&mut app, MouseEventKind::Moved, 3));
+}
+
+/// Everything else still redraws: a click can move focus, a key anything.
+#[test]
+fn a_click_or_a_key_asks_for_a_redraw() {
+    let (mut app, _root) = app_over_project("click_redraws", "alpha\n");
+    assert!(mouse(&mut app, MouseEventKind::Down(MouseButton::Left), 3));
+    assert!(key(&mut app, KeyCode::Char('j')));
+}
