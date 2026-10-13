@@ -12,3 +12,14 @@ pre-release-commit-message = "chore(release): v{{version}}"
 pre-release-hook = [
     "git", "cliff", "--unreleased", "--tag", "v{{version}}", "--prepend", "CHANGELOG.md",
 ]
+
+# recon is a workspace (the vendored `tui-textarea-2` is a member), and in a
+# workspace cargo-release makes one consolidated commit, which leaves
+# `{{version}}` unrendered: "chore(release): v{{version}}". A commit per
+# package renders it. Only `recon` is released (`-p recon`), so this is
+# still one commit.
+consolidate-commits = false
+
+# Also in Cargo.toml. Here so that a release never tries crates.io, even if
+# the package setting changes.
+publish = false
