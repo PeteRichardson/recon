@@ -288,7 +288,7 @@ fn n_with_no_scan_running_says_no_matching_file() {
 }
 
 /// A real `n` pressed while the worker is still out says the same as
-/// the chain's synthetic one.
+/// the chain's step.
 #[test]
 fn n_before_the_first_answer_lands_says_scanning() {
     let mut app = app_over("n_scanning", &["a.log", "b.log"]);

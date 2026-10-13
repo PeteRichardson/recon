@@ -173,7 +173,7 @@ fn the_status_line_reports_filters_and_lines_shown() {
     let mut app = app_over_file("status_some", "alpha\nbeta\ngamma\n");
     // Set directly rather than through `f i … Enter` (#120): this
     // fixture's single-file directory has nothing else for the chain's
-    // synthetic `n` to step to (the scan has not answered yet at this
+    // step to reach (the scan has not answered yet at this
     // point in the test), and the resulting "no matching file" report
     // would displace the status this test means to check. That
     // interaction belongs to the keymap-chain tests, not this one.

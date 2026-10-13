@@ -2060,7 +2060,8 @@ impl App<'_> {
         // (#48), and end the chain where it started.
         self.swallow_next_enter = true;
         self.return_to_chain_origin();
-        // After the chain's `n`, whose keypress clears the status row.
+        // After the chain's step: the row holds one message, and this one
+        // outranks anything the step reports.
         if let Some(index) = target {
             self.report_unsaved_edit(index);
         }

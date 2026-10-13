@@ -512,8 +512,8 @@ impl App<'_> {
                         ) {
                             self.return_to_chain_origin();
                         }
-                        // After the chain's `n`, whose keypress clears the
-                        // status row.
+                        // After the chain's step: the row holds one message,
+                        // and this one outranks anything the step reports.
                         if let PromptKind::Edit { index, .. } = kind {
                             self.report_unsaved_edit(index);
                         }

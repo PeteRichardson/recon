@@ -229,9 +229,9 @@ pub struct App<'a> {
     /// row — which costs them one extra press and is indistinguishable from
     /// the bounce anyway.
     ///
-    /// A chain return spends this guard on its synthetic `n` and immediately
-    /// re-arms it for the real `Enter` still pending — see
-    /// `return_to_chain_origin`.
+    /// A chain return leaves this guard armed: it takes its step as an
+    /// action, not a key, so nothing spends the guard before the real
+    /// `Enter` still pending — see `return_to_chain_origin` (#377).
     swallow_next_enter: bool,
     /// Set when `q` found a file set with changes no file holds, and said so
     /// on the status row instead of quitting (#348). A `q` as the next key
