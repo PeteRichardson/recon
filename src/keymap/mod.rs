@@ -169,8 +169,10 @@ pub(crate) enum ActionId {
     GlobalHideExplorer,
     GlobalHideView,
     GlobalHideFilters,
+    /// `O`: the file's project in the editor (#42, #456).
     GlobalEditorProject,
-    GlobalEditorFile,
+    /// `o`: send the file to the app its type names (#456).
+    GlobalHandOff,
     GlobalReload,
     /// Step to the next view in the file's view cycle (#242, #455).
     GlobalNextView,
@@ -352,7 +354,7 @@ impl ActionId {
             Self::GlobalHideView => "global.hide.view",
             Self::GlobalHideFilters => "global.hide.filters",
             Self::GlobalEditorProject => "global.editor.project",
-            Self::GlobalEditorFile => "global.editor.file",
+            Self::GlobalHandOff => "global.handoff",
             Self::GlobalReload => "global.reload",
             Self::GlobalNextView => "global.view.next",
             Self::GlobalVisualChar => "global.visual.char",
@@ -501,8 +503,8 @@ pub(crate) const DEFAULT: &[(Scope, &str, ActionId)] = &[
     (Scope::Global, "z", ActionId::GlobalZoomFocused),
     (Scope::Global, "E", ActionId::GlobalHideExplorer),
     (Scope::Global, "F", ActionId::GlobalHideFilters),
-    (Scope::Global, "o", ActionId::GlobalEditorProject),
-    (Scope::Global, "O", ActionId::GlobalEditorFile),
+    (Scope::Global, "o", ActionId::GlobalHandOff),
+    (Scope::Global, "O", ActionId::GlobalEditorProject),
     (Scope::Global, "r", ActionId::GlobalReload),
     // Global, not `Scope::View`, so it works while the explorer steps
     // through files: that is where a binary file is first met (#242).

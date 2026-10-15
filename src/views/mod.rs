@@ -162,10 +162,7 @@ mod tests {
     #[test]
     fn raw_on_a_binary_file_falls_back_to_hex() {
         let binary = fixture_file("views_run_fallback.bin", b"a\0b");
-        let table = Table::new(&[FileType {
-            glob: "*.bin".parse().unwrap(),
-            views: vec![View::Raw],
-        }]);
+        let table = Table::new(&[FileType::with_views("*.bin", &[View::Raw])]);
 
         let done = run(&job(&binary, table), None);
 

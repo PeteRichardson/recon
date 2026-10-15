@@ -15,7 +15,7 @@
 //! ever handed to `sh -c`, so there is no second parser to get this wrong
 //! either. See `docs/specs/2026-08-22-opening-an-editor.md`.
 
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::Sender;
@@ -40,14 +40,14 @@ const PROJECT_MARKERS: [&str; 6] = [
     "go.mod",
 ];
 
-/// The compiled-in bottom of the `o` ladder.
+/// The compiled-in bottom of the `O` ladder.
 pub const DEFAULT_PROJECT_TEMPLATE: &str = "zed {project} {file}:{line}";
 
 /// Find the project enclosing `path`.
 ///
 /// Walks up from `path`'s directory — or from `path` itself when it is one —
 /// and stops at the first ancestor holding any of [`PROJECT_MARKERS`]. Falls
-/// back to that starting directory, so `o` always has somewhere to point: a
+/// back to that starting directory, so `O` always has somewhere to point: a
 /// stray log in `/var/log` opens `/var/log`, which is a worse answer than a
 /// project root and a much better one than nothing happening.
 ///
@@ -234,10 +234,29 @@ pub fn split_template(template: &str) -> Result<Vec<String>, TemplateError> {
 /// does not exist. The template itself is text and stays text.
 #[must_use]
 pub fn substitute(argv: &[String], project: &Path, file: &Path, line: usize) -> Vec<OsString> {
-    let project = project.as_os_str();
-    let file = file.as_os_str();
     let line = line.to_string();
+    fill(
+        argv,
+        &[
+            ("project", project.as_os_str()),
+            ("file", file.as_os_str()),
+            ("line", line.as_ref()),
+        ],
+    )
+}
 
+/// The argv of a `[[filetype]]` row's `handoff` (#456), with `{file}` and
+/// `{line}` filled in as [`substitute`] fills them. A hand-off has no
+/// `{project}`; one is left as written, as any unknown placeholder is.
+#[must_use]
+pub fn hand_off_command(argv: &[String], file: &Path, line: usize) -> Vec<OsString> {
+    let line = line.to_string();
+    fill(argv, &[("file", file.as_os_str()), ("line", line.as_ref())])
+}
+
+/// The one substitution pass behind [`substitute`] and [`hand_off_command`]:
+/// each `{name}` in `values` becomes its value.
+fn fill(argv: &[String], values: &[(&str, &OsStr)]) -> Vec<OsString> {
     argv.iter()
         .map(|entry| {
             let mut out = OsString::with_capacity(entry.len());
@@ -248,12 +267,11 @@ pub fn substitute(argv: &[String], project: &Path, file: &Path, line: usize) -> 
                 // An unclosed `{` is not a placeholder at all; the rest of the
                 // entry is ordinary text and the loop must end rather than spin.
                 let Some(close) = rest.find('}') else { break };
-                match &rest[1..close] {
-                    "project" => out.push(project),
-                    "file" => out.push(file),
-                    "line" => out.push(&line),
+                let name = &rest[1..close];
+                match values.iter().find(|(known, _)| *known == name) {
+                    Some((_, value)) => out.push(value),
                     // Unknown: copied through braces and all.
-                    _ => out.push(&rest[..=close]),
+                    None => out.push(&rest[..=close]),
                 }
                 rest = &rest[close + 1..];
             }
@@ -317,9 +335,10 @@ pub fn editor_command(
 /// setting most sessions never use.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Templates {
-    /// `o` — the project template.
+    /// `O` — the project template.
     pub project: String,
-    /// `O` — the file-only template (#41).
+    /// `o` — the file-only template (#41), for a text file that no
+    /// `[[filetype]]` row hands off (#456).
     pub file: String,
     /// The program `$VISUAL`/`$EDITOR` named, when either template above came
     /// from it (#370). A terminal editor found there is not started, and any
@@ -347,9 +366,9 @@ impl Templates {
     /// below them is decided here:
     ///
     /// ```text
-    /// o:  --editor / RECON_EDITOR / config  >  $VISUAL / $EDITOR  >  default
-    /// O:  --file-editor / RECON_FILE_EDITOR / config
-    ///       >  derive from the o template  >  $VISUAL / $EDITOR  >  default
+    /// O:  --editor / RECON_EDITOR / config  >  $VISUAL / $EDITOR  >  default
+    /// o:  --file-editor / RECON_FILE_EDITOR / config
+    ///       >  derive from the O template  >  $VISUAL / $EDITOR  >  default
     /// ```
     ///
     /// **`$VISUAL`/`$EDITOR` sit below the config file**, unlike `RECON_EDITOR`
@@ -382,7 +401,7 @@ impl Templates {
 
         let file = recon_file
             .map(str::to_string)
-            // Derived from what the user configured for `o`, not from `project`
+            // Derived from what the user configured for `O`, not from `project`
             // above: deriving from a `$VISUAL` fallback would drop a
             // `{project}` that is not there, and deriving from the compiled-in
             // default would outrank `$VISUAL` — putting a rung of the ladder
@@ -426,11 +445,11 @@ fn generic_editor_template(value: &str) -> String {
     }
 }
 
-/// `drop_project` at the template level, for the derive rung of the `O` ladder.
+/// `drop_project` at the template level, for the derive rung of the `o` ladder.
 ///
 /// `None` when the template cannot be split — a broken template must not turn
 /// into a *differently* broken derived one; the ladder falls through and the
-/// user gets the error from the `o` key, once, where they can act on it.
+/// user gets the error from the `O` key, once, where they can act on it.
 fn derive_file_template(template: &str) -> Option<String> {
     let argv = split_template(template).ok()?;
     Some(shell_join(&drop_project(&argv)))
@@ -769,6 +788,7 @@ pub fn print_editor_config(
         "# recon editor templates ({name})\n\
          # Paste into ~/.config/recon/config.toml — recon never writes it for you.\n\
          # {{project}} = project root, {{file}} = the file, {{line}} = the cursor's line.\n\
+         # `O` runs `project`. `o` runs `file` for a text file that no [[filetype]] row hands off.\n\
          [editor]\n\
          project = {}\n\
          file = {}\n",
@@ -968,7 +988,7 @@ mod tests {
         }
     }
 
-    /// No marker anywhere above: `o` still has to do something, and the file's
+    /// No marker anywhere above: `O` still has to do something, and the file's
     /// own directory is the honest answer.
     ///
     /// Built under the system temp directory, not `target/`, and that is the
@@ -993,7 +1013,7 @@ mod tests {
 
     /// The bug this function's absolutising step exists for. A relative path's
     /// ancestors bottom out at `""`, and `"".join("Cargo.toml")` tests the
-    /// *current working directory* — so without it, `o` on a relative path
+    /// *current working directory* — so without it, `O` on a relative path
     /// would report whatever project recon was launched from, which is very
     /// often a plausible-looking wrong answer.
     #[test]
@@ -1005,7 +1025,7 @@ mod tests {
 
     /// The explorer can have a directory selected, and the file view shows its
     /// listing. Walking up from the directory itself — rather than from its
-    /// parent — is what makes `o` on a project's own root open that project.
+    /// parent — is what makes `O` on a project's own root open that project.
     #[test]
     fn a_directory_walks_up_from_itself() {
         let root = tree("dir-arg", &["Cargo.toml", "src/"]);

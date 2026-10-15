@@ -729,8 +729,8 @@ mod tests {
 
     #[test]
     fn a_written_line_takes_a_key_from_another_actions_default() {
-        // 'o' is global.editor.project's only default key. global.quit asks
-        // for it, so the editor binding is left with nothing at all.
+        // 'o' is global.handoff's only default key. global.quit asks for it,
+        // so the hand-off binding is left with nothing at all.
         let report = report(&[("global.quit", &["o"])]);
 
         assert_eq!(report.errors, vec![]);
@@ -740,19 +740,15 @@ mod tests {
                 taken_in: vec![Scope::Global],
                 key: "o".to_string(),
                 winner: ActionId::GlobalQuit,
-                loser: ActionId::GlobalEditorProject,
+                loser: ActionId::GlobalHandOff,
                 remaining: vec![],
                 lost_in: vec![Scope::Global],
             }],
-            "global.editor.project has only 'o', so it is left with no key at all"
+            "global.handoff has only 'o', so it is left with no key at all"
         );
         assert_eq!(
             report.evict,
-            vec![(
-                Scope::Global,
-                "o".to_string(),
-                ActionId::GlobalEditorProject
-            )],
+            vec![(Scope::Global, "o".to_string(), ActionId::GlobalHandOff)],
             "the default's row must go, or the written line does not win"
         );
     }

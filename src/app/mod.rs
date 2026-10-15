@@ -326,20 +326,6 @@ fn executor() -> Box<dyn crate::views::pool::Executor> {
     }
 }
 
-/// Which of the two editor bindings is being carried out.
-///
-/// One enum rather than two methods: template resolution, argv splitting,
-/// substitution, spawning and error reporting are identical for both keys, so
-/// `O` costs one key and one match arm rather than a second copy of
-/// `open_in_editor`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum EditorScope {
-    /// `o` — walk up to the enclosing project.
-    Project,
-    /// `O` — the file alone, no walk-up.
-    File,
-}
-
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 enum AppState {
     #[default]

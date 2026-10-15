@@ -11,30 +11,77 @@ use serde::Deserialize;
 use std::path::Path;
 use std::sync::Arc;
 
-/// One `[[filetype]]` row of the config.
+/// One `[[filetype]]` row of the config. A row sets the cycle, the
+/// hand-off, or both. Each one comes from the first row that matches the
+/// file *and* sets it (#456), so a row with only a `handoff` leaves the
+/// cycle to the rows after it.
 #[derive(Deserialize, Debug, Clone, PartialEq, Eq)]
-#[serde(deny_unknown_fields)]
+#[serde(try_from = "RawFileType")]
 pub struct FileType {
     /// The files the row is for.
     pub glob: Glob,
     /// The cycle, default first. Never empty: the config refuses `[]`.
-    #[serde(deserialize_with = "some_views")]
-    pub views: Vec<View>,
+    pub views: Option<Vec<View>>,
+    /// The argv `o` starts for the file, with `{file}` and `{line}`
+    /// filled in. Never empty: the config refuses `[]`.
+    pub handoff: Option<Vec<String>>,
 }
 
-/// `views = []` names no view to show, so it is a config error, not a row
-/// that matches and then shows nothing.
-fn some_views<'de, D>(deserializer: D) -> Result<Vec<View>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    use serde::de::Error;
-
-    let views = Vec::<View>::deserialize(deserializer)?;
-    if views.is_empty() {
-        return Err(D::Error::custom("`views` names no view"));
+#[cfg(test)]
+impl FileType {
+    /// A row that sets only the cycle.
+    pub(crate) fn with_views(glob: &str, views: &[View]) -> Self {
+        Self {
+            glob: glob.parse().expect("a glob"),
+            views: Some(views.to_vec()),
+            handoff: None,
+        }
     }
-    Ok(views)
+
+    /// A row that sets only the hand-off.
+    pub(crate) fn with_hand_off(glob: &str, argv: &[&str]) -> Self {
+        Self {
+            glob: glob.parse().expect("a glob"),
+            views: None,
+            handoff: Some(argv.iter().map(ToString::to_string).collect()),
+        }
+    }
+}
+
+/// A row as the config writes it, before the checks that make a `FileType`.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawFileType {
+    glob: Glob,
+    views: Option<Vec<View>>,
+    handoff: Option<Vec<String>>,
+}
+
+impl TryFrom<RawFileType> for FileType {
+    type Error = String;
+
+    /// `views = []` names no view to show, and `handoff = []` no program to
+    /// start, so each is a config error, not a row that matches and then
+    /// does nothing. So is a row that sets neither.
+    fn try_from(raw: RawFileType) -> Result<Self, Self::Error> {
+        if raw.views.as_ref().is_some_and(Vec::is_empty) {
+            return Err("`views` names no view".to_string());
+        }
+        if raw.handoff.as_ref().is_some_and(Vec::is_empty) {
+            return Err("`handoff` names no program".to_string());
+        }
+        if raw.views.is_none() && raw.handoff.is_none() {
+            return Err(format!(
+                "the row for `{}` sets no `views` and no `handoff`",
+                raw.glob.text
+            ));
+        }
+        Ok(Self {
+            glob: raw.glob,
+            views: raw.views,
+            handoff: raw.handoff,
+        })
+    }
 }
 
 /// A shell-style glob: `*` and `?` inside one name, `**` across
@@ -134,10 +181,25 @@ enum Matcher {
     Any,
 }
 
+/// Where `o` sends a file (#456).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum HandOff {
+    /// A user row's `handoff`: an argv with `{file}` and `{line}` in it.
+    Argv(Vec<String>),
+    /// The built-in row for text: the editor's file template.
+    Editor,
+    /// The built-in row for a binary file: the operating system's default
+    /// app.
+    DefaultApp,
+}
+
+/// One row of the table. A user row sets `views`, `handoff` or both; a
+/// built-in row sets both, so every file finds each one.
 #[derive(Debug, Clone)]
 struct Row {
     matcher: Matcher,
-    views: Vec<View>,
+    views: Option<Vec<View>>,
+    handoff: Option<HandOff>,
 }
 
 /// Every row, the user's first. Built once at startup and shared with the
@@ -159,15 +221,18 @@ impl Table {
         let user = user.iter().map(|row| Row {
             matcher: Matcher::Glob(row.glob.clone()),
             views: row.views.clone(),
+            handoff: row.handoff.clone().map(HandOff::Argv),
         });
         let built_in = [
             Row {
                 matcher: Matcher::Binary,
-                views: vec![View::Hex],
+                views: Some(vec![View::Hex]),
+                handoff: Some(HandOff::DefaultApp),
             },
             Row {
                 matcher: Matcher::Any,
-                views: vec![View::Raw, View::Hex],
+                views: Some(vec![View::Raw, View::Hex]),
+                handoff: Some(HandOff::Editor),
             },
         ];
         Self {
@@ -175,24 +240,58 @@ impl Table {
         }
     }
 
-    /// The first row that matches `path`. `binary` is asked only when a
-    /// built-in row is reached, so a user row costs no read.
+    /// The row whose cycle `path` shows: the first that matches it and
+    /// has `views`. `binary` is asked only when a built-in row is reached,
+    /// so a user row costs no read.
     pub(crate) fn row_for(&self, path: &Path, binary: impl FnOnce() -> bool) -> usize {
+        self.first(path, binary, |row| row.views.is_some())
+    }
+
+    /// Where `o` sends `path`: the hand-off of the first row that matches
+    /// it and has one (#456). `binary` is asked as `row_for` asks it.
+    pub(crate) fn hand_off(&self, path: &Path, binary: impl FnOnce() -> bool) -> HandOff {
+        let row = self.first(path, binary, |row| row.handoff.is_some());
+        self.rows[row].handoff.clone().unwrap_or(HandOff::Editor)
+    }
+
+    /// The first row that matches `path` and that `sets` accepts. Every
+    /// built-in row sets every key, so the last row is the answer when no
+    /// other is.
+    fn first(
+        &self,
+        path: &Path,
+        binary: impl FnOnce() -> bool,
+        sets: impl Fn(&Row) -> bool,
+    ) -> usize {
         // One built-in row asks, so `binary` runs at most once.
         let mut binary = Some(binary);
         self.rows
             .iter()
-            .position(|row| match &row.matcher {
-                Matcher::Glob(glob) => glob.matches(path),
-                Matcher::Binary => binary.take().is_some_and(|binary| binary()),
-                Matcher::Any => true,
+            .position(|row| {
+                sets(row)
+                    && match &row.matcher {
+                        Matcher::Glob(glob) => glob.matches(path),
+                        Matcher::Binary => binary.take().is_some_and(|binary| binary()),
+                        Matcher::Any => true,
+                    }
             })
             .unwrap_or(self.rows.len() - 1)
     }
 
-    /// The cycle of `row`.
+    /// Whether a file shown in `row` is binary, when the row says: a
+    /// built-in row is reached only once that is known. A user row was
+    /// reached with no read, so it does not know.
+    pub(crate) fn binary(&self, row: usize) -> Option<bool> {
+        match self.rows[row].matcher {
+            Matcher::Glob(_) => None,
+            Matcher::Binary => Some(true),
+            Matcher::Any => Some(false),
+        }
+    }
+
+    /// The cycle of `row`: a row from `row_for`, which always has one.
     pub(crate) fn views(&self, row: usize) -> &[View] {
-        &self.rows[row].views
+        self.rows[row].views.as_deref().unwrap_or_default()
     }
 
     fn len(&self) -> usize {
@@ -229,10 +328,11 @@ mod tests {
     use super::*;
 
     fn row(glob: &str, views: &[View]) -> FileType {
-        FileType {
-            glob: glob.parse().expect("a glob"),
-            views: views.to_vec(),
-        }
+        FileType::with_views(glob, views)
+    }
+
+    fn hand_off_row(glob: &str, program: &str) -> FileType {
+        FileType::with_hand_off(glob, &[program, "{file}"])
     }
 
     #[test]
@@ -291,6 +391,44 @@ mod tests {
             [View::Raw],
             "a user row goes before the built-in binary row"
         );
+    }
+
+    #[test]
+    fn a_row_with_no_views_leaves_the_cycle_to_the_rows_after_it() {
+        let table = Table::new(&[hand_off_row("*.md", "marked"), row("*.md", &[View::Hex])]);
+        assert_eq!(
+            table.views(table.row_for(Path::new("a.md"), || false)),
+            [View::Hex]
+        );
+    }
+
+    #[test]
+    fn the_hand_off_comes_from_the_first_matching_row_that_has_one() {
+        let table = Table::new(&[
+            row("*.md", &[View::Hex]),
+            hand_off_row("*.md", "marked"),
+            hand_off_row("*.txt", "other"),
+        ]);
+        let argv = |program: &str| HandOff::Argv(vec![program.to_string(), "{file}".to_string()]);
+        assert_eq!(table.hand_off(Path::new("a.md"), || false), argv("marked"));
+        assert_eq!(table.hand_off(Path::new("a.txt"), || false), argv("other"));
+        assert_eq!(
+            table.hand_off(Path::new("a.log"), || false),
+            HandOff::Editor
+        );
+        assert_eq!(
+            table.hand_off(Path::new("a.png"), || true),
+            HandOff::DefaultApp
+        );
+    }
+
+    #[test]
+    fn a_built_in_row_knows_whether_its_file_is_binary_and_a_user_row_does_not() {
+        let table = Table::new(&[row("*.log", &[View::Raw])]);
+        let at = |path: &str, binary: bool| table.binary(table.row_for(Path::new(path), || binary));
+        assert_eq!(at("a.log", true), None);
+        assert_eq!(at("a.bin", true), Some(true));
+        assert_eq!(at("a.txt", false), Some(false));
     }
 
     #[test]

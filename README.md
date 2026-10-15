@@ -148,9 +148,10 @@ motions throughout.
   `--theme` or `[syntax] theme`; `none` turns it off. Filter colours and search
   hits stay on top, and a multi-megabyte file colours only what is on screen,
   so opening one costs nothing extra.
-- **Straight into your editor** — `o` opens the selected file's enclosing
-  *project* at the line under the cursor; `O` opens the file *alone*, for the
-  `.zshrc` you just want open fast. The editor is a command template rather than
+- **Straight into the right app** — `o` hands the selected file to the app for
+  its type: Marked 2 for Markdown, Preview for a photo, or your editor at the
+  line under the cursor for a text file. `O` opens the file's enclosing
+  *project* in your editor. The editor is a command template rather than
   a hard-coded list, so zed, VS Code, Sublime, IntelliJ and even
   `nvim`-in-a-new-terminal-window are all one line of config; run
   `recon --print-editor-config` for a ready-made one.
@@ -294,11 +295,12 @@ Arguments:
 
 Options:
       --editor <TEMPLATE>
-          Command template `o` runs, e.g. `zed {project} {file}:{line}` [env:
+          Command template `O` runs, e.g. `zed {project} {file}:{line}` [env:
           RECON_EDITOR]
       --file-editor <TEMPLATE>
-          Command template `O` runs. Defaults to `--editor` with the `{project}`
-          argument dropped, so one setting normally configures both keys [env:
+          Command template `o` runs for a text file that no `[[filetype]]` row
+          hands off. Defaults to `--editor` with the `{project}` argument
+          dropped, so one setting normally configures both keys [env:
           RECON_FILE_EDITOR]
       --clipboard <COMMAND>
           Command `y` pipes a selection to, e.g. `pbcopy` or `xclip -selection
@@ -490,8 +492,8 @@ Global (`src/app/events.rs`), handled before the focused pane sees the key:
 | — | Hide the file view. It has no default key; bind one in `config.toml`, for example `"global.hide.view" = "T"` | `global.hide.view` |
 | `z` | Zoom: if more than one pane is shown, hide all but the focused pane; if only one is shown, show the panes the last zoom hid, or all three | `global.zoom.focused` |
 | `b` | The same as `t`, then `z`: zoom the file view, or — pressed again — show the others and keep focus in the file view | `global.zoom.view` |
-| `o` | Open the selected file's enclosing **project** in your editor, at the line the cursor is on — see [Opening an editor](#opening-an-editor) | `global.editor.project` |
-| `O` | Open the selected **file alone**, at the same line — no project, no walk-up | `global.editor.file` |
+| `o` | **Hand off** the selected file: to the app that its `[[filetype]]` row names, else a text file to your editor at the line the cursor is on, else to the system's default app — see [Opening an editor](#opening-an-editor) | `global.handoff` |
+| `O` | Open the selected file's enclosing **project** in your editor, at the line the cursor is on | `global.editor.project` |
 | `r` | **Refresh from disk** — re-list, re-stat and rescan the explorer's listing (so a file created since the listing was built appears), and reload the file in the view with the cursor kept on its line. The status row shows `changed on disk · r` when the open file's size or mtime has moved | `global.reload` |
 | `-` | Show the file in its **next view** — text, then a hex dump, then text again — see [Views](#views). A binary file opens as hex | `global.view.next` |
 
@@ -1711,10 +1713,30 @@ glob  = "**/captures/*.log"
 views = ["hex"]
 ```
 
-The first row that matches a file gives its whole cycle; rows do not merge.
-Your rows go before the built-in rows in the table above. `views` names one
-or more of `raw` and `hex`, in the order that `-` steps through them, and a
-view that is not in the list is never shown.
+The first row that matches a file and has `views` gives its whole cycle;
+two cycles do not merge. Your rows go before the built-in rows in the table
+above. `views` names one or more of `raw` and `hex`, in the order that `-`
+steps through them, and a view that is not in the list is never shown.
+
+A row can also name a **hand-off**: the app that `o` sends the file to.
+`handoff` is an argv, the program first, with `{file}` and `{line}` filled
+in. It is not given to a shell, so a space in an app's name stays in its own
+entry:
+
+```toml
+[[filetype]]
+glob    = "*.md"
+handoff = ["open", "-a", "Marked 2", "{file}"]
+
+[[filetype]]
+glob    = "*.{jpg,png,heic}"
+handoff = ["open", "-a", "Preview", "{file}"]
+```
+
+A row sets `views`, `handoff` or both, and must set one of them. Each one
+comes from the first row that matches and sets it, so the `*.md` row above
+leaves the cycle of a Markdown file as it was. See
+[Opening an editor](#opening-an-editor) for what `o` does with no hand-off.
 
 A glob with no `/` matches the file's name, wherever the file is. A glob with
 a `/` matches the whole path. `*` and `?` match inside one name, `**` matches
@@ -2153,28 +2175,41 @@ Not in the first version: ad-hoc patterns (`-i PATTERN`) and a search —
 
 ## Opening an editor
 
-`o` hands the selected file to your editor, opened at the line the cursor is on,
-with the **enclosing project** alongside it. It works from any pane — the file
-it means is whatever the view is showing, which already follows the explorer's
-selection.
+`o` does the **hand-off**: it sends the selected file to another app, and
+recon stays open. The app comes from the first of these that applies:
 
-The project is found by walking up from the file until a marker turns up:
-`.git` (a directory, or the file a linked worktree uses), `Cargo.toml`,
-`package.json`, `pyproject.toml`, `setup.py` or `go.mod`. With no marker
-anywhere above, `o` opens the file's own directory, so it always does something.
+1. the `handoff` of the file's `[[filetype]]` row — see
+   [Setting the views for a file type](#setting-the-views-for-a-file-type);
+2. for a text file, your editor's **file** template, opened at the line the
+   cursor is on, with no project;
+3. for any other file, the system's default app: `open {file}` on macOS,
+   `xdg-open {file}` on Linux.
 
-`O` opens the **file alone** and skips the walk-up entirely. The two are
-siblings, not duplicates:
+The hand-off always sends the file on disk, in every view: `o` on a hex dump
+sends the file, not the dump.
+
+`O` opens the file in your editor at the line the cursor is on, with the
+**enclosing project** alongside it. The project is found by walking up from
+the file until a marker turns up: `.git` (a directory, or the file a linked
+worktree uses), `Cargo.toml`, `package.json`, `pyproject.toml`, `setup.py` or
+`go.mod`. With no marker anywhere above, `O` opens the file's own directory,
+so it always does something.
+
+Both keys work from any pane — the file they mean is whatever the view is
+showing, which already follows the explorer's selection.
 
 | Key | Hands the editor | Walk-up? | For |
 | --- | --- | --- | --- |
-| `o` | project root + file + line | yes | a file in a codebase, where the surrounding context matters |
-| `O` | file + line | no | `.zshrc`, `.ssh/config`, any one-off file you want open *fast* |
+| `O` | project root + file + line | yes | a file in a codebase, where the surrounding context matters |
+| `o` (a text file with no hand-off) | file + line | no | `.zshrc`, `.ssh/config`, any one-off file you want open *fast* |
 
 There is deliberately no single auto-detecting key. It would break on exactly
-the case `O` exists for — dotfiles kept in a git repo, where `~/.zshrc` *does*
-have a marker above it, so auto-detect would fling open the whole dotfiles repo.
-Two explicit keys never lie about which one you asked for.
+the case the file template exists for — dotfiles kept in a git repo, where
+`~/.zshrc` *does* have a marker above it, so auto-detect would fling open the
+whole dotfiles repo. Two explicit keys never lie about which one you asked for.
+
+In v0.1.1 and before, `o` opened the project and `O` the file alone. The keymap action
+`global.editor.file` is now `global.handoff`.
 
 ### Configuring it
 
@@ -2195,6 +2230,7 @@ $ recon --print-editor-config vscode
 # recon editor templates (vscode)
 # Paste into ~/.config/recon/config.toml — recon never writes it for you.
 # {project} = project root, {file} = the file, {line} = the cursor's line.
+# `O` runs `project`. `o` runs `file` for a text file that no [[filetype]] row hands off.
 [editor]
 project = 'code {project} -g {file}:{line}'
 file = 'code -g {file}:{line}'
@@ -2205,8 +2241,8 @@ ones are `zed`, `vscode`, `sublime`, `idea`, `terminal-nvim`, `iterm-nvim`,
 `wezterm-nvim`, `kitty-nvim` and `ghostty-nvim`. It only ever **prints** — recon
 writes neither `config.toml` nor your shell rc.
 
-`editor.file` is the template for `O`, and `{project}` is not substituted there
-— there is no project. Leave it out and it is derived from `editor.project` by
+`editor.file` is the template for `o` on a text file with no hand-off, and
+`{project}` is not substituted there — there is no project. Leave it out and it is derived from `editor.project` by
 dropping the `{project}` argument, so one line normally configures both. Write
 both when you want them to differ — `-n` on just the file one, say.
 
