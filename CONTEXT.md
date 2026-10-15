@@ -197,6 +197,40 @@ _Avoid_: viewport, visible (when the window is meant)
 The two ways to treat a line that is not interesting: keep it and grey it, or
 remove it from the visible lines. `u` toggles between them.
 
+### Views and hand-offs
+
+**View** (of a file):
+One way the file view shows a file: *raw*, *hex*, *command* (the output of
+an external program) or *image*. The lines of the view are the lines the user
+sees, and filters and search run on them, not on the bytes on disk. A view
+with no lines (image) cannot be filtered or searched.
+_Avoid_: mode (that is dim or hide), format, renderer
+
+**Command view**:
+A view made by an external program the user names in the config. It reads
+the file and writes text or an image. The program is the user's, not part of
+recon.
+_Avoid_: plugin, preprocessor, filter (that is a pattern in the filter pane)
+
+**View cycle**:
+The ordered views a file type offers. The first one is the default, `-`
+steps to the next, and a view that is not in the cycle is never offered. A
+step with `-` holds for every file of that type until the user steps again
+or recon stops.
+_Avoid_: view list, view order
+
+**Highlighting**:
+Syntax colour on the lines of a text view. It is a layer on a view, never a
+view of its own, and it does not change the lines.
+_Avoid_: syntax view, pretty view
+
+**Hand-off**:
+Sending the file to an app outside recon: the app its file type names, else
+the editor for a text file, else the operating system's default app. `o`
+does it. recon does not wait, and stays open. It is never a step in a view
+cycle.
+_Avoid_: launch, export, open in editor (that is `O`, the project)
+
 ### Builds and releases
 
 **Release version**:
