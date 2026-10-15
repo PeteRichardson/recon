@@ -489,7 +489,7 @@ pub(crate) const DEFAULT: &[(Scope, &str, ActionId)] = &[
     (Scope::Global, "space", ActionId::GlobalPeek),
     (Scope::Global, "&", ActionId::GlobalFiltersAnd),
     (Scope::Global, "!", ActionId::GlobalFiltersDisable),
-    (Scope::Global, "1-9", ActionId::GlobalFiltersToggle),
+    (Scope::Global, "0-9", ActionId::GlobalFiltersToggle),
     (Scope::Global, ".", ActionId::GlobalFileNext),
     (Scope::Global, ",", ActionId::GlobalFilePrev),
     // `i`/`x`/`c`/`d`/`m`/`a`/`s` outside the filter pane, and `h`/`l`
@@ -551,7 +551,6 @@ pub(crate) const DEFAULT: &[(Scope, &str, ActionId)] = &[
     (Scope::View, "j", ActionId::ViewDown),
     (Scope::View, "Down", ActionId::ViewDown),
     (Scope::View, "w", ActionId::ViewWordForward),
-    (Scope::View, "0", ActionId::ViewLineStart),
     (Scope::View, "^", ActionId::ViewLineStart),
     (Scope::View, "$", ActionId::ViewLineEnd),
     (Scope::View, "g", ActionId::ViewGotoStart),
@@ -950,8 +949,8 @@ impl Keymap {
     /// action, because it no longer does.
     ///
     /// A row loses **the keys named**, not the label spelling them. One label
-    /// can name several keys, and only `1-9` in `DEFAULT` does today: a line
-    /// taking `5` from `global.filters.toggle` must leave the other eight
+    /// can name several keys, and only `0-9` in `DEFAULT` does today: a line
+    /// taking `5` from `global.filters.toggle` must leave the other nine
     /// digits toggling filters, so that row is re-spelled as the keys it keeps
     /// rather than dropped whole. A row naming one key — every other row — is
     /// dropped exactly as it was before, since the keys it keeps are none.
@@ -1458,6 +1457,24 @@ mod tests {
         }
     }
 
+    /// #340: `0` is the first digit of `01` to `09`, so it starts a filter
+    /// toggle and no longer moves to the start of the line. `^` still does.
+    #[test]
+    fn zero_toggles_filters_and_caret_keeps_the_line_start() {
+        let press = |c| normalise(KeyEvent::new(KeyCode::Char(c), KeyModifiers::empty()));
+        let keymap = Keymap::default();
+
+        assert_eq!(
+            keymap.resolve(Scope::Global, press('0')),
+            Some(ActionId::GlobalFiltersToggle)
+        );
+        assert_eq!(keymap.resolve(Scope::View, press('0')), None);
+        assert_eq!(
+            keymap.resolve(Scope::View, press('^')),
+            Some(ActionId::ViewLineStart)
+        );
+    }
+
     #[test]
     fn an_unbound_key_resolves_to_nothing() {
         let event = KeyEvent::new(KeyCode::Char('~'), KeyModifiers::empty());
@@ -1629,7 +1646,7 @@ mod tests {
 
     /// A key taken out of a *range* was the third place the label-vs-key
     /// confusion hid, and the one a user was most likely to read.
-    /// `global.filters.toggle` holds `1-9`, so losing `5` left no label
+    /// `global.filters.toggle` holds `0-9`, so losing `5` left no label
     /// *string* missing from its list: the comparison of label text saw
     /// nothing taken, fell through to the "yours" branch, and told the user
     /// they had written a line they never wrote — while never naming what had
@@ -1658,7 +1675,7 @@ mod tests {
         );
         assert!(
             line.contains("'4'") && line.contains("'6'"),
-            "the eight digits it kept must still be on the line: {line}"
+            "the nine digits it kept must still be on the line: {line}"
         );
 
         // And the value list must not still offer the key the comment says it
@@ -2029,12 +2046,12 @@ mod tests {
         );
     }
 
-    /// The guard against over-warning. `1-9` is `global.filters.toggle`'s own
+    /// The guard against over-warning. `0-9` is `global.filters.toggle`'s own
     /// default, so a check that fired here would warn about the built-in
     /// table on a config that says nothing.
     #[test]
     fn a_range_covering_no_reserved_key_stays_silent() {
-        for range in ["1-9", "a-f", "A-Z"] {
+        for range in ["0-9", "a-f", "A-Z"] {
             assert!(
                 reserved_hits(&[range.to_string()]).is_empty(),
                 "{range} covers neither reserved key"
@@ -2079,7 +2096,7 @@ mod tests {
     /// about `DEFAULT`, so it is pinned here rather than trusted.
     ///
     /// By concrete key, not by label text, since `check` groups by key: two
-    /// labels that expand onto one key — a `1-9` beside a `5`, an `F5` beside
+    /// labels that expand onto one key — a `0-9` beside a `5`, an `F5` beside
     /// an `F6` — are a duplicate that a comparison of strings cannot see, and
     /// would reach `check` as a contest between two defaults.
     #[test]
@@ -2175,7 +2192,7 @@ mod tests {
     /// Both halves were broken before the checker compared concrete keys:
     /// nothing saw the contest, so `5` went on toggling a filter however
     /// plainly the file asked for the editor — and an eviction that dropped
-    /// the whole `1-9` row would have been the opposite fault, costing eight
+    /// the whole `0-9` row would have been the opposite fault, costing nine
     /// keys nobody contested.
     #[test]
     fn a_written_line_takes_one_key_out_of_a_default_range() {
@@ -2194,7 +2211,7 @@ mod tests {
         assert_eq!(
             keymap.resolve(Scope::Global, four),
             Some(ActionId::GlobalFiltersToggle),
-            "the eight digits nobody asked for must still toggle their filters"
+            "the nine digits nobody asked for must still toggle their filters"
         );
     }
 
@@ -2286,7 +2303,7 @@ mod tests {
     #[test]
     fn no_default_key_is_in_both_global_and_a_pane() {
         // By concrete key, for the reason `the_defaults_hold_no_duplicate_key`
-        // gives: the global `1-9` shadows a pane's `5` while sharing no
+        // gives: the global `0-9` shadows a pane's `5` while sharing no
         // character with the label that spells it.
         let global: Vec<crate::help::Chord> = DEFAULT
             .iter()

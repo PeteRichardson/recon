@@ -218,47 +218,184 @@ fn a_pasted_newline_is_dropped_from_the_prompt() {
     assert_eq!(prompt_line(&mut app).trim_end(), "/alpha");
 }
 
-/// #120 §14: `3` toggles the filter the pane labels `3`. Global, so the
-/// loop can switch a filter without leaving the view.
-#[test]
-fn digits_toggle_filters_by_their_pane_number() {
-    let mut app = app_over_file("digit_toggle", "alpha\nbeta\n");
+/// An app over a file with the view focused and one filter per pattern,
+/// numbered `01` onwards in the order given.
+fn app_with_filters(name: &str, patterns: &[&str]) -> App<'static> {
+    let mut app = app_over_file(name, &patterns.join("\n"));
     key(&mut app, KeyCode::Char('t'));
-    app.filters.add("alpha").expect("valid pattern");
-    app.filters.add("beta").expect("valid pattern");
-    app.refresh_view();
-    assert!(app.filters.filters()[1].enabled, "sanity");
+    for pattern in patterns {
+        app.add_filter(pattern).expect("valid pattern");
+    }
+    app
+}
 
-    key(&mut app, KeyCode::Char('2'));
+/// The status row, as `report` leaves it.
+fn status_text<'a>(app: &'a App<'_>) -> Option<&'a str> {
+    app.status_message.as_ref().map(|m| m.text.as_str())
+}
+
+/// #120 §14, #340: `02` toggles the filter the pane labels `02`. Global,
+/// so the loop can switch a filter without leaving the view.
+#[test]
+fn two_digits_toggle_filters_by_their_pane_number() {
+    let mut app = app_with_filters("digit_toggle", &["alpha", "beta"]);
+
+    typed(&mut app, "02");
     assert!(
         !app.filters.filters()[1].enabled,
-        "2 did not toggle filter 2"
+        "02 did not toggle filter 2"
     );
-    assert!(app.filters.filters()[0].enabled, "2 touched filter 1");
+    assert!(app.filters.filters()[0].enabled, "02 touched filter 1");
     assert_eq!(app.focus, Focus::View, "focus moved");
 
+    typed(&mut app, "02");
+    assert!(app.filters.filters()[1].enabled, "02 did not toggle back");
+}
+
+/// #340: the first digit only waits for the second.
+#[test]
+fn one_digit_alone_toggles_nothing() {
+    let mut app = app_with_filters("digit_alone", &["alpha", "beta"]);
+
     key(&mut app, KeyCode::Char('2'));
-    assert!(app.filters.filters()[1].enabled, "2 did not toggle back");
+
+    assert!(app.filters.filters()[1].enabled, "2 alone toggled filter 2");
 }
 
 #[test]
-fn a_digit_with_no_filter_behind_it_says_so() {
-    let mut app = app_over_file("digit_missing", "alpha\n");
-    key(&mut app, KeyCode::Char('t'));
-    app.filters.add("alpha").expect("valid pattern");
-    app.refresh_view();
+fn two_digits_with_no_filter_behind_them_say_so() {
+    let mut app = app_with_filters("digit_missing", &["alpha"]);
 
-    key(&mut app, KeyCode::Char('9'));
+    typed(&mut app, "99");
 
-    assert!(app.filters.filters()[0].enabled, "9 toggled something");
-    assert_eq!(
-        app.status_message.as_ref().map(|m| m.text.as_str()),
-        Some("no filter 9")
+    assert!(app.filters.filters()[0].enabled, "99 toggled something");
+    assert_eq!(status_text(&app), Some("no filter 99"));
+}
+
+/// No filter is numbered `00`, and the number is reported as it was typed.
+#[test]
+fn double_zero_names_no_filter() {
+    let mut app = app_with_filters("digit_zero", &["alpha"]);
+
+    typed(&mut app, "00");
+
+    assert!(app.filters.filters()[0].enabled, "00 toggled something");
+    assert_eq!(status_text(&app), Some("no filter 00"));
+}
+
+/// #340: the first digit is the tens. Filter 12 is out of reach of any
+/// one key.
+#[test]
+fn two_digits_reach_past_nine() {
+    let patterns: Vec<String> = (1..=12).map(|n| format!("line{n:02}")).collect();
+    let patterns: Vec<&str> = patterns.iter().map(String::as_str).collect();
+    let mut app = app_with_filters("digit_twelve", &patterns);
+
+    typed(&mut app, "12");
+
+    assert!(
+        !app.filters.filters()[11].enabled,
+        "12 did not toggle filter 12"
+    );
+    assert!(
+        app.filters.filters()[..11].iter().all(|f| f.enabled),
+        "12 touched another filter"
     );
 }
 
-/// The digit toggles what the *pane* numbers: with a set soloed, the
-/// numbering restarts inside it, and so does the key.
+/// #340: the second digit is a digit, not a binding. A `config.toml` that
+/// gives `5` to another action takes `5` as a *first* digit only, so filter
+/// 15 is still `15` — not one of nineteen filters lost to one line.
+#[test]
+fn the_second_digit_is_read_past_the_keymap() {
+    let patterns: Vec<String> = (1..=15).map(|n| format!("line{n:02}")).collect();
+    let patterns: Vec<&str> = patterns.iter().map(String::as_str).collect();
+    let mut app = app_with_filters("digit_rebound", &patterns);
+    rebind(&mut app, &[("global.help", &["5"])]);
+
+    typed(&mut app, "15");
+
+    assert!(!app.help, "the second digit ran the action bound to 5");
+    assert!(
+        !app.filters.filters()[14].enabled,
+        "15 did not toggle filter 15"
+    );
+}
+
+/// #340: the status row shows the digit that waits for its partner.
+#[test]
+fn a_pending_digit_shows_on_the_status_row() {
+    let mut app = app_with_filters("digit_pending", &["alpha"]);
+
+    key(&mut app, KeyCode::Char('4'));
+
+    assert_eq!(status_text(&app), Some("filter 4_"));
+}
+
+/// #340: `Esc` drops the pending digit, so the next digit starts afresh.
+#[test]
+fn esc_cancels_a_pending_digit() {
+    let mut app = app_with_filters("digit_esc", &["alpha", "beta"]);
+
+    key(&mut app, KeyCode::Char('0'));
+    key(&mut app, KeyCode::Esc);
+    assert_eq!(status_text(&app), None, "the pending digit is still shown");
+    typed(&mut app, "02");
+
+    assert!(
+        app.filters.filters()[0].enabled,
+        "the cancelled 0 survived Esc"
+    );
+    assert!(
+        !app.filters.filters()[1].enabled,
+        "02 after Esc did not toggle"
+    );
+}
+
+/// #340: a key that is not a digit drops the pending digit and then does
+/// its own work.
+#[test]
+fn a_non_digit_cancels_and_still_acts() {
+    let mut app = app_with_filters("digit_other", &["alpha", "beta"]);
+
+    key(&mut app, KeyCode::Char('0'));
+    key(&mut app, KeyCode::Char('e'));
+    assert_eq!(app.focus, Focus::Explorer, "e did not move focus");
+    typed(&mut app, "02");
+
+    assert!(
+        app.filters.filters()[0].enabled,
+        "the cancelled 0 survived e"
+    );
+    assert!(
+        !app.filters.filters()[1].enabled,
+        "02 after e did not toggle"
+    );
+}
+
+/// #340: a click is input too. It drops the pending digit and its
+/// `filter 0_`, so a later digit cannot pair with one nobody can see.
+#[test]
+fn a_click_cancels_a_pending_digit() {
+    let mut app = app_with_filters("digit_click", &["alpha", "beta"]);
+
+    key(&mut app, KeyCode::Char('0'));
+    mouse(&mut app, MouseEventKind::Down(MouseButton::Left), 0);
+    assert_eq!(status_text(&app), None, "the pending digit is still shown");
+    typed(&mut app, "02");
+
+    assert!(
+        app.filters.filters()[0].enabled,
+        "the cancelled 0 survived a click"
+    );
+    assert!(
+        !app.filters.filters()[1].enabled,
+        "02 after a click did not toggle"
+    );
+}
+
+/// The digits toggle what the *pane* numbers: with a set soloed, the
+/// numbering restarts inside it, and so do the keys.
 #[test]
 fn digits_follow_the_pane_numbering_under_a_solo() {
     // Autoload alone (`true`) only brings the *set* on; a filter needs a
@@ -276,7 +413,7 @@ fn digits_follow_the_pane_numbering_under_a_solo() {
     assert_eq!(before.len(), 2, "sanity: alpha is 1, beta is 2");
     let beta = before[1];
 
-    // Solo set 2 (`b`): the pane now labels beta `1`, and so does the key.
+    // Solo set 2 (`b`): the pane now labels beta `01`, and so do the keys.
     app.filters.solo(2);
     assert_eq!(
         widgets::filterlist::numbered(&app.filters),
@@ -285,15 +422,15 @@ fn digits_follow_the_pane_numbering_under_a_solo() {
     );
     assert!(app.filters.filters()[beta].enabled, "sanity");
 
-    key(&mut app, KeyCode::Char('1'));
+    typed(&mut app, "01");
 
     assert!(
         !app.filters.filters()[beta].enabled,
-        "1 did not follow the solo numbering"
+        "01 did not follow the solo numbering"
     );
     assert!(
         app.filters.filters()[before[0]].enabled,
-        "1 reached the soloed-out set"
+        "01 reached the soloed-out set"
     );
 }
 

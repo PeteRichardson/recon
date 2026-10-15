@@ -28,6 +28,23 @@ impl App<'_> {
         Ok(())
     }
 
+    /// Toggle the filter the pane labels `n`, or say there is none (#120
+    /// §14). The label and this lookup are one walk, `numbered`, so they
+    /// cannot disagree. `00` names no filter, hence `checked_sub`.
+    pub(super) fn toggle_numbered(&mut self, n: usize) {
+        match n.checked_sub(1).and_then(|i| {
+            crate::widgets::filterlist::numbered(&self.filters)
+                .get(i)
+                .copied()
+        }) {
+            Some(index) => {
+                self.filters.toggle_enabled(index);
+                self.refresh_view();
+            }
+            None => self.report(&format!("no filter {n:02}"), false),
+        }
+    }
+
     /// Add an excluding filter: its matches leave the view entirely.
     pub(super) fn add_excluding_filter(&mut self, pattern: &str) -> Result<(), regex::Error> {
         self.filters.add_excluding(pattern)?;

@@ -383,9 +383,10 @@ impl FilterList {
                 let label = match row {
                     Row::Filter(index) if numbered.get(next) == Some(&index) => {
                         next += 1;
-                        next.to_string()
+                        // Two digits, as typed (#340): `02`, not `2`.
+                        format!("{next:02}")
                     }
-                    _ => " ".to_string(),
+                    _ => "  ".to_string(),
                 };
                 (row, Self::row_text(filters, row, &label))
             })
@@ -616,10 +617,10 @@ mod tests {
         filters.add("typed").expect("valid");
         let mut list = FilterList::default();
         let rows = rendered(&mut list, &filters, 30);
-        assert!(rows[1].contains("1[x] inc typed"), "{rows:?}");
+        assert!(rows[1].contains("01[x] inc typed"), "{rows:?}");
         assert!(rows[2].contains("[ ] definitions"), "{rows:?}");
         assert!(rows[3].contains("[x] w"), "{rows:?}");
-        assert!(rows[4].contains("  2[ ] inc assoc"), "{rows:?}");
+        assert!(rows[4].contains("  02[ ] inc assoc"), "{rows:?}");
     }
 
     #[test]
@@ -950,7 +951,7 @@ mod tests {
         let mut set = ActiveFilters::new();
         set.add("ERROR").expect("valid pattern");
 
-        assert_eq!(text_at(&set, 0), "1[x] inc ERROR");
+        assert_eq!(text_at(&set, 0), "01[x] inc ERROR");
     }
 
     /// `space` gave this pane up in #48: it became the global peek, and a
@@ -991,7 +992,7 @@ mod tests {
                 .unwrap_or_else(|| panic!("row {row}: no command"));
             match command {
                 FilterCommand::Toggle(index) => assert!(
-                    text.starts_with(&(index + 1).to_string()),
+                    text.starts_with(&format!("{:02}", index + 1)),
                     "row {row}: handle_key resolved filter {index}, the label is {text:?}"
                 ),
                 FilterCommand::ToggleSet(_) => {
@@ -1021,7 +1022,7 @@ mod tests {
         let mut filters = set_of(&["foo"], &[]);
         filters.toggle_context(0);
 
-        assert_eq!(text_at(&filters, 0), "1[x] ctx foo");
+        assert_eq!(text_at(&filters, 0), "01[x] ctx foo");
     }
 
     // ---- two levels (#129) --------------------------------------------------
@@ -1067,10 +1068,10 @@ mod tests {
         let filters = two_sets(true, false);
         let mut list = FilterList::default();
         let rows = rendered(&mut list, &filters, 30);
-        assert!(rows[1].contains("1[x] inc scratch"), "{rows:?}");
+        assert!(rows[1].contains("01[x] inc scratch"), "{rows:?}");
         assert!(rows[2].contains("[x] a"), "{rows:?}");
-        assert!(rows[3].contains("  2[ ] inc x"), "{rows:?}");
-        assert!(rows[4].contains("  3[ ] inc y"), "{rows:?}");
+        assert!(rows[3].contains("  02[ ] inc x"), "{rows:?}");
+        assert!(rows[4].contains("  03[ ] inc y"), "{rows:?}");
         assert!(rows[5].contains("[ ] b"), "{rows:?}");
         assert!(
             !rows.iter().any(|row| row.contains("inc z")),
@@ -1274,7 +1275,8 @@ mod tests {
     }
 
     /// The digit keys and the gutter labels are one walk, so they cannot
-    /// drift: label `n` is `numbered()[n - 1]`.
+    /// drift: label `n` is `numbered()[n - 1]`, written as the two digits
+    /// that toggle it (#340).
     #[test]
     fn numbered_agrees_with_the_pane_labels() {
         let filters = two_sets(true, true);
@@ -1296,7 +1298,9 @@ mod tests {
             .collect();
 
         assert!(!labelled.is_empty(), "sanity: the pane numbers something");
+        assert_eq!(labelled[0].0, "01", "the label is the two keys you type");
         for (label, row) in labelled {
+            assert_eq!(label.len(), 2, "label {label} is not two digits");
             let n: usize = label.parse().expect("digit label");
             assert_eq!(
                 Some(row),

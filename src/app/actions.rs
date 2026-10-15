@@ -157,29 +157,24 @@ impl App<'_> {
             // and no key: `f Enter` covers them.
             //
             // The one arm that reads `pressed`: `resolve` collapses every
-            // `'1'..='9'` to this one action (see `DEFAULT`'s "1-9" row), so
-            // the digit itself has to come from the key that fired it.
+            // `'0'..='9'` to this one action (see `DEFAULT`'s "0-9" row), so
+            // the digit itself has to come from the key that fired it. Only
+            // the first digit arrives here; `dispatch_event` takes the second
+            // — see `pending_digit` (#340).
             A::GlobalFiltersToggle => {
                 // `to_digit` (rather than `c as u8 - b'0'`) rejects a
-                // non-digit outright instead of underflowing: `resolve`
-                // today only ever matches this to a `Char('1'..='9')`, but
-                // plan 2b lets a `config.toml` bind this action to any key —
-                // `!`, say — and `'!' as u8 - b'0'` wraps to a huge `usize`
-                // rather than failing loudly.
+                // non-digit outright instead of underflowing: plan 2b lets a
+                // `config.toml` bind this action to any key — `!`, say — and
+                // `'!' as u8 - b'0'` wraps to a huge `usize` rather than
+                // failing loudly.
                 let KeyCode::Char(c) = pressed.code else {
                     return;
                 };
-                let Some(n) = c.to_digit(10).filter(|n| (1..=9).contains(n)) else {
+                let Some(digit) = c.to_digit(10) else {
                     return;
                 };
-                let n = n as usize;
-                match widgets::filterlist::numbered(&self.filters).get(n - 1) {
-                    Some(&index) => {
-                        self.filters.toggle_enabled(index);
-                        self.refresh_view();
-                    }
-                    None => self.report(&format!("no filter {n}"), false),
-                }
+                self.pending_digit = Some(digit as usize);
+                self.report(&format!("filter {digit}_"), false);
             }
             // Global, unlike `n`: skipping a file is the outer loop of the
             // review workflow, and it should not matter which pane the inner

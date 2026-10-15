@@ -434,8 +434,8 @@ pub const KEYMAP: &[Section] = &[
                 names: &["global.page.up", "global.page.down"],
             },
             Binding {
-                keys: &["1-9"],
-                action: "Toggle the filter with that number",
+                keys: &["0-9"],
+                action: "Toggle filter 01-99 by its number",
                 names: &["global.filters.toggle"],
             },
             Binding {
@@ -659,7 +659,7 @@ pub const KEYMAP: &[Section] = &[
                 names: &["view.word.forward"],
             },
             Binding {
-                keys: &["0", "^"],
+                keys: &["^"],
                 action: "Start of the line",
                 names: &["view.line.start"],
             },

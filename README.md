@@ -113,7 +113,7 @@ motions throughout.
   invalid pattern reports `E486: invalid pattern` and leaves the prompt open. An
   empty filter, which would match every line, reports `a filter needs a pattern`
   the same way.
-- **Vim motions** — `hjkl`, `w`, `0`/`^`/`$`, `{`/`}`, `g`/`G`, `Ctrl-D`/`Ctrl-U`,
+- **Vim motions** — `hjkl`, `w`, `^`/`$`, `{`/`}`, `g`/`G`, `Ctrl-D`/`Ctrl-U`,
   `/` then `n`/`N` to step between matches.
 - **Directories are obvious** — bright blue, bold and slash-suffixed, with
   executables in green, following yazi. `..` is the exception: it is dimmed
@@ -482,7 +482,7 @@ Global (`src/app/events.rs`), handled before the focused pane sees the key:
 | `space` | **Peek at the plain file** — drop every filter and flip the hide mode, so the code reads normally. Press again to put the filtered view back exactly as it was. See [Peeking at the plain file](#peeking-at-the-plain-file) | `global.peek` |
 | `.` / `,` | Skip to the next / previous file the filters match, landing on its first / last interesting line. Works from every pane; focus stays put. The keycaps say `>` and `<` | `global.file.next` / `global.file.prev` |
 | `[` / `]` | Page the file view up / down, whichever pane has focus — so a peeked file can be skimmed from the explorer | `global.page.up` / `global.page.down` |
-| `1` – `9` | Toggle the filter the pane numbers `1` to `9`, from any pane. Built-in filters and set headers have no number; `Enter` in the filter pane toggles those | `global.filters.toggle` |
+| `0` – `9` | Two digits, `01` to `99`, toggle the filter the pane numbers that way, from any pane. The status line shows the first digit while it waits; `Esc` cancels it, and any other key cancels it and then does its own work. Built-in filters and set headers have no number; `Enter` in the filter pane toggles those | `global.filters.toggle` |
 | `u` / `Ctrl-H` / `H` | Toggle between dimming unmatched lines and hiding them — `u` for **u**nmatched; the other two are aliases for terminals and habits that already use them | `global.toggle.hide` |
 | `!` | Disable every filter, remembering which were on; restores exactly that (or enables all, if none were on to remember) | `global.filters.disable` |
 | `&` | Combine the enabled include filters with **AND** instead of OR — a line must match every one of them. Press again for OR. See [Combining filters with AND](#combining-filters-with-and) | `global.filters.and` |
@@ -1542,7 +1542,7 @@ File view pane (`src/widgets/fileview.rs`) — its own verbs; the shared motions
 | `Ctrl-h` | Nothing here — the global `Ctrl-H` hide toggle handles it first. Plain `h` still moves the cursor back. | — |
 | `l` / `Right` | Move cursor forward | `view.right` |
 | `w` | Move to the next word | `view.word.forward` |
-| `0` / `^` | Move to the start of the line | `view.line.start` |
+| `^` | Move to the start of the line | `view.line.start` |
 | `$` | Move to the end of the line | `view.line.end` |
 | `{` / `}` | Move by paragraph, back / forward | `view.paragraph.prev` / `view.paragraph.next` |
 | `#` | Toggle the line-number gutter | `view.toggle.linenumbers` |
