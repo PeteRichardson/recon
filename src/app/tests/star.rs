@@ -376,8 +376,8 @@ fn n_promotes_a_truncated_preview_before_stepping() {
     let dir = fixture_dir("n_truncated_promote");
     // Past PREVIEW_LINES, so the first preview is truncated; the hit sits
     // beyond the preview boundary, reachable only once promoted.
-    let hit_at = crate::widgets::fileview::PREVIEW_LINES + 50;
-    let body: String = (0..crate::widgets::fileview::PREVIEW_LINES + 100)
+    let hit_at = crate::views::read::PREVIEW_LINES + 50;
+    let body: String = (0..crate::views::read::PREVIEW_LINES + 100)
         .map(|i| {
             if i == hit_at {
                 "HIT line\n".to_string()
@@ -423,8 +423,8 @@ fn slash_promotes_a_truncated_preview_before_landing_on_a_hit() {
     let dir = fixture_dir("slash_truncated_promote");
     // Same shape as the `n` fixture above: past PREVIEW_LINES, with the
     // only hit beyond the preview boundary.
-    let hit_at = crate::widgets::fileview::PREVIEW_LINES + 50;
-    let body: String = (0..crate::widgets::fileview::PREVIEW_LINES + 100)
+    let hit_at = crate::views::read::PREVIEW_LINES + 50;
+    let body: String = (0..crate::views::read::PREVIEW_LINES + 100)
         .map(|i| {
             if i == hit_at {
                 "HIT line\n".to_string()

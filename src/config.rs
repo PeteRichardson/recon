@@ -265,6 +265,11 @@ pub struct Config {
     #[arg(skip)]
     pub center_jumps: Option<bool>,
 
+    /// The `[[filetype]]` rows of `config.toml`, in file order (#455).
+    /// File-only: a table of globs is not something to type per run.
+    #[arg(skip)]
+    pub filetypes: Vec<crate::views::FileType>,
+
     /// Colours for the file view's syntax colouring: a bundled theme name,
     /// a path to a `.tmTheme` file, or `none` to turn colouring off.
     ///
@@ -455,6 +460,10 @@ pub struct FileConfig {
     /// `[keymap]`: that table's keys are action names, so a setting there
     /// would be read as an action called "warnings" and refused.
     pub warnings: Option<bool>,
+    /// `[[filetype]]`: the view cycle for each file type (#455). The first
+    /// row that matches a file wins, and the user's rows go before the
+    /// built-in ones.
+    pub filetype: Option<Vec<crate::views::FileType>>,
 }
 
 /// The `[view]` table: how the file view moves.
@@ -1156,6 +1165,7 @@ impl Config {
             layout,
             keymap,
             warnings,
+            filetype,
         } = file;
 
         if let Some(background) = background {
@@ -1210,6 +1220,12 @@ impl Config {
 
         if let Some(warnings) = warnings {
             self.warnings_setting.get_or_insert(*warnings);
+        }
+
+        if let Some(rows) = filetype
+            && self.filetypes.is_empty()
+        {
+            self.filetypes.clone_from(rows);
         }
     }
 
@@ -2676,6 +2692,48 @@ mod tests {
         let mut config = Config::default();
         config.apply(&file);
         assert!(!config.center_jumps(), "the file did not turn it off");
+    }
+
+    #[test]
+    fn filetype_rows_are_read_in_file_order() {
+        let path = fixture(
+            "filetype-rows.toml",
+            "[[filetype]]\nglob = \"*.json\"\nviews = [\"hex\", \"raw\"]\n\n\
+             [[filetype]]\nglob = \"*\"\nviews = [\"raw\"]\n",
+        );
+        let file = load_from(&path).expect("a valid file");
+        let mut config = Config::default();
+        config.apply(&file);
+        let rows: Vec<_> = config.filetypes.iter().map(|row| &row.views).collect();
+        assert_eq!(
+            rows,
+            [
+                &vec![crate::views::View::Hex, crate::views::View::Raw],
+                &vec![crate::views::View::Raw]
+            ]
+        );
+        assert!(
+            config.filetypes[0]
+                .glob
+                .matches(std::path::Path::new("a.json"))
+        );
+    }
+
+    #[test]
+    fn a_filetype_row_with_an_unknown_view_or_none_is_refused() {
+        let unknown = fixture(
+            "filetype-unknown.toml",
+            "[[filetype]]\nglob = \"*.md\"\nviews = [\"marked\"]\n",
+        );
+        let err = load_from(&unknown).expect_err("an unknown view must fail");
+        assert!(err.to_string().contains("marked"), "{err}");
+
+        let empty = fixture(
+            "filetype-empty.toml",
+            "[[filetype]]\nglob = \"*.md\"\nviews = []\n",
+        );
+        let err = load_from(&empty).expect_err("no views must fail");
+        assert!(err.to_string().contains("names no view"), "{err}");
     }
 
     #[test]

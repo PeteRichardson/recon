@@ -548,5 +548,6 @@ mod star;
 mod startup;
 mod status_line;
 mod viewport;
+mod views;
 mod visual;
 mod warnings;

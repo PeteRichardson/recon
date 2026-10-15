@@ -1,8 +1,10 @@
 //! What each keymap action does, and what a widget's action does.
 
+use super::loading::Landing;
 use super::prompt::SearchPrompt;
 use super::search::Search;
 use super::{App, AppState, EditorScope};
+use crate::views::Extent;
 use crate::widgets::{self, Action, Focus};
 use crossterm::event::KeyCode;
 
@@ -185,7 +187,7 @@ impl App<'_> {
             A::GlobalFileNext => self.skip_file(false),
             A::GlobalFilePrev => self.skip_file(true),
             A::GlobalToggleHide => self.toggle_hiding(),
-            A::GlobalToggleHex => self.toggle_hex(),
+            A::GlobalNextView => self.next_view(),
             A::GlobalZoomView => self.zoom_file_view(),
             A::GlobalZoomFocused => self.zoom_focused(),
             A::GlobalEditorProject => {
@@ -419,19 +421,20 @@ impl App<'_> {
     /// belongs to the keymap table's own dispatcher below, which runs a
     /// `keymap::ActionId` rather than one of these.
     pub(super) fn perform_widget_action(&mut self, action: Action) {
-        match &action {
-            Action::Load(path) => self.view.load(path),
+        match action {
+            Action::Load(path) => self.open_view(&path, Extent::Full, Landing::Top),
             Action::LoadAndFocus(path) => {
-                self.view.load(path);
+                self.open_view(&path, Extent::Full, Landing::Top);
                 // `reveal_and_focus`, not `self.focus = ...`: `b` and `z` can
                 // leave the file view off screen, and opening a file into a
                 // pane the user cannot see would be worse than not moving at
                 // all. This is the same reason the focus keys route here.
                 self.reveal_and_focus(Focus::View);
             }
-            Action::Preview(path) => self.view.preview(path),
+            Action::Preview(path) => {
+                self.open_view(&path, Extent::Preview, Landing::Top);
+                self.prefetch_near_selection();
+            }
         }
-        self.sync_document();
-        self.refresh_view();
     }
 }

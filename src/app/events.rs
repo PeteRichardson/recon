@@ -24,6 +24,7 @@ impl App<'_> {
         // schedule, so nothing the user does is guaranteed to arrive after it.
         let drained = self.drain_editor_outcomes()
             | self.drain_scan_results()
+            | self.drain_views()
             | self.poll_stamps()
             | self.drain_request()
             | self.poll_finish();
@@ -410,11 +411,6 @@ impl App<'_> {
     /// Shared by the explorer's key dispatch and `return_to_chain_origin`,
     /// so a chain's step does and reports exactly what a pressed `n` does.
     pub(super) fn perform_on_explorer(&mut self, action: crate::keymap::ActionId) {
-        // The file view upgrades its own truncated preview to a full load on
-        // first interaction, which rebuilds the textarea and clears its line
-        // styles. That happens inside the widget, so it never reaches
-        // `perform` — resync here instead, without re-reading the file.
-        let was_truncated = self.file_view_truncated();
         // A step lands here whether it came from the user's key or from
         // `return_to_chain_origin`; either way, a `None` back means there
         // was nothing to step to, and the status row is the only way that
@@ -427,30 +423,24 @@ impl App<'_> {
         );
         if let Some(widget_action) = self.explorer.perform(action) {
             self.perform_widget_action(widget_action);
-        } else {
-            if is_step {
-                // "No matching file" is a claim about every file, and
-                // it is false while the worker is still out (#158):
-                // a chain's step arrives one line after
-                // `refresh_scan` started it, when every mark is still
-                // `Unknown`. Say what is true instead, and let the
-                // redraw `drain_scan_results` asks for land the answer.
-                // With no matcher there is no worker and the marks
-                // stay `Unknown` for good, so that case keeps the
-                // plain answer.
-                let text = if self.explorer.has_search() {
-                    "no more matches"
-                } else if self.filters.is_scanning() && self.explorer.any_unscanned() {
-                    "scanning…"
-                } else {
-                    "no matching file"
-                };
-                self.report(text, false);
-            }
-            if was_truncated && !self.file_view_truncated() {
-                self.sync_document();
-                self.refresh_view();
-            }
+        } else if is_step {
+            // "No matching file" is a claim about every file, and
+            // it is false while the worker is still out (#158):
+            // a chain's step arrives one line after
+            // `refresh_scan` started it, when every mark is still
+            // `Unknown`. Say what is true instead, and let the
+            // redraw `drain_scan_results` asks for land the answer.
+            // With no matcher there is no worker and the marks
+            // stay `Unknown` for good, so that case keeps the
+            // plain answer.
+            let text = if self.explorer.has_search() {
+                "no more matches"
+            } else if self.filters.is_scanning() && self.explorer.any_unscanned() {
+                "scanning…"
+            } else {
+                "no matching file"
+            };
+            self.report(text, false);
         }
         // Ordinary movement stays inside the window by design, but a page at
         // the edge of the middle third does not — see `window_holds`.

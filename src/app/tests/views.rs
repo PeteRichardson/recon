@@ -1,0 +1,208 @@
+use super::*;
+use crate::views::pool::double::Held;
+use crate::views::{FileType, View};
+
+// ---- the view pipeline and the view cycle (#455) --------------------
+
+fn row(glob: &str, views: &[View]) -> FileType {
+    FileType {
+        glob: glob.parse().expect("a glob"),
+        views: views.to_vec(),
+    }
+}
+
+/// An app over `files`, with `rows` as its `[[filetype]]` table.
+fn app_with_rows(name: &str, files: &[(&str, &[u8])], rows: Vec<FileType>) -> App<'static> {
+    let dir = fixture_dir(name);
+    for (file, body) in files {
+        fs::write(dir.join(file), body).expect("write fixture");
+    }
+    App::new(&Startup::from(Config {
+        path: Some(dir.join("placeholder").display().to_string()),
+        filetypes: rows,
+        ..Config::default()
+    }))
+}
+
+/// Install a held executor: every request waits for `release`.
+fn hold(app: &mut App) -> Held {
+    let held = Held::default();
+    app.loading.executor = Box::new(held.clone());
+    held
+}
+
+/// Move the explorer's selection to the file named `name`, as an arrow
+/// key would.
+fn arrow_to(app: &mut App, name: &str) {
+    let (index, path) = app
+        .explorer
+        .files()
+        .into_iter()
+        .find(|(_, path)| path.ends_with(name))
+        .expect("no such file");
+    app.explorer.select_entry(index);
+    app.perform_widget_action(Action::Preview(path));
+}
+
+#[test]
+fn a_row_sets_the_first_view_and_other_files_keep_the_built_in_one() {
+    let mut app = app_with_rows(
+        "views_row",
+        &[("a.log", b"hi\n"), ("b.txt", b"hi\n")],
+        vec![row("*.log", &[View::Hex, View::Raw])],
+    );
+
+    arrow_to(&mut app, "a.log");
+    assert_eq!(view_lines(&app), [crate::hex::line(0, b"hi\n")]);
+
+    arrow_to(&mut app, "b.txt");
+    assert_eq!(view_lines(&app), ["hi"]);
+}
+
+/// `-` steps to the next view and wraps, and the step holds for the next
+/// file of the same row: one key press shows a whole folder as hex.
+#[test]
+fn minus_steps_wraps_and_holds_for_the_next_file_of_the_row() {
+    let mut app = app_over_files("views_sticky", &[("a.txt", "a\n"), ("b.txt", "b\n")]);
+    app.focus = Focus::Explorer;
+    arrow_to(&mut app, "a.txt");
+
+    key(&mut app, KeyCode::Char('-'));
+    assert_eq!(view_lines(&app), [crate::hex::line(0, b"a\n")]);
+
+    arrow_to(&mut app, "b.txt");
+    assert_eq!(
+        view_lines(&app),
+        [crate::hex::line(0, b"b\n")],
+        "the step did not hold for the next file"
+    );
+
+    key(&mut app, KeyCode::Char('-'));
+    assert_eq!(view_lines(&app), ["b"], "the cycle did not wrap");
+}
+
+#[test]
+fn the_status_line_names_the_view_when_it_is_not_raw() {
+    let mut app = app_over_files("views_badge", &[("a.txt", "a\n")]);
+    app.focus = Focus::Explorer;
+    arrow_to(&mut app, "a.txt");
+    assert!(
+        !status_line(&mut app).contains(" raw "),
+        "raw is named: {}",
+        status_line(&mut app)
+    );
+
+    key(&mut app, KeyCode::Char('-'));
+
+    let line = status_line(&mut app);
+    assert!(
+        line.starts_with(" hex "),
+        "no view on the status line: {line}"
+    );
+}
+
+/// A row that asks for raw on a binary file: raw fails, and hex shows at
+/// once, with the failure on the status line.
+#[test]
+fn a_failed_view_shows_hex_and_says_why() {
+    let mut app = app_with_rows(
+        "views_fallback",
+        &[("a.bin", b"a\0b")],
+        vec![row("*.bin", &[View::Raw])],
+    );
+
+    arrow_to(&mut app, "a.bin");
+
+    assert_eq!(view_lines(&app), [crate::hex::line(0, b"a\0b")]);
+    assert_eq!(status(&app), Some("raw failed → hex: binary file"));
+    assert!(status_line(&mut app).starts_with(" hex "));
+}
+
+/// A view that takes longer than the wait shows a placeholder and a
+/// spinner, then the file when it comes.
+#[test]
+fn a_late_view_shows_a_placeholder_then_the_contents() {
+    let mut app = app_over_files("views_late", &[("a.txt", "alpha\n"), ("b.txt", "bravo\n")]);
+    arrow_to(&mut app, "a.txt");
+    let held = hold(&mut app);
+
+    arrow_to(&mut app, "b.txt");
+    assert_eq!(view_lines(&app), [super::super::loading::PLACEHOLDER]);
+    assert!(
+        status_line(&mut app).starts_with(" loading "),
+        "no spinner: {}",
+        status_line(&mut app)
+    );
+
+    held.release();
+    assert!(app.drain_views(), "the answer did not ask for a redraw");
+    assert_eq!(view_lines(&app), ["bravo"]);
+    assert!(!status_line(&mut app).contains("loading"));
+}
+
+/// The answer for a file the user has already left is dropped: the pane
+/// shows the newest selection, whatever order the answers come in.
+#[test]
+fn an_answer_for_a_file_the_user_left_is_dropped() {
+    let mut app = app_over_files(
+        "views_generation",
+        &[
+            ("a.txt", "alpha\n"),
+            ("b.txt", "bravo\n"),
+            ("c.txt", "charlie\n"),
+        ],
+    );
+    let held = hold(&mut app);
+
+    arrow_to(&mut app, "b.txt");
+    arrow_to(&mut app, "c.txt");
+    held.release();
+    app.drain_views();
+
+    assert_eq!(view_lines(&app), ["charlie"]);
+}
+
+/// A move down the explorer prefetches the files below the selection,
+/// nearest first, then the ones above it.
+#[test]
+fn a_move_prefetches_the_files_ahead_then_behind() {
+    let files: Vec<(String, String)> = (0..12)
+        .map(|n| (format!("f{n:02}.txt"), format!("{n}\n")))
+        .collect();
+    let files: Vec<(&str, &str)> = files
+        .iter()
+        .map(|(name, body)| (name.as_str(), body.as_str()))
+        .collect();
+    let mut app = app_over_files("views_prefetch", &files);
+    let held = hold(&mut app);
+    arrow_to(&mut app, "f02.txt");
+    arrow_to(&mut app, "f03.txt");
+
+    let names: Vec<String> = held
+        .prefetched()
+        .iter()
+        .map(|path| path.file_name().unwrap().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(
+        names,
+        [
+            "f04.txt", "f05.txt", "f06.txt", "f07.txt", "f08.txt", "f09.txt", "f10.txt", "f11.txt",
+            "f02.txt", "f01.txt"
+        ]
+    );
+}
+
+/// `r` on a preview reads a preview again, not the whole file: a 2 GB log
+/// in the explorer must not be read whole because of `r` (#383).
+#[test]
+fn r_on_a_truncated_preview_reads_a_preview_again() {
+    let body = numbered_lines(crate::views::read::PREVIEW_LINES + 10);
+    let mut app = app_over_files("views_r_preview", &[("big.log", &body)]);
+    arrow_to(&mut app, "big.log");
+    app.focus = Focus::Explorer;
+    assert!(app.view.is_truncated(), "the fixture is not past the cap");
+
+    key(&mut app, KeyCode::Char('r'));
+
+    assert!(app.view.is_truncated(), "`r` read the whole file");
+}

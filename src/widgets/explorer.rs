@@ -768,6 +768,30 @@ impl Explorer<'_> {
             .collect()
     }
 
+    /// The files on the rows near the selection, for prefetch (#455): up to
+    /// `ahead` files in the direction of travel, nearest first, then up to
+    /// `behind` the other way. Directories, `..` and special files are not
+    /// files and are skipped; the selection itself is not included.
+    pub(crate) fn files_near(&self, ahead: usize, behind: usize, backwards: bool) -> Vec<PathBuf> {
+        let Some(row) = self.list.selected() else {
+            return Vec::new();
+        };
+        let file = |&index: &usize| {
+            let entry = self.entries.get(index)?;
+            entry.kind.is_readable().then(|| self.path_at(index))?
+        };
+        let after = self.visible.iter().skip(row + 1).filter_map(file);
+        let before = self.visible[..row.min(self.visible.len())]
+            .iter()
+            .rev()
+            .filter_map(file);
+        if backwards {
+            before.take(ahead).chain(after.take(behind)).collect()
+        } else {
+            after.take(ahead).chain(before.take(behind)).collect()
+        }
+    }
+
     /// The absolute path at `index`, so a result can be checked against the
     /// row it was requested for before being applied to it.
     pub(crate) fn path_at(&self, index: usize) -> Option<PathBuf> {
@@ -2173,6 +2197,26 @@ mod tests {
     /// gets its own directory, since tests run in parallel.
     fn searchable(name: &str) -> Explorer<'static> {
         explorer_over(name, &["alpha.rs", "beta.rs", "beta2.rs", "gamma.rs"])
+    }
+
+    /// Prefetch takes the files ahead of the selection in the direction of
+    /// travel, then a few behind it, nearest first, and skips directories.
+    #[test]
+    fn files_near_the_selection_go_ahead_first_and_skip_directories() {
+        let mut explorer = explorer_over("files_near", &["a", "b", "c", "e", "f", "g"]);
+        fs::create_dir(explorer.dir().join("d")).expect("mkdir");
+        explorer.reload();
+        let names = |paths: Vec<PathBuf>| -> Vec<String> {
+            paths
+                .iter()
+                .map(|path| path.file_name().unwrap().to_string_lossy().into_owned())
+                .collect()
+        };
+        let c = explorer.entries.iter().position(|e| e.name == "c").unwrap();
+        explorer.select_entry(c);
+
+        assert_eq!(names(explorer.files_near(2, 1, false)), ["e", "f", "b"]);
+        assert_eq!(names(explorer.files_near(2, 1, true)), ["b", "a", "e"]);
     }
 
     fn selected_name(explorer: &Explorer<'_>) -> String {

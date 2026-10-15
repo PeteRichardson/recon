@@ -259,7 +259,7 @@ fn the_arrows_and_page_keys_scroll_the_file() {
 #[test]
 fn the_editor_counts_past_a_truncated_preview() {
     let dir = fixture_dir("editor_truncated");
-    let total = crate::widgets::fileview::PREVIEW_LINES + 100;
+    let total = crate::views::read::PREVIEW_LINES + 100;
     fs::write(dir.join("big.log"), numbered_lines(total)).expect("write fixture");
     let mut app = App::new(&Startup::from(Config {
         path: Some(dir.join("placeholder").display().to_string()),

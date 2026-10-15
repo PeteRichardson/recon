@@ -172,8 +172,8 @@ pub(crate) enum ActionId {
     GlobalEditorProject,
     GlobalEditorFile,
     GlobalReload,
-    /// Show the file as hex, or as text again (#242).
-    GlobalToggleHex,
+    /// Step to the next view in the file's view cycle (#242, #455).
+    GlobalNextView,
     GlobalVisualChar,
     GlobalVisualLine,
     GlobalYank,
@@ -354,7 +354,7 @@ impl ActionId {
             Self::GlobalEditorProject => "global.editor.project",
             Self::GlobalEditorFile => "global.editor.file",
             Self::GlobalReload => "global.reload",
-            Self::GlobalToggleHex => "global.toggle.hex",
+            Self::GlobalNextView => "global.view.next",
             Self::GlobalVisualChar => "global.visual.char",
             Self::GlobalVisualLine => "global.visual.line",
             Self::GlobalYank => "global.yank",
@@ -506,7 +506,7 @@ pub(crate) const DEFAULT: &[(Scope, &str, ActionId)] = &[
     (Scope::Global, "r", ActionId::GlobalReload),
     // Global, not `Scope::View`, so it works while the explorer steps
     // through files: that is where a binary file is first met (#242).
-    (Scope::Global, "-", ActionId::GlobalToggleHex),
+    (Scope::Global, "-", ActionId::GlobalNextView),
     (Scope::Global, "v", ActionId::GlobalVisualChar),
     (Scope::Global, "V", ActionId::GlobalVisualLine),
     (Scope::Global, "y", ActionId::GlobalYank),

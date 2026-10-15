@@ -54,7 +54,17 @@ impl Widget for &mut App<'_> {
         //
         // The search badge is what says a search is set and what `n` will
         // step by, now that the filter pane has no row for it (ADR 0001).
+        //
+        // The view badge names the view when it is not raw (#455), so the
+        // user always knows when the lines are not the lines of the file;
+        // the spinner says a view is on its way.
         let badges: Vec<Cow<'static, str>> = [
+            self.loading
+                .spinner()
+                .map(|frame| Cow::Owned(format!(" loading {frame} "))),
+            self.loading
+                .view_badge()
+                .map(|name| Cow::Owned(format!(" {name} "))),
             (self.document.mode() == Mode::FilteredOnly).then_some(Cow::Borrowed(HIDE_BADGE_TEXT)),
             self.filters
                 .is_and()

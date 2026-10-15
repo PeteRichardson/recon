@@ -35,6 +35,7 @@ pub mod startup;
 mod stamp;
 pub mod syntax;
 mod toml_fmt;
+pub mod views;
 mod widgets;
 
 mod app;

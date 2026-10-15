@@ -60,7 +60,7 @@ fn the_status_line_marks_a_previewed_total_as_an_estimate() {
 
     // Past the preview's line cap, so the view truncates and there is an
     // estimate to report.
-    let body = numbered_lines(crate::widgets::fileview::PREVIEW_LINES + 100);
+    let body = numbered_lines(crate::views::read::PREVIEW_LINES + 100);
     let dir = fixture_dir_path("status_preview");
     fs::write(dir.join("big.txt"), &body).expect("write");
     app.perform_widget_action(Action::Preview(dir.join("big.txt")));
@@ -76,7 +76,7 @@ fn the_status_line_marks_a_previewed_total_as_an_estimate() {
         "the total is not marked as an estimate: {bottom}"
     );
     assert!(
-        !bottom.contains(&format!("/{} ", crate::widgets::fileview::PREVIEW_LINES)),
+        !bottom.contains(&format!("/{} ", crate::views::read::PREVIEW_LINES)),
         "reported the preview's own line count as the file's total: {bottom}"
     );
 }
