@@ -188,7 +188,7 @@ fn lines_in_dim_mode_emits_every_visible_line_and_counts_the_matches() {
 
 /// A file past the preview cap, whose last line is the only hit.
 fn app_emitting_a_large_file(name: &str, line_numbers: bool) -> App<'static> {
-    let lines = crate::widgets::fileview::PREVIEW_LINES + 100;
+    let lines = crate::views::read::PREVIEW_LINES + 100;
     let body: String = (0..lines)
         .map(|i| {
             if i == lines - 1 {
@@ -241,7 +241,7 @@ fn lines_of_a_large_file_are_read_to_its_end() {
     finish(&mut app);
 
     let (lines, summary) = emitted(&mut app);
-    let last = crate::widgets::fileview::PREVIEW_LINES + 100;
+    let last = crate::views::read::PREVIEW_LINES + 100;
     assert_eq!(lines, vec![format!("{last}\thit at the end")]);
     let name = app.view.filename().display().to_string();
     assert_eq!(
@@ -259,7 +259,7 @@ fn lines_of_a_large_file_in_dim_mode_count_the_whole_file() {
     finish(&mut app);
 
     let (lines, summary) = emitted(&mut app);
-    let total = crate::widgets::fileview::PREVIEW_LINES + 100;
+    let total = crate::views::read::PREVIEW_LINES + 100;
     assert_eq!(lines.len(), total);
     assert_eq!(lines.last().map(String::as_str), Some("hit at the end"));
     let name = app.view.filename().display().to_string();

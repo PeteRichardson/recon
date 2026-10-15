@@ -628,8 +628,8 @@ fn comma_lands_on_the_last_hit_of_a_file_that_was_only_previewed() {
     // Past PREVIEW_LINES, so the first preview of this file is truncated;
     // the hit sits beyond the preview boundary, reachable only once
     // `cross_file` promotes it.
-    let hit_at = crate::widgets::fileview::PREVIEW_LINES + 50;
-    let body: String = (0..crate::widgets::fileview::PREVIEW_LINES + 100)
+    let hit_at = crate::views::read::PREVIEW_LINES + 50;
+    let body: String = (0..crate::views::read::PREVIEW_LINES + 100)
         .map(|i| {
             if i == hit_at {
                 "HIT\n".to_string()

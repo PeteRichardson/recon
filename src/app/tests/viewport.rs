@@ -147,7 +147,7 @@ fn upgrading_a_truncated_preview_resyncs_styles_without_reloading() {
     // Past PREVIEW_LINES, so the first preview is truncated. The match
     // sits inside the preview too, so it is visible both before and after
     // the upgrade to a full load.
-    let body: String = (0..crate::widgets::fileview::PREVIEW_LINES + 100)
+    let body: String = (0..crate::views::read::PREVIEW_LINES + 100)
         .map(|i| {
             if i == 10 {
                 "MATCH line\n".to_string()
@@ -182,7 +182,7 @@ fn upgrading_a_truncated_preview_resyncs_styles_without_reloading() {
     // styles line up with what is drawn.
     assert_eq!(
         app.document.lines().len(),
-        crate::widgets::fileview::PREVIEW_LINES,
+        crate::views::read::PREVIEW_LINES,
         "sanity: preview is capped"
     );
     assert_eq!(
@@ -207,7 +207,7 @@ fn upgrading_a_truncated_preview_resyncs_styles_without_reloading() {
     let styles = view_line_styles(&app);
     assert_eq!(
         app.document.lines().len(),
-        crate::widgets::fileview::PREVIEW_LINES + 100,
+        crate::views::read::PREVIEW_LINES + 100,
         "the preview did not upgrade to a full load"
     );
     assert_eq!(
@@ -406,7 +406,7 @@ fn an_unbound_modified_key_does_not_move_the_view_cursor() {
 fn an_unbound_modified_key_does_not_promote_a_truncated_preview() {
     let dir = fixture_dir("alt_j_keeps_the_preview");
     // Past PREVIEW_LINES, so the first preview of this file is truncated.
-    let body = numbered_lines(crate::widgets::fileview::PREVIEW_LINES + 100);
+    let body = numbered_lines(crate::views::read::PREVIEW_LINES + 100);
     fs::write(dir.join("big.log"), &body).expect("write fixture");
 
     let mut app = App::new(&Startup::from(Config {

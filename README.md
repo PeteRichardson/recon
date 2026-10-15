@@ -121,12 +121,15 @@ motions throughout.
 - **Look before you enter** — selecting a directory lists its contents in the
   view pane, with size and modification time, so you can see what is inside
   without going in. `l` on that selection makes the listing the explorer's.
-- **Binary files as hex** — a file with a NUL byte in its first 8 KiB
-  opens as a hex dump, and
-  `-` switches any file between hex and text. See [The hex view](#the-hex-view).
+- **Views** — a file with a NUL byte in its first 8 KiB opens as a hex dump,
+  and `-` steps any file to its next view: text, then hex. A `[[filetype]]`
+  row in the config sets the views and their order for each file type. See
+  [Views](#views).
 - **Cheap navigation** — moving through the explorer renders a bounded preview
   (50,000 lines / 10 MiB), so scrolling a directory of very large logs doesn't
-  stutter. Ordinary files are well inside those bounds and are simply read.
+  stutter. Files are read on background threads, never on the thread that
+  reads your keys, and the files near the selection are read before you get
+  to them.
 - **Copy what you found** — `v` or `V` starts a selection in the file view,
   the motions grow it, `y` puts it on the system clipboard. Or drag with the
   mouse, or double-click a word. A yank copies the lines you can *see*, so a
@@ -490,7 +493,7 @@ Global (`src/app/events.rs`), handled before the focused pane sees the key:
 | `o` | Open the selected file's enclosing **project** in your editor, at the line the cursor is on — see [Opening an editor](#opening-an-editor) | `global.editor.project` |
 | `O` | Open the selected **file alone**, at the same line — no project, no walk-up | `global.editor.file` |
 | `r` | **Refresh from disk** — re-list, re-stat and rescan the explorer's listing (so a file created since the listing was built appears), and reload the file in the view with the cursor kept on its line. The status row shows `changed on disk · r` when the open file's size or mtime has moved | `global.reload` |
-| `-` | Show the file in the view as a **hex dump**, or as text again — see [The hex view](#the-hex-view). A binary file opens as hex | `global.toggle.hex` |
+| `-` | Show the file in its **next view** — text, then a hex dump, then text again — see [Views](#views). A binary file opens as hex | `global.view.next` |
 
 `?` used to search backward. `n`/`N` cover both directions now, which is what
 freed it for the overlay — it is the conventional help key in the pagers and
@@ -1672,14 +1675,70 @@ and opening a FIFO would block until something wrote to it. The scanner,
 the preview, `--emit files` and a batch run over a directory all skip it,
 and naming one directly is refused with `not a regular file`.
 
-### The hex view
+### Views
 
-`-` shows the file in the view as a hex dump, sixteen bytes a line, and `-`
-again shows it as text. A binary file — one with a NUL byte in its first
-8 KiB — opens as hex without the key, in place of the old
-`<binary file: contains NUL bytes>`; `-` on it shows that message again.
-`-` on a directory, or on a file that recon cannot read, shows
-`no file to show as hex` and changes nothing.
+A **view** is one way the file view shows a file: `raw` (the file's text) or
+`hex` (a hex dump). Each file has a **view cycle**: an ordered list of views.
+The first one is the default, and `-` steps to the next one. After the last
+view, `-` goes back to the first.
+
+| File | Views |
+| --- | --- |
+| a binary file (a NUL byte in its first 8 KiB) | `hex` |
+| every other file | `raw`, `hex` |
+
+A step with `-` holds for every file of the same type until you step again
+or recon stops. Press `-` once on a log, and the next logs that you move to
+open as hex too. A binary file has one view, so `-` on it says
+`this file has one view`. `-` on a directory, or on a file that recon cannot
+read, says `no file to show in another view` and changes nothing.
+
+The status line shows the name of the view when it is not `raw`, as a badge
+at its left end: ` hex `.
+
+#### Setting the views for a file type
+
+A `[[filetype]]` row in `config.toml` sets the cycle for the files that its
+`glob` matches:
+
+```toml
+[[filetype]]
+glob  = "*.{bin,dat}"
+views = ["hex", "raw"]
+
+[[filetype]]
+glob  = "**/captures/*.log"
+views = ["hex"]
+```
+
+The first row that matches a file gives its whole cycle; rows do not merge.
+Your rows go before the built-in rows in the table above. `views` names one
+or more of `raw` and `hex`, in the order that `-` steps through them, and a
+view that is not in the list is never shown.
+
+A glob with no `/` matches the file's name, wherever the file is. A glob with
+a `/` matches the whole path. `*` and `?` match inside one name, `**` matches
+across directories, and `{a,b}` matches either. Every other character is
+itself.
+
+If a view cannot run on a file, recon shows hex at once and the status line
+says why: `raw failed → hex: binary file` for a row that asks for `raw` on a
+binary file.
+
+#### Reading in the background
+
+recon reads every view on background threads (the number of cores less two,
+and at least one). After it asks for a file, it waits up to 30 ms. A file
+read in that time shows at once, as before. A slower read shows
+`<loading…>` and a spinner on the status line, and the file when it is
+ready: the explorer never waits for a file. When you move the selection,
+recon also reads the next 8 files in the direction that you move and the 2
+behind, and keeps up to 256 MiB of what it read. A file that changes on disk
+is read again.
+
+#### The hex view
+
+`hex` shows the file sixteen bytes a line:
 
 ```
 00000000: 7f 45 4c 46 02 01 01 00  00 00 00 00 00 00 00 00  .ELF............
@@ -1690,10 +1749,6 @@ The offset leads each line, in hex, so the gutter is off while a dump is
 shown. Only printable ASCII shows as itself in the right-hand column; every
 other byte is a `.`. A UTF-16 file shows its raw bytes, byte-order mark
 included. There is no syntax colour.
-
-The choice holds while you stay on the file — `r` and a full read after a
-preview keep it — and a different file starts again from its content: hex if
-it is binary, text if not.
 
 A dump is ordinary lines, so everything that works on lines works on it:
 filters, `/` and `*`, dim and hide, visual mode and `y`, `--emit lines`, and

@@ -502,8 +502,8 @@ pub const KEYMAP: &[Section] = &[
             },
             Binding {
                 keys: &["-"],
-                action: "Show the file as hex, or as text",
-                names: &["global.toggle.hex"],
+                action: "Next view of the file: raw, hex, …",
+                names: &["global.view.next"],
             },
             // `names: &[]`: reserved for 1.1, bound to nothing, so there is
             // no action to name — see `keymap::RESERVED`.

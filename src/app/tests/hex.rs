@@ -22,16 +22,17 @@ fn emitted(app: &App) -> Vec<String> {
         .collect()
 }
 
+/// A binary file's cycle is hex alone, so `-` has nowhere to go and says
+/// so (#455). It used to show the `<binary file>` refusal.
 #[test]
-fn a_binary_file_opens_as_hex_and_minus_shows_the_message() {
+fn a_binary_file_opens_as_hex_and_has_one_view() {
     let mut app = app_over_bytes("hex_app_binary", b"ab\0cd");
     assert_eq!(view_lines(&app), [crate::hex::line(0, b"ab\0cd")]);
 
     key(&mut app, KeyCode::Char('-'));
-    assert_eq!(view_lines(&app), ["<binary file: contains NUL bytes>"]);
 
-    key(&mut app, KeyCode::Char('-'));
     assert_eq!(view_lines(&app), [crate::hex::line(0, b"ab\0cd")]);
+    assert_eq!(status(&app), Some("this file has one view"));
 }
 
 /// `-` is global, so it works from the explorer as the selection moves —
@@ -68,7 +69,7 @@ fn minus_on_a_directory_says_there_is_no_file() {
 
     key(&mut app, KeyCode::Char('-'));
 
-    assert_eq!(status(&app), Some("no file to show as hex"));
+    assert_eq!(status(&app), Some("no file to show in another view"));
 }
 
 /// An error in the pane is not a file: `-` says so rather than read it
@@ -84,5 +85,5 @@ fn minus_on_an_error_says_there_is_no_file() {
 
     key(&mut app, KeyCode::Char('-'));
 
-    assert_eq!(status(&app), Some("no file to show as hex"));
+    assert_eq!(status(&app), Some("no file to show in another view"));
 }

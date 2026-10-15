@@ -55,7 +55,7 @@ fn a_directory_argument_previews_rather_than_loads() {
     // Past the line cap, which is what "previewed rather than loaded" now
     // means: below the cap the two are the same thing, deliberately, since
     // reading a log-sized file whole costs well under a millisecond.
-    let lines = crate::widgets::fileview::PREVIEW_LINES + 100;
+    let lines = crate::views::read::PREVIEW_LINES + 100;
     let body = numbered_lines(lines);
     fs::write(dir.join("big.log"), &body).expect("write");
 
@@ -69,7 +69,7 @@ fn a_directory_argument_previews_rather_than_loads() {
     // pane is, not how much of the file was read.
     assert_eq!(
         app.document.lines().len(),
-        crate::widgets::fileview::PREVIEW_LINES,
+        crate::views::read::PREVIEW_LINES,
         "the first entry was read in full instead of previewed"
     );
 }

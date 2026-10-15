@@ -1,8 +1,11 @@
 //! Moving between files, and between the interesting lines in one.
 
 use super::App;
+use super::loading::Landing;
 use super::search::{WRAPPED_TO_BOTTOM, WRAPPED_TO_TOP};
 use super::viewport::Step;
+use crate::views::Extent;
+use crate::widgets::Action;
 
 /// A cross-file step that just happened, for the notice over the file view
 /// and the accent on its title. Lives exactly as long as a `StatusMessage`:
@@ -27,36 +30,12 @@ impl Crossing {
 }
 
 impl App<'_> {
-    /// Force the file view's truncated preview to a full load, the same
-    /// thing its own `perform` does on first interaction. Needed by
-    /// every path that moves the cursor or evaluates a pattern directly
-    /// rather than going through that dispatch — see `promote_truncated_preview`,
-    /// which wraps this for those callers.
-    fn promote_file_view(&mut self) {
-        let path = self.view.filename().to_path_buf();
-        self.view.load(&path);
-    }
-
-    /// `-`: show the file as hex, or as text again (#242).
-    ///
-    /// A new document, as a load is: the dump's lines are not the text's, so
-    /// no line of the one says where to put the cursor in the other, and it
-    /// starts at the top.
-    pub(super) fn toggle_hex(&mut self) {
-        if !self.view.toggle_hex() {
-            self.report("no file to show as hex", false);
-            return;
-        }
-        self.sync_document();
-        self.refresh_view();
-    }
-
     /// Re-read the active file, and put the cursor back on the line it was on.
     ///
-    /// `load` rebuilds the buffer from the top, so this remembers the cursor's
-    /// *source* line first and re-places it afterwards — the machinery a
-    /// filter change already uses to rebuild without losing the reader's
-    /// place. A file that shrank underneath the cursor (logrotate) simply
+    /// A new read rebuilds the buffer from the top, so this remembers the
+    /// cursor's *source* line first and `Landing::Keep` re-places it when
+    /// the read arrives — the machinery a filter change already uses to
+    /// rebuild without losing the reader's place. A file that shrank underneath the cursor (logrotate) simply
     /// clamps to what is left.
     pub(super) fn reload_active_file(&mut self) {
         let path = self.view.filename().to_path_buf();
@@ -64,52 +43,19 @@ impl App<'_> {
             return;
         }
         let source = self.cursor_source();
-        self.view.load(&path);
-        self.sync_document();
-        self.document.evaluate(&self.filters);
-        let row = self
-            .document
-            .nearest_visible(source)
-            .and_then(|nearest| self.document.visible_position(nearest))
-            .unwrap_or(0);
-        self.place_cursor_on_visible_row(row);
+        self.open_view(&path, self.current_extent(), Landing::Keep(source));
         self.view_stale = false;
-    }
-
-    /// Promote a truncated preview to a full load and bring the document up
-    /// to date with it. No-op when the preview is not truncated.
-    ///
-    /// `n`/`N` and a committed `/` both bypass `FileView::perform`,
-    /// which is where a truncated preview normally promotes itself on first
-    /// interaction — one moves the cursor directly, the other evaluates a
-    /// pattern via `apply_search`, and neither goes through that dispatch.
-    /// Without this, either would silently act on the bounded preview alone:
-    /// `n` would wrap inside it forever, and `/` would report "no matches"
-    /// for a pattern that only occurs past the preview's cap.
-    ///
-    /// `refresh_view` is folded in here, guarded the same way, since a
-    /// promotion is pointless without the document catching up to the newly
-    /// loaded lines before anything steps a cursor through them.
-    pub(super) fn promote_truncated_preview(&mut self) {
-        if self.file_view_truncated() {
-            self.promote_file_view();
-            self.sync_document();
-            self.refresh_view();
-        }
     }
 
     /// Carry out one of the view's own actions, whichever pane has focus,
     /// with the after-care the focused dispatch gives the other panes: a
-    /// truncated preview that promoted itself on this action is resynced
-    /// without re-reading the file, and the window is checked after a page
-    /// at its edge.
+    /// truncated preview is made whole first, and the window is checked
+    /// after a page at its edge.
     pub(super) fn perform_on_view(&mut self, action: crate::keymap::ActionId) {
-        let was_truncated = self.file_view_truncated();
+        // The user is interacting with the view, so a preview is no longer
+        // enough: they can now scroll past the end of it.
+        self.promote_truncated_preview();
         self.view.perform(action);
-        if was_truncated && !self.file_view_truncated() {
-            self.sync_document();
-            self.refresh_view();
-        }
         self.ensure_window();
     }
 
@@ -176,11 +122,9 @@ impl App<'_> {
         if self.explorer.selected_entry() == before {
             return false;
         }
-        self.perform_widget_action(action);
-        self.promote_truncated_preview();
-        if let Some(target) = self.first_interesting(backwards) {
-            self.land_on(target);
-        }
+        let (Action::Load(path) | Action::LoadAndFocus(path) | Action::Preview(path)) = action;
+        self.open_view(&path, Extent::Full, Landing::FirstInteresting { backwards });
+        self.prefetch_near_selection();
         let name = self.explorer.selected_name().unwrap_or_default();
         let crossing = Crossing { backwards, name };
         self.report(&format!("{} · {}", crossing.label(), crossing.name), false);

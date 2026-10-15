@@ -14,6 +14,7 @@ mod finish;
 mod focus;
 mod launch;
 mod layout;
+mod loading;
 mod mouse;
 mod navigation;
 mod prompt;
@@ -34,6 +35,7 @@ use std::time::Instant;
 // need a `layout::` prefix. The pane-geometry constants are *not* re-exported
 // here — nothing outside `layout` reads them any more except the tests, which
 // import them directly (#74).
+use crate::views::Extent;
 use clipboard::Clipboard;
 use document::{Document, Mode};
 use editor::Launcher;
@@ -47,6 +49,7 @@ use widgets::filterlist::FilterList;
 // The types of `App`'s fields that live beside the code that uses them.
 use filter_editor::FilterEditor;
 use filters::PeekState;
+use loading::Landing;
 use navigation::Crossing;
 use prompt::{History, SearchPrompt};
 use render::status::StatusMessage;
@@ -305,6 +308,22 @@ pub struct App<'a> {
     /// The active file's stamp moved since it was loaded. Shown as a badge,
     /// cleared by `r`.
     view_stale: bool,
+    /// The view pipeline: where the file view's contents come from (#455).
+    loading: loading::Loading,
+}
+
+/// Where the file view's jobs run: worker threads, or the caller's own
+/// thread under test so that every test sees a load in the step that asked
+/// for it.
+fn executor() -> Box<dyn crate::views::pool::Executor> {
+    #[cfg(test)]
+    {
+        Box::new(crate::views::pool::Immediate::default())
+    }
+    #[cfg(not(test))]
+    {
+        Box::new(crate::views::pool::Pool::new())
+    }
 }
 
 /// Which of the two editor bindings is being carried out.
@@ -362,21 +381,6 @@ impl App<'_> {
         // `set_theme` after it would look it up a second time (#186). Here
         // there is nothing shown yet, so this costs nothing.
         view.set_theme(config.syntax_theme());
-
-        match explorer.selected_path() {
-            // A directory argument *selects* an entry rather than being
-            // handed one, so it is previewed — bounded by `PREVIEW_LINES` —
-            // exactly as arrowing onto it would be. Loading it in full would
-            // read a whole log at startup merely because it sorts first,
-            // which is the cost the preview mechanism exists to avoid.
-            Some(selected) if argument.is_dir() => view.preview(&selected),
-            // A file argument loads the argument itself, not the explorer's
-            // selection. They are the same path when the file exists; when it
-            // does not, the explorer falls back to the first entry, and
-            // loading *that* would silently open some other file in response
-            // to a typo. Reporting the argument is what recon already does.
-            _ => view.load(argument),
-        }
 
         // Created here rather than lazily on the first `o`: the sender has to
         // outlive every launcher clone, and a channel built on demand would
@@ -485,14 +489,30 @@ impl App<'_> {
             last_poll: None,
             stamp_check: None,
             view_stale: false,
+            loading: loading::Loading::new(executor(), &config.filetypes),
         };
         // `--hide`: on the document before `sync_document`, which carries
         // the mode across into the document it builds for the loaded file.
         if config.hide {
             app.set_mode(Mode::FilteredOnly);
         }
-        app.sync_document();
-        app.refresh_view();
+        match app.explorer.selected_path() {
+            // A directory argument *selects* an entry rather than being
+            // handed one, so it is previewed — bounded by `PREVIEW_LINES` —
+            // exactly as arrowing onto it would be. Loading it in full would
+            // read a whole log at startup merely because it sorts first,
+            // which is the cost the preview mechanism exists to avoid.
+            Some(selected) if argument.is_dir() => {
+                app.open_view(&selected, Extent::Preview, Landing::Top);
+                app.prefetch_near_selection();
+            }
+            // A file argument loads the argument itself, not the explorer's
+            // selection. They are the same path when the file exists; when it
+            // does not, the explorer falls back to the first entry, and
+            // loading *that* would silently open some other file in response
+            // to a typo. Reporting the argument is what recon already does.
+            _ => app.open_view(argument, Extent::Full, Landing::Top),
+        }
         app
     }
 

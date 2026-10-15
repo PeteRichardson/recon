@@ -2,44 +2,15 @@
 
 #[cfg(test)]
 use crate::document::BINARY_SNIFF_BYTES;
-use crate::document::{self, Sniff, read_lossy_line, read_utf16_lines, sniff};
-use crate::hex;
 use crate::syntax::{Highlighter, Span, Theme};
-use crate::widgets::explorer::Entry;
+use crate::views::read::Contents;
+#[cfg(test)]
+use crate::views::read::{MAX_PREVIEW_BYTES, PREVIEW_LINES};
 use ratatui::prelude::{Buffer, Color, Modifier, Rect, Style, Widget};
-use std::fs::File;
-use std::io::{BufReader, Cursor, Read};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tui_textarea::{CursorMove, Scrolling, TextArea};
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
-
-/// Lines read for a preview.
-///
-/// Not "enough to fill the pane", which is what this was: at 500 lines it
-/// truncated essentially every real file recon is pointed at, and a truncated
-/// document is one that filters and counts report wrong answers over — the
-/// defect in #27. The cap exists to bound work on a genuinely enormous log,
-/// not to avoid reading a log-sized log.
-///
-/// 50,000 is ~5x the largest file in the corpus this was measured against
-/// (a few thousand real log files: p50 1,084 lines, max 10,000), and
-/// `MAX_PREVIEW_BYTES` is the binding limit well before it at any realistic
-/// line length.
-///
-/// `pub(crate)` for the tests in `app/tests/`: reaching the truncated branch
-/// through `App` means a fixture past this cap, and one that hard-coded the
-/// number would quietly stop testing truncation the next time it moves.
-pub(crate) const PREVIEW_LINES: usize = 50_000;
-
-/// Byte ceiling for a preview. A file with no newlines is a single enormous
-/// line, which the line cap alone would happily read in full.
-///
-/// 10 MiB is ~10x the largest measured file and bounds the worst-case blocking
-/// read at roughly 10 ms — read, `Document` clone and a filter pass together
-/// run about 1 ms/MB, so this stays far inside the ~100 ms a delay would have
-/// to reach before anyone noticed it.
-const MAX_PREVIEW_BYTES: u64 = 10 << 20;
+use unicode_width::UnicodeWidthChar;
 
 /// Pane height assumed before this pane has rendered even once.
 ///
@@ -190,58 +161,6 @@ pub(crate) fn window_holds(
     room_above && room_below
 }
 
-/// Shown in place of the contents when a file is not a document at all.
-///
-/// It used to say `not valid UTF-8`, which was both the check and a libel: a
-/// single stray byte in a log condemned the whole file. The verdict now rests
-/// on a NUL in the file's head, so the message names what was actually found
-/// — undecodable bytes on their own no longer stop the file being read, and
-/// a UTF-16 byte-order mark explains its NULs away (#165).
-const BINARY_MESSAGE: &str = "<binary file: contains NUL bytes>";
-
-/// Shown when the explorer's selection is a directory with nothing in it.
-///
-/// A directory now renders as its listing, so this survives only for the case
-/// where there is no listing to show. Distinguished from `<directory>`, which
-/// this used to be: "I gave you a directory and got nothing" is the one case
-/// that could otherwise read as a bug rather than as an answer.
-const EMPTY_DIRECTORY_MESSAGE: &str = "<empty directory>";
-
-/// What `read_lines` or `read_preview` found: the lines it read, whether more
-/// remain, and how many lines the whole file probably has.
-struct Contents {
-    lines: Vec<String>,
-    truncated: bool,
-    /// `None` when the file was read whole (the count is not a guess then, it
-    /// is `lines.len()`) or when there was nothing to estimate from.
-    estimated_lines: Option<usize>,
-    /// Whether `lines` are the file's own text, as opposed to a directory
-    /// listing or a message standing in for a file that could not be shown.
-    /// Only text is syntax-coloured (#122): `<binary file>` beside a `.rs`
-    /// path is not Rust, and a listing is not whatever its directory is
-    /// named after.
-    text: bool,
-    /// Whether `lines` are a hex dump of the file (#242). A dump is the
-    /// file's own content, so `text` is true for it too, but it is never
-    /// syntax-coloured and never numbered: the offset in each line is its
-    /// position.
-    hex: bool,
-}
-
-impl Contents {
-    /// Contents that are really an error or a placeholder. Not truncated —
-    /// there is nothing better to re-read later — and nothing to estimate.
-    fn message(text: String) -> Self {
-        Self {
-            lines: vec![text],
-            truncated: false,
-            estimated_lines: None,
-            text: false,
-            hex: false,
-        }
-    }
-}
-
 #[derive(Debug, Default)]
 pub(crate) struct FileView<'a> {
     /// The file being shown, as a path rather than a rendering of one.
@@ -252,7 +171,7 @@ pub(crate) struct FileView<'a> {
     /// something that does not exist (#79). Rendered at the one place that
     /// should render it: the pane title.
     filename: PathBuf,
-    /// The lines as read — the whole file, or as much of it as `preview`
+    /// The lines as read — the whole file, or as much of it as a preview
     /// took — shared with the `Document` that filters them (#122).
     ///
     /// `textarea` used to be the only copy, which was fine while it held the
@@ -265,10 +184,8 @@ pub(crate) struct FileView<'a> {
     /// see `Contents::text`.
     text: bool,
     /// Whether `source` is a hex dump of the file — see `Contents::hex`.
-    ///
-    /// Kept across a `load` or `preview` of the *same* file, so `r` and the
-    /// promotion of a preview do not undo a `-`; a different file starts
-    /// again from what its content asks for (#242).
+    /// Which view a file is shown in is `App`'s choice, not this pane's
+    /// (#455).
     hex: bool,
     textarea: TextArea<'a>,
     /// The colours syntax colouring paints with. `Off` by default, so a
@@ -391,7 +308,7 @@ pub(crate) struct FileView<'a> {
 
 impl FileView<'_> {
     /// A view already showing `filename`. Test-only: `App` builds the pane
-    /// with `default()` and then `load`s or `preview`s into it, and this is
+    /// with `default()` and then `show`s a job's answer in it, and this is
     /// the one caller-free constructor the visibility sweep (#166) exposed
     /// to `dead_code` — the rest of #167 lives in `filter/mod.rs` and
     /// `document.rs`.
@@ -424,39 +341,6 @@ impl FileView<'_> {
         self.hex
     }
 
-    /// Show the file as hex if it is shown as text, or the other way round
-    /// (#242). A preview stays a preview. `false`, with nothing changed, when
-    /// the pane holds no file to show either way: a directory, nothing, or a
-    /// message that stands in for a file that could not be read (#405).
-    pub(crate) fn toggle_hex(&mut self) -> bool {
-        if !self.shows_file_content() {
-            return false;
-        }
-        self.hex = !self.hex;
-        let path = self.filename.clone();
-        if self.truncated {
-            self.preview(&path);
-        } else {
-            self.load(&path);
-        }
-        true
-    }
-
-    /// Whether the pane shows the file's content in some form: its text, its
-    /// dump, or the refusal that a binary file shows as text. The refusal is
-    /// a message, but `-` turns it back into the dump, so it counts. Every
-    /// other message is an error, and an error has no other form to show.
-    fn shows_file_content(&self) -> bool {
-        self.text || self.hex || self.source.as_slice() == [BINARY_MESSAGE]
-    }
-
-    /// What `load` and `preview` ask for: the choice already made for this
-    /// file when it is the one on screen, and otherwise none, so the file's
-    /// own content decides.
-    fn wanted_hex(&self, path: &Path) -> Option<bool> {
-        (self.filename == path).then_some(self.hex)
-    }
-
     /// The file's lines as read, for `App::sync_document`, which shares them
     /// with the `Document` rather than copying them.
     ///
@@ -473,7 +357,7 @@ impl FileView<'_> {
     /// Choose the colours syntax colouring paints with, or `Theme::Off`.
     ///
     /// Applies to the file already on screen as well as to later ones. `App::new`
-    /// sets it before the first `load`, so that load's grammar lookup is the
+    /// sets it before the first `show`, so that show's grammar lookup is the
     /// only one (#186).
     pub(crate) fn set_theme(&mut self, theme: Theme) {
         self.theme = theme;
@@ -489,15 +373,14 @@ impl FileView<'_> {
     /// Install freshly read lines: as `source`, as the textarea's buffer,
     /// and as the input to a new highlighter.
     ///
-    /// Shared by `load` and `preview_with_caps`, which differ only in what
-    /// they say about the rest of the file. The buffer starts at the file's
+    /// Called by `show`. The buffer starts at the file's
     /// first line, so `window_start` goes back to zero: leaving a previous
     /// file's offset here would misreport the cursor's line until the next
     /// `apply_view` — see `cursor_visible_row`.
     ///
     /// **A window of the lines, not a copy of all of them** (#151). This
     /// used to clone every line into the textarea, and every production
-    /// caller — `load` and `preview` both run through `sync_document` and
+    /// caller — every `show` runs through `sync_document` and
     /// `apply_view` — replaced that clone through `show_window` before the
     /// first draw, because `sync_document` clears the record `apply_view`
     /// keys its rebuild on. So a full load was resident three times at its
@@ -509,8 +392,8 @@ impl FileView<'_> {
     /// it is not. Bounded, rather than the single blank row it could be: the
     /// pane still shows a file on its own, which is what keeps this widget
     /// testable without an `App` around it.
-    fn adopt(&mut self, lines: Vec<String>, text: bool, hex: bool) {
-        self.source = Arc::new(lines);
+    fn adopt(&mut self, lines: Arc<Vec<String>>, text: bool, hex: bool) {
+        self.source = lines;
         self.text = text;
         self.hex = hex;
         let (start, end) = window_for(self.source.len(), self.window_height(), 0, 0);
@@ -567,46 +450,18 @@ impl FileView<'_> {
         self.estimated_lines
     }
 
-    /// Show `path` in the pane, replacing whatever was there.
+    /// Show `contents`, read from `path`, in the pane, replacing whatever
+    /// was there (#455). The pane never reads a file: a worker read this.
     ///
-    /// A file that cannot be read is reported in the pane itself rather than
-    /// bringing the TUI down, since any entry in the explorer pane can be selected.
-    /// Rebuilding the `TextArea` also resets the cursor and scroll position.
-    pub(crate) fn load(&mut self, path: &Path) {
-        let contents = read_lines(path, self.wanted_hex(path));
+    /// A file that could not be read arrives as a message, which the pane
+    /// shows in place of the file. Rebuilding the `TextArea` also resets the
+    /// cursor and scroll position.
+    pub(crate) fn show(&mut self, path: &Path, contents: &Contents) {
         self.filename = path.to_path_buf();
-        self.adopt(contents.lines, contents.text, contents.hex);
-        self.showing_directory = path.is_dir();
-        self.truncated = false;
-        // The whole file is here, so its length is a fact rather than a guess.
-        self.estimated_lines = None;
-        // A pending restore was measured against the buffer this just threw
-        // away; carrying it into an unrelated file would apply it to the
-        // wrong data entirely — see `sync_document`'s clearing of
-        // `last_generation` in `app/mod.rs` for the same reasoning.
-        self.pending_screen_row = None;
-    }
-
-    /// Show just enough of `path` to fill the pane.
-    ///
-    /// Used as the selection moves, where reading whole files on every cursor
-    /// key would stutter on large logs. While the explorer pane holds focus the
-    /// view cannot be scrolled, so a screenful is all that can be seen; the
-    /// rest is read by `perform` as soon as the view is actually used.
-    pub(crate) fn preview(&mut self, path: &Path) {
-        self.preview_with_caps(path, PREVIEW_LINES, MAX_PREVIEW_BYTES);
-    }
-
-    /// `preview` with both caps injected, so a test can reach the truncated
-    /// branch without building a multi-megabyte fixture. See
-    /// `read_preview_with_caps` for why the seam is here.
-    fn preview_with_caps(&mut self, path: &Path, max_lines: usize, max_bytes: u64) {
-        let preview = read_preview_with_caps(path, max_lines, max_bytes, self.wanted_hex(path));
-        self.filename = path.to_path_buf();
-        self.showing_directory = path.is_dir();
-        self.adopt(preview.lines, preview.text, preview.hex);
-        self.truncated = preview.truncated;
-        self.estimated_lines = preview.estimated_lines;
+        self.showing_directory = contents.directory;
+        self.adopt(Arc::clone(&contents.lines), contents.text, contents.hex);
+        self.truncated = contents.truncated;
+        self.estimated_lines = contents.estimated_lines;
         // Size the gutter for the whole file, not for the slice of it on
         // screen. Without this the gutter fits the preview's own line count
         // and then widens the moment the rest of the file arrives, shifting
@@ -615,19 +470,44 @@ impl FileView<'_> {
         // Only ever a *minimum*: if the estimate reads low, the real numbering
         // still wins once loaded, so a bad guess costs the same single redraw
         // that making no guess at all would have.
-        if let Some(estimate) = preview.estimated_lines {
+        if let Some(estimate) = contents.estimated_lines {
             self.textarea.set_min_line_number_width(digits(estimate));
         }
-        // See `load`: a pending restore does not survive a switch to a
-        // different file's buffer.
+        // A pending restore was measured against the buffer this just threw
+        // away; carrying it into an unrelated file would apply it to the
+        // wrong data entirely — see `sync_document`'s clearing of
+        // `last_generation` in `app/mod.rs` for the same reasoning.
         self.pending_screen_row = None;
+    }
+
+    /// Read `path` whole, in the view its content asks for, and show it.
+    /// Test-only: the app sends a job instead.
+    #[cfg(test)]
+    pub(crate) fn load(&mut self, path: &Path) {
+        let contents = crate::views::read::read_lines(path, test_view(path));
+        self.show(path, &contents);
+    }
+
+    /// `load`, bounded as the explorer's selection reads a file.
+    #[cfg(test)]
+    pub(crate) fn preview(&mut self, path: &Path) {
+        self.preview_with_caps(path, PREVIEW_LINES, MAX_PREVIEW_BYTES);
+    }
+
+    /// `preview` with both caps injected, so a test can reach the truncated
+    /// branch without building a multi-megabyte fixture.
+    #[cfg(test)]
+    fn preview_with_caps(&mut self, path: &Path, max_lines: usize, max_bytes: u64) {
+        let contents =
+            crate::views::read::read_preview_with_caps(path, max_lines, max_bytes, test_view(path));
+        self.show(path, &contents);
     }
 
     /// Style individual lines, indexed by line number.
     ///
     /// Filtering uses this to dim lines that match no filter and colour those
-    /// that do. Rebuilding the textarea — which `load` and `preview` both do —
-    /// clears these, so they must be re-applied after either.
+    /// that do. Rebuilding the textarea — which `show` does — clears these,
+    /// so they must be re-applied after it.
     ///
     /// The line the cursor is on keeps its style too: `render` folds it into
     /// the cursor-line style, because the textarea replaces rather than merges.
@@ -640,7 +520,7 @@ impl FileView<'_> {
     ///
     /// Used when the buffer holds only the lines matching a filter, so the
     /// gutter still reads as positions in the original file. Cleared by
-    /// `load` and `preview`, as above.
+    /// `show`, as above.
     pub(crate) fn set_line_numbers(&mut self, numbers: Vec<usize>) {
         // `App::apply_view` calls this on every keystroke, mostly with the
         // numbers already set; only a real change moves a row's source line.
@@ -660,7 +540,7 @@ impl FileView<'_> {
     /// deliberately a modifier rather than a whole separator row, which would
     /// spend a line of the pane on every gap.
     ///
-    /// Cleared by `load` and `preview`, as with `set_line_styles` and
+    /// Cleared by `show`, as with `set_line_styles` and
     /// `set_line_numbers` above.
     pub(crate) fn set_group_ends(&mut self, ends: Vec<bool>) {
         self.textarea.set_line_number_styles(
@@ -682,7 +562,7 @@ impl FileView<'_> {
     /// `App` owns the search; this only controls whether its hits are
     /// painted. Passing `None` clears the highlight — `set_search_pattern`
     /// treats an empty query as "no pattern", so nothing is compiled on that
-    /// path. `load`/`preview` replace the textarea outright, dropping this
+    /// path. `show` replaces the textarea outright, dropping this
     /// too, same as `set_line_styles`/`set_line_numbers` above, so
     /// `App::apply_view` re-applies it on every pass rather than only when
     /// the pattern changes.
@@ -1128,13 +1008,6 @@ impl FileView<'_> {
     /// — `set_highlight` — is called from `App::apply_view`, not from here.
     pub(crate) fn perform(&mut self, action: crate::keymap::ActionId) {
         use crate::keymap::ActionId as A;
-        // The user is interacting with the view, so a preview is no longer
-        // enough: they can now scroll past the end of it.
-        if self.truncated {
-            let path = self.filename.clone();
-            self.load(&path);
-        }
-
         match action {
             A::ViewLeft => self.textarea.move_cursor(CursorMove::Back),
             A::ViewDown => self.textarea.move_cursor(CursorMove::Down),
@@ -1158,381 +1031,14 @@ impl FileView<'_> {
     }
 }
 
-/// Read `path` whole, or a single-line message describing why it could not
-/// be read. The reading itself is `document::read_lines` (#143); this wraps
-/// its error the way the pane shows it.
-///
-/// Never `truncated`, and never estimating: the whole file is here.
-///
-/// `hex` is `Some` when the reader has chosen text or hex for this file, and
-/// `None` to let the file decide: text, unless it is binary (#242).
-fn read_lines(path: &Path, hex: Option<bool>) -> Contents {
-    // See `read_preview`: a directory opens fine and then fails to read, so
-    // it is recognised up front rather than surfacing an OS error string.
-    if path.is_dir() {
-        return directory_listing(path, usize::MAX);
-    }
-    if hex == Some(true) {
-        return read_hex(path, None);
-    }
-    match document::read_lines(path) {
-        Ok(lines) => Contents {
-            lines,
-            truncated: false,
-            estimated_lines: None,
-            text: true,
-            hex: false,
-        },
-        Err(err) if document::is_binary(&err) => binary(path, hex, None),
-        // Logged as well as shown (#83). The pane gets `<{err}>` in place of
-        // the file, which tells the user *that* it failed; the log is where
-        // the full path lives, and the pane's title is elided when the pane
-        // is narrow.
-        Err(err) => {
-            log::warn!("cannot read {}: {err}", path.display());
-            Contents::message(format!("<{err}>"))
-        }
-    }
-}
-
-/// Read at most a screenful of `path`, reporting whether anything was left.
-///
-/// Bounded on both axes: `PREVIEW_LINES` lines and `MAX_PREVIEW_BYTES` bytes.
-/// Because the reader stops as soon as either is reached, the cost does not
-/// grow with the size of the file and there is no long-running work to cancel
-/// when the selection moves on.
-///
-/// A file that cannot be read reports the reason and is *not* marked truncated
-/// — there is nothing better to re-read later.
-/// Both caps are injected rather than read from the constants.
-///
-/// `FileView::preview` is the only caller outside tests and always passes
-/// `PREVIEW_LINES` and `MAX_PREVIEW_BYTES`. The parameters exist because those
-/// constants are now 50,000 lines and 10 MiB: exercising either cap against
-/// them means building a multi-megabyte fixture per test, and the byte cap
-/// alone cost more than the entire rest of the suite. With the caps injectable
-/// a handful of bytes is enough, and a test states the cap it is testing
-/// instead of deriving it from a constant it does not control.
-///
-/// `hex` is as `read_lines` takes it. A dump's caps are in bytes, sixteen to
-/// a line, so the line cap binds long before the byte cap does: 50,000 lines
-/// is only 800 KB of file.
-fn read_preview_with_caps(
-    path: &Path,
-    max_lines: usize,
-    max_bytes: u64,
-    hex: Option<bool>,
-) -> Contents {
-    // Checked before opening, not after failing to read. `File::open` on a
-    // directory *succeeds* on macOS and the read then fails `EISDIR`, so
-    // falling through to the error path below would display
-    // `<Is a directory (os error 21)>` — platform-specific and meaningless
-    // to a reader.
-    if path.is_dir() {
-        return directory_listing(path, max_lines);
-    }
-    let hex_bytes = (max_lines as u64)
-        .saturating_mul(hex::BYTES_PER_LINE as u64)
-        .min(max_bytes);
-    if hex == Some(true) {
-        return read_hex(path, Some(hex_bytes));
-    }
-    // The same stat guards a FIFO (#221): its open would block until a
-    // writer appeared, and this runs on every selection move.
-    let file = match document::refuse_unreadable(path).and_then(|()| File::open(path)) {
-        Ok(file) => file,
-        // Logged as well as shown, as `read_lines` does (#83, #189). The
-        // preview is the arrow-key case: the pane's title is elided when
-        // the pane is narrow, so the log is where the path survives.
-        Err(err) => {
-            log::warn!("cannot preview {}: {err}", path.display());
-            return Contents::message(format!("<{err}>"));
-        }
-    };
-    // Read before the bytes are consumed; a file that cannot be stat'd simply
-    // gets no estimate rather than failing the preview.
-    let file_bytes = file.metadata().ok().map(|meta| meta.len());
-
-    let mut reader = BufReader::new(file.take(max_bytes));
-    let head = match sniff(&mut reader) {
-        Ok((Sniff::Text, head)) => head,
-        Ok((Sniff::Binary, _)) => return binary(path, hex, Some(hex_bytes)),
-        // UTF-16 is decoded whole, so the byte cap is the only cap the read
-        // itself knows; the line cap is applied to the result below.
-        Ok((Sniff::Utf16(endian), head)) => {
-            let mut lines = match read_utf16_lines(head, &mut reader, endian) {
-                Ok(lines) => lines,
-                // Logged as well as shown, as `read_lines` does (#83, #189).
-                // The preview is the arrow-key case: the pane's title is
-                // elided when the pane is narrow, so the log is where the
-                // path survives.
-                Err(err) => {
-                    log::warn!("cannot preview {}: {err}", path.display());
-                    return Contents::message(format!("<{err}>"));
-                }
-            };
-            let over_the_line_cap = lines.len() > max_lines;
-            lines.truncate(max_lines);
-            let remaining = reader.into_inner().limit();
-            return capped(
-                lines,
-                over_the_line_cap || remaining == 0,
-                file_bytes,
-                max_bytes - remaining,
-            );
-        }
-        // Logged as well as shown, as `read_lines` does (#83, #189). The
-        // preview is the arrow-key case: the pane's title is elided when
-        // the pane is narrow, so the log is where the path survives.
-        Err(err) => {
-            log::warn!("cannot preview {}: {err}", path.display());
-            return Contents::message(format!("<{err}>"));
-        }
-    };
-
-    // The sniffed bytes are content, so they go back in front of the rest.
-    let mut reader = Cursor::new(head).chain(reader);
-    let mut lines = Vec::new();
-    let mut buf = Vec::new();
-
-    while lines.len() < max_lines {
-        match read_lossy_line(&mut reader, &mut buf) {
-            Ok(Some(line)) => lines.push(line),
-            Ok(None) => break,
-            // Logged as well as shown, as `read_lines` does (#83, #189). The
-            // preview is the arrow-key case: the pane's title is elided when
-            // the pane is narrow, so the log is where the path survives.
-            Err(err) => {
-                log::warn!("cannot preview {}: {err}", path.display());
-                return Contents::message(format!("<{err}>"));
-            }
-        }
-    }
-
-    // Either the line budget ran out, or the byte allowance did. A file that
-    // ends exactly on a cap is reported as truncated, which only costs a
-    // redundant re-read the first time the view is used.
-    let remaining = reader.into_inner().1.into_inner().limit();
-    let truncated = lines.len() == max_lines || remaining == 0;
-    capped(lines, truncated, file_bytes, max_bytes - remaining)
-}
-
-/// What a binary file shows: its dump, unless the reader asked for text, and
-/// then the message that says why there is none (#242).
-///
-/// `preview` is as `read_hex` takes it.
-fn binary(path: &Path, hex: Option<bool>, preview: Option<u64>) -> Contents {
-    if hex == Some(false) {
-        Contents::message(BINARY_MESSAGE.to_string())
-    } else {
-        read_hex(path, preview)
-    }
-}
-
-/// `path` as a hex dump (#242): whole, up to `hex::MAX_HEX_BYTES`, or no
-/// more than `preview` bytes of it.
-///
-/// A preview cut short is `truncated`, so the rest is read as soon as the
-/// view is used, exactly as a text preview's is. Its line count is not an
-/// estimate — a dump's length follows from the file's size. A full read that
-/// reaches `MAX_HEX_BYTES` is not truncated, since reading again would get no
-/// further; it ends with a line that says how much was left out instead.
-fn read_hex(path: &Path, preview: Option<u64>) -> Contents {
-    let cap = preview.map_or(hex::MAX_HEX_BYTES, |bytes| bytes.min(hex::MAX_HEX_BYTES));
-    let dump = match hex::read(path, cap) {
-        Ok(dump) => dump,
-        // Logged as well as shown, as `read_lines` does (#83).
-        Err(err) => {
-            log::warn!("cannot read {} as hex: {err}", path.display());
-            return Contents::message(format!("<{err}>"));
-        }
-    };
-    let mut lines = dump.lines;
-    let (truncated, estimated_lines) = match dump.unread {
-        None => (false, None),
-        Some(unread) if cap < hex::MAX_HEX_BYTES => {
-            let size = cap.saturating_add(unread);
-            let stop_line = usize::from(size > hex::MAX_HEX_BYTES);
-            let dumped = hex::line_count(size.min(hex::MAX_HEX_BYTES));
-            (true, Some(dumped + stop_line))
-        }
-        Some(unread) => {
-            lines.push(hex::stop_line(unread));
-            (false, None)
-        }
-    };
-    Contents {
-        lines,
-        truncated,
-        estimated_lines,
-        text: true,
-        hex: true,
-    }
-}
-
-/// A preview's `Contents`, with a line estimate only when it was cut short —
-/// there is nothing to estimate about a file that was read whole.
-fn capped(
-    lines: Vec<String>,
-    truncated: bool,
-    file_bytes: Option<u64>,
-    bytes_read: u64,
-) -> Contents {
-    let estimated_lines = if truncated {
-        estimate_lines(file_bytes, bytes_read, lines.len())
-    } else {
-        None
-    };
-    Contents {
-        lines,
-        truncated,
-        estimated_lines,
-        text: true,
-        hex: false,
-    }
-}
-
-/// Widest a name column grows before long names are allowed to push the
-/// metadata out of line on their own row.
-///
-/// Same trade `MAX_EXPLORER_WIDTH` makes: one pathological 200-character filename
-/// would otherwise pad *every* row out to 200 columns and push the size and
-/// time off screen for all of them. Capping means that one row misaligns
-/// instead of all of them going blank.
-const NAME_COLUMN_MAX: usize = 40;
-
-/// Columns a size occupies, right-aligned. `1023B` and `999.9K` both fit.
-const SIZE_COLUMN: usize = 6;
-
-/// `bytes` as something readable at a glance, in the width `SIZE_COLUMN` gives.
-///
-/// Binary units, since this reports what the filesystem reports. One decimal
-/// above 1 KiB: `18.4K` says as much as `18841` in fewer columns, and the
-/// exact byte count is not what anyone scans a listing for.
-fn format_size(bytes: u64) -> String {
-    const UNITS: [(u64, char); 4] = [(1 << 30, 'G'), (1 << 20, 'M'), (1 << 10, 'K'), (1, 'B')];
-    for (scale, suffix) in UNITS {
-        if bytes >= scale {
-            return if scale == 1 {
-                format!("{bytes}B")
-            } else {
-                // Truncating rather than rounding, so a listing never claims a
-                // file reached the next unit before it did.
-                let whole = bytes / scale;
-                let tenth = (bytes % scale) * 10 / scale;
-                format!("{whole}.{tenth}{suffix}")
-            };
-        }
-    }
-    "0B".to_string()
-}
-
-/// `time` as a local calendar datetime, or `None` if it cannot be represented.
-///
-/// Local, not UTC: the logs recon reads carry local timestamps, and a listing
-/// disagreeing with the lines inside the files would be its own small bug.
-/// `jiff` resolves the zone from the system (`/etc/localtime` on Unix), which
-/// is the part that is genuinely hard to get right by hand.
-fn format_modified(time: std::time::SystemTime) -> Option<String> {
-    let zoned = jiff::Zoned::try_from(time).ok()?;
-    Some(zoned.strftime("%Y-%m-%d %H:%M").to_string())
-}
-
-/// One row: name, then size, then when it changed.
-///
-/// The metadata sits to the *right* of the name deliberately. The view pane
-/// narrows when the explorer is wide, and a row clipped at the pane's edge
-/// then loses the time first, the size next, and the name last — which is the
-/// priority order this wants, achieved by layout rather than by logic that
-/// would need a width the listing does not have when it is built.
-fn listing_row(entry: &Entry, name_width: usize) -> String {
-    let size = entry.size.map_or_else(|| "-".to_string(), format_size);
-    let modified = entry.modified.and_then(format_modified).unwrap_or_default();
-    // Padded by hand rather than with `{:<name_width$}`, which counts `char`s.
-    // `name_width` is terminal columns, so a CJK name would otherwise be padded
-    // as though its ideographs were one column each and push its own size
-    // column one place right per glyph (#97).
-    let name = entry.display();
-    let pad = " ".repeat(name_width.saturating_sub(UnicodeWidthStr::width(name.as_str())));
-    format!("{name}{pad}  {size:>SIZE_COLUMN$}  {modified}")
-        .trim_end()
-        .to_string()
-}
-
-/// A directory rendered as its contents, bounded by `max_lines`.
-///
-/// The view is the widest pane on screen and was spending all of it on the
-/// word `<directory>`. Listing what is actually there turns a selected
-/// directory into a look-ahead — and `l` on that selection makes the listing
-/// the explorer's own, which is what stops it being a navigable-looking list
-/// that cannot be navigated.
-///
-/// `..` is absent deliberately: it is the explorer's way back out, and there
-/// is nothing here that could act on it.
-fn directory_listing(path: &Path, max_lines: usize) -> Contents {
-    let entries = match crate::widgets::explorer::sorted_entries(path) {
-        Ok(entries) => entries,
-        // Same shape as an unreadable file: say why, verbatim from the OS.
-        // Worded distinctly from the explorer's own "cannot list" (#83, in
-        // explorer.rs): that is a different subsystem failing at the same
-        // directory, and a reader of the log should be able to tell them
-        // apart rather than seeing two identical lines.
-        Err(err) => {
-            log::warn!("cannot show the listing for {}: {err}", path.display());
-            return Contents::message(format!("<{err}>"));
-        }
-    };
-    if entries.is_empty() {
-        return Contents::message(EMPTY_DIRECTORY_MESSAGE.to_string());
-    }
-    let total = entries.len();
-    let shown = &entries[..entries.len().min(max_lines)];
-    // Padded to the longest name actually on screen, so the columns line up
-    // without every listing being as wide as the widest possible name.
-    let name_width = shown
-        .iter()
-        .map(|entry| UnicodeWidthStr::width(entry.display().as_str()))
-        .max()
-        .unwrap_or(0)
-        .min(NAME_COLUMN_MAX);
-    let lines: Vec<String> = shown
-        .iter()
-        .map(|entry| listing_row(entry, name_width))
-        .collect();
-    let truncated = total > lines.len();
-    Contents {
-        lines,
-        truncated,
-        // Unlike a file, the real count is known exactly rather than scaled
-        // from a sample — there is no guessing to do.
-        estimated_lines: truncated.then_some(total),
-        text: false,
-        hex: false,
-    }
-}
-
-/// How many lines a file of `file_bytes` probably holds, given that its first
-/// `bytes_read` bytes held `lines_read` lines.
-///
-/// Scaling the sample's bytes-per-line up to the whole file is a guess, but a
-/// cheap one — the alternative is reading the file to count its newlines,
-/// which is exactly the unbounded work `read_preview` exists to avoid. It only
-/// has to be right to the *digit*, since all it feeds is a gutter width, so
-/// being off by 10% costs nothing and being off by 10x costs one redraw: the
-/// same redraw as having made no estimate at all.
-///
-/// `None` when there is nothing to scale from — no readable size, an empty
-/// read, or a preview that consumed no bytes.
-fn estimate_lines(file_bytes: Option<u64>, bytes_read: u64, lines_read: usize) -> Option<usize> {
-    let file_bytes = file_bytes?;
-    if bytes_read == 0 || lines_read == 0 {
-        return None;
-    }
-    // u128: `file_bytes` is a real file size and `lines_read` is at most
-    // PREVIEW_LINES, but their product still overflows u64 on a file above
-    // ~37 PiB. Cheap to rule out rather than reason about.
-    let estimate = (u128::from(file_bytes) * lines_read as u128).div_ceil(u128::from(bytes_read));
-    Some(usize::try_from(estimate).unwrap_or(usize::MAX))
+/// The view the built-in rows give `path`, as a job with no config would
+/// choose it.
+#[cfg(test)]
+fn test_view(path: &Path) -> crate::views::View {
+    use crate::views::cycle::{Steps, Table};
+    let table = Table::default();
+    let row = table.row_for(path, || crate::views::read::is_binary(path));
+    Steps::new(&table).view(&table, row)
 }
 
 /// Decimal digits in `n`, for sizing the gutter. `0` and `1` both need one.
@@ -1835,7 +1341,7 @@ impl Widget for &mut FileView<'_> {
         // the block above is set: `apply_pending_scroll`'s scratch render
         // needs to see the same borders the real render below is about to
         // draw, or it computes an inner height that is two rows too tall on
-        // the first frame after `load`/`preview` replace the textarea (which
+        // the first frame after `show` replaces the textarea (which
         // drops its block along with everything else).
         self.apply_pending_scroll(area);
         // The block is set, so its inner area is the rows the text gets.
@@ -1856,9 +1362,14 @@ impl Widget for &mut FileView<'_> {
 mod tests {
     use super::*;
     use crate::fixtures::{fixture_dir, fixture_file};
+    use crate::hex;
     use crate::keymap::ActionId as A;
+    use crate::views::View;
+    use crate::views::read::{EMPTY_DIRECTORY_MESSAGE, listing_row};
+    use crate::widgets::explorer::Entry;
     use std::fmt::Write as _;
     use std::fs;
+    use unicode_width::UnicodeWidthStr;
 
     fn contents(view: &FileView<'_>) -> String {
         view.textarea.lines().join("\n")
@@ -2296,30 +1807,13 @@ mod tests {
         assert!(view.truncated);
     }
 
-    /// While the explorer pane has focus the preview is all that is on screen, but
-    /// the moment the view is used it must hold the whole file.
-    #[test]
-    fn interacting_upgrades_a_truncated_preview() {
-        let path = long_file("upgrade.txt", 30);
-        let mut view = placeholder_view();
-        view.preview_with_caps(&path, 10, MAX_PREVIEW_BYTES);
-        assert!(view.truncated);
-
-        view.perform(A::ViewDown);
-
-        // The upgrade goes through `load`, which is uncapped — so the whole
-        // file arrives regardless of the cap the preview was taken with.
-        assert_eq!(view.textarea.lines().len(), 30);
-        assert!(!view.truncated);
-    }
-
     /// The pane must keep the path it was given, not a rendering of it.
     ///
     /// On Unix a filename is bytes. Storing `Path::display()` — explicitly
     /// lossy — turned an invalid byte into U+FFFD, and every path that
     /// round-tripped the field back into a `Path` to re-read the file then
-    /// addressed something that does not exist: `perform` promoting a
-    /// truncated preview, `App::promote_file_view`, and `App::open_in_editor`
+    /// addressed something that does not exist: the promotion of a
+    /// truncated preview, and `App::open_in_editor`
     /// (#79).
     ///
     /// Asserted on the stored value rather than by reading such a file back.
@@ -2410,7 +1904,7 @@ mod tests {
 
         let lines = view.textarea.lines();
         assert_ne!(
-            lines[0], BINARY_MESSAGE,
+            lines[0], "<binary file: contains NUL bytes>",
             "a NUL past the sniff window condemned the whole file"
         );
         assert_eq!(lines.len(), 2, "lines lost to a late NUL: {lines:?}");
@@ -2570,34 +2064,28 @@ mod tests {
         );
     }
 
-    /// A binary file opens as hex, and `-` turns it into the refusal it
-    /// used to be, and back (#242).
+    /// A binary file opens as hex (#242).
     #[test]
-    fn a_binary_file_loads_as_hex_and_toggles_to_the_message() {
+    fn a_binary_file_loads_as_hex() {
         let path = byte_fixture("load_binary.bin", b"\x7fELF\x02\x01\x01\x00");
         let mut view = placeholder_view();
 
         view.load(&path);
         assert_eq!(contents(&view), hex::line(0, b"\x7fELF\x02\x01\x01\x00"));
-
-        assert!(view.toggle_hex());
-        assert_eq!(contents(&view), "<binary file: contains NUL bytes>");
-        assert!(!view.is_hex());
-        assert!(!view.is_text(), "the message is not the file");
-
-        assert!(view.toggle_hex());
         assert!(view.is_hex());
     }
 
-    /// Any file can be read as hex: a text file toggles to its dump — the
-    /// raw bytes, with no syntax colour and no gutter — and back.
+    /// A dump of a text file shows the raw bytes, with no syntax colour and
+    /// no gutter, and the title says hex.
     #[test]
-    fn a_text_file_toggles_to_hex_and_back() {
-        let mut view = view_of("toggle_hex.rs", "fn main() {}\n");
+    fn a_text_file_shown_as_hex_is_not_coloured_and_has_no_gutter() {
+        let path = fixture("show_hex.rs", "fn main() {}\n");
+        let mut view = placeholder_view();
         view.set_theme(Theme::builtin());
+        view.show(&path, &crate::views::read::read_lines(&path, View::Raw));
         assert!(view.syntax_name().is_some(), "the text is coloured");
 
-        assert!(view.toggle_hex());
+        view.show(&path, &crate::views::read::read_lines(&path, View::Hex));
         assert!(view.is_hex());
         assert_eq!(contents(&view), hex::line(0, b"fn main() {}\n"));
         assert_eq!(view.syntax_name(), None, "a dump is not Rust");
@@ -2614,60 +2102,9 @@ mod tests {
         view.render(area, &mut buf);
         let title: String = (0..area.width).map(|x| buf[(x, 0)].symbol()).collect();
         assert!(
-            title.contains("toggle_hex.rs [hex]"),
+            title.contains("show_hex.rs [hex]"),
             "the title says hex: {title}"
         );
-
-        assert!(view.toggle_hex());
-        assert!(!view.is_hex());
-        assert_eq!(contents(&view), "fn main() {}");
-    }
-
-    /// `r` and the promotion of a preview re-read the same file, and must
-    /// not undo a `-`. Another file starts from what its content asks for.
-    #[test]
-    fn hex_survives_a_reload_but_not_a_different_file() {
-        let path = fixture("hex_kept.txt", "alpha\n");
-        let other = fixture("hex_not_kept.txt", "bravo\n");
-        let mut view = placeholder_view();
-        view.load(&path);
-        view.toggle_hex();
-
-        view.load(&path);
-        assert!(view.is_hex(), "a reload keeps hex");
-        view.preview(&path);
-        assert!(view.is_hex(), "a preview of the same file keeps hex");
-
-        view.preview(&other);
-        assert!(!view.is_hex(), "another text file shows as text");
-        assert_eq!(contents(&view), "bravo");
-    }
-
-    /// A message that stands in for a file has no dump to show: `-`
-    /// refuses, and does not read the file again (#405).
-    #[test]
-    fn an_error_message_has_no_hex_view() {
-        let dir = fixture_dir("hex_no_error");
-        let mut view = placeholder_view();
-        view.load(&dir.join("absent.txt"));
-        let before = Arc::clone(view.source());
-
-        assert!(!view.toggle_hex());
-        assert!(!view.is_hex());
-        assert!(
-            Arc::ptr_eq(&before, view.source()),
-            "the file was read again"
-        );
-    }
-
-    #[test]
-    fn a_directory_has_no_hex_view() {
-        let dir = fixture_dir("hex_no_directory");
-        let mut view = placeholder_view();
-        view.load(&dir);
-
-        assert!(!view.toggle_hex());
-        assert!(!view.is_hex());
     }
 
     /// Whether any cell in row `y` carries `colour` as its foreground.
