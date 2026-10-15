@@ -133,6 +133,15 @@ impl App<'_> {
             // The warning goes with the row it was on (#348).
             self.quit_confirmed = std::mem::take(&mut self.quit_warned);
         }
+        // A click is input too: it ends a pending digit (#340), and the
+        // `filter 4_` that shows it, so no later digit pairs with one that
+        // is no longer on the screen.
+        if let event::Event::Mouse(mouse) = event
+            && matches!(mouse.kind, event::MouseEventKind::Down(_))
+            && self.pending_digit.take().is_some()
+        {
+            self.status_message = None;
+        }
 
         // An open prompt takes precedence over every other binding.
         if self.prompt.is_some() {
@@ -250,7 +259,23 @@ impl App<'_> {
         // body its key arm held here.
         if let event::Event::Key(key) = event {
             let pressed = crate::keymap::normalise(key);
-            if let Some(action) = self.keymap.resolve(crate::keymap::Scope::Global, pressed) {
+            let action = self.keymap.resolve(crate::keymap::Scope::Global, pressed);
+            // A pending first digit takes the next key before the keymap
+            // does — see `pending_digit` (#340).
+            if let Some(tens) = self.pending_digit.take() {
+                if let KeyCode::Char(c) = pressed.code
+                    && !pressed.ctrl
+                    && !pressed.alt
+                    && let Some(digit) = c.to_digit(10)
+                {
+                    self.toggle_numbered(tens * 10 + digit as usize);
+                    return;
+                }
+                if action == Some(crate::keymap::ActionId::GlobalEscape) {
+                    return;
+                }
+            }
+            if let Some(action) = action {
                 self.perform(action, pressed);
                 return;
             }

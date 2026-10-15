@@ -344,10 +344,10 @@ struct Claim {
 ///
 /// **By key, not by label text.** `resolve` answers a keypress through
 /// `help::label_matches`, which expands a label before comparing, so `5` and
-/// `1-9` are two spellings that the same keypress reaches. Grouping by the
+/// `0-9` are two spellings that the same keypress reaches. Grouping by the
 /// label string could not see that, and the contest it missed is exactly the
 /// one this module exists to report: a written `'explorer.up' = '5'` that the
-/// global `1-9` answers first was accepted in silence.
+/// global `0-9` answers first was accepted in silence.
 ///
 /// Each entry is therefore expanded to the keys it actually names and indexed
 /// by each of them. An equivalence class over labels would not do: `1-3` and
@@ -634,7 +634,7 @@ fn widen_evictions(built: &Keymap, report: &mut Report) {
 /// the labels of the map without them. The two agreed while a key was a label,
 /// and stopped agreeing when it became a concrete key: an action losing one
 /// key of a range keeps the rest, which a filter comparing a lost `5` against
-/// a held `1-9` would report as having lost nothing at all.
+/// a held `0-9` would report as having lost nothing at all.
 fn fill_remaining(built: &Keymap, report: &mut Report) {
     let mut after = built.clone();
     after.evict(&report.evict);
@@ -687,7 +687,7 @@ mod tests {
     /// A user who has written nothing must be told nothing.
     ///
     /// Load-bearing rather than trivial since `claims` began expanding labels
-    /// (the fix wave's item 1): `1-9` is a `DEFAULT` label, and an expansion
+    /// (the fix wave's item 1): `0-9` is a `DEFAULT` label, and an expansion
     /// that manufactured a collision between it and any other default would
     /// surface here as a report on a config file that does not exist.
     #[test]
@@ -877,9 +877,9 @@ mod tests {
     // ---- a key is a key, however it is spelled (fix wave, item 1) --------
 
     /// The defect the concrete-key grouping exists to remove. `resolve`
-    /// expands a label before matching, so the global `1-9` answers `5` and
+    /// expands a label before matching, so the global `0-9` answers `5` and
     /// answers it first; a written `explorer.up = '5'` can never fire. Comparing
-    /// label strings saw `'5'` and `'1-9'` as unrelated and let the file
+    /// label strings saw `'5'` and `'0-9'` as unrelated and let the file
     /// through in silence.
     #[test]
     fn a_pane_line_under_a_default_range_is_an_error() {
@@ -895,7 +895,7 @@ mod tests {
                 written: ActionId::ExplorerUp,
                 global: ActionId::GlobalFiltersToggle,
             }],
-            "'5' and '1-9' are one key however differently they are spelled"
+            "'5' and '0-9' are one key however differently they are spelled"
         );
     }
 
@@ -936,7 +936,7 @@ mod tests {
 
     /// A written line takes one key of a default range, and the range keeps
     /// the rest. What `global.filters.toggle` still answers to has to be the
-    /// eight digits it kept — a message naming `1-9` would tell the user that
+    /// nine digits it kept — a message naming `0-9` would tell the user that
     /// `5` still toggles a filter, which is the thing that just stopped being
     /// true.
     #[test]
@@ -951,7 +951,7 @@ mod tests {
                 key: "5".to_string(),
                 winner: ActionId::GlobalEditorProject,
                 loser: ActionId::GlobalFiltersToggle,
-                remaining: ["1", "2", "3", "4", "6", "7", "8", "9"]
+                remaining: ["0", "1", "2", "3", "4", "6", "7", "8", "9"]
                     .iter()
                     .map(ToString::to_string)
                     .collect(),

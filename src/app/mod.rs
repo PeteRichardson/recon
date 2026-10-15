@@ -236,6 +236,15 @@ pub struct App<'a> {
     /// action, not a key, so nothing spends the guard before the real
     /// `Enter` still pending — see `return_to_chain_origin` (#377).
     swallow_next_enter: bool,
+    /// The first digit of a filter toggle, waiting for the second (#340).
+    /// Two digits always name a filter, `01` to `99`, so the first can never
+    /// act alone. The keymap reads the first digit only: the second is read
+    /// as a plain digit, so a `config.toml` that takes `5` from
+    /// `global.filters.toggle` loses `5` as a first digit, not every filter
+    /// with a 5 in it. Any other key clears it — `Esc` only cancels, and
+    /// every other key cancels and then does its own work — and so does a
+    /// click.
+    pending_digit: Option<usize>,
     /// Set when `q` found a file set with changes no file holds, and said so
     /// on the status row instead of quitting (#348). A `q` as the next key
     /// quits; any other key ends the warning, as it clears the row.
@@ -470,6 +479,7 @@ impl App<'_> {
             press: None,
             last_view_click: None,
             swallow_next_enter: false,
+            pending_digit: None,
             quit_warned: false,
             quit_confirmed: false,
             chain_origin: None,

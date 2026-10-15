@@ -113,10 +113,10 @@ fn a_hidden_filter_pane_keeps_its_global_keys() {
     let mut app = app_with_two_filters("hide_global_keys");
     key(&mut app, KeyCode::Char('F'));
 
-    key(&mut app, KeyCode::Char('1'));
+    typed(&mut app, "01");
     assert!(
         !app.filters.filters()[0].enabled,
-        "1 did not toggle the hidden pane's filter"
+        "01 did not toggle the hidden pane's filter"
     );
     key(&mut app, KeyCode::Char('!'));
     assert!(
@@ -227,7 +227,7 @@ fn the_status_line_counts_filters_on_while_the_pane_is_hidden() {
     let status = status_line(&mut app);
     assert!(status.contains("filters: 2 on"), "no indicator: {status}");
 
-    key(&mut app, KeyCode::Char('1'));
+    typed(&mut app, "01");
     let status = status_line(&mut app);
     assert!(
         status.contains("filters: 1 on"),
