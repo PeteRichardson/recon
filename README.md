@@ -1819,11 +1819,13 @@ with no Quick Look.
 
 #### The image view
 
-`image` shows the file as a picture in the view pane, scaled down to fit and
-in its own shape. A picture smaller than the pane stays at its own size.
-recon asks the terminal at startup how it draws pictures: kitty, Ghostty and
-iTerm2 show the picture at full resolution, and a terminal with sixel
-support shows it in sixels. Every other terminal, and recon inside tmux,
+`image` shows the file as a picture in the view pane, scaled to fill the
+pane in its own shape. A small picture grows to at most three times its own
+size, so that an icon does not become large blocks. recon asks the terminal
+at startup how it draws pictures: kitty and Ghostty use the kitty protocol,
+iTerm2 its own protocol (it reports kitty support, but cannot show recon's
+kitty pictures), and a terminal with sixel support shows the picture in
+sixels. Every other terminal, and recon inside tmux,
 shows the picture in half-block characters, two pixels to a cell.
 
 A picture has no lines. There is no cursor, no line numbers and no visual

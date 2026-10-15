@@ -373,7 +373,7 @@ fn init_terminal() -> Result<Terminal<CrosstermBackend<io::BufWriter<Screen>>>> 
 /// answer would come. Inside tmux the picture is half-blocks, which need no
 /// passthrough.
 fn image_picker() -> ratatui_image::picker::Picker {
-    use ratatui_image::picker::{Picker, ProtocolType};
+    use ratatui_image::picker::Picker;
     if !(io::stdin().is_terminal() && io::stdout().is_terminal()) {
         return Picker::halfblocks();
     }
@@ -381,10 +381,40 @@ fn image_picker() -> ratatui_image::picker::Picker {
         log::warn!("the terminal did not say how it draws pictures: {err}");
         Picker::halfblocks()
     });
-    if picker.tmux_detected() {
-        picker.set_protocol_type(ProtocolType::Halfblocks);
-    }
+    let env = |name| std::env::var(name).ok();
+    picker.set_protocol_type(protocol_for(
+        picker.protocol_type(),
+        picker.tmux_detected(),
+        env("TERM_PROGRAM").as_deref(),
+        env("LC_TERMINAL").as_deref(),
+    ));
     picker
+}
+
+/// The protocol to draw pictures with, given the one the terminal's answer
+/// chose, whether recon runs inside tmux, and the variables that name the
+/// terminal (#458).
+///
+/// Inside tmux it is half-blocks, which need no passthrough. iTerm2 answers that it has kitty graphics, but it does not have the
+/// Unicode placeholders that `ratatui-image` draws a kitty picture with, so
+/// the picture never shows. iTerm2's own protocol does. Half-blocks stay:
+/// they are what a terminal with no graphics, or tmux, gets.
+fn protocol_for(
+    detected: ratatui_image::picker::ProtocolType,
+    tmux: bool,
+    term_program: Option<&str>,
+    lc_terminal: Option<&str>,
+) -> ratatui_image::picker::ProtocolType {
+    use ratatui_image::picker::ProtocolType;
+    let iterm2 = term_program.is_some_and(|name| name.contains("iTerm"))
+        || lc_terminal.is_some_and(|name| name.contains("iTerm"));
+    if tmux {
+        ProtocolType::Halfblocks
+    } else if iterm2 && detected != ProtocolType::Halfblocks {
+        ProtocolType::Iterm2
+    } else {
+        detected
+    }
 }
 
 /// Whether `init_terminal` has run and its undo is still owed.
@@ -467,6 +497,28 @@ mod tests {
     use super::*;
     use log::Log as _;
     use std::sync::Mutex;
+
+    /// iTerm2 says it has kitty graphics, but not the Unicode placeholders
+    /// `ratatui-image` draws kitty pictures with, so a kitty picture never
+    /// shows there (#458). Its own protocol does.
+    #[test]
+    fn iterm2_draws_with_its_own_protocol() {
+        use ratatui_image::picker::ProtocolType::{Halfblocks, Iterm2, Kitty, Sixel};
+        assert_eq!(protocol_for(Kitty, false, Some("iTerm.app"), None), Iterm2);
+        assert_eq!(protocol_for(Sixel, false, None, Some("iTerm2")), Iterm2);
+        assert_eq!(protocol_for(Kitty, false, Some("ghostty"), None), Kitty);
+        assert_eq!(protocol_for(Sixel, false, None, None), Sixel);
+        assert_eq!(
+            protocol_for(Halfblocks, false, Some("iTerm.app"), None),
+            Halfblocks,
+            "with no answer, half-blocks stay"
+        );
+        assert_eq!(
+            protocol_for(Kitty, true, Some("iTerm.app"), None),
+            Halfblocks,
+            "inside tmux"
+        );
+    }
 
     /// Keeps what reached it, so a test can see what `Muted` passed on.
     #[derive(Default)]

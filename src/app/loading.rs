@@ -292,9 +292,15 @@ impl App<'_> {
 
     /// The view pane's text width in pixels, for `{px}` (#457): its columns
     /// times the terminal's cell width, or `ASSUMED_CELL_PX` when the
-    /// terminal does not say.
+    /// terminal does not say. The cell width the terminal answered at
+    /// startup comes first (#458): it is the size the picture is drawn at.
+    /// In iTerm2 on a Retina display it is 22 px, and a Quick Look
+    /// thumbnail made for less showed at a fraction of the pane.
     fn view_px(&mut self) -> u32 {
         let columns = u32::from(self.view_area.width.saturating_sub(2));
+        if let Some(cell) = self.view.cell_width() {
+            return columns * cell;
+        }
         let cell = *self.loading.cell_px.get_or_insert_with(|| {
             crossterm::terminal::window_size()
                 .ok()

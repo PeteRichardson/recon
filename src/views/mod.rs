@@ -242,10 +242,15 @@ pub(crate) mod tests {
         assert!(done.contents.directory);
     }
 
-    /// A PNG `width` × `height` pixels, as a file would hold it.
+    /// A black PNG `width` × `height` pixels, as a file would hold it.
     pub(crate) fn png(width: u32, height: u32) -> Vec<u8> {
+        png_filled(width, height, [0, 0, 0])
+    }
+
+    /// A PNG `width` × `height` pixels of one colour.
+    pub(crate) fn png_filled(width: u32, height: u32, rgb: [u8; 3]) -> Vec<u8> {
         let mut bytes = std::io::Cursor::new(Vec::new());
-        image::RgbImage::new(width, height)
+        image::RgbImage::from_pixel(width, height, image::Rgb(rgb))
             .write_to(&mut bytes, image::ImageFormat::Png)
             .unwrap();
         bytes.into_inner()

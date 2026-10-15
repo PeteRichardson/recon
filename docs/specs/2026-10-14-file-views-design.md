@@ -290,10 +290,19 @@ Measured while stage 4 was built, and decided with the user:
   gives; a pty that answers nothing (`script` in a test) loses the first
   key to the query's reader thread.
 - **A picture is kept at most 2048 px on its longest side**, and the
-  decoder may use at most 512 MiB. A small picture is not enlarged.
+  decoder may use at most 512 MiB. It is scaled to fill the pane, but a
+  small picture grows to at most three times its own size.
+- **iTerm2 gets its own protocol.** It answers that it has kitty graphics,
+  but not the Unicode placeholders `ratatui-image` draws kitty pictures
+  with, so a kitty picture never showed there. Found in Pete's iTerm2.
+- **`{px}` uses the cell width the terminal answered**, when a graphics
+  protocol is in use. In iTerm2 on a Retina display a cell is 22 px, and a
+  thumbnail made for the window-size guess showed at a fraction of the
+  pane.
 - **Known cost:** the picture is scaled and encoded for the terminal on the
   main thread when it is first drawn and after a resize. Half-blocks and
-  kitty are fast; sixel on a large pane can take tens of milliseconds.
+  kitty are fast; sixel, and iTerm2's PNG and base64, on a large pane can
+  take tens of milliseconds.
 
 ### Documentation
 

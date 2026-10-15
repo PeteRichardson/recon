@@ -167,6 +167,9 @@ pub(crate) fn window_holds(
 struct Picture {
     image: Arc<image::DynamicImage>,
     protocol: ratatui_image::protocol::StatefulProtocol,
+    /// The cell size the protocol draws with, which sets the picture's
+    /// own size in cells.
+    font: ratatui_image::FontSize,
 }
 
 impl std::fmt::Debug for Picture {
@@ -371,6 +374,17 @@ impl FileView<'_> {
         self.picture = image.map(|image| self.picture_of(image));
     }
 
+    /// A cell's width in pixels, as the terminal answered it at startup
+    /// (#458). `None` with half-blocks, whose cell size is only a guess.
+    pub(crate) fn cell_width(&self) -> Option<u32> {
+        self.picker
+            .as_ref()
+            .filter(|picker| {
+                picker.protocol_type() != ratatui_image::picker::ProtocolType::Halfblocks
+            })
+            .map(|picker| u32::from(picker.font_size().width))
+    }
+
     /// `image`, encoded for this pane's picker.
     fn picture_of(&mut self, image: Arc<image::DynamicImage>) -> Picture {
         let picker = self
@@ -378,6 +392,7 @@ impl FileView<'_> {
             .get_or_insert_with(ratatui_image::picker::Picker::halfblocks);
         Picture {
             protocol: picker.new_resize_protocol(image.as_ref().clone()),
+            font: picker.font_size(),
             image,
         }
     }
@@ -1335,6 +1350,23 @@ fn around(span: Span, holes: &[(usize, usize)]) -> impl Iterator<Item = Span> + 
     pieces.into_iter()
 }
 
+/// The most a picture grows (#458): a small picture fills the pane, but at
+/// no more than this many times its own size, so that an icon does not
+/// become large blocks.
+const MAX_ZOOM: u16 = 3;
+
+/// The part of `area`, from its top left, that a picture may fill: `area`,
+/// or less when `MAX_ZOOM` times the picture's own size in cells of `font`
+/// is smaller.
+fn zoom_limit(area: Rect, image: &image::DynamicImage, font: ratatui_image::FontSize) -> Rect {
+    let own = ratatui_image::Resize::natural_size(image, font);
+    Rect {
+        width: area.width.min(own.width.saturating_mul(MAX_ZOOM)),
+        height: area.height.min(own.height.saturating_mul(MAX_ZOOM)),
+        ..area
+    }
+}
+
 impl FileView<'_> {
     /// The pane's title: the path, accented for a frame after a cross-file
     /// step. The one place the path is rendered, and the one place a lossy
@@ -1367,12 +1399,14 @@ impl Widget for &mut FileView<'_> {
             let block = crate::widgets::pane_block(self.title(), self.active);
             let inner = block.inner(area);
             block.render(area, buf);
-            // Fit keeps the shape, and makes a small picture no larger.
-            let image = ratatui_image::StatefulImage::default().resize(ratatui_image::Resize::Fit(
-                Some(ratatui_image::FilterType::Triangle),
-            ));
             if let Some(picture) = &mut self.picture {
-                ratatui::widgets::StatefulWidget::render(image, inner, buf, &mut picture.protocol);
+                // Scale keeps the shape and fills the area, so the area is
+                // what limits a small picture's growth.
+                let area = zoom_limit(inner, &picture.image, picture.font);
+                let image = ratatui_image::StatefulImage::default().resize(
+                    ratatui_image::Resize::Scale(Some(ratatui_image::FilterType::Triangle)),
+                );
+                ratatui::widgets::StatefulWidget::render(image, area, buf, &mut picture.protocol);
             }
             return;
         }

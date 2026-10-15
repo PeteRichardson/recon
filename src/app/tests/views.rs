@@ -365,3 +365,68 @@ fn an_image_leaves_the_explorer_keys_alone() {
     key(&mut app, KeyCode::Char('/'));
     assert!(app.prompt.is_some(), "no search in the explorer");
 }
+
+/// The picker's cell size is 10 × 20 px for half-blocks.
+fn picture_app(name: &str, width: u32, height: u32) -> App<'static> {
+    let png = crate::views::tests::png_filled(width, height, [255, 0, 0]);
+    let mut app = app_with_rows(name, &[("a.png", &png)], vec![]);
+    app.focus = Focus::Explorer;
+    arrow_to(&mut app, "a.png");
+    app
+}
+
+/// The columns and rows of the screen that show the picture's red.
+fn red_extent(app: &mut App) -> (usize, usize) {
+    let mut buf = Buffer::empty(AREA);
+    app.render(AREA, &mut buf);
+    let red = ratatui::style::Color::Rgb(255, 0, 0);
+    let cells: Vec<(u16, u16)> = (0..AREA.height)
+        .flat_map(|y| (0..AREA.width).map(move |x| (x, y)))
+        .filter(|&(x, y)| buf[(x, y)].bg == red || buf[(x, y)].fg == red)
+        .collect();
+    let columns: std::collections::BTreeSet<u16> = cells.iter().map(|c| c.0).collect();
+    let rows: std::collections::BTreeSet<u16> = cells.iter().map(|c| c.1).collect();
+    (columns.len(), rows.len())
+}
+
+/// A picture smaller than the pane grows to fill it, but to no more than
+/// three times its own size: a 20 px icon is 2 × 1 cells, and shows as
+/// 6 × 3, not as large as the pane.
+#[test]
+fn a_small_picture_grows_but_no_more_than_three_times() {
+    let mut app = picture_app("views_image_grows", 20, 20);
+    assert_eq!(red_extent(&mut app), (6, 3));
+}
+
+/// A photo larger than three times the pane fills it, in its own shape:
+/// the pane is 7 rows tall, so a square photo is 7 rows and 14 columns.
+#[test]
+fn a_large_picture_fills_the_pane() {
+    let mut app = picture_app("views_image_fills", 400, 400);
+    assert_eq!(red_extent(&mut app), (14, 7));
+}
+
+/// `{px}` is the pane's width in the pixels of the terminal's own cells,
+/// as it answered at startup: on a Retina display a cell is 22 px, and a
+/// Quick Look thumbnail made for 8 px cells shows at a third of the pane.
+#[test]
+fn px_counts_the_cells_the_terminal_reported() {
+    use ratatui_image::picker::{Picker, ProtocolType};
+    let app = app_with_commands(
+        "views_px_cells",
+        &[("a.cmd", b"x\n")],
+        vec![FileType::with_view_names("*.cmd", &["px"])],
+        commands(&[("px", &["echo", "{px}"], None)]),
+    );
+    #[allow(deprecated)]
+    let mut picker = Picker::from_fontsize((22, 40).into());
+    picker.set_protocol_type(ProtocolType::Iterm2);
+    let mut app = app.with_image_picker(picker);
+    app.focus = Focus::Explorer;
+    draw(&mut app);
+
+    arrow_to(&mut app, "a.cmd");
+
+    let columns = u32::from(app.view_area.width - 2);
+    assert_eq!(view_lines(&app), [(columns * 22).to_string()]);
+}
