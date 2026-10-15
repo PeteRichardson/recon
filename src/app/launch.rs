@@ -16,8 +16,8 @@ impl App<'_> {
     /// viewer; a missing editor is not a reason to bring the TUI down over a
     /// key the user may have pressed by accident.
     pub(super) fn open_in_editor(&mut self, template: &str, scope: EditorScope) {
-        let relative = self.view.filename().to_path_buf();
-        if relative.as_os_str().is_empty() {
+        let selected = self.view.filename().to_path_buf();
+        if selected.as_os_str().is_empty() {
             self.report("nothing to open", true);
             return;
         }
@@ -25,9 +25,15 @@ impl App<'_> {
         // `filename` is set even when the read failed — the pane shows the
         // error in place of the file's text — so a path that is not there is
         // the ordinary "the argument was a typo" case, not an impossible one.
-        if !relative.exists() {
+        //
+        // The row names the file alone: the full path can be wider than the
+        // row, and the reason is the part truncation would cut (#248). The
+        // log keeps the full path, as `read_lines` does.
+        if !selected.exists() {
+            log::warn!("cannot open {}: no such file", selected.display());
+            let name = selected.file_name().unwrap_or(selected.as_os_str());
             self.report(
-                &format!("cannot open {}: no such file", relative.display()),
+                &format!("cannot open {}: no such file", name.display()),
                 true,
             );
             return;
@@ -48,7 +54,7 @@ impl App<'_> {
         // the explorer had *already* resolved the link before this ran and
         // there was nothing left here to preserve. All three sites share this
         // one function now, which is what makes the sentence above true.
-        let file = path::lexical_absolute(&relative);
+        let file = path::lexical_absolute(&selected);
 
         let project = match scope {
             EditorScope::Project => editor::project_root(&file),

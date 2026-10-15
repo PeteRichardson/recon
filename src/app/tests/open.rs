@@ -157,13 +157,14 @@ fn o_refuses_a_file_that_is_not_there() {
         launcher.is_empty(),
         "a missing file was handed to an editor"
     );
-    // The startup argument is held absolute (#157), so this message
-    // carries a full path rather than the short relative one the
-    // default 120-column `AREA` was fitting before. The width here is
-    // incidental to what is under test — the message's content — so it
-    // is widened rather than the shared `status_line`/`AREA` that 47
-    // other tests render through.
-    assert!(status_line_at(&mut app, 300).contains("no such file"));
+    // The startup argument is held absolute (#157), so the full path can
+    // be wider than the status row. The row names the file alone, so the
+    // reason still fits at the default width (#248).
+    let row = status_line(&mut app);
+    assert!(
+        row.contains("cannot open nope.log: no such file"),
+        "status row: {row:?}"
+    );
 }
 
 // An editor exits on its own schedule, so its report is the one change
