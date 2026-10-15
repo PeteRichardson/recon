@@ -76,11 +76,39 @@ impl Commands {
 }
 
 impl Command {
-    /// Whether the output is an image, which needs the image view (stage 4).
+    /// Whether the output is an image, for the image view (#458).
     pub(crate) fn is_image(&self) -> bool {
         self.output
             .as_deref()
             .is_some_and(|mime| mime.trim().to_ascii_lowercase().starts_with("image/"))
+    }
+
+    /// The built-in `quicklook` command (#458): Quick Look's thumbnail of
+    /// the file, `{px}` on its longest side. macOS only, and `None` where
+    /// `qlmanage` is not on `PATH`.
+    ///
+    /// Through `sh`, because `qlmanage -o` writes into a directory that
+    /// must already be there, and `{out}` is a path that is not. It writes
+    /// nothing, and says that it made a thumbnail, when the directory is
+    /// not there.
+    pub(crate) fn quick_look() -> Option<Self> {
+        let program = "qlmanage";
+        (cfg!(target_os = "macos") && on_path(program)).then(|| Self {
+            argv: [
+                "sh",
+                "-c",
+                "mkdir \"$1\" && exec qlmanage -t -s \"$2\" -o \"$1\" \"$3\" >/dev/null",
+                "sh",
+                "{out}",
+                "{px}",
+                "{file}",
+            ]
+            .map(String::from)
+            .to_vec(),
+            output: Some("image/png".to_string()),
+            timeout: DEFAULT_TIMEOUT,
+            prefetch: true,
+        })
     }
 }
 

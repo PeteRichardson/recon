@@ -1682,14 +1682,17 @@ and naming one directly is refused with `not a regular file`.
 ### Views
 
 A **view** is one way the file view shows a file: `raw` (the file's text),
-`hex` (a hex dump), or a **command view** (the output of a program that you
-name in the config — see [Command views](#command-views)). Each file has a **view cycle**: an ordered list of views.
+`hex` (a hex dump), `image` (the file as a picture — see
+[The image view](#the-image-view)), or a **command view** (the output of a
+program that you name in the config — see [Command views](#command-views)). Each file has a **view cycle**: an ordered list of views.
 The first one is the default, and `-` steps to the next one. After the last
 view, `-` goes back to the first.
 
 | File | Views |
 | --- | --- |
-| a binary file (a NUL byte in its first 8 KiB) | `hex` |
+| a picture: `.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`, `.bmp`, `.tif`, `.tiff`, `.ico`, in any case | `image`, `hex` |
+| on macOS, a file of a type that Quick Look shows: `.pdf`, `.psd`, `.heic`, `.heif`, `.avif`, `.ai`, `.key`, `.pages`, `.numbers`, camera RAW (`.dng`, `.cr2`, `.nef`, `.arw` and others), `.mov`, `.mp4` | `quicklook`, `hex` |
+| any other binary file (a NUL byte in its first 8 KiB) | `hex` |
 | every other file | `raw`, `hex` |
 
 A step with `-` holds for every file of the same type until you step again
@@ -1718,8 +1721,8 @@ views = ["hex"]
 
 The first row that matches a file and has `views` gives its whole cycle;
 two cycles do not merge. Your rows go before the built-in rows in the table
-above. `views` names one or more of `raw`, `hex` and the names in
-`[commands]`, in the order that `-` steps through them, and a view that is
+above. `views` names one or more of `raw`, `hex`, `image`, `quicklook` and
+the names in `[commands]`, in the order that `-` steps through them, and a view that is
 not in the list is never shown.
 
 A row can also name a **hand-off**: the app that `o` sends the file to.
@@ -1797,11 +1800,60 @@ Filters and `/` run on the lines of the command's output: a filter on a key
 of pretty-printed JSON matches that one line, not the whole file. The
 explorer's marks still come from the file on disk.
 
+A command with an `image/*` output shows in the image view. recon decodes
+what the command writes:
+
+```toml
+[commands]
+mmd = { argv = ["mmdc", "-i", "{file}", "-o", "{out}", "-e", "png"], output = "image/png" }
+
+[[filetype]]
+glob  = "*.mmd"
+views = ["mmd", "raw"]
+```
+
 `raw`, `hex`, `image` and `quicklook` are the names of built-in views, and a
 command cannot use one. A command whose program is not on `PATH` gives one
-warning at startup, and the cycles skip it. This version of recon has no
-image view: a row that names `image` or `quicklook`, or a command with an
-`image/*` output, gives a startup warning, and the cycle skips that view.
+warning at startup, and the cycles skip it. So does `quicklook` on a system
+with no Quick Look.
+
+#### The image view
+
+`image` shows the file as a picture in the view pane, scaled down to fit and
+in its own shape. A picture smaller than the pane stays at its own size.
+recon asks the terminal at startup how it draws pictures: kitty, Ghostty and
+iTerm2 show the picture at full resolution, and a terminal with sixel
+support shows it in sixels. Every other terminal, and recon inside tmux,
+shows the picture in half-block characters, two pixels to a cell.
+
+A picture has no lines. There is no cursor, no line numbers and no visual
+mode. In the view pane, `/`, `*`, `n`, `N`, `v`, `V`, `y` and the filter
+keys say `this view has no lines` and do nothing; in the explorer they work
+as before. `z`, `b` and the other pane keys work. A file that does not
+decode as a picture shows raw (hex for a binary file), with the reason on
+the status line.
+
+recon keeps a picture no larger than 2048 pixels on its longest side, so a
+large photo costs the cache about 8 MiB.
+
+`quicklook` (macOS only) shows the file's Quick Look thumbnail, which
+`qlmanage` makes: a PDF's first page, a PSD, a HEIC photo, a frame of a
+film. It is a built-in command:
+
+```toml
+quicklook = { argv = ["qlmanage", "-t", "-s", "{px}", "-o", "{out}", "{file}"], output = "image/png" }
+```
+
+recon makes the `{out}` directory first, which `qlmanage` needs. Only the
+types in the table above get `quicklook` by default, by their extension:
+`qlmanage` does not stop for a file that it has no thumbnail for, so the
+view would wait for its timeout. A row can name `quicklook` for any other type:
+
+```toml
+[[filetype]]
+glob  = "*.{md,docx}"
+views = ["quicklook", "raw"]
+```
 
 #### Reading in the background
 

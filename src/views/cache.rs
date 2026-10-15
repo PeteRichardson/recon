@@ -13,7 +13,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
 
-/// The most bytes of lines the cache holds.
+/// The most bytes of lines and pixels the cache holds.
 pub(crate) const LIMIT: usize = 256 << 20;
 
 /// Which version of a file a result is for: the stamp the explorer's scan
@@ -106,13 +106,19 @@ impl Default for Cache {
     }
 }
 
-/// What `contents` cost to keep: each line's text and its `String`.
+/// What `contents` cost to keep: each line's text and its `String`, and a
+/// picture's pixels.
 fn size_of(contents: &Contents) -> usize {
+    let pixels = contents
+        .image
+        .as_ref()
+        .map_or(0, |image| image.as_bytes().len());
     contents
         .lines
         .iter()
         .map(|line| line.len() + std::mem::size_of::<String>())
-        .sum()
+        .sum::<usize>()
+        + pixels
 }
 
 impl Cache {
@@ -152,7 +158,7 @@ impl Cache {
     /// next read may succeed. A whole read replaces the preview it answers
     /// for.
     pub(crate) fn put(&self, key: Key, view: View, extent: Extent, contents: &Contents) {
-        if !contents.text && !contents.hex {
+        if !contents.shows_the_file() {
             return;
         }
         let bytes = size_of(contents);
@@ -274,6 +280,28 @@ mod tests {
             "b was older"
         );
         assert!(cache.get(&c, View::Raw, Extent::Full).is_some());
+    }
+
+    /// A picture is kept, so `,` and `.` back to a photo do not decode it
+    /// again, and its pixels count against the limit (#458).
+    #[test]
+    fn an_image_is_kept_and_its_pixels_count() {
+        let a = Key::of(&fixture_file("cache_image_a.png", b"a")).unwrap();
+        let b = Key::of(&fixture_file("cache_image_b.png", b"b")).unwrap();
+        let picture = Contents {
+            image: Some(Arc::new(image::DynamicImage::new_rgb8(100, 100))),
+            ..Contents::default()
+        };
+        let cache = Cache::with_limit(100 * 100 * 3 * 3 / 2);
+
+        cache.put(a.clone(), View::Image, Extent::Full, &picture);
+        assert!(cache.get(&a, View::Image, Extent::Full).is_some());
+
+        cache.put(b.clone(), View::Image, Extent::Full, &picture);
+        assert!(
+            cache.get(&a, View::Image, Extent::Full).is_none(),
+            "two pictures fit a limit for one and a half"
+        );
     }
 
     #[test]

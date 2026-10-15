@@ -1,6 +1,6 @@
 # File views and hand-offs — design
 
-**Status:** accepted; stages 1, 2 and 3 implemented (#455, #456, #457)
+**Status:** accepted; all four stages implemented (#455, #456, #457, #458)
 **Date:** 2026-10-14
 **Decision records:** [ADR 0006](../adr/0006-filters-run-on-the-view.md),
 [ADR 0007](../adr/0007-one-background-view-pipeline.md)
@@ -260,6 +260,40 @@ handoff = ["open", "-a", "Preview", "{file}"]
   `E`, `F`) work.
 - Formats are the ones the `image` crate decodes. Other formats (HEIC on
   macOS) come through `quicklook`.
+
+#### Changed in stage 4 (#458)
+
+Measured while stage 4 was built, and decided with the user:
+
+- **The Quick Look row is by extension, not "binary".** `qlmanage -t`
+  writes nothing and does not stop for a file it has no thumbnail for (a
+  plain binary, an executable): every such file would wait for the 2 s
+  timeout and say `quicklook failed`. So built-in row 2 matches a fixed
+  list of the types Quick Look shows (PDF, PSD, HEIC, camera RAW, films and
+  others), by extension alone. It does not read the file: many a PDF has no
+  NUL in its first 8 KiB, so the binary check calls it text. Every other
+  binary file goes to row 3 at once. A user row can still name `quicklook`
+  for any type.
+- **`qlmanage -o` needs a directory that is there.** With `{out}` a new
+  path, it says that it made a thumbnail and writes nothing. The built-in
+  command runs `sh -c 'mkdir "$1" && exec qlmanage …'`, so `{out}` keeps the
+  meaning it has for every other command.
+- **The filter keys refuse only with the file view focused.** In the
+  explorer, `/` searches the names, and a filter also marks the text files
+  near the picture, so those keys work there. `n` and `N` refuse from the
+  filter pane too, since they move the view. `space` never refuses: it ends
+  a peek that a text file started.
+- **The terminal is asked only when stdin and stdout are both a terminal.**
+  `ratatui-image` writes its query to stdout and reads stdin. With
+  `--emit` into a pipe there is no answer, so recon uses half-blocks. The
+  query ends on the answer to `ESC [5n`, which every VT100-style terminal
+  gives; a pty that answers nothing (`script` in a test) loses the first
+  key to the query's reader thread.
+- **A picture is kept at most 2048 px on its longest side**, and the
+  decoder may use at most 512 MiB. A small picture is not enlarged.
+- **Known cost:** the picture is scaled and encoded for the terminal on the
+  main thread when it is first drawn and after a resize. Half-blocks and
+  kitty are fast; sixel on a large pane can take tens of milliseconds.
 
 ### Documentation
 

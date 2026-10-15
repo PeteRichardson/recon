@@ -31,6 +31,10 @@ impl App<'_> {
     /// from one, so the parameter costs nothing there.
     pub(super) fn perform(&mut self, action: crate::keymap::ActionId, pressed: crate::keymap::Key) {
         use crate::keymap::ActionId as A;
+        if self.has_no_lines_for(action) {
+            self.report("this view has no lines", false);
+            return;
+        }
         match action {
             // `q`'s `DEFAULT` row carries no modifier (see `label_matches`),
             // so a modified key — e.g. Ctrl-f, which the file view uses for
@@ -401,6 +405,35 @@ impl App<'_> {
                     "{action:?} resolves in its own modal dispatch, never through `perform`"
                 );
             }
+        }
+    }
+
+    /// Whether `action` acts on the lines of the view, and the view shows
+    /// a picture, which has none (#458). `n` and `N` move the view from the
+    /// filter pane too. The other keys refuse only in the view: in the
+    /// explorer, `/` searches the names, and a filter also marks the text
+    /// files near the picture.
+    ///
+    /// Not `space`: it ends a peek as well as starting one, and a peek
+    /// started on a text file must end on any file.
+    fn has_no_lines_for(&self, action: crate::keymap::ActionId) -> bool {
+        use crate::keymap::ActionId as A;
+        if !self.view.has_image() {
+            return false;
+        }
+        match action {
+            A::HitNext | A::HitPrev => matches!(self.focus, Focus::View | Focus::Filters),
+            A::GlobalSearch
+            | A::GlobalSearchPromote
+            | A::GlobalSearchWord
+            | A::GlobalFiltersAnd
+            | A::GlobalFiltersDisable
+            | A::GlobalFiltersToggle
+            | A::GlobalToggleHide
+            | A::GlobalVisualChar
+            | A::GlobalVisualLine
+            | A::GlobalYank => self.focus == Focus::View,
+            _ => false,
         }
     }
 

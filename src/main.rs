@@ -64,6 +64,7 @@ fn main() -> Result<ExitCode> {
         signal_hook::flag::register(signal_hook::consts::SIGTERM, Arc::clone(&terminate))?;
         let terminal = init_terminal()?;
         let exit = App::new(&startup)
+            .with_image_picker(image_picker())
             .with_model(recon::generate::system())
             .with_terminate(terminate)
             .run(terminal)?;
@@ -360,6 +361,30 @@ fn init_terminal() -> Result<Terminal<CrosstermBackend<io::BufWriter<Screen>>>> 
     let backend = CrosstermBackend::new(io::BufWriter::new(screen()));
     let terminal = Terminal::new(backend)?;
     Ok(terminal)
+}
+
+/// How the image view draws a picture (#458): kitty, iTerm2 or sixel when
+/// the terminal answers that it can, else half-blocks.
+///
+/// Asked once, after `init_terminal` and before the event loop reads a
+/// key, as `ratatui-image` requires. The query writes to stdout and reads
+/// the answer from stdin, so it is asked only when both are the terminal:
+/// with `--emit` into a pipe, the question would go into the pipe and no
+/// answer would come. Inside tmux the picture is half-blocks, which need no
+/// passthrough.
+fn image_picker() -> ratatui_image::picker::Picker {
+    use ratatui_image::picker::{Picker, ProtocolType};
+    if !(io::stdin().is_terminal() && io::stdout().is_terminal()) {
+        return Picker::halfblocks();
+    }
+    let mut picker = Picker::from_query_stdio().unwrap_or_else(|err| {
+        log::warn!("the terminal did not say how it draws pictures: {err}");
+        Picker::halfblocks()
+    });
+    if picker.tmux_detected() {
+        picker.set_protocol_type(ProtocolType::Halfblocks);
+    }
+    picker
 }
 
 /// Whether `init_terminal` has run and its undo is still owed.

@@ -161,6 +161,20 @@ pub(crate) fn window_holds(
     room_above && room_below
 }
 
+/// The picture the pane shows in the image view (#458), ready for the
+/// terminal's graphics protocol. Encoded again, to fit, when the pane's size
+/// changes. The image is kept for a new picker.
+struct Picture {
+    image: Arc<image::DynamicImage>,
+    protocol: ratatui_image::protocol::StatefulProtocol,
+}
+
+impl std::fmt::Debug for Picture {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Picture")
+    }
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct FileView<'a> {
     /// The file being shown, as a path rather than a rendering of one.
@@ -189,6 +203,13 @@ pub(crate) struct FileView<'a> {
     hex: bool,
     /// The MIME type whose grammar colours `source` — see `Contents::mime`.
     mime: Option<String>,
+    /// The picture on screen in the image view (#458). `source` is empty
+    /// then: the pane draws this in place of the lines, with no cursor and
+    /// no gutter.
+    picture: Option<Picture>,
+    /// How the terminal draws a picture, as `main` found it at startup.
+    /// `None` is half-blocks, which every terminal can show.
+    picker: Option<ratatui_image::picker::Picker>,
     textarea: TextArea<'a>,
     /// The colours syntax colouring paints with. `Off` by default, so a
     /// `FileView` built without one renders exactly as it did before #122;
@@ -337,6 +358,30 @@ impl FileView<'_> {
         self.text
     }
 
+    /// Whether the pane shows a picture, which has no lines (#458).
+    pub(crate) fn has_image(&self) -> bool {
+        self.picture.is_some()
+    }
+
+    /// How the terminal draws a picture: the protocol and the cell size
+    /// `main` found when it asked the terminal (#458).
+    pub(crate) fn set_image_picker(&mut self, picker: ratatui_image::picker::Picker) {
+        self.picker = Some(picker);
+        let image = self.picture.take().map(|picture| picture.image);
+        self.picture = image.map(|image| self.picture_of(image));
+    }
+
+    /// `image`, encoded for this pane's picker.
+    fn picture_of(&mut self, image: Arc<image::DynamicImage>) -> Picture {
+        let picker = self
+            .picker
+            .get_or_insert_with(ratatui_image::picker::Picker::halfblocks);
+        Picture {
+            protocol: picker.new_resize_protocol(image.as_ref().clone()),
+            image,
+        }
+    }
+
     /// Whether the pane is showing the file as a hex dump (#242).
     #[cfg(test)]
     pub(crate) fn is_hex(&self) -> bool {
@@ -465,6 +510,7 @@ impl FileView<'_> {
         self.filename = path.to_path_buf();
         self.showing_directory = contents.directory;
         self.mime.clone_from(&contents.mime);
+        self.picture = contents.image.clone().map(|image| self.picture_of(image));
         self.adopt(Arc::clone(&contents.lines), contents.text, contents.hex);
         self.truncated = contents.truncated;
         self.estimated_lines = contents.estimated_lines;
@@ -1289,12 +1335,47 @@ fn around(span: Span, holes: &[(usize, usize)]) -> impl Iterator<Item = Span> + 
     pieces.into_iter()
 }
 
+impl FileView<'_> {
+    /// The pane's title: the path, accented for a frame after a cross-file
+    /// step. The one place the path is rendered, and the one place a lossy
+    /// conversion is both correct and harmless — see the `filename` field.
+    fn title(&self) -> ratatui::text::Line<'static> {
+        let mut title = self.filename.display().to_string();
+        if self.hex {
+            title.push_str(" [hex]");
+        }
+        if self.title_accent {
+            ratatui::text::Line::from(ratatui::text::Span::styled(
+                title,
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD),
+            ))
+        } else {
+            ratatui::text::Line::from(title)
+        }
+    }
+}
+
 /// Widget impl for `FileView`
 impl Widget for &mut FileView<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         // Recorded for the *next* `apply_view`, which runs outside render and
         // has no area of its own to size a window against. See `last_height`.
         self.last_height = Some(area.height);
+        if self.picture.is_some() {
+            let block = crate::widgets::pane_block(self.title(), self.active);
+            let inner = block.inner(area);
+            block.render(area, buf);
+            // Fit keeps the shape, and makes a small picture no larger.
+            let image = ratatui_image::StatefulImage::default().resize(ratatui_image::Resize::Fit(
+                Some(ratatui_image::FilterType::Triangle),
+            ));
+            if let Some(picture) = &mut self.picture {
+                ratatui::widgets::StatefulWidget::render(image, inner, buf, &mut picture.protocol);
+            }
+            return;
+        }
         // A dump numbers itself: the offset leads each line (#242).
         if self.hide_line_numbers || self.gutter_blank || self.showing_directory || self.hex {
             self.textarea.remove_line_number();
@@ -1324,24 +1405,8 @@ impl Widget for &mut FileView<'_> {
             .set_search_style(Style::default().fg(Color::Black).bg(Color::Yellow));
         self.apply_syntax();
         self.paint_selection();
-        // The one place the path is rendered, and the one place a lossy
-        // conversion is both correct and harmless — see the `filename` field.
-        let mut title = self.filename.display().to_string();
-        if self.hex {
-            title.push_str(" [hex]");
-        }
-        let title = if self.title_accent {
-            ratatui::text::Line::from(ratatui::text::Span::styled(
-                title,
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD),
-            ))
-        } else {
-            ratatui::text::Line::from(title)
-        };
         self.textarea
-            .set_block(crate::widgets::pane_block(title, self.active));
+            .set_block(crate::widgets::pane_block(self.title(), self.active));
         // Apply any scroll requested since the last render — see
         // `scroll_cursor_to_row` and `apply_pending_scroll` — only now, once
         // the block above is set: `apply_pending_scroll`'s scratch render

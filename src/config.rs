@@ -1055,8 +1055,8 @@ impl Config {
 
     /// Refuse a `[[filetype]]` row that names a view no one defines (#457).
     /// After the file layer: a row and the command it names are read
-    /// separately. `image` and `quicklook` are known names; the table warns
-    /// about them, since this version cannot show them.
+    /// separately. `image` and `quicklook` are known names (#458); the
+    /// table warns about `quicklook` where there is no Quick Look.
     pub fn check_views(&self) -> Result<(), ConfigError> {
         let known = |name: &str| {
             crate::views::BUILT_IN.contains(&name) || self.commands.0.contains_key(name)

@@ -306,3 +306,62 @@ fn a_failed_command_shows_raw_and_says_why() {
     let line = status_line(&mut app);
     assert!(!line.contains(" bad "), "the failed view is named: {line}");
 }
+
+// ---- the image view (#458) -------------------------------------------
+
+/// A picture shows as one, by its extension, with no row of the user's.
+/// `-` steps to its dump.
+#[test]
+fn a_picture_shows_as_an_image_and_minus_steps_to_hex() {
+    let png = crate::views::tests::png(4, 2);
+    let mut app = app_with_rows("views_image", &[("a.png", &png)], vec![]);
+    app.focus = Focus::Explorer;
+
+    arrow_to(&mut app, "a.png");
+
+    assert!(app.view.has_image(), "no image in the pane");
+    assert!(view_lines(&app).iter().all(String::is_empty));
+    let line = status_line(&mut app);
+    assert!(line.starts_with(" image "), "no view named: {line}");
+
+    key(&mut app, KeyCode::Char('-'));
+    assert!(!app.view.has_image());
+    assert_eq!(view_lines(&app)[0], crate::hex::line(0, &png[..16]));
+}
+
+/// With a picture in the focused view, the keys that act on lines say so,
+/// and do nothing: a filter or a search cannot fail on lines that are not
+/// there.
+#[test]
+fn keys_on_lines_say_an_image_has_none() {
+    let png = crate::views::tests::png(4, 2);
+    let mut app = app_with_rows("views_image_keys", &[("a.png", &png)], vec![]);
+    app.focus = Focus::Explorer;
+    arrow_to(&mut app, "a.png");
+    app.focus = Focus::View;
+
+    for code in ['/', 'n', 'N', '1', '&', '!', 'u', 'v', 'V', '*'] {
+        app.status_message = None;
+        key(&mut app, KeyCode::Char(code));
+        assert_eq!(status(&app), Some("this view has no lines"), "{code}");
+        assert!(app.prompt.is_none(), "{code} opened a prompt");
+        assert!(app.visual.is_none(), "{code} started a selection");
+        assert!(app.pending_digit.is_none(), "{code} took a digit");
+    }
+}
+
+/// In the explorer, `/` searches the names and the filter keys work: a
+/// filter also marks the text files near the picture.
+#[test]
+fn an_image_leaves_the_explorer_keys_alone() {
+    let png = crate::views::tests::png(4, 2);
+    let mut app = app_with_rows("views_image_explorer", &[("a.png", &png)], vec![]);
+    app.focus = Focus::Explorer;
+    arrow_to(&mut app, "a.png");
+
+    key(&mut app, KeyCode::Char('1'));
+    assert_eq!(status(&app), Some("filter 1_"));
+    key(&mut app, KeyCode::Esc);
+    key(&mut app, KeyCode::Char('/'));
+    assert!(app.prompt.is_some(), "no search in the explorer");
+}

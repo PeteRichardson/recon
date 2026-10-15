@@ -230,7 +230,7 @@ impl App<'_> {
         let fell_back_to = if contents.hex { View::Hex } else { View::Raw };
         self.loading.shown = done
             .shown
-            .filter(|_| contents.text || contents.hex)
+            .filter(|_| contents.shows_the_file())
             .map(|shown| Shown {
                 view: if contents.fallback.is_some() {
                     fell_back_to

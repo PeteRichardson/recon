@@ -163,6 +163,28 @@ syntect = { version = "5.3", default-features = false, features = [
 ] }
 two-face = "0.5"
 
+# The image view (#458). `ratatui-image` finds the terminal's graphics
+# protocol — kitty, iTerm2 or sixel — and falls back to half-blocks, so an
+# image always shows. Its defaults are off: `chafa-dyn` links a C library
+# through pkg-config, and `image-defaults` turns on every decoder `image`
+# has, AVIF and OpenEXR among them.
+#
+# `image` is named here for the decoders the view shows. These are the
+# formats a camera, a browser or a screenshot tool writes. Other formats
+# come through `quicklook` on macOS.
+ratatui-image = { version = "11.1.0", default-features = false, features = [
+    "crossterm",
+] }
+image = { version = "0.25", default-features = false, features = [
+    "bmp",
+    "gif",
+    "ico",
+    "jpeg",
+    "png",
+    "tiff",
+    "webp",
+] }
+
 # Pattern generation in the filter editor (#319). Off by default, so a plain
 # `cargo build` has no new dependency on any platform. `fm-rs` compiles a
 # Swift layer over Apple's FoundationModels framework in its build script, so

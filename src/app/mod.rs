@@ -512,6 +512,14 @@ impl App<'_> {
         app
     }
 
+    /// Draw pictures with `picker`, which `main` got from the terminal
+    /// (#458). Without it the image view uses half-blocks.
+    #[must_use]
+    pub fn with_image_picker(mut self, picker: ratatui_image::picker::Picker) -> Self {
+        self.view.set_image_picker(picker);
+        self
+    }
+
     /// Give the filter editor a model to write patterns with (#319).
     #[must_use]
     pub fn with_model(mut self, model: Option<std::sync::Arc<dyn crate::generate::Model>>) -> Self {

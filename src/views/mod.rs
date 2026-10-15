@@ -25,13 +25,14 @@ pub enum View {
     Raw,
     /// The file as a hex dump (#242).
     Hex,
+    /// The file as a picture (#458).
+    Image,
     /// The output of the `i`th command of the table (#457).
     Command(usize),
 }
 
-/// The names of the built-in views, which a command cannot take. `image`
-/// and `quicklook` come with the image view (stage 4); a row may name them
-/// now, and the table skips them with a warning.
+/// The names of the built-in views, which a command cannot take.
+/// `quicklook` is a built-in command, on macOS only (#458).
 pub(crate) const BUILT_IN: [&str; 4] = ["raw", "hex", "image", "quicklook"];
 
 impl View {
@@ -40,6 +41,7 @@ impl View {
         match name {
             "raw" => Some(Self::Raw),
             "hex" => Some(Self::Hex),
+            "image" => Some(Self::Image),
             _ => None,
         }
     }
@@ -146,19 +148,22 @@ pub(crate) fn run(job: &Job, cache: Option<&Cache>) -> Done {
 fn read_view(job: &Job, view: View) -> (Contents, Extent) {
     let path = &job.path;
     if let Some(command) = job.table.command(view) {
-        return match command::run(command, path, job.px) {
-            Ok(output) => (
-                read::command_output(&output, command.output.as_deref()),
-                Extent::Full,
-            ),
-            Err(reason) => {
-                let (contents, extent) = read_view(job, View::Raw);
-                let contents = Contents {
-                    fallback: Some(reason),
-                    ..contents
-                };
-                (contents, extent)
+        let contents = command::run(command, path, job.px).and_then(|output| {
+            if command.is_image() {
+                read::image_bytes(&output)
+            } else {
+                Ok(read::command_output(&output, command.output.as_deref()))
             }
+        });
+        return match contents {
+            Ok(contents) => (contents, Extent::Full),
+            Err(reason) => fall_back(job, reason),
+        };
+    }
+    if view == View::Image {
+        return match read::image_file(path) {
+            Ok(contents) => (contents, Extent::Full),
+            Err(reason) => fall_back(job, reason),
         };
     }
     let contents = match job.extent {
@@ -170,8 +175,19 @@ fn read_view(job: &Job, view: View) -> (Contents, Extent) {
     (contents, job.extent)
 }
 
+/// Raw, which is hex for a binary file, in place of a view that failed
+/// for `reason` (#457).
+fn fall_back(job: &Job, reason: String) -> (Contents, Extent) {
+    let (contents, extent) = read_view(job, View::Raw);
+    let contents = Contents {
+        fallback: Some(reason),
+        ..contents
+    };
+    (contents, extent)
+}
+
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::fixtures::{fixture_dir, fixture_file};
     use std::path::Path;
@@ -226,12 +242,104 @@ mod tests {
         assert!(done.contents.directory);
     }
 
+    /// A PNG `width` × `height` pixels, as a file would hold it.
+    pub(crate) fn png(width: u32, height: u32) -> Vec<u8> {
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        image::RgbImage::new(width, height)
+            .write_to(&mut bytes, image::ImageFormat::Png)
+            .unwrap();
+        bytes.into_inner()
+    }
+
+    #[test]
+    fn the_image_view_decodes_the_file() {
+        let file = fixture_file("views_run_image.png", &png(4, 2));
+        let table = Table::new(&[FileType::with_views("*.png", &[View::Image])]);
+
+        let done = run(&job(&file, table), None);
+
+        assert_eq!(done.shown.map(|s| s.view), Some(View::Image));
+        let image = done.contents.image.expect("an image");
+        assert_eq!((image.width(), image.height()), (4, 2));
+        assert!(done.contents.lines.is_empty(), "an image has no lines");
+        assert!(done.contents.fallback.is_none());
+    }
+
+    /// A photo is far larger than a pane. It is kept no larger than the cap,
+    /// in the same shape, so the cache and the draw do not pay for pixels
+    /// that no terminal shows.
+    #[test]
+    fn a_large_image_is_shrunk_to_the_cap() {
+        let side = read::MAX_IMAGE_SIDE;
+        let file = fixture_file("views_run_large.png", &png(side * 2, side / 2));
+        let table = Table::new(&[FileType::with_views("*.png", &[View::Image])]);
+
+        let image = run(&job(&file, table), None).contents.image.unwrap();
+
+        assert_eq!((image.width(), image.height()), (side, side / 4));
+    }
+
+    /// A `.png` that holds text: the view fails, and the text shows with
+    /// the reason, as a failed command's does.
+    #[test]
+    fn a_file_that_is_not_an_image_falls_back_to_raw() {
+        let file = fixture_file("views_run_not_image.png", b"not a picture\n");
+        let table = Table::new(&[FileType::with_views("*.png", &[View::Image])]);
+
+        let done = run(&job(&file, table), None);
+
+        assert!(done.contents.image.is_none());
+        assert_eq!(*done.contents.lines, ["not a picture"]);
+        assert!(done.contents.fallback.is_some());
+    }
+
     fn command_job(path: &Path, argv: &[&str], prefetch: bool) -> Job {
         let command = command::Command::of(argv).with_prefetch(prefetch);
         let commands = command::Commands::of([("cmd", command)]);
         let row = FileType::with_view_names("*.cmd", &["cmd", "raw"]);
         let table = Table::build(&[row], &commands).0;
         job(path, table)
+    }
+
+    /// `mmdc` and `qlmanage` write a picture: it goes to the image view.
+    /// Output that does not decode fails the view, as a non-zero exit does.
+    #[test]
+    fn a_command_with_image_output_shows_an_image() {
+        let dir = fixture_dir("views_run_image_command");
+        let file = dir.join("a.cmd");
+        std::fs::write(&file, png(3, 5)).unwrap();
+        let picture = |argv: &[&str]| {
+            let command = command::Command::of(argv).with_output("image/png");
+            let commands = command::Commands::of([("cmd", command)]);
+            let row = FileType::with_view_names("*.cmd", &["cmd", "hex"]);
+            job(&file, Table::build(&[row], &commands).0)
+        };
+
+        let done = run(&picture(&["cat"]), None);
+        let image = done.contents.image.expect("an image");
+        assert_eq!((image.width(), image.height()), (3, 5));
+        assert_eq!(done.shown.map(|s| s.view), Some(View::Command(0)));
+
+        let done = run(&picture(&["echo", "not a picture"]), None);
+        assert!(done.contents.image.is_none());
+        assert!(done.contents.fallback.is_some());
+    }
+
+    /// The built-in `quicklook` runs the real `qlmanage`: a row that names
+    /// it shows the thumbnail, no larger than `{px}`.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn quicklook_shows_the_thumbnail() {
+        let file = fixture_file("views_run_quicklook.md", b"# A heading\n\nSome text.\n");
+        let row = FileType::with_view_names("*.md", &["quicklook", "raw"]);
+        let mut job = job(&file, Table::new(&[row]));
+        job.px = 64;
+
+        let done = run(&job, None);
+
+        assert_eq!(done.contents.fallback, None);
+        let image = done.contents.image.expect("a thumbnail");
+        assert!(image.width().max(image.height()) <= 64, "{image:?}");
     }
 
     /// A command marked `prefetch = false` runs only for the file on

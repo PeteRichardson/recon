@@ -190,6 +190,11 @@ impl Glob {
 enum Matcher {
     /// A user row.
     Glob(Glob),
+    /// A built-in row for the extensions the test accepts, in any case
+    /// (#458): a picture, or a type Quick Look shows. Reads nothing: many
+    /// a PDF has no NUL in its head, so the binary check would show it as
+    /// raw.
+    Extension(fn(&str) -> bool),
     /// The built-in row for a file with a NUL in its head.
     Binary,
     /// The built-in row for every other file.
@@ -241,11 +246,11 @@ impl Table {
 
     /// The user's rows, then the built-in ones, and a warning for each view
     /// a row names that cannot run (#457): a command that is not on `PATH`,
-    /// or an image view, which this version does not have. Each such view
+    /// or `quicklook` where there is no Quick Look (#458). Each such view
     /// is left out of its cycle, and a row left with no view gives its
     /// cycle to the rows after it.
     pub(crate) fn build(user: &[FileType], commands: &Commands) -> (Self, Vec<String>) {
-        let commands: Vec<(String, Command)> = commands
+        let mut commands: Vec<(String, Command)> = commands
             .0
             .iter()
             .map(|(name, command)| (name.clone(), command.clone()))
@@ -257,41 +262,39 @@ impl Table {
                 warnings.push(warning);
             }
         };
+        let quick_look = Command::quick_look();
+        if let Some(command) = &quick_look {
+            commands.push((QUICK_LOOK.to_string(), command.clone()));
+        }
+        let quick_look = quick_look.map(|_| View::Command(commands.len() - 1));
         let mut resolve = |name: &str| -> Option<View> {
             if let Some(view) = View::built_in(name) {
                 return Some(view);
             }
-            if super::BUILT_IN.contains(&name) {
-                warn(
-                    name,
-                    format!(
-                        "view `{name}` needs the image view, which this version of recon does not have; it is skipped"
-                    ),
-                );
-                return None;
+            if name == QUICK_LOOK {
+                if quick_look.is_none() {
+                    warn(
+                        name,
+                        format!(
+                            "view `{name}` needs Quick Look (`qlmanage`), which this system does not have; it is skipped"
+                        ),
+                    );
+                }
+                return quick_look;
             }
             // The config refuses a name it does not define, so this is
             // only `None` for a table built by hand.
             let index = commands.iter().position(|(known, _)| known == name)?;
             let command = &commands[index].1;
             let program = &command.argv[0];
-            if command.is_image() {
-                warn(
-                    name,
-                    format!(
-                        "command `{name}` makes an image, which needs the image view that this version of recon does not have; it is skipped"
-                    ),
-                );
-                None
-            } else if !super::command::on_path(program) {
-                warn(
-                    name,
-                    format!("command `{name}`: `{program}` is not on PATH; the view is skipped"),
-                );
-                None
-            } else {
-                Some(View::Command(index))
+            if super::command::on_path(program) {
+                return Some(View::Command(index));
             }
+            warn(
+                name,
+                format!("command `{name}`: `{program}` is not on PATH; the view is skipped"),
+            );
+            None
         };
         let user: Vec<Row> = user
             .iter()
@@ -311,6 +314,16 @@ impl Table {
             })
             .collect();
         let built_in = [
+            Row {
+                matcher: Matcher::Extension(is_picture),
+                views: Some(vec![View::Image, View::Hex]),
+                handoff: Some(HandOff::DefaultApp),
+            },
+            Row {
+                matcher: Matcher::Extension(quick_look_shows),
+                views: quick_look.map(|view| vec![view, View::Hex]),
+                handoff: Some(HandOff::DefaultApp),
+            },
             Row {
                 matcher: Matcher::Binary,
                 views: Some(vec![View::Hex]),
@@ -333,7 +346,7 @@ impl Table {
     pub(crate) fn command(&self, view: View) -> Option<&Command> {
         match view {
             View::Command(index) => Some(&self.commands[index].1),
-            View::Raw | View::Hex => None,
+            View::Raw | View::Hex | View::Image => None,
         }
     }
 
@@ -342,6 +355,7 @@ impl Table {
         match view {
             View::Raw => "raw",
             View::Hex => "hex",
+            View::Image => "image",
             View::Command(index) => &self.commands[index].0,
         }
     }
@@ -377,6 +391,10 @@ impl Table {
                 sets(row)
                     && match &row.matcher {
                         Matcher::Glob(glob) => glob.matches(path),
+                        Matcher::Extension(accepts) => path
+                            .extension()
+                            .and_then(|ext| ext.to_str())
+                            .is_some_and(accepts),
                         Matcher::Binary => binary.take().is_some_and(|binary| binary()),
                         Matcher::Any => true,
                     }
@@ -389,7 +407,7 @@ impl Table {
     /// reached with no read, so it does not know.
     pub(crate) fn binary(&self, row: usize) -> Option<bool> {
         match self.rows[row].matcher {
-            Matcher::Glob(_) => None,
+            Matcher::Glob(_) | Matcher::Extension(_) => None,
             Matcher::Binary => Some(true),
             Matcher::Any => Some(false),
         }
@@ -403,6 +421,29 @@ impl Table {
     fn len(&self) -> usize {
         self.rows.len()
     }
+}
+
+/// The name of the built-in Quick Look command, which a row can name.
+const QUICK_LOOK: &str = "quicklook";
+
+/// The extensions of the binary types Quick Look shows and the image view
+/// does not (#458). Not every binary file: Quick Look does not stop for a
+/// file it has no thumbnail for, so each one would wait for the timeout.
+const QUICK_LOOK_EXTENSIONS: &[&str] = &[
+    "pdf", "ai", "psd", "heic", "heif", "avif", "jxl", "key", "pages", "numbers", "dng", "cr2",
+    "cr3", "nef", "arw", "orf", "raf", "rw2", "mov", "mp4", "m4v", "usdz",
+];
+
+/// Whether `ext` names a picture the image view decodes, in any case.
+fn is_picture(ext: &str) -> bool {
+    image::ImageFormat::from_extension(ext).is_some_and(|format| format.reading_enabled())
+}
+
+/// Whether `ext` names a type Quick Look shows, in any case.
+fn quick_look_shows(ext: &str) -> bool {
+    QUICK_LOOK_EXTENSIONS
+        .iter()
+        .any(|known| known.eq_ignore_ascii_case(ext))
 }
 
 /// How far `-` has stepped in each row's cycle, for this session. Shared
@@ -435,6 +476,16 @@ mod tests {
 
     fn row(glob: &str, views: &[View]) -> FileType {
         FileType::with_views(glob, views)
+    }
+
+    /// The cycle of the row `path` shows, by name.
+    fn view_names<'a>(table: &'a Table, path: &str, binary: bool) -> Vec<&'a str> {
+        let row = table.row_for(Path::new(path), || binary);
+        table
+            .views(row)
+            .iter()
+            .map(|view| table.view_name(*view))
+            .collect()
     }
 
     fn hand_off_row(glob: &str, program: &str) -> FileType {
@@ -602,12 +653,8 @@ mod tests {
             &[
                 FileType::with_view_names("*.json", &["gone", "hex"]),
                 FileType::with_view_names("*.js", &["gone", "raw"]),
-                FileType::with_view_names("*.png", &["image", "picture", "hex"]),
             ],
-            &commands(&[
-                ("gone", "recon-no-such-program", None),
-                ("picture", "cat", Some("image/png")),
-            ]),
+            &commands(&[("gone", "recon-no-such-program", None)]),
         );
         let views = |path: &str| {
             table
@@ -616,15 +663,85 @@ mod tests {
         };
         assert_eq!(views("a.json"), [View::Hex]);
         assert_eq!(views("a.js"), [View::Raw]);
-        assert_eq!(views("a.png"), [View::Hex]);
-        assert_eq!(
-            warnings.len(),
-            3,
-            "one each for gone, image and picture: {warnings:?}"
-        );
+        assert_eq!(warnings.len(), 1, "one for gone: {warnings:?}");
         assert!(warnings[0].contains("`recon-no-such-program` is not on PATH"));
-        assert!(warnings[1].contains("view `image`"));
-        assert!(warnings[2].contains("command `picture` makes an image"));
+    }
+
+    /// `image`, and a command that makes a picture, are views like any
+    /// other (#458).
+    #[test]
+    fn image_views_are_in_the_cycle() {
+        let (table, warnings) = Table::build(
+            &[FileType::with_view_names(
+                "*.mmd",
+                &["image", "picture", "raw"],
+            )],
+            &commands(&[("picture", "cat", Some("image/png"))]),
+        );
+        assert_eq!(
+            view_names(&table, "a.mmd", false),
+            ["image", "picture", "raw"]
+        );
+        assert!(warnings.is_empty(), "{warnings:?}");
+    }
+
+    /// The built-in rows, after the user's: a picture by its extension, in
+    /// any case, then a binary file, then the rest. The image row reads
+    /// nothing.
+    #[test]
+    fn a_picture_shows_as_an_image_by_its_extension() {
+        let table = Table::default();
+        for name in ["a.png", "a.JPG", "a.jpeg", "a.gif", "a.webp", "a.tiff"] {
+            let row = table.row_for(Path::new(name), || panic!("read the head"));
+            assert_eq!(table.views(row), [View::Image, View::Hex], "{name}");
+        }
+        assert_eq!(
+            table.hand_off(Path::new("a.png"), || panic!("read the head")),
+            HandOff::DefaultApp
+        );
+        let row = table.row_for(Path::new("a.txt"), || false);
+        assert_eq!(table.views(row), [View::Raw, View::Hex]);
+    }
+
+    /// On macOS a file of a type Quick Look shows has its thumbnail first,
+    /// by its extension alone: many a PDF has no NUL in its head. Any other
+    /// binary file shows its dump at once: Quick Look does not stop for a
+    /// file it has no thumbnail for.
+    #[test]
+    fn a_file_of_a_known_type_shows_quick_look_on_macos() {
+        let table = Table::default();
+        let names = |path: &str, binary: bool| view_names(&table, path, binary);
+        if cfg!(target_os = "macos") {
+            assert_eq!(names("a.pdf", false), ["quicklook", "hex"]);
+            assert_eq!(names("a.HEIC", true), ["quicklook", "hex"]);
+            let row = table.row_for(Path::new("a.psd"), || panic!("read the head"));
+            assert!(table.command(table.views(row)[0]).unwrap().is_image());
+        } else {
+            assert_eq!(names("a.pdf", true), ["hex"]);
+        }
+        assert_eq!(
+            names("a.bin", true),
+            ["hex"],
+            "a type Quick Look does not show"
+        );
+    }
+
+    /// `quicklook` is a view a row can name; where there is no Quick Look,
+    /// the row skips it with a warning.
+    #[test]
+    fn a_row_can_name_quicklook() {
+        let (table, warnings) = Table::build(
+            &[FileType::with_view_names("*.key", &["quicklook", "hex"])],
+            &Commands::default(),
+        );
+        let names = view_names(&table, "a.key", false);
+        if cfg!(target_os = "macos") {
+            assert_eq!(names, ["quicklook", "hex"]);
+            assert!(warnings.is_empty(), "{warnings:?}");
+        } else {
+            assert_eq!(names, ["hex"]);
+            assert!(warnings[0].contains("view `quicklook`"), "{warnings:?}");
+        }
     }
 
     #[test]

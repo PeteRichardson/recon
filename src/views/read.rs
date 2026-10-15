@@ -75,9 +75,18 @@ pub(crate) struct Contents {
     /// The MIME type whose grammar colours the lines: a command's `output`
     /// (#457). `None` colours them by the file's name, as raw is.
     pub(crate) mime: Option<String>,
+    /// The picture the image view shows (#458). An image has no lines, so
+    /// `lines` is empty when this is set.
+    pub(crate) image: Option<Arc<image::DynamicImage>>,
 }
 
 impl Contents {
+    /// Whether these are the file in a view: its lines, its dump or its
+    /// picture. Not a listing, and not a message in place of the file.
+    pub(crate) fn shows_the_file(&self) -> bool {
+        self.text || self.hex || self.image.is_some()
+    }
+
     /// Contents that are really an error or a placeholder. Not truncated —
     /// there is nothing better to re-read later — and nothing to estimate.
     pub(crate) fn message(text: String) -> Self {
@@ -261,6 +270,62 @@ pub(crate) fn command_output(output: &[u8], mime: Option<&str>) -> Contents {
         mime: mime.map(str::to_string),
         ..Contents::default()
     }
+}
+
+/// The longest side, in pixels, of a picture the image view keeps (#458).
+///
+/// A pane on a large display is about 2,000 pixels wide, so a larger
+/// picture only costs memory in the cache and time in each draw. A 24 MP
+/// photo becomes 2048 × 1365: 8 MiB as RGB, and 30 of them fit the cache.
+pub(crate) const MAX_IMAGE_SIDE: u32 = 2048;
+
+/// The most memory a decoder may take for one picture (#458). It refuses
+/// a picture past it, so a crafted or a huge file cannot fill the memory.
+const MAX_IMAGE_ALLOC: u64 = 512 << 20;
+
+/// `path` decoded as a picture, for the image view (#458).
+///
+/// # Errors
+///
+/// Why the file is not a picture this build can decode, for the status line.
+pub(crate) fn image_file(path: &Path) -> Result<Contents, String> {
+    let reader = image::ImageReader::open(path)
+        .and_then(image::ImageReader::with_guessed_format)
+        .map_err(|err| err.to_string())?;
+    decode(reader)
+}
+
+/// The bytes a command wrote, decoded as a picture (#458).
+///
+/// # Errors
+///
+/// As `image_file`.
+pub(crate) fn image_bytes(bytes: &[u8]) -> Result<Contents, String> {
+    let reader = image::ImageReader::new(Cursor::new(bytes))
+        .with_guessed_format()
+        .map_err(|err| err.to_string())?;
+    decode(reader)
+}
+
+/// Decode, inside the memory limit, and shrink to `MAX_IMAGE_SIDE`.
+fn decode<R: std::io::BufRead + std::io::Seek>(
+    mut reader: image::ImageReader<R>,
+) -> Result<Contents, String> {
+    let mut limits = image::Limits::default();
+    limits.max_alloc = Some(MAX_IMAGE_ALLOC);
+    reader.limits(limits);
+    let mut image = reader.decode().map_err(|err| err.to_string())?;
+    if image.width().max(image.height()) > MAX_IMAGE_SIDE {
+        image = image.resize(
+            MAX_IMAGE_SIDE,
+            MAX_IMAGE_SIDE,
+            image::imageops::FilterType::Triangle,
+        );
+    }
+    Ok(Contents {
+        image: Some(Arc::new(image)),
+        ..Contents::default()
+    })
 }
 
 /// What a binary file shows: its dump (#242). A binary file asked for as
