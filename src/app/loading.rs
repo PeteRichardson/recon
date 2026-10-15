@@ -7,9 +7,9 @@
 //! answer for a file the user has already left is dropped.
 
 use super::App;
-use crate::views::cycle::{Steps, Table};
+use crate::views::cycle::{HandOff, Steps, Table};
 use crate::views::pool::{Executor, Request};
-use crate::views::read::Contents;
+use crate::views::read::{self, Contents};
 use crate::views::{Done, Extent, FileType, Job, Shown, View};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -121,6 +121,15 @@ impl Loading {
             .map(|shown| shown.view)
             .filter(|view| *view != View::Raw)
             .map(View::name)
+    }
+
+    /// Where `o` sends `path`, the file on screen (#456). The row the pane
+    /// shows it in usually says whether it is binary; only a file shown by
+    /// a user row, or not shown yet, is read here.
+    pub(super) fn hand_off(&self, path: &Path) -> HandOff {
+        let known = self.shown.and_then(|shown| self.table.binary(shown.row));
+        self.table
+            .hand_off(path, || known.unwrap_or_else(|| read::is_binary(path)))
     }
 
     /// The spinner's frame while a view is late.

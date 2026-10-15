@@ -101,7 +101,7 @@ pub struct Config {
     #[arg(value_name = "PATH")]
     pub path: Option<String>,
 
-    /// Command template `o` runs, e.g. `zed {project} {file}:{line}`.
+    /// Command template `O` runs, e.g. `zed {project} {file}:{line}`.
     ///
     /// Falls back to the `[editor]` stanza in `config.toml`, then `$VISUAL`,
     /// then `$EDITOR`, then a built-in default.
@@ -128,8 +128,9 @@ pub struct Config {
     )]
     pub editor: Option<String>,
 
-    /// Command template `O` runs. Defaults to `--editor` with the `{project}`
-    /// argument dropped, so one setting normally configures both keys.
+    /// Command template `o` runs for a text file that no `[[filetype]]` row
+    /// hands off. Defaults to `--editor` with the `{project}` argument
+    /// dropped, so one setting normally configures both keys.
     #[arg(
         long = "file-editor",
         env = "RECON_FILE_EDITOR",
@@ -613,16 +614,16 @@ pub struct ClipboardConfig {
 
 /// The `[editor]` table.
 ///
-/// One key per binding, because `o` and `O` answer genuinely different
+/// One key per binding, because `O` and `o` answer genuinely different
 /// questions and a user may well want `-n` on one of them. `file` is optional
 /// even so: leaving it out derives it from `project`, which is the case one
 /// line of config is meant to cover.
 #[derive(Deserialize, Debug, Default, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct EditorConfig {
-    /// The template `o` runs.
-    pub project: Option<String>,
     /// The template `O` runs.
+    pub project: Option<String>,
+    /// The template `o` runs for a text file with no hand-off (#456).
     pub file: Option<String>,
 }
 
@@ -1479,8 +1480,8 @@ mod tests {
         let help = Config::command().render_long_help().to_string();
 
         for expected in [
-            "Command template `o` runs",
             "Command template `O` runs",
+            "Command template `o` runs",
             "$VISUAL",
             "ready-to-paste",
             "Bundled themes: ",
@@ -2708,8 +2709,8 @@ mod tests {
         assert_eq!(
             rows,
             [
-                &vec![crate::views::View::Hex, crate::views::View::Raw],
-                &vec![crate::views::View::Raw]
+                &Some(vec![crate::views::View::Hex, crate::views::View::Raw]),
+                &Some(vec![crate::views::View::Raw])
             ]
         );
         assert!(
@@ -2734,6 +2735,40 @@ mod tests {
         );
         let err = load_from(&empty).expect_err("no views must fail");
         assert!(err.to_string().contains("names no view"), "{err}");
+    }
+
+    #[test]
+    fn a_filetype_row_can_name_a_hand_off_with_no_views() {
+        let path = fixture(
+            "filetype-handoff.toml",
+            "[[filetype]]\nglob = \"*.md\"\nhandoff = [\"open\", \"-a\", \"Marked 2\", \"{file}\"]\n",
+        );
+        let file = load_from(&path).expect("a valid file");
+        let mut config = Config::default();
+        config.apply(&file);
+        let row = &config.filetypes[0];
+        assert_eq!(
+            row.handoff.as_deref(),
+            Some(&["open", "-a", "Marked 2", "{file}"].map(String::from)[..])
+        );
+        assert_eq!(row.views, None);
+    }
+
+    #[test]
+    fn a_filetype_row_with_no_views_and_no_hand_off_or_an_empty_one_is_refused() {
+        let neither = fixture("filetype-neither.toml", "[[filetype]]\nglob = \"*.md\"\n");
+        let err = load_from(&neither).expect_err("a row that sets nothing must fail");
+        assert!(
+            err.to_string().contains("sets no `views` and no `handoff`"),
+            "{err}"
+        );
+
+        let empty = fixture(
+            "filetype-handoff-empty.toml",
+            "[[filetype]]\nglob = \"*.md\"\nhandoff = []\n",
+        );
+        let err = load_from(&empty).expect_err("an empty hand-off must fail");
+        assert!(err.to_string().contains("names no program"), "{err}");
     }
 
     #[test]

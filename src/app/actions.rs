@@ -3,7 +3,7 @@
 use super::loading::Landing;
 use super::prompt::SearchPrompt;
 use super::search::Search;
-use super::{App, AppState, EditorScope};
+use super::{App, AppState};
 use crate::views::Extent;
 use crate::widgets::{self, Action, Focus};
 use crossterm::event::KeyCode;
@@ -190,14 +190,8 @@ impl App<'_> {
             A::GlobalNextView => self.next_view(),
             A::GlobalZoomView => self.zoom_file_view(),
             A::GlobalZoomFocused => self.zoom_focused(),
-            A::GlobalEditorProject => {
-                let template = self.editor.project.clone();
-                self.open_in_editor(&template, EditorScope::Project);
-            }
-            A::GlobalEditorFile => {
-                let template = self.editor.file.clone();
-                self.open_in_editor(&template, EditorScope::File);
-            }
+            A::GlobalEditorProject => self.open_project(),
+            A::GlobalHandOff => self.hand_off(),
             A::GlobalReload => {
                 self.explorer.reload();
                 // `r` is the one place the listing is stat'd on this thread:

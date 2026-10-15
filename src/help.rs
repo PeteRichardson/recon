@@ -487,13 +487,13 @@ pub const KEYMAP: &[Section] = &[
             },
             Binding {
                 keys: &["o"],
-                action: "Open the file's project in your editor",
-                names: &["global.editor.project"],
+                action: "Open the file in the app for its type, or your editor",
+                names: &["global.handoff"],
             },
             Binding {
                 keys: &["O"],
-                action: "Open the file alone in your editor",
-                names: &["global.editor.file"],
+                action: "Open the file's project in your editor",
+                names: &["global.editor.project"],
             },
             Binding {
                 keys: &["r"],

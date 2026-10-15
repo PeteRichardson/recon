@@ -5,10 +5,7 @@ use crate::views::{FileType, View};
 // ---- the view pipeline and the view cycle (#455) --------------------
 
 fn row(glob: &str, views: &[View]) -> FileType {
-    FileType {
-        glob: glob.parse().expect("a glob"),
-        views: views.to_vec(),
-    }
+    FileType::with_views(glob, views)
 }
 
 /// An app over `files`, with `rows` as its `[[filetype]]` table.

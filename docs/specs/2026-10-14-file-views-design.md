@@ -1,6 +1,6 @@
 # File views and hand-offs — design
 
-**Status:** accepted; stage 1 implemented (#455)
+**Status:** accepted; stages 1 and 2 implemented (#455, #456)
 **Date:** 2026-10-14
 **Decision records:** [ADR 0006](../adr/0006-filters-run-on-the-view.md),
 [ADR 0007](../adr/0007-one-background-view-pipeline.md)

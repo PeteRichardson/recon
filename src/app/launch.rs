@@ -1,25 +1,67 @@
-//! Opening a file in an editor, and reporting on the status row.
+//! `o` and `O`: handing a file to another app, and reporting on the status
+//! row.
 
+use super::App;
 use super::render::status::StatusMessage;
-use super::{App, EditorScope};
+use crate::views::cycle::HandOff;
 use crate::{editor, path};
+use std::ffi::OsString;
+use std::path::{Path, PathBuf};
+
+/// The program that opens a file in the operating system's default app.
+const DEFAULT_APP: &str = if cfg!(target_os = "macos") {
+    "open"
+} else {
+    "xdg-open"
+};
 
 impl App<'_> {
-    /// Hand the selected file to an editor.
-    ///
-    /// Every step after the walk-up is shared by both bindings, which is what
-    /// made `O` one key and one `match` arm rather than a second copy of this:
-    /// `scope` decides whether to climb, and the template decides what the
-    /// command looks like. Nothing else differs.
+    /// `O`: open the selected file's enclosing project in the editor.
     ///
     /// Failures are reported on the status row and swallowed. recon is a
     /// viewer; a missing editor is not a reason to bring the TUI down over a
     /// key the user may have pressed by accident.
-    pub(super) fn open_in_editor(&mut self, template: &str, scope: EditorScope) {
+    pub(super) fn open_project(&mut self) {
+        let Some(file) = self.file_to_open() else {
+            return;
+        };
+        let template = self.editor.project.clone();
+        let project = editor::project_root(&file);
+        self.launch_template(&template, &project, &file);
+    }
+
+    /// `o`: the hand-off (#456). Send the selected file to the app its type
+    /// names, else a text file to the editor's file template, else to the
+    /// operating system's default app.
+    pub(super) fn hand_off(&mut self) {
+        let Some(file) = self.file_to_open() else {
+            return;
+        };
+        let argv = match self.loading.hand_off(&file) {
+            HandOff::Argv(argv) => editor::hand_off_command(&argv, &file, self.line_to_open()),
+            HandOff::DefaultApp => vec![DEFAULT_APP.into(), file.clone().into_os_string()],
+            HandOff::Editor => {
+                let template = self.editor.file.clone();
+                // No walk-up. The editor fallback exists for `~/.zshrc` kept
+                // inside a dotfiles repo, where climbing would fling open the
+                // whole repo — and the file template has no `{project}` in it
+                // to receive this anyway, so it is only ever a fallback for a
+                // hand-written one.
+                let project = file.parent().unwrap_or(&file).to_path_buf();
+                self.launch_template(&template, &project, &file);
+                return;
+            }
+        };
+        self.launch(&argv, &file);
+    }
+
+    /// The selected file as the far end needs it: absolute, and there. `None`,
+    /// with the reason on the status row, when there is nothing to open.
+    fn file_to_open(&mut self) -> Option<PathBuf> {
         let selected = self.view.filename().to_path_buf();
         if selected.as_os_str().is_empty() {
             self.report("nothing to open", true);
-            return;
+            return None;
         }
 
         // `filename` is set even when the read failed — the pane shows the
@@ -36,7 +78,7 @@ impl App<'_> {
                 &format!("cannot open {}: no such file", name.display()),
                 true,
             );
-            return;
+            return None;
         }
 
         // Absolute, per the `{file}` contract. recon's working directory is not
@@ -48,39 +90,32 @@ impl App<'_> {
         // filesystem and does not resolve symlinks, so the editor opens the
         // path the explorer is showing rather than wherever it happens to
         // point. For a file reached through a symlinked directory, that is the
-        // one the user can find their way back to.
-        //
-        // That claim was false until #78. `Explorer::set_dir` canonicalized, so
-        // the explorer had *already* resolved the link before this ran and
-        // there was nothing left here to preserve. All three sites share this
-        // one function now, which is what makes the sentence above true.
-        let file = path::lexical_absolute(&selected);
+        // one the user can find their way back to (#78).
+        Some(path::lexical_absolute(&selected))
+    }
 
-        let project = match scope {
-            EditorScope::Project => editor::project_root(&file),
-            // No walk-up. `O` exists precisely for `~/.zshrc` kept inside a
-            // dotfiles repo, where climbing would fling open the whole repo —
-            // and the file template has no `{project}` in it to receive this
-            // anyway, so it is only ever a fallback for a hand-written one.
-            EditorScope::File => file.parent().unwrap_or(&file).to_path_buf(),
-        };
+    /// The cursor's line, 1-based: `cursor_source` indexes the document's
+    /// lines, and every editor's `:line` argument counts from one.
+    fn line_to_open(&self) -> usize {
+        self.cursor_source() + 1
+    }
 
-        // 1-based: `cursor_source` indexes the document's lines, and every
-        // editor's `:line` argument counts from one.
-        let line = self.cursor_source() + 1;
-        let argv = match editor::editor_command(template, &project, &file, line) {
-            Ok(argv) => argv,
+    /// Split and fill an editor template, then start it.
+    fn launch_template(&mut self, template: &str, project: &Path, file: &Path) {
+        let line = self.line_to_open();
+        match editor::editor_command(template, project, file, line) {
+            Ok(argv) => self.launch(&argv, file),
             // A template error is the user's typo in a setting, and it can only
             // be reported here: it is not caught at startup, precisely so a bad
             // template does not stop recon opening a log.
-            Err(err) => {
-                self.report(&err.to_string(), true);
-                return;
-            }
-        };
+            Err(err) => self.report(&err.to_string(), true),
+        }
+    }
 
-        // `editor_command` rejects an empty template, so there is always a
-        // program — read defensively anyway rather than indexing, since this
+    /// Start `argv`, detached, and say how that went on the status row.
+    fn launch(&mut self, argv: &[OsString], file: &Path) {
+        // Every template has a program — `editor_command` rejects an empty
+        // one — but read defensively anyway rather than indexing, since this
         // runs inside a TUI where a panic takes the terminal with it.
         let program = argv
             .first()
@@ -96,7 +131,7 @@ impl App<'_> {
             self.report(&editor::terminal_editor_refusal(&program), true);
             return;
         }
-        match self.launcher.spawn(&argv) {
+        match self.launcher.spawn(argv) {
             // Reported rather than silent: a GUI editor can take seconds to
             // raise a window, and a key that appears to have done nothing is a
             // key that gets pressed again.
