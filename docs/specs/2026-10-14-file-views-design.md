@@ -1,6 +1,6 @@
 # File views and hand-offs — design
 
-**Status:** accepted; stages 1 and 2 implemented (#455, #456)
+**Status:** accepted; stages 1, 2 and 3 implemented (#455, #456, #457)
 **Date:** 2026-10-14
 **Decision records:** [ADR 0006](../adr/0006-filters-run-on-the-view.md),
 [ADR 0007](../adr/0007-one-background-view-pipeline.md)
@@ -279,6 +279,9 @@ handoff = ["open", "-a", "Preview", "{file}"]
 3. **Command views.** `[commands]`, the placeholders, `output` as MIME,
    highlighting by MIME, timeouts, `prefetch = false`, the failure rule,
    and the PATH warning. Commands with `image/*` output wait for stage 4.
+   Until then, a row that names `image` or `quicklook`, or a command with
+   `image/*` output, gives one startup warning and the cycle skips that
+   view, so a config written for stage 4 still starts.
 4. **The image view.** `ratatui-image`, the `image` view, `image/*` output
    from commands, and the built-in image and Quick Look rows.
 

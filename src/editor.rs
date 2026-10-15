@@ -254,9 +254,10 @@ pub fn hand_off_command(argv: &[String], file: &Path, line: usize) -> Vec<OsStri
     fill(argv, &[("file", file.as_os_str()), ("line", line.as_ref())])
 }
 
-/// The one substitution pass behind [`substitute`] and [`hand_off_command`]:
-/// each `{name}` in `values` becomes its value.
-fn fill(argv: &[String], values: &[(&str, &OsStr)]) -> Vec<OsString> {
+/// The one substitution pass behind [`substitute`], [`hand_off_command`]
+/// and a command view's argv (#457): each `{name}` in `values` becomes its
+/// value.
+pub(crate) fn fill(argv: &[String], values: &[(&str, &OsStr)]) -> Vec<OsString> {
     argv.iter()
         .map(|entry| {
             let mut out = OsString::with_capacity(entry.len());

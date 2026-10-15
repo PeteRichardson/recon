@@ -123,8 +123,9 @@ motions throughout.
   without going in. `l` on that selection makes the listing the explorer's.
 - **Views** — a file with a NUL byte in its first 8 KiB opens as a hex dump,
   and `-` steps any file to its next view: text, then hex. A `[[filetype]]`
-  row in the config sets the views and their order for each file type. See
-  [Views](#views).
+  row in the config sets the views and their order for each file type, and a
+  **command view** shows a file as the output of a program such as `jq` or
+  `exiftool`. See [Views](#views).
 - **Cheap navigation** — moving through the explorer renders a bounded preview
   (50,000 lines / 10 MiB), so scrolling a directory of very large logs doesn't
   stutter. Files are read on background threads, never on the thread that
@@ -351,9 +352,10 @@ Options:
   -q, --quiet
           Suppress the summary line on stderr; warnings still print
   -w, --warnings
-          Show keymap warnings at startup. On unless something turns them off
+          Show startup warnings (keymap, views). On unless something turns them
+          off
       --no-warnings
-          Hide the keymap warnings for this run. The opposite of `--warnings`
+          Hide the startup warnings for this run. The opposite of `--warnings`
   -h, --help
           Print help (see more with '--help')
   -V, --version
@@ -1679,8 +1681,9 @@ and naming one directly is refused with `not a regular file`.
 
 ### Views
 
-A **view** is one way the file view shows a file: `raw` (the file's text) or
-`hex` (a hex dump). Each file has a **view cycle**: an ordered list of views.
+A **view** is one way the file view shows a file: `raw` (the file's text),
+`hex` (a hex dump), or a **command view** (the output of a program that you
+name in the config — see [Command views](#command-views)). Each file has a **view cycle**: an ordered list of views.
 The first one is the default, and `-` steps to the next one. After the last
 view, `-` goes back to the first.
 
@@ -1715,8 +1718,9 @@ views = ["hex"]
 
 The first row that matches a file and has `views` gives its whole cycle;
 two cycles do not merge. Your rows go before the built-in rows in the table
-above. `views` names one or more of `raw` and `hex`, in the order that `-`
-steps through them, and a view that is not in the list is never shown.
+above. `views` names one or more of `raw`, `hex` and the names in
+`[commands]`, in the order that `-` steps through them, and a view that is
+not in the list is never shown.
 
 A row can also name a **hand-off**: the app that `o` sends the file to.
 `handoff` is an argv, the program first, with `{file}` and `{line}` filled
@@ -1743,9 +1747,61 @@ a `/` matches the whole path. `*` and `?` match inside one name, `**` matches
 across directories, and `{a,b}` matches either. Every other character is
 itself.
 
-If a view cannot run on a file, recon shows hex at once and the status line
-says why: `raw failed → hex: binary file` for a row that asks for `raw` on a
-binary file.
+If a view cannot run on a file, recon shows raw at once (hex for a binary
+file) and the status line says why: `raw failed → hex: binary file` for a
+row that asks for `raw` on a binary file, or `jq failed → raw: parse error`
+with the first line of the command's stderr.
+
+#### Command views
+
+A `[commands]` table names programs whose output recon shows as a view. A
+row then names the command in its `views`:
+
+```toml
+[commands]
+jq      = ["jq", "."]
+exif    = ["exiftool", "{file}"]
+summary = { argv = ["incident-summary", "{file}"], output = "text/markdown", timeout = 30, prefetch = false }
+
+[[filetype]]
+glob  = "*.json"
+views = ["jq", "raw", "hex"]
+
+[[filetype]]
+glob  = "*.{jpg,png,heic}"
+views = ["exif", "hex"]
+```
+
+A command is an argv array, or a table with these keys:
+
+| Key | Default | What it does |
+| --- | --- | --- |
+| `argv` | — | The program and its arguments. It is not given to a shell. |
+| `output` | `text/plain` | The MIME type of the output. recon colours the output with the grammar for that type (`application/json` gets JSON colours). With no `output`, the grammar comes from the file's name, as for `raw`. |
+| `timeout` | `2` | Seconds. After this time, recon stops the command and the view fails. |
+| `prefetch` | `true` | `false` runs the command only for the file that you are on, never for the files near it. Use it for a command that is slow or that has side effects. |
+
+These placeholders are filled in, in any argument:
+
+- `{file}` — the path of the file. With no `{file}`, recon writes the file to
+  the command's standard input, so `["jq", "."]` works.
+- `{out}` — a new temporary path. recon reads the file the command writes
+  there (or the one file in it, if the command makes a directory) in place
+  of standard output, then deletes it.
+- `{px}` — the width of the view pane in pixels.
+
+recon keeps a command's output, and its failure, as it keeps any view: it
+runs the command again only when the file changes on disk.
+
+Filters and `/` run on the lines of the command's output: a filter on a key
+of pretty-printed JSON matches that one line, not the whole file. The
+explorer's marks still come from the file on disk.
+
+`raw`, `hex`, `image` and `quicklook` are the names of built-in views, and a
+command cannot use one. A command whose program is not on `PATH` gives one
+warning at startup, and the cycles skip it. This version of recon has no
+image view: a row that names `image` or `quicklook`, or a command with an
+`image/*` output, gives a startup warning, and the cycle skips that view.
 
 #### Reading in the background
 

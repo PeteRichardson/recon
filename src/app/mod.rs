@@ -277,9 +277,9 @@ pub struct App<'a> {
     /// Set in `App::new` when the config carried warnings and the switch
     /// leaves them on, and cleared by the first key. Like `help`, it is not a
     /// focus and joins no `Tab` cycle: it is a notice you read and put away.
-    keymap_warnings_open: bool,
+    warnings_open: bool,
     /// The warning text, rendered once in `App::new` rather than per frame.
-    keymap_warnings: Vec<String>,
+    warnings: Vec<String>,
     /// The profile picker, while one is open (#130). Takes every key, as a
     /// prompt does.
     picker: Option<widgets::picker::ProfilePicker>,
@@ -471,8 +471,8 @@ impl App<'_> {
             chain_origin: None,
             chain_shown_filters: false,
             help: false,
-            keymap_warnings: startup.keymap_warnings.clone(),
-            keymap_warnings_open: config.warnings() && !startup.keymap_warnings.is_empty(),
+            warnings: startup.warnings.clone(),
+            warnings_open: config.warnings() && !startup.warnings.is_empty(),
             picker: None,
             set_picker: None,
             filter_editor: None,
@@ -485,7 +485,7 @@ impl App<'_> {
             last_poll: None,
             stamp_check: None,
             view_stale: false,
-            loading: loading::Loading::new(executor(), &config.filetypes),
+            loading: loading::Loading::new(executor(), std::sync::Arc::clone(&startup.table)),
         };
         // `--hide`: on the document before `sync_document`, which carries
         // the mode across into the document it builds for the loaded file.

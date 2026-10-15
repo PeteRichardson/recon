@@ -18,21 +18,27 @@ pub struct Startup {
     pub config: Config,
     /// Every binding in force: the defaults with `[keymap]` folded in (#61).
     pub bindings: Keymap,
-    /// What the `[keymap]` table cost, for the panel `App` draws on its
-    /// first frame, or for stderr on a path with no panel.
-    pub keymap_warnings: Vec<String>,
+    /// What the `[keymap]` table cost, then each view a `[[filetype]]` row
+    /// names that cannot run (#457): for the panel `App` draws on its first
+    /// frame, or for stderr on a path with no panel.
+    pub warnings: Vec<String>,
+    /// The view cycle of each file type, with the commands that can run.
+    /// Built once, here, so that each command is looked up on `PATH` once.
+    pub(crate) table: std::sync::Arc<crate::views::cycle::Table>,
     /// Sets read from each `filters.toml`, in pane order (#128, #46).
     pub filter_sets: Vec<LoadedSet>,
 }
 
 /// A `Config` with nothing read from disk: the default keymap, no warnings
-/// and no sets. What a test builds when it needs an `App`.
+/// and no sets. The table is built from the config's rows and commands. What a test builds when it needs an `App`.
 impl From<Config> for Startup {
     fn from(config: Config) -> Self {
+        let (table, _) = crate::views::cycle::Table::build(&config.filetypes, &config.commands);
         Self {
             config,
             bindings: Keymap::default(),
-            keymap_warnings: Vec::new(),
+            warnings: Vec::new(),
+            table: std::sync::Arc::new(table),
             filter_sets: Vec::new(),
         }
     }
@@ -133,10 +139,18 @@ pub fn start() -> Result<Start> {
     // reach a screen that is not about to be replaced (#143).
     config.check_sets(&filter_sets)?;
 
+    // Looks each command up on `PATH` once, here, so that a missing one is
+    // one warning at startup and not an error on each file.
+    let (table, view_warnings) =
+        crate::views::cycle::Table::build(&config.filetypes, &config.commands);
+    let mut warnings = keymap_warnings;
+    warnings.extend(view_warnings);
+
     Ok(Start::Run(Box::new(Startup {
         config,
         bindings,
-        keymap_warnings,
+        warnings,
+        table: std::sync::Arc::new(table),
         filter_sets,
     })))
 }

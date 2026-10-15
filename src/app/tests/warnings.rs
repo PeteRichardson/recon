@@ -35,7 +35,7 @@ fn app_over_keymap(name: &str, files: &[&str], no_warnings: bool) -> App<'static
     .expect("valid");
     App::new(&Startup {
         bindings: map,
-        keymap_warnings: warnings,
+        warnings,
         ..Startup::from(config)
     })
 }
@@ -48,7 +48,7 @@ fn a_keymap_warning_opens_a_panel() {
 
     let screen = screen(&mut app);
     assert!(
-        screen.contains("Keymap warnings"),
+        screen.contains(" Warnings "),
         "the panel did not draw:\n{screen}"
     );
     assert!(screen.contains("explorer.down"), "{screen}");
@@ -62,7 +62,7 @@ fn any_key_dismisses_the_panel() {
 
     let screen = screen(&mut app);
     assert!(
-        !screen.contains("Keymap warnings"),
+        !screen.contains(" Warnings "),
         "the panel outlived its key:\n{screen}"
     );
 }
@@ -98,7 +98,7 @@ fn a_mouse_event_does_not_dismiss_the_panel() {
     }));
 
     let screen = screen(&mut app);
-    assert!(screen.contains("Keymap warnings"), "{screen}");
+    assert!(screen.contains(" Warnings "), "{screen}");
 }
 
 #[test]
@@ -106,7 +106,7 @@ fn a_clean_config_opens_no_panel() {
     let mut app = app_over("no_warnings_clean", &["a.rs"]);
 
     let screen = screen(&mut app);
-    assert!(!screen.contains("Keymap warnings"), "{screen}");
+    assert!(!screen.contains(" Warnings "), "{screen}");
 }
 
 #[test]
@@ -114,7 +114,7 @@ fn no_warnings_opens_no_panel() {
     let mut app = app_with_warnings_silenced("warning_panel_silenced", &["a.rs"]);
 
     let screen = screen(&mut app);
-    assert!(!screen.contains("Keymap warnings"), "{screen}");
+    assert!(!screen.contains(" Warnings "), "{screen}");
 }
 
 /// Two or more warnings, each long enough to wrap onto more than one

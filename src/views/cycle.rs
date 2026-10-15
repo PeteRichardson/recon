@@ -6,6 +6,7 @@
 //! rows never merge.
 
 use super::View;
+use super::command::{Command, Commands};
 use regex::Regex;
 use serde::Deserialize;
 use std::path::Path;
@@ -20,8 +21,9 @@ use std::sync::Arc;
 pub struct FileType {
     /// The files the row is for.
     pub glob: Glob,
-    /// The cycle, default first. Never empty: the config refuses `[]`.
-    pub views: Option<Vec<View>>,
+    /// The cycle, default first, by name: `raw`, `hex`, or a name from
+    /// `[commands]` (#457). Never empty: the config refuses `[]`.
+    pub views: Option<Vec<String>>,
     /// The argv `o` starts for the file, with `{file}` and `{line}`
     /// filled in. Never empty: the config refuses `[]`.
     pub handoff: Option<Vec<String>>,
@@ -29,11 +31,18 @@ pub struct FileType {
 
 #[cfg(test)]
 impl FileType {
-    /// A row that sets only the cycle.
+    /// A row that sets only the cycle, of built-in views.
     pub(crate) fn with_views(glob: &str, views: &[View]) -> Self {
+        let table = Table::default();
+        let names: Vec<&str> = views.iter().map(|view| table.view_name(*view)).collect();
+        Self::with_view_names(glob, &names)
+    }
+
+    /// A row that sets only the cycle, by name.
+    pub(crate) fn with_view_names(glob: &str, views: &[&str]) -> Self {
         Self {
             glob: glob.parse().expect("a glob"),
-            views: Some(views.to_vec()),
+            views: Some(views.iter().map(ToString::to_string).collect()),
             handoff: None,
         }
     }
@@ -53,7 +62,7 @@ impl FileType {
 #[serde(deny_unknown_fields)]
 struct RawFileType {
     glob: Glob,
-    views: Option<Vec<View>>,
+    views: Option<Vec<String>>,
     handoff: Option<Vec<String>>,
 }
 
@@ -158,6 +167,12 @@ impl<'de> Deserialize<'de> for Glob {
 }
 
 impl Glob {
+    /// The glob as the config wrote it.
+    #[must_use]
+    pub fn text(&self) -> &str {
+        &self.text
+    }
+
     /// Whether the glob matches `path`.
     #[must_use]
     pub fn matches(&self, path: &Path) -> bool {
@@ -207,22 +222,94 @@ struct Row {
 #[derive(Debug, Clone)]
 pub(crate) struct Table {
     rows: Vec<Row>,
+    /// `[commands]` in name order: `View::Command(i)` is the `i`th.
+    commands: Vec<(String, Command)>,
 }
 
 impl Default for Table {
     fn default() -> Self {
-        Self::new(&[])
+        Self::build(&[], &Commands::default()).0
     }
 }
 
 impl Table {
-    /// The user's rows, then the built-in ones.
+    /// The user's rows, then the built-in ones, with no commands.
+    #[cfg(test)]
     pub(crate) fn new(user: &[FileType]) -> Self {
-        let user = user.iter().map(|row| Row {
-            matcher: Matcher::Glob(row.glob.clone()),
-            views: row.views.clone(),
-            handoff: row.handoff.clone().map(HandOff::Argv),
-        });
+        Self::build(user, &Commands::default()).0
+    }
+
+    /// The user's rows, then the built-in ones, and a warning for each view
+    /// a row names that cannot run (#457): a command that is not on `PATH`,
+    /// or an image view, which this version does not have. Each such view
+    /// is left out of its cycle, and a row left with no view gives its
+    /// cycle to the rows after it.
+    pub(crate) fn build(user: &[FileType], commands: &Commands) -> (Self, Vec<String>) {
+        let commands: Vec<(String, Command)> = commands
+            .0
+            .iter()
+            .map(|(name, command)| (name.clone(), command.clone()))
+            .collect();
+        let mut warnings = Vec::new();
+        let mut warned = std::collections::HashSet::new();
+        let mut warn = |name: &str, warning: String| {
+            if warned.insert(name.to_string()) {
+                warnings.push(warning);
+            }
+        };
+        let mut resolve = |name: &str| -> Option<View> {
+            if let Some(view) = View::built_in(name) {
+                return Some(view);
+            }
+            if super::BUILT_IN.contains(&name) {
+                warn(
+                    name,
+                    format!(
+                        "view `{name}` needs the image view, which this version of recon does not have; it is skipped"
+                    ),
+                );
+                return None;
+            }
+            // The config refuses a name it does not define, so this is
+            // only `None` for a table built by hand.
+            let index = commands.iter().position(|(known, _)| known == name)?;
+            let command = &commands[index].1;
+            let program = &command.argv[0];
+            if command.is_image() {
+                warn(
+                    name,
+                    format!(
+                        "command `{name}` makes an image, which needs the image view that this version of recon does not have; it is skipped"
+                    ),
+                );
+                None
+            } else if !super::command::on_path(program) {
+                warn(
+                    name,
+                    format!("command `{name}`: `{program}` is not on PATH; the view is skipped"),
+                );
+                None
+            } else {
+                Some(View::Command(index))
+            }
+        };
+        let user: Vec<Row> = user
+            .iter()
+            .map(|row| Row {
+                matcher: Matcher::Glob(row.glob.clone()),
+                views: row
+                    .views
+                    .as_ref()
+                    .map(|names| {
+                        names
+                            .iter()
+                            .filter_map(|name| resolve(name))
+                            .collect::<Vec<_>>()
+                    })
+                    .filter(|views| !views.is_empty()),
+                handoff: row.handoff.clone().map(HandOff::Argv),
+            })
+            .collect();
         let built_in = [
             Row {
                 matcher: Matcher::Binary,
@@ -235,8 +322,27 @@ impl Table {
                 handoff: Some(HandOff::Editor),
             },
         ];
-        Self {
-            rows: user.chain(built_in).collect(),
+        let table = Self {
+            rows: user.into_iter().chain(built_in).collect(),
+            commands,
+        };
+        (table, warnings)
+    }
+
+    /// The command behind `view`, for a command view.
+    pub(crate) fn command(&self, view: View) -> Option<&Command> {
+        match view {
+            View::Command(index) => Some(&self.commands[index].1),
+            View::Raw | View::Hex => None,
+        }
+    }
+
+    /// The name of `view`, as the config and the status line say it.
+    pub(crate) fn view_name(&self, view: View) -> &str {
+        match view {
+            View::Raw => "raw",
+            View::Hex => "hex",
+            View::Command(index) => &self.commands[index].0,
         }
     }
 
@@ -464,5 +570,70 @@ mod tests {
         let sent = steps.clone();
         steps.next(&table, row);
         assert_eq!(sent.view(&table, row), View::Raw);
+    }
+
+    fn commands(entries: &[(&'static str, &str, Option<&str>)]) -> Commands {
+        Commands::of(entries.iter().map(|(name, program, output)| {
+            let command = Command::of(&[program]);
+            (
+                *name,
+                output.map_or(command.clone(), |output| command.with_output(output)),
+            )
+        }))
+    }
+
+    #[test]
+    fn a_command_view_is_in_the_cycle_by_its_name() {
+        let (table, warnings) = Table::build(
+            &[FileType::with_view_names("*.json", &["jq", "raw"])],
+            &commands(&[("jq", "cat", None)]),
+        );
+        let row = table.row_for(Path::new("a.json"), || false);
+        let views = table.views(row);
+        assert_eq!(views.len(), 2);
+        assert_eq!(table.view_name(views[0]), "jq");
+        assert_eq!(views[1], View::Raw);
+        assert!(warnings.is_empty(), "{warnings:?}");
+    }
+
+    #[test]
+    fn a_view_that_cannot_run_is_skipped_with_one_warning() {
+        let (table, warnings) = Table::build(
+            &[
+                FileType::with_view_names("*.json", &["gone", "hex"]),
+                FileType::with_view_names("*.js", &["gone", "raw"]),
+                FileType::with_view_names("*.png", &["image", "picture", "hex"]),
+            ],
+            &commands(&[
+                ("gone", "recon-no-such-program", None),
+                ("picture", "cat", Some("image/png")),
+            ]),
+        );
+        let views = |path: &str| {
+            table
+                .views(table.row_for(Path::new(path), || false))
+                .to_vec()
+        };
+        assert_eq!(views("a.json"), [View::Hex]);
+        assert_eq!(views("a.js"), [View::Raw]);
+        assert_eq!(views("a.png"), [View::Hex]);
+        assert_eq!(
+            warnings.len(),
+            3,
+            "one each for gone, image and picture: {warnings:?}"
+        );
+        assert!(warnings[0].contains("`recon-no-such-program` is not on PATH"));
+        assert!(warnings[1].contains("view `image`"));
+        assert!(warnings[2].contains("command `picture` makes an image"));
+    }
+
+    #[test]
+    fn a_row_left_with_no_view_gives_its_cycle_to_the_rows_after_it() {
+        let (table, _) = Table::build(
+            &[FileType::with_view_names("*.json", &["gone"])],
+            &commands(&[("gone", "recon-no-such-program", None)]),
+        );
+        let row = table.row_for(Path::new("a.json"), || false);
+        assert_eq!(table.views(row), [View::Raw, View::Hex]);
     }
 }

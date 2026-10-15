@@ -330,8 +330,46 @@ fn detect(path: &Path, first_line: Option<&str>) -> Option<&'static SyntaxRefere
         .and_then(|name| set.find_syntax_by_extension(name));
     let by_extension = || extension.and_then(|ext| set.find_syntax_by_extension(ext));
     let by_first_line = || first_line.and_then(|line| set.find_syntax_by_first_line(line));
-    let syntax = by_name.or_else(by_extension).or_else(by_first_line)?;
-    (!std::ptr::eq(syntax, set.find_syntax_plain_text())).then_some(syntax)
+    not_plain(by_name.or_else(by_extension).or_else(by_first_line)?)
+}
+
+/// `syntax`, unless it is plain text, which colours nothing and is not
+/// worth a parser.
+fn not_plain(syntax: &'static SyntaxReference) -> Option<&'static SyntaxReference> {
+    (!std::ptr::eq(syntax, syntaxes().find_syntax_plain_text())).then_some(syntax)
+}
+
+/// The grammar for a command's output of MIME type `mime` (#457), or `None`
+/// for plain text and for a type no grammar claims.
+///
+/// Parameters (`; charset=utf-8`) and case do not count. A few types are
+/// named here because their subtype is not a grammar's name or extension;
+/// any other is tried by its subtype, without `x-`, then by the suffix
+/// after a `+` (`application/ld+json`).
+fn detect_mime(mime: &str) -> Option<&'static SyntaxReference> {
+    let mime = mime
+        .split(';')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    let (_, subtype) = mime.split_once('/')?;
+    let subtype = subtype.strip_prefix("x-").unwrap_or(subtype);
+    let token = match subtype {
+        "plain" => return None,
+        "shellscript" | "sh" => "sh",
+        "javascript" | "ecmascript" => "js",
+        "markdown" => "md",
+        "python" => "py",
+        "rust" => "rs",
+        other => other,
+    };
+    let set = syntaxes();
+    let find = |token: &str| {
+        set.find_syntax_by_extension(token)
+            .or_else(|| set.find_syntax_by_token(token))
+    };
+    not_plain(find(token).or_else(|| find(token.rsplit_once('+')?.1))?)
 }
 
 /// The colouring of one file, filled in as lines are asked for.
@@ -374,13 +412,29 @@ impl Highlighter {
             return None;
         };
         let syntax = detect(path, lines.first().map(String::as_str))?;
-        Some(Self {
+        Some(Self::new(theme, syntax, lines.len()))
+    }
+
+    /// A highlighter for `lines` of MIME type `mime`: a command's output
+    /// (#457). `None` as `for_file` gives it, and for plain text.
+    #[must_use]
+    pub fn for_mime(theme: Theme, mime: &str, lines: &[String]) -> Option<Self> {
+        let Theme::On(theme) = theme else {
+            return None;
+        };
+        let syntax = detect_mime(mime)?;
+        Some(Self::new(theme, syntax, lines.len()))
+    }
+
+    /// A highlighter in `syntax` for `lines` lines, none parsed yet.
+    fn new(theme: &'static SynTheme, syntax: &'static SyntaxReference, lines: usize) -> Self {
+        Self {
             theme,
             syntax,
             state: HighlightLines::new(syntax, theme),
             next: 0,
-            spans: vec![None; lines.len()],
-        })
+            spans: vec![None; lines],
+        }
     }
 
     /// The grammar's own name — `Rust`, `JSON`, `Bourne Again Shell (bash)`.
@@ -1169,6 +1223,26 @@ int main(void) { return 0; }
         let theme = Theme::builtin();
         assert!(Highlighter::for_file(theme, Path::new("notes.txt"), &lines).is_none());
         assert!(Highlighter::for_file(theme, Path::new("data.xyz123"), &lines).is_none());
+    }
+
+    #[test]
+    fn a_grammar_is_found_by_mime_type_and_plain_text_has_none() {
+        let theme = Theme::builtin();
+        let lines = vec!["{}".to_string()];
+        let name = |mime: &str| {
+            Highlighter::for_mime(theme, mime, &lines).map(|h| h.syntax_name().to_string())
+        };
+        assert_eq!(name("application/json").as_deref(), Some("JSON"));
+        assert_eq!(
+            name("Application/JSON; charset=utf-8").as_deref(),
+            Some("JSON")
+        );
+        assert_eq!(name("application/ld+json").as_deref(), Some("JSON"));
+        assert_eq!(name("text/x-yaml").as_deref(), Some("YAML"));
+        assert_eq!(name("text/markdown").as_deref(), Some("Markdown"));
+        assert_eq!(name("text/plain"), None);
+        assert_eq!(name("application/x-no-such-type"), None);
+        assert_eq!(name("nonsense"), None);
     }
 
     #[test]

@@ -271,6 +271,11 @@ pub struct Config {
     #[arg(skip)]
     pub filetypes: Vec<crate::views::FileType>,
 
+    /// The `[commands]` table of `config.toml`: the command views a row
+    /// can name (#457).
+    #[arg(skip)]
+    pub commands: crate::views::command::Commands,
+
     /// Colours for the file view's syntax colouring: a bundled theme name,
     /// a path to a `.tmTheme` file, or `none` to turn colouring off.
     ///
@@ -362,7 +367,7 @@ pub struct Config {
     #[arg(short = 'q', long)]
     pub quiet: bool,
 
-    /// Show keymap warnings at startup. On unless something turns them off.
+    /// Show startup warnings (keymap, views). On unless something turns them off.
     ///
     /// A warning says that recon did what your `config.toml` asked and
     /// something else paid for it — an action lost a key you did not mention.
@@ -393,7 +398,7 @@ pub struct Config {
     #[arg(skip)]
     pub warnings_setting: Option<bool>,
 
-    /// Hide the keymap warnings for this run. The opposite of `--warnings`.
+    /// Hide the startup warnings for this run. The opposite of `--warnings`.
     ///
     /// Wins over `--warnings` and over `RECON_WARNINGS` when both are given.
     //
@@ -465,6 +470,9 @@ pub struct FileConfig {
     /// row that matches a file wins, and the user's rows go before the
     /// built-in ones.
     pub filetype: Option<Vec<crate::views::FileType>>,
+    /// `[commands]`: the command views a `[[filetype]]` row can name
+    /// (#457).
+    pub commands: Option<crate::views::command::Commands>,
 }
 
 /// The `[view]` table: how the file view moves.
@@ -671,6 +679,9 @@ pub enum ConfigError {
     AllPanesHidden,
     /// `RECON_WARNINGS` set to something other than `true` or `false`.
     BadWarningsVar(String),
+    /// A `[[filetype]]` row naming a view that is neither built in nor in
+    /// `[commands]` (#457).
+    UnknownView { glob: String, name: String },
     /// `[keymap]` naming an action that does not exist. `known` is every name
     /// that does: the message gives the nearest of them (#385), since a typo
     /// is the common case and the whole list is about 93 names.
@@ -815,6 +826,10 @@ impl fmt::Display for ConfigError {
             Self::AllPanesHidden => write!(
                 f,
                 "--hide-pane or [layout] hide_panes hides every pane; at least one must stay shown"
+            ),
+            Self::UnknownView { glob, name } => write!(
+                f,
+                "the [[filetype]] row for `{glob}` names view `{name}`, which is not a built-in view or a name in [commands]"
             ),
             Self::BadWarningsVar(value) => {
                 write!(f, "{WARNINGS_VAR} must be true or false, not {value:?}")
@@ -1038,6 +1053,25 @@ impl Config {
         Ok(())
     }
 
+    /// Refuse a `[[filetype]]` row that names a view no one defines (#457).
+    /// After the file layer: a row and the command it names are read
+    /// separately. `image` and `quicklook` are known names; the table warns
+    /// about them, since this version cannot show them.
+    pub fn check_views(&self) -> Result<(), ConfigError> {
+        let known = |name: &str| {
+            crate::views::BUILT_IN.contains(&name) || self.commands.0.contains_key(name)
+        };
+        for row in &self.filetypes {
+            if let Some(name) = row.views.iter().flatten().find(|name| !known(name)) {
+                return Err(ConfigError::UnknownView {
+                    glob: row.glob.text().to_string(),
+                    name: name.clone(),
+                });
+            }
+        }
+        Ok(())
+    }
+
     /// The panes to hide at startup, once the chain has run: the flag, else
     /// `[layout] hide_panes`, else none.
     #[must_use]
@@ -1137,6 +1171,7 @@ impl Config {
         let file = load_file()?;
         self.apply(&file);
         self.check_panes()?;
+        self.check_views()?;
         Ok(file.keymap.unwrap_or_default())
     }
 
@@ -1167,6 +1202,7 @@ impl Config {
             keymap,
             warnings,
             filetype,
+            commands,
         } = file;
 
         if let Some(background) = background {
@@ -1227,6 +1263,12 @@ impl Config {
             && self.filetypes.is_empty()
         {
             self.filetypes.clone_from(rows);
+        }
+
+        if let Some(commands) = commands
+            && self.commands.0.is_empty()
+        {
+            self.commands.clone_from(commands);
         }
     }
 
@@ -2706,13 +2748,8 @@ mod tests {
         let mut config = Config::default();
         config.apply(&file);
         let rows: Vec<_> = config.filetypes.iter().map(|row| &row.views).collect();
-        assert_eq!(
-            rows,
-            [
-                &Some(vec![crate::views::View::Hex, crate::views::View::Raw]),
-                &Some(vec![crate::views::View::Raw])
-            ]
-        );
+        let names = |names: &[&str]| Some(names.iter().map(ToString::to_string).collect());
+        assert_eq!(rows, [&names(&["hex", "raw"]), &names(&["raw"])]);
         assert!(
             config.filetypes[0]
                 .glob
@@ -2726,8 +2763,11 @@ mod tests {
             "filetype-unknown.toml",
             "[[filetype]]\nglob = \"*.md\"\nviews = [\"marked\"]\n",
         );
-        let err = load_from(&unknown).expect_err("an unknown view must fail");
-        assert!(err.to_string().contains("marked"), "{err}");
+        let mut config = Config::default();
+        config.apply(&load_from(&unknown).expect("a row parses before its names are checked"));
+        let err = config.check_views().expect_err("an unknown view must fail");
+        assert!(err.to_string().contains("`marked`"), "{err}");
+        assert!(err.to_string().contains("`*.md`"), "{err}");
 
         let empty = fixture(
             "filetype-empty.toml",
@@ -2735,6 +2775,20 @@ mod tests {
         );
         let err = load_from(&empty).expect_err("no views must fail");
         assert!(err.to_string().contains("names no view"), "{err}");
+    }
+
+    #[test]
+    fn a_filetype_row_can_name_a_command_or_an_image_view() {
+        let path = fixture(
+            "filetype-commands.toml",
+            "[commands]\njq = [\"jq\", \".\"]\n\n\
+             [[filetype]]\nglob = \"*.json\"\nviews = [\"jq\", \"raw\"]\n\n\
+             [[filetype]]\nglob = \"*.png\"\nviews = [\"image\", \"quicklook\", \"hex\"]\n",
+        );
+        let mut config = Config::default();
+        config.apply(&load_from(&path).expect("a valid file"));
+        config.check_views().expect("every name is known");
+        assert_eq!(config.commands.0["jq"].argv, ["jq", "."]);
     }
 
     #[test]

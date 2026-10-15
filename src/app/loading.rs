@@ -10,7 +10,7 @@ use super::App;
 use crate::views::cycle::{HandOff, Steps, Table};
 use crate::views::pool::{Executor, Request};
 use crate::views::read::{self, Contents};
-use crate::views::{Done, Extent, FileType, Job, Shown, View};
+use crate::views::{Done, Extent, Job, Shown, View};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -25,6 +25,9 @@ const PREFETCH_AHEAD: usize = 8;
 
 /// Files prefetched behind the selection.
 const PREFETCH_BEHIND: usize = 2;
+
+/// A cell's width in pixels when the terminal does not report its size.
+const ASSUMED_CELL_PX: u32 = 8;
 
 /// What the pane shows while a view is late.
 pub(super) const PLACEHOLDER: &str = "<loading…>";
@@ -81,46 +84,51 @@ pub(super) struct Loading {
     /// The explorer entry the last preview was for, to tell the direction
     /// of travel.
     last_entry: Option<usize>,
+    /// A terminal cell's width in pixels, for a command's `{px}` (#457).
+    /// Asked of the terminal once, and again after a resize.
+    cell_px: Option<u32>,
 }
 
 /// No rows of the user's, and an executor that runs nothing: what a
 /// `App::default()` holds until `App::new` builds the real one.
 impl Default for Loading {
     fn default() -> Self {
-        Self::new(Box::default(), &[])
+        Self::new(Box::default(), Arc::new(Table::default()))
     }
 }
 
 impl Loading {
-    pub(super) fn new(executor: Box<dyn Executor>, rows: &[FileType]) -> Self {
-        let table = Table::new(rows);
+    pub(super) fn new(executor: Box<dyn Executor>, table: Arc<Table>) -> Self {
         Self {
             executor,
             steps: Steps::new(&table),
-            table: Arc::new(table),
+            table,
             generation: 0,
             pending: None,
             shown: None,
             last_entry: None,
+            cell_px: None,
         }
     }
 
-    fn job(&self, path: &Path, extent: Extent) -> Job {
+    fn job(&self, path: &Path, extent: Extent, prefetch: bool, px: u32) -> Job {
         Job {
             path: path.to_path_buf(),
             extent,
             table: Arc::clone(&self.table),
             steps: self.steps.clone(),
+            px,
+            prefetch,
         }
     }
 
     /// The view on screen, for the status line: `None` for raw, which is
     /// what a file is unless the status line says otherwise.
-    pub(super) fn view_badge(&self) -> Option<&'static str> {
+    pub(super) fn view_badge(&self) -> Option<&str> {
         self.shown
             .map(|shown| shown.view)
             .filter(|view| *view != View::Raw)
-            .map(View::name)
+            .map(|view| self.table.view_name(view))
     }
 
     /// Where `o` sends `path`, the file on screen (#456). The row the pane
@@ -152,10 +160,11 @@ impl App<'_> {
     /// says. Waits up to `WAIT` for the answer; past that the pane shows a
     /// placeholder, and `drain_views` shows the file when it comes.
     pub(super) fn open_view(&mut self, path: &Path, extent: Extent, landing: Landing) {
+        let px = self.view_px();
         let loading = &mut self.loading;
         loading.generation += 1;
         let generation = loading.generation;
-        let job = loading.job(path, extent);
+        let job = loading.job(path, extent, false, px);
         loading.executor.submit(Request { generation, job });
         loading.pending = Some(Pending {
             path: path.to_path_buf(),
@@ -216,12 +225,15 @@ impl App<'_> {
         self.loading.pending = None;
         let contents = &done.contents;
         self.view.show(&done.path, contents);
+        // A view that failed shows hex for a binary file and raw for any
+        // other: the status line names the one on screen.
+        let fell_back_to = if contents.hex { View::Hex } else { View::Raw };
         self.loading.shown = done
             .shown
             .filter(|_| contents.text || contents.hex)
             .map(|shown| Shown {
-                view: if contents.fallback {
-                    View::Hex
+                view: if contents.fallback.is_some() {
+                    fell_back_to
                 } else {
                     shown.view
                 },
@@ -247,12 +259,15 @@ impl App<'_> {
             }
         }
         if let Some(shown) = done.shown
-            && contents.fallback
+            && let Some(reason) = &contents.fallback
         {
-            self.report(
-                &format!("{} failed → hex: binary file", shown.view.name()),
-                true,
+            let table = &self.loading.table;
+            let report = format!(
+                "{} failed → {}: {reason}",
+                table.view_name(shown.view),
+                table.view_name(fell_back_to)
             );
+            self.report(&report, true);
         }
     }
 
@@ -265,13 +280,36 @@ impl App<'_> {
             (Some(last), Some(now)) if now < last
         );
         self.loading.last_entry = entry;
+        let px = self.view_px();
         let jobs = self
             .explorer
             .files_near(PREFETCH_AHEAD, PREFETCH_BEHIND, backwards)
             .iter()
-            .map(|path| self.loading.job(path, Extent::Preview))
+            .map(|path| self.loading.job(path, Extent::Preview, true, px))
             .collect();
         self.loading.executor.prefetch(jobs);
+    }
+
+    /// The view pane's text width in pixels, for `{px}` (#457): its columns
+    /// times the terminal's cell width, or `ASSUMED_CELL_PX` when the
+    /// terminal does not say.
+    fn view_px(&mut self) -> u32 {
+        let columns = u32::from(self.view_area.width.saturating_sub(2));
+        let cell = *self.loading.cell_px.get_or_insert_with(|| {
+            crossterm::terminal::window_size()
+                .ok()
+                .filter(|size| size.width > 0 && size.columns > 0)
+                .map_or(ASSUMED_CELL_PX, |size| {
+                    u32::from(size.width) / u32::from(size.columns)
+                })
+        });
+        columns * cell
+    }
+
+    /// The terminal changed size, and maybe its font: ask for the cell
+    /// width again at the next request.
+    pub(super) fn forget_cell_size(&mut self) {
+        self.loading.cell_px = None;
     }
 
     /// Make a preview whole, keeping the cursor on its line. No-op when the

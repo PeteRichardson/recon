@@ -1,4 +1,5 @@
 use super::*;
+use crate::views::command::{Command, Commands};
 use crate::views::pool::double::Held;
 use crate::views::{FileType, View};
 
@@ -202,4 +203,106 @@ fn r_on_a_truncated_preview_reads_a_preview_again() {
     key(&mut app, KeyCode::Char('r'));
 
     assert!(app.view.is_truncated(), "`r` read the whole file");
+}
+
+// ---- command views (#457) --------------------------------------------
+
+/// `[commands]`: each name, its argv, and the MIME type of its output.
+fn commands(entries: &[(&'static str, &[&str], Option<&str>)]) -> Commands {
+    Commands::of(entries.iter().map(|(name, argv, output)| {
+        let command = Command::of(argv);
+        (
+            *name,
+            output.map_or(command.clone(), |output| command.with_output(output)),
+        )
+    }))
+}
+
+/// An app over `files`, with `rows` and `commands`.
+fn app_with_commands(
+    name: &str,
+    files: &[(&str, &[u8])],
+    rows: Vec<FileType>,
+    commands: Commands,
+) -> App<'static> {
+    let dir = fixture_dir(name);
+    for (file, body) in files {
+        fs::write(dir.join(file), body).expect("write fixture");
+    }
+    App::new(&Startup::from(Config {
+        path: Some(dir.join("placeholder").display().to_string()),
+        filetypes: rows,
+        commands,
+        ..Config::default()
+    }))
+}
+
+/// One JSON line, and a command that puts each key on its own line, as
+/// `jq .` does, with no `jq` needed to run the test.
+fn split_json_app(name: &str) -> App<'static> {
+    app_with_commands(
+        name,
+        &[("a.json", br#"{"a":1,"b":2}"#)],
+        vec![FileType::with_view_names("*.json", &["split", "raw"])],
+        commands(&[("split", &["tr", ",", "\n"], Some("application/json"))]),
+    )
+}
+
+#[test]
+fn a_command_view_shows_its_output_and_the_status_line_names_it() {
+    let mut app = split_json_app("views_command");
+    arrow_to(&mut app, "a.json");
+
+    assert_eq!(view_lines(&app), [r#"{"a":1"#, r#""b":2}"#]);
+    let line = status_line(&mut app);
+    assert!(line.starts_with(" split "), "no view name: {line}");
+
+    key(&mut app, KeyCode::Char('-'));
+    assert_eq!(
+        view_lines(&app),
+        [r#"{"a":1,"b":2}"#],
+        "`-` did not step to raw"
+    );
+}
+
+#[test]
+fn a_command_view_is_coloured_by_its_output_type() {
+    let mut app = app_with_commands(
+        "views_command_mime",
+        &[("a.txt", br#"{"a":1}"#)],
+        vec![FileType::with_view_names("*.txt", &["json"])],
+        commands(&[("json", &["cat"], Some("application/json"))]),
+    );
+    app.view.set_theme(crate::syntax::Theme::builtin());
+    arrow_to(&mut app, "a.txt");
+    assert_eq!(app.view.syntax_name(), Some("JSON"));
+}
+
+/// ADR 0006: a filter runs on the lines of the view, so a key in the
+/// split output matches one line, not the whole file.
+#[test]
+fn a_filter_on_a_command_view_matches_its_lines() {
+    let mut app = split_json_app("views_command_filter");
+    arrow_to(&mut app, "a.json");
+
+    app.add_filter("\"b\"").expect("valid");
+
+    assert_eq!(app.document.verdicts().len(), 2);
+    assert_eq!(included(&app), 1);
+}
+
+#[test]
+fn a_failed_command_shows_raw_and_says_why() {
+    let mut app = app_with_commands(
+        "views_command_fail",
+        &[("a.json", b"{}\n")],
+        vec![FileType::with_view_names("*.json", &["bad", "hex"])],
+        commands(&[("bad", &["sh", "-c", "echo 'parse error' >&2; exit 4"], None)]),
+    );
+    arrow_to(&mut app, "a.json");
+
+    assert_eq!(view_lines(&app), ["{}"]);
+    assert_eq!(status(&app), Some("bad failed → raw: parse error"));
+    let line = status_line(&mut app);
+    assert!(!line.contains(" bad "), "the failed view is named: {line}");
 }

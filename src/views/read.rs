@@ -68,9 +68,13 @@ pub(crate) struct Contents {
     pub(crate) hex: bool,
     /// Whether `lines` are a directory's listing.
     pub(crate) directory: bool,
-    /// Whether the view asked for could not run on this file, and these
-    /// lines are the fallback: hex for a binary file asked for as raw.
-    pub(crate) fallback: bool,
+    /// Why the view asked for could not run on this file, when these lines
+    /// are the fallback: hex for a binary file asked for as raw, or raw (hex
+    /// for a binary file) when a command view failed (#457).
+    pub(crate) fallback: Option<String>,
+    /// The MIME type whose grammar colours the lines: a command's `output`
+    /// (#457). `None` colours them by the file's name, as raw is.
+    pub(crate) mime: Option<String>,
 }
 
 impl Contents {
@@ -241,13 +245,31 @@ pub(crate) fn read_preview_with_caps(
     capped(lines, truncated, file_bytes, max_bytes - remaining)
 }
 
+/// A command's output as lines (#457), decoded as raw text is: lossy
+/// UTF-8, one line for each `\n`. `mime` is the command's `output`.
+pub(crate) fn command_output(output: &[u8], mime: Option<&str>) -> Contents {
+    let mut reader = Cursor::new(output);
+    let mut lines = Vec::new();
+    let mut buf = Vec::new();
+    // A read from memory cannot fail.
+    while let Ok(Some(line)) = read_lossy_line(&mut reader, &mut buf) {
+        lines.push(line);
+    }
+    Contents {
+        lines: Arc::new(lines),
+        text: true,
+        mime: mime.map(str::to_string),
+        ..Contents::default()
+    }
+}
+
 /// What a binary file shows: its dump (#242). A binary file asked for as
 /// raw has no text to show, so raw fails and the dump is its fallback.
 ///
 /// `preview` is as `read_hex` takes it.
 fn binary(path: &Path, preview: Option<u64>) -> Contents {
     let mut contents = read_hex(path, preview);
-    contents.fallback = contents.hex;
+    contents.fallback = contents.hex.then(|| "binary file".to_string());
     contents
 }
 

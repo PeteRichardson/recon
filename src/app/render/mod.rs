@@ -159,7 +159,7 @@ impl Widget for &mut App<'_> {
         if self.help {
             help::render(area, buf, &self.keymap);
         }
-        self.render_keymap_warnings(area, buf);
+        self.render_warnings(area, buf);
 
         // An open prompt takes the rest of the row; nothing but the badge
         // competes with it. The badge stays because the mode it reports is
@@ -293,7 +293,7 @@ impl App<'_> {
             .render(area, buf);
     }
 
-    /// The keymap warnings, over everything, until the first key.
+    /// The startup warnings, over everything, until the first key.
     ///
     /// Modelled on `render_crossing`: cleared underneath, bordered, and
     /// silent when the area cannot hold it. Not on the help overlay's column
@@ -306,9 +306,9 @@ impl App<'_> {
     /// `--print-keymap`, which writes every one of them to stderr (#259).
     /// The body and not the title (#252): a title is cut at the border, and
     /// a narrow terminal kept the count and lost the command.
-    fn render_keymap_warnings(&self, area: Rect, buf: &mut Buffer) {
+    fn render_warnings(&self, area: Rect, buf: &mut Buffer) {
         use ratatui::widgets::{Block, Clear, Padding, Paragraph};
-        if !self.keymap_warnings_open || self.keymap_warnings.is_empty() {
+        if !self.warnings_open || self.warnings.is_empty() {
             return;
         }
         let width = area.width.min(76);
@@ -319,7 +319,7 @@ impl App<'_> {
         let inner_width = usize::from(width - 4);
         // The rows inside the borders.
         let budget = usize::from(area.height.min(20)) - 2;
-        let Some(lines) = warning_panel_lines(&self.keymap_warnings, inner_width, budget) else {
+        let Some(lines) = warning_panel_lines(&self.warnings, inner_width, budget) else {
             return;
         };
 
@@ -339,7 +339,7 @@ impl App<'_> {
         Paragraph::new(lines.join("\n"))
             .block(
                 Block::bordered()
-                    .title(" Keymap warnings ")
+                    .title(" Warnings ")
                     .padding(Padding::horizontal(1))
                     .border_style(Style::default().fg(Color::Yellow)),
             )

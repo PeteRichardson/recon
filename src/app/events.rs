@@ -50,6 +50,9 @@ impl App<'_> {
     /// wheel each have their own kind. Dispatching them cost a full frame
     /// each. Every other event still redraws.
     pub fn handle_event(&mut self, event: event::Event) -> bool {
+        if let event::Event::Resize(..) = event {
+            self.forget_cell_size();
+        }
         if let event::Event::Mouse(mouse) = event
             && mouse.kind == event::MouseEventKind::Moved
         {
@@ -112,9 +115,9 @@ impl App<'_> {
             return;
         }
 
-        if self.keymap_warnings_open {
+        if self.warnings_open {
             if matches!(event, event::Event::Key(_)) {
-                self.keymap_warnings_open = false;
+                self.warnings_open = false;
             }
             return;
         }

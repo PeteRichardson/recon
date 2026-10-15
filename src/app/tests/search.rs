@@ -507,7 +507,7 @@ fn the_recall_keys_can_be_rebound() {
     );
     let mut app = App::new(&Startup {
         bindings: map,
-        keymap_warnings: warnings,
+        warnings,
         ..Startup::from(config)
     });
     key(&mut app, KeyCode::Char('t'));

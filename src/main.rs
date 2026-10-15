@@ -48,7 +48,7 @@ fn main() -> Result<ExitCode> {
         // Inside this branch and not above it, because in TUI mode they belong
         // to the panel. A copy on stderr would be drawn over by the alternate
         // screen moments later anyway.
-        log_keymap_warnings(&startup);
+        log_warnings(&startup);
         // Buffered, and written as the run goes (#219, #379): `io::stdout()`
         // alone is a `LineWriter`, one `write(2)` per line even into a pipe.
         // Dropped at the end of this block, so the lock is gone before
@@ -87,9 +87,9 @@ fn main() -> Result<ExitCode> {
 /// The keymap warnings on stderr, for batch mode, which has no panel to
 /// show them. The switch is the panel's, since these are the same warnings
 /// by another route. `--print-keymap` gets its copy from `Start::Print`.
-fn log_keymap_warnings(startup: &Startup) {
+fn log_warnings(startup: &Startup) {
     if startup.config.warnings() {
-        for warning in &startup.keymap_warnings {
+        for warning in &startup.warnings {
             log::warn!("{warning}");
         }
     }

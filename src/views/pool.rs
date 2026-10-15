@@ -237,6 +237,8 @@ mod tests {
             extent: Extent::Preview,
             steps: Steps::new(&table),
             table: Arc::new(table),
+            px: 0,
+            prefetch: false,
         }
     }
 

@@ -187,6 +187,8 @@ pub(crate) struct FileView<'a> {
     /// Which view a file is shown in is `App`'s choice, not this pane's
     /// (#455).
     hex: bool,
+    /// The MIME type whose grammar colours `source` — see `Contents::mime`.
+    mime: Option<String>,
     textarea: TextArea<'a>,
     /// The colours syntax colouring paints with. `Off` by default, so a
     /// `FileView` built without one renders exactly as it did before #122;
@@ -424,7 +426,10 @@ impl FileView<'_> {
         }
         self.syntax_rows.clear();
         self.highlighter = coloured
-            .then(|| Highlighter::for_file(self.theme, &self.filename, &self.source))
+            .then(|| match &self.mime {
+                Some(mime) => Highlighter::for_mime(self.theme, mime, &self.source),
+                None => Highlighter::for_file(self.theme, &self.filename, &self.source),
+            })
             .flatten();
     }
 
@@ -459,6 +464,7 @@ impl FileView<'_> {
     pub(crate) fn show(&mut self, path: &Path, contents: &Contents) {
         self.filename = path.to_path_buf();
         self.showing_directory = contents.directory;
+        self.mime.clone_from(&contents.mime);
         self.adopt(Arc::clone(&contents.lines), contents.text, contents.hex);
         self.truncated = contents.truncated;
         self.estimated_lines = contents.estimated_lines;
