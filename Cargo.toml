@@ -202,5 +202,15 @@ fm-rs = { version = "0.3", optional = true }
 [build-dependencies]
 jiff = "0.2.35"
 
+# Dependencies are optimised in a debug build; recon itself is not, so it
+# stays easy to step through (#458). Scaling a photo for the image view is
+# a tight loop in `image`, and unoptimised it took 1.4 s for one picture
+# where a release build takes 43 ms: a debug build was too slow to try the
+# image view in. With this it takes 69 ms (85 ms for iTerm2, from 1.9 s). Cargo builds dependencies once, so only the first debug
+# build is slower. `"*"` is every package that is not a workspace member,
+# so `vendor/tui-textarea-2` is not changed.
+[profile.dev.package."*"]
+opt-level = 2
+
 [patch.crates-io]
 tui-textarea-2 = { path = "vendor/tui-textarea-2" }
