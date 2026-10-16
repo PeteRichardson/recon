@@ -252,6 +252,7 @@ mod tests {
                 path: job.path.clone(),
                 contents: Contents::default(),
                 shown: None,
+                facts: None,
             }
         }));
         (pool, ran)

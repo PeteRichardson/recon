@@ -2839,6 +2839,40 @@ mod tests {
         assert_eq!(row.glob, None);
     }
 
+    /// Each type the title can show loads (#467): one from an extension,
+    /// and both fallbacks.
+    #[test]
+    fn a_filetype_row_can_name_any_type_the_title_shows() {
+        for mime in ["text/x-rust", "text/plain", "application/octet-stream"] {
+            let path = fixture(
+                &format!("filetype-mime-{}.toml", mime.replace('/', "-")),
+                &format!("[[filetype]]\nmime = \"{mime}\"\nviews = [\"hex\"]\n"),
+            );
+            load_from(&path).unwrap_or_else(|err| panic!("`{mime}` refused: {err}"));
+        }
+    }
+
+    /// A type that no file can have is refused, not a row that never
+    /// matches: a wildcard, a second name for an extension (`.gz` is
+    /// `application/gzip`, so `application/x-gzip` matches nothing), another
+    /// case, and the directory type, since a directory has no row.
+    #[test]
+    fn a_filetype_row_with_a_type_no_file_gets_is_refused() {
+        for mime in [
+            "text/*",
+            "application/x-gzip",
+            "TEXT/X-RUST",
+            "inode/directory",
+        ] {
+            let path = fixture(
+                &format!("filetype-mime-never-{}.toml", mime.replace(['/', '*'], "-")),
+                &format!("[[filetype]]\nmime = \"{mime}\"\nviews = [\"hex\"]\n"),
+            );
+            let err = load_from(&path).expect_err(mime);
+            assert!(err.to_string().contains(&format!("`{mime}`")), "{err}");
+        }
+    }
+
     #[test]
     fn a_filetype_row_with_an_unknown_mime_type_or_no_matcher_is_refused() {
         let unknown = fixture(

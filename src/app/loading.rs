@@ -132,12 +132,12 @@ impl Loading {
     }
 
     /// Where `o` sends `path`, the file on screen (#456). The job that
-    /// showed it usually read its head; only a file shown by a glob row,
-    /// or not shown yet, is read here.
+    /// showed it read its head; only a file not shown yet is read here.
     pub(super) fn hand_off(&self, path: &Path) -> HandOff {
-        let known = self.shown.and_then(|shown| shown.head);
-        self.table
-            .hand_off(path, || known.unwrap_or_else(|| read::head(path)))
+        self.table.hand_off(path, || {
+            self.shown
+                .map_or_else(|| read::head(path), |shown| shown.head)
+        })
     }
 
     /// The spinner's frame while a view is late.
@@ -225,6 +225,7 @@ impl App<'_> {
         self.loading.pending = None;
         let contents = &done.contents;
         self.view.show(&done.path, contents);
+        self.view.set_facts(done.facts.as_ref());
         // A view that failed shows hex for a binary file and raw for any
         // other: the status line names the one on screen.
         let fell_back_to = if contents.hex { View::Hex } else { View::Raw };

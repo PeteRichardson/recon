@@ -17,6 +17,7 @@ use cycle::{Head, Steps, Table};
 use read::{Contents, MAX_PREVIEW_BYTES, PREVIEW_LINES};
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::SystemTime;
 
 /// One way the file view shows a file. `Table::view_name` gives its name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -77,9 +78,18 @@ pub(crate) struct Job {
 pub(crate) struct Shown {
     pub(crate) row: usize,
     pub(crate) view: View,
-    /// The file's head, if a row asked for it: `o` asks only when this
-    /// is `None` (#465).
-    pub(crate) head: Option<Head>,
+    /// The file's head, for `o` (#465).
+    pub(crate) head: Head,
+}
+
+/// What the file view's title says about the file besides its path (#467).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Facts {
+    pub(crate) modified: Option<SystemTime>,
+    /// `None` for a directory: `stat` gives the size of the directory file,
+    /// not of what it holds.
+    pub(crate) size: Option<u64>,
+    pub(crate) mime: &'static str,
 }
 
 /// A job's result.
@@ -89,46 +99,61 @@ pub(crate) struct Done {
     pub(crate) contents: Contents,
     /// `None` for a directory, which has no row and no cycle.
     pub(crate) shown: Option<Shown>,
+    /// The file's, whatever the view: a command's output is not the file
+    /// the title names. `None` when the file could not be read: a FIFO, or
+    /// a dangling link, has only its path in the title.
+    pub(crate) facts: Option<Facts>,
 }
 
 /// Run `job` in the caller: the work a worker does. With a cache, a file
 /// already read in this view is not read again.
 pub(crate) fn run(job: &Job, cache: Option<&Cache>) -> Done {
     let path = &job.path;
-    let done = |contents, shown| Done {
+    let done = |contents, shown, facts| Done {
         path: path.clone(),
         contents,
         shown,
+        facts,
     };
-    if path.is_dir() {
+    // One stat for all of it. `fs::metadata` follows a link, so a link's
+    // facts are its target's, as its contents are.
+    let meta = std::fs::metadata(path).ok();
+    let modified = meta.as_ref().and_then(|meta| meta.modified().ok());
+    if meta.as_ref().is_some_and(std::fs::Metadata::is_dir) {
         let max_lines = match job.extent {
             Extent::Preview => PREVIEW_LINES,
             Extent::Full => usize::MAX,
         };
-        return done(read::directory_listing(path, max_lines), None);
-    }
-    let cached = cache.zip(Key::of(path));
-    let mut read_head = None;
-    let row = job.table.row_for(path, || {
-        let head = if let Some((cache, key)) = &cached
-            && let Some(head) = cache.head(key)
-        {
-            head
-        } else {
-            let head = read::head(path);
-            if let Some((cache, key)) = &cached {
-                cache.set_head(key, head);
-            }
-            head
+        let facts = Facts {
+            modified,
+            size: None,
+            mime: crate::mime::DIRECTORY,
         };
-        *read_head.insert(head)
+        return done(read::directory_listing(path, max_lines), None, Some(facts));
+    }
+    let cached = cache.zip(meta.as_ref().and_then(|meta| Key::with_meta(path, meta)));
+    // Read for every file, not only when a row asks: the title shows the
+    // type (#467). The cache keeps it to one read per version of the file.
+    let head = if let Some((cache, key)) = &cached
+        && let Some(head) = cache.head(key)
+    {
+        head
+    } else {
+        let head = read::head(path);
+        if let Some((cache, key)) = &cached {
+            cache.set_head(key, head);
+        }
+        head
+    };
+    let facts = head.mime.map(|mime| Facts {
+        modified,
+        size: meta.as_ref().map(std::fs::Metadata::len),
+        mime,
     });
+    let done = |contents, shown| done(contents, shown, facts);
+    let row = job.table.row_for(path, || head);
     let view = job.steps.view(&job.table, row);
-    let shown = Some(Shown {
-        row,
-        view,
-        head: read_head,
-    });
+    let shown = Some(Shown { row, view, head });
     if job.prefetch
         && job
             .table
@@ -202,7 +227,8 @@ pub(crate) mod tests {
     use crate::fixtures::{fixture_dir, fixture_file};
     use std::path::Path;
 
-    fn job(path: &Path, table: Table) -> Job {
+    /// A preview job for `path`, as the explorer's selection sends one.
+    pub(crate) fn job(path: &Path, table: Table) -> Job {
         let steps = Steps::new(&table);
         Job {
             path: path.to_path_buf(),
@@ -228,23 +254,19 @@ pub(crate) mod tests {
         assert!(done.contents.fallback.is_none());
     }
 
-    /// `o` asks the head again only when the job did not read it.
+    /// `o` uses the head the job read, so it never reads the file again.
     #[test]
-    fn a_job_keeps_the_head_it_read_and_a_glob_row_reads_none() {
+    fn a_job_keeps_the_head_it_read() {
         let binary = fixture_file("views_run_head.bin", b"a\0b");
-        let done = run(&job(&binary, Table::default()), None);
-        let head = done.shown.and_then(|shown| shown.head);
-        assert_eq!(
-            head,
-            Some(Head {
-                binary: true,
-                mime: None
-            })
-        );
-
         let table = Table::new(&[FileType::with_views("*.bin", &[View::Hex])]);
         let done = run(&job(&binary, table), None);
-        assert_eq!(done.shown.and_then(|shown| shown.head), None);
+        assert_eq!(
+            done.shown.map(|shown| shown.head),
+            Some(Head {
+                binary: true,
+                mime: Some("application/octet-stream")
+            })
+        );
     }
 
     /// A row that asks for raw on a binary file: raw fails, and the dump
@@ -325,6 +347,63 @@ pub(crate) mod tests {
         assert!(done.contents.image.is_none());
         assert_eq!(*done.contents.lines, ["not a picture"]);
         assert!(done.contents.fallback.is_some());
+    }
+
+    /// When the file changed, as its metadata says.
+    fn modified(path: &Path) -> Option<std::time::SystemTime> {
+        std::fs::metadata(path).unwrap().modified().ok()
+    }
+
+    /// The title's facts are the file's (#467): its size and type, whatever
+    /// row or view shows it.
+    #[test]
+    fn a_job_carries_the_file_s_facts() {
+        let file = fixture_file("views_run_facts.rs", b"fn main() {}\n");
+        let table = Table::new(&[FileType::with_views("*.rs", &[View::Hex])]);
+
+        let facts = run(&job(&file, table), None).facts;
+
+        assert_eq!(
+            facts,
+            Some(Facts {
+                modified: modified(&file),
+                size: Some(13),
+                mime: "text/x-rust",
+            })
+        );
+    }
+
+    /// A command view shows the facts of the file it ran on, not of its
+    /// output: the title names the file.
+    #[test]
+    fn a_command_view_carries_the_file_s_facts_not_the_output_s() {
+        let picture = png(1, 1);
+        let file = fixture_file("views_run_facts.cmd", &picture);
+        let done = run(&command_job(&file, &["echo", "some output"], true), None);
+
+        assert_eq!(done.shown.map(|s| s.view), Some(View::Command(0)));
+        assert_eq!(*done.contents.lines, ["some output"]);
+        let facts = done.facts.expect("facts");
+        assert_eq!(
+            (facts.size, facts.mime),
+            (Some(picture.len() as u64), "image/png")
+        );
+    }
+
+    /// A directory has a date and its type, but no size: what `stat` says
+    /// is the size of the directory file, not of what it holds.
+    #[test]
+    fn a_directory_carries_its_date_and_type_and_no_size() {
+        let dir = fixture_dir("views_run_facts_dir");
+        let facts = run(&job(&dir, Table::default()), None).facts;
+        assert_eq!(
+            facts,
+            Some(Facts {
+                modified: modified(&dir),
+                size: None,
+                mime: crate::mime::DIRECTORY,
+            })
+        );
     }
 
     fn command_job(path: &Path, argv: &[&str], prefetch: bool) -> Job {

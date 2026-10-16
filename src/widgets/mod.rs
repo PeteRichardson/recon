@@ -35,6 +35,40 @@ pub(crate) fn pane_block<'a>(title: impl Into<ratatui::text::Line<'a>>, active: 
     }
 }
 
+/// Shorten `text` to `width` columns by dropping characters from the *left*,
+/// marking the cut with a leading `…`.
+///
+/// The tail is what identifies a path: `…/projects/recon/src` still says where
+/// you are, where the same cut taken from the right would not.
+/// Measured in terminal columns, not `char`s. A CJK ideograph or an emoji
+/// occupies two columns, so counting chars over-filled the budget by one column
+/// per wide glyph and the row then overran the terminal it was sized for (#97).
+///
+/// The tail is accumulated from the right — the one place where columns and
+/// chars genuinely differ in *how* the cut is taken, not merely in what it
+/// measures, since a wide glyph can no longer be assumed to cost one.
+pub(crate) fn elide_left(text: &str, width: usize) -> String {
+    if unicode_width::UnicodeWidthStr::width(text) <= width {
+        return text.to_string();
+    }
+    if width == 0 {
+        return String::new();
+    }
+    // One column goes to the ellipsis itself.
+    let budget = width - 1;
+    let mut taken = 0;
+    let mut start = text.len();
+    for (index, ch) in text.char_indices().rev() {
+        let w = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+        if taken + w > budget {
+            break;
+        }
+        taken += w;
+        start = index;
+    }
+    format!("…{}", &text[start..])
+}
+
 /// A request raised by a widget that only `App` can carry out, because it
 /// needs to reach a sibling widget.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -134,3 +168,40 @@ pub(crate) enum FilterCommand {
 // `App::render` now calls each pane directly with the arguments that pane
 // actually needs, so the routing is structural rather than a convention a
 // runtime assertion has to police.
+
+#[cfg(test)]
+mod tests {
+    use super::elide_left;
+    use unicode_width::UnicodeWidthStr;
+
+    /// `elide_left` cuts to a column budget, not a `char` budget. Counting
+    /// chars over-fills by one column per wide glyph, and the row then overruns
+    /// the terminal it was supposed to fit inside (#97).
+    #[test]
+    fn eliding_a_path_of_wide_glyphs_fits_the_column_budget() {
+        // 6 ideographs = 12 columns, plus `/x` = 14. Asked for 10.
+        let path = "日本語ロググ/x";
+        assert_eq!(UnicodeWidthStr::width(path), 14);
+
+        let elided = elide_left(path, 10);
+
+        assert!(
+            UnicodeWidthStr::width(elided.as_str()) <= 10,
+            "elided to {} columns, budget was 10: {elided:?}",
+            UnicodeWidthStr::width(elided.as_str())
+        );
+        assert!(elided.starts_with('…'), "the cut is unmarked: {elided:?}");
+        assert!(
+            elided.ends_with("/x"),
+            "cut from the wrong end — the tail is what identifies a path: {elided:?}"
+        );
+    }
+
+    /// A path that already fits is returned whole, wide glyphs included.
+    #[test]
+    fn a_path_of_wide_glyphs_that_fits_is_not_elided() {
+        let path = "日本語/x";
+        assert_eq!(UnicodeWidthStr::width(path), 8);
+        assert_eq!(elide_left(path, 8), path);
+    }
+}

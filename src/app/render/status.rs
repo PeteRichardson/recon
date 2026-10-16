@@ -3,6 +3,7 @@
 use crate::app::App;
 use crate::document::Mode;
 use crate::widgets::Focus;
+use crate::widgets::elide_left;
 use ratatui::prelude::{Color, Style};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
@@ -82,43 +83,10 @@ pub(in crate::app) struct StatusMessage {
     pub(in crate::app) error: bool,
 }
 
-/// Shorten `text` to `width` columns by dropping characters from the *left*,
-/// marking the cut with a leading `…`.
-///
-/// The tail is what identifies a path: `…/projects/recon/src` still says where
-/// you are, where the same cut taken from the right would not.
-/// Measured in terminal columns, not `char`s. A CJK ideograph or an emoji
-/// occupies two columns, so counting chars over-filled the budget by one column
-/// per wide glyph and the row then overran the terminal it was sized for (#97).
-///
-/// The tail is accumulated from the right — the one place where columns and
-/// chars genuinely differ in *how* the cut is taken, not merely in what it
-/// measures, since a wide glyph can no longer be assumed to cost one.
-pub(in crate::app) fn elide_left(text: &str, width: usize) -> String {
-    if UnicodeWidthStr::width(text) <= width {
-        return text.to_string();
-    }
-    if width == 0 {
-        return String::new();
-    }
-    // One column goes to the ellipsis itself.
-    let budget = width - 1;
-    let mut taken = 0;
-    let mut start = text.len();
-    for (index, ch) in text.char_indices().rev() {
-        let w = UnicodeWidthChar::width(ch).unwrap_or(0);
-        if taken + w > budget {
-            break;
-        }
-        taken += w;
-        start = index;
-    }
-    format!("…{}", &text[start..])
-}
-
 /// Shorten `text` to `width` columns by dropping characters from the
 /// *right*, marking the cut with a trailing `…`: the start of a sentence is
-/// what says what it is about. Columns, not `char`s, as in `elide_left`.
+/// what says what it is about. Columns, not `char`s, as in
+/// `widgets::elide_left`.
 pub(in crate::app) fn elide_right(text: &str, width: usize) -> String {
     if UnicodeWidthStr::width(text) <= width {
         return text.to_string();

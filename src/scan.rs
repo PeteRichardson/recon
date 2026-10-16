@@ -66,7 +66,11 @@ pub fn grew(held: Option<Stamp>, now: Option<Stamp>, progress: &Progress) -> boo
 /// # Errors
 /// Whatever `fs::metadata` reports — a missing file, no permission.
 pub fn stamp(path: &Path) -> std::io::Result<Stamp> {
-    let meta = std::fs::metadata(path)?;
+    stamp_of(&std::fs::metadata(path)?)
+}
+
+/// The stamp in `meta`, for a caller that has already stat'd the file.
+pub fn stamp_of(meta: &std::fs::Metadata) -> std::io::Result<Stamp> {
     Ok((meta.modified()?, meta.len()))
 }
 

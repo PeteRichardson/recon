@@ -10,6 +10,7 @@ use std::fs::File;
 use std::io::{BufReader, Cursor, Read};
 use std::path::Path;
 use std::sync::Arc;
+use std::time::SystemTime;
 use unicode_width::UnicodeWidthStr;
 
 /// Lines read for a preview.
@@ -420,7 +421,7 @@ const SIZE_COLUMN: usize = 6;
 /// Binary units, since this reports what the filesystem reports. One decimal
 /// above 1 KiB: `18.4K` says as much as `18841` in fewer columns, and the
 /// exact byte count is not what anyone scans a listing for.
-fn format_size(bytes: u64) -> String {
+pub(crate) fn format_size(bytes: u64) -> String {
     const UNITS: [(u64, char); 4] = [(1 << 30, 'G'), (1 << 20, 'M'), (1 << 10, 'K'), (1, 'B')];
     for (scale, suffix) in UNITS {
         if bytes >= scale {
@@ -444,7 +445,7 @@ fn format_size(bytes: u64) -> String {
 /// disagreeing with the lines inside the files would be its own small bug.
 /// `jiff` resolves the zone from the system (`/etc/localtime` on Unix), which
 /// is the part that is genuinely hard to get right by hand.
-fn format_modified(time: std::time::SystemTime) -> Option<String> {
+pub(crate) fn format_modified(time: SystemTime) -> Option<String> {
     let zoned = jiff::Zoned::try_from(time).ok()?;
     Some(zoned.strftime("%Y-%m-%d %H:%M").to_string())
 }
@@ -553,16 +554,16 @@ fn estimate_lines(file_bytes: Option<u64>, bytes_read: u64, lines_read: usize) -
 }
 
 /// What the head of `path` says: whether it has a NUL, the check that
-/// picks the built-in binary row, and the MIME type its magic bytes name,
-/// which a mime row asks for (#465). A file that cannot be read has an
-/// empty head; its read says why.
+/// picks the built-in binary row, and the file's MIME type, which a mime
+/// row asks for (#465) and the title shows (#467). A file that cannot be
+/// read has an empty head; its read says why.
 pub(crate) fn head(path: &Path) -> Head {
     document::refuse_unreadable(path)
         .and_then(|()| File::open(path))
         .and_then(|mut file| sniff(&mut file))
         .map(|(verdict, bytes)| Head {
             binary: verdict == Sniff::Binary,
-            mime: infer::get(&bytes).map(|kind| kind.mime_type()),
+            mime: Some(crate::mime::of(path, &bytes, verdict == Sniff::Binary)),
         })
         .unwrap_or_default()
 }
@@ -598,10 +599,31 @@ mod tests {
         assert_eq!(head(&class).mime, Some("application/java"));
     }
 
+    /// A text file has no magic bytes, so its type comes from its name, and
+    /// with no known name it is plain text (#467).
     #[test]
-    fn a_text_file_has_no_mime_type_and_is_not_binary() {
-        let text = fixture_file("read_head_text.txt", b"hello\n");
-        assert_eq!(head(&text), Head::default());
+    fn a_text_file_is_typed_by_its_extension_and_is_not_binary() {
+        let rust = fixture_file("read_head_main.rs", b"fn main() {}\n");
+        let readme = fixture_file("read_head_README", b"hello\n");
+        assert_eq!(head(&rust).mime, Some("text/x-rust"));
+        assert!(!head(&rust).binary);
+        assert_eq!(head(&readme).mime, Some("text/plain"));
+    }
+
+    /// The type the head names is the type a `mime =` row matches: a row
+    /// for `text/x-rust` shows a Rust file as hex, with no glob (#467).
+    #[test]
+    fn a_mime_row_matches_a_text_file_by_the_type_its_head_names() {
+        use crate::views::{FileType, View, cycle::Table};
+        let rust = fixture_file("read_head_row.rs", b"fn main() {}\n");
+        let readme = fixture_file("read_head_row_README", b"hello\n");
+        let table = Table::new(&[
+            FileType::with_views("*", &[View::Hex]).matching_mime(None, "text/x-rust"),
+            FileType::with_views("*", &[View::Image]).matching_mime(None, "text/plain"),
+        ]);
+        let views = |path: &Path| table.views(table.row_for(path, || head(path)));
+        assert_eq!(views(&rust), [View::Hex]);
+        assert_eq!(views(&readme), [View::Image]);
     }
 
     #[test]

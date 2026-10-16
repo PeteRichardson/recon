@@ -81,37 +81,6 @@ fn the_status_line_marks_a_previewed_total_as_an_estimate() {
     );
 }
 
-/// `elide_left` cuts to a column budget, not a `char` budget. Counting
-/// chars over-fills by one column per wide glyph, and the status row then
-/// overruns the terminal it was supposed to fit inside (#97).
-#[test]
-fn eliding_a_path_of_wide_glyphs_fits_the_column_budget() {
-    // 6 ideographs = 12 columns, plus `/x` = 14. Asked for 10.
-    let path = "日本語ロググ/x";
-    assert_eq!(UnicodeWidthStr::width(path), 14);
-
-    let elided = elide_left(path, 10);
-
-    assert!(
-        UnicodeWidthStr::width(elided.as_str()) <= 10,
-        "elided to {} columns, budget was 10: {elided:?}",
-        UnicodeWidthStr::width(elided.as_str())
-    );
-    assert!(elided.starts_with('…'), "the cut is unmarked: {elided:?}");
-    assert!(
-        elided.ends_with("/x"),
-        "cut from the wrong end — the tail is what identifies a path: {elided:?}"
-    );
-}
-
-/// A path that already fits is returned whole, wide glyphs included.
-#[test]
-fn a_path_of_wide_glyphs_that_fits_is_not_elided() {
-    let path = "日本語/x";
-    assert_eq!(UnicodeWidthStr::width(path), 8);
-    assert_eq!(elide_left(path, 8), path);
-}
-
 /// The row cannot hold everything on a narrow terminal, so it has a
 /// priority: the counts survive whole and the path gives way.
 ///

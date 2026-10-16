@@ -185,6 +185,10 @@ image = { version = "0.25", default-features = false, features = [
     "webp",
 ] }
 infer = "0.22.0"
+# The MIME type of a file that has no magic bytes, from its extension (#467).
+# `infer` knows only magic numbers, so without this nearly every text file
+# would have no type in the title and none a `mime =` row could match.
+mime_guess = "2.0.5"
 
 # Pattern generation in the filter editor (#319). Off by default, so a plain
 # `cargo build` has no new dependency on any platform. `fm-rs` compiles a

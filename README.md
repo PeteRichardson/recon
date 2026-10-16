@@ -62,6 +62,12 @@ motions throughout.
   triage one file; `F` hides the filter pane to use recon as a plain file
   manager. `e`, `t` and `f` show a hidden pane again and focus it, and `z`
   hides every pane but the focused one. See [Show and hide the panes](#show-and-hide-the-panes).
+- **The file at a glance** — the title of the file view shows the path, then
+  the date of the last change, the size and the MIME type:
+  `/home/me/app/src/main.rs · 2026-10-16 14:02 · 4.7K · text/x-rust`. A
+  directory shows its date and `inode/directory`. In a narrow pane the type
+  goes first, then the size, then the date, then the start of the path. A
+  `[[filetype]] mime =` row matches the type that the title shows.
 - **Dim or hide, on one keystroke** — `u` toggles unmatched lines between
   dimmed-but-present and removed. Toggling back returns you to the exact line
   you were on. Dimming marks unmatched lines whenever an *including* filter
@@ -1750,9 +1756,13 @@ a `/` matches the whole path. `*` and `?` match inside one name, `**` matches
 across directories, and `{a,b}` matches either. Every other character is
 itself.
 
-A row can match a file by its content in place of its name. `mime` is a
-MIME type, and recon finds the type of a file from the magic bytes at its
-start. Use it for a file that has no extension, for example an executable:
+A row can match a file by its type in place of its name. `mime` is a
+MIME type. recon finds the type of a file from the magic bytes at its
+start. If the magic bytes give no type, recon uses the file extension
+(`.rs` is `text/x-rust`). If neither gives a type, a text file is
+`text/plain` and a binary file is `application/octet-stream`. The title of
+the file view shows this type, so you can copy it into a row. Use `mime`
+for a file that has no extension, for example an executable:
 
 ```toml
 [commands]
@@ -1766,13 +1776,16 @@ views = ["macho", "hex"]
 `application/x-mach-binary` matches a thin or a universal (fat) Mach-O
 file, and not a Java `.class` file, which starts with the same bytes. Other
 types include `application/x-executable` (ELF), `application/vnd.microsoft.portable-executable`
-(Windows), `application/zip` and `application/pdf`. If recon cannot find a
-type from a file's content, the config gives an error at startup.
+(Windows), `application/zip` and `application/pdf`. If recon cannot give
+the type to a file, the config gives an error at startup. This includes a
+wildcard (`text/*`), a type in a different case, and a second name for an
+extension: `.gz` is `application/gzip`, so `application/x-gzip` matches no
+file. A `text/plain` row matches each text file that has no other type.
 
 A row sets `glob`, `mime` or both. With both, a file must match both:
 `glob = "*.dylib"` and the Mach-O type match a library but not an
 executable. To find the type, recon reads the start of the file, as it does
-to find a binary file. A row with only a `glob` reads nothing.
+to find a binary file.
 
 If a view cannot run on a file, recon shows raw at once (hex for a binary
 file) and the status line says why: `raw failed → hex: binary file` for a

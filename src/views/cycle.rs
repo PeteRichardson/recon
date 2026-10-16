@@ -101,10 +101,10 @@ impl TryFrom<RawFileType> for FileType {
             return Err("a [[filetype]] row sets no `glob` and no `mime`".to_string());
         }
         if let Some(mime) = &row.mime
-            && !infer::is_mime_supported(mime)
+            && !crate::mime::is_known(mime)
         {
             return Err(format!(
-                "`{mime}` is not a MIME type that recon finds from a file's content"
+                "`{mime}` is not a MIME type that recon gives a file"
             ));
         }
         if row.views.as_ref().is_some_and(Vec::is_empty) {
@@ -233,7 +233,8 @@ impl Glob {
 pub(crate) struct Head {
     /// A NUL in the head: the built-in binary row.
     pub(crate) binary: bool,
-    /// The MIME type the magic bytes in the head name, if any (#465).
+    /// The file's MIME type, as `mime::of` gives it (#465, #467). `None`
+    /// only when the file could not be read.
     pub(crate) mime: Option<&'static str>,
 }
 

@@ -27,11 +27,22 @@ pub(crate) struct Key {
 
 impl Key {
     /// The key for `path` as it is on disk now, or `None` when it cannot be
-    /// stat'd: a file with no stamp is not cached.
+    /// stat'd: a file with no stamp is not cached. Test-only: a job uses
+    /// `with_meta`.
+    #[cfg(test)]
     pub(crate) fn of(path: &Path) -> Option<Self> {
         Some(Self {
             path: path.to_path_buf(),
             stamp: scan::stamp(path).ok()?,
+        })
+    }
+
+    /// The key for `path`, from the metadata of the stat the job already
+    /// made, so a job stats its file once (#467). `None` as for `of`.
+    pub(crate) fn with_meta(path: &Path, meta: &std::fs::Metadata) -> Option<Self> {
+        Some(Self {
+            path: path.to_path_buf(),
+            stamp: scan::stamp_of(meta).ok()?,
         })
     }
 }
