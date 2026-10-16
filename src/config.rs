@@ -1064,7 +1064,7 @@ impl Config {
         for row in &self.filetypes {
             if let Some(name) = row.views.iter().flatten().find(|name| !known(name)) {
                 return Err(ConfigError::UnknownView {
-                    glob: row.glob.text().to_string(),
+                    glob: row.label().to_string(),
                     name: name.clone(),
                 });
             }
@@ -2753,7 +2753,8 @@ mod tests {
         assert!(
             config.filetypes[0]
                 .glob
-                .matches(std::path::Path::new("a.json"))
+                .as_ref()
+                .is_some_and(|glob| glob.matches(std::path::Path::new("a.json")))
         );
     }
 
@@ -2823,6 +2824,54 @@ mod tests {
         );
         let err = load_from(&empty).expect_err("an empty hand-off must fail");
         assert!(err.to_string().contains("names no program"), "{err}");
+    }
+
+    #[test]
+    fn a_filetype_row_can_match_by_mime_type_with_no_glob() {
+        let path = fixture(
+            "filetype-mime.toml",
+            "[[filetype]]\nmime = \"application/x-mach-binary\"\nviews = [\"hex\"]\n",
+        );
+        let mut config = Config::default();
+        config.apply(&load_from(&path).expect("a valid file"));
+        let row = &config.filetypes[0];
+        assert_eq!(row.mime.as_deref(), Some("application/x-mach-binary"));
+        assert_eq!(row.glob, None);
+    }
+
+    #[test]
+    fn a_filetype_row_with_an_unknown_mime_type_or_no_matcher_is_refused() {
+        let unknown = fixture(
+            "filetype-mime-unknown.toml",
+            "[[filetype]]\nmime = \"application/x-macho\"\nviews = [\"hex\"]\n",
+        );
+        let err = load_from(&unknown).expect_err("an unknown MIME type must fail");
+        assert!(err.to_string().contains("`application/x-macho`"), "{err}");
+
+        let neither = fixture(
+            "filetype-no-matcher.toml",
+            "[[filetype]]\nviews = [\"hex\"]\n",
+        );
+        let err = load_from(&neither).expect_err("a row that matches nothing must fail");
+        assert!(
+            err.to_string().contains("sets no `glob` and no `mime`"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn an_unknown_view_in_a_mime_row_names_the_mime_type() {
+        let path = fixture(
+            "filetype-mime-unknown-view.toml",
+            "[[filetype]]\nmime = \"application/x-mach-binary\"\nviews = [\"otool\"]\n",
+        );
+        let mut config = Config::default();
+        config.apply(&load_from(&path).expect("a row parses before its names are checked"));
+        let err = config.check_views().expect_err("an unknown view must fail");
+        assert!(
+            err.to_string().contains("`application/x-mach-binary`"),
+            "{err}"
+        );
     }
 
     #[test]

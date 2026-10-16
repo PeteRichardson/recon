@@ -131,13 +131,13 @@ impl Loading {
             .map(|view| self.table.view_name(view))
     }
 
-    /// Where `o` sends `path`, the file on screen (#456). The row the pane
-    /// shows it in usually says whether it is binary; only a file shown by
-    /// a user row, or not shown yet, is read here.
+    /// Where `o` sends `path`, the file on screen (#456). The job that
+    /// showed it usually read its head; only a file shown by a glob row,
+    /// or not shown yet, is read here.
     pub(super) fn hand_off(&self, path: &Path) -> HandOff {
-        let known = self.shown.and_then(|shown| self.table.binary(shown.row));
+        let known = self.shown.and_then(|shown| shown.head);
         self.table
-            .hand_off(path, || known.unwrap_or_else(|| read::is_binary(path)))
+            .hand_off(path, || known.unwrap_or_else(|| read::head(path)))
     }
 
     /// The spinner's frame while a view is late.

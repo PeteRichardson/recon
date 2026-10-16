@@ -184,6 +184,7 @@ image = { version = "0.25", default-features = false, features = [
     "tiff",
     "webp",
 ] }
+infer = "0.22.0"
 
 # Pattern generation in the filter editor (#319). Off by default, so a plain
 # `cargo build` has no new dependency on any platform. `fm-rs` compiles a

@@ -9,6 +9,7 @@ use super::View;
 use super::command::{Command, Commands};
 use regex::Regex;
 use serde::Deserialize;
+use std::cell::LazyCell;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -19,8 +20,12 @@ use std::sync::Arc;
 #[derive(Deserialize, Debug, Clone, PartialEq, Eq)]
 #[serde(try_from = "RawFileType")]
 pub struct FileType {
-    /// The files the row is for.
-    pub glob: Glob,
+    /// The names of the files the row is for. With `mime` too, a file must
+    /// match both.
+    pub glob: Option<Glob>,
+    /// The MIME type of the files the row is for, from the magic bytes in
+    /// the file's head (#465). The config refuses a type recon cannot find.
+    pub mime: Option<String>,
     /// The cycle, default first, by name: `raw`, `hex`, or a name from
     /// `[commands]` (#457). Never empty: the config refuses `[]`.
     pub views: Option<Vec<String>>,
@@ -41,16 +46,27 @@ impl FileType {
     /// A row that sets only the cycle, by name.
     pub(crate) fn with_view_names(glob: &str, views: &[&str]) -> Self {
         Self {
-            glob: glob.parse().expect("a glob"),
+            glob: Some(glob.parse().expect("a glob")),
+            mime: None,
             views: Some(views.iter().map(ToString::to_string).collect()),
             handoff: None,
+        }
+    }
+
+    /// This row, matching `mime` and, with no `glob`, any name.
+    pub(crate) fn matching_mime(self, glob: Option<&str>, mime: &str) -> Self {
+        Self {
+            glob: glob.map(|glob| glob.parse().expect("a glob")),
+            mime: Some(mime.to_string()),
+            ..self
         }
     }
 
     /// A row that sets only the hand-off.
     pub(crate) fn with_hand_off(glob: &str, argv: &[&str]) -> Self {
         Self {
-            glob: glob.parse().expect("a glob"),
+            glob: Some(glob.parse().expect("a glob")),
+            mime: None,
             views: None,
             handoff: Some(argv.iter().map(ToString::to_string).collect()),
         }
@@ -61,7 +77,8 @@ impl FileType {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawFileType {
-    glob: Glob,
+    glob: Option<Glob>,
+    mime: Option<String>,
     views: Option<Vec<String>>,
     handoff: Option<Vec<String>>,
 }
@@ -71,25 +88,50 @@ impl TryFrom<RawFileType> for FileType {
 
     /// `views = []` names no view to show, and `handoff = []` no program to
     /// start, so each is a config error, not a row that matches and then
-    /// does nothing. So is a row that sets neither.
+    /// does nothing. So is a row that sets neither, and a row that sets
+    /// no `glob` and no `mime`, or a `mime` that recon cannot find.
     fn try_from(raw: RawFileType) -> Result<Self, Self::Error> {
-        if raw.views.as_ref().is_some_and(Vec::is_empty) {
-            return Err("`views` names no view".to_string());
-        }
-        if raw.handoff.as_ref().is_some_and(Vec::is_empty) {
-            return Err("`handoff` names no program".to_string());
-        }
-        if raw.views.is_none() && raw.handoff.is_none() {
-            return Err(format!(
-                "the row for `{}` sets no `views` and no `handoff`",
-                raw.glob.text
-            ));
-        }
-        Ok(Self {
+        let row = Self {
             glob: raw.glob,
+            mime: raw.mime,
             views: raw.views,
             handoff: raw.handoff,
-        })
+        };
+        if row.glob.is_none() && row.mime.is_none() {
+            return Err("a [[filetype]] row sets no `glob` and no `mime`".to_string());
+        }
+        if let Some(mime) = &row.mime
+            && !infer::is_mime_supported(mime)
+        {
+            return Err(format!(
+                "`{mime}` is not a MIME type that recon finds from a file's content"
+            ));
+        }
+        if row.views.as_ref().is_some_and(Vec::is_empty) {
+            return Err("`views` names no view".to_string());
+        }
+        if row.handoff.as_ref().is_some_and(Vec::is_empty) {
+            return Err("`handoff` names no program".to_string());
+        }
+        if row.views.is_none() && row.handoff.is_none() {
+            return Err(format!(
+                "the row for `{}` sets no `views` and no `handoff`",
+                row.label()
+            ));
+        }
+        Ok(row)
+    }
+}
+
+impl FileType {
+    /// The row as an error names it: its glob, else its MIME type.
+    #[must_use]
+    pub fn label(&self) -> &str {
+        self.glob
+            .as_ref()
+            .map(Glob::text)
+            .or(self.mime.as_deref())
+            .unwrap_or_default()
     }
 }
 
@@ -185,11 +227,25 @@ impl Glob {
     }
 }
 
+/// What a file's head says about it: the two things a row can ask that
+/// the file's name does not tell.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct Head {
+    /// A NUL in the head: the built-in binary row.
+    pub(crate) binary: bool,
+    /// The MIME type the magic bytes in the head name, if any (#465).
+    pub(crate) mime: Option<&'static str>,
+}
+
 /// What a row matches.
 #[derive(Debug, Clone)]
 enum Matcher {
-    /// A user row.
-    Glob(Glob),
+    /// A user row: its glob, if it has one, and its MIME type, if it has
+    /// one. A file must match each that the row sets.
+    User {
+        glob: Option<Glob>,
+        mime: Option<String>,
+    },
     /// A built-in row for the extensions the test accepts, in any case
     /// (#458): a picture, or a type Quick Look shows. Reads nothing: many
     /// a PDF has no NUL in its head, so the binary check would show it as
@@ -299,7 +355,10 @@ impl Table {
         let user: Vec<Row> = user
             .iter()
             .map(|row| Row {
-                matcher: Matcher::Glob(row.glob.clone()),
+                matcher: Matcher::User {
+                    glob: row.glob.clone(),
+                    mime: row.mime.clone(),
+                },
                 views: row
                     .views
                     .as_ref()
@@ -361,16 +420,16 @@ impl Table {
     }
 
     /// The row whose cycle `path` shows: the first that matches it and
-    /// has `views`. `binary` is asked only when a built-in row is reached,
-    /// so a user row costs no read.
-    pub(crate) fn row_for(&self, path: &Path, binary: impl FnOnce() -> bool) -> usize {
-        self.first(path, binary, |row| row.views.is_some())
+    /// has `views`. `head` is asked only when a mime row or a built-in row
+    /// is reached, so a glob row costs no read.
+    pub(crate) fn row_for(&self, path: &Path, head: impl FnOnce() -> Head) -> usize {
+        self.first(path, head, |row| row.views.is_some())
     }
 
     /// Where `o` sends `path`: the hand-off of the first row that matches
-    /// it and has one (#456). `binary` is asked as `row_for` asks it.
-    pub(crate) fn hand_off(&self, path: &Path, binary: impl FnOnce() -> bool) -> HandOff {
-        let row = self.first(path, binary, |row| row.handoff.is_some());
+    /// it and has one (#456). `head` is asked as `row_for` asks it.
+    pub(crate) fn hand_off(&self, path: &Path, head: impl FnOnce() -> Head) -> HandOff {
+        let row = self.first(path, head, |row| row.handoff.is_some());
         self.rows[row].handoff.clone().unwrap_or(HandOff::Editor)
     }
 
@@ -380,37 +439,29 @@ impl Table {
     fn first(
         &self,
         path: &Path,
-        binary: impl FnOnce() -> bool,
+        head: impl FnOnce() -> Head,
         sets: impl Fn(&Row) -> bool,
     ) -> usize {
-        // One built-in row asks, so `binary` runs at most once.
-        let mut binary = Some(binary);
+        // Many rows can ask, but `head` runs at most once.
+        let head = LazyCell::new(head);
         self.rows
             .iter()
             .position(|row| {
                 sets(row)
                     && match &row.matcher {
-                        Matcher::Glob(glob) => glob.matches(path),
+                        Matcher::User { glob, mime } => {
+                            glob.as_ref().is_none_or(|glob| glob.matches(path))
+                                && mime.as_ref().is_none_or(|mime| head.mime == Some(mime))
+                        }
                         Matcher::Extension(accepts) => path
                             .extension()
                             .and_then(|ext| ext.to_str())
                             .is_some_and(accepts),
-                        Matcher::Binary => binary.take().is_some_and(|binary| binary()),
+                        Matcher::Binary => head.binary,
                         Matcher::Any => true,
                     }
             })
             .unwrap_or(self.rows.len() - 1)
-    }
-
-    /// Whether a file shown in `row` is binary, when the row says: a
-    /// built-in row is reached only once that is known. A user row was
-    /// reached with no read, so it does not know.
-    pub(crate) fn binary(&self, row: usize) -> Option<bool> {
-        match self.rows[row].matcher {
-            Matcher::Glob(_) | Matcher::Extension(_) => None,
-            Matcher::Binary => Some(true),
-            Matcher::Any => Some(false),
-        }
     }
 
     /// The cycle of `row`: a row from `row_for`, which always has one.
@@ -480,12 +531,27 @@ mod tests {
 
     /// The cycle of the row `path` shows, by name.
     fn view_names<'a>(table: &'a Table, path: &str, binary: bool) -> Vec<&'a str> {
-        let row = table.row_for(Path::new(path), || binary);
+        let row = table.row_for(Path::new(path), || head(binary));
         table
             .views(row)
             .iter()
             .map(|view| table.view_name(*view))
             .collect()
+    }
+
+    /// A head with no MIME type, binary or not.
+    fn head(binary: bool) -> Head {
+        Head { binary, mime: None }
+    }
+
+    const MACH_O: &str = "application/x-mach-binary";
+
+    /// The head of a Mach-O file.
+    fn mach_o() -> Head {
+        Head {
+            binary: true,
+            mime: Some(MACH_O),
+        }
     }
 
     fn hand_off_row(glob: &str, program: &str) -> FileType {
@@ -530,8 +596,8 @@ mod tests {
     #[test]
     fn with_no_rows_a_text_file_cycles_raw_then_hex_and_a_binary_one_hex() {
         let table = Table::default();
-        let text = table.row_for(Path::new("a.txt"), || false);
-        let binary = table.row_for(Path::new("a.bin"), || true);
+        let text = table.row_for(Path::new("a.txt"), || head(false));
+        let binary = table.row_for(Path::new("a.bin"), || head(true));
         assert_eq!(table.views(text), [View::Raw, View::Hex]);
         assert_eq!(table.views(binary), [View::Hex]);
     }
@@ -540,11 +606,11 @@ mod tests {
     fn the_first_matching_row_wins_and_user_rows_go_first() {
         let table = Table::new(&[row("*.json", &[View::Hex]), row("*", &[View::Raw])]);
         assert_eq!(
-            table.views(table.row_for(Path::new("a.json"), || false)),
+            table.views(table.row_for(Path::new("a.json"), || head(false))),
             [View::Hex]
         );
         assert_eq!(
-            table.views(table.row_for(Path::new("a.bin"), || true)),
+            table.views(table.row_for(Path::new("a.bin"), || head(true))),
             [View::Raw],
             "a user row goes before the built-in binary row"
         );
@@ -554,7 +620,7 @@ mod tests {
     fn a_row_with_no_views_leaves_the_cycle_to_the_rows_after_it() {
         let table = Table::new(&[hand_off_row("*.md", "marked"), row("*.md", &[View::Hex])]);
         assert_eq!(
-            table.views(table.row_for(Path::new("a.md"), || false)),
+            table.views(table.row_for(Path::new("a.md"), || head(false))),
             [View::Hex]
         );
     }
@@ -567,25 +633,62 @@ mod tests {
             hand_off_row("*.txt", "other"),
         ]);
         let argv = |program: &str| HandOff::Argv(vec![program.to_string(), "{file}".to_string()]);
-        assert_eq!(table.hand_off(Path::new("a.md"), || false), argv("marked"));
-        assert_eq!(table.hand_off(Path::new("a.txt"), || false), argv("other"));
         assert_eq!(
-            table.hand_off(Path::new("a.log"), || false),
+            table.hand_off(Path::new("a.md"), || head(false)),
+            argv("marked")
+        );
+        assert_eq!(
+            table.hand_off(Path::new("a.txt"), || head(false)),
+            argv("other")
+        );
+        assert_eq!(
+            table.hand_off(Path::new("a.log"), || head(false)),
             HandOff::Editor
         );
         assert_eq!(
-            table.hand_off(Path::new("a.png"), || true),
+            table.hand_off(Path::new("a.png"), || head(true)),
             HandOff::DefaultApp
         );
     }
 
     #[test]
-    fn a_built_in_row_knows_whether_its_file_is_binary_and_a_user_row_does_not() {
-        let table = Table::new(&[row("*.log", &[View::Raw])]);
-        let at = |path: &str, binary: bool| table.binary(table.row_for(Path::new(path), || binary));
-        assert_eq!(at("a.log", true), None);
-        assert_eq!(at("a.bin", true), Some(true));
-        assert_eq!(at("a.txt", false), Some(false));
+    fn a_mime_row_matches_a_file_whose_head_has_that_type() {
+        let table = Table::new(&[row("*", &[View::Raw]).matching_mime(None, MACH_O)]);
+        let views = |head: Head| table.views(table.row_for(Path::new("tool"), || head));
+        assert_eq!(views(mach_o()), [View::Raw]);
+        assert_eq!(views(head(true)), [View::Hex], "another binary file");
+        assert_eq!(views(head(false)), [View::Raw, View::Hex], "a text file");
+    }
+
+    #[test]
+    fn a_row_with_a_glob_and_a_mime_type_needs_both() {
+        let table = Table::new(&[row("*", &[View::Raw]).matching_mime(Some("*.dylib"), MACH_O)]);
+        let views = |path: &str| table.views(table.row_for(Path::new(path), mach_o));
+        assert_eq!(views("libz.dylib"), [View::Raw]);
+        assert_eq!(views("tool"), [View::Hex]);
+    }
+
+    #[test]
+    fn a_mime_row_that_does_not_match_leaves_the_head_to_the_binary_row() {
+        let table = Table::new(&[
+            row("*", &[View::Raw]).matching_mime(None, "application/x-executable"),
+            row("*.json", &[View::Raw]),
+        ]);
+        let row = table.row_for(Path::new("tool"), mach_o);
+        assert_eq!(table.views(row), [View::Hex]);
+    }
+
+    #[test]
+    fn a_mime_row_can_set_the_hand_off() {
+        let table = Table::new(&[hand_off_row("*", "hopper").matching_mime(None, MACH_O)]);
+        assert_eq!(
+            table.hand_off(Path::new("tool"), mach_o),
+            HandOff::Argv(vec!["hopper".to_string(), "{file}".to_string()])
+        );
+        assert_eq!(
+            table.hand_off(Path::new("a.bin"), || head(true)),
+            HandOff::DefaultApp
+        );
     }
 
     #[test]
@@ -597,8 +700,8 @@ mod tests {
     #[test]
     fn a_step_wraps_and_holds_for_its_row_only() {
         let table = Table::new(&[row("*.log", &[View::Raw, View::Hex])]);
-        let log = table.row_for(Path::new("a.log"), || false);
-        let txt = table.row_for(Path::new("a.txt"), || false);
+        let log = table.row_for(Path::new("a.log"), || head(false));
+        let txt = table.row_for(Path::new("a.txt"), || head(false));
         let mut steps = Steps::new(&table);
 
         steps.next(&table, log);
@@ -616,7 +719,7 @@ mod tests {
     #[test]
     fn a_snapshot_does_not_see_a_later_step() {
         let table = Table::default();
-        let row = table.row_for(Path::new("a.txt"), || false);
+        let row = table.row_for(Path::new("a.txt"), || head(false));
         let mut steps = Steps::new(&table);
         let sent = steps.clone();
         steps.next(&table, row);
@@ -639,7 +742,7 @@ mod tests {
             &[FileType::with_view_names("*.json", &["jq", "raw"])],
             &commands(&[("jq", "cat", None)]),
         );
-        let row = table.row_for(Path::new("a.json"), || false);
+        let row = table.row_for(Path::new("a.json"), || head(false));
         let views = table.views(row);
         assert_eq!(views.len(), 2);
         assert_eq!(table.view_name(views[0]), "jq");
@@ -658,7 +761,7 @@ mod tests {
         );
         let views = |path: &str| {
             table
-                .views(table.row_for(Path::new(path), || false))
+                .views(table.row_for(Path::new(path), || head(false)))
                 .to_vec()
         };
         assert_eq!(views("a.json"), [View::Hex]);
@@ -699,7 +802,7 @@ mod tests {
             table.hand_off(Path::new("a.png"), || panic!("read the head")),
             HandOff::DefaultApp
         );
-        let row = table.row_for(Path::new("a.txt"), || false);
+        let row = table.row_for(Path::new("a.txt"), || head(false));
         assert_eq!(table.views(row), [View::Raw, View::Hex]);
     }
 
@@ -750,7 +853,7 @@ mod tests {
             &[FileType::with_view_names("*.json", &["gone"])],
             &commands(&[("gone", "recon-no-such-program", None)]),
         );
-        let row = table.row_for(Path::new("a.json"), || false);
+        let row = table.row_for(Path::new("a.json"), || head(false));
         assert_eq!(table.views(row), [View::Raw, View::Hex]);
     }
 }

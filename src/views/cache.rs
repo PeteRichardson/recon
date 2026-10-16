@@ -6,6 +6,7 @@
 //! has a new stamp, and its old results go at its next read. The least
 //! recently used file goes first once the results pass the byte limit.
 
+use super::cycle::Head;
 use super::read::Contents;
 use super::{Extent, View};
 use crate::scan::{self, Stamp};
@@ -38,7 +39,7 @@ impl Key {
 #[derive(Debug)]
 struct Entry {
     stamp: Stamp,
-    binary: Option<bool>,
+    head: Option<Head>,
     views: Vec<(View, Extent, Contents)>,
     bytes: usize,
     used: u64,
@@ -48,7 +49,7 @@ impl Entry {
     fn new(stamp: Stamp) -> Self {
         Self {
             stamp,
-            binary: None,
+            head: None,
             views: Vec::new(),
             bytes: 0,
             used: 0,
@@ -133,13 +134,13 @@ impl Cache {
         self.inner.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// Whether the file is binary, if a worker already looked.
-    pub(crate) fn binary(&self, key: &Key) -> Option<bool> {
-        self.lock().current(key)?.binary
+    /// What the file's head says, if a worker already looked.
+    pub(crate) fn head(&self, key: &Key) -> Option<Head> {
+        self.lock().current(key)?.head
     }
 
-    pub(crate) fn set_binary(&self, key: &Key, binary: bool) {
-        self.lock().entry(key).binary = Some(binary);
+    pub(crate) fn set_head(&self, key: &Key, head: Head) {
+        self.lock().entry(key).head = Some(head);
     }
 
     /// The file in `view`, read to `extent`. A whole read answers for a

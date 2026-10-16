@@ -2,6 +2,7 @@
 //! listing (#455). They run on a worker, never on the main thread.
 
 use super::View;
+use super::cycle::Head;
 use crate::document::{self, Sniff, read_lossy_line, read_utf16_lines, sniff};
 use crate::hex;
 use crate::widgets::explorer::Entry;
@@ -551,11 +552,60 @@ fn estimate_lines(file_bytes: Option<u64>, bytes_read: u64, lines_read: usize) -
     Some(usize::try_from(estimate).unwrap_or(usize::MAX))
 }
 
-/// Whether `path` has a NUL in its head: the check that picks the built-in
-/// binary row. A file that cannot be read is not binary; its read says why.
-pub(crate) fn is_binary(path: &Path) -> bool {
+/// What the head of `path` says: whether it has a NUL, the check that
+/// picks the built-in binary row, and the MIME type its magic bytes name,
+/// which a mime row asks for (#465). A file that cannot be read has an
+/// empty head; its read says why.
+pub(crate) fn head(path: &Path) -> Head {
     document::refuse_unreadable(path)
         .and_then(|()| File::open(path))
         .and_then(|mut file| sniff(&mut file))
-        .is_ok_and(|(verdict, _)| verdict == Sniff::Binary)
+        .map(|(verdict, bytes)| Head {
+            binary: verdict == Sniff::Binary,
+            mime: infer::get(&bytes).map(|kind| kind.mime_type()),
+        })
+        .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::fixtures::fixture_file;
+
+    const MACH_O: Option<&str> = Some("application/x-mach-binary");
+
+    #[test]
+    fn the_head_of_a_mach_o_file_names_its_type() {
+        let thin = fixture_file(
+            "read_head_thin.bin",
+            &[0xcf, 0xfa, 0xed, 0xfe, 0x0c, 0x00, 0x00, 0x01, 0, 0, 0, 0],
+        );
+        let fat = fixture_file(
+            "read_head_fat.bin",
+            &[0xca, 0xfe, 0xba, 0xbe, 0x00, 0x00, 0x00, 0x02, 0, 0, 0, 0],
+        );
+        assert_eq!(head(&thin).mime, MACH_O);
+        assert!(head(&thin).binary);
+        assert_eq!(head(&fat).mime, MACH_O);
+    }
+
+    #[test]
+    fn a_java_class_file_is_not_a_fat_mach_o_file() {
+        let class = fixture_file(
+            "read_head_class.bin",
+            &[0xca, 0xfe, 0xba, 0xbe, 0x00, 0x00, 0x00, 0x41, 0, 0, 0, 0],
+        );
+        assert_eq!(head(&class).mime, Some("application/java"));
+    }
+
+    #[test]
+    fn a_text_file_has_no_mime_type_and_is_not_binary() {
+        let text = fixture_file("read_head_text.txt", b"hello\n");
+        assert_eq!(head(&text), Head::default());
+    }
+
+    #[test]
+    fn a_file_that_cannot_be_read_has_an_empty_head() {
+        assert_eq!(head(Path::new("/no/such/file")), Head::default());
+    }
 }

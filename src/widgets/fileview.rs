@@ -1104,7 +1104,7 @@ impl FileView<'_> {
 fn test_view(path: &Path) -> crate::views::View {
     use crate::views::cycle::{Steps, Table};
     let table = Table::default();
-    let row = table.row_for(path, || crate::views::read::is_binary(path));
+    let row = table.row_for(path, || crate::views::read::head(path));
     Steps::new(&table).view(&table, row)
 }
 

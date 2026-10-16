@@ -13,7 +13,7 @@ pub(crate) mod read;
 pub use cycle::{FileType, Glob};
 
 use cache::{Cache, Key};
-use cycle::{Steps, Table};
+use cycle::{Head, Steps, Table};
 use read::{Contents, MAX_PREVIEW_BYTES, PREVIEW_LINES};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -77,6 +77,9 @@ pub(crate) struct Job {
 pub(crate) struct Shown {
     pub(crate) row: usize,
     pub(crate) view: View,
+    /// The file's head, if a row asked for it: `o` asks only when this
+    /// is `None` (#465).
+    pub(crate) head: Option<Head>,
 }
 
 /// A job's result.
@@ -105,20 +108,27 @@ pub(crate) fn run(job: &Job, cache: Option<&Cache>) -> Done {
         return done(read::directory_listing(path, max_lines), None);
     }
     let cached = cache.zip(Key::of(path));
+    let mut read_head = None;
     let row = job.table.row_for(path, || {
-        if let Some((cache, key)) = &cached
-            && let Some(binary) = cache.binary(key)
+        let head = if let Some((cache, key)) = &cached
+            && let Some(head) = cache.head(key)
         {
-            return binary;
-        }
-        let binary = read::is_binary(path);
-        if let Some((cache, key)) = &cached {
-            cache.set_binary(key, binary);
-        }
-        binary
+            head
+        } else {
+            let head = read::head(path);
+            if let Some((cache, key)) = &cached {
+                cache.set_head(key, head);
+            }
+            head
+        };
+        *read_head.insert(head)
     });
     let view = job.steps.view(&job.table, row);
-    let shown = Some(Shown { row, view });
+    let shown = Some(Shown {
+        row,
+        view,
+        head: read_head,
+    });
     if job.prefetch
         && job
             .table
@@ -216,6 +226,25 @@ pub(crate) mod tests {
         let done = run(&job(&binary, Table::default()), None);
         assert_eq!(done.shown.map(|s| s.view), Some(View::Hex));
         assert!(done.contents.fallback.is_none());
+    }
+
+    /// `o` asks the head again only when the job did not read it.
+    #[test]
+    fn a_job_keeps_the_head_it_read_and_a_glob_row_reads_none() {
+        let binary = fixture_file("views_run_head.bin", b"a\0b");
+        let done = run(&job(&binary, Table::default()), None);
+        let head = done.shown.and_then(|shown| shown.head);
+        assert_eq!(
+            head,
+            Some(Head {
+                binary: true,
+                mime: None
+            })
+        );
+
+        let table = Table::new(&[FileType::with_views("*.bin", &[View::Hex])]);
+        let done = run(&job(&binary, table), None);
+        assert_eq!(done.shown.and_then(|shown| shown.head), None);
     }
 
     /// A row that asks for raw on a binary file: raw fails, and the dump

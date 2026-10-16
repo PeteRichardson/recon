@@ -1750,6 +1750,30 @@ a `/` matches the whole path. `*` and `?` match inside one name, `**` matches
 across directories, and `{a,b}` matches either. Every other character is
 itself.
 
+A row can match a file by its content in place of its name. `mime` is a
+MIME type, and recon finds the type of a file from the magic bytes at its
+start. Use it for a file that has no extension, for example an executable:
+
+```toml
+[commands]
+macho = ["otool", "-hvL", "{file}"]
+
+[[filetype]]
+mime  = "application/x-mach-binary"
+views = ["macho", "hex"]
+```
+
+`application/x-mach-binary` matches a thin or a universal (fat) Mach-O
+file, and not a Java `.class` file, which starts with the same bytes. Other
+types include `application/x-executable` (ELF), `application/vnd.microsoft.portable-executable`
+(Windows), `application/zip` and `application/pdf`. If recon cannot find a
+type from a file's content, the config gives an error at startup.
+
+A row sets `glob`, `mime` or both. With both, a file must match both:
+`glob = "*.dylib"` and the Mach-O type match a library but not an
+executable. To find the type, recon reads the start of the file, as it does
+to find a binary file. A row with only a `glob` reads nothing.
+
 If a view cannot run on a file, recon shows raw at once (hex for a binary
 file) and the status line says why: `raw failed → hex: binary file` for a
 row that asks for `raw` on a binary file, or `jq failed → raw: parse error`
