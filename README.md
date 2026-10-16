@@ -62,9 +62,9 @@ motions throughout.
   triage one file; `F` hides the filter pane to use recon as a plain file
   manager. `e`, `t` and `f` show a hidden pane again and focus it, and `z`
   hides every pane but the focused one. See [Show and hide the panes](#show-and-hide-the-panes).
-- **The file at a glance** — the title of the file view shows the path, then
-  the date of the last change, the size and the MIME type:
-  `/home/me/app/src/main.rs · 2026-10-16 14:02 · 4.7K · text/x-rust`. A
+- **The file at a glance** — the title of the file view shows the path at the
+  left, and the date of the last change, the size and the MIME type at the
+  right: `2026-10-16 14:02 · 4.7K · text/x-rust`. A
   directory shows its date and `inode/directory`. In a narrow pane the type
   goes first, then the size, then the date, then the start of the path. A
   `[[filetype]] mime =` row matches the type that the title shows.

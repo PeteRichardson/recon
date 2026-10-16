@@ -1392,55 +1392,66 @@ fn zoom_limit(area: Rect, image: &image::DynamicImage, font: ratatui_image::Font
 }
 
 impl FileView<'_> {
-    /// The pane's title, `width` columns of border wide: the path, then
-    /// the file's date, size and type, accented for a frame after a
-    /// cross-file step. The one place the path is rendered, and the one
-    /// place a lossy conversion is both correct and harmless — see the
-    /// `filename` field.
-    fn title(&self, width: u16) -> ratatui::text::Line<'static> {
+    /// The pane's block, `width` columns wide: the path at the left of the
+    /// top border, and the file's date, size and type at the right of it,
+    /// both accented for a frame after a cross-file step. The one place the
+    /// path is rendered, and the one place a lossy conversion is both
+    /// correct and harmless — see the `filename` field.
+    fn block(&self, width: u16) -> ratatui::widgets::Block<'static> {
         let path = self.filename.display().to_string();
         let marker = if self.hex { " [hex]" } else { "" };
-        let title = title_text(
+        let (title, facts) = title_text(
             &path,
             marker,
             &self.title_fields,
             usize::from(width.saturating_sub(2)),
         );
-        if self.title_accent {
-            ratatui::text::Line::from(ratatui::text::Span::styled(
-                title,
-                Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD),
-            ))
+        let style = if self.title_accent {
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD)
         } else {
-            ratatui::text::Line::from(title)
+            Style::default()
+        };
+        let block =
+            crate::widgets::pane_block(ratatui::text::Line::styled(title, style), self.active);
+        if facts.is_empty() {
+            block
+        } else {
+            block.title_top(ratatui::text::Line::styled(facts, style).right_aligned())
         }
     }
 }
 
-/// The title in `room` columns: `path` and `marker`, then each of
-/// `fields` after a `·` (#467).
+/// The title in `room` columns: `path` and `marker` for the left, and each
+/// of `fields` that fits, joined by `·`, for the right (#467). One column of
+/// border stays between the two, so they never run together.
 ///
 /// Too narrow for all of it, the facts go first, the type before the size
 /// before the date: each says less about which file this is than the one
 /// before it. Then the path is cut from the left, which keeps the file's
 /// name — ratatui would clip from the right and cut the name first.
-fn title_text(path: &str, marker: &str, fields: &[String], room: usize) -> String {
-    let fits = |text: &str| UnicodeWidthStr::width(text) <= room;
-    let mut title = format!("{path}{marker}");
-    if !fits(&title) {
+fn title_text(path: &str, marker: &str, fields: &[String], room: usize) -> (String, String) {
+    let title = format!("{path}{marker}");
+    let left = UnicodeWidthStr::width(title.as_str());
+    if left > room {
         let path_room = room.saturating_sub(UnicodeWidthStr::width(marker));
-        return format!("{}{marker}", crate::widgets::elide_left(path, path_room));
+        let path = crate::widgets::elide_left(path, path_room);
+        return (format!("{path}{marker}"), String::new());
     }
+    let mut facts = String::new();
     for field in fields {
-        let longer = format!("{title} · {field}");
-        if !fits(&longer) {
+        let longer = if facts.is_empty() {
+            field.clone()
+        } else {
+            format!("{facts} · {field}")
+        };
+        if left + 1 + UnicodeWidthStr::width(longer.as_str()) > room {
             break;
         }
-        title = longer;
+        facts = longer;
     }
-    title
+    (title, facts)
 }
 
 /// Widget impl for `FileView`
@@ -1450,7 +1461,7 @@ impl Widget for &mut FileView<'_> {
         // has no area of its own to size a window against. See `last_height`.
         self.last_height = Some(area.height);
         if self.picture.is_some() {
-            let block = crate::widgets::pane_block(self.title(area.width), self.active);
+            let block = self.block(area.width);
             let inner = block.inner(area);
             block.render(area, buf);
             if let Some(picture) = &mut self.picture {
@@ -1493,10 +1504,7 @@ impl Widget for &mut FileView<'_> {
             .set_search_style(Style::default().fg(Color::Black).bg(Color::Yellow));
         self.apply_syntax();
         self.paint_selection();
-        self.textarea.set_block(crate::widgets::pane_block(
-            self.title(area.width),
-            self.active,
-        ));
+        self.textarea.set_block(self.block(area.width));
         // Apply any scroll requested since the last render — see
         // `scroll_cursor_to_row` and `apply_pending_scroll` — only now, once
         // the block above is set: `apply_pending_scroll`'s scratch render
@@ -2270,13 +2278,21 @@ mod tests {
     }
 
     /// The title row of `view` drawn `width` columns wide, without the
-    /// border's corners.
-    fn title_at(view: &mut FileView, width: u16) -> String {
+    /// border's corners: the text at the left of the border and the text
+    /// at its right end. The right is empty when no fact fits.
+    fn title_at(view: &mut FileView, width: u16) -> (String, String) {
         let area = Rect::new(0, 0, width, 3);
         let mut buf = Buffer::empty(area);
         view.render(area, &mut buf);
         let row: String = (1..width - 1).map(|x| buf[(x, 0)].symbol()).collect();
-        row.trim_end_matches(['─', '━']).to_string()
+        let border = ['─', '━'];
+        let left = row.split(border).next().unwrap_or_default().to_string();
+        let right = if row.ends_with(border) || !row.contains(border) {
+            String::new()
+        } else {
+            row.rsplit(border).next().unwrap_or_default().to_string()
+        };
+        (left, right)
     }
 
     /// A view of `path` as the app shows it: through a job, which is what
@@ -2292,26 +2308,25 @@ mod tests {
     /// A date as the listing writes it.
     const DATE: &str = r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}";
 
-    /// The title is the path, then the date, size and type of the file
-    /// (#467), each after a `·`. `[hex]` stays next to the path it is about.
+    /// The title is the path at the left, and the date, size and type of
+    /// the file (#467) at the right, each after a `·`. `[hex]` stays next
+    /// to the path it is about.
     #[test]
-    fn the_title_shows_the_date_size_and_type_after_the_path() {
+    fn the_title_shows_the_date_size_and_type_at_the_right() {
         let path = fixture_file("title_facts.rs", b"fn main() {}\n");
         let mut view = shown(&path, Table::default());
 
-        let title = title_at(&mut view, 200);
-        let shape = format!(
-            "^{} · {DATE} · 13B · text/x-rust$",
-            regex::escape(&path.display().to_string())
-        );
+        let (left, right) = title_at(&mut view, 200);
+        assert_eq!(left, path.display().to_string());
+        let shape = format!("^{DATE} · 13B · text/x-rust$");
         assert!(
-            regex::Regex::new(&shape).unwrap().is_match(&title),
-            "{title}"
+            regex::Regex::new(&shape).unwrap().is_match(&right),
+            "{right}"
         );
 
         let hex_row = crate::views::FileType::with_views("*.rs", &[View::Hex]);
-        let hex = title_at(&mut shown(&path, Table::new(&[hex_row])), 200);
-        assert!(hex.contains("title_facts.rs [hex] · "), "{hex}");
+        let (hex, _) = title_at(&mut shown(&path, Table::new(&[hex_row])), 200);
+        assert!(hex.ends_with("title_facts.rs [hex]"), "{hex}");
     }
 
     /// A directory has its date and type, and no size.
@@ -2320,14 +2335,12 @@ mod tests {
         let dir = fixture_dir("title_facts_dir");
         let mut view = shown(&dir, Table::default());
 
-        let title = title_at(&mut view, 200);
-        let shape = format!(
-            "^{} · {DATE} · inode/directory$",
-            regex::escape(&dir.display().to_string())
-        );
+        let (left, right) = title_at(&mut view, 200);
+        assert_eq!(left, dir.display().to_string());
+        let shape = format!("^{DATE} · inode/directory$");
         assert!(
-            regex::Regex::new(&shape).unwrap().is_match(&title),
-            "{title}"
+            regex::Regex::new(&shape).unwrap().is_match(&right),
+            "{right}"
         );
     }
 
@@ -2338,21 +2351,36 @@ mod tests {
     fn a_narrow_title_drops_the_facts_before_the_path_and_keeps_the_name() {
         let path = fixture_file("title_narrow.rs", b"fn main() {}\n");
         let mut view = shown(&path, Table::default());
-        let full = title_at(&mut view, 200);
-        let path = path.display().to_string();
-        // Two border corners, and the widths the title needs as it loses
-        // one field after the other.
-        let fits = |text: &str| u16::try_from(text.chars().count()).unwrap() + 2;
+        let (path, full) = title_at(&mut view, 200);
+        // Two border corners, one column of border between the path and
+        // the facts, and the widths the title needs as it loses one field
+        // after the other.
+        let fits =
+            |facts: &str| u16::try_from(path.chars().count() + facts.chars().count()).unwrap() + 3;
         let no_type = full.trim_end_matches(" · text/x-rust").to_string();
         let no_size = no_type.trim_end_matches(" · 13B").to_string();
 
-        assert_eq!(title_at(&mut view, fits(&full) - 1), no_type);
-        assert_eq!(title_at(&mut view, fits(&no_type) - 1), no_size);
-        assert_eq!(title_at(&mut view, fits(&no_size) - 1), path);
+        assert_eq!(
+            title_at(&mut view, fits(&full)),
+            (path.clone(), full.clone())
+        );
+        assert_eq!(
+            title_at(&mut view, fits(&full) - 1),
+            (path.clone(), no_type.clone())
+        );
+        assert_eq!(
+            title_at(&mut view, fits(&no_type) - 1),
+            (path.clone(), no_size.clone())
+        );
+        assert_eq!(
+            title_at(&mut view, fits(&no_size) - 1),
+            (path.clone(), String::new())
+        );
 
-        let elided = title_at(&mut view, 20);
+        let (elided, facts) = title_at(&mut view, 20);
         assert_eq!(elided, format!("…{}", &path[path.len() - 17..]), "{elided}");
         assert!(elided.ends_with("title_narrow.rs"), "{elided}");
+        assert_eq!(facts, "");
     }
 
     /// Whether any cell in row `y` carries `colour` as its foreground.
