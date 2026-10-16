@@ -620,8 +620,8 @@ pub const KEYMAP: &[Section] = &[
             },
             Binding {
                 keys: &["Enter"],
-                action: "Open entry; toggle filter or set; not the view",
-                names: &["explorer.open", "filters.toggle"],
+                action: "Open entry, also in a listing; toggle filter or set",
+                names: &["explorer.open", "view.open", "filters.toggle"],
             },
         ],
     },

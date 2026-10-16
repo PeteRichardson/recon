@@ -47,6 +47,29 @@ impl App<'_> {
         self.view_stale = false;
     }
 
+    /// Open the entry a directory listing shows on `visible_row`, the way a
+    /// click on that row (#58) and `Enter` on it (#469) both do: the
+    /// explorer enters the listed directory and opens the entry. Does
+    /// nothing while the view shows anything but a listing.
+    ///
+    /// The visible row is not the entry: filters and hide mode apply to a
+    /// listing like any document. The row goes back to its source line,
+    /// which is the entry's index in the listing (#349). An empty hidden
+    /// listing draws one blank row that maps to none.
+    pub(super) fn open_listing_row(&mut self, visible_row: usize) {
+        if !self.view.showing_directory() {
+            return;
+        }
+        let Some(index) = self.document.source_at(visible_row) else {
+            return;
+        };
+        let dir = self.view.filename().to_path_buf();
+        if let Some(action) = self.explorer.open_listed(&dir, index) {
+            self.perform_widget_action(action);
+        }
+        self.ensure_window();
+    }
+
     /// Carry out one of the view's own actions, whichever pane has focus,
     /// with the after-care the focused dispatch gives the other panes: a
     /// truncated preview is made whole first, and the window is checked

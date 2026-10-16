@@ -219,6 +219,9 @@ pub(crate) enum ActionId {
     ViewHalfPageUp,
     ViewPageDown,
     ViewPageUp,
+    /// `Enter` on a directory listing: open the entry under the cursor,
+    /// as a click on its row does (#469).
+    ViewOpen,
     // Filter pane
     FiltersUp,
     FiltersDown,
@@ -395,6 +398,7 @@ impl ActionId {
             Self::ViewHalfPageUp => "view.halfpage.up",
             Self::ViewPageDown => "view.page.down",
             Self::ViewPageUp => "view.page.up",
+            Self::ViewOpen => "view.open",
             Self::FiltersUp => "filters.up",
             Self::FiltersDown => "filters.down",
             Self::FiltersGotoStart => "filters.goto.start",
@@ -568,6 +572,7 @@ pub(crate) const DEFAULT: &[(Scope, &str, ActionId)] = &[
     (Scope::View, "PageDown", ActionId::ViewPageDown),
     (Scope::View, "Ctrl-b", ActionId::ViewPageUp),
     (Scope::View, "PageUp", ActionId::ViewPageUp),
+    (Scope::View, "Enter", ActionId::ViewOpen),
     // See the Global section above: `n`/`N` fall through to here (and to
     // the filter pane below) rather than being bound in Global.
     (Scope::View, "n", ActionId::HitNext),
@@ -1443,18 +1448,18 @@ mod tests {
     }
 
     /// `[` and `]` took over paging from space and Enter (#48). The view
-    /// must not still bind either, or it would keep a second copy of a key
-    /// that now belongs to another pane.
+    /// must not still page on either. Space is bound to nothing there;
+    /// Enter opens the entry under the cursor of a listing (#469).
     #[test]
     fn space_and_enter_no_longer_page_the_view() {
-        for code in [KeyCode::Char(' '), KeyCode::Enter] {
-            let event = KeyEvent::new(code, KeyModifiers::empty());
-            assert_eq!(
-                Keymap::default().resolve(Scope::View, normalise(event)),
-                None,
-                "{code:?} still means something in the file view"
-            );
-        }
+        let resolve = |code| {
+            Keymap::default().resolve(
+                Scope::View,
+                normalise(KeyEvent::new(code, KeyModifiers::empty())),
+            )
+        };
+        assert_eq!(resolve(KeyCode::Char(' ')), None);
+        assert_eq!(resolve(KeyCode::Enter), Some(ActionId::ViewOpen));
     }
 
     /// #340: `0` is the first digit of `01` to `09`, so it starts a filter

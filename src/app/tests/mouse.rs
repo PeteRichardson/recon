@@ -247,9 +247,10 @@ fn clicking_a_row_of_the_listing_in_the_view_opens_that_entry() {
     assert_eq!(app.focus, Focus::View);
 }
 
-#[test]
-fn clicking_a_listed_subdirectory_in_the_view_descends_into_it() {
-    let dir = fixture_dir("click_view_subdir");
+/// A directory holding `outer/deeper/leaf.log`, and the app previewing
+/// `outer/` in the view, so the look-ahead's first row is `deeper/`.
+fn app_previewing_outer(name: &str) -> (App<'static>, std::path::PathBuf) {
+    let dir = fixture_dir(name);
     fs::create_dir_all(dir.join("outer/deeper")).expect("create dirs");
     fs::write(dir.join("outer/deeper/leaf.log"), "l\n").expect("write");
     let mut app = App::new(&Startup::from(Config {
@@ -258,6 +259,12 @@ fn clicking_a_listed_subdirectory_in_the_view_descends_into_it() {
     }));
     draw(&mut app);
     click_pane(&mut app, Focus::Explorer, 1); // `outer/`, previewed
+    (app, dir)
+}
+
+#[test]
+fn clicking_a_listed_subdirectory_in_the_view_descends_into_it() {
+    let (mut app, dir) = app_previewing_outer("click_view_subdir");
     draw(&mut app);
 
     click_pane(&mut app, Focus::View, 0); // `deeper/` in the look-ahead
@@ -518,4 +525,91 @@ fn a_click_or_a_key_asks_for_a_redraw() {
     let (mut app, _root) = app_over_project("click_redraws", "alpha\n");
     assert!(mouse(&mut app, MouseEventKind::Down(MouseButton::Left), 3));
     assert!(key(&mut app, KeyCode::Char('j')));
+}
+
+// ---- #469: Enter on a listing row does what a click on it does ---------
+
+#[test]
+fn enter_on_a_listed_file_in_the_view_opens_it_like_a_click() {
+    let mut app = app_previewing_listing("enter_listing_file", &["a.log", "b.log"]);
+    let sub = app.view.filename().to_path_buf();
+    focus_file_view(&mut app);
+    key(&mut app, KeyCode::Char('j'));
+
+    key(&mut app, KeyCode::Enter);
+
+    assert_eq!(app.explorer.dir(), sub);
+    assert_eq!(shown(&app), "b.log");
+    assert!(
+        app.explorer
+            .selected_path()
+            .is_some_and(|p| p.ends_with("b.log"))
+    );
+    assert_eq!(app.focus, Focus::View);
+}
+
+#[test]
+fn enter_on_a_listed_subdirectory_in_the_view_descends_like_a_click() {
+    let (mut app, dir) = app_previewing_outer("enter_listing_subdir");
+    focus_file_view(&mut app);
+
+    key(&mut app, KeyCode::Enter); // `deeper/` in the look-ahead
+
+    assert!(
+        app.explorer.dir().ends_with(dir.join("outer/deeper")),
+        "got {}",
+        app.explorer.dir().display()
+    );
+    assert!(
+        app.explorer
+            .selected_path()
+            .is_some_and(|p| p.ends_with("leaf.log")),
+        "the first entry is selected"
+    );
+    assert_eq!(shown(&app), "leaf.log", "and previewed");
+}
+
+#[test]
+fn enter_in_the_view_while_it_shows_a_file_changes_nothing() {
+    let mut app = app_over_files("enter_view_file", &[("a.log", "a\nb\nc\n")]);
+    open_file(&mut app, 0);
+    focus_file_view(&mut app);
+    key(&mut app, KeyCode::Char('j'));
+    let dir = app.explorer.dir().to_path_buf();
+    let cursor = app.view.cursor_visible_row();
+
+    key(&mut app, KeyCode::Enter);
+
+    assert_eq!(app.explorer.dir(), dir);
+    assert_eq!(shown(&app), "a.log");
+    assert_eq!(app.view.cursor_visible_row(), cursor);
+    assert_eq!(app.focus, Focus::View);
+}
+
+#[test]
+fn enter_on_a_filtered_listing_opens_the_entry_under_the_cursor() {
+    let mut app = app_previewing_listing("enter_listing_exclude", &["a.log", "b.tmp", "c.log"]);
+    app.add_excluding_filter(r"\.tmp").expect("valid pattern");
+    focus_file_view(&mut app);
+    key(&mut app, KeyCode::Char('j'));
+    draw(&mut app);
+    assert_eq!(listing_row_name(&app, 1), "c.log");
+
+    key(&mut app, KeyCode::Enter);
+
+    assert_eq!(shown(&app), "c.log");
+}
+
+#[test]
+fn enter_on_the_blank_row_of_an_empty_hidden_listing_opens_nothing() {
+    let mut app = app_previewing_listing("enter_listing_blank", &["a.log", "b.log"]);
+    app.add_filter("zzz").expect("valid pattern");
+    app.toggle_hiding();
+    focus_file_view(&mut app);
+    let dir = app.explorer.dir().to_path_buf();
+
+    key(&mut app, KeyCode::Enter);
+
+    assert_eq!(app.explorer.dir(), dir, "the explorer stayed put");
+    assert!(app.view.showing_directory(), "nothing was opened");
 }

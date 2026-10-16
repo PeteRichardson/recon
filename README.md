@@ -546,7 +546,7 @@ exists:
 | `Ctrl-d` / `Ctrl-u` | half a page | scroll half a page | half a page | `explorer.halfpage.down` / `explorer.halfpage.up` / `view.halfpage.down` / `view.halfpage.up` / `filters.halfpage.down` / `filters.halfpage.up` |
 | `PageDown` / `PageUp` | a page | scroll a page (also `Ctrl-f` / `Ctrl-b`) | a page | `explorer.page.down` / `explorer.page.up` / `view.page.down` / `view.page.up` / `filters.page.down` / `filters.page.up` |
 | `n` / `N` | next / previous filename-search match, or file the filters match | with a search set, next / previous hit line, wrapping within the file; otherwise next / previous interesting line, crossing files | acts on the file view | `hit.next` / `hit.prev` / `explorer.hit.next` / `explorer.hit.prev` |
-| `Enter` | open the entry — a file also takes the focus | — | toggle the filter or the set | `explorer.open` / `filters.toggle` |
+| `Enter` | open the entry — a file also takes the focus | in a directory listing, open the entry under the cursor, as a click on its row does; otherwise nothing | toggle the filter or the set | `explorer.open` / `view.open` / `filters.toggle` |
 
 `[` and `]` page the file view from every pane and so live in the Global table.
 
@@ -557,7 +557,8 @@ on a file opens it and one click on a directory looks inside it; a second click
 on the same directory (or on `..`) enters it, the way `Enter` does. In the
 filter pane a click toggles the filter or the set header on that row. In the file view, a click on a row of a directory's look-ahead
 listing takes the explorer into that directory and opens the entry clicked —
-one click instead of `l`, a cursor motion and `Enter`. A click on a *file's*
+one click instead of `l`, a cursor motion and `Enter`. `Enter` on a listing
+row in the file view does the same from the keyboard. A click on a *file's*
 text puts the cursor on the character under the pointer; dragging from there
 selects, and double-clicking selects the word, both ready for `y` — see
 [Copying text](#copying-text). A click on the status row opens the

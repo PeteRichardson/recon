@@ -258,6 +258,9 @@ impl App<'_> {
                     self.jump_to_visible_row(target);
                 }
             }
+            // Only `App` holds the document that maps the cursor's row back
+            // to an entry of the listing, so this cannot be the widget's.
+            A::ViewOpen => self.open_listing_row(self.view.cursor_visible_row()),
             // Bound the same way in the view and the filter pane; only `App`
             // can see the document, so `n`/`N` land here rather than in
             // either widget.
