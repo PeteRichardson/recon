@@ -507,6 +507,14 @@ impl Explorer<'_> {
         self.step_to(reverse, |entry| matches!(entry.matched, Match::Yes(_)))
     }
 
+    /// The next (or previous) readable file, wrapping, whatever the filters
+    /// and the filename search say: the step `.`/`,` take when no filter
+    /// selects, where every file is a match (#471). Directories, `..` and
+    /// special files are not files to read, so they are not stops.
+    pub(crate) fn step_to_file(&mut self, reverse: bool) -> Option<Action> {
+        self.step_to(reverse, |entry| entry.kind.is_readable())
+    }
+
     /// Whether any file the scan could answer for is still `Unknown` (#158):
     /// what tells "not scanned yet" apart from "no file matches". Only
     /// readable entries count — a directory, `..` or a special file is

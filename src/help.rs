@@ -425,7 +425,7 @@ pub const KEYMAP: &[Section] = &[
             },
             Binding {
                 keys: &[".", ","],
-                action: "Next / previous file the filters match",
+                action: "Next / previous file the filters match, else any file",
                 names: &["global.file.next", "global.file.prev"],
             },
             Binding {
@@ -1863,7 +1863,10 @@ mod tests {
         let rows = rows(&keymap(&[("global.file.prev", &["<"])]));
 
         assert_eq!(
-            keys_of(&rows, "Next / previous file the filters match"),
+            keys_of(
+                &rows,
+                "Next / previous file the filters match, else any file"
+            ),
             ". / <",
             "only the rebound half of the row may move"
         );
