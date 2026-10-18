@@ -6,6 +6,7 @@ use super::search::{WRAPPED_TO_BOTTOM, WRAPPED_TO_TOP};
 use super::viewport::Step;
 use crate::views::Extent;
 use crate::widgets::Action;
+use crate::widgets::explorer::Explorer;
 
 /// A cross-file step that just happened, for the notice over the file view
 /// and the accent on its title. Lives exactly as long as a `StatusMessage`:
@@ -29,7 +30,7 @@ impl Crossing {
     }
 }
 
-impl App<'_> {
+impl<'a> App<'a> {
     /// Re-read the active file, and put the cursor back on the line it was on.
     ///
     /// A new read rebuilds the buffer from the top, so this remembers the
@@ -109,7 +110,7 @@ impl App<'_> {
             self.land_on(target);
             return;
         }
-        if !self.cross_file(backwards) {
+        if !self.cross_file(backwards, Explorer::step_to_match) {
             // `step_to_interesting` is quiet about what it did, and a key
             // whose whole job is finding a hit should not be: say when the
             // walk passed the file's edge, and say when there was nothing.
@@ -128,8 +129,8 @@ impl App<'_> {
         }
     }
 
-    /// Select, load and land in the next (previous) file the filters
-    /// selected. `false` when there is no *other* such file — the explorer
+    /// Select, load and land in the next (previous) file that `step` walks
+    /// the explorer to. `false` when there is no *other* such file — the explorer
     /// wraps, so "the only match is the one we are in" comes back as an
     /// unchanged selection rather than `None`.
     ///
@@ -137,9 +138,13 @@ impl App<'_> {
     /// status row, the notice `render` paints over the file view, and the
     /// accent on the view's title. Log files look alike, and a step that
     /// silently changed which one is on screen would be worse than no step.
-    fn cross_file(&mut self, backwards: bool) -> bool {
+    fn cross_file(
+        &mut self,
+        backwards: bool,
+        step: fn(&mut Explorer<'a>, bool) -> Option<Action>,
+    ) -> bool {
         let before = self.explorer.selected_entry();
-        let Some(action) = self.explorer.step_to_match(backwards) else {
+        let Some(action) = step(&mut self.explorer, backwards) else {
             return false;
         };
         if self.explorer.selected_entry() == before {
@@ -157,9 +162,18 @@ impl App<'_> {
 
     /// `.`/`,`: the cross-file half of `n`/`N`, without first exhausting the
     /// current file. Global, so the loop can skip a file from any pane.
+    ///
+    /// With no filter selecting, every file is a match — the explorer shows
+    /// them all plain, unscanned — so the step goes to the next file (#471).
+    /// The peek is restored first, so its own "no filter" never counts.
     pub(super) fn skip_file(&mut self, backwards: bool) {
         self.restore_peek_before_moving();
-        if !self.cross_file(backwards) {
+        let step = if self.filters.is_scanning() {
+            Explorer::step_to_match
+        } else {
+            Explorer::step_to_file
+        };
+        if !self.cross_file(backwards, step) {
             self.report("no other file matches", false);
         }
     }

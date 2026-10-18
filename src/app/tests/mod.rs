@@ -92,11 +92,16 @@ fn rebind(app: &mut App<'_>, lines: &[(&str, &[&str])]) {
 }
 
 /// `app_over`, with real contents. The app starts on a placeholder path
-/// that does not exist, so nothing is loaded until `open_file`.
+/// that does not exist, so nothing is loaded until `open_file`. A name
+/// with a `/` makes its directory too, which lists as a directory row.
 fn app_over_files(name: &str, files: &[(&str, &str)]) -> App<'static> {
     let dir = fixture_dir(name);
     for (file, body) in files {
-        fs::write(dir.join(file), body).expect("write fixture");
+        let path = dir.join(file);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).expect("create fixture subdir");
+        }
+        fs::write(path, body).expect("write fixture");
     }
     App::new(&Startup::from(Config {
         path: Some(dir.join("placeholder").display().to_string()),

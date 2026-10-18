@@ -949,3 +949,81 @@ fn the_search_wraps_to_the_top_and_says_so() {
     assert_eq!(cursor_source(&app), 0);
     assert_eq!(status(&app), Some(WRAPPED_TO_TOP));
 }
+
+// ---- `.`/`,` with no filter (#471) ---------------------------
+
+/// Three plain logs and no filter, with the view on `a.log` and focused.
+fn app_over_unfiltered_logs(name: &str) -> App<'static> {
+    let mut app = app_over_files(
+        name,
+        &[
+            ("a.log", "a1\na2\n"),
+            ("b.log", "b1\nb2\n"),
+            ("c.log", "c1\nc2\n"),
+        ],
+    );
+    open_file(&mut app, 0);
+    focus_file_view(&mut app);
+    app
+}
+
+/// With no filter on, every file is a match, so `.` steps to the next
+/// file rather than reporting that none matches.
+#[test]
+fn dot_with_no_filter_goes_to_the_next_file() {
+    let mut app = app_over_unfiltered_logs("dot_no_filter");
+    key(&mut app, KeyCode::Down);
+    assert_eq!(cursor_source(&app), 1, "sanity: cursor moved off the top");
+
+    key(&mut app, KeyCode::Char('.'));
+
+    assert_eq!(shown(&app), "b.log");
+    assert_eq!(cursor_source(&app), 0, "did not land at the top");
+    assert_eq!(message(&app), Some("next file · b.log"));
+    assert!(app.crossing.is_some());
+}
+
+/// `,` with no filter goes back a file, and wraps from the first file to
+/// the last, as the filtered step does.
+#[test]
+fn comma_with_no_filter_wraps_to_the_last_file() {
+    let mut app = app_over_unfiltered_logs("comma_no_filter");
+
+    key(&mut app, KeyCode::Char(','));
+
+    assert_eq!(shown(&app), "c.log");
+    assert_eq!(message(&app), Some("previous file · c.log"));
+}
+
+/// The step with no filter stops only on files: from the last file it
+/// wraps past `..` and the directory row to the first file.
+#[test]
+fn dot_with_no_filter_skips_directory_rows() {
+    let mut app = app_over_files(
+        "dot_no_filter_dirs",
+        &[("a.log", "a\n"), ("sub/inner.log", "i\n"), ("z.log", "z\n")],
+    );
+    let last = app.explorer.files().len() - 1;
+    open_file(&mut app, last);
+    focus_file_view(&mut app);
+    assert_eq!(shown(&app), "z.log", "sanity: on the last file");
+
+    key(&mut app, KeyCode::Char('.'));
+
+    assert_eq!(shown(&app), "a.log", "stopped on a directory row");
+}
+
+/// `.` is global: with no filter it steps the file from the explorer pane
+/// too, and leaves focus where it was.
+#[test]
+fn dot_with_no_filter_works_from_the_explorer() {
+    let mut app = app_over_unfiltered_logs("dot_no_filter_explorer");
+    key(&mut app, KeyCode::Tab);
+    let focus = app.focus;
+    assert_ne!(focus, Focus::View, "sanity: focus left the file view");
+
+    key(&mut app, KeyCode::Char('.'));
+
+    assert_eq!(shown(&app), "b.log");
+    assert_eq!(app.focus, focus, "the step moved focus");
+}
