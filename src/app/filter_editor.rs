@@ -74,7 +74,7 @@
 
 use super::App;
 use super::prompt::SearchPrompt;
-use crate::filter::{Details, Example, Sense, generated_hash};
+use crate::filter::{Broken, Details, Example, Expander, Predicate, Sense, generated_hash};
 use crate::generate::{self, ATTEMPTS, Candidate, Rejection, Running};
 use crossterm::event::{self, KeyCode, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::prelude::{Rect, Style};
@@ -270,6 +270,14 @@ pub(super) struct FilterEditor {
     /// empty — an empty regex matches every line, and a highlight on every
     /// line says nothing.
     pub(super) regex: Option<Regex>,
+    /// What a reference in the pattern can stand for (#473), as the
+    /// filters were when the editor opened, and the set a reference with
+    /// no set is to.
+    pub(super) expander: Expander,
+    pub(super) own: String,
+    /// The pattern with its references expanded, or why one cannot be:
+    /// `None` for a pattern with no reference. The panel shows it.
+    pub(super) expansion: Option<Result<String, Broken>>,
     /// Why the pattern as typed does not compile, or why Enter refused it.
     pub(super) error: Option<String>,
     /// How many of `lines` `regex` matches.
@@ -404,7 +412,12 @@ enum Target {
 
 impl FilterEditor {
     /// An editor over `lines`, with an empty pattern.
-    pub(super) fn new(lines: Arc<Vec<String>>, style: Style) -> Self {
+    pub(super) fn new(
+        lines: Arc<Vec<String>>,
+        style: Style,
+        expander: Expander,
+        own: String,
+    ) -> Self {
         Self {
             field: SearchPrompt::default(),
             name: SearchPrompt::default(),
@@ -414,6 +427,9 @@ impl FilterEditor {
             lines,
             extra: Vec::new(),
             regex: None,
+            expander,
+            own,
+            expansion: None,
             error: None,
             matches: 0,
             top: 0,
@@ -447,15 +463,14 @@ impl FilterEditor {
         }
     }
 
-    /// An editor over `lines` on the pattern of the filter at `index`, cursor
+    /// `base`, a new editor, on the pattern of the filter at `index`, cursor
     /// at its end as `c` puts it, with the highlight and the count already
     /// showing, and the filter's name, description and prompt in their
     /// fields, and its sense. Its examples are marks (#318): on each line of
     /// the file that has an example's text, or on a line of `extra` for an
     /// example the file does not have.
     pub(super) fn editing(
-        lines: Arc<Vec<String>>,
-        style: Style,
+        base: Self,
         index: usize,
         pattern: String,
         details: Details,
@@ -483,7 +498,7 @@ impl FilterEditor {
             sense,
             target: Some(index),
             generated,
-            ..Self::new(lines, style)
+            ..base
         };
         editor.mark_examples(details.examples);
         editor.recompile();
@@ -661,7 +676,24 @@ impl FilterEditor {
             self.refresh();
             return;
         }
-        match Regex::new(pattern) {
+        let regex = self
+            .expander
+            .predicate(&self.own, pattern)
+            .map(|predicate| {
+                self.expansion = match &predicate {
+                    Predicate::Referring { expanded, .. } => Some(
+                        expanded
+                            .as_ref()
+                            .map(|regex| regex.as_str().to_string())
+                            .map_err(Clone::clone),
+                    ),
+                    _ => None,
+                };
+                predicate
+                    .line_regex()
+                    .expect("a typed pattern is never a definition")
+            });
+        match regex {
             Ok(regex) => {
                 self.matched = self
                     .lines
@@ -1309,7 +1341,9 @@ fn pattern_error(pattern: &str) -> Option<String> {
     if pattern.is_empty() {
         return None;
     }
-    Regex::new(pattern).err().map(|error| error_line(&error))
+    Predicate::parse(pattern)
+        .err()
+        .map(|error| error_line(&error))
 }
 
 /// The lines of `examples` with the mark `must_match` gives.
@@ -1447,7 +1481,12 @@ impl App<'_> {
     pub(super) fn open_filter_editor(&mut self) {
         self.promote_truncated_preview();
         let lines = self.view.source().clone();
-        let editor = FilterEditor::new(lines, self.filters.next_style());
+        let editor = FilterEditor::new(
+            lines,
+            self.filters.next_style(),
+            self.filters.expander(),
+            self.filters.set_name_of(None).to_string(),
+        );
         self.show_filter_editor(editor);
     }
 
@@ -1488,14 +1527,15 @@ impl App<'_> {
         let Some(filter) = self.filters.filters().get(index) else {
             return;
         };
-        let Some(regex) = filter.predicate.as_regex() else {
+        // As typed: a referring filter keeps its references (#473).
+        let Some(pattern) = filter.predicate.typed() else {
             self.report(
                 "a definition filter has no pattern to edit; c turns it into one",
                 false,
             );
             return;
         };
-        let (pattern, style, sense) = (regex.as_str().to_string(), filter.style, filter.sense);
+        let (pattern, style, sense) = (pattern.to_string(), filter.style, filter.sense);
         let details = Details {
             name: filter.name.clone(),
             description: filter.description.clone(),
@@ -1505,7 +1545,13 @@ impl App<'_> {
         };
         self.promote_truncated_preview();
         let lines = self.view.source().clone();
-        let editor = FilterEditor::editing(lines, style, index, pattern, details, sense);
+        let base = FilterEditor::new(
+            lines,
+            style,
+            self.filters.expander(),
+            self.filters.set_name_of(Some(index)).to_string(),
+        );
+        let editor = FilterEditor::editing(base, index, pattern, details, sense);
         self.show_filter_editor(editor);
     }
 
@@ -2091,7 +2137,12 @@ mod tests {
 
     fn editor_over(lines: &[&str]) -> FilterEditor {
         let lines = lines.iter().map(ToString::to_string).collect();
-        FilterEditor::new(Arc::new(lines), Style::default())
+        FilterEditor::new(
+            Arc::new(lines),
+            Style::default(),
+            Expander::default(),
+            String::new(),
+        )
     }
 
     fn example(line: &str, must_match: bool) -> Example {
@@ -2194,7 +2245,12 @@ mod tests {
     #[test]
     fn details_of_many_marks_is_fast() {
         let lines: Vec<String> = (0..200_000).map(|i| format!("line {i}")).collect();
-        let mut editor = FilterEditor::new(Arc::new(lines), Style::default());
+        let mut editor = FilterEditor::new(
+            Arc::new(lines),
+            Style::default(),
+            Expander::default(),
+            String::new(),
+        );
         for index in 0..200_000 {
             editor.marks.insert(index, Mark::MustMatch);
         }

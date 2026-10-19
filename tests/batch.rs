@@ -680,3 +680,79 @@ fn print_keymap_puts_keymap_warnings_on_stderr() {
         "the warnings must not change what stdout carries"
     );
 }
+
+/// A config home for pattern references (#473): `org:Summary`, and a
+/// `team` set that refers to it — once correctly and twice not. The set
+/// `spare` has a broken reference too, and is never turned on.
+fn reference_home(dir: &Path) -> PathBuf {
+    let home = dir.join("config");
+    fs::create_dir_all(home.join("recon")).expect("create config dir");
+    fs::write(
+        home.join("recon/filters.toml"),
+        "[sets.org]\n\
+         [[sets.org.filters]]\n\
+         name = 'Summary'\n\
+         pattern = '^SUMMARY'\n\n\
+         [sets.team]\n\
+         [[sets.team.filters]]\n\
+         name = 'u'\n\
+         pattern = '${org:Summary}.*Updates'\n\
+         [[sets.team.filters]]\n\
+         name = 'bad'\n\
+         pattern = '${org:Nope}'\n\
+         [[sets.team.filters]]\n\
+         name = 'worse'\n\
+         pattern = '${gone:X}'\n\n\
+         [sets.spare]\n\
+         [[sets.spare.filters]]\n\
+         name = 's'\n\
+         pattern = '${org:Nope}'\n",
+    )
+    .expect("write filters.toml");
+    home
+}
+
+#[test]
+fn a_reference_uses_the_target_s_pattern_and_a_disabled_broken_one_is_ignored() {
+    let dir = fixture("reference_expands");
+    let home = reference_home(&dir);
+    let a = dir.join("a.log");
+    fs::write(&a, "SUMMARY: Updates\nSUMMARY only\nUpdates\n").expect("write");
+
+    let out = recon(
+        &home,
+        &["--emit", "lines", "-q", "--set", "team:u", "--hide"],
+        format!("{}\n", a.display()).as_bytes(),
+    );
+
+    assert_eq!(text(&out.stdout), "SUMMARY: Updates\n");
+    assert_eq!(text(&out.stderr), "");
+    assert_eq!(out.status.code(), Some(0));
+}
+
+#[test]
+fn a_broken_reference_that_takes_effect_stops_the_run_before_any_output() {
+    let dir = fixture("reference_broken");
+    let home = reference_home(&dir);
+    let a = dir.join("a.log");
+    fs::write(&a, "SUMMARY: Updates\n").expect("write");
+
+    let out = recon(
+        &home,
+        &["--emit", "lines", "--set", "team:u,bad,worse"],
+        format!("{}\n", a.display()).as_bytes(),
+    );
+
+    assert_eq!(out.stdout, b"");
+    let stderr = text(&out.stderr);
+    assert!(
+        stderr.contains("filter team:bad has a broken reference: org:Nope not found"),
+        "stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("filter team:worse has a broken reference: gone:X not found"),
+        "stderr: {stderr}"
+    );
+    assert!(!stderr.contains("spare"), "stderr: {stderr}");
+    assert_eq!(out.status.code(), Some(1));
+}

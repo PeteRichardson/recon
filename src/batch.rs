@@ -95,6 +95,16 @@ fn filters_for(startup: &Startup) -> Result<ActiveFilters> {
             .unlist_named(set)
             .map_err(|err| eyre!("--unlist {set}: {err}"))?;
     }
+    // A run that cannot apply a filter the user turned on must not give
+    // output that looks right (#473): stop, and name every one.
+    let broken: Vec<String> = filters
+        .broken_references()
+        .into_iter()
+        .map(|(filter, broken)| format!("filter {filter} has a broken reference: {broken}"))
+        .collect();
+    if !broken.is_empty() {
+        return Err(eyre!("{}", broken.join("\n")));
+    }
     Ok(filters)
 }
 

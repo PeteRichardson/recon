@@ -58,7 +58,7 @@ impl App<'_> {
             A::GlobalHideFilters => self.hide_pane(Focus::Filters),
             A::GlobalHelp => self.help = true,
             A::GlobalSets => {
-                self.set_picker = Some(widgets::setpicker::SetPicker::new(self.filters.sets()));
+                self.set_picker = Some(widgets::setpicker::SetPicker::new(&self.filters));
             }
             // Every `/` captures its origin: the search moves as it is
             // typed in every pane, and Esc goes back to where it opened.

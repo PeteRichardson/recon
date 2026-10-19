@@ -947,6 +947,37 @@ after such a change does not quit: it names the sets
 `q` quits. Any other key cancels the warning. `Q` quits at once. To keep a
 change, edit the set's file.
 
+#### Pattern references
+
+A pattern can use the pattern of another filter, so that two filters cannot
+become different. `${set:name}` stands for the current pattern of the filter
+`name` in the set `set`, and `${name}` stands for a filter in the same set.
+The name is the filter's `name` key, as profiles use it, so a filter with no
+`name` cannot be a target. To write the characters `${` in a pattern, write
+`\$\{`.
+
+```toml
+[[sets.team.filters]]
+name = "Update summaries"
+pattern = '${org:Summary}.*Updates'
+```
+
+recon puts the target's pattern in `(?:…)` in place of the reference. It uses
+only the pattern, never the target's sense, colour or switch, so `org:Summary`
+can be off, and its set can be unlisted. recon expands the reference again
+each time a pattern changes, so the reference always means the target's
+pattern now. To keep a pattern as it is, copy it. The filter pane shows the
+pattern as you wrote it. The filter editor also shows the expanded pattern,
+and its matches use it.
+
+A reference is broken when its target does not exist, is a definition
+filter, or has references of its own. A broken reference does not stop recon.
+Only its filter matches nothing, and its row in the filter pane shows `⚠` and
+the reason (`org:Summary not found`). In batch mode, a broken reference in a
+filter that is on stops the run before any output, with exit status 1, and
+names each broken reference on stderr. A broken reference in a filter or a
+set that is off does not stop the run.
+
 #### More directories of sets
 
 `RECON_FILTER_PATH` (or `--filter-path`) names more directories to read sets
@@ -997,6 +1028,8 @@ order: `[x]` or `[ ]`, the name, and the set's `description` (blank if it has
 none, and cut with `…` when it is too long for the row). The list scrolls. The
 checkbox means **listed**, not enabled: a listed set that is disabled is also
 checked.
+A set that references point into shows `↗ N` after its name, where N is the
+number of references (see [Pattern references](#pattern-references)).
 
 | Key(s) | Action | Name(s) |
 | --- | --- | --- |

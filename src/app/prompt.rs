@@ -449,9 +449,13 @@ impl App<'_> {
                     // A filter's examples are regression tests (#318): a
                     // pattern that fails one does not replace the old one.
                     if let PromptKind::Edit { index, .. } = kind
-                        && let Ok(regex) = regex::Regex::new(&pattern)
+                        && let Ok(predicate) = self
+                            .filters
+                            .expander()
+                            .predicate(self.filters.set_name_of(Some(index)), &pattern)
+                        && let Some(regex) = predicate.as_regex()
                     {
-                        let failed = self.filters.failed_examples(index, &regex);
+                        let failed = self.filters.failed_examples(index, regex);
                         if !failed.is_empty() {
                             let open = self.keymap.keys_for(&[
                                 crate::keymap::ActionId::GlobalFocusFilters,
