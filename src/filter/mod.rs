@@ -12,9 +12,11 @@
 //! name `crate::filter::X` whichever file `X` lives in.
 
 mod matcher;
+mod reference;
 mod sets;
 
 pub use matcher::{Bits, MAX_PATTERNS, Matcher, Owner, ScanOff, ScanStamp};
+pub use reference::{Broken, Expander};
 pub use sets::{
     DEFINITIONS_DESCRIPTION, DEFINITIONS_SET, EnableError, FilterSet, LoadedFilter, LoadedSet,
     Origin, is_builtin_name, list_members,
@@ -241,6 +243,13 @@ pub enum Predicate {
     /// `KindSet` the document supplies alongside the line; on a file with no
     /// grammar every set is empty and the predicate never holds.
     Definition(Kind),
+    /// A pattern with a reference to another filter's pattern (#473):
+    /// `typed` as the user wrote it, and its expansion, or why there is
+    /// none. See `reference`.
+    Referring {
+        typed: String,
+        expanded: Result<Regex, Broken>,
+    },
 }
 
 /// A regex that matches nothing: an empty character class. Stands in for a
@@ -263,25 +272,28 @@ impl Predicate {
         match self {
             Self::Regex(regex) => regex.as_str().to_string(),
             Self::Definition(kind) => kind.to_string(),
+            Self::Referring { typed, .. } => typed.clone(),
         }
     }
 
-    /// The regex, when there is one. The explorer's `Matcher` runs regexes
+    /// The regex, when there is one: for a referring pattern, its
+    /// expansion, and none while a reference is broken. The explorer's `Matcher` runs regexes
     /// over files it never parses, so it has nothing to ask a definition.
     #[must_use]
     pub fn as_regex(&self) -> Option<&Regex> {
         match self {
-            Self::Regex(regex) => Some(regex),
-            Self::Definition(_) => None,
+            Self::Regex(regex)
+            | Self::Referring {
+                expanded: Ok(regex),
+                ..
+            } => Some(regex),
+            Self::Definition(_) | Self::Referring { .. } => None,
         }
     }
 
     /// The pattern this predicate contributes to the compiled `RegexSet`.
     fn source(&self) -> &str {
-        match self {
-            Self::Regex(regex) => regex.as_str(),
-            Self::Definition(_) => NEVER,
-        }
+        self.as_regex().map_or(NEVER, Regex::as_str)
     }
 
     /// The scan cache's name for this predicate. Distinct from `source` only
@@ -289,8 +301,8 @@ impl Predicate {
     /// The leading control character cannot appear in a typed pattern.
     fn key(&self) -> String {
         match self {
-            Self::Regex(regex) => regex.as_str().to_string(),
             Self::Definition(kind) => format!("\u{1}{kind}"),
+            Self::Regex(_) | Self::Referring { .. } => self.source().to_string(),
         }
     }
 
@@ -298,8 +310,10 @@ impl Predicate {
     /// evaluation — the scanning path's counterpart to a `RegexSet` hit.
     fn holds(&self, line: &str, kinds: KindSet) -> bool {
         match self {
-            Self::Regex(regex) => regex.is_match(line),
             Self::Definition(kind) => kinds.contains(*kind),
+            Self::Regex(_) | Self::Referring { .. } => {
+                self.as_regex().is_some_and(|regex| regex.is_match(line))
+            }
         }
     }
 }
@@ -392,14 +406,8 @@ impl Filter {
     /// the filter an ordinary one, and nothing asks a model anything.
     #[must_use]
     pub fn is_generated(&self) -> bool {
-        match (
-            &self.generated_from,
-            &self.prompt,
-            self.predicate.as_regex(),
-        ) {
-            (Some(hash), Some(prompt), Some(regex)) => {
-                *hash == generated_hash(prompt, regex.as_str())
-            }
+        match (&self.generated_from, &self.prompt, self.predicate.typed()) {
+            (Some(hash), Some(prompt), Some(pattern)) => *hash == generated_hash(prompt, pattern),
             _ => false,
         }
     }
@@ -682,11 +690,11 @@ impl ActiveFilters {
     /// predecessors. A pattern that will not compile is rejected and the set
     /// left untouched.
     pub fn add(&mut self, pattern: &str) -> Result<(), regex::Error> {
-        let compiled = Regex::new(pattern)?;
+        let predicate = Predicate::parse(pattern)?;
         let style = self.next_style();
         self.insert_scratch(Filter {
             id: FilterId::fresh(),
-            predicate: Predicate::Regex(compiled),
+            predicate,
             sense: Sense::Include,
             enabled: true,
             style,
@@ -706,10 +714,10 @@ impl ActiveFilters {
     /// Excluding filters carry no colour, since a line they match is never
     /// rendered.
     pub fn add_excluding(&mut self, pattern: &str) -> Result<(), regex::Error> {
-        let pattern = Regex::new(pattern)?;
+        let predicate = Predicate::parse(pattern)?;
         self.insert_scratch(Filter {
             id: FilterId::fresh(),
-            predicate: Predicate::Regex(pattern),
+            predicate,
             sense: Sense::Exclude,
             enabled: true,
             style: Style::default(),
@@ -768,9 +776,10 @@ impl ActiveFilters {
     /// every line. Any sense counts here.
     #[must_use]
     pub fn needs_regex(&self) -> bool {
-        self.filters.iter().enumerate().any(|(index, filter)| {
-            matches!(filter.predicate, Predicate::Regex(_)) && self.effective(index)
-        })
+        self.filters
+            .iter()
+            .enumerate()
+            .any(|(index, filter)| filter.predicate.as_regex().is_some() && self.effective(index))
     }
 
     /// Whether the filter at `index` currently takes effect: on, and in a
@@ -916,9 +925,9 @@ impl ActiveFilters {
     /// A filter with no `name` answers to its pattern, so a new pattern is
     /// a new name, and the profiles follow it as `set_details` says (#356).
     pub fn set_pattern(&mut self, index: usize, pattern: &str) -> Result<bool, regex::Error> {
-        let compiled = Regex::new(pattern)?;
+        let predicate = Predicate::parse(pattern)?;
         let changed = self.change(index, |filter| {
-            filter.predicate = Predicate::Regex(compiled);
+            filter.predicate = predicate;
         });
         if changed {
             self.recompile();
@@ -938,9 +947,9 @@ impl ActiveFilters {
         pattern: &str,
         details: Details,
     ) -> Result<bool, regex::Error> {
-        let compiled = Regex::new(pattern)?;
+        let predicate = Predicate::parse(pattern)?;
         let changed = self.change(index, |filter| {
-            filter.predicate = Predicate::Regex(compiled);
+            filter.predicate = predicate;
             filter.apply(details);
         });
         if changed {
@@ -988,10 +997,18 @@ impl ActiveFilters {
     /// one: the set still opens the way it did. The caller checks the name
     /// with `name_taken` first.
     ///
-    /// No `recompile` and no `forget_capture`: nothing that matches or is
-    /// switched changes.
+    /// No `forget_capture`: nothing that is switched changes. A `recompile`
+    /// only when a new name changes what a reference stands for (#473).
     pub fn set_details(&mut self, index: usize, details: Details) -> bool {
-        self.change(index, |filter| filter.apply(details))
+        let before = self.filters.get(index).map(Filter::display_name);
+        let changed = self.change(index, |filter| filter.apply(details));
+        if changed
+            && before != self.filters.get(index).map(Filter::display_name)
+            && self.expand_references()
+        {
+            self.recompile();
+        }
+        changed
     }
 
     /// Change the user-authored filter at `index` with `change`, and write
@@ -1010,10 +1027,16 @@ impl ActiveFilters {
         let after = filter.display_name();
         let set = filter.set;
         if before != after {
-            for members in self.sets[set].profiles.values_mut() {
+            let meta = &mut self.sets[set];
+            for members in meta.profiles.values_mut() {
                 for member in members.iter_mut().filter(|member| **member == before) {
                     member.clone_from(&after);
                 }
+            }
+            // A reference names its target by name (#473), so the old name
+            // is no longer a target and the new one is.
+            for name in meta.filter_names.iter_mut().filter(|name| **name == before) {
+                name.clone_from(&after);
             }
         }
         true
@@ -1205,7 +1228,7 @@ impl ActiveFilters {
         // A definition's slot in the set never matches (see `NEVER`), so it
         // is answered from `kinds` instead; a regex's is the set's answer.
         let hit = |index: usize| match &self.filters[index].predicate {
-            Predicate::Regex(_) => matched(index),
+            Predicate::Regex(_) | Predicate::Referring { .. } => matched(index),
             Predicate::Definition(kind) => kinds.contains(*kind),
         };
 
@@ -1252,6 +1275,7 @@ impl ActiveFilters {
     /// slow, but `matcher` returns `None` and the explorer's marking
     /// switches off with nothing said (#187).
     fn recompile(&mut self) {
+        self.expand_references();
         self.generation = GENERATIONS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let patterns = self.filters.iter().map(|filter| filter.predicate.source());
         match RegexSet::new(patterns) {
@@ -1334,7 +1358,6 @@ impl ActiveFilters {
 #[cfg(test)]
 pub(crate) mod test_support {
     use super::{LoadedFilter, LoadedSet, Predicate, Sense};
-    use regex::Regex;
     use std::collections::BTreeMap;
     use std::path::PathBuf;
 
@@ -1359,7 +1382,7 @@ pub(crate) mod test_support {
                 .map(|pattern| LoadedFilter {
                     name: (*pattern).to_string(),
                     named: true,
-                    predicate: Predicate::Regex(Regex::new(pattern).expect("valid")),
+                    predicate: Predicate::parse(pattern).expect("valid"),
                     sense: Sense::Include,
                     colour: None,
                     description: None,

@@ -65,6 +65,10 @@ const INDENT: &str = "  ";
 /// profiles, but a different one.
 pub(crate) const GENERATED_MARK: &str = " ✦";
 
+/// Before the reason a filter's reference is broken (#473), which is why
+/// the filter matches nothing.
+const BROKEN_MARK: &str = " ⚠ ";
+
 /// One row of the pane.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Row {
@@ -423,8 +427,13 @@ impl FilterList {
                 } else {
                     ""
                 };
+                let broken = filter
+                    .predicate
+                    .broken()
+                    .map(|broken| format!("{BROKEN_MARK}{broken}"))
+                    .unwrap_or_default();
                 format!(
-                    "{indent}{number}[{}] {} {}{generated}",
+                    "{indent}{number}[{}] {} {}{generated}{broken}",
                     mark(filter.enabled),
                     sense_word(filter.sense),
                     filter.display_name()
@@ -1023,6 +1032,15 @@ mod tests {
         filters.toggle_context(0);
 
         assert_eq!(text_at(&filters, 0), "01[x] ctx foo");
+    }
+
+    /// #473: the pattern as typed, then the marker and the reason, so the
+    /// row says why the filter matches nothing.
+    #[test]
+    fn a_broken_reference_shows_its_reason_in_its_row() {
+        let filters = set_of(&["${Nope}x"], &[]);
+
+        assert_eq!(text_at(&filters, 0), "01[x] inc ${Nope}x ⚠ Nope not found");
     }
 
     // ---- two levels (#129) --------------------------------------------------

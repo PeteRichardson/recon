@@ -211,16 +211,23 @@ impl FilterEditor {
                 Style::default().fg(Color::DarkGray),
             );
         }
-        if let Some(error) = &self.error
+        // The error row, or what the pattern's references expand to (#473)
+        // when there is no error to give.
+        let last = match (&self.error, &self.expansion) {
+            (Some(error), _) => Some((error.clone(), Style::default().fg(Color::Red))),
+            (None, Some(Ok(expanded))) => Some((
+                format!("expands to: {expanded}"),
+                Style::default().fg(Color::DarkGray),
+            )),
+            (None, Some(Err(broken))) => {
+                Some((format!("⚠ {broken}"), Style::default().fg(Color::Red)))
+            }
+            (None, None) => None,
+        };
+        if let Some((text, style)) = last
             && inner.height >= rows
         {
-            buf.set_stringn(
-                x,
-                inner.y + rows - 1,
-                error,
-                usize::from(width),
-                Style::default().fg(Color::Red),
-            );
+            buf.set_stringn(x, inner.y + rows - 1, text, usize::from(width), style);
         }
     }
 

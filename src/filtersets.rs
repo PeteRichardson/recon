@@ -15,7 +15,6 @@
 use crate::config::parse_colour;
 use crate::filter::{Example, LoadedFilter, LoadedSet, Predicate, Sense};
 use crate::syntax::Kind;
-use regex::Regex;
 use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::fmt;
@@ -301,7 +300,7 @@ fn parse_sets(text: &str, path: &Path) -> Result<Vec<LoadedSet>, Error> {
             // (#200): the `name` when there is one, the pattern otherwise.
             let named = entry.name.is_some();
             let display = entry.name.unwrap_or_else(|| entry.pattern.clone());
-            let regex = Regex::new(&entry.pattern)
+            let predicate = Predicate::parse(&entry.pattern)
                 .map_err(|err| invalid(&name, Some(&display), err.to_string()))?;
             let colour = entry
                 .colour
@@ -347,7 +346,7 @@ fn parse_sets(text: &str, path: &Path) -> Result<Vec<LoadedSet>, Error> {
             filters.push(LoadedFilter {
                 name: display,
                 named,
-                predicate: Predicate::Regex(regex),
+                predicate,
                 sense: entry.sense.map_or(Sense::Include, Into::into),
                 colour,
                 description: entry.description,
@@ -1055,6 +1054,29 @@ sense = "context"
         assert!(message.contains("t/filters.toml"), "{message}");
         assert!(message.contains("[sets.a]"), "{message}");
         assert!(message.contains("filter '('"), "{message}");
+    }
+
+    /// A reference (#473) is not a regex, and a target that is missing is
+    /// broken, not an error: one renamed filter in an org file must not
+    /// stop recon (ADR 0008).
+    #[test]
+    fn a_reference_loads_even_when_its_target_is_missing() {
+        let sets = parse(
+            "[sets.team]\n[[sets.team.filters]]\nname = 'u'\npattern = '${org:Summary}.*Updates'\n",
+            Path::new("t"),
+        )
+        .expect("loads");
+        let team = sets.iter().find(|set| set.name == "team").expect("team");
+        assert_eq!(
+            team.filters[0].predicate.display(),
+            "${org:Summary}.*Updates"
+        );
+    }
+
+    #[test]
+    fn a_bad_pattern_beside_a_reference_is_still_rejected() {
+        let message = rejected("[sets.a]\n[[sets.a.filters]]\npattern = '${b:c}('\n");
+        assert!(message.contains("filter '${b:c}('"), "{message}");
     }
 
     #[test]

@@ -3538,3 +3538,57 @@ fn a_wide_character_under_the_cursor_at_the_edge_is_shown_whole() {
     };
     assert_eq!(buf[(column, y)].symbol(), "日");
 }
+
+// ---- pattern references (#473) ---------------------------------------------
+
+/// An app over `BODY` that knows the set `org`, whose filter `Summary`
+/// is `^ERROR`, unlisted.
+fn app_with_org(name: &str) -> App<'static> {
+    let mut app = app_over_file(name, BODY);
+    let mut org = crate::filter::test_support::loaded("org", 50, false, &["^ERROR"]);
+    org.filters[0].name = "Summary".into();
+    org.listed = false;
+    app.filters = ActiveFilters::with_sets(None, &[org]);
+    app
+}
+
+#[test]
+fn the_editor_shows_the_expansion_and_matches_with_it() {
+    let mut app = app_with_org("editor_reference");
+    open_editor(&mut app);
+    typed(&mut app, "${org:Summary}.*disk");
+
+    assert_eq!(editor(&app).matches, 1);
+    assert!(editor(&app).error.is_none());
+    let screen = rendered(&mut app);
+    assert!(screen.contains("expands to: (?:^ERROR).*disk"), "{screen}");
+
+    key(&mut app, KeyCode::Enter);
+    assert!(app.filter_editor.is_none());
+    assert_eq!(
+        app.filters.filters()[0].predicate.display(),
+        "${org:Summary}.*disk",
+        "the filter keeps the pattern as typed"
+    );
+}
+
+#[test]
+fn a_broken_reference_in_the_editor_matches_nothing_and_says_why() {
+    let mut app = app_with_org("editor_reference_broken");
+    open_editor(&mut app);
+    typed(&mut app, "${org:Nope}|INFO");
+
+    assert_eq!(editor(&app).matches, 0);
+    let screen = rendered(&mut app);
+    assert!(screen.contains("⚠ org:Nope not found"), "{screen}");
+}
+
+#[test]
+fn editing_a_referring_filter_edits_the_pattern_as_typed() {
+    let mut app = app_with_org("editor_reference_edit");
+    app.filters.add("${org:Summary}.*disk").expect("valid");
+    app.open_filter_editor_on(0);
+
+    assert_eq!(editor(&app).field.pattern, "${org:Summary}.*disk");
+    assert_eq!(editor(&app).matches, 1);
+}

@@ -20,7 +20,7 @@
 //! `App` owns the prompt, its origin and its history; the picker owns the
 //! search that is set, and `n`/`N`.
 
-use crate::filter::FilterSet;
+use crate::filter::ActiveFilters;
 use ratatui::prelude::{Buffer, Color, Modifier, Rect, Style, Widget};
 use ratatui::widgets::{Block, Clear};
 use regex::Regex;
@@ -56,6 +56,8 @@ struct Entry {
     was: bool,
     /// The checkbox as it stands now.
     listed: bool,
+    /// The name, and `↗ N` when N references point into the set (#473).
+    label: String,
 }
 
 #[derive(Debug)]
@@ -80,12 +82,18 @@ impl SetPicker {
     /// A picker over `sets`, in `ActiveFilters::sets` order. Set 0, the
     /// scratch set, is always listed and has no row. The list is never
     /// empty, because the built-in set is always known.
-    pub(crate) fn new(sets: &[FilterSet]) -> Self {
-        let mut entries: Vec<Entry> = sets
+    pub(crate) fn new(filters: &ActiveFilters) -> Self {
+        let referenced = filters.references_into();
+        let mut entries: Vec<Entry> = filters
+            .sets()
             .iter()
             .enumerate()
             .skip(1)
             .map(|(set, meta)| Entry {
+                label: match referenced[set] {
+                    0 => meta.name.clone(),
+                    n => format!("{} ↗ {n}", meta.name),
+                },
                 set,
                 name: meta.name.clone(),
                 description: meta.description.clone().unwrap_or_default(),
@@ -225,10 +233,10 @@ impl SetPicker {
             self.top = self.selected + 1 - height;
         }
 
-        let name_width = self
+        let label_width = self
             .entries
             .iter()
-            .map(|entry| UnicodeWidthStr::width(entry.name.as_str()))
+            .map(|entry| UnicodeWidthStr::width(entry.label.as_str()))
             .max()
             .unwrap_or(0);
         // A column of padding each side, inside the border.
@@ -237,10 +245,10 @@ impl SetPicker {
             (inner.y..inner.bottom()).zip(self.entries.iter().enumerate().skip(self.top))
         {
             let mark = if entry.listed { 'x' } else { ' ' };
-            let pad = name_width - UnicodeWidthStr::width(entry.name.as_str());
+            let pad = label_width - UnicodeWidthStr::width(entry.label.as_str());
             let line = format!(
                 "[{mark}] {}{}  {}",
-                entry.name,
+                entry.label,
                 " ".repeat(pad),
                 entry.description
             );
@@ -313,7 +321,7 @@ mod tests {
 
     #[test]
     fn rows_are_every_named_set_in_alphabetical_order() {
-        let p = SetPicker::new(filters().sets());
+        let p = SetPicker::new(&filters());
         let names: Vec<String> = p.rows().into_iter().map(|(name, _)| name).collect();
         assert_eq!(names, ["alpha", "definitions", "zeta"]);
     }
@@ -329,7 +337,7 @@ mod tests {
             .position(|s| s.name == "zeta")
             .unwrap();
         filters.set_listed(zeta, false);
-        let p = SetPicker::new(filters.sets());
+        let p = SetPicker::new(&filters);
         assert_eq!(
             p.rows(),
             [
@@ -343,7 +351,7 @@ mod tests {
     #[test]
     fn space_toggles_and_enter_reports_only_what_changed() {
         let filters = filters();
-        let mut p = SetPicker::new(filters.sets());
+        let mut p = SetPicker::new(&filters);
         assert_eq!(p.perform(A::SetsToggle), SetPickerOutcome::Open);
         p.perform(A::SetsDown);
         p.perform(A::SetsToggle);
@@ -361,14 +369,14 @@ mod tests {
 
     #[test]
     fn esc_cancels() {
-        let mut p = SetPicker::new(filters().sets());
+        let mut p = SetPicker::new(&filters());
         p.perform(A::SetsToggle);
         assert_eq!(p.perform(A::SetsCancel), SetPickerOutcome::Cancelled);
     }
 
     #[test]
     fn j_and_k_move_and_clamp() {
-        let mut p = SetPicker::new(filters().sets());
+        let mut p = SetPicker::new(&filters());
         p.perform(A::SetsUp);
         assert_eq!(p.selected(), 0);
         for _ in 0..5 {
@@ -388,7 +396,7 @@ mod tests {
 
     #[test]
     fn it_covers_the_area_with_a_checkbox_name_and_description() {
-        let mut p = SetPicker::new(filters().sets());
+        let mut p = SetPicker::new(&filters());
         let rows = drawn(&mut p, 80, 8);
         assert!(rows[0].contains("Filter sets"), "{}", rows[0]);
         assert!(rows[0].starts_with('┌') && rows[7].starts_with('└'));
@@ -405,12 +413,31 @@ mod tests {
         );
     }
 
+    /// #473: a set that references point into says how many, so the user
+    /// sees what unlisting or renaming it would touch.
+    #[test]
+    fn a_set_that_references_point_into_shows_how_many() {
+        let org = loaded("org", 50, false, &["Summary"]);
+        let mut team = loaded(
+            "team",
+            50,
+            false,
+            &["${org:Summary}x", "${org:Summary}|${org:Gone}"],
+        );
+        team.listed = false;
+        let mut p = SetPicker::new(&ActiveFilters::with_sets(None, &[org, team]));
+        let rows = drawn(&mut p, 80, 8);
+        assert!(rows[2].contains("[x] org ↗ 3"), "{}", rows[2]);
+        assert!(rows[3].contains("[ ] team "), "{}", rows[3]);
+        assert!(!rows[3].contains('↗'), "{}", rows[3]);
+    }
+
     #[test]
     fn a_long_description_is_truncated() {
         let long = "word ".repeat(40);
         let sets =
             ActiveFilters::with_sets(None, &[described(loaded("a", 10, false, &["x"]), &long)]);
-        let mut p = SetPicker::new(sets.sets());
+        let mut p = SetPicker::new(&sets);
         let rows = drawn(&mut p, 40, 6);
         assert!(rows[1].ends_with("… │"), "{}", rows[1]);
     }
@@ -421,7 +448,7 @@ mod tests {
             .map(|n| loaded(&format!("set{n}"), 10, false, &["x"]))
             .collect();
         let filters = ActiveFilters::with_sets(None, &sets);
-        let mut p = SetPicker::new(filters.sets());
+        let mut p = SetPicker::new(&filters);
         // Three rows inside the border.
         for _ in 0..6 {
             p.perform(A::SetsDown);
@@ -449,7 +476,7 @@ mod tests {
 
     #[test]
     fn the_search_matches_the_name_or_the_description() {
-        let mut p = SetPicker::new(filters().sets());
+        let mut p = SetPicker::new(&filters());
         searched(&mut p, "^alp");
         assert_eq!(p.hit_from(0), Some(0));
         searched(&mut p, "last by");
@@ -460,7 +487,7 @@ mod tests {
 
     #[test]
     fn hit_from_starts_at_the_row_and_wraps() {
-        let mut p = SetPicker::new(filters().sets());
+        let mut p = SetPicker::new(&filters());
         searched(&mut p, "a");
         assert_eq!(p.hit_from(2), Some(2), "the origin row was not first");
         searched(&mut p, "alpha");
@@ -469,7 +496,7 @@ mod tests {
 
     #[test]
     fn n_and_big_n_step_between_hits_and_wrap() {
-        let mut p = SetPicker::new(filters().sets());
+        let mut p = SetPicker::new(&filters());
         searched(&mut p, "^(alpha|zeta)$");
         assert_eq!(p.perform(A::SetsHitNext), SetPickerOutcome::Open);
         assert_eq!(p.selected(), 2);
@@ -483,7 +510,7 @@ mod tests {
 
     #[test]
     fn n_with_no_hit_says_so_and_stays() {
-        let mut p = SetPicker::new(filters().sets());
+        let mut p = SetPicker::new(&filters());
         p.select(1);
         assert_eq!(p.perform(A::SetsHitNext), SetPickerOutcome::Open);
         assert_eq!(p.selected(), 1, "n moved with no search set");
@@ -494,14 +521,14 @@ mod tests {
 
     #[test]
     fn slash_asks_for_a_prompt() {
-        let mut p = SetPicker::new(filters().sets());
+        let mut p = SetPicker::new(&filters());
         assert_eq!(p.perform(A::SetsSearch), SetPickerOutcome::Search);
     }
 
     /// A hit is highlighted and no row is hidden.
     #[test]
     fn hits_are_highlighted_and_every_row_stays() {
-        let mut p = SetPicker::new(filters().sets());
+        let mut p = SetPicker::new(&filters());
         searched(&mut p, "zeta");
         let area = Rect::new(0, 0, 60, 6);
         let mut buf = Buffer::empty(area);
