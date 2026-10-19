@@ -74,11 +74,12 @@
 
 use super::App;
 use super::prompt::SearchPrompt;
-use crate::filter::{Broken, Details, Example, Expander, Predicate, Sense, generated_hash};
+use crate::filter::{
+    Broken, Details, Engine, Example, Expander, LineRegex, Predicate, Sense, generated_hash,
+};
 use crate::generate::{self, ATTEMPTS, Candidate, Rejection, Running};
 use crossterm::event::{self, KeyCode, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::prelude::{Rect, Style};
-use regex::Regex;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt::Write as _;
 use std::sync::Arc;
@@ -269,7 +270,13 @@ pub(super) struct FilterEditor {
     /// half-typed `(` does not blank the screen. `None` while the pattern is
     /// empty — an empty regex matches every line, and a highlight on every
     /// line says nothing.
-    pub(super) regex: Option<Regex>,
+    pub(super) regex: Option<LineRegex>,
+    /// Which engine reads the pattern (#474): `Ctrl-e` changes it. An
+    /// advanced filter's pattern is Oniguruma's, with lookaround.
+    pub(super) engine: Engine,
+    /// How many steps an advanced pattern may take on one line: the set's
+    /// `step_limit` when the editor opened.
+    pub(super) step_limit: u32,
     /// What a reference in the pattern can stand for (#473), as the
     /// filters were when the editor opened, and the set a reference with
     /// no set is to.
@@ -411,12 +418,14 @@ enum Target {
 }
 
 impl FilterEditor {
-    /// An editor over `lines`, with an empty pattern.
+    /// An editor over `lines`, with an empty pattern, testing an advanced
+    /// pattern with `step_limit` steps a line.
     pub(super) fn new(
         lines: Arc<Vec<String>>,
         style: Style,
         expander: Expander,
         own: String,
+        step_limit: u32,
     ) -> Self {
         Self {
             field: SearchPrompt::default(),
@@ -427,6 +436,8 @@ impl FilterEditor {
             lines,
             extra: Vec::new(),
             regex: None,
+            engine: Engine::Standard,
+            step_limit,
             expander,
             own,
             expansion: None,
@@ -475,6 +486,7 @@ impl FilterEditor {
         pattern: String,
         details: Details,
         sense: Sense,
+        engine: Engine,
     ) -> Self {
         let field = |text: Option<String>| {
             SearchPrompt::editing(
@@ -496,6 +508,7 @@ impl FilterEditor {
             description: field(details.description),
             prompt: field(details.prompt),
             sense,
+            engine,
             target: Some(index),
             generated,
             ..base
@@ -678,17 +691,11 @@ impl FilterEditor {
         }
         let regex = self
             .expander
-            .predicate(&self.own, pattern)
+            .predicate(&self.own, pattern, self.engine)
             .map(|predicate| {
-                self.expansion = match &predicate {
-                    Predicate::Referring { expanded, .. } => Some(
-                        expanded
-                            .as_ref()
-                            .map(|regex| regex.as_str().to_string())
-                            .map_err(Clone::clone),
-                    ),
-                    _ => None,
-                };
+                self.expansion = predicate
+                    .expansion()
+                    .map(|expansion| expansion.map(str::to_string).map_err(Clone::clone));
                 predicate
                     .line_regex()
                     .expect("a typed pattern is never a definition")
@@ -699,7 +706,7 @@ impl FilterEditor {
                     .lines
                     .iter()
                     .chain(&self.extra)
-                    .map(|line| regex.is_match(line))
+                    .map(|line| regex.is_match(line, self.step_limit))
                     .collect();
                 self.matches = self.matched[..self.lines.len()]
                     .iter()
@@ -709,7 +716,7 @@ impl FilterEditor {
                 self.error = None;
                 self.refresh();
             }
-            Err(error) => self.error = Some(error_line(&error)),
+            Err(error) => self.error = Some(error.reason()),
         }
     }
 
@@ -825,7 +832,7 @@ impl FilterEditor {
         self.anchor = None;
         self.refresh();
         // A refusal of Enter may name the mark just changed (#318).
-        self.error = pattern_error(&self.field.pattern);
+        self.error = pattern_error(&self.field.pattern, self.engine);
     }
 
     /// `u`: show only the matched and the marked lines, or every line again.
@@ -922,7 +929,7 @@ impl FilterEditor {
     /// session's requests again: it was written from the prompt alone.
     /// The pattern is generated from `prompt`.
     fn take_candidate(&mut self, request: Option<String>, prompt: String, candidate: Candidate) {
-        self.error = pattern_error(&self.field.pattern);
+        self.error = pattern_error(&self.field.pattern, self.engine);
         if self.field.pattern.is_empty() {
             self.edited_at = None;
             self.keep_version();
@@ -953,7 +960,7 @@ impl FilterEditor {
         let pattern = &self.field.pattern;
         generate::request_text(&generate::Parts {
             prompt: (!prompt.is_empty()).then_some(prompt),
-            pattern: (!pattern.is_empty() && pattern_error(pattern).is_none())
+            pattern: (!pattern.is_empty() && pattern_error(pattern, self.engine).is_none())
                 .then_some(pattern.as_str()),
             must_match: &lines(true),
             must_not_match: &lines(false),
@@ -990,7 +997,7 @@ impl FilterEditor {
         generate::consolidate_text(
             (!prompt.is_empty()).then_some(prompt),
             &self.requests,
-            if pattern_error(pattern).is_none() {
+            if pattern_error(pattern, self.engine).is_none() {
                 pattern
             } else {
                 ""
@@ -1088,7 +1095,13 @@ impl FilterEditor {
     fn verify(&self, pattern: &str) -> Result<(), Rejection> {
         let examples = self.details().examples;
         let lines = |must_match| marked(&examples, must_match);
-        generate::verify(pattern, &lines(true), &lines(false))
+        generate::verify(
+            pattern,
+            self.engine,
+            self.step_limit,
+            &lines(true),
+            &lines(false),
+        )
     }
 
     /// Up to `SAMPLE_LINES` lines of the file with no mark and some text,
@@ -1321,29 +1334,15 @@ impl FilterEditor {
     }
 }
 
-/// The one line of a `regex::Error` worth showing in a single row.
-///
-/// A syntax error's text is several lines: the pattern, a caret under the
-/// fault, and `error: <reason>` last. The panel shows the pattern already,
-/// so the reason is what is left to say.
-fn error_line(error: &regex::Error) -> String {
-    let text = error.to_string();
-    text.lines()
-        .rev()
-        .find(|line| !line.trim().is_empty())
-        .unwrap_or("invalid pattern")
-        .trim()
-        .to_string()
-}
-
-/// Why `pattern` does not compile, or `None` when it does or is empty.
-fn pattern_error(pattern: &str) -> Option<String> {
+/// Why `pattern` does not compile in `engine`, or `None` when it does or
+/// is empty.
+fn pattern_error(pattern: &str, engine: Engine) -> Option<String> {
     if pattern.is_empty() {
         return None;
     }
-    Predicate::parse(pattern)
+    Predicate::parse_as(pattern, engine)
         .err()
-        .map(|error| error_line(&error))
+        .map(|error| error.reason())
 }
 
 /// The lines of `examples` with the mark `must_match` gives.
@@ -1458,7 +1457,7 @@ impl FilterEditor {
     /// `Ctrl-r` with `None`, in place of a request still running.
     fn ask(&mut self, model: Arc<dyn generate::Model>, request: Option<String>, text: String) {
         self.running = Some(Asking {
-            running: Running::start(model, text.clone()),
+            running: Running::start(model, self.engine, text.clone()),
             request,
             prompt: self.prompt.pattern.trim().to_string(),
             text,
@@ -1468,7 +1467,7 @@ impl FilterEditor {
         });
         self.waited = 0;
         self.explanation = None;
-        self.error = pattern_error(&self.field.pattern);
+        self.error = pattern_error(&self.field.pattern, self.engine);
     }
 }
 
@@ -1486,6 +1485,7 @@ impl App<'_> {
             self.filters.next_style(),
             self.filters.expander(),
             self.filters.set_name_of(None).to_string(),
+            self.filters.step_limit(),
         );
         self.show_filter_editor(editor);
     }
@@ -1535,7 +1535,12 @@ impl App<'_> {
             );
             return;
         };
-        let (pattern, style, sense) = (pattern.to_string(), filter.style, filter.sense);
+        let (pattern, style, sense, engine) = (
+            pattern.to_string(),
+            filter.style,
+            filter.sense,
+            filter.predicate.engine(),
+        );
         let details = Details {
             name: filter.name.clone(),
             description: filter.description.clone(),
@@ -1550,8 +1555,9 @@ impl App<'_> {
             style,
             self.filters.expander(),
             self.filters.set_name_of(Some(index)).to_string(),
+            self.filters.step_limit(),
         );
-        let editor = FilterEditor::editing(base, index, pattern, details, sense);
+        let editor = FilterEditor::editing(base, index, pattern, details, sense, engine);
         self.show_filter_editor(editor);
     }
 
@@ -1691,6 +1697,11 @@ impl App<'_> {
                     self.edit_filter_editor(FilterEditor::toggle_matches_only);
                 }
                 A::FilterEditorRegenerate => self.regenerate(),
+                // The pattern is read again by the other engine (#474).
+                A::FilterEditorEngine => self.edit_filter_editor(|editor| {
+                    editor.engine = editor.engine.toggled();
+                    editor.recompile();
+                }),
                 A::FilterEditorUndo => self.step_filter_editor_version(FilterEditor::undo),
                 A::FilterEditorRedo => self.step_filter_editor_version(FilterEditor::redo),
                 // Without a model there is no request line to go to.
@@ -1813,7 +1824,7 @@ impl App<'_> {
                 edit(field);
                 // A refused name is fixed here, so its reason goes; a
                 // pattern that does not compile still says why.
-                editor.error = pattern_error(&editor.field.pattern);
+                editor.error = pattern_error(&editor.field.pattern, editor.engine);
             }
             None => editor.edit_pattern(now, edit),
         });
@@ -1942,7 +1953,7 @@ impl App<'_> {
             Some(model) if asking.attempt < ATTEMPTS => {
                 asking.attempt += 1;
                 let text = generate::retry_text(&asking.text, &asking.rejected);
-                asking.running = Running::start(model, text);
+                asking.running = Running::start(model, editor.engine, text);
                 editor.running = Some(asking);
             }
             _ => {
@@ -2022,7 +2033,7 @@ impl App<'_> {
         }
         // Worked out again, not read: a refusal from an earlier Enter may
         // still be showing after the mark it named was cleared.
-        editor.error = pattern_error(&editor.field.pattern);
+        editor.error = pattern_error(&editor.field.pattern, editor.engine);
         if editor.error.is_some() {
             return false;
         }
@@ -2059,45 +2070,39 @@ impl App<'_> {
         let Some(editor) = self.filter_editor.as_ref() else {
             return;
         };
-        let (pattern, target, details, sense) = (
+        let (pattern, target, details, sense, engine) = (
             editor.field.pattern.clone(),
             editor.target,
             editor.details(),
             editor.sense,
+            editor.engine,
         );
         // The sense goes on before the add or the edit, whose re-evaluate
         // is what shows it.
         let outcome = match target {
-            None => {
-                let added = if sense == Sense::Exclude {
-                    self.add_excluding_filter(&pattern)
-                } else {
-                    self.add_filter(&pattern)
-                };
-                added.map(|()| {
-                    if let Some((index, _)) = self.filters.filters_in(0).last() {
-                        self.filters.set_details(index, details);
-                        if self.filters.set_sense(index, sense) {
-                            self.refresh_view();
-                        }
-                    }
-                })
-            }
+            None => self.filters.add_as(&pattern, sense, engine).map(|()| {
+                if let Some((index, _)) = self.filters.filters_in(0).last() {
+                    self.filters.set_details(index, details);
+                }
+                self.refresh_view();
+            }),
             // The details and the pattern go on as one change: the set's
             // profiles go from the name the filter had to the one it has
             // now in one step (#356).
             Some(index) => {
                 self.filters.set_sense(index, sense);
-                self.filters.edit(index, &pattern, details).map(|changed| {
-                    if changed {
-                        self.refresh_view();
-                    }
-                })
+                self.filters
+                    .edit(index, &pattern, engine, details)
+                    .map(|changed| {
+                        if changed {
+                            self.refresh_view();
+                        }
+                    })
             }
         };
         if let Err(error) = outcome {
             if let Some(editor) = self.filter_editor.as_mut() {
-                editor.error = Some(error_line(&error));
+                editor.error = Some(error.reason());
             }
             return;
         }
@@ -2117,6 +2122,7 @@ impl App<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::filter::DEFAULT_STEP_LIMIT;
 
     #[test]
     fn grouped_puts_a_comma_between_each_three_digits() {
@@ -2131,8 +2137,10 @@ mod tests {
     fn an_error_shows_its_reason_line() {
         // Through a `String`, so clippy does not refuse the bad literal.
         let pattern = String::from("foo(");
-        let error = Regex::new(&pattern).expect_err("unclosed group");
-        assert_eq!(error_line(&error), "error: unclosed group");
+        let error = crate::filter::PatternError::from(
+            regex::Regex::new(&pattern).expect_err("unclosed group"),
+        );
+        assert_eq!(error.reason(), "error: unclosed group");
     }
 
     fn editor_over(lines: &[&str]) -> FilterEditor {
@@ -2142,6 +2150,7 @@ mod tests {
             Style::default(),
             Expander::default(),
             String::new(),
+            DEFAULT_STEP_LIMIT,
         )
     }
 
@@ -2250,6 +2259,7 @@ mod tests {
             Style::default(),
             Expander::default(),
             String::new(),
+            DEFAULT_STEP_LIMIT,
         );
         for index in 0..200_000 {
             editor.marks.insert(index, Mark::MustMatch);

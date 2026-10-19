@@ -220,6 +220,11 @@ pub struct Config {
     #[arg(skip)]
     pub filter_palette: Option<Vec<Color>>,
 
+    /// `[filters] advanced_step_limit` (#474), or `None` for the default.
+    /// No flag, for the reason `filter_palette` gives.
+    #[arg(skip)]
+    pub advanced_step_limit: Option<u32>,
+
     /// Whether the terminal background is dark or light: picks the built-in
     /// filter palette and the grey of dimmed lines. Falls back to a top-level
     /// `background` in `config.toml`, then to `dark`.
@@ -543,6 +548,11 @@ pub struct FiltersConfig {
     /// `non_empty_palette`, which does the conversion and owns the message.
     #[serde(default, deserialize_with = "non_empty_palette")]
     pub palette: Option<Vec<Color>>,
+    /// How many steps an advanced filter may take on one line before the
+    /// line counts as no match (#474). A step count, not a clock, so a line
+    /// gives the same answer on every machine. Non-zero: Oniguruma reads 0
+    /// as no limit, which is what the setting exists to prevent.
+    pub advanced_step_limit: Option<std::num::NonZeroU32>,
 }
 
 /// The colour names `Color::from_str` accepts, for the error message. Kept
@@ -1224,10 +1234,17 @@ impl Config {
             self.clipboard.get_or_insert_with(|| command.clone());
         }
 
-        if let Some(FiltersConfig { palette }) = filters
-            && let Some(palette) = palette
+        if let Some(FiltersConfig {
+            palette,
+            advanced_step_limit,
+        }) = filters
         {
-            self.filter_palette.get_or_insert_with(|| palette.clone());
+            if let Some(palette) = palette {
+                self.filter_palette.get_or_insert_with(|| palette.clone());
+            }
+            if let Some(limit) = advanced_step_limit {
+                self.advanced_step_limit.get_or_insert(limit.get());
+            }
         }
 
         if let Some(SyntaxConfig { theme }) = syntax
@@ -1322,6 +1339,14 @@ impl Config {
         self.filter_palette
             .clone()
             .unwrap_or_else(|| self.background().palette().to_vec())
+    }
+
+    /// How many steps an advanced filter may take on one line:
+    /// `[filters] advanced_step_limit`, else Oniguruma's own limit.
+    #[must_use]
+    pub fn advanced_step_limit(&self) -> u32 {
+        self.advanced_step_limit
+            .unwrap_or(crate::filter::DEFAULT_STEP_LIMIT)
     }
 
     /// The theme the file view colours with, once the chain has run:
@@ -2554,6 +2579,36 @@ mod tests {
         );
     }
 
+    /// `advanced_step_limit` (#474) reaches the resolved config, and the
+    /// default is Oniguruma's own limit.
+    #[test]
+    fn the_advanced_step_limit_parses_and_defaults() {
+        let path = fixture(
+            "filters-step-limit.toml",
+            "[filters]\nadvanced_step_limit = 5000\n",
+        );
+        let file = load_from(&path).expect("valid");
+        let mut config = Config::default();
+        config.apply(&file);
+        assert_eq!(config.advanced_step_limit(), 5000);
+        assert_eq!(
+            Config::default().advanced_step_limit(),
+            crate::filter::DEFAULT_STEP_LIMIT
+        );
+    }
+
+    /// Oniguruma reads a limit of 0 as no limit at all, which is the one
+    /// thing the setting exists to prevent.
+    #[test]
+    fn an_advanced_step_limit_of_zero_is_refused() {
+        let path = fixture(
+            "filters-step-limit-zero.toml",
+            "[filters]\nadvanced_step_limit = 0\n",
+        );
+        let err = load_from(&path).expect_err("0 is no limit").to_string();
+        assert!(err.contains("advanced_step_limit"), "{err}");
+    }
+
     /// All three spellings ratatui's own parser accepts, because a user who
     /// wants a colour outside the sixteen ANSI names needs one of the other
     /// two and should not have to discover which by trial and error.
@@ -2706,6 +2761,7 @@ mod tests {
         let file = FileConfig {
             filters: Some(FiltersConfig {
                 palette: Some(vec![Color::Red, Color::Blue]),
+                advanced_step_limit: None,
             }),
             ..FileConfig::default()
         };

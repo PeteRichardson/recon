@@ -493,7 +493,6 @@ Global (`src/app/events.rs`), handled before the focused pane sees the key:
 | `0` – `9` | Two digits, `01` to `99`, toggle the filter the pane numbers that way, from any pane. The status line shows the first digit while it waits; `Esc` cancels it, and any other key cancels it and then does its own work. Built-in filters and set headers have no number; `Enter` in the filter pane toggles those | `global.filters.toggle` |
 | `u` / `Ctrl-H` / `H` | Toggle between dimming unmatched lines and hiding them — `u` for **u**nmatched; the other two are aliases for terminals and habits that already use them | `global.toggle.hide` |
 | `!` | Disable every filter, remembering which were on; restores exactly that (or enables all, if none were on to remember) | `global.filters.disable` |
-| `&` | Combine the enabled include filters with **AND** instead of OR — a line must match every one of them. Press again for OR. See [Combining filters with AND](#combining-filters-with-and) | `global.filters.and` |
 | `L` | Open the set picker — choose which filter sets the filter pane lists. See [The set picker](#the-set-picker) | `global.sets` |
 | `E` | Hide the explorer | `global.hide.explorer` |
 | `F` | Hide the filter pane | `global.hide.filters` |
@@ -594,7 +593,7 @@ At least one pane is always shown: a hide of the last one does nothing, and
 the status line says so. If you hide the focused pane, focus goes to the file
 view, or to the next shown pane if the file view is hidden too. A hidden pane
 keeps its cursor, scroll and selection, and its global keys still work — `.`
-and `,`, `1`–`9`, `!`, `&`, `p` and `L` act on it while you cannot see it.
+and `,`, `1`–`9`, `!`, `p` and `L` act on it while you cannot see it.
 With the filter pane hidden and a filter on, the status line shows
 `filters: 3 on`, so you know why lines are coloured or gone.
 
@@ -829,6 +828,10 @@ recon is exactly this model with one set.
   change the prompt or the pattern, here or in recon, the filter is an
   ordinary filter again. recon never changes a pattern when it loads this
   file.
+- **`engine`** — `"advanced"` makes the filter an
+  [advanced filter](#advanced-filters): Oniguruma reads its pattern, so it
+  can use lookahead and lookbehind. Without the key, or with `"standard"`,
+  the `regex` crate reads it. Any other value is refused.
 - **`colour`** — a colour for this filter instead of the next palette entry,
   in the same spellings as the palette: a name, `#RRGGBB`, or a 256-colour
   index as a string. A palette position is a poor way to say "errors are
@@ -978,6 +981,10 @@ filter that is on stops the run before any output, with exit status 1, and
 names each broken reference on stderr. A broken reference in a filter or a
 set that is off does not stop the run.
 
+A reference in an [advanced filter](#advanced-filters) can go in a
+lookahead, so a team filter can ask for the org's pattern and a word of its
+own, in either order: `^(?=.*${org:Summary})(?=.*Updates)`.
+
 #### More directories of sets
 
 `RECON_FILTER_PATH` (or `--filter-path`) names more directories to read sets
@@ -1093,6 +1100,7 @@ that compiled left them, so a half-typed `(` does not clear the screen.
 | `Ctrl-z` / `Ctrl-y` | Go back / forward one version of the pattern | `filtereditor.undo` / `filtereditor.redo` |
 | `Ctrl-g` | With a model: move the keys to the request line | `filtereditor.request` |
 | `Ctrl-r` | With a model: write the pattern again from the prompt | `filtereditor.regenerate` |
+| `Ctrl-e` | Make the filter [advanced](#advanced-filters), with lookaround, or standard again. The sense row shows which | `filtereditor.engine` |
 | mouse drag | On a line of the file: mark a phrase, a hint to the model | — |
 
 ##### The name, description, prompt and sense
@@ -1477,37 +1485,56 @@ to compare the numbers. Toggling back returns you to the exact line
 you were on, which is the point: the hidden view is for finding a line, not
 for living in.
 
-#### Combining filters with AND
+#### Advanced filters
 
-Including filters are combined with **OR**: a line is coloured if *any* enabled
-one matches it. That answers "show me errors or warnings" and cannot answer
-"show me lines with `foo` *and* `bar`". The regex workaround does not scale —
-Rust's `regex` crate has no lookaround, so the only spelling is every ordering
-of the terms (`foo.*bar|bar.*foo`), which is six alternations at three terms
-and 24 at four. And the natural thing to type, `foo.*bar.*baz`, silently misses
-`baz bar foo`.
+Including filters are combined with **OR**: a line is coloured if *any*
+enabled one matches it. A filter that needs two things in one line, in
+either order, is an **advanced filter**. Its pattern is read by Oniguruma,
+which can test what is ahead of a point in the line:
 
-`&` flips the whole set to **AND**: a line is included only when *every*
-enabled including filter matches it. Press `&` again to go back. The status row
-carries an **AND** badge while it is on, painted like **HIDE** and for the same
-reason — the mode survives file loads and is easy to forget.
+```toml
+[[sets.team.filters]]
+name = "Update summaries"
+pattern = '^(?=.*Summary)(?=.*Updates)'
+engine = "advanced"
+```
 
-What the mode does and does not touch:
+Each `(?=.*…)` is a lookahead: it looks for its text from the start of the
+line and does not move on. So the line matches when both are in it, in any
+order. `(?!.*…)` at the start leaves out the lines that contain the text,
+and `(?<=…)` and `(?<!…)` look behind.
 
-- Every matching line matched every filter, so no single filter owns it: lines
-  take the colour of the **first enabled** including filter. Disable that one
-  and the next takes over — and stops being a term.
-- Excluding filters (`x`) are unchanged. They remove lines in both modes.
-- Context filters (`m`) are not terms. A line a context filter matches is still
-  shown; that sense promises "also show these" and keeps its promise.
-- The search (`/`) is not a term either: it is a motion over the visible
-  lines, not a filter. `p` promotes it into one.
-- The explorer follows the same rule: a file is marked when one of its lines
-  matches every enabled including filter, in that first filter's colour. The
-  cached scan re-answers the folder with no I/O, as any toggle does.
+A filter is advanced only when you mark it: `engine = "advanced"` in the set
+file, or `Ctrl-e` in the [filter editor](#the-filter-editor). recon never
+makes a filter advanced because the standard engine refused its pattern. An
+advanced filter's row in the filter pane shows `[adv]`. Every other filter
+stays on the standard engine, which tests all of them in one pass.
 
-`&` is global and works from any pane. Groups — AND *within* a group, OR
-*between* them — are the general form and are tracked separately (#40).
+Oniguruma can backtrack, so some patterns take a very long time on some
+lines. To prevent this, an advanced filter has a step limit: a line that
+takes more steps than the limit counts as no match for that filter. The row
+then shows how many lines of the open file did that, for example
+`⚠ 3 lines over the step limit`. The limit is a count of steps, not a time,
+so a line gives the same result on every computer. To change it:
+
+```toml
+# ~/.config/recon/config.toml
+[filters]
+advanced_step_limit = 10000000   # the default; 0 is refused
+```
+
+The explorer marks the files that an advanced filter matches, as for any
+including filter. With a model, the model may write lookaround only for a
+filter that is already advanced, and it is told to write patterns that do
+not backtrack too much.
+
+**Known limit.** A [reference](#pattern-references) in an advanced filter
+puts a pattern written for the standard engine into Oniguruma. Simple
+patterns mean the same in both. These may not: the Unicode rules of `\d` and
+`\w`, `\z`, class operations such as `[a&&b]`, and backreferences.
+
+There was a global `&` key that changed every include filter to AND. An
+advanced filter replaces it, and `&` does nothing now.
 
 The hide toggle survives loading another file, exactly as the filter set does
 — it describes how you are reading, not which file you are reading. That is

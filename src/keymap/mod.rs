@@ -156,7 +156,6 @@ pub(crate) enum ActionId {
     GlobalSearchWord,
     GlobalEscape,
     GlobalPeek,
-    GlobalFiltersAnd,
     GlobalFiltersDisable,
     GlobalFiltersToggle,
     GlobalFileNext,
@@ -314,6 +313,8 @@ pub(crate) enum ActionId {
     /// `Ctrl-r`: write the pattern again from the prompt, with a model
     /// (#321).
     FilterEditorRegenerate,
+    /// `Ctrl-e`: the standard engine or the advanced one (#474).
+    FilterEditorEngine,
     // Finishing
     /// Stop the work `q` started under `--emit`, and emit nothing (#351,
     /// #352).
@@ -345,7 +346,6 @@ impl ActionId {
             Self::GlobalSearchWord => "global.search.word",
             Self::GlobalEscape => "global.escape",
             Self::GlobalPeek => "global.peek",
-            Self::GlobalFiltersAnd => "global.filters.and",
             Self::GlobalFiltersDisable => "global.filters.disable",
             Self::GlobalFiltersToggle => "global.filters.toggle",
             Self::GlobalFileNext => "global.file.next",
@@ -439,6 +439,7 @@ impl ActionId {
             Self::FilterEditorUndo => "filtereditor.undo",
             Self::FilterEditorRedo => "filtereditor.redo",
             Self::FilterEditorRequest => "filtereditor.request",
+            Self::FilterEditorEngine => "filtereditor.engine",
             Self::FilterEditorRegenerate => "filtereditor.regenerate",
             Self::FinishingCancel => "finishing.cancel",
             Self::PromptCommit => "prompt.commit",
@@ -491,7 +492,6 @@ pub(crate) const DEFAULT: &[(Scope, &str, ActionId)] = &[
     (Scope::Global, "*", ActionId::GlobalSearchWord),
     (Scope::Global, "Esc", ActionId::GlobalEscape),
     (Scope::Global, "space", ActionId::GlobalPeek),
-    (Scope::Global, "&", ActionId::GlobalFiltersAnd),
     (Scope::Global, "!", ActionId::GlobalFiltersDisable),
     (Scope::Global, "0-9", ActionId::GlobalFiltersToggle),
     (Scope::Global, ".", ActionId::GlobalFileNext),
@@ -690,6 +690,9 @@ pub(crate) const DEFAULT: &[(Scope, &str, ActionId)] = &[
         "Ctrl-r",
         ActionId::FilterEditorRegenerate,
     ),
+    // `e` for "engine" (#474): a control key, for the reason `Ctrl-g`
+    // gives, so it works from every field.
+    (Scope::FilterEditor, "Ctrl-e", ActionId::FilterEditorEngine),
     // Ctrl-c, which raw mode delivers as a key and not as SIGINT, and Esc,
     // the key that backs out of everything else.
     (Scope::Finishing, "Ctrl-c", ActionId::FinishingCancel),

@@ -62,6 +62,7 @@ impl App<'_> {
         // its row in the view is only meaningful against the old visible list.
         let cursor_source = self.cursor_source();
         self.document.evaluate(&self.filters);
+        self.filters.note_over_limit(self.document.over_limit());
         self.apply_view(cursor_source);
     }
 

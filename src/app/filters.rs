@@ -22,7 +22,7 @@ pub(super) struct PeekState {
 
 impl App<'_> {
     /// Add an including filter, colouring it distinctly from its predecessors.
-    pub(super) fn add_filter(&mut self, pattern: &str) -> Result<(), regex::Error> {
+    pub(super) fn add_filter(&mut self, pattern: &str) -> Result<(), filter::PatternError> {
         self.filters.add(pattern)?;
         self.refresh_view();
         Ok(())
@@ -46,7 +46,10 @@ impl App<'_> {
     }
 
     /// Add an excluding filter: its matches leave the view entirely.
-    pub(super) fn add_excluding_filter(&mut self, pattern: &str) -> Result<(), regex::Error> {
+    pub(super) fn add_excluding_filter(
+        &mut self,
+        pattern: &str,
+    ) -> Result<(), filter::PatternError> {
         self.filters.add_excluding(pattern)?;
         self.refresh_view();
         Ok(())
@@ -69,7 +72,7 @@ impl App<'_> {
         &mut self,
         index: usize,
         pattern: &str,
-    ) -> Result<(), regex::Error> {
+    ) -> Result<(), filter::PatternError> {
         if self.filters.set_pattern(index, pattern)? {
             self.refresh_view();
         }
@@ -279,6 +282,7 @@ impl App<'_> {
                         .is_generated()
                         .then(|| filter.generated_from.clone())
                         .flatten(),
+                    engine: filter.predicate.engine(),
                     ..filtersets::FilterToSave::new(filter.predicate.display(), filter.sense)
                 })
                 .collect(),

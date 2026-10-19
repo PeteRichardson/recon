@@ -11,7 +11,7 @@
 
 use super::FilterCommand;
 use super::listmotion::ListMotion;
-use crate::filter::{ActiveFilters, Sense};
+use crate::filter::{ActiveFilters, Engine, Sense};
 #[cfg(test)]
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::prelude::{Buffer, Color, Modifier, Rect, Style};
@@ -66,8 +66,13 @@ const INDENT: &str = "  ";
 pub(crate) const GENERATED_MARK: &str = " ✦";
 
 /// Before the reason a filter's reference is broken (#473), which is why
-/// the filter matches nothing.
+/// the filter matches nothing, and before the count of lines an advanced
+/// filter gave up on at the step limit (#474).
 const BROKEN_MARK: &str = " ⚠ ";
+
+/// After the name of an advanced filter (#474): Oniguruma reads its
+/// pattern, with lookaround and a step limit.
+pub(crate) const ADVANCED_MARK: &str = " [adv]";
 
 /// One row of the pane.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -432,8 +437,18 @@ impl FilterList {
                     .broken()
                     .map(|broken| format!("{BROKEN_MARK}{broken}"))
                     .unwrap_or_default();
+                let advanced = if filter.predicate.engine() == Engine::Advanced {
+                    ADVANCED_MARK
+                } else {
+                    ""
+                };
+                let over = match filters.over_limit(index) {
+                    0 => String::new(),
+                    1 => format!("{BROKEN_MARK}1 line over the step limit"),
+                    n => format!("{BROKEN_MARK}{n} lines over the step limit"),
+                };
                 format!(
-                    "{indent}{number}[{}] {} {}{generated}{broken}",
+                    "{indent}{number}[{}] {} {}{generated}{advanced}{broken}{over}",
                     mark(filter.enabled),
                     sense_word(filter.sense),
                     filter.display_name()
@@ -1041,6 +1056,33 @@ mod tests {
         let filters = set_of(&["${Nope}x"], &[]);
 
         assert_eq!(text_at(&filters, 0), "01[x] inc ${Nope}x ⚠ Nope not found");
+    }
+
+    /// #474: an advanced filter wears its mark, and the lines it gave up
+    /// on at the step limit, once there are any.
+    #[test]
+    fn an_advanced_filter_shows_its_mark_and_the_lines_over_the_limit() {
+        let mut filters = set_of(&["x"], &[]);
+        filters
+            .edit(
+                0,
+                "(?<=a)b",
+                crate::filter::Engine::Advanced,
+                crate::filter::Details::default(),
+            )
+            .expect("valid");
+        assert_eq!(text_at(&filters, 0), "01[x] inc (?<=a)b [adv]");
+
+        filters.note_over_limit(&[2]);
+        assert_eq!(
+            text_at(&filters, 0),
+            "01[x] inc (?<=a)b [adv] ⚠ 2 lines over the step limit"
+        );
+        filters.note_over_limit(&[1]);
+        assert_eq!(
+            text_at(&filters, 0),
+            "01[x] inc (?<=a)b [adv] ⚠ 1 line over the step limit"
+        );
     }
 
     // ---- two levels (#129) --------------------------------------------------

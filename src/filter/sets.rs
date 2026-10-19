@@ -1951,12 +1951,15 @@ mod tests {
         let (x, filter) = set.filters_in(1).next().expect("x");
         assert_eq!(filter.examples.len(), 3, "the example went to the filter");
         let failed: Vec<&str> = set
-            .failed_examples(x, &Regex::new("x").expect("valid"))
+            .failed_examples(x, &LineRegex::Standard(Regex::new("x").expect("valid")))
             .into_iter()
             .map(|example| example.line.as_str())
             .collect();
         assert_eq!(failed, ["two", "x three"]);
-        let failed = set.failed_examples(x, &Regex::new("one|two").expect("valid"));
+        let failed = set.failed_examples(
+            x,
+            &LineRegex::Standard(Regex::new("one|two").expect("valid")),
+        );
         assert!(failed.is_empty(), "{failed:?}");
     }
 
@@ -2022,7 +2025,10 @@ mod tests {
             name: Some("n".into()),
             ..Details::default()
         };
-        assert!(set.edit(foo, "foo2", edit).expect("valid"));
+        assert!(
+            set.edit(foo, "foo2", Engine::Standard, edit)
+                .expect("valid")
+        );
 
         assert_eq!(set.sets()[web].profiles["default"], ["n", "foo2"]);
         assert_eq!(set.filters()[foo].predicate.display(), "foo2");
@@ -2041,7 +2047,10 @@ mod tests {
         let mut set = ActiveFilters::with_sets(None, &[a]);
         let (x, _) = set.filters_in(1).next().expect("x");
 
-        assert!(set.edit(x, "bar", Details::default()).expect("valid"));
+        assert!(
+            set.edit(x, "bar", Engine::Standard, Details::default())
+                .expect("valid")
+        );
 
         assert_eq!(set.sets()[1].profiles["default"], ["bar", "foo"]);
     }
@@ -2055,7 +2064,7 @@ mod tests {
             name: Some("n".into()),
             ..Details::default()
         };
-        assert!(set.edit(0, "[", edit).is_err());
+        assert!(set.edit(0, "[", Engine::Standard, edit).is_err());
         assert_eq!(set.filters()[0].display_name(), "foo");
     }
 

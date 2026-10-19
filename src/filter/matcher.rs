@@ -1,7 +1,7 @@
 //! The scan-side snapshot of the filter set: what a thread matching whole
 //! files in the explorer needs from [`ActiveFilters`], and nothing more.
 
-use super::{ActiveFilters, Combine, Sense};
+use super::{ActiveFilters, Lookaround, Sense};
 use regex::RegexSet;
 
 /// Which patterns hit a line, one bit per filter: bit `i` is `filters[i]`.
@@ -69,42 +69,37 @@ pub struct Matcher {
     selects: Bits,
     /// Bit `i` set: `filters[i]` is enabled and `Sense::Exclude`.
     exclude: Bits,
-    /// How the include bits combine. In `And` mode a line selects only when
-    /// every include bit in `selects` is set.
-    combine: Combine,
+    /// Each advanced filter that compiled, by index (#474). Its slot in
+    /// `set` never matches, so `bits` tests it here, with `step_limit`; a
+    /// line over the limit leaves its bit clear.
+    advanced: Vec<(usize, Lookaround)>,
+    step_limit: u32,
 }
 
 impl Matcher {
     /// Which patterns hit `line`, enabled or not.
     #[must_use]
     pub fn bits(&self, line: &str) -> Bits {
-        self.set
+        let bits = self
+            .set
             .matches(line)
             .iter()
-            .fold(0, |bits, index| bits | (1 << index))
+            .fold(0, |bits, index| bits | (1 << index));
+        self.advanced
+            .iter()
+            .filter(|(_, lookaround)| lookaround.test(line, self.step_limit) == Ok(true))
+            .fold(bits, |bits, &(index, _)| bits | (1 << index))
     }
 
-    /// Whether a line with these hits selects its file, and no enabled
-    /// `Exclude` filter hits it.
-    ///
-    /// `Or`: an enabled `Include` filter hits it. `And`: every enabled
-    /// `Include` filter hits it. With no include filter enabled, `And`
-    /// selects nothing, the same as `Or`.
+    /// Whether a line with these hits selects its file: an enabled
+    /// `Include` filter hits it, and no enabled `Exclude` filter does.
     #[must_use]
     pub fn selects(&self, bits: Bits) -> bool {
-        if bits & self.exclude != 0 {
-            return false;
-        }
-        let includes = self.selects;
-        match self.combine {
-            Combine::Or => bits & includes != 0,
-            Combine::And => includes != 0 && bits & includes == includes,
-        }
+        bits & self.exclude == 0 && bits & self.selects != 0
     }
 
-    /// Which filter selected a line with these hits, if any. In `And` mode
-    /// every include filter hit, so this is the first enabled one — the same
-    /// colour `verdict` gives the line.
+    /// Which filter selected a line with these hits, if any: the lowest
+    /// selecting one.
     #[must_use]
     pub fn owner(&self, bits: Bits) -> Option<Owner> {
         if !self.selects(bits) {
@@ -113,16 +108,15 @@ impl Matcher {
         Some((bits & self.selects).trailing_zeros() as usize)
     }
 
-    /// `(selects, exclude, combine)`, for the caller that wants to know
-    /// whether a toggle changed anything a scan cares about. The mode is part
-    /// of it: the same bitset answers differently under each.
+    /// `(selects, exclude)`, for the caller that wants to know whether a
+    /// toggle changed anything a scan cares about.
     #[must_use]
-    pub fn masks(&self) -> (Bits, Bits, Combine) {
-        (self.selects, self.exclude, self.combine)
+    pub fn masks(&self) -> (Bits, Bits) {
+        (self.selects, self.exclude)
     }
 }
 
-/// Everything about the filter set a scan depends on, in four numbers:
+/// Everything about the filter set a scan depends on, in three numbers:
 /// what `refresh_scan` compares on every event (#186). The pattern key it
 /// replaces was a `Vec<String>` built each time to find that nothing moved.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -132,7 +126,6 @@ pub struct ScanStamp {
     pub patterns: u64,
     pub selects: Bits,
     pub exclude: Bits,
-    pub combine: Combine,
 }
 
 impl ActiveFilters {
@@ -145,7 +138,6 @@ impl ActiveFilters {
             patterns: self.generation,
             selects,
             exclude,
-            combine: self.combine,
         })
     }
 
@@ -162,7 +154,15 @@ impl ActiveFilters {
             set: set.clone(),
             selects,
             exclude,
-            combine: self.combine,
+            advanced: self
+                .filters
+                .iter()
+                .enumerate()
+                .filter_map(|(index, filter)| {
+                    Some((index, filter.predicate.as_lookaround()?.clone()))
+                })
+                .collect(),
+            step_limit: self.step_limit,
         })
     }
 
@@ -180,9 +180,7 @@ impl ActiveFilters {
     #[must_use]
     pub fn scan_off(&self) -> Option<ScanOff> {
         let asks = self.filters.iter().enumerate().any(|(index, filter)| {
-            self.effective(index)
-                && filter.sense == Sense::Include
-                && filter.predicate.as_regex().is_some()
+            self.effective(index) && filter.sense == Sense::Include && filter.predicate.reads_text()
         });
         if !asks {
             return None;
@@ -212,11 +210,12 @@ impl ActiveFilters {
         let mut selects: Bits = 0;
         let mut exclude: Bits = 0;
         for (index, filter) in self.filters.iter().enumerate() {
-            // A definition predicate is not a regex over the line's text,
+            // A definition predicate is not a test of the line's text,
             // and a scan reads text it never parses: its bit stays out of
             // every mask, so it neither selects nor excludes a file. The
-            // view still applies it per line.
-            if !self.effective(index) || filter.predicate.as_regex().is_none() {
+            // view still applies it per line. An advanced filter is a test
+            // of the text, which `Matcher::bits` makes on its own.
+            if !self.effective(index) || !filter.predicate.reads_text() {
                 continue;
             }
             match filter.sense {
@@ -475,7 +474,7 @@ mod tests {
         let stamp = set.scan_stamp().expect("selects");
         assert_eq!(
             set.matcher().expect("selects").masks(),
-            (stamp.selects, stamp.exclude, stamp.combine)
+            (stamp.selects, stamp.exclude)
         );
 
         set.set_all_enabled(false);

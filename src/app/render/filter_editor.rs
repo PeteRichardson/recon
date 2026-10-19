@@ -8,7 +8,7 @@ use super::super::filter_editor::{
     PROMPT_CHANGED_NO_MODEL, prompt_changed,
 };
 use super::super::prompt::TAB;
-use crate::filter::Sense;
+use crate::filter::{Engine, Sense};
 use crate::keymap::{ActionId, Keymap};
 use crate::widgets::pane_block;
 use ratatui::prelude::{
@@ -240,7 +240,7 @@ impl FilterEditor {
     /// takes, and no `[keymap]` line reaches them.
     fn key_hints(&self, keymap: &Keymap) -> String {
         use ActionId::{
-            FilterEditorCancel, FilterEditorCommit, FilterEditorFailureNext,
+            FilterEditorCancel, FilterEditorCommit, FilterEditorEngine, FilterEditorFailureNext,
             FilterEditorFailurePrev, FilterEditorFocus, FilterEditorFocusPrev,
             FilterEditorMarkClear, FilterEditorMarkMatch, FilterEditorMarkNoMatch,
             FilterEditorPageDown, FilterEditorPageUp, FilterEditorRedo, FilterEditorRegenerate,
@@ -299,6 +299,7 @@ impl FilterEditor {
                 cancel,
                 scroll(),
                 undo,
+                hint(&[FilterEditorEngine], "engine"),
                 hint(&[FilterEditorFocus], after_pattern),
                 hint(&[FilterEditorFocusPrev], "prompt"),
             ],
@@ -366,7 +367,9 @@ impl FilterEditor {
     }
 
     /// The sense row: the three senses, the filter's in bold, and in
-    /// reversed video while the keys go to it; the other two dimmed.
+    /// reversed video while the keys go to it; the other two dimmed. Then
+    /// the two engines (#474), the filter's in bold: `Ctrl-e` changes it
+    /// from any field, so it never takes the reversed video.
     fn sense_spans(&self) -> Vec<Span<'static>> {
         let mut spans = vec![Span::raw(format!("{:LABEL_WIDTH$}", "sense:"))];
         for (sense, word) in [
@@ -382,6 +385,16 @@ impl FilterEditor {
                 Style::default().add_modifier(Modifier::BOLD)
             };
             spans.push(Span::styled(word, style));
+            spans.push(Span::raw("  "));
+        }
+        spans.push(Span::raw("· "));
+        for engine in [Engine::Standard, Engine::Advanced] {
+            let style = if engine == self.engine {
+                Style::default().add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::DarkGray)
+            };
+            spans.push(Span::styled(engine.name(), style));
             spans.push(Span::raw("  "));
         }
         spans.pop();
@@ -441,12 +454,7 @@ impl FilterEditor {
         let found: Vec<(usize, usize)> = self
             .regex
             .as_ref()
-            .map(|regex| {
-                regex
-                    .find_iter(line)
-                    .map(|m| (m.start(), m.end()))
-                    .collect()
-            })
+            .map(|regex| regex.find_iter(line, self.step_limit))
             .unwrap_or_default();
         let phrases: Vec<(usize, usize)> = self
             .phrases

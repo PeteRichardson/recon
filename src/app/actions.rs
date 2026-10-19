@@ -135,10 +135,6 @@ impl App<'_> {
                 }
             }
             A::GlobalPeek => self.toggle_peek(),
-            A::GlobalFiltersAnd => {
-                self.filters.toggle_and();
-                self.refresh_view();
-            }
             // Three states, because "nothing is enabled" and "nothing was
             // captured" are different situations. Branching on the capture
             // alone makes `!` inert once every filter has been disabled by
@@ -402,6 +398,7 @@ impl App<'_> {
             | A::FilterEditorRedo
             | A::FilterEditorRequest
             | A::FilterEditorRegenerate
+            | A::FilterEditorEngine
             | A::FinishingCancel => {
                 debug_assert!(
                     false,
@@ -429,7 +426,6 @@ impl App<'_> {
             A::GlobalSearch
             | A::GlobalSearchPromote
             | A::GlobalSearchWord
-            | A::GlobalFiltersAnd
             | A::GlobalFiltersDisable
             | A::GlobalFiltersToggle
             | A::GlobalToggleHide

@@ -449,13 +449,15 @@ impl App<'_> {
                     // A filter's examples are regression tests (#318): a
                     // pattern that fails one does not replace the old one.
                     if let PromptKind::Edit { index, .. } = kind
-                        && let Ok(predicate) = self
-                            .filters
-                            .expander()
-                            .predicate(self.filters.set_name_of(Some(index)), &pattern)
-                        && let Some(regex) = predicate.as_regex()
+                        && let Ok(predicate) = self.filters.expander().predicate(
+                            self.filters.set_name_of(Some(index)),
+                            &pattern,
+                            self.filters.filters()[index].predicate.engine(),
+                        )
+                        && predicate.reads_text()
+                        && let Some(regex) = predicate.line_regex()
                     {
-                        let failed = self.filters.failed_examples(index, regex);
+                        let failed = self.filters.failed_examples(index, &regex);
                         if !failed.is_empty() {
                             let open = self.keymap.keys_for(&[
                                 crate::keymap::ActionId::GlobalFocusFilters,
@@ -472,7 +474,7 @@ impl App<'_> {
                         }
                     }
                     let outcome = match kind {
-                        PromptKind::Search => self.run_search(&pattern),
+                        PromptKind::Search => self.run_search(&pattern).map_err(Into::into),
                         PromptKind::SaveSet => unreachable!("handled above"),
                         PromptKind::Filter => self.add_filter(&pattern),
                         PromptKind::Exclude => self.add_excluding_filter(&pattern),

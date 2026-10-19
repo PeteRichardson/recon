@@ -340,7 +340,7 @@ fn keys_on_lines_say_an_image_has_none() {
     arrow_to(&mut app, "a.png");
     app.focus = Focus::View;
 
-    for code in ['/', 'n', 'N', '1', '&', '!', 'u', 'v', 'V', '*'] {
+    for code in ['/', 'n', 'N', '1', '!', 'u', 'v', 'V', '*'] {
         app.status_message = None;
         key(&mut app, KeyCode::Char(code));
         assert_eq!(status(&app), Some("this view has no lines"), "{code}");
