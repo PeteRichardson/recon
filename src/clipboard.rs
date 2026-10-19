@@ -104,21 +104,24 @@ impl Clipboard for ProcessClipboard {
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()?;
-        if let Some(mut stdin) = child.stdin.take() {
-            stdin.write_all(text.as_bytes())?;
-            // Dropped here, so the child sees EOF before `wait` below.
-        }
+        // Not returned yet: a tool that fails before reading its input makes
+        // the write a broken pipe, and its exit status says more than that.
+        let written = match child.stdin.take() {
+            // Dropped at the end of the arm, so the child sees EOF before
+            // `wait` below.
+            Some(mut stdin) => stdin.write_all(text.as_bytes()),
+            None => Ok(()),
+        };
         // Waited on, unlike an editor: `pbcopy`, `xclip` and `wl-copy` all
         // return as soon as they have read their input, and a non-zero exit
         // is the only way they report a clipboard they could not reach.
         let status = child.wait()?;
-        if status.success() {
-            Ok(())
-        } else {
-            Err(std::io::Error::other(format!(
+        if !status.success() {
+            return Err(std::io::Error::other(format!(
                 "{program} exited with {status}"
-            )))
+            )));
         }
+        written
     }
 }
 
@@ -246,6 +249,14 @@ mod tests {
 
         let failing = ProcessClipboard::new("sh -c 'exit 3'");
         let err = failing.copy("x").expect_err("a non-zero exit is an error");
+        assert!(err.to_string().contains("exit"), "{err}");
+
+        // More than a pipe buffer holds, so the write cannot finish before
+        // the tool exits: it always breaks the pipe, and the exit status is
+        // still what is reported.
+        let err = failing
+            .copy(&"x".repeat(1 << 20))
+            .expect_err("a non-zero exit is an error");
         assert!(err.to_string().contains("exit"), "{err}");
     }
 }
