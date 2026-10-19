@@ -16,7 +16,7 @@ _Avoid_: pattern (that is the text of a filter), search
 
 **Sense**:
 What a match means for a line: *include* colors the line, *exclude* removes
-it, *context* keeps it on screen without coloring it.
+it, *context* colors it too, but it is not an interesting line.
 
 **Filter set**:
 A named group of filters loaded together and toggled as one. The unnamed set
@@ -147,8 +147,9 @@ Enter does not keep it with the filter.
 _Avoid_: check (only a line mark is a check), highlight, selection
 
 **Interesting line**:
-A line an enabled including filter matches. `n` and `N` step between
-interesting lines when no search is set, and hide mode keeps only them.
+A line an enabled include filter matches. `n` and `N` step between
+interesting lines when no search is set. A line a context filter matches is
+not interesting, but hide mode keeps it.
 
 ### Search
 
@@ -203,8 +204,8 @@ _Avoid_: maximise
 
 **Visible lines**:
 The lines the file view can show, in file order: every line an exclude filter
-does not remove, and in hide mode only the interesting lines. Dimmed lines are
-visible.
+does not remove, and in hide mode only the lines an include or context filter
+matches. Dimmed lines are visible.
 _Avoid_: on screen, shown lines
 
 **Window**:
@@ -212,8 +213,9 @@ The slice of the visible lines that fits on the screen right now.
 _Avoid_: viewport, visible (when the window is meant)
 
 **Dim mode / Hide mode**:
-The two ways to treat a line that is not interesting: keep it and grey it, or
-remove it from the visible lines. `u` toggles between them.
+The two ways to treat a line that no filter matches, when an include or
+context filter is enabled: keep it and grey it, or remove it from the visible
+lines. `u` toggles between them.
 
 ### Views and hand-offs
 

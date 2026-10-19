@@ -14,7 +14,7 @@ Panes are hidable and zoomable in-app or from the command line.
 - display a view of the currently selected file.
 - Cycle through configured views of a file type using `-`.
 - Views are configurable, and include built-in (raw, hex, image) and user supplied (via pre-processing commands in config.toml.  e.g. running json through a jq command before displaying.)
-- Reveal and Focus the explorer pane with `t`. Hide it with `T`
+- Reveal and Focus the file view with `t`.
 
 
 ## **Filter Pane**

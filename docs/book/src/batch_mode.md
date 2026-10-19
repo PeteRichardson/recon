@@ -1,0 +1,43 @@
+# About output and batch mode
+
+recon is a part of the shell, not a replacement for it. When you find
+something in recon, the next step is often a different command: `sort`,
+`xargs` or `cd`. recon can give its result to that command.
+
+## Output when you quit
+
+recon draws its window on stderr, so stdout is free for a result. With
+`--emit`, recon prints a result when you quit with `q`:
+
+| `--emit` | Prints |
+| --- | --- |
+| `lines` | the visible lines of the file view |
+| `files` | the files in the explorer, one absolute path on each line |
+| `cwd` | the directory that the explorer shows |
+
+`Q` quits without output, and exits with status 1. Thus a shell script or a
+`cd` does not continue after you stop a session.
+
+The display mode decides the result. Dim mode prints each line or file;
+hide mode prints only the matches. The output cannot show which mode was
+on, so recon always prints a summary line to stderr that names the mode and
+the counts.
+
+## Batch mode
+
+In batch mode (`-b`), recon does not open a window. It reads files from the
+command line or from stdin, applies the filter sets that `--set` names, and
+prints the result:
+
+```sh
+recon -b --set errors --hide server.log
+ls -1 *.log | recon -b --emit files --set BugFilters:Bug57 --hide
+```
+
+Batch mode uses the same filter sets as the window. Thus you can make a set
+by experiment in the window, and then use it without change in a script or
+a CI job. `-n` puts the original line number before each line, separated by
+a tab.
+
+For the reason that batch mode has its own flag, see
+[ADR 0005](https://github.com/PeteRichardson/recon/blob/main/docs/adr/0005-batch-mode-has-a-flag.md).
