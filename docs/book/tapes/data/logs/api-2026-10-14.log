@@ -1,0 +1,161 @@
+09:00:00 INFO  build commit=3f9c2e1 host=api-3
+09:00:04 DEBUG cache pool size=5 idle=4
+09:00:13 INFO  http POST /orders 201 29ms
+09:00:14 DEBUG auth pool size=9 idle=0
+09:00:23 INFO  http GET /healthz 200 1ms
+09:00:24 INFO  worker job=email-receipt done in 280ms
+09:00:27 DEBUG cache hit key=order:1135
+09:00:36 INFO  http GET /orders/4646 200 34ms
+09:00:37 INFO  http GET /orders/8388 200 14ms
+09:00:43 INFO  worker job=email-receipt done in 190ms
+09:00:49 INFO  http GET /healthz 200 1ms
+09:00:56 DEBUG cache pool size=10 idle=4
+09:01:04 DEBUG cache pool size=12 idle=0
+09:01:11 WARN  auth token near expiry user=543
+09:01:20 INFO  http GET /healthz 200 1ms
+09:01:24 DEBUG worker pool size=15 idle=3
+09:01:29 WARN  auth token near expiry user=325
+09:01:38 INFO  http GET /orders/6225 200 25ms
+09:01:41 DEBUG http pool size=13 idle=2
+09:01:48 INFO  http POST /orders 201 51ms
+09:01:54 INFO  http GET /healthz 200 1ms
+09:02:01 INFO  http GET /healthz 200 1ms
+09:02:04 INFO  http GET /healthz 200 1ms
+09:02:10 DEBUG cache hit key=order:6440
+09:02:12 DEBUG cache hit key=order:9563
+09:02:19 WARN  auth token near expiry user=820
+09:02:23 INFO  http GET /healthz 200 1ms
+09:02:27 INFO  http GET /healthz 200 1ms
+09:02:29 DEBUG cache pool size=7 idle=4
+09:02:31 DEBUG db pool size=7 idle=4
+09:02:40 INFO  http GET /orders/6164 200 14ms
+09:02:49 INFO  worker job=email-receipt done in 298ms
+09:02:57 WARN  auth token near expiry user=748
+09:03:03 INFO  http GET /healthz 200 1ms
+09:03:04 INFO  http GET /healthz 200 1ms
+09:03:09 DEBUG worker pool size=14 idle=1
+09:03:15 DEBUG cache hit key=order:3207
+09:03:20 INFO  http GET /orders/5268 200 27ms
+09:03:28 INFO  http GET /healthz 200 1ms
+09:03:33 INFO  http GET /healthz 200 1ms
+09:03:35 INFO  http GET /healthz 200 1ms
+09:03:37 DEBUG cache pool size=15 idle=0
+09:03:44 INFO  http GET /healthz 200 1ms
+09:03:52 INFO  worker job=email-receipt done in 108ms
+09:03:56 INFO  worker job=email-receipt done in 75ms
+09:03:59 INFO  http GET /orders/4637 200 16ms
+09:04:03 DEBUG http pool size=9 idle=0
+09:04:04 INFO  http GET /healthz 200 1ms
+09:04:11 INFO  http GET /healthz 200 1ms
+09:04:17 INFO  http GET /orders/2834 200 31ms
+09:04:24 INFO  http GET /orders/2456 200 8ms
+09:04:30 INFO  worker job=email-receipt done in 234ms
+09:04:37 DEBUG db pool size=4 idle=0
+09:04:38 INFO  http GET /orders/7559 200 10ms
+09:04:44 DEBUG cache hit key=order:5300
+09:04:46 INFO  http GET /orders/2532 200 40ms
+09:04:51 DEBUG http pool size=11 idle=0
+09:04:54 WARN  auth token near expiry user=138
+09:04:59 INFO  http GET /healthz 200 1ms
+09:05:08 INFO  http GET /healthz 200 1ms
+09:05:11 DEBUG auth pool size=8 idle=4
+09:05:15 DEBUG db pool size=8 idle=4
+09:05:17 INFO  worker job=email-receipt done in 123ms
+09:05:18 WARN  auth token near expiry user=412
+09:05:27 DEBUG db pool size=8 idle=3
+09:05:29 INFO  http GET /healthz 200 1ms
+09:05:37 DEBUG worker pool size=11 idle=1
+09:05:44 INFO  http GET /healthz 200 1ms
+09:05:52 INFO  http POST /orders 201 28ms
+09:05:57 INFO  http GET /orders/4459 200 26ms
+09:06:03 INFO  http POST /orders 201 77ms
+09:06:05 INFO  http GET /orders/7959 200 17ms
+09:06:06 INFO  http GET /orders/6220 200 10ms
+09:06:10 INFO  worker job=email-receipt done in 141ms
+09:06:11 DEBUG http pool size=15 idle=0
+09:06:13 INFO  http GET /healthz 200 1ms
+09:06:21 INFO  http GET /orders/4743 200 27ms
+09:06:22 DEBUG cache hit key=order:7972
+09:06:24 DEBUG cache pool size=7 idle=1
+09:06:29 DEBUG auth pool size=14 idle=2
+09:06:32 WARN  auth token near expiry user=265
+09:06:35 INFO  http GET /healthz 200 1ms
+09:06:37 INFO  http POST /orders 201 90ms
+09:06:46 DEBUG db pool size=10 idle=3
+09:06:48 INFO  worker job=email-receipt done in 200ms
+09:06:54 INFO  http GET /orders/3137 200 33ms
+09:06:55 INFO  http GET /healthz 200 1ms
+09:07:04 DEBUG db pool size=12 idle=1
+09:07:08 DEBUG auth pool size=10 idle=3
+09:07:09 WARN  auth token near expiry user=723
+09:07:15 DEBUG cache hit key=order:1377
+09:07:23 DEBUG cache hit key=order:1763
+09:07:31 DEBUG cache hit key=order:3565
+09:07:39 INFO  http POST /orders 201 23ms
+09:07:43 INFO  http GET /healthz 200 1ms
+09:07:51 INFO  http POST /orders 201 33ms
+09:07:59 INFO  worker job=email-receipt done in 72ms
+09:08:04 INFO  worker job=email-receipt done in 77ms
+09:08:10 DEBUG db pool size=11 idle=2
+09:08:15 DEBUG worker pool size=4 idle=0
+09:08:24 INFO  http GET /healthz 200 1ms
+09:08:27 DEBUG db pool size=13 idle=0
+09:08:30 INFO  http GET /healthz 200 1ms
+09:08:33 INFO  http GET /orders/2599 200 25ms
+09:08:41 INFO  http GET /orders/1027 200 11ms
+09:08:42 INFO  http GET /orders/3334 200 13ms
+09:08:43 DEBUG auth pool size=4 idle=1
+09:08:45 DEBUG auth pool size=12 idle=1
+09:08:49 DEBUG auth pool size=6 idle=3
+09:08:57 INFO  http POST /orders 201 58ms
+09:09:00 INFO  http GET /orders/1706 200 16ms
+09:09:04 DEBUG cache hit key=order:7406
+09:09:06 INFO  http POST /orders 201 82ms
+09:09:10 INFO  http GET /orders/3490 200 18ms
+09:09:14 INFO  http GET /healthz 200 1ms
+09:09:23 INFO  http GET /orders/5262 200 24ms
+09:09:29 DEBUG db pool size=16 idle=4
+09:09:38 DEBUG cache hit key=order:5729
+09:09:42 DEBUG auth pool size=5 idle=0
+09:09:48 INFO  http GET /healthz 200 1ms
+09:09:54 INFO  http GET /healthz 200 1ms
+09:10:03 INFO  worker job=email-receipt done in 233ms
+09:10:04 INFO  http POST /orders 201 83ms
+09:10:13 INFO  http GET /healthz 200 1ms
+09:10:21 DEBUG http pool size=14 idle=1
+09:10:27 DEBUG db pool size=7 idle=2
+09:10:31 DEBUG db pool size=4 idle=2
+09:10:40 INFO  http GET /orders/6417 200 29ms
+09:10:46 DEBUG http pool size=12 idle=0
+09:10:51 WARN  auth token near expiry user=789
+09:10:52 DEBUG auth pool size=9 idle=3
+09:11:00 DEBUG cache hit key=order:9093
+09:11:02 INFO  http GET /healthz 200 1ms
+09:11:10 INFO  http POST /orders 201 50ms
+09:11:15 INFO  http GET /healthz 200 1ms
+09:11:20 DEBUG cache pool size=14 idle=3
+09:11:27 INFO  http GET /orders/2411 200 37ms
+09:11:35 DEBUG cache hit key=order:9982
+09:11:43 INFO  http GET /orders/5760 200 26ms
+09:11:45 INFO  http GET /healthz 200 1ms
+09:11:54 INFO  worker job=email-receipt done in 62ms
+09:11:57 INFO  http GET /orders/8778 200 38ms
+09:11:59 INFO  http GET /healthz 200 1ms
+09:12:08 INFO  http GET /healthz 200 1ms
+09:12:12 INFO  http GET /healthz 200 1ms
+09:12:20 DEBUG auth pool size=13 idle=3
+09:12:28 INFO  http GET /orders/9664 200 25ms
+09:12:37 INFO  http POST /orders 201 58ms
+09:12:38 INFO  http GET /healthz 200 1ms
+09:12:43 DEBUG cache hit key=order:9918
+09:12:48 DEBUG auth pool size=10 idle=4
+09:12:49 DEBUG auth pool size=13 idle=4
+09:12:55 DEBUG worker pool size=6 idle=2
+09:12:59 INFO  http GET /orders/2663 200 21ms
+09:13:03 INFO  http GET /orders/2309 200 11ms
+09:13:10 INFO  http POST /orders 201 37ms
+09:13:19 INFO  http GET /orders/3823 200 39ms
+09:13:20 INFO  http GET /healthz 200 1ms
+09:13:24 INFO  http GET /healthz 200 1ms
+09:13:26 INFO  http GET /healthz 200 1ms
+09:13:32 INFO  worker job=email-receipt done in 123ms

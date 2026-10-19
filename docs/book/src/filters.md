@@ -30,6 +30,8 @@ When an include or context filter is on, a line that no include or context
 filter matches is *dimmed*. You can still read it, but it is gray. The `u` key changes to *hide
 mode*, which removes these lines. Press `u` again to show them.
 
+![Two exclude filters and an include filter, then hide mode and a peek](images/filter-stack.gif)
+
 Each mode has a use. Dim mode shows a result with the text around it. Hide
 mode shows only the results, so that you can count them or read them quickly.
 

@@ -18,6 +18,8 @@ with no matches leave the view. When you move through the explorer, the file
 view shows only the matching lines of each file. A file that shows nothing
 has no matches.
 
+![The explorer marks the logs with errors, and hide mode removes the others](images/browsing.gif)
+
 Thus a question such as "which of these logs contain bug 57?" has an answer
 in the explorer. You do not need a pipe of `grep` commands.
 
