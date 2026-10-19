@@ -21,6 +21,22 @@ it, *context* keeps it on screen without colouring it.
 A named group of filters loaded together and toggled as one. The unnamed set
 the user builds by hand is the *scratch set*.
 
+**Reference**:
+A part of a filter's pattern that stands for the current pattern of a named
+filter in a known set, so that two filters cannot drift apart. It takes only
+the pattern: never the other filter's sense, colour or enabled state. A
+reference whose filter cannot be found is *broken*: its filter matches
+nothing in the TUI, and a batch run stops before any output.
+_Avoid_: link, include, import, macro
+
+**Advanced filter**:
+A filter the user marked to use the richer regular-expression engine, which
+can test what is ahead of or behind a point in the line: for example "has
+`Summary` and `Updates` in either order". It can be slow on some lines, so a
+line that takes too many steps counts as no match, and the filter shows how
+many lines did.
+_Avoid_: fancy, PCRE, lookaround filter
+
 **Known set**:
 A filter set recon found at startup, listed or not.
 _Avoid_: discovered, available
@@ -28,8 +44,9 @@ _Avoid_: discovered, available
 **Listed / Unlisted**:
 Whether a known set has a row in the filter pane. An unlisted set has no
 effect on recon — not on what the user sees, and not on the pattern limit —
-except that it can be listed. A set listed again comes back as its file
-describes it. The scratch set is always listed.
+except that it can be listed, and that it supplies patterns to references. A
+set listed again comes back as its file describes it. The scratch set is
+always listed.
 _Avoid_: loaded, unloaded, hidden, shelved
 
 **Enabled / Disabled** (of a set):
