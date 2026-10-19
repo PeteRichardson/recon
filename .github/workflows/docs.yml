@@ -1,0 +1,75 @@
+name: Docs
+
+# The user guide in docs/book, published to GitHub Pages from main. The book
+# describes main, not the last release: recon is installed from a clone of
+# main, and book.toml's edit links point at main too. A pull request builds
+# the book but does not deploy it, so a typo in SUMMARY.md or a broken
+# {{#include}} fails before the merge.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docs/book/**"
+      # glossary.md includes the user-facing part of CONTEXT.md.
+      - "CONTEXT.md"
+      - ".github/workflows/docs.yml"
+  pull_request:
+    paths:
+      - "docs/book/**"
+      - "CONTEXT.md"
+      - ".github/workflows/docs.yml"
+  workflow_dispatch:
+
+# Pinned, so that a new mdBook release cannot change or break the book on a
+# day nobody touched it. Change it on purpose, with a local `mdbook build`.
+env:
+  MDBOOK_VERSION: v0.5.4
+
+permissions:
+  contents: read
+
+jobs:
+  # Linux, not macOS as in ci.yml: mdBook needs nothing from the platform,
+  # and macOS runners bill at 10x the Linux rate.
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      # The release binary, not `cargo install`: a download takes seconds,
+      # and a compile of mdBook takes minutes.
+      - name: Install mdBook
+        run: |
+          mkdir -p "$HOME/.local/bin"
+          curl -sSfL "https://github.com/rust-lang/mdBook/releases/download/${MDBOOK_VERSION}/mdbook-${MDBOOK_VERSION}-x86_64-unknown-linux-gnu.tar.gz" \
+            | tar -xz -C "$HOME/.local/bin"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      # book.toml sets build-dir to target/book, outside the source tree.
+      - name: Build
+        run: mdbook build docs/book
+
+      - name: Upload
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-pages-artifact@v5
+        with:
+          path: target/book
+
+  deploy:
+    if: github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    # One deploy at a time, and a deploy that started is not cancelled: a
+    # cancelled deploy can leave the site half published.
+    concurrency:
+      group: pages
+      cancel-in-progress: false
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v5
