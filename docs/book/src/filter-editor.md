@@ -29,6 +29,8 @@ as checks, also when the open file does not contain those lines. A change
 that fails an example does not replace the pattern. Thus an example protects
 a filter from a future edit that breaks it.
 
+![A pattern in the filter editor, a failed check, and the pattern that corrects it](images/filter-editor.gif)
+
 ## A pattern from a description
 
 On Apple silicon, recon has an optional build that uses Apple's on-device

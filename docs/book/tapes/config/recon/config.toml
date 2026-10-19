@@ -1,0 +1,9 @@
+# The demo config for the tapes. Each tape sets XDG_CONFIG_HOME to the
+# directory above this one, so recon reads this file and not your own.
+
+[commands]
+jq = ["jq", "."]
+
+[[filetype]]
+glob  = "*.json"
+views = ["jq", "raw"]

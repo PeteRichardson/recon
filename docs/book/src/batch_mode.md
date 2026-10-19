@@ -39,5 +39,7 @@ by experiment in the window, and then use it without change in a script or
 a CI job. `-n` puts the original line number before each line, separated by
 a tab.
 
+![Batch mode in the shell](images/batch.gif)
+
 For the reason that batch mode has its own flag, see
 [ADR 0005](https://github.com/PeteRichardson/recon/blob/main/docs/adr/0005-batch-mode-has-a-flag.md).

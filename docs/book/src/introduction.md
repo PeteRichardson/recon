@@ -24,6 +24,8 @@ to show. recon starts from a different idea: **the filters are things that
 you keep, look at and change**. The file is only the text that the filters
 operate on.
 
+![recon with an exclude filter, an include filter, hide mode and a peek](images/filter-stack.gif)
+
 ## The basics
 
 Many log viewers give you a version of the features in this section. recon

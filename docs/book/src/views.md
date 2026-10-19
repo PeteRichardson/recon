@@ -47,6 +47,8 @@ line where `jq` puts that key. A filter on an EXIF field matches a field that
 only `exiftool` can show. For the decision, see
 [ADR 0006](https://github.com/PeteRichardson/recon/blob/main/docs/adr/0006-filters-run-on-the-view.md).
 
+![A JSON file in its jq view, a filter on the jq lines, and the raw view](images/command-view.gif)
+
 A picture has no lines, so you cannot filter or search it.
 
 ## Pictures and previews

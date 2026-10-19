@@ -1,0 +1,21 @@
+# The demo filter sets for the tapes.
+
+[sets.triage]
+description = "Find the requests that time out"
+
+[sets.triage.profiles]
+default = ["errors", "noise"]
+slow = ["timeouts", "noise"]
+
+[[sets.triage.filters]]
+name    = "errors"
+pattern = 'ERROR'
+
+[[sets.triage.filters]]
+name    = "timeouts"
+pattern = 'timed out|504'
+
+[[sets.triage.filters]]
+name    = "noise"
+pattern = '/healthz|DEBUG'
+sense   = "exclude"
