@@ -1,0 +1,24 @@
+[book]
+title = "recon Documentation"
+authors = ["Pete Richardson"]
+description = "User guide for recon"
+language = "en"
+src = "src"
+
+[build]
+# Keep build output out of the source tree; target/ is already ignored.
+build-dir = "../../target/book"
+# A typo in SUMMARY.md fails the build instead of making an empty page.
+create-missing = false
+
+[output.html]
+site-url = "/recon/"
+git-repository-url = "https://github.com/PeteRichardson/recon"
+edit-url-template = "https://github.com/PeteRichardson/recon/edit/main/docs/book/{path}"
+default-theme = "light"
+preferred-dark-theme = "navy"
+smart-punctuation = true   # curly quotes, en/em dashes
+hash-files = true          # cache-busting file names for CSS/JS
+
+[output.html.search]
+enable = true

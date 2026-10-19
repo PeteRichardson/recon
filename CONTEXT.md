@@ -6,16 +6,17 @@ sees. It is a glossary, not a spec.
 
 ## Language
 
+<!-- ANCHOR: glossary -->
 ### Filters
 
-**Filter**:
+<a id="filter"></a>**Filter**:
 A regular expression the user keeps in the filter pane, with a sense and a
-colour. A filter decides what a line is, not where the cursor goes.
+color. A filter decides what a line is, not where the cursor goes.
 _Avoid_: pattern (that is the text of a filter), search
 
 **Sense**:
-What a match means for a line: *include* colours the line, *exclude* removes
-it, *context* keeps it on screen without colouring it.
+What a match means for a line: *include* colors the line, *exclude* removes
+it, *context* keeps it on screen without coloring it.
 
 **Filter set**:
 A named group of filters loaded together and toggled as one. The unnamed set
@@ -24,7 +25,7 @@ the user builds by hand is the *scratch set*.
 **Reference**:
 A part of a filter's pattern that stands for the current pattern of a named
 filter in a known set, so that two filters cannot drift apart. It takes only
-the pattern: never the other filter's sense, colour or enabled state. A
+the pattern: never the other filter's sense, color or enabled state. A
 reference whose filter cannot be found is *broken*: its filter matches
 nothing in the TUI, and a batch run stops before any output.
 _Avoid_: link, include, import, macro
@@ -237,7 +238,7 @@ or recon stops.
 _Avoid_: view list, view order
 
 **Highlighting**:
-Syntax colour on the lines of a text view. It is a layer on a view, never a
+Syntax color on the lines of a text view. It is a layer on a view, never a
 view of its own, and it does not change the lines.
 _Avoid_: syntax view, pretty view
 
@@ -247,6 +248,8 @@ the editor for a text file, else the operating system's default app. `o`
 does it. recon does not wait, and stays open. It is never a step in a view
 cycle.
 _Avoid_: launch, export, open in editor (that is `O`, the project)
+
+<!-- ANCHOR_END: glossary -->
 
 ### Builds and releases
 
