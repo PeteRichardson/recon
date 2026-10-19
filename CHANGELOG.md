@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.3.0 — 2026-10-19
+
+### Breaking changes
+
+- **filters:** Add advanced filters with lookaround and a step limit
+
+### Features
+
+- **views:** Match a [[filetype]] row by MIME type from the content
+- **views:** Show date, size and MIME type in the file view title
+- **keys:** Open a listing entry with Enter in the file view
+- **views:** Right-align the file facts in the file view title
+- **keys:** Step to any file with . and , when no filter is on
+- **filters:** Use another filter's pattern with ${set:name}
+
 ## v0.2.0 — 2026-10-15
 
 ### Breaking changes
