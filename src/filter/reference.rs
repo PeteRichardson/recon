@@ -8,7 +8,7 @@
 //! compiles to `NEVER`: its filter matches nothing, and no index in the
 //! compiled set moves.
 
-use super::{ActiveFilters, Filter, Predicate};
+use super::{ActiveFilters, Engine, Filter, LineRegex, Lookaround, PatternError, Predicate};
 use regex::Regex;
 use std::collections::HashMap;
 use std::fmt;
@@ -111,6 +111,15 @@ fn references(pattern: &str) -> Vec<(Range<usize>, Reference)> {
     found
 }
 
+/// `pattern` with each reference as an empty group: what a syntax check
+/// of the rest of the pattern compiles.
+fn blanked(pattern: &str, found: &[(Range<usize>, Reference)]) -> String {
+    substitute(pattern, found, |_| {
+        Ok::<_, std::convert::Infallible>("(?:)".into())
+    })
+    .unwrap_or_else(|never| match never {})
+}
+
 /// `pattern` with each reference replaced by what `with` gives for it.
 fn substitute<E>(
     pattern: &str,
@@ -138,12 +147,52 @@ impl Predicate {
         if found.is_empty() {
             return Regex::new(pattern).map(Self::Regex);
         }
-        let blank = substitute(pattern, &found, |_| Ok::<_, regex::Error>("(?:)".into()))?;
-        Regex::new(&blank)?;
+        Regex::new(&blanked(pattern, &found))?;
         Ok(Self::Referring {
             typed: pattern.to_string(),
             expanded: Err(Broken::Unexpanded),
         })
+    }
+
+    /// The predicate for a typed pattern read by `engine`: `parse` for the
+    /// standard engine, and an `Advanced` for the other (#474). As there,
+    /// the rest of a pattern with references is checked with each one as
+    /// an empty group, and the references wait for the next `recompile`.
+    pub fn parse_as(pattern: &str, engine: Engine) -> Result<Self, PatternError> {
+        if engine == Engine::Standard {
+            return Ok(Self::parse(pattern)?);
+        }
+        let found = references(pattern);
+        let compiled = if found.is_empty() {
+            Ok(Lookaround::new(pattern)?)
+        } else {
+            Lookaround::new(&blanked(pattern, &found))?;
+            Err(Broken::Unexpanded)
+        };
+        Ok(Self::Advanced {
+            typed: pattern.to_string(),
+            compiled,
+        })
+    }
+
+    /// Whether the pattern as typed has a reference in it.
+    #[must_use]
+    pub fn has_references(&self) -> bool {
+        self.typed()
+            .is_some_and(|typed| !references(typed).is_empty())
+    }
+
+    /// The pattern with its references expanded, or why one cannot be:
+    /// `None` for a pattern with no reference. The filter editor shows it.
+    #[must_use]
+    pub fn expansion(&self) -> Option<Result<&str, &Broken>> {
+        match self {
+            Self::Referring { expanded, .. } => Some(expanded.as_ref().map(Regex::as_str)),
+            Self::Advanced { compiled, .. } if self.has_references() => {
+                Some(compiled.as_ref().map(Lookaround::as_str))
+            }
+            _ => None,
+        }
     }
 
     /// Why this predicate matches nothing: a reference that cannot be
@@ -153,6 +202,10 @@ impl Predicate {
         match self {
             Self::Referring {
                 expanded: Err(broken),
+                ..
+            }
+            | Self::Advanced {
+                compiled: Err(broken),
                 ..
             } => Some(broken),
             _ => None,
@@ -165,7 +218,7 @@ impl Predicate {
     pub fn typed(&self) -> Option<&str> {
         match self {
             Self::Regex(regex) => Some(regex.as_str()),
-            Self::Referring { typed, .. } => Some(typed),
+            Self::Referring { typed, .. } | Self::Advanced { typed, .. } => Some(typed),
             Self::Definition(_) => None,
         }
     }
@@ -173,32 +226,60 @@ impl Predicate {
     /// The regex a line's text is tested with: for a broken reference, one
     /// that matches nothing, as its filter does. `None` for a definition.
     #[must_use]
-    pub fn line_regex(&self) -> Option<Regex> {
+    pub fn line_regex(&self) -> Option<LineRegex> {
         match self {
             Self::Definition(_) => None,
-            _ => Some(self.as_regex().cloned().unwrap_or_else(|| NOTHING.clone())),
+            Self::Advanced { .. } => Some(self.as_lookaround().map_or_else(
+                || LineRegex::Standard(NOTHING.clone()),
+                |lookaround| LineRegex::Advanced(lookaround.clone()),
+            )),
+            _ => Some(LineRegex::Standard(
+                self.as_regex().cloned().unwrap_or_else(|| NOTHING.clone()),
+            )),
         }
     }
 
     /// A referring predicate's expansion, made again from `expander` for a
     /// filter of set `own`. Reports whether it changed; compiles only then.
     fn expand(&mut self, expander: &Expander, own: &str) -> bool {
-        let Self::Referring { typed, expanded } = self else {
-            return false;
-        };
-        let now = expander.expand(own, typed);
-        let same = match (&now, &*expanded) {
-            (Ok(source), Ok(regex)) => source == regex.as_str(),
-            (Err(now), Err(was)) => now == was,
+        match self {
+            Self::Referring { typed, expanded } => reexpand(
+                expanded,
+                expander.expand(own, typed),
+                Regex::as_str,
+                |source| Ok(Regex::new(source)?),
+            ),
+            Self::Advanced { typed, compiled } if !references(typed).is_empty() => reexpand(
+                compiled,
+                expander.expand(own, typed),
+                Lookaround::as_str,
+                |source| Ok(Lookaround::new(source)?),
+            ),
             _ => false,
-        };
-        if !same {
-            *expanded = now.and_then(|source| {
-                Regex::new(&source).map_err(|error| Broken::Invalid(error.to_string()))
-            });
         }
-        !same
     }
+}
+
+/// Put `now`, an expansion or why there is none, in `slot`, compiling it
+/// with `compile` only when it differs from what `slot` holds. Reports
+/// whether it changed. One for each engine's compiled type.
+fn reexpand<T>(
+    slot: &mut Result<T, Broken>,
+    now: Result<String, Broken>,
+    as_str: impl Fn(&T) -> &str,
+    compile: impl FnOnce(&str) -> Result<T, PatternError>,
+) -> bool {
+    let same = match (&now, &*slot) {
+        (Ok(source), Ok(compiled)) => source == as_str(compiled),
+        (Err(now), Err(was)) => now == was,
+        _ => false,
+    };
+    if !same {
+        *slot = now.and_then(|source| {
+            compile(&source).map_err(|error| Broken::Invalid(error.to_string()))
+        });
+    }
+    !same
 }
 
 impl Reference {
@@ -222,7 +303,7 @@ impl ActiveFilters {
         if !self
             .filters
             .iter()
-            .any(|filter| matches!(filter.predicate, Predicate::Referring { .. }))
+            .any(|filter| filter.predicate.has_references())
         {
             return false;
         }
@@ -260,7 +341,7 @@ impl ActiveFilters {
     pub fn references_into(&self) -> Vec<usize> {
         let mut counts = vec![0; self.sets.len()];
         for filter in self.known_filters() {
-            let Predicate::Referring { typed, .. } = &filter.predicate else {
+            let Some(typed) = filter.predicate.typed() else {
                 continue;
             };
             let own = &self.sets[filter.set].name;
@@ -306,6 +387,12 @@ impl ActiveFilters {
                 Predicate::Regex(regex) => Ok(regex.as_str().to_string()),
                 Predicate::Definition(_) => Err(Broken::Definition as Reason),
                 Predicate::Referring { .. } => Err(Broken::HasReferences as Reason),
+                // An advanced pattern is Oniguruma's: a standard filter
+                // that names it gets it as typed, and may not compile.
+                Predicate::Advanced { .. } if filter.predicate.has_references() => {
+                    Err(Broken::HasReferences as Reason)
+                }
+                Predicate::Advanced { typed, .. } => Ok(typed.clone()),
             };
             targets.insert((meta.name.clone(), name.clone()), pattern);
         }
@@ -351,9 +438,14 @@ impl Expander {
 
     /// The predicate for `pattern` typed in a filter of set `own`, with its
     /// references expanded: what the filter would be. The filter editor and
-    /// `c` check a pattern with this.
-    pub fn predicate(&self, own: &str, pattern: &str) -> Result<Predicate, regex::Error> {
-        let mut predicate = Predicate::parse(pattern)?;
+    /// `c` check a pattern with this, in the engine the filter uses.
+    pub fn predicate(
+        &self,
+        own: &str,
+        pattern: &str,
+        engine: Engine,
+    ) -> Result<Predicate, PatternError> {
+        let mut predicate = Predicate::parse_as(pattern, engine)?;
         predicate.expand(self, own);
         Ok(predicate)
     }

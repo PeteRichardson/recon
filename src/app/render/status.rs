@@ -56,11 +56,6 @@ pub(in crate::app) fn stale_badge_text(keymap: &crate::keymap::Keymap) -> Option
     Some(format!(" changed on disk · {key} "))
 }
 
-/// The badge saying the include filters are combined with AND (#39). Same style
-/// as `HIDE`, and for the same reason: the mode changes what the pane shows
-/// and is easy to forget while moving fast.
-pub(in crate::app) const AND_BADGE_TEXT: &str = " AND ";
-
 /// The most columns of pattern the search badge shows before eliding the
 /// tail. The badge shares the status row with the filter summary and the
 /// path; a regex this long is still recognisable from its head.

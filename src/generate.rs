@@ -7,7 +7,8 @@
 //! nothing on every other build: the editor then has no request line, and
 //! everything else in it works as before.
 //!
-//! What the model receives is the fixed `INSTRUCTIONS` and the text
+//! What the model receives is the fixed `INSTRUCTIONS` — or, for an
+//! advanced filter, `ADVANCED_INSTRUCTIONS` (#474) — and the text
 //! `request_text` builds: the filter's prompt, the current pattern, its
 //! marked lines, a few other lines of the file, the session's earlier
 //! requests and the latest request. The filter's description is for people
@@ -27,20 +28,23 @@
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::sync::{Arc, Mutex, PoisonError};
 
-use regex::Regex;
+use crate::filter::{Engine, LineRegex};
 
-/// What the model is told before every request: the rules of the `regex`
-/// crate's dialect, and the shape of the answer.
-pub const INSTRUCTIONS: &str = "\
+/// The instructions for one engine: the shared opening, `$rules` for the
+/// engine's dialect, the shared middle, `$leave_out` for how to leave a
+/// line out, and the shape of the answer. A macro, as `concat!` takes
+/// only literals.
+macro_rules! instructions {
+    ($rules:literal, $leave_out:literal) => {
+        concat!(
+            "\
 You write one regular expression for a log viewer. The viewer tests the \
 expression against each line of a file separately, and a line matches when \
 the expression is found anywhere in it.
 
-The expression is for the Rust `regex` crate. Its rules:
-- There is no lookahead or lookbehind: (?=, (?!, (?<= and (?<! are errors.
-- There are no backreferences: \\1 is an error.
-- \\d, \\w, \\s, \\b, character classes, alternation, repetition and \
-  non-capturing groups (?:...) are available.
+",
+            $rules,
+            "
 - (?i) at the start makes the whole expression case-insensitive.
 - Escape . * + ? ( ) [ ] { } | ^ $ and \\ with a backslash to match them \
   literally.
@@ -49,13 +53,60 @@ There can be a current pattern and earlier requests. Then change the \
 current pattern to do what the latest request asks, and keep what the \
 earlier requests asked for.
 
-To leave out lines, match only the lines to keep: there is no way to say \
-\"not\" inside the expression. Prefer a short expression that matches the \
+",
+            $leave_out,
+            " Prefer a short expression that matches the \
 important text over one that copies a whole line.
 
 Answer with exactly two lines and nothing else:
 pattern: the expression, as it is, with no quotes and no backticks
-explanation: one short sentence about what the expression matches";
+explanation: one short sentence about what the expression matches"
+        )
+    };
+}
+
+/// What the model is told before every request for a standard filter:
+/// the rules of the `regex` crate's dialect, and the shape of the answer.
+pub const INSTRUCTIONS: &str = instructions!(
+    "\
+The expression is for the Rust `regex` crate. Its rules:
+- There is no lookahead or lookbehind: (?=, (?!, (?<= and (?<! are errors.
+- There are no backreferences: \\1 is an error.
+- \\d, \\w, \\s, \\b, character classes, alternation, repetition and \
+  non-capturing groups (?:...) are available.",
+    "\
+To leave out lines, match only the lines to keep: there is no way to say \
+\"not\" inside the expression."
+);
+
+/// What the model is told for an advanced filter (#474): Oniguruma's
+/// rules, lookaround among them, and a warning that a pattern which
+/// backtracks too much gives up on long lines. Only a filter the user
+/// already marked advanced is asked under these.
+pub const ADVANCED_INSTRUCTIONS: &str = instructions!(
+    "\
+The expression is for Oniguruma, with Perl syntax. Its rules:
+- Lookahead (?=...) and (?!...) and lookbehind (?<=...) and (?<!...) are \
+  available. For lines that have two things in either order, put one \
+  lookahead for each at the start: ^(?=.*first)(?=.*second).
+- The viewer stops on a line that takes too many steps, and the line then \
+  does not match. Write patterns that do not backtrack too much: never put \
+  one repetition inside another, as in (a+)+ or (.*x)*.
+- \\d, \\w, \\s, \\b, character classes, alternation, repetition and \
+  non-capturing groups (?:...) are available.",
+    "\
+To leave out lines that contain a word, start with a negative lookahead: \
+^(?!.*word)."
+);
+
+/// The instructions a request for a filter read by `engine` goes under.
+#[must_use]
+pub fn instructions(engine: Engine) -> &'static str {
+    match engine {
+        Engine::Standard => INSTRUCTIONS,
+        Engine::Advanced => ADVANCED_INSTRUCTIONS,
+    }
+}
 
 /// What the model is told before it writes one prompt from a session's
 /// requests (#322).
@@ -110,9 +161,15 @@ pub trait Model: Send + Sync {
     /// editor opens: a model can finish its download while recon runs.
     fn available(&self) -> bool;
 
-    /// Answer `text` under `INSTRUCTIONS`. Runs on a worker thread and may
-    /// take seconds; it stops early, with any error, once `cancel` fires.
-    fn generate(&self, text: &str, cancel: &Cancel) -> Result<Candidate, String>;
+    /// Answer `text` under `instructions`, which `instructions` gives for
+    /// the filter's engine. Runs on a worker thread and may take seconds;
+    /// it stops early, with any error, once `cancel` fires.
+    fn generate(
+        &self,
+        instructions: &str,
+        text: &str,
+        cancel: &Cancel,
+    ) -> Result<Candidate, String>;
 
     /// Answer `text` under `PROMPT_INSTRUCTIONS` with one prompt (#322), on
     /// a worker thread as `generate` is.
@@ -208,9 +265,11 @@ pub(crate) struct Running<T = Candidate> {
 }
 
 impl Running {
-    /// Send `text` to `model` on a new thread, for a pattern.
-    pub(crate) fn start(model: Arc<dyn Model>, text: String) -> Self {
-        Running::spawn(model, move |model, cancel| model.generate(&text, cancel))
+    /// Send `text` to `model` on a new thread, for a pattern in `engine`.
+    pub(crate) fn start(model: Arc<dyn Model>, engine: Engine, text: String) -> Self {
+        Running::spawn(model, move |model, cancel| {
+            model.generate(instructions(engine), &text, cancel)
+        })
     }
 }
 
@@ -437,27 +496,24 @@ impl Rejection {
     }
 }
 
-/// Whether `pattern` compiles and gets every marked line right (#320).
+/// Whether `pattern` compiles in `engine` and gets every marked line
+/// right (#320), with `limit` steps a line for an advanced pattern (#474).
 pub(crate) fn verify(
     pattern: &str,
+    engine: Engine,
+    limit: u32,
     must_match: &[&str],
     must_not_match: &[&str],
 ) -> Result<(), Rejection> {
-    let regex = Regex::new(pattern).map_err(|error| {
-        let text = error.to_string();
-        let reason = text
-            .lines()
-            .rev()
-            .find(|line| !line.trim().is_empty())
-            .unwrap_or("invalid pattern")
-            .trim();
-        let reason = reason.strip_prefix("error:").unwrap_or(reason).trim();
+    let regex = LineRegex::new(pattern, engine).map_err(|error| {
+        let reason = error.reason();
+        let reason = reason.strip_prefix("error:").unwrap_or(&reason).trim();
         Rejection::Invalid(reason.to_string())
     })?;
     let wrong = |lines: &[&str], matched: bool| -> Vec<String> {
         lines
             .iter()
-            .filter(|line| regex.is_match(line) != matched)
+            .filter(|line| regex.is_match(line, limit) != matched)
             .map(ToString::to_string)
             .collect()
     };
@@ -564,7 +620,7 @@ fn section(text: &mut String, heading: &str, lines: &[&str]) {
     target_arch = "aarch64"
 ))]
 mod foundation {
-    use super::{Cancel, Candidate, INSTRUCTIONS, Model, PROMPT_INSTRUCTIONS};
+    use super::{Cancel, Candidate, Model, PROMPT_INSTRUCTIONS};
     use fm_rs::{GenerationOptions, Session, SystemLanguageModel};
 
     /// Apple's on-device model, through `fm-rs`.
@@ -582,8 +638,13 @@ mod foundation {
             self.0.is_available()
         }
 
-        fn generate(&self, text: &str, cancel: &Cancel) -> Result<Candidate, String> {
-            super::parse_answer(&self.respond(INSTRUCTIONS, text, cancel)?)
+        fn generate(
+            &self,
+            instructions: &str,
+            text: &str,
+            cancel: &Cancel,
+        ) -> Result<Candidate, String> {
+            super::parse_answer(&self.respond(instructions, text, cancel)?)
         }
 
         fn consolidate(&self, text: &str, cancel: &Cancel) -> Result<String, String> {
@@ -619,6 +680,43 @@ mod foundation {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::filter::DEFAULT_STEP_LIMIT;
+
+    /// #474: the standard rules forbid lookaround; the advanced ones allow
+    /// it, show the two-words idiom, and warn about backtracking.
+    #[test]
+    fn each_engine_has_its_own_rules() {
+        let standard = instructions(Engine::Standard);
+        assert!(standard.contains("There is no lookahead"), "{standard}");
+        let advanced = instructions(Engine::Advanced);
+        assert!(!advanced.contains("There is no lookahead"), "{advanced}");
+        assert!(advanced.contains("(?=.*"), "{advanced}");
+        assert!(advanced.contains("backtrack"), "{advanced}");
+        assert!(advanced.contains("Oniguruma"), "{advanced}");
+    }
+
+    #[test]
+    fn verify_compiles_in_the_engine_it_is_given() {
+        let lookahead = "^(?=.*a)(?=.*b)";
+        assert!(matches!(
+            verify(lookahead, Engine::Standard, DEFAULT_STEP_LIMIT, &[], &[]),
+            Err(Rejection::Invalid(_))
+        ));
+        assert_eq!(
+            verify(
+                lookahead,
+                Engine::Advanced,
+                DEFAULT_STEP_LIMIT,
+                &["b a"],
+                &["a"]
+            ),
+            Ok(())
+        );
+        assert!(matches!(
+            verify(lookahead, Engine::Advanced, DEFAULT_STEP_LIMIT, &["a"], &[]),
+            Err(Rejection::Fails { .. })
+        ));
+    }
 
     #[test]
     fn the_request_text_has_each_part_under_its_heading() {
@@ -723,13 +821,27 @@ mod tests {
 
     #[test]
     fn a_pattern_that_passes_every_mark_is_verified() {
-        assert_eq!(verify("ERROR", &["ERROR x"], &["INFO x"]), Ok(()));
-        assert_eq!(verify("x", &[], &[]), Ok(()));
+        assert_eq!(
+            verify(
+                "ERROR",
+                Engine::Standard,
+                DEFAULT_STEP_LIMIT,
+                &["ERROR x"],
+                &["INFO x"]
+            ),
+            Ok(())
+        );
+        assert_eq!(
+            verify("x", Engine::Standard, DEFAULT_STEP_LIMIT, &[], &[]),
+            Ok(())
+        );
     }
 
     #[test]
     fn a_pattern_that_does_not_compile_is_rejected_with_the_error() {
-        let Err(Rejection::Invalid(error)) = verify("ERROR(", &[], &[]) else {
+        let Err(Rejection::Invalid(error)) =
+            verify("ERROR(", Engine::Standard, DEFAULT_STEP_LIMIT, &[], &[])
+        else {
             panic!("compiled");
         };
         assert_eq!(error, "unclosed group");
@@ -738,7 +850,14 @@ mod tests {
 
     #[test]
     fn a_pattern_that_fails_marks_is_rejected_with_the_lines() {
-        let rejection = verify("x", &["a x", "b"], &["c x", "d"]).expect_err("passed");
+        let rejection = verify(
+            "x",
+            Engine::Standard,
+            DEFAULT_STEP_LIMIT,
+            &["a x", "b"],
+            &["c x", "d"],
+        )
+        .expect_err("passed");
         assert_eq!(
             rejection,
             Rejection::Fails {
@@ -747,7 +866,8 @@ mod tests {
             }
         );
         assert_eq!(rejection.reason(), "fails 2 marks, the first: \"b\"");
-        let one = verify("x", &["b"], &[]).expect_err("passed");
+        let one =
+            verify("x", Engine::Standard, DEFAULT_STEP_LIMIT, &["b"], &[]).expect_err("passed");
         assert_eq!(one.reason(), "fails a mark: \"b\"");
     }
 

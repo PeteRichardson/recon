@@ -9,9 +9,7 @@ use crate::document::Mode;
 use crate::help;
 use crate::widgets::Focus;
 use ratatui::prelude::{Buffer, Color, Constraint, Layout, Rect, Style, Widget};
-use status::{
-    AND_BADGE_TEXT, HIDE_BADGE_STYLE, HIDE_BADGE_TEXT, search_badge_text, stale_badge_text,
-};
+use status::{HIDE_BADGE_STYLE, HIDE_BADGE_TEXT, search_badge_text, stale_badge_text};
 use std::borrow::Cow;
 use unicode_width::UnicodeWidthStr;
 
@@ -66,9 +64,6 @@ impl Widget for &mut App<'_> {
                 .view_badge()
                 .map(|name| Cow::Owned(format!(" {name} "))),
             (self.document.mode() == Mode::FilteredOnly).then_some(Cow::Borrowed(HIDE_BADGE_TEXT)),
-            self.filters
-                .is_and()
-                .then_some(Cow::Borrowed(AND_BADGE_TEXT)),
             self.search
                 .as_ref()
                 .map(|search| Cow::Owned(search_badge_text(&search.text))),

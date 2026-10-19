@@ -163,6 +163,12 @@ syntect = { version = "5.3", default-features = false, features = [
 ] }
 two-face = "0.5"
 
+# The advanced filter engine (#474, ADR 0008): lookaround, which the `regex`
+# crate does not have. The same Oniguruma that `regex-onig` above already
+# links for syntect, named here so recon can call it; `default-features =
+# false` as syntect has it, so no second build of the C library.
+onig = { version = "6.5", default-features = false }
+
 # The image view (#458). `ratatui-image` finds the terminal's graphics
 # protocol — kitty, iTerm2 or sixel — and falls back to half-blocks, so an
 # image always shows. Its defaults are off: `chafa-dyn` links a C library

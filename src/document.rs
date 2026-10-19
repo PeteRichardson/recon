@@ -37,6 +37,9 @@ pub struct Document {
     /// being a third copy of every large file.
     lines: Arc<Vec<String>>,
     verdicts: Vec<Verdict>,
+    /// How many lines each advanced filter gave up on at the step limit in
+    /// the last `evaluate` (#474), by filter index: what its row shows.
+    over_limit: Vec<usize>,
     /// Whether anything was marking lines at the last `evaluate` — an
     /// including filter.
     ///
@@ -79,6 +82,7 @@ impl Document {
         Self {
             lines,
             verdicts,
+            over_limit: Vec::new(),
             anything_including: false,
             mode: Mode::default(),
             visible: Vec::new(),
@@ -112,6 +116,13 @@ impl Document {
         &self.lines
     }
 
+    /// Each filter's lines over the step limit in the last `evaluate`, by
+    /// index (#474). `App` hands it to `ActiveFilters::note_over_limit`.
+    #[must_use]
+    pub fn over_limit(&self) -> &[usize] {
+        &self.over_limit
+    }
+
     #[must_use]
     pub fn verdicts(&self) -> &[Verdict] {
         &self.verdicts
@@ -136,9 +147,13 @@ impl Document {
         }
         let kinds = self.kinds.as_deref().unwrap_or(&[]);
         self.verdicts.clear();
+        self.over_limit.clear();
+        self.over_limit.resize(filters.filters().len(), 0);
+        let over_limit = &mut self.over_limit;
         self.verdicts
             .extend(self.lines.iter().enumerate().map(|(row, line)| {
-                filters.verdict(line, kinds.get(row).copied().unwrap_or(KindSet::EMPTY))
+                let kinds = kinds.get(row).copied().unwrap_or(KindSet::EMPTY);
+                filters.verdict_noting(line, kinds, |index| over_limit[index] += 1)
             }));
         self.anything_including = filters.any_including();
         self.recompute_visible();

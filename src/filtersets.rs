@@ -13,7 +13,7 @@
 //! effective-enabled, profiles as actions — belongs to the `filter` module.
 
 use crate::config::parse_colour;
-use crate::filter::{Example, LoadedFilter, LoadedSet, Predicate, Sense};
+use crate::filter::{Engine, Example, LoadedFilter, LoadedSet, Predicate, Sense};
 use crate::syntax::Kind;
 use serde::Deserialize;
 use std::collections::BTreeMap;
@@ -81,6 +81,26 @@ struct FilterSchema {
     /// (#321). Any text loads: one that does not agree with the two only
     /// means the filter is not shown as generated.
     generated_from: Option<String>,
+    /// Which engine reads `pattern` (#474): `advanced` for Oniguruma, with
+    /// lookaround. Absent is `standard`.
+    engine: Option<EngineSchema>,
+}
+
+/// `engine` as the file spells it, for the reason `SenseSchema` gives.
+#[derive(Deserialize, Debug, Clone, Copy)]
+#[serde(rename_all = "lowercase")]
+enum EngineSchema {
+    Standard,
+    Advanced,
+}
+
+impl From<EngineSchema> for Engine {
+    fn from(engine: EngineSchema) -> Self {
+        match engine {
+            EngineSchema::Standard => Self::Standard,
+            EngineSchema::Advanced => Self::Advanced,
+        }
+    }
 }
 
 /// `sense` as the file spells it. A separate enum rather than deriving
@@ -300,7 +320,8 @@ fn parse_sets(text: &str, path: &Path) -> Result<Vec<LoadedSet>, Error> {
             // (#200): the `name` when there is one, the pattern otherwise.
             let named = entry.name.is_some();
             let display = entry.name.unwrap_or_else(|| entry.pattern.clone());
-            let predicate = Predicate::parse(&entry.pattern)
+            let engine = entry.engine.map_or(Engine::Standard, Engine::from);
+            let predicate = Predicate::parse_as(&entry.pattern, engine)
                 .map_err(|err| invalid(&name, Some(&display), err.to_string()))?;
             let colour = entry
                 .colour
@@ -504,6 +525,8 @@ pub struct FilterToSave {
     pub examples: Vec<Example>,
     /// Written only for a filter the model wrote (#321).
     pub generated_from: Option<String>,
+    /// Written only for an advanced filter (#474).
+    pub engine: Engine,
 }
 
 impl FilterToSave {
@@ -518,6 +541,7 @@ impl FilterToSave {
             prompt: None,
             examples: Vec::new(),
             generated_from: None,
+            engine: Engine::Standard,
         }
     }
 }
@@ -588,6 +612,10 @@ pub fn append_set(text: &str, set: &SetToSave<'_>) -> Result<String, String> {
             filter.insert("prompt", value(prompt.as_str()));
         }
         filter.insert("pattern", literal_string(&entry.pattern)?);
+        // Beside the pattern, as it says how the pattern is read.
+        if entry.engine == Engine::Advanced {
+            filter.insert("engine", value(Engine::Advanced.name()));
+        }
         // Beside the pattern, as it is a hash of the pattern and the prompt.
         if let Some(hash) = &entry.generated_from {
             filter.insert("generated_from", value(hash.as_str()));
@@ -1194,6 +1222,62 @@ sense = "context"
     }
 
     // ---- saving (#131) -----------------------------------------------------
+
+    /// `engine = 'advanced'` (#474): Oniguruma reads the pattern, so
+    /// lookaround loads; without the key the same pattern is refused.
+    #[test]
+    fn engine_advanced_loads_lookaround() {
+        let sets = parsed(
+            "[sets.a]\n[[sets.a.filters]]\npattern = '^(?=.*a)(?=.*b)'\nengine = 'advanced'\n\
+             [[sets.a.filters]]\npattern = 'plain'\nengine = 'standard'\n",
+        );
+        assert_eq!(sets[0].filters[0].predicate.engine(), Engine::Advanced);
+        assert_eq!(sets[0].filters[1].predicate.engine(), Engine::Standard);
+        assert!(
+            rejected("[sets.a]\n[[sets.a.filters]]\npattern = '(?=a)'\n").contains("(?=a)"),
+            "the standard engine has no lookaround"
+        );
+    }
+
+    #[test]
+    fn an_unknown_engine_is_rejected() {
+        let message = rejected("[sets.a]\n[[sets.a.filters]]\npattern = 'x'\nengine = 'pcre'\n");
+        assert!(message.contains("advanced"), "{message}");
+    }
+
+    #[test]
+    fn a_bad_advanced_pattern_names_the_filter() {
+        let message = rejected(
+            "[sets.a]\n[[sets.a.filters]]\nname = 'both'\npattern = '(?=a'\nengine = 'advanced'\n",
+        );
+        assert!(message.contains("both"), "{message}");
+    }
+
+    /// An advanced filter saves its engine; a standard one writes no key.
+    #[test]
+    fn append_set_writes_the_engine_of_an_advanced_filter() {
+        let after = append_set(
+            "",
+            &SetToSave {
+                name: "s",
+                filters: vec![
+                    FilterToSave {
+                        engine: Engine::Advanced,
+                        ..FilterToSave::new("(?<=a)b", Sense::Include)
+                    },
+                    FilterToSave::new("plain", Sense::Include),
+                ],
+                default: Vec::new(),
+            },
+        )
+        .expect("edits");
+        assert_eq!(after.matches("engine = \"advanced\"").count(), 1, "{after}");
+        assert!(!after.contains("standard"), "{after}");
+        let sets = parse(&after, Path::new("t")).expect("round-trips");
+        let saved = sets.iter().find(|set| set.name == "s").expect("saved");
+        assert_eq!(saved.filters[0].predicate.engine(), Engine::Advanced);
+        assert_eq!(saved.filters[1].predicate.engine(), Engine::Standard);
+    }
 
     #[test]
     fn append_set_preserves_comments_and_other_sets() {

@@ -390,6 +390,7 @@ impl App<'_> {
         let mut filters =
             ActiveFilters::with_sets(Some(config.filter_palette()), &startup.filter_sets);
         filters.set_background(config.background());
+        filters.set_step_limit(config.advanced_step_limit());
         for (set, items) in config.sets_to_enable() {
             // `Config::check_sets` refused an unknown name in
             // `startup::start` before the terminal came up; a failure here

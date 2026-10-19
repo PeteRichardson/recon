@@ -449,11 +449,6 @@ pub const KEYMAP: &[Section] = &[
                 names: &["global.filters.disable"],
             },
             Binding {
-                keys: &["&"],
-                action: "AND the include filters instead of OR, or back",
-                names: &["global.filters.and"],
-            },
-            Binding {
                 keys: &["L"],
                 action: "Choose which filter sets the filter pane lists",
                 names: &["global.sets"],
@@ -908,6 +903,11 @@ pub const KEYMAP: &[Section] = &[
                 keys: &["Ctrl-r"],
                 action: "With a model: regenerate the pattern from the prompt",
                 names: &["filtereditor.regenerate"],
+            },
+            Binding {
+                keys: &["Ctrl-e"],
+                action: "Advanced engine, with lookaround, or standard",
+                names: &["filtereditor.engine"],
             },
             Binding {
                 keys: &[],

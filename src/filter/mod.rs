@@ -4,17 +4,20 @@
 //! any one file. Matching is by regular expression, the same as search, so
 //! `^foo` anchors to the start of a line.
 
-//! Three files, one per job the module does: this one holds the palette
-//! and the per-line model — [`ActiveFilters`], [`Predicate`], [`Verdict`] —
-//! `sets` holds the set, solo, reset and adopt state machine, and `matcher`
-//! the `Send` snapshot a scan thread matches with. Each adds its own
-//! `impl ActiveFilters` block; everything is re-exported here, so callers
-//! name `crate::filter::X` whichever file `X` lives in.
+//! One file per job the module does: this one holds the palette and the
+//! per-line model — [`ActiveFilters`], [`Predicate`], [`Verdict`] — `sets`
+//! holds the set, solo, reset and adopt state machine, `matcher` the `Send`
+//! snapshot a scan thread matches with, `reference` the `${set:name}`
+//! references, and `advanced` the Oniguruma engine of an advanced filter.
+//! Each adds its own `impl ActiveFilters` block; everything is re-exported
+//! here, so callers name `crate::filter::X` whichever file `X` lives in.
 
+mod advanced;
 mod matcher;
 mod reference;
 mod sets;
 
+pub use advanced::{DEFAULT_STEP_LIMIT, Engine, LineRegex, Lookaround, OverLimit, PatternError};
 pub use matcher::{Bits, MAX_PATTERNS, Matcher, Owner, ScanOff, ScanStamp};
 pub use reference::{Broken, Expander};
 pub use sets::{
@@ -201,29 +204,6 @@ pub enum Verdict {
     Excluded,
 }
 
-/// How the enabled include filters combine to include a line (#39).
-///
-/// Global, not per filter: a flag on the set needs no per-filter state, no
-/// nested pane, and leaves `Enter`, `d` and `!` untouched. Filter groups
-/// (#40) are the general form and subsume this if it proves too blunt.
-///
-/// Only `Sense::Include` filters are terms. `Exclude` is AND-NOT in both
-/// modes, as it always was. `Context` stays OR-ed: its promise is "also show
-/// these lines", and a context filter that *narrowed* the view would break
-/// the one workflow it exists for. The search is not a term at all: it is a
-/// motion over the visible lines (ADR 0001), and `p` is how a pattern
-/// crosses into the set.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum Combine {
-    /// A line is included when *any* enabled include filter matches it.
-    #[default]
-    Or,
-    /// A line is included only when *every* enabled include filter matches
-    /// it. No single filter then owns the line, so the colour is the first
-    /// enabled include filter's — one colour for one kind of line.
-    And,
-}
-
 /// What a filter tests a line against (#123).
 ///
 /// A filter used to *be* a regex. It is now a regex *or* a question about
@@ -250,6 +230,14 @@ pub enum Predicate {
         typed: String,
         expanded: Result<Regex, Broken>,
     },
+    /// An advanced filter (#474): `typed` as the user wrote it, read by
+    /// Oniguruma, references and all, or why it cannot be. Its slot in the
+    /// compiled set is `NEVER`; the verdict tests it on its own, with the
+    /// step limit. See `advanced`.
+    Advanced {
+        typed: String,
+        compiled: Result<Lookaround, Broken>,
+    },
 }
 
 /// A regex that matches nothing: an empty character class. Stands in for a
@@ -272,7 +260,7 @@ impl Predicate {
         match self {
             Self::Regex(regex) => regex.as_str().to_string(),
             Self::Definition(kind) => kind.to_string(),
-            Self::Referring { typed, .. } => typed.clone(),
+            Self::Referring { typed, .. } | Self::Advanced { typed, .. } => typed.clone(),
         }
     }
 
@@ -287,8 +275,39 @@ impl Predicate {
                 expanded: Ok(regex),
                 ..
             } => Some(regex),
-            Self::Definition(_) | Self::Referring { .. } => None,
+            Self::Definition(_) | Self::Referring { .. } | Self::Advanced { .. } => None,
         }
+    }
+
+    /// The Oniguruma regex of an advanced filter, and none while a
+    /// reference in it is broken.
+    #[must_use]
+    pub fn as_lookaround(&self) -> Option<&Lookaround> {
+        match self {
+            Self::Advanced {
+                compiled: Ok(lookaround),
+                ..
+            } => Some(lookaround),
+            _ => None,
+        }
+    }
+
+    /// Which engine reads the pattern. A definition has none, and says
+    /// `Standard`.
+    #[must_use]
+    pub fn engine(&self) -> Engine {
+        match self {
+            Self::Advanced { .. } => Engine::Advanced,
+            Self::Regex(_) | Self::Definition(_) | Self::Referring { .. } => Engine::Standard,
+        }
+    }
+
+    /// Whether the predicate is a test of the line's text that can hold:
+    /// a regex, a referring pattern that expanded, or an advanced filter
+    /// that compiled. What the explorer's scan can evaluate.
+    #[must_use]
+    pub fn reads_text(&self) -> bool {
+        self.as_regex().is_some() || self.as_lookaround().is_some()
     }
 
     /// The pattern this predicate contributes to the compiled `RegexSet`.
@@ -302,15 +321,24 @@ impl Predicate {
     fn key(&self) -> String {
         match self {
             Self::Definition(kind) => format!("\u{1}{kind}"),
+            // Not `NEVER`: the scan tests an advanced filter on its own,
+            // so its bits change with its pattern.
+            Self::Advanced { typed, compiled } => match compiled {
+                Ok(lookaround) => format!("\u{2}{}", lookaround.as_str()),
+                Err(_) => format!("\u{3}{typed}"),
+            },
             Self::Regex(_) | Self::Referring { .. } => self.source().to_string(),
         }
     }
 
     /// Whether the predicate holds for a line with these `kinds`, by direct
     /// evaluation — the scanning path's counterpart to a `RegexSet` hit.
+    /// Never for an advanced filter: `ActiveFilters::advanced_hits` answers
+    /// for it, with the step limit, once a line.
     fn holds(&self, line: &str, kinds: KindSet) -> bool {
         match self {
             Self::Definition(kind) => kinds.contains(*kind),
+            Self::Advanced { .. } => false,
             Self::Regex(_) | Self::Referring { .. } => {
                 self.as_regex().is_some_and(|regex| regex.is_match(line))
             }
@@ -375,12 +403,13 @@ impl Filter {
         self.generated_from = details.generated_from;
     }
 
-    /// Whether the two say the same thing in a set file: the pattern, the
-    /// sense and the editor's fields. The switch and the colour are not
+    /// Whether the two say the same thing in a set file: the pattern, its
+    /// engine, the sense and the editor's fields. The switch and the colour are not
     /// part of it: a switch is session state, and a colour the file did not
     /// give is the palette's (#348).
     fn same_text(&self, other: &Self) -> bool {
         self.predicate.display() == other.predicate.display()
+            && self.predicate.engine() == other.predicate.engine()
             && self.sense == other.sense
             && self.name == other.name
             && self.description == other.description
@@ -449,10 +478,11 @@ pub struct Example {
 }
 
 impl Example {
-    /// Whether `regex` does what the example says.
+    /// Whether `regex` does what the example says, with `limit` steps for
+    /// an advanced pattern.
     #[must_use]
-    pub fn passes(&self, regex: &Regex) -> bool {
-        regex.is_match(&self.line) == self.must_match
+    pub fn passes(&self, regex: &LineRegex, limit: u32) -> bool {
+        regex.is_match(&self.line, limit) == self.must_match
     }
 }
 
@@ -538,8 +568,6 @@ pub struct ActiveFilters {
     /// so this carries only the half the palette cannot: `style_for`'s
     /// answer for an unmatched line.
     background: Background,
-    /// How the enabled include filters combine. `Or` by default; `&` flips it.
-    combine: Combine,
     filters: Vec<Filter>,
     /// Enabled flags captured by `disable_all_remembering`, awaiting a restore.
     ///
@@ -577,11 +605,23 @@ pub struct ActiveFilters {
     /// set puts a fresh copy back, which is why a set listed again comes
     /// back as its file describes it, not as it was when it was unlisted.
     as_loaded: Vec<Vec<Filter>>,
+    /// How many steps an advanced filter may take on one line (#474):
+    /// `[filters] advanced_step_limit`. A line over it is no match.
+    step_limit: u32,
+    /// How many lines of the open file each advanced filter gave up on at
+    /// the step limit, as the last `Document::evaluate` counted them. By
+    /// id, so a filter added or removed since moves no count to another.
+    over_limit: HashMap<FilterId, usize>,
 }
 
 /// The source of every `ActiveFilters::generation`. Process-wide rather than
 /// per set so that a set built to replace another never repeats its number.
 static GENERATIONS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// A generation no set has had yet.
+fn next_generation() -> u64 {
+    GENERATIONS.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
 
 /// Hand-written rather than derived: the scratch set must exist from the
 /// start, so that every filter has a set to belong to.
@@ -614,12 +654,13 @@ impl ActiveFilters {
             solo: None,
             palette: palette.map_or_else(Palette::default, Palette::new),
             background: Background::default(),
-            combine: Combine::default(),
             filters: Vec::new(),
             remembered: None,
             compiled: None,
             generation: 0,
             as_loaded: vec![Vec::new()],
+            step_limit: DEFAULT_STEP_LIMIT,
+            over_limit: HashMap::new(),
         }
     }
 
@@ -689,13 +730,29 @@ impl ActiveFilters {
     /// Add an including filter, colouring it distinctly from its
     /// predecessors. A pattern that will not compile is rejected and the set
     /// left untouched.
-    pub fn add(&mut self, pattern: &str) -> Result<(), regex::Error> {
-        let predicate = Predicate::parse(pattern)?;
-        let style = self.next_style();
+    pub fn add(&mut self, pattern: &str) -> Result<(), PatternError> {
+        self.add_as(pattern, Sense::Include, Engine::Standard)
+    }
+
+    /// Add a filter of `sense` whose pattern `engine` reads: the filter
+    /// editor's Enter on a new filter (#474). An excluding filter carries
+    /// no colour, as `add_excluding` says.
+    pub fn add_as(
+        &mut self,
+        pattern: &str,
+        sense: Sense,
+        engine: Engine,
+    ) -> Result<(), PatternError> {
+        let predicate = Predicate::parse_as(pattern, engine)?;
+        let style = if sense == Sense::Exclude {
+            Style::default()
+        } else {
+            self.next_style()
+        };
         self.insert_scratch(Filter {
             id: FilterId::fresh(),
             predicate,
-            sense: Sense::Include,
+            sense,
             enabled: true,
             style,
             name: None,
@@ -713,22 +770,8 @@ impl ActiveFilters {
     ///
     /// Excluding filters carry no colour, since a line they match is never
     /// rendered.
-    pub fn add_excluding(&mut self, pattern: &str) -> Result<(), regex::Error> {
-        let predicate = Predicate::parse(pattern)?;
-        self.insert_scratch(Filter {
-            id: FilterId::fresh(),
-            predicate,
-            sense: Sense::Exclude,
-            enabled: true,
-            style: Style::default(),
-            name: None,
-            description: None,
-            prompt: None,
-            examples: Vec::new(),
-            generated_from: None,
-            set: 0,
-        });
-        Ok(())
+    pub fn add_excluding(&mut self, pattern: &str) -> Result<(), PatternError> {
+        self.add_as(pattern, Sense::Exclude, Engine::Standard)
     }
 
     /// Add an including filter that selects lines starting a definition of
@@ -801,34 +844,14 @@ impl ActiveFilters {
         self.remembered = None;
     }
 
-    /// Flip between OR and AND (#39), reporting whether AND is now on.
-    ///
-    /// Only a flag read at verdict time, like `enabled`: no recompile, and
-    /// nothing about the pattern list changes. Callers re-evaluate, since
-    /// every cached verdict was decided under the other rule.
-    pub fn toggle_and(&mut self) -> bool {
-        self.combine = match self.combine {
-            Combine::Or => Combine::And,
-            Combine::And => Combine::Or,
-        };
-        self.is_and()
-    }
-
-    /// Whether the enabled include filters are combined with AND.
-    #[must_use]
-    pub fn is_and(&self) -> bool {
-        self.combine == Combine::And
-    }
-
     /// The include verdict once exclusion has had its say:
     /// which include or context filter, if any, claims a line whose hits
-    /// `hit` reports. Shared by the compiled and scanning paths so the two
-    /// cannot disagree about the mode.
+    /// `hit` reports: the first effective include filter that hit, else the
+    /// first context one. Shared by the compiled and scanning paths so the
+    /// two cannot disagree.
     ///
-    /// `Or`: the first enabled non-excluding filter that hit. `And`: every
-    /// enabled `Include` filter must have hit, and the first of them takes
-    /// the colour; failing that, a context filter that hit still shows the
-    /// line — context is OR-ed in both modes, see [`Combine`].
+    /// There is no global AND (#474, ADR 0008): an advanced filter's
+    /// lookahead is how one filter asks for two things at once.
     fn include_verdict(&self, hit: impl Fn(usize) -> bool) -> Verdict {
         let live = |sense: Sense| {
             self.filters
@@ -836,34 +859,20 @@ impl ActiveFilters {
                 .enumerate()
                 .filter(move |&(index, filter)| self.effective(index) && filter.sense == sense)
         };
-        // Include outranks context in both modes, whatever their order in
-        // the set: a line an include filter selected is a hit, and must say
-        // so — `n` stops on `Included`, not on `Context` — and its colour is
-        // then the same one the explorer gives the file, whose owner is the
+        // Include outranks context, whatever their order in the set: a
+        // line an include filter selected is a hit, and must say so — `n`
+        // stops on `Included`, not on `Context` — and its colour is then
+        // the same one the explorer gives the file, whose owner is the
         // lowest *selecting* filter and never a context one.
-        match self.combine {
-            Combine::Or => live(Sense::Include)
-                .find(|&(index, _)| hit(index))
-                .map(|(index, _)| Verdict::Included(index))
-                .or_else(|| {
-                    live(Sense::Context)
-                        .find(|&(index, _)| hit(index))
-                        .map(|(index, _)| Verdict::Context(index))
-                })
-                .unwrap_or(Verdict::Unmatched),
-            Combine::And => {
-                let mut includes = live(Sense::Include).map(|(index, _)| index).peekable();
-                let first = includes.peek().copied();
-                if let Some(first) = first
-                    && includes.all(&hit)
-                {
-                    return Verdict::Included(first);
-                }
+        live(Sense::Include)
+            .find(|&(index, _)| hit(index))
+            .map(|(index, _)| Verdict::Included(index))
+            .or_else(|| {
                 live(Sense::Context)
                     .find(|&(index, _)| hit(index))
-                    .map_or(Verdict::Unmatched, |(index, _)| Verdict::Context(index))
-            }
-        }
+                    .map(|(index, _)| Verdict::Context(index))
+            })
+            .unwrap_or(Verdict::Unmatched)
     }
 
     /// Whether any enabled filter removes lines.
@@ -924,8 +933,14 @@ impl ActiveFilters {
     ///
     /// A filter with no `name` answers to its pattern, so a new pattern is
     /// a new name, and the profiles follow it as `set_details` says (#356).
-    pub fn set_pattern(&mut self, index: usize, pattern: &str) -> Result<bool, regex::Error> {
-        let predicate = Predicate::parse(pattern)?;
+    ///
+    /// The pattern is read by the engine the filter already uses (#474).
+    pub fn set_pattern(&mut self, index: usize, pattern: &str) -> Result<bool, PatternError> {
+        let engine = self
+            .filters
+            .get(index)
+            .map_or(Engine::Standard, |filter| filter.predicate.engine());
+        let predicate = Predicate::parse_as(pattern, engine)?;
         let changed = self.change(index, |filter| {
             filter.predicate = predicate;
         });
@@ -941,13 +956,16 @@ impl ActiveFilters {
     /// between the two can be another filter's, and the second rename then
     /// takes that filter's member too. The caller checks the final name
     /// with `name_taken` first.
+    ///
+    /// `engine` reads the pattern (#474): the editor's key chooses it.
     pub fn edit(
         &mut self,
         index: usize,
         pattern: &str,
+        engine: Engine,
         details: Details,
-    ) -> Result<bool, regex::Error> {
-        let predicate = Predicate::parse(pattern)?;
+    ) -> Result<bool, PatternError> {
+        let predicate = Predicate::parse_as(pattern, engine)?;
         let changed = self.change(index, |filter| {
             filter.predicate = predicate;
             filter.apply(details);
@@ -976,12 +994,12 @@ impl ActiveFilters {
     /// (#318), in the file's order. A new pattern that fails one does not
     /// replace the old one: the examples are regression tests.
     #[must_use]
-    pub fn failed_examples(&self, index: usize, regex: &Regex) -> Vec<&Example> {
+    pub fn failed_examples(&self, index: usize, regex: &LineRegex) -> Vec<&Example> {
         self.filters.get(index).map_or_else(Vec::new, |filter| {
             filter
                 .examples
                 .iter()
-                .filter(|example| !example.passes(regex))
+                .filter(|example| !example.passes(regex, self.step_limit))
                 .collect()
         })
     }
@@ -1208,12 +1226,27 @@ impl ActiveFilters {
     /// One pass over the line, not one per filter. See `compiled`.
     #[must_use]
     pub fn verdict(&self, line: &str, kinds: KindSet) -> Verdict {
+        self.verdict_noting(line, kinds, |_| {})
+    }
+
+    /// `verdict`, telling `over_limit` the index of each advanced filter
+    /// that took more steps on this line than the limit allows (#474).
+    /// Such a filter does not match the line. Every effective advanced
+    /// filter is tested on every line, so the count is exact.
+    pub fn verdict_noting(
+        &self,
+        line: &str,
+        kinds: KindSet,
+        mut over_limit: impl FnMut(usize),
+    ) -> Verdict {
+        let advanced = self.advanced_hits(line, &mut over_limit);
+        let advanced_hit = |index: usize| advanced.contains(&index);
         debug_assert!(
             self.compiled.as_ref().is_none_or(|set| self.in_step(set)),
             "the compiled set is out of step with the filters"
         );
         let Some(set) = self.compiled.as_ref().filter(|set| self.in_step(set)) else {
-            return self.verdict_by_scanning(line, kinds);
+            return self.verdict_scanning(line, kinds, advanced_hit);
         };
         // Nothing in the compiled set can take effect, so it is not asked:
         // one pass over the line is still one regex pass too many when
@@ -1221,7 +1254,7 @@ impl ActiveFilters {
         // tests only effective filters, and every one of those is a
         // definition, answered from `kinds`.
         if !self.needs_regex() {
-            return self.verdict_by_scanning(line, kinds);
+            return self.verdict_scanning(line, kinds, advanced_hit);
         }
         let matched = set.matches(line);
         let matched = |index: usize| matched.matched(index);
@@ -1230,6 +1263,7 @@ impl ActiveFilters {
         let hit = |index: usize| match &self.filters[index].predicate {
             Predicate::Regex(_) | Predicate::Referring { .. } => matched(index),
             Predicate::Definition(kind) => kinds.contains(*kind),
+            Predicate::Advanced { .. } => advanced_hit(index),
         };
 
         // Exclusion is applied after inclusion and overrides it, so a line an
@@ -1251,15 +1285,94 @@ impl ActiveFilters {
     /// `in_step`. That is a bug rather than a state to support, but indexing a
     /// short `SetMatches` panics, and taking down a full-screen TUI is a much
     /// worse way to report it than being slow.
-    fn verdict_by_scanning(&self, line: &str, kinds: KindSet) -> Verdict {
-        let holds = |filter: &Filter| filter.predicate.holds(line, kinds);
+    ///
+    /// `advanced` answers for each advanced filter, already tested once by
+    /// `advanced_hits`.
+    fn verdict_scanning(
+        &self,
+        line: &str,
+        kinds: KindSet,
+        advanced: impl Fn(usize) -> bool,
+    ) -> Verdict {
+        let holds = |index: usize| match &self.filters[index].predicate {
+            Predicate::Advanced { .. } => advanced(index),
+            predicate => predicate.holds(line, kinds),
+        };
         if self.filters.iter().enumerate().any(|(index, filter)| {
-            self.effective(index) && filter.sense == Sense::Exclude && holds(filter)
+            self.effective(index) && filter.sense == Sense::Exclude && holds(index)
         }) {
             return Verdict::Excluded;
         }
 
-        self.include_verdict(|index| holds(&self.filters[index]))
+        self.include_verdict(holds)
+    }
+
+    /// The scanning path alone, for the tests that compare it with the
+    /// compiled one.
+    #[cfg(test)]
+    fn verdict_by_scanning(&self, line: &str, kinds: KindSet) -> Verdict {
+        let advanced = self.advanced_hits(line, &mut |_| {});
+        self.verdict_scanning(line, kinds, |index| advanced.contains(&index))
+    }
+
+    /// The index of each effective advanced filter that matches `line`,
+    /// with `over_limit` told of each that passed the step limit. Empty,
+    /// and no allocation, when none matches.
+    fn advanced_hits(&self, line: &str, over_limit: &mut impl FnMut(usize)) -> Vec<usize> {
+        let mut hits = Vec::new();
+        for (index, filter) in self.filters.iter().enumerate() {
+            let Some(lookaround) = filter.predicate.as_lookaround() else {
+                continue;
+            };
+            if !self.effective(index) {
+                continue;
+            }
+            match lookaround.test(line, self.step_limit) {
+                Ok(true) => hits.push(index),
+                Ok(false) => {}
+                Err(OverLimit) => over_limit(index),
+            }
+        }
+        hits
+    }
+
+    /// Set how many steps an advanced filter may take on one line (#474),
+    /// from `[filters] advanced_step_limit`. Callers re-evaluate. It moves
+    /// the generation, as a pattern change does: a cached scan bit of an
+    /// advanced filter may mean something else under another limit.
+    pub fn set_step_limit(&mut self, limit: u32) {
+        self.step_limit = limit;
+        self.generation = next_generation();
+    }
+
+    /// Keep the open file's counts of lines over the step limit, by filter
+    /// index as `Document::over_limit` gives them, for the filter rows.
+    pub fn note_over_limit(&mut self, counts: &[usize]) {
+        self.over_limit = self
+            .filters
+            .iter()
+            .zip(counts)
+            .filter(|&(_, &count)| count > 0)
+            .map(|(filter, &count)| (filter.id, count))
+            .collect();
+    }
+
+    /// How many lines of the open file the filter at `index` gave up on at
+    /// the step limit (#474). 0 for a filter that is not advanced.
+    #[must_use]
+    pub fn over_limit(&self, index: usize) -> usize {
+        self.filters
+            .get(index)
+            .and_then(|filter| self.over_limit.get(&filter.id))
+            .copied()
+            .unwrap_or(0)
+    }
+
+    /// The step limit in force, for a test of a pattern outside the set:
+    /// the filter editor's highlight and checks.
+    #[must_use]
+    pub fn step_limit(&self) -> u32 {
+        self.step_limit
     }
 
     /// Whether the compiled set still describes this filter set.
@@ -1276,7 +1389,7 @@ impl ActiveFilters {
     /// switches off with nothing said (#187).
     fn recompile(&mut self) {
         self.expand_references();
-        self.generation = GENERATIONS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.generation = next_generation();
         let patterns = self.filters.iter().map(|filter| filter.predicate.source());
         match RegexSet::new(patterns) {
             Ok(set) => self.compiled = Some(set),
@@ -1302,12 +1415,13 @@ impl ActiveFilters {
             solo: self.solo.clone(),
             palette: self.palette.clone(),
             background: self.background,
-            combine: self.combine,
             filters: self.filters.clone(),
             remembered: self.remembered.clone(),
             compiled: self.compiled.clone(),
-            generation: GENERATIONS.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            generation: next_generation(),
             as_loaded: self.as_loaded.clone(),
+            step_limit: self.step_limit,
+            over_limit: self.over_limit.clone(),
         }
     }
 
@@ -1536,20 +1650,6 @@ mod tests {
         assert_eq!(set.verdict("foo", KindSet::EMPTY), Verdict::Included(0));
     }
 
-    /// A definition filter is a term of the AND like any include filter.
-    #[test]
-    fn definitions_are_terms_in_and_mode() {
-        let mut set = set_with(&["pub"]);
-        set.add_definition(Kind::Function);
-        set.toggle_and();
-        let functions = KindSet::of(&[Kind::Function]);
-        assert_eq!(set.verdict("pub fn x()", functions), Verdict::Included(0));
-        assert_eq!(
-            set.verdict("pub struct", KindSet::EMPTY),
-            Verdict::Unmatched
-        );
-        assert_eq!(set.verdict("fn x()", functions), Verdict::Unmatched);
-    }
     /// The explorer cannot evaluate a definition, so its bit is in no mask:
     /// alone it yields no matcher, and beside a regex it neither selects nor
     /// excludes.
@@ -1565,12 +1665,6 @@ mod tests {
         assert!(
             !m.selects(m.bits("fn nothing")),
             "the definition slot never matches text"
-        );
-        set.toggle_and();
-        let m = set.matcher().expect("still selects under AND");
-        assert!(
-            m.selects(m.bits("foo")),
-            "the definition is not a term of the scan's AND"
         );
     }
 
@@ -1601,131 +1695,6 @@ mod tests {
         assert!(set.set_pattern(0, "class ").expect("valid"));
         assert!(set.filters()[0].predicate.as_regex().is_some());
         assert!(!set.needs_kinds());
-    }
-
-    // ---- AND mode (#39) ----------------------------------------------------
-
-    /// The default is today's behaviour: any enabled include filter includes.
-    #[test]
-    fn or_is_the_default() {
-        let set = set_with(&["foo", "bar"]);
-        assert!(!set.is_and());
-        assert_eq!(
-            set.verdict("foo only", KindSet::EMPTY),
-            Verdict::Included(0)
-        );
-    }
-
-    /// In AND mode a line must match every enabled include filter.
-    #[test]
-    fn and_requires_every_enabled_include_filter() {
-        let mut set = set_with(&["foo", "bar"]);
-        assert!(set.toggle_and());
-        assert_eq!(set.verdict("foo only", KindSet::EMPTY), Verdict::Unmatched);
-        assert_eq!(set.verdict("bar only", KindSet::EMPTY), Verdict::Unmatched);
-        assert_eq!(
-            set.verdict("bar then foo", KindSet::EMPTY),
-            Verdict::Included(0)
-        );
-        assert!(!set.toggle_and(), "a second press turns it back off");
-        assert_eq!(
-            set.verdict("foo only", KindSet::EMPTY),
-            Verdict::Included(0)
-        );
-    }
-
-    /// The colour is the first *enabled* include filter's, so disabling the
-    /// first filter hands the colour to the next — and drops it as a term.
-    #[test]
-    fn and_colours_by_the_first_enabled_include_filter() {
-        let mut set = set_with(&["foo", "bar", "baz"]);
-        set.toggle_and();
-        set.set_enabled(0, false);
-        assert_eq!(set.verdict("bar baz", KindSet::EMPTY), Verdict::Included(1));
-        assert_eq!(
-            set.verdict("foo bar baz", KindSet::EMPTY),
-            Verdict::Included(1)
-        );
-    }
-
-    /// A disabled filter is not a term, and with no enabled include filter
-    /// at all nothing is included — the same as OR mode.
-    #[test]
-    fn and_with_nothing_enabled_includes_nothing() {
-        let mut set = set_with(&["foo"]);
-        set.toggle_and();
-        set.set_enabled(0, false);
-        assert_eq!(set.verdict("foo", KindSet::EMPTY), Verdict::Unmatched);
-    }
-
-    /// Exclusion still wins, in either mode.
-    #[test]
-    fn and_still_excludes() {
-        let mut set = set_with(&["foo", "bar"]);
-        set.add_excluding("skip").expect("valid");
-        set.toggle_and();
-        assert_eq!(
-            set.verdict("foo bar skip", KindSet::EMPTY),
-            Verdict::Excluded
-        );
-    }
-
-    /// Context filters are not terms of the AND: a line a context filter
-    /// matches is still shown, as the sense promises, and a line matching
-    /// every include filter is not also required to match the context one.
-    #[test]
-    fn context_filters_stay_or_ed_in_and_mode() {
-        let mut set = set_with(&["foo", "bar", "ctx"]);
-        set.toggle_context(2);
-        set.toggle_and();
-        assert_eq!(set.verdict("foo bar", KindSet::EMPTY), Verdict::Included(0));
-        assert_eq!(
-            set.verdict("ctx alone", KindSet::EMPTY),
-            Verdict::Context(2)
-        );
-        assert_eq!(set.verdict("foo alone", KindSet::EMPTY), Verdict::Unmatched);
-    }
-
-    /// The scanning fallback agrees with the compiled path.
-    #[test]
-    fn and_agrees_between_compiled_and_scanning_paths() {
-        let mut set = set_with(&["foo", "bar"]);
-        set.add_excluding("skip").expect("valid");
-        set.toggle_and();
-        for line in ["foo", "bar foo", "foo bar skip", "nothing"] {
-            assert_eq!(
-                set.verdict(line, KindSet::EMPTY),
-                set.verdict_by_scanning(line, KindSet::EMPTY),
-                "{line:?}"
-            );
-        }
-    }
-
-    /// The explorer's rule follows: a file matches when one line matches
-    /// every enabled include filter, and its owner is the first of them.
-    #[test]
-    fn the_matcher_ands_too() {
-        let mut set = set_with(&["foo", "bar"]);
-        set.toggle_and();
-        let m = set.matcher().expect("something selects");
-        assert!(!m.selects(m.bits("foo only")));
-        assert!(m.selects(m.bits("foo bar")));
-        assert_eq!(m.owner(m.bits("foo bar")), Some(0));
-        set.set_enabled(0, false);
-        let m = set.matcher().expect("bar still selects");
-        assert!(m.selects(m.bits("bar only")));
-        assert_eq!(m.owner(m.bits("bar only")), Some(1));
-    }
-
-    /// Flipping the mode changes what a cached bitset means, so the masks a
-    /// scan is keyed on must differ between the two modes.
-    #[test]
-    fn toggling_and_changes_the_matcher_masks() {
-        let mut set = set_with(&["foo", "bar"]);
-        let before = set.matcher().expect("selects").masks();
-        set.toggle_and();
-        let after = set.matcher().expect("selects").masks();
-        assert_ne!(before, after);
     }
 
     // ---- the default palette -------------------------------------------

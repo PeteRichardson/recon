@@ -245,6 +245,7 @@ impl App<'_> {
             Landing::Top => self.refresh_view(),
             Landing::Keep(source) => {
                 self.document.evaluate(&self.filters);
+                self.filters.note_over_limit(self.document.over_limit());
                 let row = self
                     .document
                     .nearest_visible(source)

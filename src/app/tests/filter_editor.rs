@@ -1,7 +1,6 @@
 use super::*;
 use crate::app::filter_editor::NO_PATTERN;
-use crate::filter::Sense;
-use regex::Regex;
+use crate::filter::{Engine, Sense};
 
 // ---- the filter editor (#312) --------------------------------------------
 
@@ -105,7 +104,10 @@ fn a_pattern_that_does_not_compile_shows_its_error_and_keeps_the_count() {
     let editor = editor(&app);
     assert_eq!(editor.error.as_deref(), Some("error: unclosed group"));
     assert_eq!(editor.matches, 2, "the count of `timeout` went");
-    assert_eq!(editor.regex.as_ref().map(Regex::as_str), Some("timeout"));
+    assert_eq!(
+        editor.regex.as_ref().map(crate::filter::LineRegex::as_str),
+        Some("timeout")
+    );
     let screen = rendered(&mut app);
     assert!(screen.contains("error: unclosed group"), "{screen}");
 
@@ -1130,7 +1132,13 @@ fn ctrl_y_goes_forward_again() {
     assert_eq!(pattern(&app), "ERROR d");
     ctrl(&mut app, KeyCode::Char('y'));
     assert_eq!(pattern(&app), "INFO", "the pattern undo left came back");
-    assert_eq!(editor(&app).regex.as_ref().map(Regex::as_str), Some("INFO"));
+    assert_eq!(
+        editor(&app)
+            .regex
+            .as_ref()
+            .map(crate::filter::LineRegex::as_str),
+        Some("INFO")
+    );
     ctrl(&mut app, KeyCode::Char('y'));
     assert_eq!(message(&app), Some("no newer version of the pattern"));
 }
@@ -1917,6 +1925,8 @@ struct FakeModel {
     replies: Mutex<Vec<Result<Candidate, String>>>,
     prompt: Arc<Mutex<Result<String, String>>>,
     sent: Arc<Mutex<Vec<String>>>,
+    /// The instructions each pattern request went under (#474).
+    instructions: Arc<Mutex<Vec<String>>>,
     release: Mutex<Receiver<()>>,
     /// Whether each reply reached the editor, sent after the send.
     done: Mutex<Sender<bool>>,
@@ -1927,7 +1937,16 @@ impl Model for FakeModel {
         self.available
     }
 
-    fn generate(&self, text: &str, _cancel: &Cancel) -> Result<Candidate, String> {
+    fn generate(
+        &self,
+        instructions: &str,
+        text: &str,
+        _cancel: &Cancel,
+    ) -> Result<Candidate, String> {
+        self.instructions
+            .lock()
+            .expect("instructions")
+            .push(instructions.to_string());
         self.sent.lock().expect("sent").push(text.to_string());
         let _ = self.release.lock().expect("release").recv();
         let mut replies = self.replies.lock().expect("replies");
@@ -1952,6 +1971,7 @@ impl Model for FakeModel {
 /// The test's side of a `FakeModel`.
 struct Harness {
     sent: Arc<Mutex<Vec<String>>>,
+    instructions: Arc<Mutex<Vec<String>>>,
     /// What the model answers a consolidation with.
     prompt: Arc<Mutex<Result<String, String>>>,
     release: Sender<()>,
@@ -2010,18 +2030,21 @@ fn app_with_replies(
     let (release_tx, release_rx) = channel();
     let (done_tx, done_rx) = channel();
     let sent = Arc::new(Mutex::new(Vec::new()));
+    let instructions = Arc::new(Mutex::new(Vec::new()));
     let prompt = Arc::new(Mutex::new(Ok(MODEL_PROMPT.to_string())));
     let model = FakeModel {
         available,
         replies: Mutex::new(replies),
         prompt: Arc::clone(&prompt),
         sent: Arc::clone(&sent),
+        instructions: Arc::clone(&instructions),
         release: Mutex::new(release_rx),
         done: Mutex::new(done_tx),
     };
     let model = Arc::new(model);
     let harness = Harness {
         sent,
+        instructions,
         prompt,
         release: release_tx,
         done: done_rx,
@@ -2047,6 +2070,51 @@ fn ask(app: &mut App, request: &str) {
     ctrl(app, KeyCode::Char('g'));
     typed(app, request);
     key(app, KeyCode::Enter);
+}
+
+/// #474: the model may write lookaround only for a filter that is already
+/// advanced. Each engine's request goes under its own instructions, and an
+/// advanced pattern with lookaround passes the check.
+#[test]
+fn an_advanced_filter_asks_the_model_under_the_advanced_instructions() {
+    let (mut app, harness) = app_with_model(
+        "fe_request_advanced",
+        true,
+        Ok(candidate("^(?=.*ERROR)(?=.*disk)")),
+    );
+    open_editor(&mut app);
+    ctrl(&mut app, KeyCode::Char('e'));
+    ask(&mut app, "errors about the disk");
+    harness.answer();
+    take_reply(&mut app);
+
+    assert_eq!(
+        harness
+            .instructions
+            .lock()
+            .expect("instructions")
+            .as_slice(),
+        [crate::generate::instructions(Engine::Advanced)]
+    );
+    assert_eq!(editor(&app).field.pattern, "^(?=.*ERROR)(?=.*disk)");
+    assert_eq!(editor(&app).error, None);
+}
+
+#[test]
+fn a_standard_filter_asks_under_the_standard_instructions() {
+    let (mut app, harness) = app_with_model("fe_request_standard", true, Ok(candidate("ERROR")));
+    open_editor(&mut app);
+    ask(&mut app, "errors");
+    harness.answer();
+    take_reply(&mut app);
+    assert_eq!(
+        harness
+            .instructions
+            .lock()
+            .expect("instructions")
+            .as_slice(),
+        [crate::generate::instructions(Engine::Standard)]
+    );
 }
 
 #[test]
@@ -3591,4 +3659,80 @@ fn editing_a_referring_filter_edits_the_pattern_as_typed() {
 
     assert_eq!(editor(&app).field.pattern, "${org:Summary}.*disk");
     assert_eq!(editor(&app).matches, 1);
+}
+
+// ---- advanced filters (#474) ---------------------------------------------
+
+/// `Ctrl-e` marks the filter advanced: lookaround compiles, the matches
+/// are counted, the sense row says so, and Enter adds an advanced filter.
+#[test]
+fn ctrl_e_makes_the_filter_advanced() {
+    let mut app = app_over_file(
+        "editor_advanced",
+        "Summary of Updates\nUpdates in the Summary\nSummary only\n",
+    );
+    open_editor(&mut app);
+    typed(&mut app, "^(?=.*Summary)(?=.*Updates)");
+    assert!(editor(&app).error.is_some(), "sanity: no lookaround yet");
+
+    ctrl(&mut app, KeyCode::Char('e'));
+
+    assert_eq!(editor(&app).engine, Engine::Advanced);
+    assert_eq!(editor(&app).error, None);
+    assert_eq!(editor(&app).matches, 2);
+    assert!(
+        rendered(&mut app).contains("advanced"),
+        "{}",
+        rendered(&mut app)
+    );
+
+    key(&mut app, KeyCode::Enter);
+
+    assert!(app.filter_editor.is_none(), "Enter added it");
+    let (_, filter) = app.filters.filters_in(0).last().expect("added");
+    assert_eq!(filter.predicate.engine(), Engine::Advanced);
+    assert_eq!(app.document.verdicts()[0], filter::Verdict::Included(0));
+    assert_eq!(app.document.verdicts()[2], filter::Verdict::Unmatched);
+}
+
+/// A second `Ctrl-e` goes back to the standard engine, and `f C` on an
+/// advanced filter opens with the engine it has.
+#[test]
+fn ctrl_e_toggles_and_the_editor_opens_with_the_filter_s_engine() {
+    let mut app = app_over_file("editor_advanced_back", "ab\n");
+    open_editor(&mut app);
+    typed(&mut app, "(?<=a)b");
+    ctrl(&mut app, KeyCode::Char('e'));
+    ctrl(&mut app, KeyCode::Char('e'));
+    assert_eq!(editor(&app).engine, Engine::Standard);
+    assert!(
+        editor(&app).error.is_some(),
+        "the standard engine refuses it"
+    );
+    ctrl(&mut app, KeyCode::Char('e'));
+    key(&mut app, KeyCode::Enter);
+
+    let (index, _) = app.filters.filters_in(0).last().expect("added");
+    app.open_filter_editor_on(index);
+    assert_eq!(editor(&app).engine, Engine::Advanced);
+    assert_eq!(editor(&app).matches, 1);
+}
+
+/// The count comes from the open file: each line an advanced filter gave
+/// up on at the step limit, shown on the filter's row.
+#[test]
+fn the_filter_row_counts_the_lines_over_the_step_limit() {
+    let slow = format!("{}!", "a".repeat(40));
+    let mut app = app_over_file("editor_over_limit", &format!("{slow}\nabc\n{slow}\n"));
+    app.filters.set_step_limit(1_000);
+    app.filters
+        .add_as(r"^(\w|\w)*$", Sense::Include, Engine::Advanced)
+        .expect("valid");
+    app.refresh_view();
+
+    let (index, _) = app.filters.filters_in(0).last().expect("added");
+    assert_eq!(app.filters.over_limit(index), 2);
+    assert_eq!(app.document.verdicts()[1], filter::Verdict::Included(index));
+    let screen = rendered(&mut app);
+    assert!(screen.contains("[adv] ⚠ 2 lines"), "{screen}");
 }
