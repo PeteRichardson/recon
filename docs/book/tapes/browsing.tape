@@ -3,25 +3,31 @@
 Output docs/book/src/images/browsing.gif
 Set Width 1400
 Set Height 640
-Source docs/book/tapes/common.tape
+Source docs/book/tapes/lib/common.tape
 
 # The triage set: include ERROR, exclude the health checks and DEBUG.
+#> recon --set triage logs · open a directory with a saved filter set
 Type "recon --set triage logs"
 Sleep 300ms
 Enter
 Sleep 2s
 
 # Each file shows only what the filters chose. A dim name has no errors.
+#> j · next file: a dim name has no errors
 Type@1.2s "jjjjj"
 Sleep 1.2s
 
 # Back to a log with errors, then hide mode: only the files with errors
 # stay in the explorer.
+#> k · back to a log with errors
 Type "k"
 Sleep 1.2s
+#> u · hide mode: only the logs with errors stay
 Type "u"
 Sleep 2s
+#> k · the other log with errors
 Type "k"
 Sleep 2s
+#> q · quit
 Type "q"
 Sleep 500ms

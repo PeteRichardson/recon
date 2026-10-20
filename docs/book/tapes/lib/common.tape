@@ -2,6 +2,7 @@
 # Height first, because VHS ignores a Set after the Type lines below.
 # make-gifs.sh copies the demo data to /tmp/recon-demo.
 Set Shell bash
+Set Framerate 15
 Set FontSize 15
 Set TypingSpeed 80ms
 
