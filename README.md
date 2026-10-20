@@ -1934,7 +1934,10 @@ decode as a picture shows raw (hex for a binary file), with the reason on
 the status line.
 
 recon keeps a picture no larger than 2048 pixels on its longest side, so a
-large photo costs the cache about 8 MiB.
+large photo costs the cache about 8 MiB. A decoder may use no more than
+512 MiB for one picture. A large JPEG, such as a 600 DPI scan, is decoded
+at ½, ¼ or ⅛ scale, so it shows inside that limit. A very large picture in
+another format, or a very large progressive JPEG, can still go past it.
 
 `quicklook` (macOS only) shows the file's Quick Look thumbnail, which
 `qlmanage` makes: a PDF's first page, a PSD, a HEIC photo, a frame of a

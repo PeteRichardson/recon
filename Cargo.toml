@@ -195,6 +195,11 @@ infer = "0.22.0"
 # `infer` knows only magic numbers, so without this nearly every text file
 # would have no type in the title and none a `mime =` row could match.
 mime_guess = "2.0.5"
+# A large JPEG for the image view, decoded at ½, ¼ or ⅛ scale (#484), so a
+# scan too large to decode whole inside the memory limit still shows.
+# `image`'s own JPEG decoder, `zune-jpeg`, has no scaled decode. Pure Rust;
+# `default-features = false` leaves out `rayon`.
+jpeg-decoder = { version = "0.3", default-features = false }
 
 # Pattern generation in the filter editor (#319). Off by default, so a plain
 # `cargo build` has no new dependency on any platform. `fm-rs` compiles a

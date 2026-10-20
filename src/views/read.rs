@@ -311,12 +311,13 @@ pub(crate) fn image_bytes(bytes: &[u8]) -> Result<Contents, String> {
 
 /// Decode, inside the memory limit, and shrink to `MAX_IMAGE_SIDE`.
 fn decode<R: std::io::BufRead + std::io::Seek>(
-    mut reader: image::ImageReader<R>,
+    reader: image::ImageReader<R>,
 ) -> Result<Contents, String> {
-    let mut limits = image::Limits::default();
-    limits.max_alloc = Some(MAX_IMAGE_ALLOC);
-    reader.limits(limits);
-    let mut image = reader.decode().map_err(|err| err.to_string())?;
+    let mut image = if reader.format() == Some(image::ImageFormat::Jpeg) {
+        decode_jpeg(reader.into_inner())?
+    } else {
+        decode_whole(reader)?
+    };
     if image.width().max(image.height()) > MAX_IMAGE_SIDE {
         image = image.resize(
             MAX_IMAGE_SIDE,
@@ -328,6 +329,63 @@ fn decode<R: std::io::BufRead + std::io::Seek>(
         image: Some(Arc::new(image)),
         ..Contents::default()
     })
+}
+
+/// The picture at its full size, inside the memory limit.
+fn decode_whole<R: std::io::BufRead + std::io::Seek>(
+    mut reader: image::ImageReader<R>,
+) -> Result<image::DynamicImage, String> {
+    let mut limits = image::Limits::default();
+    limits.max_alloc = Some(MAX_IMAGE_ALLOC);
+    reader.limits(limits);
+    reader.decode().map_err(|err| err.to_string())
+}
+
+/// A JPEG, decoded at the smallest DCT scale (½, ¼ or ⅛) that keeps its
+/// longest side at `MAX_IMAGE_SIDE` or more (#484). A block then becomes
+/// fewer pixels as it is decoded, so the full-size picture is never in
+/// memory and a scan too large to decode whole still shows.
+///
+/// A JPEG too small to scale, or one `jpeg-decoder` cannot give as grey
+/// or RGB, is decoded whole as before, so its pixels do not change.
+fn decode_jpeg<R: std::io::BufRead + std::io::Seek>(
+    mut reader: R,
+) -> Result<image::DynamicImage, String> {
+    use jpeg_decoder::{CodingProcess, PixelFormat};
+
+    let start = reader.stream_position().map_err(|err| err.to_string())?;
+    let mut decoder = jpeg_decoder::Decoder::new(&mut reader);
+    let scalable = decoder.read_info().ok().and(decoder.info()).filter(|info| {
+        u32::from(info.width.max(info.height)) >= 2 * MAX_IMAGE_SIDE
+            && info.coding_process != CodingProcess::Lossless
+            && matches!(info.pixel_format, PixelFormat::L8 | PixelFormat::RGB24)
+    });
+    let Some(info) = scalable else {
+        reader
+            .seek(std::io::SeekFrom::Start(start))
+            .map_err(|err| err.to_string())?;
+        return decode_whole(image::ImageReader::with_format(
+            reader,
+            image::ImageFormat::Jpeg,
+        ));
+    };
+    // A progressive JPEG keeps its coefficients for the whole picture, two
+    // bytes for each sample, at any scale.
+    let samples =
+        u64::from(info.width) * u64::from(info.height) * info.pixel_format.pixel_bytes() as u64;
+    if info.coding_process == CodingProcess::DctProgressive && 2 * samples > MAX_IMAGE_ALLOC {
+        return Err("Memory limit exceeded".to_string());
+    }
+    let side = MAX_IMAGE_SIDE as u16;
+    let (width, height) = decoder.scale(side, side).map_err(|err| err.to_string())?;
+    decoder.set_max_decoding_buffer_size(MAX_IMAGE_ALLOC as usize);
+    let pixels = decoder.decode().map_err(|err| err.to_string())?;
+    let (width, height) = (u32::from(width), u32::from(height));
+    let image = match info.pixel_format {
+        PixelFormat::L8 => image::GrayImage::from_raw(width, height, pixels).map(Into::into),
+        _ => image::RgbImage::from_raw(width, height, pixels).map(Into::into),
+    };
+    image.ok_or_else(|| "the JPEG decoded to fewer pixels than its size".to_string())
 }
 
 /// What a binary file shows: its dump (#242). A binary file asked for as

@@ -300,10 +300,16 @@ pub(crate) mod tests {
 
     /// A PNG `width` × `height` pixels of one colour.
     pub(crate) fn png_filled(width: u32, height: u32, rgb: [u8; 3]) -> Vec<u8> {
+        encoded(
+            &image::RgbImage::from_pixel(width, height, image::Rgb(rgb)),
+            image::ImageFormat::Png,
+        )
+    }
+
+    /// `image` as a file in `format` would hold it.
+    fn encoded(image: &image::RgbImage, format: image::ImageFormat) -> Vec<u8> {
         let mut bytes = std::io::Cursor::new(Vec::new());
-        image::RgbImage::from_pixel(width, height, image::Rgb(rgb))
-            .write_to(&mut bytes, image::ImageFormat::Png)
-            .unwrap();
+        image.write_to(&mut bytes, format).unwrap();
         bytes.into_inner()
     }
 
@@ -333,6 +339,86 @@ pub(crate) mod tests {
         let image = run(&job(&file, table), None).contents.image.unwrap();
 
         assert_eq!((image.width(), image.height()), (side, side / 4));
+    }
+
+    /// A mid-grey baseline JPEG `width` × `height` pixels, written by hand
+    /// so a picture far past the memory limit costs only a few MiB (#484).
+    ///
+    /// One grey component, and each Huffman table has one code, `0`: a
+    /// block is two bits, a DC difference of 0 and an end of block.
+    fn grey_jpeg(width: u16, height: u16) -> Vec<u8> {
+        let [w1, w0] = width.to_be_bytes();
+        let [h1, h0] = height.to_be_bytes();
+        let mut bytes = vec![0xFF, 0xD8];
+        // The quantization table: every step 1.
+        bytes.extend([0xFF, 0xDB, 0x00, 0x43, 0x00]);
+        bytes.extend([1; 64]);
+        bytes.extend([0xFF, 0xC0, 0x00, 0x0B, 8, h1, h0, w1, w0, 1, 1, 0x11, 0]);
+        // DC table 0, then AC table 0: one code of length 1, for symbol 0.
+        for class in [0x00, 0x10] {
+            bytes.extend([0xFF, 0xC4, 0x00, 0x14, class, 1]);
+            bytes.extend([0; 15]);
+            bytes.push(0);
+        }
+        bytes.extend([0xFF, 0xDA, 0x00, 0x08, 1, 1, 0x00, 0, 63, 0]);
+        let blocks = usize::from(width.div_ceil(8)) * usize::from(height.div_ceil(8));
+        bytes.resize(bytes.len() + blocks / 4, 0);
+        if blocks % 4 != 0 {
+            // The rest of the last byte is padded with 1 bits.
+            bytes.push(0xFF >> (2 * (blocks % 4)));
+        }
+        bytes.extend([0xFF, 0xD9]);
+        bytes
+    }
+
+    /// A scan is too large to decode at full size inside the memory limit
+    /// (#484). It is decoded at a reduced scale, so it shows, and kept no
+    /// larger than the cap.
+    #[test]
+    fn a_jpeg_too_large_to_decode_whole_shows_at_the_cap() {
+        let side = read::MAX_IMAGE_SIDE;
+        let file = fixture_file("views_run_huge.jpg", &grey_jpeg(32_000, 20_000));
+        let table = Table::new(&[FileType::with_views("*.jpg", &[View::Image])]);
+
+        let done = run(&job(&file, table), None);
+
+        assert!(
+            done.contents.fallback.is_none(),
+            "{:?}",
+            done.contents.fallback
+        );
+        let image = done.contents.image.expect("an image");
+        assert_eq!((image.width(), image.height()), (side, side * 5 / 8));
+        assert_eq!(image.to_luma8().get_pixel(1000, 500).0, [128]);
+    }
+
+    /// The scale is the smallest that still keeps the longest side at the
+    /// cap: ½ here, as ¼ would leave 1024 pixels to stretch.
+    #[test]
+    fn a_jpeg_is_not_scaled_below_the_cap() {
+        let side = read::MAX_IMAGE_SIDE;
+        let file = fixture_file("views_run_half.jpg", &grey_jpeg(side as u16 * 2, 64));
+        let table = Table::new(&[FileType::with_views("*.jpg", &[View::Image])]);
+
+        let image = run(&job(&file, table), None).contents.image.unwrap();
+
+        assert_eq!((image.width(), image.height()), (side, 32));
+    }
+
+    /// A JPEG too small to scale decodes as it did before #484, pixel for
+    /// pixel.
+    #[test]
+    fn a_small_jpeg_decodes_as_before() {
+        let bytes = encoded(
+            &image::RgbImage::from_fn(64, 32, |x, y| image::Rgb([x as u8 * 4, y as u8 * 8, 99])),
+            image::ImageFormat::Jpeg,
+        );
+        let file = fixture_file("views_run_small.jpg", &bytes);
+        let table = Table::new(&[FileType::with_views("*.jpg", &[View::Image])]);
+
+        let image = run(&job(&file, table), None).contents.image.unwrap();
+
+        assert_eq!(*image, image::load_from_memory(&bytes).unwrap());
     }
 
     /// A `.png` that holds text: the view fails, and the text shows with
