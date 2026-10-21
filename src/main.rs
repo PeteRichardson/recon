@@ -15,7 +15,7 @@ use std::io::{self, IsTerminal, Write};
 use std::panic;
 use std::process::ExitCode;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 fn main() -> Result<ExitCode> {
     install_error_hooks()?;
@@ -23,7 +23,17 @@ fn main() -> Result<ExitCode> {
     setup_logging();
     // Everything recon reads before it starts, in the order it must be
     // read, and every refusal while a message can still be seen (#409).
-    let startup = match recon::startup::start()? {
+    let start = recon::startup::start();
+    if !matches!(start, Ok(Start::Run(_))) {
+        // A print command or a refusal: no TUI, and no config to read a log
+        // file from, so `RECON_LOG` or stderr, as before #500.
+        let config = recon::Config {
+            log_file: std::env::var_os("RECON_LOG").map(Into::into),
+            ..recon::Config::default()
+        };
+        choose_log_target(&config, false);
+    }
+    let startup = match start? {
         Start::Print { stdout, warnings } => {
             for warning in warnings {
                 log::warn!("{warning}");
@@ -43,6 +53,10 @@ fn main() -> Result<ExitCode> {
         Some(reason) => log::debug!("mode: batch: {reason}"),
         None => log::debug!("mode: TUI"),
     }
+    // Now, and not in `setup_logging`: the target depends on the mode and
+    // on `config.toml` (#500). Before the terminal is taken, so a file that
+    // cannot be opened is reported where it can be read.
+    choose_log_target(config, batch.is_none());
     let exit = if batch.is_some() {
         // Batch mode has no panel, so the keymap warnings that would have filled
         // one go to stderr instead — the channel and the gate the reserved-key
@@ -155,9 +169,9 @@ fn install_error_hooks() -> Result<()> {
         let current = std::thread::current();
         let name = current.name();
         if on_panic(name) == OnPanic::Quiet {
-            // The only trace a worker's panic leaves. With `RECON_LOG` it
-            // reaches the file; without it the TUI is up, so `Muted` drops it
-            // too (#246). That cost is recorded in the 1.0 spec: the user sees
+            // The only trace a worker's panic leaves. With a log file it
+            // reaches the file; without one the TUI is up, so `Muted` drops
+            // it too (#246). That cost is recorded in the 1.0 spec: the user sees
             // only that the marks on the files stop changing.
             log::error!("panic on thread {}: {info}", name.unwrap_or("<unnamed>"));
             return;
@@ -168,30 +182,30 @@ fn install_error_hooks() -> Result<()> {
     Ok(())
 }
 
-/// Names a file to write the log to. Unset means stderr.
-///
-/// The variable exists because of where recon spends its time: stderr goes to
-/// the *normal* screen, and recon is holding the alternate one from
-/// `init_terminal` until it exits. A line logged in between would be drawn
-/// over the TUI and stay there until the next full redraw, so on stderr recon
-/// drops every record logged while the screen is held (#246). Only the
-/// startup and shutdown call sites reach stderr.
-///
-/// Pointing this at a file makes every call site usable, which is the whole
-/// reason the in-session ones were worth adding (#83), and it is the only way
-/// to see them.
-const LOG_FILE_VAR: &str = "RECON_LOG";
-
 /// Bring up the logger, before anything has anything to say.
+///
+/// The logger holds each record until `choose_log_target` says where the
+/// log goes (#500): that depends on `--log-file`, on `config.toml` and on
+/// the mode, and none of them is known yet. See `Deferred`.
+fn setup_logging() {
+    let deferred = LOGGER.get_or_init(|| Deferred::new(log_builder().build()));
+    log::set_max_level(deferred.filter.filter());
+    // Only reachable if something else already installed a logger, which
+    // nothing in this binary does. Reported and survived: a debugging aid
+    // must not stop the program.
+    if let Err(err) = log::set_logger(deferred) {
+        eprintln!("recon: the logger could not be installed: {err}");
+    }
+}
+
+/// The one logger, so that `choose_log_target` can reach it.
+static LOGGER: OnceLock<Deferred<env_logger::Logger>> = OnceLock::new();
+
+/// The logger without its target.
 ///
 /// **The levels follow one rule**, written in `recon::logging`: `Info` for a
 /// fact the user must see without a setting, `Debug` once per session or
 /// per user action, `Trace` once per file, key or frame (#490).
-///
-/// **A file gets timestamps and module names; stderr does not** (#490). A
-/// file is read later, often beside a bug report, where the time between
-/// two records and the module that wrote each one are the point. On stderr
-/// a record is read as it appears, and the short form stays.
 ///
 /// **`Info` as the floor, not `Debug` as a fixed level.** This is the actual
 /// fix (#83): `filter_level(Debug)` put every `debug!` on stderr on every
@@ -210,72 +224,190 @@ const LOG_FILE_VAR: &str = "RECON_LOG";
 /// reading exactly this code, so an explicit call is the cheapest way to stop
 /// the next reader reaching the same wrong conclusion. It costs one idempotent
 /// call at startup.
-///
-/// **`build` rather than `init`.** `init` installs the logger immediately,
-/// and #246 needs to wrap it first. The two lines `init` would have run —
-/// `set_boxed_logger` and `set_max_level` — are spelled out at the end of
-/// the function instead. See `Muted`.
-fn setup_logging() {
+fn log_builder() -> env_logger::Builder {
     let mut builder = env_logger::builder();
     builder
         .filter_level(log::LevelFilter::Info)
         .parse_default_env()
         .format_target(false)
         .format_timestamp(None);
+    builder
+}
 
-    let mut to_file = false;
-    if let Some(path) = std::env::var_os(LOG_FILE_VAR) {
-        match std::fs::File::create(&path) {
-            Ok(file) => {
-                builder
-                    .target(env_logger::Target::Pipe(Box::new(file)))
-                    .format_target(true)
-                    .format_timestamp_millis();
-                to_file = true;
-            }
+/// Send the log to a file or to stderr, and pass on what waited (#500).
+///
+/// `config.log_file` is the file that `--log-file`, `RECON_LOG` or
+/// `log_file` names. Without one, the TUI writes to the default file when
+/// `RUST_LOG` is set; see `recon::logfile::choose`.
+///
+/// **A file gets timestamps, the process ID and module names; stderr does
+/// not** (#490, #500). A file is read later, often beside a bug report,
+/// where the time between two records and the module that wrote each one
+/// are the point. The file keeps many sessions, and two recons can append
+/// to it at the same time, so each record says which process wrote it. On
+/// stderr a record is read as it appears, and the short form stays.
+fn choose_log_target(config: &recon::Config, tui: bool) {
+    let Some(deferred) = LOGGER.get() else {
+        return;
+    };
+    let env = |name| std::env::var(name).ok();
+    let path = recon::logfile::choose(
+        config.log_file.as_deref(),
+        tui,
+        env("RUST_LOG").is_some_and(|value| !value.is_empty()),
+        || recon::logfile::default_path(env("XDG_STATE_HOME").as_deref(), env("HOME").as_deref()),
+    );
+
+    let mut builder = log_builder();
+    let file = path.and_then(|path| {
+        // The default file's directory may not be there yet. A failure here
+        // shows as the open failure below.
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        match recon::logfile::Rotating::open(&path, config.log_max_bytes(), config.log_files()) {
+            Ok(file) => Some(file),
             // Warned about and carried on, which is the opposite of the call
-            // `Config::load` makes two lines below — and deliberately. A
-            // config file recon cannot read changes what the app *does*; a log
-            // file it cannot open only changes what it records. Refusing to
-            // start because a debugging aid is unavailable would be the wrong
-            // trade. Printed rather than logged because the logger is, at this
-            // exact moment, what has just failed to be set up.
+            // `Config::load` makes — and deliberately. A config file recon
+            // cannot read changes what the app *does*; a log file it cannot
+            // open only changes what it records. Printed rather than logged,
+            // because the logger is what has just failed to be set up.
             Err(err) => {
-                eprintln!(
-                    "recon: {LOG_FILE_VAR} names {}, which cannot be opened: {err}",
-                    std::path::Path::new(&path).display(),
-                );
+                eprintln!("recon: cannot open the log file {}: {err}", path.display());
                 eprintln!("recon: continuing with logging on stderr");
+                None
             }
         }
-    }
-
-    // `build` and not `init`, so that the logger can be wrapped before it is
-    // installed (#246). `init` is `set_boxed_logger` plus `set_max_level`, so
-    // both are done by hand here.
-    let logger = builder.build();
-    log::set_max_level(logger.filter());
-
-    // The failed-to-open branch above falls back to stderr, so it takes the
-    // muted path too — `to_file` tracks where the records actually go, not
-    // whether the variable was set.
-    let installed = if to_file {
-        log::set_boxed_logger(Box::new(logger))
+    });
+    let logger: Box<dyn log::Log> = if let Some(file) = file {
+        let pid = std::process::id();
+        builder
+            .target(env_logger::Target::Pipe(Box::new(file)))
+            .format(move |buf, record| {
+                writeln!(
+                    buf,
+                    "[{} {pid} {:<5} {}] {}",
+                    buf.timestamp_millis(),
+                    record.level(),
+                    record.target(),
+                    record.args()
+                )
+            });
+        Box::new(builder.build())
     } else {
         // Held only while the TUI draws on stderr. On `/dev/tty` (#382) a
         // record goes to wherever stderr was sent, and the screen never sees
         // it.
-        log::set_boxed_logger(Box::new(Muted {
-            inner: logger,
+        Box::new(Muted {
+            inner: builder.build(),
             hold: || TERMINAL_UP.load(Ordering::Relaxed) && TTY.get().is_none(),
-        }))
+        })
     };
+    deferred.resolve(logger);
+}
 
-    // Only reachable if something else already installed a logger, which
-    // nothing in this binary does. Reported and survived for the same reason
-    // as the file failure above: a debugging aid must not stop the program.
-    if let Err(err) = installed {
-        eprintln!("recon: the logger could not be installed: {err}");
+/// A logger that keeps each record until it knows where the log goes.
+///
+/// The target depends on what `config.toml` says, and recon logs while it
+/// reads that file, so the logger starts before its target is known (#500).
+/// The records that come first are kept in memory, then passed on in order
+/// by `resolve`. Nothing is lost, and nothing reaches stderr early: with a
+/// file, those records would have been drawn on the screen and not kept.
+///
+/// A record that waited gets its timestamp when it is passed on. They are
+/// all from the first moments of the session, before the terminal is taken.
+struct Deferred<F> {
+    /// Decides what is kept while there is no target: `RUST_LOG`.
+    filter: F,
+    pending: Mutex<Vec<Pending>>,
+    ready: OnceLock<Box<dyn log::Log>>,
+}
+
+/// A record kept by `Deferred`: what a `log::Record` borrows, owned.
+struct Pending {
+    level: log::Level,
+    target: String,
+    module_path: Option<String>,
+    file: Option<String>,
+    line: Option<u32>,
+    message: String,
+}
+
+impl<F: log::Log> Deferred<F> {
+    fn new(filter: F) -> Self {
+        Self {
+            filter,
+            pending: Mutex::new(Vec::new()),
+            ready: OnceLock::new(),
+        }
+    }
+
+    /// Send the log to `logger` from now on, starting with what waited.
+    /// Only the first call has an effect.
+    fn resolve(&self, logger: Box<dyn log::Log>) {
+        // Under the lock, so that no record is kept after the drain.
+        let mut pending = self
+            .pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if self.ready.get().is_some() {
+            return;
+        }
+        let ready = self.ready.get_or_init(|| logger);
+        for kept in pending.drain(..) {
+            ready.log(
+                &log::Record::builder()
+                    .args(format_args!("{}", kept.message))
+                    .level(kept.level)
+                    .target(&kept.target)
+                    .module_path(kept.module_path.as_deref())
+                    .file(kept.file.as_deref())
+                    .line(kept.line)
+                    .build(),
+            );
+        }
+    }
+}
+
+impl<F: log::Log> log::Log for Deferred<F> {
+    fn enabled(&self, metadata: &log::Metadata) -> bool {
+        match self.ready.get() {
+            Some(ready) => ready.enabled(metadata),
+            None => self.filter.enabled(metadata),
+        }
+    }
+
+    fn log(&self, record: &log::Record) {
+        if let Some(ready) = self.ready.get() {
+            ready.log(record);
+            return;
+        }
+        if !self.filter.enabled(record.metadata()) {
+            return;
+        }
+        let mut pending = self
+            .pending
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // `resolve` can have run while this waited for the lock.
+        if let Some(ready) = self.ready.get() {
+            ready.log(record);
+            return;
+        }
+        pending.push(Pending {
+            level: record.level(),
+            target: record.target().to_string(),
+            module_path: record.module_path().map(str::to_string),
+            file: record.file().map(str::to_string),
+            line: record.line(),
+            message: record.args().to_string(),
+        });
+    }
+
+    fn flush(&self) {
+        if let Some(ready) = self.ready.get() {
+            ready.flush();
+        }
     }
 }
 
@@ -492,12 +624,12 @@ fn restore_terminal() -> Result<()> {
 /// Dropping is the least bad of the three answers. Buffering needs a bound
 /// and a flush point, and nothing would ever read the buffer on the normal
 /// exit path. Reporting on the status row needs a channel from every call
-/// site, including ones inside worker threads. `RECON_LOG` already exists
-/// and already puts every record somewhere the screen cannot see, so the
-/// recovery costs the user one environment variable.
+/// site, including ones inside worker threads. A log file already puts
+/// every record somewhere the screen cannot see, and with `RUST_LOG` set
+/// the TUI writes to one by default (#500).
 ///
-/// Installed only when no file target was set: with `RECON_LOG` the records
-/// go to the file, so nothing is dropped.
+/// Installed only when the log has no file: with one the records go to the
+/// file, so nothing is dropped.
 struct Muted<L> {
     inner: L,
     /// True while a record must not reach stderr.
@@ -530,7 +662,6 @@ impl<L: log::Log> log::Log for Muted<L> {
 mod tests {
     use super::*;
     use log::Log as _;
-    use std::sync::Mutex;
 
     /// iTerm2 says it has kitty graphics, but not the Unicode placeholders
     /// `ratatui-image` draws kitty pictures with, so a kitty picture never
@@ -624,6 +755,40 @@ mod tests {
             !muted.enabled(&log::Metadata::builder().level(log::Level::Warn).build()),
             "log_enabled! would disagree with what log() actually does"
         );
+    }
+
+    /// A record logged before recon knows where the log goes is kept, and
+    /// reaches the target once it is chosen, before the later records.
+    #[test]
+    fn deferred_passes_the_early_records_on_when_the_target_is_chosen() {
+        let deferred = Deferred::new(Spy::default());
+        let target: &'static Spy = Box::leak(Box::default());
+
+        record(&deferred, "before the config is read");
+        assert!(target.0.lock().unwrap().is_empty());
+        deferred.resolve(Box::new(target));
+        record(&deferred, "after");
+
+        assert_eq!(
+            *target.0.lock().unwrap(),
+            ["before the config is read", "after"]
+        );
+    }
+
+    /// The filter decides what is kept: `RUST_LOG` applies to the records
+    /// that wait, too.
+    #[test]
+    fn deferred_keeps_only_what_the_filter_lets_through() {
+        let deferred = Deferred::new(Muted {
+            inner: Spy::default(),
+            hold: || true,
+        });
+        let target: &'static Spy = Box::leak(Box::default());
+
+        record(&deferred, "filtered out");
+        deferred.resolve(Box::new(target));
+
+        assert!(target.0.lock().unwrap().is_empty());
     }
 
     #[test]
