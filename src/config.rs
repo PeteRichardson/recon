@@ -412,7 +412,7 @@ pub struct Config {
     #[arg(long = "no-warnings")]
     pub no_warnings: bool,
 
-    /// A file for the log. Falls back to `log_file` in `config.toml`. With
+    /// A file for the log. Falls back to `[log] file` in `config.toml`. With
     /// neither, the TUI writes to `~/.local/state/recon/recon.log` when
     /// `RUST_LOG` is set, and batch mode writes to stderr.
     //
@@ -426,20 +426,14 @@ pub struct Config {
     )]
     pub log_file: Option<PathBuf>,
 
-    /// `log_max_mb` in `config.toml` (#500), or `None` for the default.
+    /// `[log] max_mb` in `config.toml` (#500), or `None` for the default.
     /// No flag, for the reason `filter_palette` gives.
     #[arg(skip)]
     pub log_max_mb: Option<u64>,
 
-    /// `log_files` in `config.toml` (#500), or `None` for the default.
+    /// `[log] files` in `config.toml` (#500), or `None` for the default.
     #[arg(skip)]
     pub log_files: Option<u32>,
-
-    /// What `apply` found wrong with `log_max_mb` and `log_files`. A
-    /// warning and not an error: a log setting only changes what recon
-    /// records, as `choose_log_target` says about a file it cannot open.
-    #[arg(skip)]
-    pub log_warnings: Vec<String>,
 }
 
 /// The `--theme` long help: the short help's two sentences, then the bundled
@@ -507,54 +501,25 @@ pub struct FileConfig {
     /// `[commands]`: the command views a `[[filetype]]` row can name
     /// (#457).
     pub commands: Option<crate::views::command::Commands>,
-    /// Top-level `log_file` (#500). See [`Config::log_file`].
-    pub log_file: Option<PathBuf>,
-    /// Top-level `log_max_mb` (#500): the size of one log file.
-    pub log_max_mb: Option<PositiveInt>,
-    /// Top-level `log_files` (#500): how many log files to keep.
-    pub log_files: Option<PositiveInt>,
+    /// `[log]`: the log file and its size (#500, #504). Same absent-vs-empty
+    /// reasoning as `editor`.
+    pub log: Option<LogConfig>,
 }
 
-/// A setting that must be a positive whole number, as the file gave it: the
-/// number, or the text of what was there instead. Any value parses, so that
-/// a bad one is a warning and not a refusal to start (#500).
-#[derive(Debug, PartialEq, Eq)]
-pub struct PositiveInt(Result<u64, String>);
-
-impl PositiveInt {
-    /// The number, if it fits a `T`; else a warning that names `key` and
-    /// says that recon uses `default`.
-    fn read<T: TryFrom<u64> + std::fmt::Display>(
-        &self,
-        key: &str,
-        default: T,
-        warnings: &mut Vec<String>,
-    ) -> Option<T> {
-        let text = match &self.0 {
-            Ok(n) => match T::try_from(*n) {
-                Ok(n) => return Some(n),
-                Err(_) => n.to_string(),
-            },
-            Err(text) => text.clone(),
-        };
-        warnings.push(format!(
-            "{key} = {text} is not a positive whole number; recon uses {default}"
-        ));
-        None
-    }
-}
-
-impl<'de> Deserialize<'de> for PositiveInt {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        Ok(Self(match toml::Value::deserialize(deserializer)? {
-            toml::Value::Integer(n) if n > 0 => Ok(n.unsigned_abs()),
-            // No `Display` for a `Value` in this build (see `Cargo.toml`).
-            toml::Value::Integer(n) => Err(n.to_string()),
-            toml::Value::Float(f) => Err(f.to_string()),
-            toml::Value::String(text) => Err(format!("{text:?}")),
-            other => Err(format!("a {}", other.type_str())),
-        }))
-    }
+/// The `[log]` table.
+///
+/// Non-zero sizes, so that `max_mb = 0` or `files = "two"` is a parse error
+/// that names the line, as each other setting is (#504). A log file that
+/// recon cannot *open* stays a warning: see `choose_log_target`.
+#[derive(Deserialize, Debug, Default, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct LogConfig {
+    /// The log file. See [`Config::log_file`].
+    pub file: Option<PathBuf>,
+    /// The size of one log file, in megabytes.
+    pub max_mb: Option<std::num::NonZeroU64>,
+    /// How many log files to keep, with the live one.
+    pub files: Option<std::num::NonZeroU32>,
 }
 
 /// The `[view]` table: how the file view moves.
@@ -1024,6 +989,24 @@ pub(crate) fn recon_dir_from(
     Some(base.join(CONFIG_DIR))
 }
 
+/// `path` with a leading `~` or `~/` made `home` (#505), as a shell does.
+/// Each path setting goes through here, so that each one reads `~` the same
+/// way.
+///
+/// Only that: not `~user/`, which needs the password database, and not
+/// `$HOME`, which a path in TOML can mean literally. With no `home`, the
+/// path stays as written. `home` is an argument for the reason
+/// `config_home_from` gives.
+#[must_use]
+pub fn expand_tilde(path: &Path, home: Option<&str>) -> PathBuf {
+    let home = home.filter(|dir| !dir.is_empty());
+    match (home, path.strip_prefix("~")) {
+        (Some(home), Ok(rest)) if rest.as_os_str().is_empty() => PathBuf::from(home),
+        (Some(home), Ok(rest)) => Path::new(home).join(rest),
+        _ => path.to_path_buf(),
+    }
+}
+
 /// Where recon looks for `config.toml`, or `None` when the environment names
 /// no home to look in.
 #[must_use]
@@ -1319,9 +1302,7 @@ impl Config {
             warnings,
             filetype,
             commands,
-            log_file,
-            log_max_mb,
-            log_files,
+            log,
         } = file;
 
         if let Some(background) = background {
@@ -1397,19 +1378,25 @@ impl Config {
             self.commands.clone_from(commands);
         }
 
-        if let Some(log_file) = log_file {
-            self.log_file.get_or_insert_with(|| log_file.clone());
-        }
-        if let Some(setting) = log_max_mb {
-            self.log_max_mb =
-                setting.read("log_max_mb", DEFAULT_LOG_MAX_MB, &mut self.log_warnings);
-        }
-        if let Some(setting) = log_files {
-            self.log_files = setting.read("log_files", DEFAULT_LOG_FILES, &mut self.log_warnings);
+        if let Some(LogConfig {
+            file,
+            max_mb,
+            files,
+        }) = log
+        {
+            if let Some(file) = file {
+                self.log_file.get_or_insert_with(|| file.clone());
+            }
+            if let Some(max_mb) = max_mb {
+                self.log_max_mb.get_or_insert(max_mb.get());
+            }
+            if let Some(files) = files {
+                self.log_files.get_or_insert(files.get());
+            }
         }
     }
 
-    /// The size at which the log file rotates: `log_max_mb` megabytes, 50
+    /// The size at which the log file rotates: `[log] max_mb` megabytes, 50
     /// by default (#500).
     #[must_use]
     pub fn log_max_bytes(&self) -> u64 {
@@ -1418,7 +1405,7 @@ impl Config {
             .saturating_mul(1024 * 1024)
     }
 
-    /// How many log files to keep with the live one: `log_files`, 2 by
+    /// How many log files to keep with the live one: `[log] files`, 2 by
     /// default (#500). Together with the size, about 100 MB of log.
     #[must_use]
     pub fn log_files(&self) -> u32 {
@@ -2067,7 +2054,7 @@ mod tests {
     // ---- the log file (#500) ---------------------------------------------
 
     /// `--log-file` beats `RECON_LOG`, which clap reads for it, and both
-    /// beat `log_file` in the file.
+    /// beat `[log] file` in the file.
     #[test]
     fn the_log_file_flag_reads_recon_log_and_beats_the_file() {
         use clap::CommandFactory;
@@ -2078,7 +2065,7 @@ mod tests {
             .unwrap();
         assert_eq!(arg.get_env(), Some(std::ffi::OsStr::new("RECON_LOG")));
 
-        let path = fixture("log-file.toml", "log_file = '/from/the/file.log'\n");
+        let path = fixture("log-file.toml", "[log]\nfile = '/from/the/file.log'\n");
         let file = load_from(&path).expect("valid");
         let mut config = parse_clean(["recon", "--log-file", "/from/the/flag.log"]).unwrap();
         config.apply(&file);
@@ -2091,40 +2078,85 @@ mod tests {
 
     #[test]
     fn the_log_size_settings_parse_and_default() {
-        let path = fixture("log-size.toml", "log_max_mb = 7\nlog_files = 1\n");
+        let path = fixture("log-size.toml", "[log]\nmax_mb = 7\nfiles = 1\n");
         let mut config = Config::default();
         config.apply(&load_from(&path).expect("valid"));
         assert_eq!(config.log_max_bytes(), 7 * 1024 * 1024);
         assert_eq!(config.log_files(), 1);
-        assert!(config.log_warnings.is_empty(), "{:?}", config.log_warnings);
 
         assert_eq!(Config::default().log_max_bytes(), 50 * 1024 * 1024);
         assert_eq!(Config::default().log_files(), 2);
     }
 
-    /// A bad size is a warning and the default, not a refusal: the setting
-    /// only changes what recon records.
+    /// A bad size is refused with the line, as each other setting is: a
+    /// warning in a panel is easy to miss, and then the log is not the size
+    /// the user asked for.
     #[test]
-    fn a_bad_log_size_warns_and_uses_the_default() {
-        for (index, value) in ["0", "-3", "'ten'", "1.5"].into_iter().enumerate() {
+    fn a_bad_log_size_is_refused_with_its_line() {
+        for (index, (key, value)) in [
+            ("max_mb", "0"),
+            ("files", "-1"),
+            ("files", "\"two\""),
+            ("max_mb", "1.5"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
             let path = fixture(
                 &format!("log-size-bad-{index}.toml"),
-                &format!("log_max_mb = {value}\nlog_files = {value}\n"),
+                &format!("[log]\n{key} = {value}\n"),
             );
-            let mut config = Config::default();
-            config.apply(&load_from(&path).expect("a bad size still parses"));
-            assert_eq!(config.log_max_bytes(), 50 * 1024 * 1024, "{value}");
-            assert_eq!(config.log_files(), 2, "{value}");
-            assert_eq!(config.log_warnings.len(), 2, "{value}");
-            assert!(
-                config.log_warnings[0].contains("log_max_mb"),
-                "{:?}",
-                config.log_warnings
+            let err = load_from(&path).expect_err(value).to_string();
+            assert!(err.contains(key), "{value}: {err}");
+            assert!(err.contains("line 2"), "{value}: {err}");
+        }
+    }
+
+    /// The top-level keys of #500 never shipped in a release, so they are
+    /// not aliases: an old one is refused, which tells the user to move it.
+    #[test]
+    fn the_top_level_log_keys_are_refused() {
+        for (index, (key, value)) in [
+            ("log_file", "'/x.log'"),
+            ("log_max_mb", "7"),
+            ("log_files", "1"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let path = fixture(
+                &format!("log-top-level-{index}.toml"),
+                &format!("{key} = {value}\n"),
             );
-            assert!(
-                config.log_warnings[1].contains("log_files"),
-                "{:?}",
-                config.log_warnings
+            let err = load_from(&path).expect_err(key).to_string();
+            assert!(err.contains(key), "{key}: {err}");
+        }
+    }
+
+    /// A leading `~` is the home directory (#505); nothing else changes.
+    #[test]
+    fn expand_tilde_replaces_only_a_leading_tilde() {
+        let home = Some("/home/me");
+        let expand = |path: &str| expand_tilde(Path::new(path), home);
+        assert_eq!(
+            expand("~/logs/recon.log"),
+            PathBuf::from("/home/me/logs/recon.log")
+        );
+        assert_eq!(expand("~"), PathBuf::from("/home/me"));
+        assert_eq!(expand("a/~/b"), PathBuf::from("a/~/b"));
+        assert_eq!(expand("~bob/x"), PathBuf::from("~bob/x"));
+        assert_eq!(expand("/abs/x"), PathBuf::from("/abs/x"));
+        assert_eq!(expand("$HOME/x"), PathBuf::from("$HOME/x"));
+    }
+
+    /// With no home to go to, the path stays as the user wrote it.
+    #[test]
+    fn expand_tilde_without_a_home_changes_nothing() {
+        for home in [None, Some("")] {
+            assert_eq!(
+                expand_tilde(Path::new("~/x"), home),
+                PathBuf::from("~/x"),
+                "{home:?}"
             );
         }
     }

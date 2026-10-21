@@ -106,15 +106,19 @@ pub fn default_path(xdg_state_home: Option<&str>, home: Option<&str>) -> Option<
 /// the TUI draws on stderr and drops what is logged there (#246), but a
 /// batch run's stderr is where a script reads its log. Without `RUST_LOG`
 /// nothing is written to a file that nobody asked for.
+///
+/// A named file that starts with `~` is under `home`, whichever rung named
+/// it (#505).
 #[must_use]
 pub fn choose(
     named: Option<&Path>,
+    home: Option<&str>,
     tui: bool,
     rust_log: bool,
     default: impl FnOnce() -> Option<PathBuf>,
 ) -> Option<PathBuf> {
     match named {
-        Some(path) => Some(path.to_path_buf()),
+        Some(path) => Some(crate::config::expand_tilde(path, home)),
         None if tui && rust_log => default(),
         None => None,
     }
@@ -239,7 +243,7 @@ mod tests {
     fn a_named_file_wins_in_each_mode() {
         for (tui, rust_log) in [(true, true), (true, false), (false, true), (false, false)] {
             assert_eq!(
-                choose(Some(Path::new("/tmp/x.log")), tui, rust_log, || Some(
+                choose(Some(Path::new("/tmp/x.log")), None, tui, rust_log, || Some(
                     "/d".into()
                 )),
                 Some("/tmp/x.log".into()),
@@ -247,15 +251,35 @@ mod tests {
         }
     }
 
+    /// From each rung: `RECON_LOG="~/x"` in quotes and `[log] file` in
+    /// TOML get no help from a shell (#505).
+    #[test]
+    fn a_named_file_starting_with_tilde_is_in_home() {
+        assert_eq!(
+            choose(
+                Some(Path::new("~/logs/recon.log")),
+                Some("/h"),
+                false,
+                false,
+                || None
+            ),
+            Some("/h/logs/recon.log".into()),
+        );
+    }
+
     #[test]
     fn the_default_file_is_only_for_the_tui_with_rust_log() {
         let default = || Some(PathBuf::from("/d/recon.log"));
         assert_eq!(
-            choose(None, true, true, default),
+            choose(None, None, true, true, default),
             Some("/d/recon.log".into())
         );
-        assert_eq!(choose(None, false, true, default), None, "batch");
-        assert_eq!(choose(None, true, false, default), None, "no RUST_LOG");
-        assert_eq!(choose(None, true, true, || None), None, "no home");
+        assert_eq!(choose(None, None, false, true, default), None, "batch");
+        assert_eq!(
+            choose(None, None, true, false, default),
+            None,
+            "no RUST_LOG"
+        );
+        assert_eq!(choose(None, None, true, true, || None), None, "no home");
     }
 }

@@ -363,7 +363,7 @@ Options:
       --no-warnings
           Hide the startup warnings for this run. The opposite of `--warnings`
       --log-file <PATH>
-          A file for the log. Falls back to `log_file` in `config.toml`. With
+          A file for the log. Falls back to `[log] file` in `config.toml`. With
           neither, the TUI writes to `~/.local/state/recon/recon.log` when
           `RUST_LOG` is set, and batch mode writes to stderr [env: RECON_LOG]
   -h, --help
@@ -409,18 +409,22 @@ With `RUST_LOG` set, the TUI writes its log to
 holds the screen would be dropped. Batch mode logs to **stderr**, where a
 script reads it.
 
-`--log-file PATH`, then `RECON_LOG`, then `log_file` in `config.toml` name a
-different file, in batch mode too:
+`--log-file PATH`, then `RECON_LOG`, then `[log] file` in `config.toml` name
+a different file, in batch mode too:
 
 ```sh
 RECON_LOG=/tmp/recon.log RUST_LOG=recon=debug recon app.log
 ```
 
-The file is appended to, so it keeps many sessions. At `log_max_mb` (50) it
-rotates to `recon.log.1`, and `recon` keeps `log_files` (2) files with the
-live one: about 100 MB. Both are `config.toml` keys. If the file cannot be
-opened, `recon` says so and carries on logging to stderr — which, once the
-TUI is up, means the in-session records are dropped.
+A path that starts with `~/` is in your home directory, even in
+`config.toml` or a quoted `RECON_LOG`, where no shell expands it.
+
+The file is appended to, so it keeps many sessions. At `max_mb` (50) it
+rotates to `recon.log.1`, and `recon` keeps `files` (2) files with the live
+one: about 100 MB. Both are keys of `[log]` in `config.toml`, and a value
+that is not a whole number of 1 or more stops `recon` with an error. If the
+file cannot be opened, `recon` says so and carries on logging to stderr —
+which, once the TUI is up, means the in-session records are dropped.
 
 What gets recorded:
 

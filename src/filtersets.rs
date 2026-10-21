@@ -715,7 +715,6 @@ pub fn path() -> Option<PathBuf> {
 /// once, at its first position.
 #[must_use]
 pub fn search_path_from(filter_path: Option<&str>, home: Option<&str>) -> Vec<PathBuf> {
-    let home = home.filter(|home| !home.is_empty());
     let entries = filter_path
         .map(|list| std::env::split_paths(list).collect::<Vec<_>>())
         .unwrap_or_default();
@@ -724,10 +723,7 @@ pub fn search_path_from(filter_path: Option<&str>, home: Option<&str>) -> Vec<Pa
         if dir.as_os_str().is_empty() {
             continue;
         }
-        let dir = match (home, dir.strip_prefix("~")) {
-            (Some(home), Ok(rest)) => Path::new(home).join(rest),
-            _ => dir,
-        };
+        let dir = crate::config::expand_tilde(&dir, home);
         let key = crate::path::lexical_absolute(&dir);
         if dirs
             .iter()

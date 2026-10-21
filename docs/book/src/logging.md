@@ -25,9 +25,13 @@ To use a different file, set one of these. The first one that is set wins:
 
 1. `--log-file PATH`
 2. `RECON_LOG=PATH`
-3. `log_file = "PATH"` in `config.toml`
+3. `file = "PATH"` in the `[log]` table of `config.toml`
 
 A file that you name applies in batch mode too, and without `RUST_LOG`.
+
+A path that starts with `~/` is in your home directory, in each of the
+three: for example `~/logs/recon.log`. recon does not change `~user/` or
+`$HOME` in a path.
 
 When the log goes to stderr in the TUI, recon drops each record that comes
 while the screen is open, because recon draws its screen on stderr. Only
@@ -44,15 +48,24 @@ keeps many sessions.
 
 When the file gets to its limit, recon renames it to `recon.log.1`
 (`recon.log.1` becomes `recon.log.2`, and so on), deletes the oldest file,
-and starts a new `recon.log`. Two keys in `config.toml` set the limits:
+and starts a new `recon.log`. Two keys in the `[log]` table of
+`config.toml` set the limits:
 
 | Key | What it sets | Default |
 | --- | --- | --- |
-| `log_max_mb` | The size of one file, in megabytes. | 50 |
-| `log_files` | The number of files to keep, with the live file. With 1, recon empties the file at the limit. | 2 |
+| `max_mb` | The size of one file, in megabytes. | 50 |
+| `files` | The number of files to keep, with the live file. With 1, recon empties the file at the limit. | 2 |
 
-With the defaults, the log uses a maximum of about 100 MB. A value that is
-not a positive whole number gives a warning, and recon uses the default.
+```toml
+[log]
+file = "~/logs/recon.log"
+max_mb = 50
+files = 2
+```
+
+With the defaults, the log uses a maximum of about 100 MB. Each value must
+be a whole number of 1 or more. If it is not, recon does not start, and the
+error gives the line in `config.toml`.
 
 Two recon processes can write to the same file. Their records can mix: use
 the process ID in each record to separate them.

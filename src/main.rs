@@ -245,7 +245,7 @@ fn log_builder() -> env_logger::Builder {
 /// Send the log to a file or to stderr, and pass on what waited (#500).
 ///
 /// `config.log_file` is the file that `--log-file`, `RECON_LOG` or
-/// `log_file` names. Without one, the TUI writes to the default file when
+/// `[log] file` names. Without one, the TUI writes to the default file when
 /// `RUST_LOG` is set; see `recon::logfile::choose`.
 ///
 /// **A file gets timestamps, the process ID and module names; stderr does
@@ -259,11 +259,13 @@ fn choose_log_target(config: &recon::Config, tui: bool) {
         return;
     };
     let env = |name| std::env::var(name).ok();
+    let home = env("HOME");
     let path = recon::logfile::choose(
         config.log_file.as_deref(),
+        home.as_deref(),
         tui,
         env("RUST_LOG").is_some_and(|value| !value.is_empty()),
-        || recon::logfile::default_path(env("XDG_STATE_HOME").as_deref(), env("HOME").as_deref()),
+        || recon::logfile::default_path(env("XDG_STATE_HOME").as_deref(), home.as_deref()),
     );
 
     let mut builder = log_builder();
