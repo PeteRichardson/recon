@@ -1583,10 +1583,7 @@ impl App<'_> {
                 .map(|step| step.running.is_some())
         });
         if let Some(writing) = writing {
-            match self
-                .keymap
-                .resolve(crate::keymap::Scope::FilterEditor, pressed)
-            {
+            match self.resolve_key(crate::keymap::Scope::FilterEditor, pressed) {
                 Some(A::FilterEditorCommit) if !writing => self.finish_consolidation(true),
                 Some(A::FilterEditorCommit) => {}
                 Some(A::FilterEditorCancel) => self.finish_consolidation(false),
@@ -1623,6 +1620,7 @@ impl App<'_> {
                             | A::FilterEditorToggleMatchesOnly
                     )
             });
+        self.dispatched = action;
         if let Some(action) = action {
             let page = |editor: &FilterEditor| isize::try_from(editor.page).unwrap_or(isize::MAX);
             match action {
@@ -1736,7 +1734,7 @@ impl App<'_> {
     fn type_in_filter_editor(&mut self, key: event::KeyEvent) {
         use crate::keymap::ActionId as A;
         let pressed = crate::keymap::normalise(key);
-        if let Some(action) = self.keymap.resolve(crate::keymap::Scope::Prompt, pressed) {
+        if let Some(action) = self.resolve_key(crate::keymap::Scope::Prompt, pressed) {
             let edit: fn(&mut SearchPrompt) = match action {
                 A::PromptLeft => SearchPrompt::move_left,
                 A::PromptRight => SearchPrompt::move_right,
@@ -1793,7 +1791,7 @@ impl App<'_> {
     fn handle_sense_key(&mut self, key: event::KeyEvent) {
         use crate::keymap::ActionId as A;
         let pressed = crate::keymap::normalise(key);
-        let choice = match self.keymap.resolve(crate::keymap::Scope::Prompt, pressed) {
+        let choice = match self.resolve_key(crate::keymap::Scope::Prompt, pressed) {
             Some(A::PromptRight) => Some(SenseKey::Next),
             Some(A::PromptLeft) => Some(SenseKey::Prev),
             _ if key

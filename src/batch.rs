@@ -485,7 +485,7 @@ fn reason(err: &io::Error) -> String {
 }
 
 /// `1 file`, `3 files`.
-fn count(n: usize, noun: &str) -> String {
+pub(crate) fn count(n: usize, noun: &str) -> String {
     if n == 1 {
         format!("1 {noun}")
     } else {

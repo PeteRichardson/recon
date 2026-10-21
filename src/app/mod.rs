@@ -171,6 +171,11 @@ pub struct App<'a> {
     /// generated hint reads the same table — a hint that still consulted the
     /// defaults would name a key the user had moved.
     keymap: crate::keymap::Keymap,
+    /// The action the key being dispatched resolved to, for its `Trace`
+    /// record (#492). The last lookup wins, and a lookup that finds nothing
+    /// clears it: a key the interrupt guard looked up and a prompt then
+    /// typed was typed, not acted on.
+    dispatched: Option<crate::keymap::ActionId>,
     /// Whether a jump to a line off screen centres it — `[view]
     /// center_jumps`, resolved by `Config::center_jumps`.
     center_jumps: bool,
@@ -455,6 +460,7 @@ impl App<'_> {
             // this function returns `Self` and has nowhere to put an error.
             // A `Startup` built from a bare `Config` carries the defaults.
             keymap: startup.bindings.clone(),
+            dispatched: None,
             center_jumps: config.center_jumps(),
             emit: config.emit,
             line_numbers: config.line_numbers,
@@ -599,10 +605,14 @@ impl App<'_> {
                 break;
             }
             if dirty {
+                // Timed whatever the level: two clock reads a frame cost
+                // nothing to see, and the slow-frame `WARN` needs the time.
+                let drawing = Instant::now();
                 terminal.draw(|frame| {
                     let area = frame.area();
                     frame.render_widget(&mut *self, area);
                 })?;
+                crate::logging::frame_drawn(drawing.elapsed());
             }
             dirty = self.handle_events()?;
         }

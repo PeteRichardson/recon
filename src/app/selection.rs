@@ -223,6 +223,13 @@ impl App<'_> {
         };
         match self.clipboard.copy(&yank.text) {
             Ok(()) => {
+                // The size and not the text: the log has no file contents
+                // (#492).
+                log::debug!(
+                    "clipboard: copied {}, {} bytes",
+                    crate::batch::count(yank.lines, "line"),
+                    yank.text.len()
+                );
                 let what = if yank.lines == 1 && !visual.linewise {
                     let chars = yank.text.chars().count();
                     format!("{chars} character{}", if chars == 1 { "" } else { "s" })
@@ -235,7 +242,14 @@ impl App<'_> {
                 };
                 self.report(&format!("yanked {what}"), false);
             }
-            Err(err) => self.report(&format!("clipboard: {err}"), true),
+            Err(err) => {
+                log::warn!(
+                    "clipboard: the copy of {}, {} bytes failed: {err}",
+                    crate::batch::count(yank.lines, "line"),
+                    yank.text.len()
+                );
+                self.report(&format!("clipboard: {err}"), true);
+            }
         }
     }
 

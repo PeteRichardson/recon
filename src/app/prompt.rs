@@ -398,7 +398,7 @@ impl App<'_> {
     /// are typed into the pattern rather than acted on.
     pub(super) fn handle_search_key(&mut self, key: event::KeyEvent) {
         let pressed = crate::keymap::normalise(key);
-        if let Some(action) = self.keymap.resolve(crate::keymap::Scope::Prompt, pressed) {
+        if let Some(action) = self.resolve_key(crate::keymap::Scope::Prompt, pressed) {
             use crate::keymap::ActionId as A;
             match action {
                 A::PromptCancel => self.cancel_prompt(),

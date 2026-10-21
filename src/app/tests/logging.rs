@@ -263,3 +263,133 @@ fn a_file_changed_on_disk_is_logged() {
     assert_eq!(records.len(), 1, "{:?}", capture::here());
     assert!(records[0].ends_with("(it grew)"), "{records:?}");
 }
+
+// ---- keys and actions ---------------------------------------------------
+
+/// Each key is one `Trace` record that names the key and the action it
+/// dispatched.
+#[test]
+fn a_key_is_logged_with_its_action() {
+    capture::install();
+    let mut app = app_over_file("log_key_action", "alpha\n");
+
+    key(&mut app, KeyCode::Tab);
+
+    let records = logged(log::Level::Trace, "key Tab: ");
+    assert_eq!(
+        records,
+        ["key Tab: global.focus.next"],
+        "{:?}",
+        capture::here()
+    );
+}
+
+/// A key that no binding takes says so.
+#[test]
+fn a_key_that_does_nothing_is_logged_as_no_action() {
+    capture::install();
+    let mut app = app_over_file("log_key_none", "alpha\n");
+
+    app.handle_event(event::Event::Key(KeyEvent::new(
+        KeyCode::Char('%'),
+        KeyModifiers::ALT,
+    )));
+
+    let records = logged(log::Level::Trace, "key Alt-%: ");
+    assert_eq!(records, ["key Alt-%: no action"], "{:?}", capture::here());
+}
+
+/// A character typed into a prompt is search text, and the log does not
+/// contain search text: the record names neither the character nor an
+/// action, only that a character went into the text.
+#[test]
+fn a_character_typed_into_a_prompt_is_not_logged() {
+    let app = app_filtering("log_key_typed");
+
+    assert_eq!(
+        logged(log::Level::Trace, "key "),
+        [
+            "key f: global.focus.filters",
+            "key i: filters.include",
+            "key (typed into a text field): no action",
+            "key (typed into a text field): no action",
+            "key (typed into a text field): no action",
+            "key (typed into a text field): no action",
+            "key Enter: prompt.commit",
+        ],
+        "{:?}",
+        app.focus
+    );
+}
+
+/// A key is named as `[keymap]` spells it.
+#[test]
+fn a_key_is_named_as_the_keymap_spells_it() {
+    capture::install();
+    let mut app = app_over_file("log_key_label", "alpha\n");
+
+    key(&mut app, KeyCode::BackTab);
+    key(&mut app, KeyCode::F(5));
+
+    assert_eq!(
+        logged(log::Level::Trace, "key Shift-Tab: ").len(),
+        1,
+        "{:?}",
+        capture::here()
+    );
+    assert_eq!(
+        logged(log::Level::Trace, "key F5: ").len(),
+        1,
+        "{:?}",
+        capture::here()
+    );
+}
+
+// ---- the clipboard ------------------------------------------------------
+
+/// A yank over two lines, through `clipboard`, from the file view.
+fn yank_two_lines(name: &str, clipboard: RecordingClipboard) {
+    capture::install();
+    let mut app = app_over_file(name, "alpha\nbeta\n");
+    app.clipboard = Box::new(clipboard);
+    key(&mut app, KeyCode::Char('t'));
+    key(&mut app, KeyCode::Char('V'));
+    key(&mut app, KeyCode::Char('j'));
+    key(&mut app, KeyCode::Char('y'));
+}
+
+/// A copy is one `Debug` record with its size, and not the text.
+#[test]
+fn a_copy_is_logged_with_its_size() {
+    yank_two_lines("log_clipboard_copy", RecordingClipboard::default());
+
+    let records = logged(log::Level::Debug, "clipboard: ");
+    assert_eq!(
+        records,
+        ["clipboard: copied 2 lines, 11 bytes"],
+        "{:?}",
+        capture::here()
+    );
+    assert!(
+        capture::here()
+            .iter()
+            .all(|(_, text)| !text.contains("alpha"))
+    );
+}
+
+/// A copy that fails is a `Warn` record with the reason.
+#[test]
+fn a_copy_that_fails_is_a_warning() {
+    yank_two_lines(
+        "log_clipboard_fail",
+        RecordingClipboard::failing("pbcopy: not found"),
+    );
+
+    let records = logged(log::Level::Warn, "clipboard: ");
+    assert_eq!(
+        records,
+        ["clipboard: the copy of 2 lines, 11 bytes failed: pbcopy: not found"],
+        "{:?}",
+        capture::here()
+    );
+}

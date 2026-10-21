@@ -24,7 +24,7 @@ a batch run then write nothing new to stderr.
 | Level | When recon uses it |
 | --- | --- |
 | `error` | A worker thread stopped with a panic. |
-| `warn` | Something went wrong: a file that recon cannot read, a command view or an editor that failed. |
+| `warn` | Something went wrong: a file that recon cannot read, a command view, an editor or a clipboard copy that failed, a slow frame. |
 | `info` | A fact that you must see without a setting. |
 | `debug` | One time for each session, or one time for each thing that you do. |
 | `trace` | One time for each file, each key or each frame. |
@@ -34,7 +34,8 @@ a batch run then write nothing new to stderr.
 - **At the start:** the recon version, the arguments, TUI or batch mode and
   the reason, the config file, each `RECON_*` variable that is set, the
   filter path, each filter set (listed or not, enabled or not), the number of
-  keymap overrides, the image protocol and the reason, the screen (stderr or
+  keymap overrides, the syntax theme and the background (each with `set`
+  or `default`), the image protocol and the reason, the screen (stderr or
   `/dev/tty`), and the terminal size. Also the time to read the config and
   the filter sets. A set that another file shadows has its own record.
 - **Each change to the filters:** add, edit, delete, toggle, `!`, list,
@@ -59,6 +60,8 @@ a batch run then write nothing new to stderr.
 - **Navigation:** each change of directory, each file opened (with `n`, `N`,
   `.` and `,` too), each reload with `r`, and each file that changed on disk
   (it grew, or something wrote it again).
+- **Each copy to the clipboard:** the number of lines and bytes that `y`
+  copied. A copy that fails is a `warn` record with the reason.
 - **At the end:** how long the session was, how it ended (`q`, `Q`, Ctrl-c,
   SIGTERM, or an error), the `--emit` mode, the number of files opened and
   scanned, and the view cache hits and misses.
@@ -71,6 +74,18 @@ a batch run then write nothing new to stderr.
   known yet` when a pass stopped before the end of the file) and the time.
   Use `RUST_LOG=recon=debug,recon::scan=trace` to add these records and no
   other `trace` records.
+
+- **Each key:** the key, and the action that it did, for example `key j:
+  view.down`. A key that does nothing says `no action`. A character that
+  you type into a prompt or the filter editor is not in the log: its
+  record says `typed into a text field`.
+- **Each frame:** the time that recon took to draw the screen.
+
+## A slow frame
+
+A frame that takes more than 50 ms to draw gives a `warn` record, `slow
+frame`. You do not need `RUST_LOG` for it: set only `RECON_LOG`. recon does
+not show it on the screen.
 
 The log contains paths and filter patterns. It does not contain the
 contents of your files or the text of a search.
