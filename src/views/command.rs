@@ -19,6 +19,11 @@ use std::time::{Duration, Instant};
 /// How long a command runs before it is killed, when the config says nothing.
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(2);
 
+/// How long the built-in `quicklook` runs (#506). The first `qlmanage`
+/// after a cold start must start `quicklookd` and find its generators,
+/// which can take more than [`DEFAULT_TIMEOUT`].
+const QUICK_LOOK_TIMEOUT: Duration = Duration::from_secs(10);
+
 /// One `[commands]` entry.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Command {
@@ -106,7 +111,7 @@ impl Command {
             .map(String::from)
             .to_vec(),
             output: Some("image/png".to_string()),
-            timeout: DEFAULT_TIMEOUT,
+            timeout: QUICK_LOOK_TIMEOUT,
             prefetch: true,
         })
     }
@@ -517,6 +522,19 @@ mod tests {
         assert!(on_path("/bin/sh"));
         assert!(!on_path("recon-no-such-program"));
         assert!(!on_path("/no/such/program"));
+    }
+
+    /// A cold `qlmanage` can be slow, so `quicklook` waits longer than
+    /// other commands before it fails (#506).
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn quicklook_waits_longer_than_other_commands() {
+        let quick_look = Command::quick_look().expect("qlmanage on PATH");
+        assert!(
+            quick_look.timeout > DEFAULT_TIMEOUT,
+            "{:?}",
+            quick_look.timeout
+        );
     }
 
     fn commands(toml: &str) -> Result<Commands, toml::de::Error> {
