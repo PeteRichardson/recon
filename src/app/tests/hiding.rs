@@ -287,3 +287,171 @@ fn the_status_line_shows_a_funnel_for_an_excluding_filter_while_dimmed() {
         status_line(&mut app)
     );
 }
+
+// ---- #481: the file view follows a selection that hide mode moves --------
+
+/// An app over `files` (each with a body), with an including filter and
+/// the scan answers `matches` gives, row by row, and the explorer focused.
+fn app_with_answers(
+    name: &str,
+    files: &[(&str, &str)],
+    matches: &[bool],
+) -> (App<'static>, Sender<scan::Scanned>) {
+    let mut app = app_over_files(name, files);
+    let (_scanner, tx) = record_scans(&mut app);
+    key(&mut app, KeyCode::Char('e'));
+    app.add_filter("alpha").expect("valid pattern");
+    app.refresh_view();
+    app.refresh_scan(false);
+    for (row, &yes) in matches.iter().enumerate() {
+        mark(&mut app, &tx, row, yes);
+    }
+    (app, tx)
+}
+
+#[test]
+fn u_moves_the_view_with_a_selection_it_hides() {
+    let (mut app, _tx) = app_with_answers(
+        "hide_follow_view",
+        &[("a.log", "beta\n"), ("b.log", "alpha\n")],
+        &[false, true],
+    );
+    arrow_to(&mut app, "a.log");
+    assert_eq!(shown(&app), "a.log", "sanity");
+
+    key(&mut app, KeyCode::Char('u'));
+
+    assert_eq!(selected_name(&app), "b.log");
+    assert_eq!(shown(&app), "b.log", "the view kept the hidden file");
+}
+
+/// With no file left that matches, the selection can only land on `..` or
+/// a directory. Their listings are not filtered, so the view shows nothing
+/// rather than a page of text that does not answer the question.
+#[test]
+fn u_with_no_file_left_blanks_the_view_and_says_why() {
+    let (mut app, _tx) = app_with_answers(
+        "hide_none_left",
+        &[("a.log", "beta\n"), ("sub/inner.log", "beta\n")],
+        &[false],
+    );
+    arrow_to(&mut app, "a.log");
+
+    key(&mut app, KeyCode::Char('u'));
+
+    assert_ne!(selected_name(&app), "a.log", "sanity: hide mode moved it");
+    assert_ne!(shown(&app), "a.log", "the view kept the hidden file");
+    // What the view holds, not what it draws: hide mode would draw a
+    // listing as blank too, since none of its lines match.
+    assert!(
+        app.view.source().is_empty(),
+        "the view holds a listing: {:?}",
+        app.view.source()
+    );
+    assert_eq!(status(&app), Some(NO_FILE_MATCHES));
+}
+
+/// The blank is only for a move hide mode made. A move the user makes onto
+/// a directory shows its listing, as it always did.
+#[test]
+fn after_the_blank_a_move_to_a_directory_shows_its_listing() {
+    let (mut app, _tx) = app_with_answers(
+        "hide_blank_then_k",
+        &[("a.log", "beta\n"), ("sub/inner.log", "beta\n")],
+        &[false],
+    );
+    arrow_to(&mut app, "a.log");
+    key(&mut app, KeyCode::Char('u'));
+    assert!(app.view.source().is_empty(), "sanity: blank");
+
+    key(&mut app, KeyCode::Char('k'));
+
+    assert!(
+        !app.view.source().is_empty(),
+        "no listing for {}",
+        selected_name(&app)
+    );
+}
+
+/// Back to dim mode, the selection stays where hide mode put it, and so
+/// does the view: the file that was hidden is listed again, but nothing
+/// moves back to it.
+#[test]
+fn u_again_stays_on_the_file_hide_mode_moved_to() {
+    let (mut app, _tx) = app_with_answers(
+        "hide_follow_back",
+        &[("a.log", "beta\n"), ("b.log", "alpha\n")],
+        &[false, true],
+    );
+    arrow_to(&mut app, "a.log");
+    key(&mut app, KeyCode::Char('u'));
+
+    key(&mut app, KeyCode::Char('u'));
+
+    assert_eq!(app.document.mode(), Mode::Dimmed, "sanity");
+    assert_eq!(selected_name(&app), "b.log");
+    assert_eq!(shown(&app), "b.log");
+}
+
+/// Hide mode can remove the selected file without a key: the scan answers
+/// it `No` while hide mode is on. The view follows the same way.
+#[test]
+fn a_scan_answer_that_hides_the_selection_moves_the_view_too() {
+    let (mut app, tx) = app_with_answers(
+        "hide_follow_scan",
+        &[("a.log", "beta\n"), ("b.log", "alpha\n")],
+        &[],
+    );
+    mark(&mut app, &tx, 1, true);
+    arrow_to(&mut app, "a.log");
+    key(&mut app, KeyCode::Char('u'));
+    assert_eq!(shown(&app), "a.log", "sanity: not answered yet, so listed");
+
+    mark(&mut app, &tx, 0, false);
+
+    assert_eq!(selected_name(&app), "b.log");
+    assert_eq!(shown(&app), "b.log", "the view kept the hidden file");
+}
+
+/// Ending a peek puts hide mode back, and with it the rows the peek showed.
+/// A file selected during the peek can be one of them.
+#[test]
+fn ending_a_peek_that_hides_the_selection_moves_the_view_too() {
+    let (mut app, _tx) = app_with_answers(
+        "hide_follow_peek",
+        &[("a.log", "beta\n"), ("b.log", "alpha\n")],
+        &[false, true],
+    );
+    arrow_to(&mut app, "b.log");
+    key(&mut app, KeyCode::Char('u'));
+    key(&mut app, KeyCode::Char(' '));
+    arrow_to(&mut app, "a.log");
+    assert_eq!(shown(&app), "a.log", "sanity: the peek lists it");
+
+    key(&mut app, KeyCode::Char(' '));
+
+    assert_eq!(selected_name(&app), "b.log");
+    assert_eq!(shown(&app), "b.log", "the view kept the hidden file");
+}
+
+/// The nearest row can be a file not scanned yet. Hide mode passes it for
+/// the nearest file that matches, so the view has a file to show.
+#[test]
+fn u_passes_an_unscanned_file_for_one_that_matches() {
+    let (mut app, tx) = app_with_answers(
+        "hide_follow_unscanned",
+        &[
+            ("a.log", "alpha\n"),
+            ("b.log", "beta\n"),
+            ("c.log", "beta\n"),
+        ],
+        &[true],
+    );
+    mark(&mut app, &tx, 2, false);
+    arrow_to(&mut app, "c.log");
+
+    key(&mut app, KeyCode::Char('u'));
+
+    assert_eq!(selected_name(&app), "a.log");
+    assert_eq!(shown(&app), "a.log");
+}

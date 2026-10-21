@@ -4,7 +4,7 @@
 use super::App;
 use super::prompt::{PromptKind, SearchPrompt};
 use crate::document::Mode;
-use crate::widgets::{self, FilterCommand};
+use crate::widgets::{self, Action, FilterCommand};
 use crate::{filter, filtersets};
 use color_eyre::Result;
 use crossterm::event::{self, KeyCode};
@@ -19,6 +19,9 @@ pub(super) struct PeekState {
     mode: Mode,
     flags: filter::EnabledFlags,
 }
+
+/// What the status line says when hide mode leaves no file to show (#481).
+pub(super) const NO_FILE_MATCHES: &str = "no file here matches the filters";
 
 impl App<'_> {
     /// Add an including filter, colouring it distinctly from its predecessors.
@@ -98,9 +101,20 @@ impl App<'_> {
     /// The one place the mode is set. `Ctrl-H`/`H` is one key with one meaning
     /// in both panes: non-matching *lines* dim or hide in the view, and
     /// non-matching *files* dim or hide in the explorer (#119).
-    pub(super) fn set_mode(&mut self, mode: Mode) {
+    ///
+    /// Returns whether hide mode took the selected file off the explorer's
+    /// list. The caller follows with `follow_a_hidden_selection` once it has
+    /// finished with the document this view is showing.
+    pub(super) fn set_mode(&mut self, mode: Mode) -> bool {
         self.document.set_mode(mode);
-        self.explorer.set_mode(mode);
+        self.explorer.set_mode(mode)
+    }
+
+    /// `Explorer::restyle`, with the view following a selection it moved.
+    pub(super) fn restyle_explorer(&mut self) {
+        if self.explorer.restyle() {
+            self.follow_a_hidden_selection();
+        }
     }
 
     /// Flip between dimming unmatched lines and hiding them.
@@ -121,9 +135,34 @@ impl App<'_> {
             Mode::FilteredOnly => Mode::Dimmed,
         };
         let cursor_source = self.cursor_source();
-        self.set_mode(mode);
+        let moved = self.set_mode(mode);
         self.document.recompute_visible();
         self.apply_view(cursor_source);
+        if moved {
+            self.follow_a_hidden_selection();
+        }
+    }
+
+    /// Hide mode removed the selected file from the explorer, which moved the
+    /// selection to a neighbour (#481): `u`, a peek, or a scan answer while
+    /// hide mode is on. The view follows it, as it follows `j`
+    /// and `k`, or it would go on showing a file the explorer no longer
+    /// lists.
+    ///
+    /// Only to a file that matches. When none is left, the selection is on
+    /// `..`, a directory or a file not scanned yet, and the view goes blank
+    /// instead: a listing is not filtered, so in the middle of a filtered
+    /// session it is a page of text that does not answer the question. `j`
+    /// and `k` onto the same row still show it — the blank is only for a
+    /// move the user did not make.
+    fn follow_a_hidden_selection(&mut self) {
+        if let Some(path) = self.explorer.selected_match() {
+            self.perform_widget_action(Action::Preview(path));
+        } else {
+            let dir = self.explorer.dir().to_path_buf();
+            self.show_nothing(&dir);
+            self.report(NO_FILE_MATCHES, false);
+        }
     }
 
     /// `<space>`: show the plain file, or put the filtered view back (#48).
@@ -162,9 +201,9 @@ impl App<'_> {
     /// which `!` owns — see `enabled_flags` for why sharing one slot loses the
     /// other feature's undo.
     pub(super) fn toggle_peek(&mut self) {
-        if let Some(peek) = self.peek.take() {
+        let moved = if let Some(peek) = self.peek.take() {
             self.filters.apply_enabled_flags(&peek.flags);
-            self.set_mode(peek.mode);
+            self.set_mode(peek.mode)
         } else {
             self.peek = Some(PeekState {
                 mode: self.document.mode(),
@@ -177,12 +216,15 @@ impl App<'_> {
             self.set_mode(match self.document.mode() {
                 Mode::Dimmed => Mode::FilteredOnly,
                 Mode::FilteredOnly => Mode::Dimmed,
-            });
-        }
+            })
+        };
         // The full `evaluate`, not `recompute_visible` as `toggle_hiding` uses:
         // the enabled flags changed, so every line's verdict can differ. The
         // mode moved too, which `refresh_view` picks up on the same pass.
         self.refresh_view();
+        if moved {
+            self.follow_a_hidden_selection();
+        }
     }
 
     /// Put the filters back before a jump that leaves the peeked file.

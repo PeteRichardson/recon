@@ -29,19 +29,6 @@ fn hold(app: &mut App) -> Held {
     held
 }
 
-/// Move the explorer's selection to the file named `name`, as an arrow
-/// key would.
-fn arrow_to(app: &mut App, name: &str) {
-    let (index, path) = app
-        .explorer
-        .files()
-        .into_iter()
-        .find(|(_, path)| path.ends_with(name))
-        .expect("no such file");
-    app.explorer.select_entry(index);
-    app.perform_widget_action(Action::Preview(path));
-}
-
 #[test]
 fn a_row_sets_the_first_view_and_other_files_keep_the_built_in_one() {
     let mut app = app_with_rows(
