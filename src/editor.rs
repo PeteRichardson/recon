@@ -595,6 +595,10 @@ impl Launcher for ProcessLauncher {
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .spawn()?;
+        let started = std::time::Instant::now();
+        // For the log (#490). The editor's stderr goes nowhere, above, so
+        // its exit status is all there is to record.
+        let shown = format!("{argv:?}");
 
         let outcomes = self.outcomes.clone();
         let fallback = self.fallback.clone();
@@ -621,14 +625,24 @@ impl Launcher for ProcessLauncher {
                         return;
                     }
                 };
-                if !status.success()
-                    && let Some(outcomes) = outcomes
-                {
-                    // Logged because "the editor exited badly and recon said
-                    // nothing" is otherwise indistinguishable from "recon never
-                    // launched it".
+                // A failure at `Warn`, because "the editor exited badly and
+                // recon said nothing" is otherwise indistinguishable from
+                // "recon never launched it".
+                let level = if status.success() {
+                    log::Level::Debug
+                } else {
+                    log::Level::Warn
+                };
+                log::log!(
+                    level,
+                    "editor {shown}: {status} after {:?}",
+                    started.elapsed()
+                );
+                if status.success() {
+                    return;
+                }
+                if let Some(outcomes) = outcomes {
                     let report = exit_report(&name, status, fallback.as_deref());
-                    log::warn!("{report}");
                     if outcomes.send(report).is_err() {
                         // A closed receiver means recon is shutting down, which is
                         // not worth reporting to anyone — hence `debug!` rather
@@ -1543,6 +1557,39 @@ mod tests {
             .recv_timeout(std::time::Duration::from_secs(5))
             .expect("a non-zero exit is reported");
         assert!(message.contains("false"), "{message}");
+    }
+
+    /// The reaper logs how the editor ended (#490): its argv, exit status and
+    /// how long it ran, at `Warn` when it failed.
+    #[test]
+    fn the_editor_s_exit_is_logged() {
+        crate::logging::capture::install();
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let launcher = ProcessLauncher::new(tx, None);
+        launcher
+            .spawn(&[
+                "sh".into(),
+                "-c".into(),
+                "exit 3".into(),
+                "reaper490".into(),
+            ])
+            .expect("sh exists on every Unix");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let records = loop {
+            let records = crate::logging::capture::mentioning("reaper490");
+            if !records.is_empty() || std::time::Instant::now() > deadline {
+                break records;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        };
+        assert!(
+            records
+                .iter()
+                .any(|(level, text)| *level == log::Level::Warn
+                    && text.contains("exit status: 3")
+                    && text.contains(" after ")),
+            "{records:?}"
+        );
     }
 
     #[test]

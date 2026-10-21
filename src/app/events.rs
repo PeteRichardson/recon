@@ -189,7 +189,10 @@ impl App<'_> {
                         widgets::picker::PickerOutcome::Chosen(name) => {
                             let set = picker.set;
                             self.picker = None;
-                            self.filters.apply_profile(set, &name);
+                            if self.filters.apply_profile(set, &name) {
+                                let set = self.set_name(set);
+                                self.log_filters(format_args!("profile {name:?} of set {set:?}"));
+                            }
                             self.refresh_view();
                         }
                     }

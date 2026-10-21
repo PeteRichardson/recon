@@ -553,6 +553,7 @@ mod hex;
 mod hiding;
 mod jumps;
 mod layout;
+mod logging;
 mod mouse;
 mod open;
 mod peek;

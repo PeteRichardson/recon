@@ -180,6 +180,7 @@ impl App<'_> {
             if !further {
                 continue;
             }
+            self.scanned += 1;
             let record = scan::Record {
                 stamp: scanned.stamp,
                 progress: scanned.progress,

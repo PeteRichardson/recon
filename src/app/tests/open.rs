@@ -648,3 +648,24 @@ fn o_sends_a_binary_file_with_no_row_to_the_default_app() {
     };
     assert_eq!(launcher.only_command(), [opener, file.as_str()]);
 }
+
+/// The hand-off is in the log (#490): the argv at `Debug` when the editor
+/// starts, and a `Warn` when it cannot.
+#[test]
+fn an_editor_hand_off_is_logged() {
+    crate::logging::capture::install();
+    let (mut app, _root) = app_over_project("shift_o_logged", "alpha\n");
+    record_launches(&mut app, RecordingLauncher::default());
+    shift(&mut app, KeyCode::Char('O'));
+    record_launches(&mut app, RecordingLauncher::failing("no such file"));
+    shift(&mut app, KeyCode::Char('O'));
+
+    let started = crate::logging::capture::here_at(log::Level::Debug, "editor: starting [\"zed\"");
+    assert_eq!(started.len(), 1, "{started:?}");
+    let failed =
+        crate::logging::capture::here_at(log::Level::Warn, "editor: cannot start [\"zed\"");
+    assert!(
+        failed.iter().any(|text| text.contains("no such file")),
+        "{failed:?}"
+    );
+}

@@ -243,6 +243,10 @@ impl Drop for Scratch {
 /// Run `command` on `file`, for a pane `px` pixels wide, and give back the
 /// bytes of its output.
 ///
+/// Each run is in the log (#490): the argv, how long it ran and its exit
+/// status at `Debug`, and at `Warn` when it could not start, was killed at
+/// its timeout or failed, with the first line of its stderr.
+///
 /// # Errors
 ///
 /// Why the view failed, for the status line: the program could not start,
@@ -269,6 +273,7 @@ pub(crate) fn run(command: &Command, file: &Path, px: u32) -> Result<Vec<u8>, St
     );
 
     let program = &command.argv[0];
+    let started = Instant::now();
     let mut child = std::process::Command::new(&argv[0])
         .args(&argv[1..])
         .stdin(if to_stdin {
@@ -279,9 +284,12 @@ pub(crate) fn run(command: &Command, file: &Path, px: u32) -> Result<Vec<u8>, St
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .map_err(|err| match err.kind() {
-            io::ErrorKind::NotFound => format!("`{program}` not found"),
-            _ => format!("cannot start `{program}`: {err}"),
+        .map_err(|err| {
+            log::warn!("command view {argv:?}: cannot start: {err}");
+            match err.kind() {
+                io::ErrorKind::NotFound => format!("`{program}` not found"),
+                _ => format!("cannot start `{program}`: {err}"),
+            }
         })?;
 
     if let Some(mut stdin) = child.stdin.take() {
@@ -299,8 +307,14 @@ pub(crate) fn run(command: &Command, file: &Path, px: u32) -> Result<Vec<u8>, St
     let stderr = drain(child.stderr.take(), MAX_STDERR);
 
     let deadline = Instant::now() + command.timeout;
-    let status = wait(&mut child, deadline)
-        .ok_or_else(|| format!("timed out after {}s", command.timeout.as_secs_f64()))?;
+    let status = wait(&mut child, deadline).ok_or_else(|| {
+        log::warn!(
+            "command view {argv:?}: killed after {:?}, its timeout",
+            command.timeout
+        );
+        format!("timed out after {}s", command.timeout.as_secs_f64())
+    })?;
+    let ran = started.elapsed();
     // A grandchild can hold a pipe open after the command exits, so the
     // readers get what is left of the timeout and no more.
     let left = || deadline.saturating_duration_since(Instant::now());
@@ -312,8 +326,13 @@ pub(crate) fn run(command: &Command, file: &Path, px: u32) -> Result<Vec<u8>, St
             .map(str::trim)
             .find(|line| !line.is_empty())
             .map(str::to_string);
+        log::warn!(
+            "command view {argv:?}: {status} after {ran:?}, stderr: {}",
+            first.as_deref().unwrap_or("")
+        );
         return Err(first.unwrap_or_else(|| status.to_string()));
     }
+    log::debug!("command view {argv:?}: {status} after {ran:?}");
     match out {
         Some(out) => read_out(&out),
         None => Ok(stdout),
@@ -535,5 +554,48 @@ mod tests {
         assert!(typo.to_string().contains("timout"), "{typo}");
         let zero = commands("[commands]\njq = { argv = [\"jq\"], timeout = 0 }\n").unwrap_err();
         assert!(zero.to_string().contains("above 0"), "{zero}");
+    }
+
+    /// Every run is in the log (#490): the argv, how long it ran and how it
+    /// ended at `Debug`, and a failure at `Warn` with the reason.
+    #[test]
+    fn each_run_is_logged_and_a_failure_is_a_warning() {
+        use crate::logging::capture::{here_at, install};
+        use log::Level::{Debug, Warn};
+        install();
+        let file = fixture_file("command_logged.txt", b"x\n");
+
+        text(run(&command(&["echo", "ok490"]), &file, 0));
+        let ok = here_at(
+            Debug,
+            "command view [\"echo\", \"ok490\"]: exit status: 0 after ",
+        );
+        assert_eq!(ok.len(), 1, "{ok:?}");
+
+        let _ = run(&command(&["sh", "-c", "echo bad490 >&2; exit 3"]), &file, 0);
+        let bad = here_at(Warn, "bad490");
+        assert!(
+            bad.iter()
+                .any(|text| text.contains("exit status: 3") && text.ends_with("stderr: bad490")),
+            "{bad:?}"
+        );
+
+        let _ = run(
+            &command(&["sh", "-c", "sleep 5", "slow490"]).with_timeout(Duration::from_millis(50)),
+            &file,
+            0,
+        );
+        let slow = here_at(Warn, "slow490");
+        assert!(
+            slow.iter().any(|text| text.contains("killed after")),
+            "{slow:?}"
+        );
+
+        let _ = run(&command(&["recon-no-such-program-490"]), &file, 0);
+        let missing = here_at(Warn, "recon-no-such-program-490");
+        assert!(
+            missing.iter().any(|text| text.contains("cannot start")),
+            "{missing:?}"
+        );
     }
 }

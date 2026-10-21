@@ -17,4 +17,5 @@
 - [Panes](panes.md)
 - [Keys](keys.md)
 - [Usage](usage.md)
+- [Logging](logging.md)
 - [Glossary](glossary.md)

@@ -26,6 +26,7 @@ pub mod generate;
 pub mod help;
 mod hex;
 pub mod keymap;
+pub mod logging;
 mod mime;
 pub mod panes;
 mod path;

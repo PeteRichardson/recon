@@ -104,7 +104,9 @@ pub fn start() -> Result<Start> {
         });
     }
 
+    let read = std::time::Instant::now();
     let overlay = config.load()?;
+    log::debug!("config read in {:?}", read.elapsed());
 
     // The `[keymap]` table, before `--print-keymap` below, which prints the
     // answer. An unknown action name, an unreadable key spelling or a keymap
@@ -133,7 +135,13 @@ pub fn start() -> Result<Start> {
         });
     }
 
+    let read = std::time::Instant::now();
     let filter_sets = crate::filtersets::load_file(config.filter_path.as_deref())?;
+    log::debug!(
+        "{} filter sets read in {:?}",
+        filter_sets.len(),
+        read.elapsed()
+    );
     // Needs the loaded sets, which is why it is not inside `Config::load`
     // with `check_flags`. Still before any terminal setup: the message must
     // reach a screen that is not about to be replaced (#143).

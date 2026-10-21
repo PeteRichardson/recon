@@ -2084,17 +2084,22 @@ impl App<'_> {
                 if let Some((index, _)) = self.filters.filters_in(0).last() {
                     self.filters.set_details(index, details);
                 }
+                self.log_filters(format_args!("add {pattern:?} in the filter editor"));
                 self.refresh_view();
             }),
             // The details and the pattern go on as one change: the set's
             // profiles go from the name the filter had to the one it has
             // now in one step (#356).
             Some(index) => {
+                let old = self.pattern_of(index);
                 self.filters.set_sense(index, sense);
                 self.filters
                     .edit(index, &pattern, engine, details)
                     .map(|changed| {
                         if changed {
+                            self.log_filters(format_args!(
+                                "edit {old:?} to {pattern:?} in the filter editor"
+                            ));
                             self.refresh_view();
                         }
                     })

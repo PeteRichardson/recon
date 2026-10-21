@@ -186,3 +186,37 @@ fn a_directory_that_cannot_be_listed_is_logged() {
         "no warning naming {child_name} was logged: {records:?}"
     );
 }
+
+/// The startup snapshot (#490): what a bug report needs to know about the
+/// setup, each fact at `Debug`, and no fact at `Info` or above, so a normal
+/// run and a batch run write nothing new to stderr.
+#[test]
+fn the_startup_snapshot_is_logged_at_debug() {
+    install();
+    let mut startup = Startup::from(Config {
+        filter_path: Some("snapshot_filter_path_for_the_logging_test".to_string()),
+        ..Config::default()
+    });
+    startup.filter_sets = vec![recon::filter::LoadedSet::builtin_default()];
+
+    recon::logging::startup_snapshot(&startup);
+
+    for needle in [
+        "recon ",
+        "arguments: ",
+        "config file: ",
+        "filter path: snapshot_filter_path_for_the_logging_test",
+        "keymap: 0 overrides",
+    ] {
+        let found = records_mentioning(needle);
+        assert!(
+            found.iter().any(|(level, _)| *level == log::Level::Debug),
+            "no debug record with {needle:?}: {found:?}"
+        );
+    }
+    let set = records_mentioning("filter set \"definitions\": listed");
+    assert!(
+        set.iter().all(|(level, _)| *level == log::Level::Debug) && !set.is_empty(),
+        "{set:?}"
+    );
+}

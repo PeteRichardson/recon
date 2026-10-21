@@ -20,13 +20,71 @@ pub(super) struct PeekState {
     flags: filter::EnabledFlags,
 }
 
+/// A flag as a log record says it.
+const fn on_off(on: bool) -> &'static str {
+    if on { "on" } else { "off" }
+}
+
 /// What the status line says when hide mode leaves no file to show (#481).
 pub(super) const NO_FILE_MATCHES: &str = "no file here matches the filters";
 
 impl App<'_> {
+    /// Log one change to the filters at `Debug` (#490): what changed, then
+    /// the state after it. Call it after the change.
+    pub(super) fn log_filters(&self, change: std::fmt::Arguments<'_>) {
+        if !log::log_enabled!(log::Level::Debug) {
+            return;
+        }
+        let filters = self.filters.filters();
+        let sets = self.filters.sets();
+        log::debug!(
+            "filters: {change}; now {} of {} filters on, {} of {} listed sets on, {} mode{}",
+            filters.iter().filter(|filter| filter.enabled).count(),
+            filters.len(),
+            sets.iter().filter(|set| set.enabled).count(),
+            sets.iter().filter(|set| set.listed).count(),
+            match self.document.mode() {
+                Mode::Dimmed => "dim",
+                Mode::FilteredOnly => "hide",
+            },
+            if self.peek.is_some() { ", peeking" } else { "" },
+        );
+    }
+
+    /// The pattern of the filter at `index`, for a log record. Empty, with
+    /// no copy made, when `Debug` is off and no record will be written.
+    pub(super) fn pattern_of(&self, index: usize) -> String {
+        if !log::log_enabled!(log::Level::Debug) {
+            return String::new();
+        }
+        self.filters
+            .filters()
+            .get(index)
+            .map(|filter| filter.predicate.display())
+            .unwrap_or_default()
+    }
+
+    /// The name of the set at `set`, for a log record.
+    pub(super) fn set_name(&self, set: usize) -> &str {
+        self.filters
+            .sets()
+            .get(set)
+            .map_or("", |set| set.name.as_str())
+    }
+
+    /// Log that the filter at `index` was switched, with its new flag.
+    fn log_toggle(&self, index: usize, on: Option<bool>) {
+        if let Some(on) = on {
+            let pattern = self.pattern_of(index);
+            let on = on_off(on);
+            self.log_filters(format_args!("toggle {pattern:?} {on}"));
+        }
+    }
+
     /// Add an including filter, colouring it distinctly from its predecessors.
     pub(super) fn add_filter(&mut self, pattern: &str) -> Result<(), filter::PatternError> {
         self.filters.add(pattern)?;
+        self.log_filters(format_args!("add include {pattern:?}"));
         self.refresh_view();
         Ok(())
     }
@@ -41,7 +99,8 @@ impl App<'_> {
                 .copied()
         }) {
             Some(index) => {
-                self.filters.toggle_enabled(index);
+                let on = self.filters.toggle_enabled(index);
+                self.log_toggle(index, on);
                 self.refresh_view();
             }
             None => self.report(&format!("no filter {n:02}"), false),
@@ -54,6 +113,7 @@ impl App<'_> {
         pattern: &str,
     ) -> Result<(), filter::PatternError> {
         self.filters.add_excluding(pattern)?;
+        self.log_filters(format_args!("add exclude {pattern:?}"));
         self.refresh_view();
         Ok(())
     }
@@ -76,7 +136,9 @@ impl App<'_> {
         index: usize,
         pattern: &str,
     ) -> Result<(), filter::PatternError> {
+        let old = self.pattern_of(index);
         if self.filters.set_pattern(index, pattern)? {
+            self.log_filters(format_args!("edit {old:?} to {pattern:?}"));
             self.refresh_view();
         }
         Ok(())
@@ -136,6 +198,8 @@ impl App<'_> {
         };
         let cursor_source = self.cursor_source();
         let moved = self.set_mode(mode);
+        let on = on_off(mode == Mode::FilteredOnly);
+        self.log_filters(format_args!("hide mode {on}"));
         self.document.recompute_visible();
         self.apply_view(cursor_source);
         if moved {
@@ -226,6 +290,8 @@ impl App<'_> {
                 Mode::FilteredOnly => Mode::Dimmed,
             })
         };
+        let on = on_off(self.peek.is_some());
+        self.log_filters(format_args!("peek {on}"));
         // The full `evaluate`, not `recompute_visible` as `toggle_hiding` uses:
         // the enabled flags changed, so every line's verdict can differ. The
         // mode moved too, which `refresh_view` picks up on the same pass.
@@ -463,22 +529,40 @@ impl App<'_> {
     pub(super) fn apply_filter_command(&mut self, command: FilterCommand) {
         match command {
             FilterCommand::Toggle(index) => {
-                self.filters.toggle_enabled(index);
+                let on = self.filters.toggle_enabled(index);
+                self.log_toggle(index, on);
             }
             FilterCommand::Delete(index) => {
-                self.filters.remove(index);
+                let pattern = self.pattern_of(index);
+                if self.filters.remove(index) {
+                    self.log_filters(format_args!("delete {pattern:?}"));
+                }
             }
             FilterCommand::ToggleContext(index) => {
-                self.filters.toggle_context(index);
+                if self.filters.toggle_context(index) {
+                    let pattern = self.pattern_of(index);
+                    self.log_filters(format_args!("toggle context of {pattern:?}"));
+                }
             }
             FilterCommand::ToggleSet(set) => {
-                self.filters.toggle_set(set);
+                if let Some(on) = self.filters.toggle_set(set) {
+                    let name = self.set_name(set);
+                    let on = on_off(on);
+                    self.log_filters(format_args!("toggle set {name:?} {on}"));
+                }
             }
             FilterCommand::Solo(set) => {
-                self.filters.solo(set);
+                let verb = if self.filters.solo(set) {
+                    "solo"
+                } else {
+                    "end the solo on"
+                };
+                let name = self.set_name(set);
+                self.log_filters(format_args!("{verb} set {name:?}"));
             }
             FilterCommand::Reset => {
                 self.filters.reset();
+                self.log_filters(format_args!("reset"));
             }
             // Opens the picker, or says why not; the set is untouched until
             // a profile is chosen, so nothing to re-evaluate here.

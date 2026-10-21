@@ -34,10 +34,16 @@ fn main() -> Result<ExitCode> {
         Start::Run(startup) => startup,
     };
     let config = &startup.config;
+    recon::logging::startup_snapshot(&startup);
 
     // Batch mode (#143, #439): `--batch`, or `--emit` with no terminal on
     // stdin. The result is computed and printed, with no TUI.
-    let exit = if config.batch_mode(io::stdin().is_terminal()) {
+    let batch = config.batch_reason(io::stdin().is_terminal());
+    match batch {
+        Some(reason) => log::debug!("mode: batch: {reason}"),
+        None => log::debug!("mode: TUI"),
+    }
+    let exit = if batch.is_some() {
         // Batch mode has no panel, so the keymap warnings that would have filled
         // one go to stderr instead — the channel and the gate the reserved-key
         // notice in `keymap::config::build` already uses. Without this they were
@@ -63,6 +69,9 @@ fn main() -> Result<ExitCode> {
         let terminate = Arc::new(AtomicBool::new(false));
         signal_hook::flag::register(signal_hook::consts::SIGTERM, Arc::clone(&terminate))?;
         let terminal = init_terminal()?;
+        if let Ok(size) = terminal.size() {
+            log::debug!("terminal: {} columns, {} rows", size.width, size.height);
+        }
         let exit = App::new(&startup)
             .with_image_picker(image_picker())
             .with_model(recon::generate::system())
@@ -175,6 +184,15 @@ const LOG_FILE_VAR: &str = "RECON_LOG";
 
 /// Bring up the logger, before anything has anything to say.
 ///
+/// **The levels follow one rule**, written in `recon::logging`: `Info` for a
+/// fact the user must see without a setting, `Debug` once per session or
+/// per user action, `Trace` once per file, key or frame (#490).
+///
+/// **A file gets timestamps and module names; stderr does not** (#490). A
+/// file is read later, often beside a bug report, where the time between
+/// two records and the module that wrote each one are the point. On stderr
+/// a record is read as it appears, and the short form stays.
+///
 /// **`Info` as the floor, not `Debug` as a fixed level.** This is the actual
 /// fix (#83): `filter_level(Debug)` put every `debug!` on stderr on every
 /// ordinary run, which was harmless only while nothing logged.
@@ -209,7 +227,10 @@ fn setup_logging() {
     if let Some(path) = std::env::var_os(LOG_FILE_VAR) {
         match std::fs::File::create(&path) {
             Ok(file) => {
-                builder.target(env_logger::Target::Pipe(Box::new(file)));
+                builder
+                    .target(env_logger::Target::Pipe(Box::new(file)))
+                    .format_target(true)
+                    .format_timestamp_millis();
                 to_file = true;
             }
             // Warned about and carried on, which is the opposite of the call
@@ -305,6 +326,7 @@ fn screen() -> Screen {
 /// raw mode, so there is nothing to undo.
 fn open_screen() -> Result<()> {
     if io::stderr().is_terminal() {
+        log::debug!("screen: stderr");
         return Ok(());
     }
     let tty = std::fs::OpenOptions::new()
@@ -318,6 +340,7 @@ fn open_screen() -> Result<()> {
                  For a result without one, use --emit with stdin from a file or a pipe"
             )
         })?;
+    log::debug!("screen: /dev/tty, as stderr is not a terminal");
     // Set once: this is the only caller, and it runs once.
     let _ = TTY.set(tty);
     Ok(())
@@ -375,6 +398,7 @@ fn init_terminal() -> Result<Terminal<CrosstermBackend<io::BufWriter<Screen>>>> 
 fn image_picker() -> ratatui_image::picker::Picker {
     use ratatui_image::picker::Picker;
     if !(io::stdin().is_terminal() && io::stdout().is_terminal()) {
+        log::debug!("image protocol: half-blocks, as stdin or stdout is not a terminal");
         return Picker::halfblocks();
     }
     let mut picker = Picker::from_query_stdio().unwrap_or_else(|err| {
@@ -382,12 +406,22 @@ fn image_picker() -> ratatui_image::picker::Picker {
         Picker::halfblocks()
     });
     let env = |name| std::env::var(name).ok();
-    picker.set_protocol_type(protocol_for(
-        picker.protocol_type(),
-        picker.tmux_detected(),
+    let (detected, tmux) = (picker.protocol_type(), picker.tmux_detected());
+    let protocol = protocol_for(
+        detected,
+        tmux,
         env("TERM_PROGRAM").as_deref(),
         env("LC_TERMINAL").as_deref(),
-    ));
+    );
+    log::debug!(
+        "image protocol: {protocol:?}, {}",
+        if tmux {
+            "inside tmux".to_string()
+        } else {
+            format!("the terminal answered {detected:?}")
+        }
+    );
+    picker.set_protocol_type(protocol);
     picker
 }
 

@@ -135,8 +135,14 @@ impl App<'_> {
             // Reported rather than silent: a GUI editor can take seconds to
             // raise a window, and a key that appears to have done nothing is a
             // key that gets pressed again.
-            Ok(()) => self.report(&format!("{program}: opening {}", file.display()), false),
-            Err(err) => self.report(&format!("{program}: {err}"), true),
+            Ok(()) => {
+                log::debug!("editor: starting {argv:?}");
+                self.report(&format!("{program}: opening {}", file.display()), false);
+            }
+            Err(err) => {
+                log::warn!("editor: cannot start {argv:?}: {err}");
+                self.report(&format!("{program}: {err}"), true);
+            }
         }
     }
 

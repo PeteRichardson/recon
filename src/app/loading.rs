@@ -160,6 +160,7 @@ impl App<'_> {
     /// says. Waits up to `WAIT` for the answer; past that the pane shows a
     /// placeholder, and `drain_views` shows the file when it comes.
     pub(super) fn open_view(&mut self, path: &Path, extent: Extent, landing: Landing) {
+        self.opened += 1;
         let px = self.view_px();
         let loading = &mut self.loading;
         loading.generation += 1;

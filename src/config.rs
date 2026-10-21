@@ -1035,7 +1035,21 @@ impl Config {
     /// gets the TUI and prints its result on `q`.
     #[must_use]
     pub fn batch_mode(&self, stdin_is_terminal: bool) -> bool {
-        self.batch || (self.emit.is_some() && !stdin_is_terminal)
+        self.batch_reason(stdin_is_terminal).is_some()
+    }
+
+    /// Why the session is in batch mode, or `None` for the TUI. The one
+    /// decision `batch_mode` reads, so the log's reason (#490) cannot
+    /// disagree with the mode.
+    #[must_use]
+    pub fn batch_reason(&self, stdin_is_terminal: bool) -> Option<&'static str> {
+        if self.batch {
+            Some("--batch")
+        } else if self.emit.is_some() && !stdin_is_terminal {
+            Some("--emit with no terminal on stdin")
+        } else {
+            None
+        }
     }
 
     /// Refuse flag combinations clap cannot express: `-n` is meaningful only

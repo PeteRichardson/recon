@@ -141,13 +141,17 @@ impl App<'_> {
             // hand: it would capture all-disabled and then faithfully
             // restore it, forever.
             A::GlobalFiltersDisable => {
-                if self.filters.any_enabled() {
+                let change = if self.filters.any_enabled() {
                     self.filters.disable_all_remembering();
+                    "disable all"
                 } else if self.filters.has_remembered() {
                     self.filters.restore_remembered();
+                    "restore"
                 } else {
                     self.filters.set_all_enabled(true);
-                }
+                    "enable all"
+                };
+                self.log_filters(format_args!("! {change}"));
                 self.refresh_view();
             }
             // Toggle a numbered filter from anywhere (#120 §14). The number

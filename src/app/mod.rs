@@ -319,6 +319,10 @@ pub struct App<'a> {
     view_stale: bool,
     /// The view pipeline: where the file view's contents come from (#455).
     loading: loading::Loading,
+    /// Files the view was asked to show, for the shutdown summary (#490).
+    opened: u64,
+    /// Scan answers the explorer took, for the shutdown summary.
+    scanned: u64,
 }
 
 /// Where the file view's jobs run: worker threads, or the caller's own
@@ -487,6 +491,8 @@ impl App<'_> {
             stamp_check: None,
             view_stale: false,
             loading: loading::Loading::new(executor(), std::sync::Arc::clone(&startup.table)),
+            opened: 0,
+            scanned: 0,
         };
         // `--hide`: on the document before `sync_document`, which carries
         // the mode across into the document it builds for the loaded file.
@@ -549,7 +555,32 @@ impl App<'_> {
     /// the explorer's `List`, every `Entry::display()` string, and every
     /// filter row. For a log viewer that sits open on a desk all day that is
     /// the difference between idling at 0% and idling at a few percent.
-    pub fn run<B>(mut self, mut terminal: Terminal<B>) -> Result<emit::Exit>
+    ///
+    /// Ends with the shutdown summary in the log (#490), on an error too.
+    pub fn run<B>(mut self, terminal: Terminal<B>) -> Result<emit::Exit>
+    where
+        B: Backend,
+        B::Error: std::error::Error + Send + Sync + 'static,
+    {
+        let started = Instant::now();
+        let looped = self.event_loop(terminal);
+        let ending = if looped.is_err() {
+            crate::logging::Ending::Error
+        } else {
+            self.ending()
+        };
+        crate::logging::shutdown_summary(
+            started.elapsed(),
+            ending,
+            self.emit,
+            self.opened,
+            self.scanned,
+        );
+        looped?;
+        Ok(self.exit())
+    }
+
+    fn event_loop<B>(&mut self, mut terminal: Terminal<B>) -> Result<()>
     where
         B: Backend,
         B::Error: std::error::Error + Send + Sync + 'static,
@@ -570,12 +601,23 @@ impl App<'_> {
             if dirty {
                 terminal.draw(|frame| {
                     let area = frame.area();
-                    frame.render_widget(&mut self, area);
+                    frame.render_widget(&mut *self, area);
                 })?;
             }
             dirty = self.handle_events()?;
         }
-        Ok(self.exit())
+        Ok(())
+    }
+
+    /// How the session ended, for the summary. Asked once the loop is over.
+    const fn ending(&self) -> crate::logging::Ending {
+        use crate::logging::Ending;
+        match self.state {
+            AppState::Quit { emit: false } => Ending::QuitSilent,
+            AppState::Cancelled => Ending::Cancelled,
+            AppState::Terminated => Ending::Terminated,
+            AppState::Quit { emit: true } | AppState::Running | AppState::Finishing => Ending::Quit,
+        }
     }
 
     /// What this session hands back, given how it ended (#143). `Emit`

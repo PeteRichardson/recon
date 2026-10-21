@@ -47,6 +47,11 @@ fn config_home(dir: &Path) -> PathBuf {
 /// at `home`. Stdin is a pipe even when empty, which is what puts the run
 /// in batch mode.
 fn recon(home: &Path, args: &[&str], stdin: &[u8]) -> Output {
+    recon_with(home, args, stdin, &[])
+}
+
+/// `recon`, with `env` set as well.
+fn recon_with(home: &Path, args: &[&str], stdin: &[u8], env: &[(&str, &Path)]) -> Output {
     let mut child = Command::new(env!("CARGO_BIN_EXE_recon"))
         .args(args)
         // A clean environment, not two variables removed (#367): an exported
@@ -59,6 +64,7 @@ fn recon(home: &Path, args: &[&str], stdin: &[u8]) -> Output {
                 .filter_map(|name| std::env::var_os(name).map(|value| (name, value))),
         )
         .env("XDG_CONFIG_HOME", home)
+        .envs(env.iter().copied())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -755,4 +761,44 @@ fn a_broken_reference_that_takes_effect_stops_the_run_before_any_output() {
     );
     assert!(!stderr.contains("spare"), "stderr: {stderr}");
     assert_eq!(out.status.code(), Some(1));
+}
+
+/// #490: with `RECON_LOG` and `RUST_LOG=recon=debug`, the startup snapshot
+/// goes to the file, each record with a timestamp and its module, and
+/// stderr has what it has without them.
+#[test]
+fn recon_log_gets_the_startup_snapshot_with_timestamps_and_modules() {
+    let dir = fixture("recon_log_snapshot");
+    let home = config_home(&dir);
+    let a = dir.join("a.log");
+    fs::write(&a, "hit\n").expect("write");
+    let log = dir.join("recon.log");
+
+    let out = recon_with(
+        &home,
+        &["--emit", "lines", "-q"],
+        format!("{}\n", a.display()).as_bytes(),
+        &[("RECON_LOG", &log), ("RUST_LOG", Path::new("recon=debug"))],
+    );
+
+    assert_eq!(text(&out.stderr), "");
+    assert_eq!(out.status.code(), Some(0));
+    let written = fs::read_to_string(&log).expect("the log file");
+    for needle in [
+        "mode: batch: --emit with no terminal on stdin",
+        "filter set \"Bugs\": listed",
+        "config read in",
+        "filter sets read in",
+        "environment: RECON_LOG=",
+    ] {
+        assert!(written.contains(needle), "no {needle:?} in:\n{written}");
+    }
+    let snapshot = written
+        .lines()
+        .find(|line| line.contains("mode: batch"))
+        .expect("the mode record");
+    assert!(
+        snapshot.starts_with("[20") && snapshot.contains("DEBUG recon"),
+        "no timestamp or module: {snapshot}"
+    );
 }

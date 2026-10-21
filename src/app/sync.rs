@@ -91,7 +91,11 @@ impl App<'_> {
             .selected()
             .and_then(|index| before.get(index).copied());
         for &(set, listed) in changes {
-            self.filters.set_listed(set, listed);
+            if self.filters.set_listed(set, listed) {
+                let name = self.set_name(set);
+                let verb = if listed { "list" } else { "unlist" };
+                self.log_filters(format_args!("{verb} set {name:?}"));
+            }
         }
         if let Some(row) = selected {
             let after = widgets::filterlist::rows(&self.filters);

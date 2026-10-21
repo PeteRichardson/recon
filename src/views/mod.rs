@@ -162,10 +162,12 @@ pub(crate) fn run(job: &Job, cache: Option<&Cache>) -> Done {
     {
         return done(Contents::default(), shown);
     }
-    if let Some((cache, key)) = &cached
-        && let Some(contents) = cache.get(key, view, job.extent)
-    {
-        return done(contents, shown);
+    if let Some((cache, key)) = &cached {
+        if let Some(contents) = cache.get(key, view, job.extent) {
+            crate::logging::count(&crate::logging::CACHE_HITS);
+            return done(contents, shown);
+        }
+        crate::logging::count(&crate::logging::CACHE_MISSES);
     }
     let (contents, extent) = read_view(job, view);
     if let Some((cache, key)) = cached {

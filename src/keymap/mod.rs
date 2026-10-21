@@ -1026,6 +1026,16 @@ impl Keymap {
         labels
     }
 
+    /// How many actions have keys other than their default keys: the
+    /// `[keymap]` lines that changed something, for the log (#490).
+    #[must_use]
+    pub fn overrides(&self) -> usize {
+        let defaults = Self::default();
+        every_action()
+            .filter(|&action| self.labels_for(action) != defaults.labels_for(action))
+            .count()
+    }
+
     /// Build a key hint: the key that reaches `action`, the verb describing
     /// what it does, and the key that reaches `opener`.
     ///

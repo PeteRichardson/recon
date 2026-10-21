@@ -421,12 +421,22 @@ What gets recorded:
 | --- | --- |
 | `error` | a panic on one of recon's worker threads |
 | `warn` | a file or directory that could not be read, previewed or listed, and why |
-| `warn` | an editor that exited badly or could not be waited on |
+| `warn` | an editor that could not start, exited badly or could not be waited on |
+| `warn` | a command view that could not start, ran past its timeout or failed, with the first line of its stderr |
 | `warn` | the scan that marks files in the explorer: its thread could not start or panicked, a file it could not read or resume in, a scan that stopped early, a worker that went away; and the same for the check that watches for changes on disk |
 | `warn` | filter patterns that do not compile together, so the explorer stops marking files until they change |
 | `warn` | a search highlight that could not be applied, or a search that could not become a filter |
 | `warn` | a `config.toml` warning, a reserved key in `[keymap]`, or a `--set` or `--unlist` that could not be applied |
 | `debug` | which `config.toml` and `filters.toml` were read, or where `recon` looked and found none |
+| `debug` | the startup snapshot: version, arguments, mode and why, config file, `RECON_*` variables, filter sets, keymap overrides, image protocol, screen and terminal size |
+| `debug` | each change to the filters, with the state after it |
+| `debug` | each command view and editor hand-off: arguments, duration and exit status |
+| `debug` | the shutdown summary: duration, how the session ended, emit mode, files opened and scanned, view cache hits and misses |
+
+With `RECON_LOG`, each record has a timestamp and the module that wrote it.
+The levels follow one rule: `info` is for a fact you must see without a
+setting, `debug` is once per session or per action, and `trace` is once per
+file, key or frame. The book's "Logging" page has the details.
 
 ---
 
