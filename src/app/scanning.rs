@@ -86,7 +86,7 @@ impl App<'_> {
                 self.explorer.set_answer(index, Match::Unknown);
             }
             self.scanner.cancel();
-            self.explorer.restyle();
+            self.restyle_explorer();
             return;
         };
 
@@ -134,7 +134,7 @@ impl App<'_> {
                 files: pending,
             });
         }
-        self.explorer.restyle();
+        self.restyle_explorer();
     }
 
     /// Move scan results into the cache and the explorer, reporting whether
@@ -193,7 +193,7 @@ impl App<'_> {
             }
         }
         if changed {
-            self.explorer.restyle();
+            self.restyle_explorer();
         }
         changed
     }

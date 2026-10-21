@@ -136,6 +136,13 @@ pub(crate) enum Match {
     Yes(Style),
 }
 
+impl Match {
+    /// Whether the file matches the filters.
+    pub(crate) fn is_yes(self) -> bool {
+        matches!(self, Self::Yes(_))
+    }
+}
+
 /// One row of the listing: its name, and what it is.
 ///
 /// `name` stays exactly as it is on disk — the trailing `/` on a directory is
@@ -317,7 +324,8 @@ impl Explorer<'_> {
         self.dir = crate::path::lexical_absolute(&dir);
         self.entries = read_dir_entries(&self.dir);
         // Fresh entries are all `Unknown`, so every row is visible whatever
-        // the mode; `rebuild_visible` also rebuilds the drawn list.
+        // the mode; `rebuild_visible` also rebuilds the drawn list. The
+        // selection is chosen below, so whether it moved means nothing here.
         self.rebuild_visible();
         self.list.reset();
         self.select_entry(self.index_of(&select));
@@ -504,7 +512,7 @@ impl Explorer<'_> {
     /// step `.`/`,` take unconditionally: the loop those keys drive is about
     /// content, so a filename hit with no interesting lines is not a stop.
     pub(crate) fn step_to_match(&mut self, reverse: bool) -> Option<Action> {
-        self.step_to(reverse, |entry| matches!(entry.matched, Match::Yes(_)))
+        self.step_to(reverse, |entry| entry.matched.is_yes())
     }
 
     /// The next (or previous) readable file, wrapping, whatever the filters
@@ -523,6 +531,15 @@ impl Explorer<'_> {
         self.entries
             .iter()
             .any(|entry| entry.kind.is_readable() && entry.matched == Match::Unknown)
+    }
+
+    /// The selected entry's path, if it is a file the filters match.
+    pub(crate) fn selected_match(&self) -> Option<PathBuf> {
+        let index = self.selected_entry()?;
+        self.entries[index]
+            .matched
+            .is_yes()
+            .then(|| self.path_at(index))?
     }
 
     /// The selected entry's file name, for reporting.
@@ -822,9 +839,10 @@ impl Explorer<'_> {
     }
 
     /// Rebuild the drawn rows from the current answers. A `No` answer can hide
-    /// a row in `FilteredOnly` mode, so this is `rebuild_visible`.
-    pub(crate) fn restyle(&mut self) {
-        self.rebuild_visible();
+    /// a row in `FilteredOnly` mode, so this is `rebuild_visible`, and says
+    /// the same: whether the selected entry left the list.
+    pub(crate) fn restyle(&mut self) -> bool {
+        self.rebuild_visible()
     }
 
     /// Which grey dims rows (#231). Redraws, since `..` and every `No` row
@@ -837,15 +855,16 @@ impl Explorer<'_> {
     }
 
     /// Dim or hide rows answered `No`. The same `Mode` the file view uses.
+    /// Says whether the selected entry left the list, as `restyle` does.
     /// A no-op when the mode is unchanged: answer changes go through
     /// `restyle`, never here, so every call with the same mode is wasted work
     /// — and `App::sync_document` makes one on every file load and preview.
-    pub(crate) fn set_mode(&mut self, mode: Mode) {
+    pub(crate) fn set_mode(&mut self, mode: Mode) -> bool {
         if self.mode == mode {
-            return;
+            return false;
         }
         self.mode = mode;
-        self.rebuild_visible();
+        self.rebuild_visible()
     }
 
     /// Re-list `self.dir` from disk, keeping the selection on the entry it
@@ -865,12 +884,18 @@ impl Explorer<'_> {
     }
 
     /// Recompute which rows are listed, redraw them, and keep the selection on
-    /// the entry it was on — or on a neighbour if that entry vanished.
+    /// the entry it was on — or on a neighbour if that entry vanished: the
+    /// nearest file that matches, else the row in its place (#481). A file
+    /// that matches is one the view can follow to; the row in its place can
+    /// be `..`, a directory or a file not scanned yet.
     ///
     /// Directories and `..` are always listed: they have no answer. `Unknown`
     /// is always listed: you do not hide what you have not read. Only `No` is
     /// removed, and only in `FilteredOnly`.
-    pub(crate) fn rebuild_visible(&mut self) {
+    ///
+    /// Returns whether the selected entry left the list, so the selection is
+    /// on another row now: the caller's cue to make the view follow (#481).
+    pub(crate) fn rebuild_visible(&mut self) -> bool {
         let keep = self.selected_entry();
         let row_before = self.list.selected();
         let mode = self.mode;
@@ -891,9 +916,22 @@ impl Explorer<'_> {
         // there is a row to be on, and `..` is always a row.
         let row = keep
             .and_then(|index| self.visible.iter().position(|&v| v == index))
+            .or_else(|| row_before.and_then(|row| self.nearest_match(row)))
             .or_else(|| row_before.map(|row| row.min(self.visible.len().saturating_sub(1))))
             .unwrap_or(0);
         self.list.select((!self.visible.is_empty()).then_some(row));
+        keep.is_some() && self.selected_entry() != keep
+    }
+
+    /// The visible row nearest `row` whose file matches, the row below first
+    /// on a tie.
+    fn nearest_match(&self, row: usize) -> Option<usize> {
+        self.visible
+            .iter()
+            .enumerate()
+            .filter(|&(_, &index)| self.entries[index].matched.is_yes())
+            .min_by_key(|&(at, _)| (at.abs_diff(row), at < row))
+            .map(|(at, _)| at)
     }
 
     /// The `entries` index of the selected row.

@@ -33,6 +33,7 @@ use std::rc::Rc;
 use std::sync::mpsc::Sender;
 use std::time::Duration;
 // What `App` keeps in its topic modules, and the tests read.
+use super::filters::NO_FILE_MATCHES;
 use super::focus::LAST_PANE;
 use super::prompt::{EMPTY_PATTERN, HISTORY_CAP, INVALID_PATTERN, PromptKind};
 use super::render::status::{HIDE_BADGE_STYLE, HIDE_BADGE_TEXT};
@@ -115,6 +116,19 @@ fn open_file(app: &mut App, row: usize) {
     let (index, path) = app.explorer.files()[row].clone();
     app.explorer.select_entry(index);
     app.perform_widget_action(Action::Load(path));
+}
+
+/// Move the explorer's selection to the file named `name`, as an arrow
+/// key would.
+fn arrow_to(app: &mut App, name: &str) {
+    let (index, path) = app
+        .explorer
+        .files()
+        .into_iter()
+        .find(|(_, path)| path.ends_with(name))
+        .expect("no such file");
+    app.explorer.select_entry(index);
+    app.perform_widget_action(Action::Preview(path));
 }
 
 /// Mark the `row`th file as matching (`yes`) or not, through the scan

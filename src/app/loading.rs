@@ -188,12 +188,25 @@ impl App<'_> {
         }
         // `r` and a preview made whole keep the file on screen meanwhile.
         if !matches!(landing, Landing::Keep(_)) {
-            self.loading.shown = None;
-            self.view
-                .show(path, &Contents::message(PLACEHOLDER.to_string()));
-            self.sync_document();
-            self.refresh_view();
+            self.show_contents(path, &Contents::message(PLACEHOLDER.to_string()));
         }
+    }
+
+    /// Show `contents` under `path`'s title: lines that are not a file's
+    /// content, so the pane has no `Shown` view to step.
+    fn show_contents(&mut self, path: &Path, contents: &Contents) {
+        self.loading.shown = None;
+        self.view.show(path, contents);
+        self.sync_document();
+        self.refresh_view();
+    }
+
+    /// Show an empty view titled `path`, and drop any load still on its way,
+    /// so it cannot land on top of the blank later.
+    pub(super) fn show_nothing(&mut self, path: &Path) {
+        self.loading.generation += 1;
+        self.loading.pending = None;
+        self.show_contents(path, &Contents::default());
     }
 
     /// Show any answer that has come since the last wake, and say whether

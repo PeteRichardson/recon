@@ -18,6 +18,11 @@ with no matches leave the view. When you move through the explorer, the file
 view shows only the matching lines of each file. A file that shows nothing
 has no matches.
 
+If hide mode removes the selected file, the selection moves to the nearest
+file that matches, and the file view shows that file. If no file in the
+directory matches, the file view is blank, and the status line says
+`no file here matches the filters`.
+
 ![The explorer marks the logs with errors, and hide mode removes the others](images/browsing.gif)
 
 Thus a question such as "which of these logs contain bug 57?" has an answer
