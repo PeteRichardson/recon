@@ -69,7 +69,11 @@ the process ID in each record to separate them.
 
 ## What a `debug` log shows
 
-- **At the start:** the recon version, the arguments, TUI or batch mode and
+- **The first record:** `session started:`, with the path of the recon
+  program, the full version and the process ID. Use `grep 'session
+  started: '` to find the start of each session.
+- **At the start:** the version (`version:`, the same text as `recon -V`,
+  with the commit), the arguments, TUI or batch mode and
   the reason, the config file, each `RECON_*` variable that is set, the
   filter path, each filter set (listed or not, enabled or not), the number of
   keymap overrides, the syntax theme and the background (each with `set`

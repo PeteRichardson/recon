@@ -35,6 +35,28 @@ pub(crate) fn count(counter: &AtomicU64) {
     counter.fetch_add(1, Ordering::Relaxed);
 }
 
+/// The first record of a session (#501): which binary, which build, and
+/// which process, so that a reader can find each start and separate two
+/// recons that write to one file. The pair of `session ended`.
+///
+/// `exe` is `std::env::current_exe()`. When that fails (Linux without
+/// `/proc`), the name recon was started with, `argv0`, is the next best.
+pub fn session_started(
+    exe: std::io::Result<std::path::PathBuf>,
+    argv0: Option<std::ffi::OsString>,
+    pid: u32,
+) {
+    let path = exe.ok().map(std::path::PathBuf::into_os_string).or(argv0);
+    let path = path.as_deref().map_or_else(
+        || "(unknown)".into(),
+        |path| std::path::Path::new(path).display().to_string(),
+    );
+    log::debug!(
+        "session started: {path} {} pid {pid}",
+        crate::config::VERSION
+    );
+}
+
 /// The startup snapshot (#490): who this recon is and what it read.
 ///
 /// At `DEBUG`, one record for each fact so that a reader can grep for one.
@@ -44,7 +66,9 @@ pub fn startup_snapshot(startup: &Startup) {
         return;
     }
     let config = &startup.config;
-    log::debug!("recon {}", env!("CARGO_PKG_VERSION"));
+    // The build stamp `recon -V` shows, with the commit and `.dirty`
+    // (#501): the `Cargo.toml` version alone is the same for two builds.
+    log::debug!("version: {}", crate::config::VERSION);
     log::debug!("arguments: {:?}", std::env::args_os().collect::<Vec<_>>());
     match crate::config::config_path() {
         Some(path) => log::debug!("config file: {}", path.display()),
@@ -312,6 +336,57 @@ mod tests {
             theme_and_background(config),
             ["theme: none (set)", "background: light (set)"]
         );
+    }
+
+    /// The full build stamp, as `recon -V` gives it, and not only the
+    /// version in `Cargo.toml`: two builds of one release are different.
+    #[test]
+    fn the_snapshot_gives_the_version_that_recon_v_shows() {
+        capture::install();
+        startup_snapshot(&Startup::from(crate::config::Config::default()));
+        // `config`'s tests pin `VERSION` to what `recon -V` prints.
+        assert_eq!(
+            capture::here_at(log::Level::Debug, "version: "),
+            [format!("version: {}", crate::config::VERSION)]
+        );
+    }
+
+    /// The records from `session_started`.
+    fn started(
+        exe: std::io::Result<std::path::PathBuf>,
+        argv0: Option<&str>,
+    ) -> Vec<(log::Level, String)> {
+        capture::install();
+        let before = capture::here().len();
+        session_started(exe, argv0.map(Into::into), 4242);
+        capture::here()[before..].to_vec()
+    }
+
+    /// The one record `session_started` should give for `path`.
+    fn started_with(path: &str) -> [(log::Level, String); 1] {
+        let version = crate::config::VERSION;
+        [(
+            log::Level::Debug,
+            format!("session started: {path} {version} pid 4242"),
+        )]
+    }
+
+    #[test]
+    fn a_session_starts_with_the_binary_the_version_and_the_process() {
+        assert_eq!(
+            started(Ok("/opt/bin/recon".into()), Some("recon")),
+            started_with("/opt/bin/recon")
+        );
+    }
+
+    #[test]
+    fn without_the_binary_path_the_name_it_was_started_with_is_given() {
+        let gone = || Err(std::io::Error::other("no /proc"));
+        assert_eq!(
+            started(gone(), Some("./target/debug/recon")),
+            started_with("./target/debug/recon")
+        );
+        assert_eq!(started(gone(), None), started_with("(unknown)"));
     }
 
     #[test]

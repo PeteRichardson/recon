@@ -202,7 +202,7 @@ fn the_startup_snapshot_is_logged_at_debug() {
     recon::logging::startup_snapshot(&startup);
 
     for needle in [
-        "recon ",
+        "version: ",
         "arguments: ",
         "config file: ",
         "filter path: snapshot_filter_path_for_the_logging_test",
