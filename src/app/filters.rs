@@ -484,7 +484,7 @@ impl App<'_> {
         }
 
         let pressed = crate::keymap::normalise(key);
-        let Some(action) = self.keymap.resolve(crate::keymap::Scope::Filters, pressed) else {
+        let Some(action) = self.resolve_key(crate::keymap::Scope::Filters, pressed) else {
             return;
         };
 

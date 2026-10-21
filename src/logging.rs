@@ -78,6 +78,22 @@ pub fn startup_snapshot(startup: &Startup) {
         );
     }
     log::debug!("keymap: {} overrides", startup.bindings.overrides());
+    // recon does not ask the terminal for its background (#231): the
+    // record says whether a setting gave it, or it is the default.
+    let source = |set: bool| if set { "set" } else { "default" };
+    log::debug!(
+        "theme: {} ({})",
+        config.syntax_theme().name().unwrap_or("none"),
+        source(config.theme.is_some()),
+    );
+    log::debug!(
+        "background: {} ({})",
+        match config.background() {
+            crate::filter::Background::Dark => "dark",
+            crate::filter::Background::Light => "light",
+        },
+        source(config.background.is_some()),
+    );
 }
 
 /// How a TUI session ended, for the summary.
@@ -112,6 +128,46 @@ pub(crate) fn shutdown_summary(
         load(&CACHE_HITS),
         load(&CACHE_MISSES),
     );
+}
+
+/// One key and the action it dispatched (#492), at `TRACE`.
+///
+/// A plain character that a text field took and no binding did is search
+/// text, or a pattern, name or prompt being typed, so its record does not
+/// name it. `typing` says a text field was open when the key came.
+pub(crate) fn key(key: crate::keymap::Key, action: Option<crate::keymap::ActionId>, typing: bool) {
+    if !log::log_enabled!(log::Level::Trace) {
+        return;
+    }
+    let plain_char =
+        matches!(key.code, crossterm::event::KeyCode::Char(_)) && !key.ctrl && !key.alt;
+    if typing && plain_char && action.is_none() {
+        log::trace!("key (typed into a text field): no action");
+        return;
+    }
+    log::trace!(
+        "key {}: {}",
+        crate::help::pressed_label(key),
+        action.map_or("no action", crate::keymap::ActionId::name)
+    );
+}
+
+/// A frame that takes longer than this to draw is a `WARN` (#492).
+///
+/// Three frames at 60 a second: a user sees a pause that long.
+pub(crate) const SLOW_FRAME: Duration = Duration::from_millis(50);
+
+/// The time to draw one frame (#492): `TRACE`, and also a `WARN` when it is
+/// more than [`SLOW_FRAME`].
+///
+/// The `WARN` passes the default level, so `RECON_LOG` gets it without
+/// `RUST_LOG`. Without `RECON_LOG` the log is stderr, and the logger in
+/// `main` drops it while the screen is open.
+pub(crate) fn frame_drawn(took: Duration) {
+    log::trace!("frame drawn in {took:.1?}");
+    if took > SLOW_FRAME {
+        log::warn!("slow frame: drawn in {took:.1?}, more than {SLOW_FRAME:?}");
+    }
 }
 
 /// A logger for the unit tests, which keeps every record.
@@ -195,6 +251,68 @@ pub(crate) mod capture {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_frame_is_a_trace_record_with_its_time() {
+        capture::install();
+        frame_drawn(Duration::from_millis(10));
+        assert_eq!(
+            capture::here(),
+            [(log::Level::Trace, "frame drawn in 10.0ms".to_string())]
+        );
+    }
+
+    #[test]
+    fn a_slow_frame_is_also_a_warning() {
+        capture::install();
+        frame_drawn(Duration::from_millis(60));
+        assert_eq!(
+            capture::here(),
+            [
+                (log::Level::Trace, "frame drawn in 60.0ms".to_string()),
+                (
+                    log::Level::Warn,
+                    "slow frame: drawn in 60.0ms, more than 50ms".to_string()
+                ),
+            ]
+        );
+    }
+
+    /// The theme and background records of one snapshot.
+    fn theme_and_background(config: crate::config::Config) -> Vec<String> {
+        capture::install();
+        let before = capture::here().len();
+        startup_snapshot(&Startup::from(config));
+        capture::here()[before..]
+            .iter()
+            .filter(|(level, text)| {
+                *level == log::Level::Debug
+                    && (text.starts_with("theme: ") || text.starts_with("background: "))
+            })
+            .map(|(_, text)| text.clone())
+            .collect()
+    }
+
+    #[test]
+    fn the_snapshot_gives_the_default_theme_and_background() {
+        assert_eq!(
+            theme_and_background(crate::config::Config::default()),
+            ["theme: ANSI (default)", "background: dark (default)"]
+        );
+    }
+
+    #[test]
+    fn the_snapshot_gives_a_theme_and_background_that_were_set() {
+        let config = crate::config::Config {
+            theme: Some(crate::syntax::Theme::Off),
+            background: Some(crate::filter::Background::Light),
+            ..crate::config::Config::default()
+        };
+        assert_eq!(
+            theme_and_background(config),
+            ["theme: none (set)", "background: light (set)"]
+        );
+    }
 
     #[test]
     fn the_summary_is_one_debug_record() {

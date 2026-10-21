@@ -285,6 +285,42 @@ impl Chord {
     }
 }
 
+/// How the log names a pressed key (#492): the label `[keymap]` would
+/// spell it with, so a record can be read against the user's own table.
+///
+/// A function key keeps its number, which `Chord::label` cannot give, and
+/// a key the grammar has no spelling for (a media key, say) is written as
+/// crossterm names it.
+pub(crate) fn pressed_label(pressed: crate::keymap::Key) -> String {
+    let key = match pressed.code {
+        crossterm::event::KeyCode::Char(c) => Some(Key::Char(c)),
+        crossterm::event::KeyCode::F(_) => None,
+        code => NAMED_KEYS
+            .iter()
+            .find(|name| named_matches(name, code))
+            .map(|name| Key::Named(name)),
+    };
+    let Some(key) = key else {
+        let prefix = if pressed.ctrl {
+            "Ctrl-"
+        } else if pressed.alt {
+            "Alt-"
+        } else {
+            ""
+        };
+        return match pressed.code {
+            crossterm::event::KeyCode::F(n) => format!("{prefix}F{n}"),
+            code => format!("{prefix}{code:?}"),
+        };
+    };
+    Chord {
+        ctrl: pressed.ctrl,
+        alt: pressed.alt,
+        key,
+    }
+    .label()
+}
+
 /// Whether the label grammar can read this spelling at all.
 ///
 /// `label_matches` answers "does this label name that key", and a label the

@@ -58,7 +58,19 @@ impl App<'_> {
         {
             return false;
         }
+        // Its record (#492) is written after the dispatch, which is what
+        // knows the action; whether a text field takes it is asked before,
+        // as the dispatch can open or close one.
+        let pressed = match &event {
+            event::Event::Key(key) => Some(crate::keymap::normalise(*key)),
+            _ => None,
+        };
+        let typing = self.prompt.is_some() || self.filter_editor.is_some();
+        self.dispatched = None;
         self.dispatch_event(event);
+        if let Some(pressed) = pressed {
+            crate::logging::key(pressed, self.dispatched, typing);
+        }
         // Here, beside `refresh_scan`, for the same reason: the dispatch has
         // two dozen early returns and every one of them may have moved
         // focus (#67).
@@ -94,6 +106,7 @@ impl App<'_> {
                     crate::keymap::normalise(key),
                 ) == Some(crate::keymap::ActionId::FinishingCancel)
             {
+                self.dispatched = Some(crate::keymap::ActionId::FinishingCancel);
                 self.cancel_finish();
             }
             return;
@@ -111,6 +124,7 @@ impl App<'_> {
                 .resolve(crate::keymap::Scope::Global, crate::keymap::normalise(key))
                 == Some(crate::keymap::ActionId::GlobalInterrupt)
         {
+            self.dispatched = Some(crate::keymap::ActionId::GlobalInterrupt);
             self.state = super::AppState::Cancelled;
             return;
         }
@@ -182,7 +196,8 @@ impl App<'_> {
         if let Some(picker) = self.picker.as_mut() {
             if let event::Event::Key(key) = event {
                 let pressed = crate::keymap::normalise(key);
-                if let Some(action) = self.keymap.resolve(crate::keymap::Scope::Picker, pressed) {
+                self.dispatched = self.keymap.resolve(crate::keymap::Scope::Picker, pressed);
+                if let Some(action) = self.dispatched {
                     match picker.perform(action) {
                         widgets::picker::PickerOutcome::Open => {}
                         widgets::picker::PickerOutcome::Closed => self.picker = None,
@@ -206,7 +221,8 @@ impl App<'_> {
         if let Some(picker) = self.set_picker.as_mut() {
             if let event::Event::Key(key) = event {
                 let pressed = crate::keymap::normalise(key);
-                if let Some(action) = self.keymap.resolve(crate::keymap::Scope::Sets, pressed) {
+                self.dispatched = self.keymap.resolve(crate::keymap::Scope::Sets, pressed);
+                if let Some(action) = self.dispatched {
                     match picker.perform(action) {
                         widgets::setpicker::SetPickerOutcome::Open => {}
                         widgets::setpicker::SetPickerOutcome::Cancelled => self.set_picker = None,
@@ -265,7 +281,7 @@ impl App<'_> {
         // body its key arm held here.
         if let event::Event::Key(key) = event {
             let pressed = crate::keymap::normalise(key);
-            let action = self.keymap.resolve(crate::keymap::Scope::Global, pressed);
+            let action = self.resolve_key(crate::keymap::Scope::Global, pressed);
             // A pending first digit takes the next key before the keymap
             // does — see `pending_digit` (#340).
             if let Some(tens) = self.pending_digit.take() {
@@ -360,7 +376,7 @@ impl App<'_> {
             && self.focus == Focus::View
         {
             let pressed = crate::keymap::normalise(key);
-            match self.keymap.resolve(crate::keymap::Scope::View, pressed) {
+            match self.resolve_key(crate::keymap::Scope::View, pressed) {
                 Some(action) => self.perform(action, pressed),
                 None => self.hint_filter_verb(pressed),
             }
@@ -374,10 +390,7 @@ impl App<'_> {
             Focus::Explorer => {
                 if let event::Event::Key(key) = event {
                     let pressed = crate::keymap::normalise(key);
-                    match self
-                        .keymap
-                        .resolve(crate::keymap::Scope::for_focus(self.focus), pressed)
-                    {
+                    match self.resolve_key(crate::keymap::Scope::for_focus(self.focus), pressed) {
                         Some(action) => self.perform_on_explorer(action),
                         None => self.hint_filter_verb(pressed),
                     }
@@ -394,6 +407,22 @@ impl App<'_> {
             // cannot carry out its own commands.
             Focus::Filters => {}
         }
+    }
+
+    /// Look `pressed` up in `scope`, and keep the answer as the action the
+    /// key dispatched, for its record (#492).
+    ///
+    /// For a lookup the dispatch acts on. `hint_filter_verb` and the two
+    /// guards at the top of `dispatch_event` look keys up too, and keep
+    /// `self.keymap.resolve`: a hint is not an action, and a guard's lookup
+    /// that the guard does not act on says nothing about the key.
+    pub(super) fn resolve_key(
+        &mut self,
+        scope: crate::keymap::Scope,
+        pressed: crate::keymap::Key,
+    ) -> Option<crate::keymap::ActionId> {
+        self.dispatched = self.keymap.resolve(scope, pressed);
+        self.dispatched
     }
 
     /// Say so, for one keypress, when a key the focused pane leaves unbound
