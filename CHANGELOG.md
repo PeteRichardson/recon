@@ -1,5 +1,26 @@
 # Changelog
 
+## v0.4.0 — 2026-10-21
+
+### Features
+
+- **views:** Decode a large JPEG at reduced scale in the image view
+- **keys:** Hide the file view with T
+- **logging:** Add startup snapshot, filter changes, programs, summary
+- **logging:** Add view job timings, scan passes and navigation
+- **logging:** Add keys and actions, frame times, clipboard and theme
+- **logging:** Log to a rotating file by default in the TUI
+- **logging:** Log the full version and a session-started record
+- **config:** Move the log settings to [log] and expand ~ in paths
+
+### Fixes
+
+- **clipboard:** Report the exit status when the tool breaks the pipe
+- **explorer:** Make the file view follow a selection hide mode moves
+- **explorer:** Keep the selection on a file a peek from dim mode shows
+- **keys:** Let a pane binding win over the filter-verb hint
+- **views:** Give quicklook a 10 s timeout for a cold qlmanage
+
 ## v0.3.0 — 2026-10-19
 
 ### Breaking changes
