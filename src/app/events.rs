@@ -282,49 +282,6 @@ impl App<'_> {
                 self.perform(action, pressed);
                 return;
             }
-            match key.code {
-                // A filter-pane verb pressed anywhere else says so, for one
-                // keypress, instead of doing nothing (#120 §9). Not a
-                // redirect: making `i` global would collapse `f i` and `i`,
-                // and `x`-not-`e` for exclude exists because `e` is a focus
-                // key. The chain stays the answer; the hint teaches it.
-                // These nine letters are unbound in the explorer and the
-                // file view, so this arm shadows nothing.
-                //
-                // Not resolved through the table (#199): these are guidance,
-                // not a binding, and deliberately have no `ActionId` — see
-                // the doc comment on `keymap::ActionId`. The hint text is
-                // generated from the table (task 8), so it names the key
-                // that actually reaches the filter action, not the key this
-                // arm happens to match.
-                KeyCode::Char(c @ ('i' | 'x' | 'c' | 'd' | 'm' | 'a' | 's' | 'I' | 'C'))
-                    // `pressed`, not `key.modifiers.is_empty()`: a terminal
-                    // sets `SHIFT` on the `I`, as on every uppercase letter
-                    // (#250), and `normalise` is what drops it.
-                    if !pressed.ctrl && !pressed.alt && self.focus != Focus::Filters =>
-                {
-                    use crate::keymap::ActionId as A;
-                    let (action, verb) = match c {
-                        'i' => (A::FiltersInclude, "adds a filter"),
-                        'x' => (A::FiltersExclude, "adds an excluding filter"),
-                        'c' => (A::FiltersEdit, "changes the selected filter"),
-                        'd' => (A::FiltersDelete, "deletes the selected filter"),
-                        'm' => (A::FiltersContext, "toggles include and context"),
-                        'a' => (A::FiltersProfile, "picks a profile for the set"),
-                        'I' => (A::FiltersEditorNew, "opens the filter editor"),
-                        'C' => (
-                            A::FiltersEditorOpen,
-                            "opens the selected filter in the filter editor",
-                        ),
-                        _ => (A::FiltersSolo, "solos the set"),
-                    };
-                    if let Some(hint) = self.keymap.hint_for(action, verb, A::GlobalFocusFilters) {
-                        self.report(&hint, false);
-                    }
-                    return;
-                }
-                _ => {}
-            }
         }
 
         if let event::Event::Mouse(mouse) = event
@@ -400,8 +357,9 @@ impl App<'_> {
             && self.focus == Focus::View
         {
             let pressed = crate::keymap::normalise(key);
-            if let Some(action) = self.keymap.resolve(crate::keymap::Scope::View, pressed) {
-                self.perform(action, pressed);
+            match self.keymap.resolve(crate::keymap::Scope::View, pressed) {
+                Some(action) => self.perform(action, pressed),
+                None => self.hint_filter_verb(pressed),
             }
             return;
         }
@@ -411,13 +369,15 @@ impl App<'_> {
             // explorer's key resolves in its own scope here, then
             // `perform_on_explorer` carries out whatever it named.
             Focus::Explorer => {
-                if let event::Event::Key(key) = event
-                    && let Some(action) = self.keymap.resolve(
-                        crate::keymap::Scope::for_focus(self.focus),
-                        crate::keymap::normalise(key),
-                    )
-                {
-                    self.perform_on_explorer(action);
+                if let event::Event::Key(key) = event {
+                    let pressed = crate::keymap::normalise(key);
+                    match self
+                        .keymap
+                        .resolve(crate::keymap::Scope::for_focus(self.focus), pressed)
+                    {
+                        Some(action) => self.perform_on_explorer(action),
+                        None => self.hint_filter_verb(pressed),
+                    }
                 }
             }
             // Every key returned above, and the view has nothing to do with
@@ -430,6 +390,30 @@ impl App<'_> {
             // `ActiveFilters`, and the pane only ever borrows one, so it
             // cannot carry out its own commands.
             Focus::Filters => {}
+        }
+    }
+
+    /// Say so, for one keypress, when a key the focused pane leaves unbound
+    /// is a filter-pane verb, instead of doing nothing (#120 §9). Not a
+    /// redirect: making `i` global would collapse `f i` and `i`, and
+    /// `x`-not-`e` for exclude exists because `e` is a focus key. The chain
+    /// stays the answer; the hint teaches it.
+    ///
+    /// Called only where the explorer and the view drop a key their own
+    /// scope does not resolve, so a `[keymap]` line binding `a` in either
+    /// pane wins over the hint by construction (#494). The key is a verb
+    /// when `Scope::Filters` resolves it to one, so the hint moves with a
+    /// rebound verb rather than staying on its default letter. The hint has
+    /// no `ActionId` of its own: it is guidance, not a binding.
+    fn hint_filter_verb(&mut self, pressed: crate::keymap::Key) {
+        use crate::keymap::{ActionId, Scope};
+        if let Some(action) = self.keymap.resolve(Scope::Filters, pressed)
+            && let Some(verb) = filter_verb(action)
+            && let Some(hint) = self
+                .keymap
+                .hint_for(action, verb, ActionId::GlobalFocusFilters)
+        {
+            self.report(&hint, false);
         }
     }
 
@@ -474,4 +458,23 @@ impl App<'_> {
         // the edge of the middle third does not — see `window_holds`.
         self.ensure_window();
     }
+}
+
+/// What a filter-pane verb does, as the wrong-pane hint says it (#120 §9),
+/// or `None` for a filter-pane action that is not one of the verbs — a
+/// motion such as `j` gives no hint outside the pane.
+fn filter_verb(action: crate::keymap::ActionId) -> Option<&'static str> {
+    use crate::keymap::ActionId as A;
+    Some(match action {
+        A::FiltersInclude => "adds a filter",
+        A::FiltersExclude => "adds an excluding filter",
+        A::FiltersEdit => "changes the selected filter",
+        A::FiltersDelete => "deletes the selected filter",
+        A::FiltersContext => "toggles include and context",
+        A::FiltersProfile => "picks a profile for the set",
+        A::FiltersSolo => "solos the set",
+        A::FiltersEditorNew => "opens the filter editor",
+        A::FiltersEditorOpen => "opens the selected filter in the filter editor",
+        _ => return None,
+    })
 }

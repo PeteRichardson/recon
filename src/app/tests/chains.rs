@@ -400,6 +400,60 @@ fn a_filter_verb_in_the_filter_pane_is_not_a_hint() {
     assert_eq!(status(&app), None);
 }
 
+/// A `[keymap]` binding in the explorer wins over the hint (#494): the
+/// hint is for a key the pane leaves unbound, not for a fixed set of
+/// letters.
+#[test]
+fn an_explorer_binding_on_a_filter_letter_beats_the_hint() {
+    let mut app = app_over("hint_explorer_bound", &["a.log", "b.log"]);
+    rebind(&mut app, &[("explorer.down", &["a", "j", "Down"])]);
+    key(&mut app, KeyCode::Char('e'));
+
+    key(&mut app, KeyCode::Char('a'));
+
+    assert_eq!(app.explorer.selected_name().as_deref(), Some("b.log"));
+    assert_eq!(status(&app), None, "the hint fired over the binding");
+}
+
+/// The issue's own case (#494): `a` as page up in the file view pages up,
+/// exactly as `PageUp` does, rather than hinting at `f a`.
+#[test]
+fn a_view_binding_on_a_filter_letter_beats_the_hint() {
+    let body = numbered_lines(200);
+    let paged = |name: &str, code: KeyCode| {
+        let mut app = app_over_file(name, &body);
+        rebind(&mut app, &[("view.page.up", &["a", "Ctrl-b", "PageUp"])]);
+        key(&mut app, KeyCode::Char('t'));
+        key(&mut app, KeyCode::Char('G'));
+        let end = cursor_source(&app);
+        key(&mut app, code);
+        (end, cursor_source(&app), status(&app).map(str::to_string))
+    };
+
+    let (end, after_a, hint) = paged("hint_view_bound_a", KeyCode::Char('a'));
+    let (_, after_page_up, _) = paged("hint_view_bound_pgup", KeyCode::PageUp);
+
+    assert!(after_a < end, "a did not move the cursor up");
+    assert_eq!(after_a, after_page_up, "a did not page up");
+    assert_eq!(hint, None, "the hint fired over the binding");
+}
+
+/// The hint follows the keymap (#494): after `filters.profile` moves to
+/// `P`, `P` gives the profile hint outside the filter pane, and `a`, which
+/// now reaches nothing there, gives none.
+#[test]
+fn a_moved_filter_verb_hints_on_its_new_key_only() {
+    let mut app = app_over("hint_moved", &["a.log"]);
+    rebind(&mut app, &[("filters.profile", &["P"])]);
+    key(&mut app, KeyCode::Char('e'));
+
+    key(&mut app, KeyCode::Char('P'));
+    assert_eq!(status(&app), Some("P picks a profile for the set · f P"));
+
+    key(&mut app, KeyCode::Char('a'));
+    assert_eq!(status(&app), None, "a still hints at the profile picker");
+}
+
 // ---- the return acts, it does not press a key (#377) -----------------
 
 /// `f i fn Enter` from the view, with `n` given to another action and
