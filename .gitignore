@@ -2,3 +2,5 @@
 /.claude/worktrees
 /.superpowers/
 /docs/reviews/code-review*.md
+/.zed
+**/.DS_Store
