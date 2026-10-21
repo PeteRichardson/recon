@@ -455,3 +455,57 @@ fn u_passes_an_unscanned_file_for_one_that_matches() {
     assert_eq!(selected_name(&app), "a.log");
     assert_eq!(shown(&app), "a.log");
 }
+
+// ---- #488: a peek leaves the explorer selection where it was -------------
+
+/// `space` `space`, with `check` after each: a whole peek, as the user
+/// makes it.
+fn peek_and_back(app: &mut App, check: impl Fn(&App)) {
+    for _ in 0..2 {
+        key(app, KeyCode::Char(' '));
+        check(app);
+    }
+}
+
+/// From dim mode a peek turns hide mode on, with every filter off. The
+/// file with no matches must not be hidden for the moment before the scan
+/// says that nothing selects.
+#[test]
+fn a_peek_from_dim_mode_keeps_the_selection_on_a_file_with_no_matches() {
+    let (mut app, _tx) = app_with_answers(
+        "peek_dim_keeps",
+        &[("a.log", "beta\n"), ("b.log", "alpha\n")],
+        &[false, true],
+    );
+    arrow_to(&mut app, "a.log");
+
+    peek_and_back(&mut app, |app| {
+        assert_eq!(selected_name(app), "a.log", "the peek moved the selection");
+        assert_eq!(shown(app), "a.log", "the peek moved the view");
+    });
+    assert_eq!(app.document.mode(), Mode::Dimmed, "sanity");
+}
+
+/// From hide mode the selection is on a file that matches, and a peek
+/// leaves it there too.
+#[test]
+fn a_peek_from_hide_mode_keeps_the_selection() {
+    let (mut app, _tx) = app_with_answers(
+        "peek_hide_keeps",
+        &[
+            ("a.log", "beta\n"),
+            ("b.log", "alpha\n"),
+            ("c.log", "alpha\n"),
+        ],
+        &[false, true, true],
+    );
+    arrow_to(&mut app, "c.log");
+    key(&mut app, KeyCode::Char('u'));
+    assert_eq!(selected_name(&app), "c.log", "sanity");
+
+    peek_and_back(&mut app, |app| {
+        assert_eq!(selected_name(app), "c.log", "the peek moved the selection");
+        assert_eq!(shown(app), "c.log", "the peek moved the view");
+    });
+    assert_eq!(app.document.mode(), Mode::FilteredOnly, "sanity");
+}

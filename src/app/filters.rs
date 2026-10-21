@@ -210,6 +210,14 @@ impl App<'_> {
                 flags: self.filters.enabled_flags(),
             });
             self.filters.set_all_enabled(false);
+            // With nothing selecting, every answer is `Unknown`. Said to the
+            // explorer before the flip (#488): from dim mode the flip arms
+            // hide mode, which would take a file still answered `No` off the
+            // list, and the selection with it, before the event loop's own
+            // scan refresh put the file back. Only this way round: the end
+            // of a peek flips first and refreshes after, or the `No`
+            // answers would come back while hide mode is still armed.
+            self.refresh_scan(false);
             // The same flip `toggle_hiding` does, deliberately: `<space>`
             // and `Ctrl-H` move the mode identically, and only the filter
             // switching below is the peek's own.
