@@ -428,7 +428,8 @@ What gets recorded:
 | `warn` | a search highlight that could not be applied, or a search that could not become a filter |
 | `warn` | a `config.toml` warning, a reserved key in `[keymap]`, or a `--set` or `--unlist` that could not be applied |
 | `debug` | which `config.toml` and `filters.toml` were read, or where `recon` looked and found none |
-| `debug` | the startup snapshot: version, arguments, mode and why, config file, `RECON_*` variables, filter sets, keymap overrides, image protocol, screen and terminal size |
+| `debug` | `session started:` with the program path, the full version and the process ID, as the first record |
+| `debug` | the startup snapshot: version (as `recon -V` gives it), arguments, mode and why, config file, `RECON_*` variables, filter sets, keymap overrides, image protocol, screen and terminal size |
 | `debug` | each change to the filters, with the state after it |
 | `debug` | each command view and editor hand-off: arguments, duration and exit status |
 | `debug` | the shutdown summary: duration, how the session ended, emit mode, files opened and scanned, view cache hits and misses |

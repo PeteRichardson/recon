@@ -21,6 +21,14 @@ fn main() -> Result<ExitCode> {
     install_error_hooks()?;
 
     setup_logging();
+    // Guarded here and not inside: the arguments cost syscalls to get.
+    if log::log_enabled!(log::Level::Debug) {
+        recon::logging::session_started(
+            std::env::current_exe(),
+            std::env::args_os().next(),
+            std::process::id(),
+        );
+    }
     // Everything recon reads before it starts, in the order it must be
     // read, and every refusal while a message can still be seen (#409).
     let startup = match recon::startup::start()? {
