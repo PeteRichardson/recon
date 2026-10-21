@@ -411,6 +411,35 @@ pub struct Config {
     // `--warnings` must not stop a run that also asks for silence.
     #[arg(long = "no-warnings")]
     pub no_warnings: bool,
+
+    /// A file for the log. Falls back to `log_file` in `config.toml`. With
+    /// neither, the TUI writes to `~/.local/state/recon/recon.log` when
+    /// `RUST_LOG` is set, and batch mode writes to stderr.
+    //
+    // `env = "RECON_LOG"`: the variable that named the file before #500
+    // is now the rung between the flag and the file, with no merge code.
+    #[arg(
+        long = "log-file",
+        env = "RECON_LOG",
+        hide_env_values = true,
+        value_name = "PATH"
+    )]
+    pub log_file: Option<PathBuf>,
+
+    /// `log_max_mb` in `config.toml` (#500), or `None` for the default.
+    /// No flag, for the reason `filter_palette` gives.
+    #[arg(skip)]
+    pub log_max_mb: Option<u64>,
+
+    /// `log_files` in `config.toml` (#500), or `None` for the default.
+    #[arg(skip)]
+    pub log_files: Option<u32>,
+
+    /// What `apply` found wrong with `log_max_mb` and `log_files`. A
+    /// warning and not an error: a log setting only changes what recon
+    /// records, as `choose_log_target` says about a file it cannot open.
+    #[arg(skip)]
+    pub log_warnings: Vec<String>,
 }
 
 /// The `--theme` long help: the short help's two sentences, then the bundled
@@ -478,6 +507,54 @@ pub struct FileConfig {
     /// `[commands]`: the command views a `[[filetype]]` row can name
     /// (#457).
     pub commands: Option<crate::views::command::Commands>,
+    /// Top-level `log_file` (#500). See [`Config::log_file`].
+    pub log_file: Option<PathBuf>,
+    /// Top-level `log_max_mb` (#500): the size of one log file.
+    pub log_max_mb: Option<PositiveInt>,
+    /// Top-level `log_files` (#500): how many log files to keep.
+    pub log_files: Option<PositiveInt>,
+}
+
+/// A setting that must be a positive whole number, as the file gave it: the
+/// number, or the text of what was there instead. Any value parses, so that
+/// a bad one is a warning and not a refusal to start (#500).
+#[derive(Debug, PartialEq, Eq)]
+pub struct PositiveInt(Result<u64, String>);
+
+impl PositiveInt {
+    /// The number, if it fits a `T`; else a warning that names `key` and
+    /// says that recon uses `default`.
+    fn read<T: TryFrom<u64> + std::fmt::Display>(
+        &self,
+        key: &str,
+        default: T,
+        warnings: &mut Vec<String>,
+    ) -> Option<T> {
+        let text = match &self.0 {
+            Ok(n) => match T::try_from(*n) {
+                Ok(n) => return Some(n),
+                Err(_) => n.to_string(),
+            },
+            Err(text) => text.clone(),
+        };
+        warnings.push(format!(
+            "{key} = {text} is not a positive whole number; recon uses {default}"
+        ));
+        None
+    }
+}
+
+impl<'de> Deserialize<'de> for PositiveInt {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        Ok(Self(match toml::Value::deserialize(deserializer)? {
+            toml::Value::Integer(n) if n > 0 => Ok(n.unsigned_abs()),
+            // No `Display` for a `Value` in this build (see `Cargo.toml`).
+            toml::Value::Integer(n) => Err(n.to_string()),
+            toml::Value::Float(f) => Err(f.to_string()),
+            toml::Value::String(text) => Err(format!("{text:?}")),
+            other => Err(format!("a {}", other.type_str())),
+        }))
+    }
 }
 
 /// The `[view]` table: how the file view moves.
@@ -919,7 +996,18 @@ pub(crate) fn config_home_from(
     xdg_config_home: Option<&str>,
     home: Option<&str>,
 ) -> Option<PathBuf> {
-    let config_home = xdg_config_home
+    recon_dir_from(xdg_config_home, home, ".config")
+}
+
+/// recon's directory under an XDG base directory: `$XDG_…_HOME/recon`, else
+/// `$HOME/<fallback>/recon`. Shared by the config home and the log's state
+/// home (#500), so the two follow one rule.
+pub(crate) fn recon_dir_from(
+    xdg_home: Option<&str>,
+    home: Option<&str>,
+    fallback: &str,
+) -> Option<PathBuf> {
+    let base = xdg_home
         .filter(|dir| !dir.is_empty())
         .map(Path::new)
         // The XDG base directory specification requires an absolute path and
@@ -930,10 +1018,10 @@ pub(crate) fn config_home_from(
         .map(Path::to_path_buf)
         .or_else(|| {
             home.filter(|dir| !dir.is_empty())
-                .map(|dir| Path::new(dir).join(".config"))
+                .map(|dir| Path::new(dir).join(fallback))
         })?;
 
-    Some(config_home.join(CONFIG_DIR))
+    Some(base.join(CONFIG_DIR))
 }
 
 /// Where recon looks for `config.toml`, or `None` when the environment names
@@ -990,6 +1078,10 @@ pub fn load_file() -> Result<FileConfig, ConfigError> {
     }
     load_from(&path)
 }
+
+/// The log file defaults (#500).
+const DEFAULT_LOG_MAX_MB: u64 = 50;
+const DEFAULT_LOG_FILES: u32 = 2;
 
 /// The variable that turns keymap warnings on or off, below the flags.
 const WARNINGS_VAR: &str = "RECON_WARNINGS";
@@ -1227,6 +1319,9 @@ impl Config {
             warnings,
             filetype,
             commands,
+            log_file,
+            log_max_mb,
+            log_files,
         } = file;
 
         if let Some(background) = background {
@@ -1301,6 +1396,33 @@ impl Config {
         {
             self.commands.clone_from(commands);
         }
+
+        if let Some(log_file) = log_file {
+            self.log_file.get_or_insert_with(|| log_file.clone());
+        }
+        if let Some(setting) = log_max_mb {
+            self.log_max_mb =
+                setting.read("log_max_mb", DEFAULT_LOG_MAX_MB, &mut self.log_warnings);
+        }
+        if let Some(setting) = log_files {
+            self.log_files = setting.read("log_files", DEFAULT_LOG_FILES, &mut self.log_warnings);
+        }
+    }
+
+    /// The size at which the log file rotates: `log_max_mb` megabytes, 50
+    /// by default (#500).
+    #[must_use]
+    pub fn log_max_bytes(&self) -> u64 {
+        self.log_max_mb
+            .unwrap_or(DEFAULT_LOG_MAX_MB)
+            .saturating_mul(1024 * 1024)
+    }
+
+    /// How many log files to keep with the live one: `log_files`, 2 by
+    /// default (#500). Together with the size, about 100 MB of log.
+    #[must_use]
+    pub fn log_files(&self) -> u32 {
+        self.log_files.unwrap_or(DEFAULT_LOG_FILES)
     }
 
     /// The clipboard command, once the chain has run: the flag, the
@@ -1939,6 +2061,71 @@ mod tests {
         for id in ["hide_pane", "no_warnings"] {
             let arg = command.get_arguments().find(|a| a.get_id() == id).unwrap();
             assert_eq!(arg.get_short(), None, "{id}");
+        }
+    }
+
+    // ---- the log file (#500) ---------------------------------------------
+
+    /// `--log-file` beats `RECON_LOG`, which clap reads for it, and both
+    /// beat `log_file` in the file.
+    #[test]
+    fn the_log_file_flag_reads_recon_log_and_beats_the_file() {
+        use clap::CommandFactory;
+        let command = Config::command();
+        let arg = command
+            .get_arguments()
+            .find(|a| a.get_id() == "log_file")
+            .unwrap();
+        assert_eq!(arg.get_env(), Some(std::ffi::OsStr::new("RECON_LOG")));
+
+        let path = fixture("log-file.toml", "log_file = '/from/the/file.log'\n");
+        let file = load_from(&path).expect("valid");
+        let mut config = parse_clean(["recon", "--log-file", "/from/the/flag.log"]).unwrap();
+        config.apply(&file);
+        assert_eq!(config.log_file, Some(PathBuf::from("/from/the/flag.log")));
+
+        let mut config = Config::default();
+        config.apply(&file);
+        assert_eq!(config.log_file, Some(PathBuf::from("/from/the/file.log")));
+    }
+
+    #[test]
+    fn the_log_size_settings_parse_and_default() {
+        let path = fixture("log-size.toml", "log_max_mb = 7\nlog_files = 1\n");
+        let mut config = Config::default();
+        config.apply(&load_from(&path).expect("valid"));
+        assert_eq!(config.log_max_bytes(), 7 * 1024 * 1024);
+        assert_eq!(config.log_files(), 1);
+        assert!(config.log_warnings.is_empty(), "{:?}", config.log_warnings);
+
+        assert_eq!(Config::default().log_max_bytes(), 50 * 1024 * 1024);
+        assert_eq!(Config::default().log_files(), 2);
+    }
+
+    /// A bad size is a warning and the default, not a refusal: the setting
+    /// only changes what recon records.
+    #[test]
+    fn a_bad_log_size_warns_and_uses_the_default() {
+        for (index, value) in ["0", "-3", "'ten'", "1.5"].into_iter().enumerate() {
+            let path = fixture(
+                &format!("log-size-bad-{index}.toml"),
+                &format!("log_max_mb = {value}\nlog_files = {value}\n"),
+            );
+            let mut config = Config::default();
+            config.apply(&load_from(&path).expect("a bad size still parses"));
+            assert_eq!(config.log_max_bytes(), 50 * 1024 * 1024, "{value}");
+            assert_eq!(config.log_files(), 2, "{value}");
+            assert_eq!(config.log_warnings.len(), 2, "{value}");
+            assert!(
+                config.log_warnings[0].contains("log_max_mb"),
+                "{:?}",
+                config.log_warnings
+            );
+            assert!(
+                config.log_warnings[1].contains("log_files"),
+                "{:?}",
+                config.log_warnings
+            );
         }
     }
 

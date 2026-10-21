@@ -160,9 +160,9 @@ pub(crate) const SLOW_FRAME: Duration = Duration::from_millis(50);
 /// The time to draw one frame (#492): `TRACE`, and also a `WARN` when it is
 /// more than [`SLOW_FRAME`].
 ///
-/// The `WARN` passes the default level, so `RECON_LOG` gets it without
-/// `RUST_LOG`. Without `RECON_LOG` the log is stderr, and the logger in
-/// `main` drops it while the screen is open.
+/// The `WARN` passes the default level, so a log file that a setting names
+/// gets it without `RUST_LOG`. Without a log file the log is stderr, and the
+/// logger in `main` drops it while the screen is open.
 pub(crate) fn frame_drawn(took: Duration) {
     log::trace!("frame drawn in {took:.1?}");
     if took > SLOW_FRAME {

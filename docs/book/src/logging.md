@@ -3,21 +3,59 @@
 recon can write a log of what it does. Use the log when recon does not do
 what you expect, and attach it to a bug report.
 
-## Two settings
+## Which records
 
-- `RUST_LOG` sets which records recon writes. It uses the
-  [`env_logger`](https://docs.rs/env_logger) syntax. `RUST_LOG=recon=debug`
-  gives the records on this page.
-- `RECON_LOG` names a file for the log. recon empties the file each time it
-  starts.
-
-Without `RECON_LOG`, the log goes to stderr. recon draws its screen on
-stderr, so it drops each record that comes while the screen is open. Only
-the records from before the screen opens and after it closes stay. Set
-`RECON_LOG` to keep all of them.
+`RUST_LOG` sets which records recon writes. It uses the
+[`env_logger`](https://docs.rs/env_logger) syntax. `RUST_LOG=recon=debug`
+gives the records on this page.
 
 Without `RUST_LOG`, recon writes only warnings and errors. A normal run and
 a batch run then write nothing new to stderr.
+
+## Where the log goes
+
+When `RUST_LOG` is set, the TUI writes the log to a file:
+`$XDG_STATE_HOME/recon/recon.log`, or `~/.local/state/recon/recon.log` when
+`$XDG_STATE_HOME` is not set. recon makes the directory.
+
+Batch mode writes the log to stderr, because a script reads it there.
+Without `RUST_LOG`, recon writes no file.
+
+To use a different file, set one of these. The first one that is set wins:
+
+1. `--log-file PATH`
+2. `RECON_LOG=PATH`
+3. `log_file = "PATH"` in `config.toml`
+
+A file that you name applies in batch mode too, and without `RUST_LOG`.
+
+When the log goes to stderr in the TUI, recon drops each record that comes
+while the screen is open, because recon draws its screen on stderr. Only
+the records from before the screen opens and after it closes stay.
+
+In a file, each record has the time, the process ID and the module that
+wrote it. If recon cannot open the file, it tells you and writes the log
+to stderr.
+
+## The size of the log
+
+recon adds to the file. It does not empty it at the start, so the file
+keeps many sessions.
+
+When the file gets to its limit, recon renames it to `recon.log.1`
+(`recon.log.1` becomes `recon.log.2`, and so on), deletes the oldest file,
+and starts a new `recon.log`. Two keys in `config.toml` set the limits:
+
+| Key | What it sets | Default |
+| --- | --- | --- |
+| `log_max_mb` | The size of one file, in megabytes. | 50 |
+| `log_files` | The number of files to keep, with the live file. With 1, recon empties the file at the limit. | 2 |
+
+With the defaults, the log uses a maximum of about 100 MB. A value that is
+not a positive whole number gives a warning, and recon uses the default.
+
+Two recon processes can write to the same file. Their records can mix: use
+the process ID in each record to separate them.
 
 ## The levels
 
@@ -84,8 +122,8 @@ a batch run then write nothing new to stderr.
 ## A slow frame
 
 A frame that takes more than 50 ms to draw gives a `warn` record, `slow
-frame`. You do not need `RUST_LOG` for it: set only `RECON_LOG`. recon does
-not show it on the screen.
+frame`. You do not need `RUST_LOG` for it: name a log file with
+`RECON_LOG`. recon does not show it on the screen.
 
 The log contains paths and filter patterns. It does not contain the
 contents of your files or the text of a search.
@@ -97,5 +135,7 @@ RECON_LOG=/tmp/recon.log RUST_LOG=recon=debug recon app.log
 ```
 
 Do the steps that show the problem, quit, and attach `/tmp/recon.log`.
+A file that you name keeps your other sessions too, so you can delete it
+first.
 
 {{#include glossary-links.md}}

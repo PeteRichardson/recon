@@ -362,6 +362,10 @@ Options:
           off
       --no-warnings
           Hide the startup warnings for this run. The opposite of `--warnings`
+      --log-file <PATH>
+          A file for the log. Falls back to `log_file` in `config.toml`. With
+          neither, the TUI writes to `~/.local/state/recon/recon.log` when
+          `RUST_LOG` is set, and batch mode writes to stderr [env: RECON_LOG]
   -h, --help
           Print help (see more with '--help')
   -V, --version
@@ -399,21 +403,24 @@ wrong, and warnings are the only level that reaches you unasked.
 RUST_LOG=recon=debug recon app.log
 ```
 
-Log output goes to **stderr** by default, and `recon` draws its interface on
-stderr too, so `recon` drops any record logged while the TUI holds the
-screen — only the startup and shutdown records reach you. When stderr is
-redirected, the TUI draws on `/dev/tty` and nothing is dropped: every record
-goes to the redirect. Set `RECON_LOG`
-to a file to avoid losing the rest, and to see the in-session messages at
-all:
+With `RUST_LOG` set, the TUI writes its log to
+`$XDG_STATE_HOME/recon/recon.log` (or `~/.local/state/recon/recon.log`).
+`recon` draws its interface on stderr, so a record sent there while the TUI
+holds the screen would be dropped. Batch mode logs to **stderr**, where a
+script reads it.
+
+`--log-file PATH`, then `RECON_LOG`, then `log_file` in `config.toml` name a
+different file, in batch mode too:
 
 ```sh
 RECON_LOG=/tmp/recon.log RUST_LOG=recon=debug recon app.log
 ```
 
-The file is truncated on each run. If it cannot be opened, `recon` says so
-and carries on logging to stderr — which, once the TUI is up, means the
-in-session records are dropped rather than merely hard to see.
+The file is appended to, so it keeps many sessions. At `log_max_mb` (50) it
+rotates to `recon.log.1`, and `recon` keeps `log_files` (2) files with the
+live one: about 100 MB. Both are `config.toml` keys. If the file cannot be
+opened, `recon` says so and carries on logging to stderr — which, once the
+TUI is up, means the in-session records are dropped.
 
 What gets recorded:
 
@@ -433,7 +440,8 @@ What gets recorded:
 | `debug` | each command view and editor hand-off: arguments, duration and exit status |
 | `debug` | the shutdown summary: duration, how the session ended, emit mode, files opened and scanned, view cache hits and misses |
 
-With `RECON_LOG`, each record has a timestamp and the module that wrote it.
+In a file, each record has a timestamp, the process ID and the module that
+wrote it.
 The levels follow one rule: `info` is for a fact you must see without a
 setting, `debug` is once per session or per action, and `trace` is once per
 file, key or frame. The book's "Logging" page has the details.

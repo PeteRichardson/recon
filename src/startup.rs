@@ -153,6 +153,7 @@ pub fn start() -> Result<Start> {
         crate::views::cycle::Table::build(&config.filetypes, &config.commands);
     let mut warnings = keymap_warnings;
     warnings.extend(view_warnings);
+    warnings.append(&mut config.log_warnings);
 
     Ok(Start::Run(Box::new(Startup {
         config,
