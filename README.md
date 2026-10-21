@@ -1964,10 +1964,12 @@ another format, or a very large progressive JPEG, can still go past it.
 film. It is a built-in command:
 
 ```toml
-quicklook = { argv = ["qlmanage", "-t", "-s", "{px}", "-o", "{out}", "{file}"], output = "image/png" }
+quicklook = { argv = ["qlmanage", "-t", "-s", "{px}", "-o", "{out}", "{file}"], output = "image/png", timeout = 10 }
 ```
 
-recon makes the `{out}` directory first, which `qlmanage` needs. Only the
+recon makes the `{out}` directory first, which `qlmanage` needs. The
+timeout is longer than the default, because the first `qlmanage` after a
+cold start can be slow. Only the
 types in the table above get `quicklook` by default, by their extension:
 `qlmanage` does not stop for a file that it has no thumbnail for, so the
 view would wait for its timeout. A row can name `quicklook` for any other type:
