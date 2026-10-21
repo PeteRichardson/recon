@@ -21,7 +21,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::SystemTime;
+use std::time::{Instant, SystemTime};
 
 /// How far one file has been read, and what its lines matched.
 ///
@@ -36,6 +36,20 @@ pub struct Progress {
     pub seen: Vec<crate::filter::Bits>,
     pub scanned_to: u64,
     pub eof: bool,
+}
+
+impl Progress {
+    /// As [`Record::answer`], which is this under the stamp it was read at.
+    #[must_use]
+    pub fn answer(&self, m: &Matcher) -> Option<bool> {
+        if self.seen.iter().any(|&bits| m.selects(bits)) {
+            return Some(true);
+        }
+        if self.eof {
+            return Some(false);
+        }
+        None
+    }
 }
 
 /// `(mtime, len)` of a file when it was scanned. A mismatch on re-stat means
@@ -94,13 +108,7 @@ impl Record {
     /// and only for the unread remainder.
     #[must_use]
     pub fn answer(&self, m: &Matcher) -> Option<bool> {
-        if self.progress.seen.iter().any(|&bits| m.selects(bits)) {
-            return Some(true);
-        }
-        if self.progress.eof {
-            return Some(false);
-        }
-        None
+        self.progress.answer(m)
     }
 
     /// Which filter selected the file, for its colour: the highest-ranked
@@ -139,6 +147,8 @@ pub struct Request {
     pub cache_id: u64,
     pub matcher: Matcher,
     pub files: Vec<FileToScan>,
+    /// The directory the files are listed in, for the log (#491).
+    pub dir: PathBuf,
 }
 
 /// One file's result. `index` is the explorer row the request named; the
@@ -244,12 +254,19 @@ fn scan_caught(
 /// would then drop the first file's result entirely. `scan` already handles
 /// an already-cancelled flag — it returns `progress` unchanged on its first
 /// check — so the file's (possibly untouched) result still reaches `tx`.
+///
+/// The pass ends with a `Debug` record, and each file has its answer and
+/// its time at `Trace` (#491).
 fn worker(request: Request, tx: &Sender<Scanned>, cancel: &AtomicBool) {
     let Request {
         cache_id,
         matcher,
         files,
+        dir,
     } = request;
+    let started = Instant::now();
+    let total = files.len();
+    let mut sent = 0;
     for FileToScan {
         index,
         path,
@@ -257,6 +274,7 @@ fn worker(request: Request, tx: &Sender<Scanned>, cancel: &AtomicBool) {
         progress,
     } in files
     {
+        let file_started = Instant::now();
         let stamp = stamp(&path).ok();
         // Resuming a file that changed since `progress` was read would add
         // new bytes to old bitsets at an offset that may no longer be a line
@@ -288,16 +306,39 @@ fn worker(request: Request, tx: &Sender<Scanned>, cancel: &AtomicBool) {
                 }
             }
         };
-        let sent = tx.send(Scanned {
+        log::trace!(
+            "{}: {} in {:.1?}",
+            path.display(),
+            match progress.answer(&matcher) {
+                Some(true) => "yes",
+                Some(false) => "no",
+                None => "not known yet",
+            },
+            file_started.elapsed()
+        );
+        let delivered = tx.send(Scanned {
             cache_id,
             index,
             path,
             stamp,
             progress,
         });
-        if sent.is_err() || cancel.load(Ordering::Relaxed) {
-            return;
+        sent += 1;
+        if delivered.is_err() || cancel.load(Ordering::Relaxed) {
+            break;
         }
+    }
+    let took = started.elapsed();
+    if sent == total {
+        log::debug!(
+            "scan pass ended in {}: {total} files in {took:.1?}",
+            dir.display()
+        );
+    } else {
+        log::debug!(
+            "scan pass stopped in {}: {sent} of {total} files in {took:.1?}",
+            dir.display()
+        );
     }
 }
 
@@ -965,11 +1006,57 @@ mod tests {
                     stamp,
                     progress,
                 }],
+                dir: PathBuf::new(),
             },
             &tx,
             &never(),
         );
         rx.recv().expect("one result")
+    }
+
+    /// A pass ends with one `Debug` record, and each file has its answer and
+    /// its time at `Trace` (#491).
+    #[test]
+    fn a_pass_logs_its_end_and_each_file() {
+        use crate::logging::capture;
+        capture::install();
+        let dir = crate::fixtures::fixture_dir("scan_log_pass");
+        let (yes, no) = (dir.join("yes.log"), dir.join("no.log"));
+        std::fs::write(&yes, "alpha\n").expect("write");
+        std::fs::write(&no, "beta\n").expect("write");
+        let file = |index, path: &Path| FileToScan {
+            index,
+            path: path.to_path_buf(),
+            stamp: None,
+            progress: Progress::default(),
+        };
+        let (tx, _rx) = std::sync::mpsc::channel();
+
+        worker(
+            Request {
+                cache_id: 1,
+                matcher: matcher(&["alpha"], &[]),
+                files: vec![file(0, &yes), file(1, &no)],
+                dir: dir.clone(),
+            },
+            &tx,
+            &never(),
+        );
+
+        let ended = capture::here_at(log::Level::Debug, "scan_log_pass");
+        assert_eq!(ended.len(), 1, "{:?}", capture::here());
+        assert!(
+            ended[0].starts_with(&format!(
+                "scan pass ended in {}: 2 files in ",
+                dir.display()
+            )),
+            "{ended:?}"
+        );
+        let yes_record = capture::here_at(log::Level::Trace, &yes.display().to_string());
+        assert_eq!(yes_record.len(), 1, "{:?}", capture::here());
+        assert!(yes_record[0].contains(": yes in "), "{yes_record:?}");
+        let no_record = capture::here_at(log::Level::Trace, &no.display().to_string());
+        assert!(no_record[0].contains(": no in "), "{no_record:?}");
     }
 
     /// `refresh_scan` no longer stats before a resume (#156), so the worker
@@ -1284,6 +1371,7 @@ mod tests {
             cache_id: 7,
             matcher: matcher(&["alpha"], &[]),
             files: vec![],
+            dir: PathBuf::new(),
         });
         recording.cancel();
 
@@ -1313,6 +1401,7 @@ mod tests {
                 cache_id: 3,
                 matcher: matcher(&["alpha"], &[]),
                 files: vec![],
+                dir: PathBuf::new(),
             },
         );
         Scan::cancel(&handle);

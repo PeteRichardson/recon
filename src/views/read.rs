@@ -10,7 +10,7 @@ use std::fs::File;
 use std::io::{BufReader, Cursor, Read};
 use std::path::Path;
 use std::sync::Arc;
-use std::time::SystemTime;
+use std::time::{Duration, Instant, SystemTime};
 use unicode_width::UnicodeWidthStr;
 
 /// Lines read for a preview.
@@ -80,6 +80,20 @@ pub(crate) struct Contents {
     /// The picture the image view shows (#458). An image has no lines, so
     /// `lines` is empty when this is set.
     pub(crate) image: Option<Arc<image::DynamicImage>>,
+    /// The bytes the read took from the file, or from the command's output,
+    /// for the log (#491). 0 from a read of the whole file: the job's own
+    /// stat has its size.
+    pub(crate) bytes: u64,
+    /// How the picture was decoded, for the log (#491).
+    pub(crate) decoded: Option<Decoded>,
+}
+
+/// How long a picture took to decode, and at which scale (#491).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Decoded {
+    pub(crate) took: Duration,
+    /// The JPEG scale's denominator: 2, 4 or 8, or 1 for the full size.
+    pub(crate) scale: u32,
 }
 
 impl Contents {
@@ -270,6 +284,7 @@ pub(crate) fn command_output(output: &[u8], mime: Option<&str>) -> Contents {
         lines: Arc::new(lines),
         text: true,
         mime: mime.map(str::to_string),
+        bytes: output.len() as u64,
         ..Contents::default()
     }
 }
@@ -290,6 +305,9 @@ const MAX_IMAGE_ALLOC: u64 = 512 << 20;
 /// # Errors
 ///
 /// Why the file is not a picture this build can decode, for the status line.
+///
+/// The decoder reads the file as it decodes, so the time it took is the
+/// read and the decode together.
 pub(crate) fn image_file(path: &Path) -> Result<Contents, String> {
     let reader = image::ImageReader::open(path)
         .and_then(image::ImageReader::with_guessed_format)
@@ -306,17 +324,21 @@ pub(crate) fn image_bytes(bytes: &[u8]) -> Result<Contents, String> {
     let reader = image::ImageReader::new(Cursor::new(bytes))
         .with_guessed_format()
         .map_err(|err| err.to_string())?;
-    decode(reader)
+    decode(reader).map(|contents| Contents {
+        bytes: bytes.len() as u64,
+        ..contents
+    })
 }
 
 /// Decode, inside the memory limit, and shrink to `MAX_IMAGE_SIDE`.
 fn decode<R: std::io::BufRead + std::io::Seek>(
     reader: image::ImageReader<R>,
 ) -> Result<Contents, String> {
-    let mut image = if reader.format() == Some(image::ImageFormat::Jpeg) {
+    let started = Instant::now();
+    let (mut image, scale) = if reader.format() == Some(image::ImageFormat::Jpeg) {
         decode_jpeg(reader.into_inner())?
     } else {
-        decode_whole(reader)?
+        (decode_whole(reader)?, 1)
     };
     if image.width().max(image.height()) > MAX_IMAGE_SIDE {
         image = image.resize(
@@ -327,6 +349,10 @@ fn decode<R: std::io::BufRead + std::io::Seek>(
     }
     Ok(Contents {
         image: Some(Arc::new(image)),
+        decoded: Some(Decoded {
+            took: started.elapsed(),
+            scale,
+        }),
         ..Contents::default()
     })
 }
@@ -348,9 +374,11 @@ fn decode_whole<R: std::io::BufRead + std::io::Seek>(
 ///
 /// A JPEG too small to scale, or one `jpeg-decoder` cannot give as grey
 /// or RGB, is decoded whole as before, so its pixels do not change.
+///
+/// With the picture comes the scale's denominator, 1 for the full size.
 fn decode_jpeg<R: std::io::BufRead + std::io::Seek>(
     mut reader: R,
-) -> Result<image::DynamicImage, String> {
+) -> Result<(image::DynamicImage, u32), String> {
     use jpeg_decoder::{CodingProcess, PixelFormat};
 
     let start = reader.stream_position().map_err(|err| err.to_string())?;
@@ -364,10 +392,11 @@ fn decode_jpeg<R: std::io::BufRead + std::io::Seek>(
         reader
             .seek(std::io::SeekFrom::Start(start))
             .map_err(|err| err.to_string())?;
-        return decode_whole(image::ImageReader::with_format(
+        let image = decode_whole(image::ImageReader::with_format(
             reader,
             image::ImageFormat::Jpeg,
-        ));
+        ))?;
+        return Ok((image, 1));
     };
     // A progressive JPEG keeps its coefficients for the whole picture, two
     // bytes for each sample, at any scale.
@@ -385,7 +414,10 @@ fn decode_jpeg<R: std::io::BufRead + std::io::Seek>(
         PixelFormat::L8 => image::GrayImage::from_raw(width, height, pixels).map(Into::into),
         _ => image::RgbImage::from_raw(width, height, pixels).map(Into::into),
     };
-    image.ok_or_else(|| "the JPEG decoded to fewer pixels than its size".to_string())
+    let scale = u32::from(info.width).div_ceil(width.max(1));
+    image
+        .map(|image| (image, scale))
+        .ok_or_else(|| "the JPEG decoded to fewer pixels than its size".to_string())
 }
 
 /// What a binary file shows: its dump (#242). A binary file asked for as
@@ -436,6 +468,7 @@ fn read_hex(path: &Path, preview: Option<u64>) -> Contents {
         estimated_lines,
         text: true,
         hex: true,
+        bytes: dump.read,
         ..Contents::default()
     }
 }
@@ -458,6 +491,7 @@ fn capped(
         truncated,
         estimated_lines,
         text: true,
+        bytes: bytes_read,
         ..Contents::default()
     }
 }

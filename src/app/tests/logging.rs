@@ -155,3 +155,111 @@ fn listing_and_unlisting_a_set_are_logged() {
         capture::here()
     );
 }
+
+// ---- scan passes --------------------------------------------------------
+
+/// A pass starts with one `Debug` record: the directory, the files, how
+/// many the scan cache answered and how many go to the worker (#491).
+#[test]
+fn a_scan_pass_logs_its_start_with_the_cache_hits() {
+    capture::install();
+    let mut app = app_over_files("log_scan_start", &[("a.log", "a\n"), ("b.log", "b\n")]);
+    let (_scanner, tx) = record_scans(&mut app);
+    app.add_filter("alpha").expect("valid");
+    let dir = app.explorer.dir().display().to_string();
+    let started = |app: &mut App| {
+        app.refresh_scan(true);
+        logged(log::Level::Debug, &format!("scan pass started in {dir}: "))
+            .pop()
+            .expect("a start record")
+    };
+
+    assert!(
+        started(&mut app).ends_with(": 2 files, 0 from the scan cache, 2 to scan"),
+        "{:?}",
+        capture::here()
+    );
+
+    tx.send(scanned(&app, 0, vec![], true)).expect("send");
+    app.drain_scan_results();
+
+    let record = started(&mut app);
+    assert!(
+        record.ends_with(": 2 files, 1 from the scan cache, 1 to scan"),
+        "{record}"
+    );
+}
+
+// ---- navigation ---------------------------------------------------------
+
+/// Each move to another directory is one `Debug` record (#491).
+#[test]
+fn a_change_of_directory_is_logged() {
+    capture::install();
+    let (mut app, _dir) = app_over_nested("log_nav_dir");
+    draw(&mut app);
+    let moves = || logged(log::Level::Debug, "navigation: directory ").len();
+    let before = moves();
+
+    key(&mut app, KeyCode::Char('l'));
+
+    assert_eq!(moves(), before + 1, "{:?}", capture::here());
+    let sub = app.explorer.dir().display().to_string();
+    assert!(sub.ends_with("log_nav_dir/sub"), "{sub}");
+    assert_eq!(
+        logged(log::Level::Debug, &format!("navigation: directory {sub}")).len(),
+        1
+    );
+}
+
+/// A file opened is one `Debug` record with its path.
+#[test]
+fn a_file_opened_is_logged() {
+    capture::install();
+    let mut app = app_over_files("log_nav_open", &[("a.log", "a\n"), ("b.log", "b\n")]);
+    let path = app.explorer.files()[1].1.display().to_string();
+
+    open_file(&mut app, 1);
+
+    let records = logged(log::Level::Debug, &format!("navigation: open {path}"));
+    assert_eq!(records.len(), 1, "{:?}", capture::here());
+}
+
+/// `r` is one `Debug` record with the file it reads again.
+#[test]
+fn a_reload_is_logged() {
+    capture::install();
+    let mut app = app_over_file("log_nav_reload", "alpha\n");
+    let file = app.view.filename().to_path_buf();
+
+    key(&mut app, KeyCode::Char('r'));
+
+    let records = logged(
+        log::Level::Debug,
+        &format!("navigation: reload {}", file.display()),
+    );
+    assert_eq!(records.len(), 1, "{:?}", capture::here());
+}
+
+/// A file the stamp check finds changed on disk is one `Debug` record.
+#[test]
+fn a_file_changed_on_disk_is_logged() {
+    capture::install();
+    let mut app = app_over_files("log_nav_moved", &[("a.log", "a\n")]);
+    let (_scanner, tx) = record_scans(&mut app);
+    app.add_filter("alpha").expect("valid");
+    app.refresh_scan(true);
+    tx.send(scanned(&app, 0, vec![], true)).expect("send");
+    app.drain_scan_results();
+    let path = app.explorer.files()[0].1.clone();
+    fs::write(&path, "a\nmore\n").expect("grow the file");
+
+    app.check_stamps();
+
+    let records = logged(
+        log::Level::Debug,
+        &format!("navigation: {} changed on disk", path.display()),
+    );
+    assert_eq!(records.len(), 1, "{:?}", capture::here());
+    assert!(records[0].ends_with("(it grew)"), "{records:?}");
+}

@@ -43,6 +43,7 @@ impl<'a> App<'a> {
         if path.as_os_str().is_empty() {
             return;
         }
+        log::debug!("navigation: reload {}", path.display());
         let source = self.cursor_source();
         self.open_view(&path, self.current_extent(), Landing::Keep(source));
         self.view_stale = false;
@@ -151,10 +152,15 @@ impl<'a> App<'a> {
             return false;
         }
         let (Action::Load(path) | Action::LoadAndFocus(path) | Action::Preview(path)) = action;
-        self.open_view(&path, Extent::Full, Landing::FirstInteresting { backwards });
-        self.prefetch_near_selection();
         let name = self.explorer.selected_name().unwrap_or_default();
         let crossing = Crossing { backwards, name };
+        log::debug!(
+            "navigation: open {}, the {}",
+            path.display(),
+            crossing.label()
+        );
+        self.open_view(&path, Extent::Full, Landing::FirstInteresting { backwards });
+        self.prefetch_near_selection();
         self.report(&format!("{} · {}", crossing.label(), crossing.name), false);
         self.crossing = Some(crossing);
         true

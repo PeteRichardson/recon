@@ -37,6 +37,8 @@ pub(crate) struct Dump {
     /// file's size less what was read, or at least one when the size could
     /// not be found.
     pub(crate) unread: Option<u64>,
+    /// The bytes read, for the log (#491).
+    pub(crate) read: u64,
 }
 
 /// One line of the dump: `offset`, then `chunk` as hex, then as ASCII.
@@ -131,6 +133,7 @@ pub(crate) fn read(path: &Path, max_bytes: u64) -> io::Result<Dump> {
     Ok(Dump {
         lines: lines(&bytes),
         unread,
+        read: bytes.len() as u64,
     })
 }
 

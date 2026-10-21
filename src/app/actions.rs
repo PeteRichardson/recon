@@ -446,6 +446,9 @@ impl App<'_> {
     /// belongs to the keymap table's own dispatcher below, which runs a
     /// `keymap::ActionId` rather than one of these.
     pub(super) fn perform_widget_action(&mut self, action: Action) {
+        if let Action::Load(path) | Action::LoadAndFocus(path) = &action {
+            log::debug!("navigation: open {}", path.display());
+        }
         match action {
             Action::Load(path) => self.open_view(&path, Extent::Full, Landing::Top),
             Action::LoadAndFocus(path) => {

@@ -99,7 +99,9 @@ impl App<'_> {
         // `poll_stamps` finds a file that changed, off this thread, and a
         // resumed scan re-checks its own stamp in the worker.
         let mut pending = Vec::new();
-        for (index, path) in self.explorer.files() {
+        let files = self.explorer.files();
+        let listed = files.len();
+        for (index, path) in files {
             let answer = self
                 .scan_cache
                 .records
@@ -125,6 +127,13 @@ impl App<'_> {
             self.explorer.set_answer(index, matched);
         }
 
+        // The start of the pass (#491). The worker logs its end.
+        log::debug!(
+            "scan pass started in {}: {listed} files, {} from the scan cache, {} to scan",
+            self.scan_cache.dir.display(),
+            listed - pending.len(),
+            pending.len(),
+        );
         if pending.is_empty() {
             self.scanner.cancel();
         } else {
@@ -132,6 +141,7 @@ impl App<'_> {
                 cache_id: self.scan_cache.id,
                 matcher,
                 files: pending,
+                dir: self.scan_cache.dir.clone(),
             });
         }
         self.restyle_explorer();
@@ -297,7 +307,13 @@ impl App<'_> {
             if held.stamp == stamp {
                 continue;
             }
-            if scan::grew(held.stamp, stamp, &held.progress) {
+            let grew = scan::grew(held.stamp, stamp, &held.progress);
+            log::debug!(
+                "navigation: {} changed on disk ({})",
+                path.display(),
+                if grew { "it grew" } else { "rewritten" }
+            );
+            if grew {
                 held.stamp = stamp;
                 held.progress.eof = false;
                 let still_yes = matcher

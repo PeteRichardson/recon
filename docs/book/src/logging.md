@@ -45,9 +45,32 @@ a batch run then write nothing new to stderr.
   fails, or that recon stops at its timeout, is a `warn` record with the
   first line of its stderr. An editor's stderr goes nowhere, so its record
   has only the exit status.
+- **Each file that recon loads into the file view:** a `view job` record
+  with the path, the view, the extent (`preview` or `full`), and if the view
+  cache had it. When recon reads the file, the record gives the bytes read
+  and the time. For a picture, the record gives the decode time, and the
+  scale when recon decoded a large JPEG at ½, ¼ or ⅛ of its size. For a
+  picture file, the read and the decode are one step, so the read time
+  includes the decode.
+- **Each scan pass:** at the start, the directory, the number of files, the
+  number that the scan cache answered and the number that recon must scan.
+  At the end, the number of files scanned and the time. A pass that a new
+  pass stops says `stopped`.
+- **Navigation:** each change of directory, each file opened (with `n`, `N`,
+  `.` and `,` too), each reload with `r`, and each file that changed on disk
+  (it grew, or something wrote it again).
 - **At the end:** how long the session was, how it ended (`q`, `Q`, Ctrl-c,
   SIGTERM, or an error), the `--emit` mode, the number of files opened and
   scanned, and the view cache hits and misses.
+
+## What a `trace` log adds
+
+- **Each prefetch:** a `view job` record, as for a file that you open, with
+  `prefetch` in it. recon prefetches the files near the selection.
+- **Each file in a scan pass:** the path, the answer (`yes`, `no`, or `not
+  known yet` when a pass stopped before the end of the file) and the time.
+  Use `RUST_LOG=recon=debug,recon::scan=trace` to add these records and no
+  other `trace` records.
 
 The log contains paths and filter patterns. It does not contain the
 contents of your files or the text of a search.

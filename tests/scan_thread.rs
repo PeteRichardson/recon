@@ -44,6 +44,7 @@ fn a_scanner_thread_answers_every_file_it_is_given() {
     scanner.start(Request {
         cache_id: 7,
         matcher: set.matcher().expect("selects"),
+        dir: std::path::PathBuf::new(),
         files: vec![
             FileToScan {
                 index: 1,
@@ -112,6 +113,7 @@ fn no_workers_result_is_lost_across_a_handoff() {
     let request = |cache_id| Request {
         cache_id,
         matcher: set.matcher().expect("selects"),
+        dir: std::path::PathBuf::new(),
         files: vec![FileToScan {
             index: 0,
             path: big.clone(),

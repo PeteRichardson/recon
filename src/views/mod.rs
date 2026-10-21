@@ -17,7 +17,7 @@ use cycle::{Head, Steps, Table};
 use read::{Contents, MAX_PREVIEW_BYTES, PREVIEW_LINES};
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::SystemTime;
+use std::time::{Duration, Instant, SystemTime};
 
 /// One way the file view shows a file. `Table::view_name` gives its name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -107,6 +107,9 @@ pub(crate) struct Done {
 
 /// Run `job` in the caller: the work a worker does. With a cache, a file
 /// already read in this view is not read again.
+///
+/// Logs one record for the job (#491): at `Debug` for a file the user asked
+/// for, at `Trace` for a prefetch, which is work for each file.
 pub(crate) fn run(job: &Job, cache: Option<&Cache>) -> Done {
     let path = &job.path;
     let done = |contents, shown, facts| Done {
@@ -129,7 +132,10 @@ pub(crate) fn run(job: &Job, cache: Option<&Cache>) -> Done {
             size: None,
             mime: crate::mime::DIRECTORY,
         };
-        return done(read::directory_listing(path, max_lines), None, Some(facts));
+        let started = Instant::now();
+        let contents = read::directory_listing(path, max_lines);
+        log_job(job, "directory", "", &contents, None, started.elapsed());
+        return done(contents, None, Some(facts));
     }
     let cached = cache.zip(meta.as_ref().and_then(|meta| Key::with_meta(path, meta)));
     // Read for every file, not only when a row asks: the title shows the
@@ -162,18 +168,93 @@ pub(crate) fn run(job: &Job, cache: Option<&Cache>) -> Done {
     {
         return done(Contents::default(), shown);
     }
+    let name = job.table.view_name(view);
     if let Some((cache, key)) = &cached {
         if let Some(contents) = cache.get(key, view, job.extent) {
             crate::logging::count(&crate::logging::CACHE_HITS);
+            log::log!(
+                job_level(job),
+                "view job: {}, cache hit",
+                job_names(job, name)
+            );
             return done(contents, shown);
         }
         crate::logging::count(&crate::logging::CACHE_MISSES);
     }
+    let started = Instant::now();
     let (contents, extent) = read_view(job, view);
+    let cache_state = if cached.is_some() {
+        ", cache miss"
+    } else {
+        ", no cache"
+    };
+    let size = meta.as_ref().map(std::fs::Metadata::len);
+    log_job(job, name, cache_state, &contents, size, started.elapsed());
     if let Some((cache, key)) = cached {
         cache.put(key, view, extent, &contents);
     }
     done(contents, shown)
+}
+
+/// `Trace` for a prefetch, `Debug` for a file the user asked for.
+const fn job_level(job: &Job) -> log::Level {
+    if job.prefetch {
+        log::Level::Trace
+    } else {
+        log::Level::Debug
+    }
+}
+
+/// The start of a job's record: the file, the view, the extent, and
+/// whether it is a prefetch.
+fn job_names(job: &Job, view: &str) -> String {
+    format!(
+        "{}, {view}, {}{}",
+        job.path.display(),
+        match job.extent {
+            Extent::Preview => "preview",
+            Extent::Full => "full",
+        },
+        if job.prefetch { ", prefetch" } else { "" },
+    )
+}
+
+/// The record of a job that read its file: `took` is the whole read, and
+/// a picture's decode is part of it (#491). For a picture in a file the
+/// decoder reads as it decodes, so the decode time is the read time too.
+///
+/// A reader that reads the whole file gives no byte count: `size`, from
+/// the job's one stat, is the count then.
+fn log_job(
+    job: &Job,
+    view: &str,
+    cache_state: &str,
+    contents: &Contents,
+    size: Option<u64>,
+    took: Duration,
+) {
+    let level = job_level(job);
+    if !log::log_enabled!(level) {
+        return;
+    }
+    let decoded = contents.decoded.map_or_else(String::new, |decoded| {
+        let scale = if decoded.scale > 1 {
+            format!(" at 1/{} scale", decoded.scale)
+        } else {
+            String::new()
+        };
+        format!(", decoded in {:.1?}{scale}", decoded.took)
+    });
+    log::log!(
+        level,
+        "view job: {}{cache_state}, {} bytes read in {took:.1?}{decoded}",
+        job_names(job, view),
+        if contents.bytes > 0 {
+            contents.bytes
+        } else {
+            size.unwrap_or(0)
+        },
+    );
 }
 
 /// The job's file in `view`, and how much of it the contents answer for.
@@ -284,6 +365,56 @@ pub(crate) mod tests {
         assert_eq!(done.contents.fallback.as_deref(), Some("binary file"));
         assert!(done.contents.hex);
         assert_eq!(*done.contents.lines, [crate::hex::line(0, b"a\0b")]);
+    }
+
+    /// A job writes one `Debug` record (#491): the file, the view, the
+    /// extent, the cache's answer, the bytes and the time.
+    #[test]
+    fn a_job_logs_what_it_read_and_how_long_it_took() {
+        use crate::logging::capture;
+        capture::install();
+        let text = fixture_file("views_log_job.txt", b"alpha\nbeta\n");
+        let cache = Cache::with_limit(1 << 20);
+
+        run(&job(&text, Table::default()), Some(&cache));
+
+        let records = capture::here_at(log::Level::Debug, "views_log_job.txt");
+        assert_eq!(records.len(), 1, "{:?}", capture::here());
+        let record = &records[0];
+        assert!(record.starts_with("view job: "), "{record}");
+        assert!(record.contains(", raw, preview, cache miss,"), "{record}");
+        assert!(record.contains(" 11 bytes read in "), "{record}");
+
+        run(&job(&text, Table::default()), Some(&cache));
+
+        let records = capture::here_at(log::Level::Debug, "views_log_job.txt");
+        assert_eq!(records.len(), 2, "{:?}", capture::here());
+        assert!(
+            records[1].ends_with(", raw, preview, cache hit"),
+            "{records:?}"
+        );
+    }
+
+    /// A prefetch is work for each file that no one asked for: `Trace`.
+    #[test]
+    fn a_prefetch_job_logs_at_trace() {
+        use crate::logging::capture;
+        capture::install();
+        let text = fixture_file("views_log_prefetch.txt", b"alpha\n");
+
+        run(
+            &Job {
+                prefetch: true,
+                ..job(&text, Table::default())
+            },
+            None,
+        );
+
+        let debug = capture::here_at(log::Level::Debug, "views_log_prefetch.txt");
+        assert!(debug.is_empty(), "{debug:?}");
+        let records = capture::here_at(log::Level::Trace, "views_log_prefetch.txt");
+        assert_eq!(records.len(), 1, "{:?}", capture::here());
+        assert!(records[0].contains(", prefetch, no cache,"), "{records:?}");
     }
 
     #[test]
@@ -405,6 +536,28 @@ pub(crate) mod tests {
         let image = run(&job(&file, table), None).contents.image.unwrap();
 
         assert_eq!((image.width(), image.height()), (side, 32));
+    }
+
+    /// The record of a picture names its decode, and the scale when it was
+    /// reduced (#491).
+    #[test]
+    fn a_picture_logs_its_decode_and_its_scale() {
+        use crate::logging::capture;
+        capture::install();
+        let side = read::MAX_IMAGE_SIDE as u16;
+        let file = fixture_file("views_log_half.jpg", &grey_jpeg(side * 2, 64));
+        let table = Table::new(&[FileType::with_views("*.jpg", &[View::Image])]);
+
+        run(&job(&file, table), None);
+
+        let records = capture::here_at(log::Level::Debug, "views_log_half.jpg");
+        assert_eq!(records.len(), 1, "{:?}", capture::here());
+        assert!(
+            records[0].contains(", image, preview, no cache,"),
+            "{records:?}"
+        );
+        assert!(records[0].contains(", decoded in "), "{records:?}");
+        assert!(records[0].ends_with(" at 1/2 scale"), "{records:?}");
     }
 
     /// A JPEG too small to scale decodes as it did before #484, pixel for

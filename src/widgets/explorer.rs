@@ -321,7 +321,11 @@ impl Explorer<'_> {
     /// so a bad path now lists empty at the path the user actually named,
     /// rather than at whatever the unresolved fallback happened to be.
     fn set_dir(&mut self, dir: PathBuf, select: Select) {
-        self.dir = crate::path::lexical_absolute(&dir);
+        let dir = crate::path::lexical_absolute(&dir);
+        if dir != self.dir {
+            log::debug!("navigation: directory {}", dir.display());
+        }
+        self.dir = dir;
         self.entries = read_dir_entries(&self.dir);
         // Fresh entries are all `Unknown`, so every row is visible whatever
         // the mode; `rebuild_visible` also rebuilds the drawn list. The
