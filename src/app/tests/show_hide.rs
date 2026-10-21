@@ -2,23 +2,6 @@ use super::*;
 
 // ---- #300: show and hide each pane ------------------------------------
 
-/// An app over a one-line file, with `global.hide.view` bound to `T` as
-/// a user would in `config.toml`: it has no default key.
-fn app_with_hide_view_key(name: &str) -> App<'static> {
-    let mut bindings = std::collections::BTreeMap::new();
-    bindings.insert("global.hide.view".to_string(), vec!["T".to_string()]);
-    let (keymap, _) = crate::keymap::Keymap::new(&crate::keymap::config::KeymapConfig { bindings })
-        .expect("a valid keymap");
-    let file = fixture_path(name, "alpha\n");
-    App::new(&Startup {
-        bindings: keymap,
-        ..Startup::from(Config {
-            path: Some(file.display().to_string()),
-            ..Config::default()
-        })
-    })
-}
-
 #[test]
 fn e_and_f_hide_their_panes_and_lowercase_shows_them_again() {
     let mut app = app_over_file("hide_ef", "alpha\n");
@@ -44,15 +27,12 @@ fn e_and_f_hide_their_panes_and_lowercase_shows_them_again() {
 }
 
 #[test]
-fn the_file_view_hides_by_a_bound_key_and_t_shows_it_again() {
-    let mut app = app_with_hide_view_key("hide_view");
+fn capital_t_hides_the_file_view_and_t_shows_it_again() {
+    let mut app = app_over_file("hide_view", "alpha\n");
     key(&mut app, KeyCode::Char('t'));
 
     key(&mut app, KeyCode::Char('T'));
-    assert!(
-        !app.panes.is_shown(Focus::View),
-        "the bound key did not hide the view"
-    );
+    assert!(!app.panes.is_shown(Focus::View), "T did not hide the view");
     assert_eq!(
         app.focus,
         Focus::Filters,
@@ -84,7 +64,7 @@ fn a_hidden_pane_is_not_drawn() {
 
 #[test]
 fn the_last_shown_pane_cannot_be_hidden() {
-    let mut app = app_with_hide_view_key("hide_last");
+    let mut app = app_over_file("hide_last", "alpha\n");
     key(&mut app, KeyCode::Char('t'));
     key(&mut app, KeyCode::Char('z'));
 

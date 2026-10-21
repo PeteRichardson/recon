@@ -463,10 +463,8 @@ pub const KEYMAP: &[Section] = &[
                 action: "Hide the filter pane",
                 names: &["global.hide.filters"],
             },
-            // No default key (#300) — see `keymap::UNBOUND`. The overlay
-            // draws "unbound" until a `[keymap]` line gives it one.
             Binding {
-                keys: &[],
+                keys: &["T"],
                 action: "Hide the file view",
                 names: &["global.hide.view"],
             },
@@ -1922,15 +1920,7 @@ mod tests {
         let literal: Vec<String> = KEYMAP
             .iter()
             .flat_map(|section| section.bindings)
-            // A row naming an action with no default key (#300) draws
-            // `UNBOUND`, which is what a default keymap leaves it.
-            .map(|binding| {
-                if binding.keys.is_empty() && !binding.names.is_empty() {
-                    UNBOUND.to_string()
-                } else {
-                    binding.keys.join(" / ")
-                }
-            })
+            .map(|binding| binding.keys.join(" / "))
             .collect();
 
         let rendered: Vec<String> = rows(&crate::keymap::Keymap::default())

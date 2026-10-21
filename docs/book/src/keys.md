@@ -9,7 +9,7 @@ The default keys that this guide names. `?` in recon shows the full keymap.
 | --- | --- |
 | `?` | Show the keymap |
 | `e` / `t` / `f` | Show and focus the explorer / file view / filter pane |
-| `E` / `F` | Hide the explorer / filter pane (the file view has no default key) |
+| `E` / `T` / `F` | Hide the explorer / file view / filter pane |
 | `z` | Zoom the focused pane, or show the other panes again |
 | `space` | Peek: turn off all filters and change the display mode; press again to restore |
 | `!` | Turn off all filters; press again to restore |

@@ -495,8 +495,8 @@ Global (`src/app/events.rs`), handled before the focused pane sees the key:
 | `!` | Disable every filter, remembering which were on; restores exactly that (or enables all, if none were on to remember) | `global.filters.disable` |
 | `L` | Open the set picker — choose which filter sets the filter pane lists. See [The set picker](#the-set-picker) | `global.sets` |
 | `E` | Hide the explorer | `global.hide.explorer` |
+| `T` | Hide the file view | `global.hide.view` |
 | `F` | Hide the filter pane | `global.hide.filters` |
-| — | Hide the file view. It has no default key; bind one in `config.toml`, for example `"global.hide.view" = "T"` | `global.hide.view` |
 | `z` | Zoom: if more than one pane is shown, hide all but the focused pane; if only one is shown, show the panes the last zoom hid, or all three | `global.zoom.focused` |
 | `b` | The same as `t`, then `z`: zoom the file view, or — pressed again — show the others and keep focus in the file view | `global.zoom.view` |
 | `o` | **Hand off** the selected file: to the app that its `[[filetype]]` row names, else a text file to your editor at the line the cursor is on, else to the system's default app — see [Opening an editor](#opening-an-editor) | `global.handoff` |
@@ -586,8 +586,9 @@ file view shows. Any pane can be hidden:
   used and the file view and the filter pane get its width.
 - `F` hides the filter pane — to move around the file system with no
   filters, where recon looks like a plain TUI file manager.
-- `global.hide.view` hides the file view. It has no default key.
-- `e`, `t` and `f` show their pane if it is hidden, and focus it.
+- `T` hides the file view.
+- `e`, `t` and `f` show their pane if it is hidden, and focus it. The
+  lowercase key shows a pane, and the uppercase key hides it.
 
 At least one pane is always shown: a hide of the last one does nothing, and
 the status line says so. If you hide the focused pane, focus goes to the file

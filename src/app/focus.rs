@@ -5,7 +5,7 @@ use crate::keymap::ActionId;
 use crate::panes;
 use crate::widgets::Focus;
 
-/// What `E`, `F` or `global.hide.view` says when the pane is the last one
+/// What `E`, `T` or `F` says when the pane is the last one
 /// shown (#300).
 pub(super) const LAST_PANE: &str = "at least one pane stays shown";
 
@@ -54,7 +54,7 @@ impl App<'_> {
         self.focus = pane;
     }
 
-    /// `E`, `F` and `global.hide.view`: take `pane` off the screen.
+    /// `E`, `T` and `F`: take `pane` off the screen.
     ///
     /// The last shown pane is refused, with a message: a window with no
     /// pane in it has no key a user could find to undo it. Focus leaves a

@@ -163,8 +163,7 @@ pub(crate) enum ActionId {
     GlobalToggleHide,
     GlobalZoomView,
     GlobalZoomFocused,
-    /// Hide one pane (#300). `global.hide.view` has no default key — see
-    /// `UNBOUND`.
+    /// Hide one pane (#300).
     GlobalHideExplorer,
     GlobalHideView,
     GlobalHideFilters,
@@ -506,6 +505,7 @@ pub(crate) const DEFAULT: &[(Scope, &str, ActionId)] = &[
     (Scope::Global, "b", ActionId::GlobalZoomView),
     (Scope::Global, "z", ActionId::GlobalZoomFocused),
     (Scope::Global, "E", ActionId::GlobalHideExplorer),
+    (Scope::Global, "T", ActionId::GlobalHideView),
     (Scope::Global, "F", ActionId::GlobalHideFilters),
     (Scope::Global, "o", ActionId::GlobalHandOff),
     (Scope::Global, "O", ActionId::GlobalEditorProject),
@@ -708,16 +708,6 @@ pub(crate) const DEFAULT: &[(Scope, &str, ActionId)] = &[
 /// the hex view has it now (#242).
 pub(crate) const RESERVED: &[(&str, &str)] = &[(":", "a command palette")];
 
-/// Actions with no key in `DEFAULT`, each with the scope a `[keymap]` line
-/// binds it in (#300).
-///
-/// Every other action has at least one `DEFAULT` row, and that row is where
-/// its scope comes from. An action here has none to read, so it says its
-/// scope itself. `global.hide.view` is the one: hiding the file view is
-/// rare enough that no key is worth spending on it by default, and a user
-/// who wants one — `T`, say — binds it in `config.toml`.
-pub(crate) const UNBOUND: &[(Scope, ActionId)] = &[(Scope::Global, ActionId::GlobalHideView)];
-
 /// Which reserved keys `labels` binds, each paired with what claims it.
 ///
 /// Compared as **keys**, not as label text. One label can name many keys, and
@@ -769,28 +759,17 @@ pub(crate) fn action_named(name: &str) -> Option<ActionId> {
 /// Every action, once each, in `DEFAULT`'s order.
 ///
 /// `DEFAULT` holds more rows than actions, because many actions carry a
-/// second key and `hit.next`/`hit.prev` each hold a row in two scopes; an
-/// `UNBOUND` action holds none. This yields
-/// each action one time, which is the unit `--print-keymap` prints and the
-/// unit a `[keymap]` line names.
-///
-/// An `UNBOUND` action follows the last action of its own scope, so
-/// `--print-keymap` prints it with the rest of that scope's group.
+/// second key and `hit.next`/`hit.prev` each hold a row in two scopes. This
+/// yields each action one time, which is the unit `--print-keymap` prints and
+/// the unit a `[keymap]` line names.
 pub(crate) fn every_action() -> impl Iterator<Item = ActionId> {
-    let mut actions: Vec<(Scope, ActionId)> = Vec::new();
-    for (scope, _, action) in DEFAULT {
-        if !actions.iter().any(|(_, seen)| seen == action) {
-            actions.push((*scope, *action));
+    let mut actions: Vec<ActionId> = Vec::new();
+    for (_, _, action) in DEFAULT {
+        if !actions.contains(action) {
+            actions.push(*action);
         }
     }
-    for (scope, action) in UNBOUND {
-        let at = actions
-            .iter()
-            .rposition(|(seen, _)| seen == scope)
-            .map_or(actions.len(), |last| last + 1);
-        actions.insert(at, (*scope, *action));
-    }
-    actions.into_iter().map(|(_, action)| action)
+    actions.into_iter()
 }
 
 /// Every action name, in table order, each once — the list an unknown name's
@@ -922,8 +901,7 @@ impl Keymap {
     /// whoever binds an action to different keys per scope next.
     ///
     /// Every `ActionId` holds at least one `DEFAULT` row, so there is always
-    /// a position to replace — except an `UNBOUND` one, which has none and
-    /// is appended in its own scope instead.
+    /// a position to replace.
     fn rebind(&mut self, action: ActionId, labels: &[String]) {
         let mut replaced: Vec<Scope> = Vec::new();
         let mut entries = Vec::with_capacity(self.entries.len());
@@ -934,13 +912,6 @@ impl Keymap {
                 replaced.push(scope);
                 entries.extend(labels.iter().map(|label| (scope, label.clone(), action)));
             }
-        }
-        // An `UNBOUND` action holds no row to replace, so its new keys go
-        // at the end, in the scope `UNBOUND` names for it.
-        if replaced.is_empty()
-            && let Some((scope, _)) = UNBOUND.iter().find(|(_, unbound)| *unbound == action)
-        {
-            entries.extend(labels.iter().map(|label| (*scope, label.clone(), action)));
         }
         self.entries = entries;
     }
@@ -1178,14 +1149,7 @@ fn first_scope_of(defaults: &Keymap, action: ActionId) -> Scope {
         .entries
         .iter()
         .find(|(_, _, a)| *a == action)
-        .map(|(scope, _, _)| *scope)
-        .or_else(|| {
-            UNBOUND
-                .iter()
-                .find(|(_, unbound)| *unbound == action)
-                .map(|(scope, _)| *scope)
-        })
-        .unwrap_or(Scope::Global)
+        .map_or(Scope::Global, |(scope, _, _)| *scope)
 }
 
 /// Every key `action` no longer answers to, and what holds each one now.
@@ -1770,10 +1734,6 @@ mod tests {
             if !labels.contains(label) {
                 labels.push(label);
             }
-        }
-        // An `UNBOUND` action is printed too, with no keys: `= []`.
-        for (_, action) in UNBOUND {
-            expected.entry(action.name()).or_default();
         }
 
         let parsed_names: std::collections::BTreeSet<&str> =
