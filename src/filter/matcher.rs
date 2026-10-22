@@ -23,8 +23,14 @@ pub const MAX_PATTERNS: usize = Bits::BITS as usize;
 /// not a failure, and has no reason to report.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScanOff {
-    /// More patterns than `MAX_PATTERNS` bits.
-    TooMany { patterns: usize, limit: usize },
+    /// More patterns than `MAX_PATTERNS` bits. `builtin` is how many of
+    /// them are the built-in `definitions` set's slots, which the user did
+    /// not write as patterns (#396).
+    TooMany {
+        patterns: usize,
+        builtin: usize,
+        limit: usize,
+    },
     /// The patterns do not compile together — the regex engine's size limit,
     /// usually. `recompile` logs the engine's own message.
     NotCompiled,
@@ -34,9 +40,14 @@ pub enum ScanOff {
 impl std::fmt::Display for ScanOff {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::TooMany { patterns, limit } => {
-                write!(f, "file matching off: {patterns} patterns, limit {limit}")
-            }
+            Self::TooMany {
+                patterns,
+                builtin,
+                limit,
+            } => write!(
+                f,
+                "file matching off: {patterns} patterns ({builtin} built-in), limit {limit}"
+            ),
             Self::NotCompiled => write!(f, "file matching off: patterns too large"),
         }
     }
@@ -189,6 +200,11 @@ impl ActiveFilters {
             None => Some(ScanOff::NotCompiled),
             Some(set) if set.len() > MAX_PATTERNS => Some(ScanOff::TooMany {
                 patterns: set.len(),
+                builtin: self
+                    .filters
+                    .iter()
+                    .filter(|filter| filter.predicate.is_definition())
+                    .count(),
                 limit: MAX_PATTERNS,
             }),
             Some(_) => None,
@@ -369,8 +385,13 @@ mod tests {
             set.scan_off(),
             Some(ScanOff::TooMany {
                 patterns: MAX_PATTERNS + 1,
+                builtin: Kind::ALL.len(),
                 limit: MAX_PATTERNS
             })
+        );
+        assert_eq!(
+            set.scan_off().expect("off").to_string(),
+            "file matching off: 129 patterns (11 built-in), limit 128"
         );
     }
 

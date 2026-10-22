@@ -1368,7 +1368,7 @@ mod tests {
         assert!(set.filters_in(index).all(|(_, f)| !f.enabled));
         assert!(
             set.filters_in(index)
-                .all(|(_, f)| matches!(f.predicate, Predicate::Definition(_)))
+                .all(|(_, f)| f.predicate.is_definition())
         );
     }
 
@@ -1898,7 +1898,7 @@ mod tests {
         let set_index = |set: &ActiveFilters| {
             set.filters()
                 .iter()
-                .position(|filter| matches!(filter.predicate, Predicate::Definition(_)))
+                .position(|filter| filter.predicate.is_definition())
                 .expect("a built-in filter")
         };
         let mut set = ActiveFilters::new();

@@ -185,7 +185,7 @@ fn the_status_line_says_when_file_matching_is_off() {
     app.filters.add("one too many").expect("valid pattern");
     let status = status_line_at(&mut app, 200);
     assert!(
-        status.contains("file matching off: 129 patterns, limit 128"),
+        status.contains("file matching off: 129 patterns (11 built-in), limit 128"),
         "no note: {status}"
     );
 

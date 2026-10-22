@@ -2746,13 +2746,15 @@ needs every line's answer at once — see *Definition filters*.
 
 ## Known Limitations
 
-- **The explorer's file matching covers at most 128 patterns**, counted across
-  every listed set whether or not it is enabled — and the built-in
-  `definitions` set's eleven are among them, so 117 are yours. An unlisted
-  set does not count: `--unlist` a large set you do not need for this run. Above that the
-  explorer's marking switches off — never wrong, just absent — while the view
-  keeps filtering. The status line then says so, for example
-  `file matching off: 140 patterns, limit 128`, and `--emit files` writes the
+- **The explorer's file matching covers at most 128 patterns.** The limit
+  affects only how the explorer marks files; the view filters with every
+  pattern. The count includes every filter in every listed set, enabled or
+  disabled, and the built-in `definitions` set's eleven slots, so 117 are
+  yours. An unlisted set does not count: `--unlist` a large set you do not
+  need for this run. Above the limit the explorer's marking switches off —
+  never wrong, just absent. The status line then says so, with the built-in
+  slots counted apart, for example
+  `file matching off: 140 patterns (11 built-in), limit 128`, and `--emit files` writes the
   same words to stderr. `file matching off: patterns too large` means the
   patterns did not compile together, which the regex engine's size limit can
   cause before the count does.
