@@ -327,6 +327,14 @@ pub struct Config {
     #[arg(short = 'n', long)]
     pub line_numbers: bool,
 
+    /// Follow a file that grows, as `tail -f` does.
+    ///
+    /// In the TUI, follow mode starts on PATH, as `Ctrl-t` would turn it on.
+    /// In batch mode, print the matching lines of the one file PATH names,
+    /// then each new matching line as it comes, until SIGINT or SIGTERM.
+    #[arg(short = 'f', long)]
+    pub follow: bool,
+
     /// Enable a saved filter set at startup, as `NAME` for its `default`
     /// profile or `NAME:LIST` for the filters a comma-separated list of
     /// profiles and filter names turns on. Repeatable.
@@ -687,6 +695,9 @@ pub struct EditorConfig {
     pub file: Option<String>,
 }
 
+/// What `--follow` with a directory is told (#493), here and in batch mode.
+pub(crate) const FOLLOW_NEEDS_ONE_FILE: &str = "--follow needs one file, not a directory";
+
 /// Why a config file could not be turned into a [`FileConfig`].
 ///
 /// Both variants carry the path. An error that says "invalid config" without
@@ -710,6 +721,10 @@ pub enum ConfigError {
     /// `--line-numbers` without `--emit lines`. Refused rather than ignored:
     /// a script that meant `lines` should find out (#143).
     LineNumbersNeedLines,
+    /// `--follow` with an `--emit` other than `lines` (#493).
+    FollowNeedsLines,
+    /// `--follow` with a directory: follow mode follows one file (#493).
+    FollowNeedsOneFile,
     /// `--set` naming a set `filters.toml` does not define (#143). `known`
     /// is every set it does define, for the message.
     UnknownSet { name: String, known: Vec<String> },
@@ -844,6 +859,8 @@ impl fmt::Display for ConfigError {
                 write!(f, "invalid config file {}\n{source}", path.display())
             }
             Self::LineNumbersNeedLines => write!(f, "--line-numbers applies to --emit lines"),
+            Self::FollowNeedsLines => write!(f, "--follow applies to --emit lines"),
+            Self::FollowNeedsOneFile => write!(f, "{FOLLOW_NEEDS_ONE_FILE}"),
             // The built-in set is listed apart: it is among the known names
             // — `--set definitions` is accepted (#220) — but no set file
             // defines it, and the message says what the set files define.
@@ -1133,6 +1150,18 @@ impl Config {
     pub fn check_flags(&self) -> Result<(), ConfigError> {
         if self.line_numbers && self.emit != Some(crate::emit::Emit::Lines) {
             return Err(ConfigError::LineNumbersNeedLines);
+        }
+        if self.follow
+            && self
+                .emit
+                .is_some_and(|emit| emit != crate::emit::Emit::Lines)
+        {
+            return Err(ConfigError::FollowNeedsLines);
+        }
+        // A `PATH` that names a directory. Batch mode refuses one that came
+        // from stdin, or the current directory, itself.
+        if self.follow && std::path::Path::new(self.path_or_current_dir()).is_dir() {
+            return Err(ConfigError::FollowNeedsOneFile);
         }
         Ok(())
     }
@@ -2002,6 +2031,43 @@ mod tests {
             Config::default().check_flags().is_ok(),
             "neither flag is fine"
         );
+    }
+
+    /// `--follow` prints lines of one file: with another emit, or with a
+    /// directory, it is refused (#493).
+    #[test]
+    fn follow_is_refused_with_an_emit_other_than_lines() {
+        use crate::emit::Emit;
+        for emit in [Some(Emit::Files), Some(Emit::Cwd)] {
+            let config = Config {
+                follow: true,
+                emit,
+                ..Config::default()
+            };
+            let err = config.check_flags().expect_err("must be refused");
+            assert_eq!(err.to_string(), "--follow applies to --emit lines");
+        }
+        for emit in [None, Some(Emit::Lines)] {
+            let config = Config {
+                follow: true,
+                emit,
+                path: Some("Cargo.toml".to_string()),
+                ..Config::default()
+            };
+            assert!(config.check_flags().is_ok(), "{emit:?}");
+        }
+        // No `PATH` is the current directory.
+        for path in [None, Some("src".to_string())] {
+            let config = Config {
+                follow: true,
+                path,
+                ..Config::default()
+            };
+            let err = config.check_flags().expect_err("a directory is refused");
+            assert_eq!(err.to_string(), "--follow needs one file, not a directory");
+        }
+        assert!(parse_clean(["recon", "-f"]).unwrap().follow);
+        assert!(parse_clean(["recon", "--follow"]).unwrap().follow);
     }
 
     // ---- -e, -s, -u, -w (#440) ------------------------------------------

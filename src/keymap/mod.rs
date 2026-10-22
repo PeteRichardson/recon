@@ -174,6 +174,8 @@ pub(crate) enum ActionId {
     GlobalReload,
     /// Step to the next view in the file's view cycle (#242, #455).
     GlobalNextView,
+    /// `Ctrl-t`: follow the file in the view as it grows, or stop (#493).
+    GlobalFollow,
     GlobalVisualChar,
     GlobalVisualLine,
     GlobalYank,
@@ -359,6 +361,7 @@ impl ActionId {
             Self::GlobalHandOff => "global.handoff",
             Self::GlobalReload => "global.reload",
             Self::GlobalNextView => "global.view.next",
+            Self::GlobalFollow => "global.follow",
             Self::GlobalVisualChar => "global.visual.char",
             Self::GlobalVisualLine => "global.visual.line",
             Self::GlobalYank => "global.yank",
@@ -513,6 +516,7 @@ pub(crate) const DEFAULT: &[(Scope, &str, ActionId)] = &[
     // Global, not `Scope::View`, so it works while the explorer steps
     // through files: that is where a binary file is first met (#242).
     (Scope::Global, "-", ActionId::GlobalNextView),
+    (Scope::Global, "Ctrl-t", ActionId::GlobalFollow),
     (Scope::Global, "v", ActionId::GlobalVisualChar),
     (Scope::Global, "V", ActionId::GlobalVisualLine),
     (Scope::Global, "y", ActionId::GlobalYank),

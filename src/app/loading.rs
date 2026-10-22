@@ -47,6 +47,9 @@ pub(super) enum Landing {
     Keep(usize),
     /// The first interesting line from that end: a cross-file step.
     FirstInteresting { backwards: bool },
+    /// The last visible line, at the bottom of the pane: a followed file
+    /// read again while the cursor was at its end (#493).
+    End,
 }
 
 /// A request whose answer has not come.
@@ -140,6 +143,12 @@ impl Loading {
         })
     }
 
+    /// Whether the pane shows a file's own text in the raw view: the one
+    /// view follow mode works in (#493).
+    pub(super) fn shows_raw(&self) -> bool {
+        self.shown.is_some_and(|shown| shown.view == View::Raw)
+    }
+
     /// The spinner's frame while a view is late.
     pub(super) fn spinner(&self) -> Option<char> {
         let pending = self.pending.as_ref()?;
@@ -159,7 +168,15 @@ impl App<'_> {
     /// Show `path` read to `extent`, and put the cursor where `landing`
     /// says. Waits up to `WAIT` for the answer; past that the pane shows a
     /// placeholder, and `drain_views` shows the file when it comes.
+    ///
+    /// A followed file is always read whole, so that its tail starts at its
+    /// end (#493).
     pub(super) fn open_view(&mut self, path: &Path, extent: Extent, landing: Landing) {
+        let extent = if self.following.is_followed(path) {
+            Extent::Full
+        } else {
+            extent
+        };
         self.opened += 1;
         let px = self.view_px();
         let loading = &mut self.loading;
@@ -200,6 +217,7 @@ impl App<'_> {
         self.view.show(path, contents);
         self.sync_document();
         self.refresh_view();
+        self.rewatch();
     }
 
     /// Show an empty view titled `path`, and drop any load still on its way,
@@ -273,7 +291,12 @@ impl App<'_> {
                     self.land_on(target);
                 }
             }
+            Landing::End => {
+                self.refresh_view();
+                self.place_cursor_at_end();
+            }
         }
+        self.rewatch();
         if let Some(shown) = done.shown
             && let Some(reason) = &contents.fallback
         {

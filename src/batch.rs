@@ -13,7 +13,8 @@ use crate::config::CURRENT_DIR;
 use crate::document::{self, Document, Mode};
 use crate::emit::{Emit, Exit, path_bytes};
 use crate::filter::{ActiveFilters, Matcher};
-use crate::path::lexical_absolute;
+use crate::follow::{Change, Tail};
+use crate::path::{file_label, lexical_absolute};
 use crate::scan::{self, Progress};
 use crate::startup::Startup;
 use crate::widgets::explorer::sorted_entries;
@@ -46,7 +47,10 @@ pub(crate) enum Source {
 /// and write what `--emit` names to `out`. Read-failure warnings go to
 /// stderr as they are met; the `Exit` carries the summary, the failure
 /// count and any write error for `main` to deliver.
-pub fn run(startup: &Startup, out: &mut impl Write) -> Result<Exit> {
+///
+/// `stop` ends `--follow`, which runs until it is set: `main` sets it from
+/// SIGINT and SIGTERM (#493).
+pub fn run(startup: &Startup, out: &mut impl Write, stop: &AtomicBool) -> Result<Exit> {
     let config = &startup.config;
     let Some(what) = config.emit else {
         return Err(eyre!("batch mode needs --emit"));
@@ -68,6 +72,20 @@ pub fn run(startup: &Startup, out: &mut impl Write) -> Result<Exit> {
     } else {
         Mode::Dimmed
     };
+    if config.follow {
+        return follow_lines(
+            &inputs,
+            &filters,
+            mode,
+            config.line_numbers,
+            out,
+            &mut io::stderr(),
+            || {
+                std::thread::sleep(crate::follow::INTERVAL);
+                !stop.load(std::sync::atomic::Ordering::Relaxed)
+            },
+        );
+    }
     Ok(collect(
         what,
         &inputs,
@@ -245,12 +263,7 @@ fn collect_lines(
         document.set_mode(mode);
         document.evaluate(filters);
         read += 1;
-        // The TUI's definition, `App::interesting_count` in viewport.rs.
-        interesting += document
-            .verdicts()
-            .iter()
-            .filter(|v| is_interesting(v))
-            .count();
+        interesting += document.interesting_count();
         let text = document.lines();
         let prefix = several.then(|| path_bytes(path));
         for &source in document.visible() {
@@ -263,23 +276,139 @@ fn collect_lines(
     }
     let written = written.and_then(|()| out.flush());
     let subject = match inputs.files.as_slice() {
-        [only] => only.file_name().map_or_else(
-            || only.display().to_string(),
-            |name| name.to_string_lossy().into_owned(),
-        ),
+        [only] => file_label(only),
         _ => count(read, "file"),
     };
-    let summary = match mode {
+    Exit::Streamed {
+        summary: lines_summary(mode, emitted, &subject, interesting),
+        failed,
+        written,
+    }
+}
+
+/// The `--emit lines` summary: what was emitted, of what, in which mode.
+fn lines_summary(mode: Mode, emitted: usize, subject: &str, interesting: usize) -> String {
+    match mode {
         Mode::Dimmed => format!(
             "recon: emitted {emitted} lines of {subject}, dim mode ({interesting} match) — pass --hide to emit matches only"
         ),
         Mode::FilteredOnly => format!("recon: emitted {emitted} lines of {subject}, hide mode"),
-    };
-    Exit::Streamed {
-        summary,
-        failed,
-        written,
     }
+}
+
+/// `--emit lines --follow` (#493): the one input's visible lines, then each
+/// new visible line as the file grows, until `wait` says to stop. `wait`
+/// runs between two looks at the file: in `run` it sleeps
+/// `follow::INTERVAL` and reads the SIGINT and SIGTERM flag.
+///
+/// Each line is flushed as it is written, so a pipe gets it at once. A
+/// last line with no line end yet is held until its end comes, so that it
+/// is written once, whole, and not again as it grows; at the stop it is
+/// written as it is. A file that became shorter or was replaced is read
+/// again from the start, as `tail -F` does, with a warning.
+///
+/// # Errors
+/// A directory, or a list of more than one file: follow mode follows one.
+pub(crate) fn follow_lines(
+    inputs: &Inputs,
+    filters: &ActiveFilters,
+    mode: Mode,
+    line_numbers: bool,
+    out: &mut impl Write,
+    warnings: &mut impl Write,
+    mut wait: impl FnMut() -> bool,
+) -> Result<Exit> {
+    let path = match (&inputs.from, inputs.files.as_slice()) {
+        (Source::Directory(_), _) => {
+            return Err(eyre!(crate::config::FOLLOW_NEEDS_ONE_FILE));
+        }
+        (_, [only]) => only.clone(),
+        (_, files) => return Err(eyre!("--follow needs one file, not {}", files.len())),
+    };
+    let subject = file_label(&path);
+    let read = |warnings: &mut _| {
+        let document = Document::read(&path).map_err(|err| warn(warnings, &path, &err));
+        let mut document = document.ok()?;
+        document.set_mode(mode);
+        document.evaluate(filters);
+        Some(document)
+    };
+    let Some(mut document) = read(warnings) else {
+        return Ok(Exit::Streamed {
+            summary: lines_summary(mode, 0, &subject, 0),
+            failed: 1,
+            written: Ok(()),
+        });
+    };
+    let mut tail = Tail::after_lines(&path, document.lines().len());
+    let mut emitted = 0;
+    // Source lines before this one are written, or hidden.
+    let mut done = 0;
+    let mut written;
+    loop {
+        let whole = document.lines().len() - usize::from(tail.partial());
+        written = write_new(&document, done..whole, line_numbers, out, &mut emitted);
+        done = whole;
+        if written.is_err() || !wait() {
+            break;
+        }
+        match tail.poll() {
+            None => {}
+            Some(Change::Grew {
+                replace_last,
+                lines,
+            }) => document.append(lines, replace_last, filters),
+            Some(Change::Reset) => {
+                let _ = writeln!(
+                    warnings,
+                    "recon: {} became shorter or was replaced: read again from the start",
+                    path.display()
+                );
+                // A file that cannot be read now is followed from nothing.
+                document = read(warnings).unwrap_or_default();
+                tail = Tail::after_lines(&path, document.lines().len());
+                done = 0;
+            }
+            Some(Change::Gone) => {
+                let _ = writeln!(
+                    warnings,
+                    "recon: {} is gone: waiting for it to come back",
+                    path.display()
+                );
+            }
+        }
+    }
+    if written.is_ok() {
+        let end = document.lines().len();
+        written = write_new(&document, done..end, line_numbers, out, &mut emitted);
+    }
+    let interesting = document.interesting_count();
+    Ok(Exit::Streamed {
+        summary: lines_summary(mode, emitted, &subject, interesting),
+        failed: 0,
+        written,
+    })
+}
+
+/// Write the visible lines among source lines `range`, and flush them.
+fn write_new(
+    document: &Document,
+    range: std::ops::Range<usize>,
+    line_numbers: bool,
+    out: &mut impl Write,
+    emitted: &mut usize,
+) -> io::Result<()> {
+    let visible = document.visible();
+    let first = visible.partition_point(|&source| source < range.start);
+    let text = document.lines();
+    for &source in visible[first..]
+        .iter()
+        .take_while(|&&source| source < range.end)
+    {
+        write_line(out, None, line_numbers, source, &text[source])?;
+        *emitted += 1;
+    }
+    out.flush()
 }
 
 /// One `--emit lines` line: `path<TAB>` when there is a `path`, `N<TAB>`
@@ -515,7 +644,7 @@ mod tests {
     use crate::document::Mode;
     use crate::emit::{Emit, Exit};
     use crate::filter::ActiveFilters;
-    use crate::fixtures::{fixture_dir, fixture_file, fixture_path};
+    use crate::fixtures::{append, fixture_dir, fixture_file, fixture_path};
     use std::fs;
     use std::io::Cursor;
 
@@ -789,6 +918,108 @@ mod tests {
 
     fn warnings_of(buf: &[u8]) -> String {
         String::from_utf8(buf.to_vec()).expect("utf-8 warnings")
+    }
+
+    // ---- --follow (#493) ----------------------------------------------------
+
+    /// The matching lines, then each new one as it comes; a line with no
+    /// line end yet waits for its end, so it is printed once, whole.
+    #[test]
+    fn follow_prints_each_new_matching_line_as_it_comes() {
+        let inputs = one_file("batch_follow.log", b"hit\nmiss\n");
+        let path = inputs.files[0].clone();
+        let mut out = Vec::new();
+        let mut warnings = Vec::new();
+        let mut step = 0;
+        let exit = follow_lines(
+            &inputs,
+            &filters_matching("hit"),
+            Mode::FilteredOnly,
+            true,
+            &mut out,
+            &mut warnings,
+            || {
+                step += 1;
+                match step {
+                    1 => append(&path, b"hit two\nmiss\nhit thr"),
+                    2 => append(&path, b"ee\n"),
+                    _ => return false,
+                }
+                true
+            },
+        )
+        .expect("one file");
+        let (lines, summary, failed) = emitted(exit, &out);
+        assert_eq!(lines, ["1\thit", "3\thit two", "5\thit three"]);
+        assert_eq!(failed, 0);
+        assert_eq!(
+            summary,
+            "recon: emitted 3 lines of batch_follow.log, hide mode"
+        );
+        assert_eq!(warnings_of(&warnings), "");
+    }
+
+    #[test]
+    fn follow_reads_a_truncated_file_again_from_the_start() {
+        let inputs = one_file("batch_follow_truncated.log", b"hit one\n");
+        let path = inputs.files[0].clone();
+        let mut out = Vec::new();
+        let mut warnings = Vec::new();
+        let mut step = 0;
+        let exit = follow_lines(
+            &inputs,
+            &filters_matching("hit"),
+            Mode::FilteredOnly,
+            false,
+            &mut out,
+            &mut warnings,
+            || {
+                step += 1;
+                if step == 1 {
+                    fs::write(&path, b"hit\n").expect("truncate");
+                }
+                step < 2
+            },
+        )
+        .expect("one file");
+        let (lines, _, _) = emitted(exit, &out);
+        assert_eq!(lines, ["hit one", "hit"]);
+        assert!(
+            warnings_of(&warnings).contains("read again from the start"),
+            "{}",
+            warnings_of(&warnings)
+        );
+    }
+
+    #[test]
+    fn follow_refuses_a_directory_and_more_than_one_file() {
+        let dir = fixture_dir("batch_follow_dir");
+        fs::write(dir.join("a.log"), "x").expect("write");
+        let listed = path_inputs(&dir).expect("lists");
+        let err = follow_lines(
+            &listed,
+            &ActiveFilters::new(),
+            Mode::Dimmed,
+            false,
+            &mut Vec::new(),
+            &mut Vec::new(),
+            || false,
+        )
+        .expect_err("a directory is refused");
+        assert_eq!(err.to_string(), "--follow needs one file, not a directory");
+
+        let two = from_stdin("batch_follow_two", &[("a.log", "x"), ("b.log", "y")]);
+        let err = follow_lines(
+            &two,
+            &ActiveFilters::new(),
+            Mode::Dimmed,
+            false,
+            &mut Vec::new(),
+            &mut Vec::new(),
+            || false,
+        )
+        .expect_err("two files are refused");
+        assert_eq!(err.to_string(), "--follow needs one file, not 2");
     }
 
     // ---- lines -------------------------------------------------------------

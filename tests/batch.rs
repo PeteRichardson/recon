@@ -802,3 +802,89 @@ fn recon_log_gets_the_startup_snapshot_with_timestamps_and_modules() {
         "no timestamp or module: {snapshot}"
     );
 }
+
+/// #493: `--follow` prints each new matching line at once, through a pipe,
+/// and SIGINT ends the run with the summary and exit code 0.
+#[cfg(unix)]
+#[test]
+fn follow_prints_new_matching_lines_until_sigint() {
+    use std::io::BufRead as _;
+    let dir = fixture("follow");
+    let home = config_home(&dir);
+    let log = dir.join("app.log");
+    fs::write(&log, "hit one\nmiss\n").expect("write");
+    let mut child = Command::new(env!("CARGO_BIN_EXE_recon"))
+        .args([
+            "--batch",
+            "--follow",
+            "--set",
+            "Bugs:only_hit",
+            "--hide",
+            "-n",
+        ])
+        .arg(&log)
+        .env_clear()
+        .envs(
+            ["PATH", "HOME"]
+                .into_iter()
+                .filter_map(|name| std::env::var_os(name).map(|value| (name, value))),
+        )
+        .env("XDG_CONFIG_HOME", &home)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn recon");
+    // A run that never ends fails here, not by hanging the suite.
+    let pid = child.id().to_string();
+    let watchdog = {
+        let pid = pid.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_secs(20));
+            let _ = Command::new("kill").args(["-KILL", &pid]).status();
+        })
+    };
+    let mut stdout = std::io::BufReader::new(child.stdout.take().expect("piped stdout"));
+    let mut line = String::new();
+    stdout.read_line(&mut line).expect("first line");
+    assert_eq!(line, "1\thit one\n");
+
+    let mut file = fs::OpenOptions::new()
+        .append(true)
+        .open(&log)
+        .expect("open");
+    file.write_all(b"miss again\nhit two\n").expect("append");
+    line.clear();
+    stdout.read_line(&mut line).expect("the new line");
+    assert_eq!(line, "4\thit two\n");
+
+    Command::new("kill")
+        .args(["-INT", &pid])
+        .status()
+        .expect("send SIGINT");
+    let out = child.wait_with_output().expect("wait for recon");
+    drop(watchdog);
+    assert_eq!(out.status.code(), Some(0));
+    assert_eq!(
+        text(&out.stderr),
+        "recon: emitted 2 lines of app.log, hide mode\n"
+    );
+}
+
+#[test]
+fn follow_refuses_a_directory() {
+    let dir = fixture("follow_dir");
+    let home = config_home(&dir);
+    fs::write(dir.join("a.log"), "hit\n").expect("write");
+    let out = recon(
+        &home,
+        &["--batch", "--follow", dir.to_str().expect("utf-8")],
+        b"",
+    );
+    assert_ne!(out.status.code(), Some(0));
+    assert!(
+        text(&out.stderr).contains("--follow needs one file, not a directory"),
+        "{}",
+        text(&out.stderr)
+    );
+}

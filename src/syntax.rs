@@ -437,6 +437,19 @@ impl Highlighter {
         }
     }
 
+    /// Make room for lines a followed file grew by (#493): `lines` lines in
+    /// all, with every line from `from` on not coloured yet. The colour
+    /// already made for the lines before `from` stays.
+    pub fn extend(&mut self, lines: usize, from: usize) {
+        self.spans.truncate(from);
+        self.spans.resize(lines, None);
+        // The parser's state is past a line that changed: the next row
+        // resyncs above it instead of going on from there.
+        if self.next > from {
+            self.next = usize::MAX;
+        }
+    }
+
     /// The grammar's own name — `Rust`, `JSON`, `Bourne Again Shell (bash)`.
     #[must_use]
     pub fn syntax_name(&self) -> &str {

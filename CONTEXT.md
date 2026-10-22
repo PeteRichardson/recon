@@ -217,6 +217,14 @@ The two ways to treat a line that no filter matches, when an include or
 context filter is enabled: keep it and grey it, or remove it from the visible
 lines. `u` toggles between them.
 
+**Follow mode**:
+A property of one file, for the session: while the file is in the raw view,
+the lines added to its end come into the view at once, filtered as the other
+lines are. `Ctrl-t` turns it on or off. While the cursor is on the last
+visible line, the view scrolls with the new lines (*autoscroll*); a cursor
+above it pauses autoscroll, and `G` resumes it.
+_Avoid_: tail mode, watch, live mode
+
 ### Views and hand-offs
 
 **View** (of a file):

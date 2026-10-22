@@ -41,5 +41,21 @@ a tab.
 
 ![Batch mode in the shell](images/batch.gif)
 
+## Follow a growing file
+
+With `--follow` (`-f`), batch mode prints the matching lines of one file,
+and then each new matching line when it comes, as `tail -f | grep` does
+with your filter sets. recon flushes each line at once, so the next command
+in a pipe gets it immediately. Push `Ctrl-c`, or send SIGTERM, to stop:
+
+```sh
+recon -b -f --set errors --hide server.log | tee errors.log
+```
+
+If the file becomes shorter or a different file replaces it (logrotate),
+recon reads it again from the start and writes a message on stderr.
+recon refuses `--follow` with a directory, with more than one file, and
+with an `--emit` other than `lines`.
+
 For the reason that batch mode has its own flag, see
 [ADR 0005](https://github.com/PeteRichardson/recon/blob/main/docs/adr/0005-batch-mode-has-a-flag.md).

@@ -82,7 +82,16 @@ fn main() -> Result<ExitCode> {
         // Dropped at the end of this block, so the lock is gone before
         // `deliver` takes stdout again.
         let mut out = io::BufWriter::new(io::stdout().lock());
-        recon::batch::run(&startup, &mut out)?
+        // `--follow` runs until one of these (#493). Registered only then:
+        // any other run ends on its own, and a Ctrl-c there kills it as
+        // it always did.
+        let stop = Arc::new(AtomicBool::new(false));
+        if config.follow {
+            for signal in [signal_hook::consts::SIGINT, signal_hook::consts::SIGTERM] {
+                signal_hook::flag::register(signal, Arc::clone(&stop))?;
+            }
+        }
+        recon::batch::run(&startup, &mut out, &stop)?
     } else {
         // Registered before the terminal is set up, so no SIGTERM can find
         // it raw with nothing to undo it (#382). The handler only sets the

@@ -12,6 +12,7 @@ mod filter_editor;
 mod filters;
 mod finish;
 mod focus;
+mod follow;
 mod launch;
 mod layout;
 mod loading;
@@ -324,6 +325,8 @@ pub struct App<'a> {
     view_stale: bool,
     /// The view pipeline: where the file view's contents come from (#455).
     loading: loading::Loading,
+    /// The followed files, and the tail of the one on screen (#493).
+    following: follow::Following,
     /// Files the view was asked to show, for the shutdown summary (#490).
     opened: u64,
     /// Scan answers the explorer took, for the shutdown summary.
@@ -497,6 +500,7 @@ impl App<'_> {
             stamp_check: None,
             view_stale: false,
             loading: loading::Loading::new(executor(), std::sync::Arc::clone(&startup.table)),
+            following: follow::Following::default(),
             opened: 0,
             scanned: 0,
         };
@@ -504,6 +508,12 @@ impl App<'_> {
         // the mode across into the document it builds for the loaded file.
         if config.hide {
             app.set_mode(Mode::FilteredOnly);
+        }
+        // `--follow FILE` (#493): before the load, whose end starts the tail.
+        // `main` refused a directory before the terminal came up.
+        if config.follow && argument.is_file() {
+            app.following.start_with(argument.to_path_buf());
+            app.explorer.set_followed(app.following.files());
         }
         match app.explorer.selected_path() {
             // A directory argument *selects* an entry rather than being

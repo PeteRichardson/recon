@@ -49,3 +49,28 @@ A context filter or an exclude filter does not mark a file. Only an include
 filter finds a result, so only an include filter makes a file important.
 The `n` key uses the same rule, so the explorer and the file view agree about
 which lines and files are important.
+
+## Follow a growing file
+
+Push `Ctrl-t` to follow the file in the view, for example a log that a
+program writes. The new lines come into the view less than a second after
+they are written. The filters color, dim or hide them as they do the other
+lines, and the explorer mark of the file changes when a new line matches.
+
+- While the cursor is on the last line, the view scrolls to show each new
+  line. In hide mode, the last line is the last visible line.
+- If you move the cursor up, the view stops scrolling. The status line
+  shows `FOLLOW` and the number of new lines. Push `G` to go to the end and
+  scroll again.
+- Follow mode is a property of the file. If you go to a different file and
+  come back, follow mode is on again. More than one file can be in follow
+  mode, and the explorer shows `↓` after each one.
+- If the file becomes shorter or a different file replaces it
+  (logrotate), recon reads it again from the start. If the file is deleted,
+  recon waits for it to come back.
+- Follow mode works only in the text view. It is not saved: it ends when
+  recon stops.
+
+`recon --follow app.log` opens recon with follow mode on for `app.log`. For
+`--follow` in batch mode, see
+[About output and batch mode](batch_mode.md#follow-a-growing-file).

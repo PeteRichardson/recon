@@ -22,6 +22,7 @@ pub mod filter;
 pub mod filtersets;
 #[cfg(test)]
 pub(crate) mod fixtures;
+mod follow;
 pub mod generate;
 pub mod help;
 mod hex;

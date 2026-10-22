@@ -63,6 +63,7 @@ impl Widget for &mut App<'_> {
             self.loading
                 .view_badge()
                 .map(|name| Cow::Owned(format!(" {name} "))),
+            self.follow_badge().map(Cow::Owned),
             (self.document.mode() == Mode::FilteredOnly).then_some(Cow::Borrowed(HIDE_BADGE_TEXT)),
             self.search
                 .as_ref()

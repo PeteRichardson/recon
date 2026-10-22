@@ -326,7 +326,9 @@ impl App<'_> {
                 self.scan_cache.records.remove(&path);
                 self.explorer.set_answer(index, Match::Unknown);
             }
-            if path == active {
+            // A followed file on screen is never stale: its tail keeps the
+            // view current (#493).
+            if path == active && !self.following.is_followed(&path) {
                 self.view_stale = true;
             }
             changed = true;
