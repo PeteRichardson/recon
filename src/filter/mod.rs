@@ -310,6 +310,13 @@ impl Predicate {
         self.as_regex().is_some() || self.as_lookaround().is_some()
     }
 
+    /// Whether the predicate is a definition kind: a [`NEVER`] slot in the
+    /// compiled `RegexSet`, answered from the grammar pass instead.
+    #[must_use]
+    pub fn is_definition(&self) -> bool {
+        matches!(self, Self::Definition(_))
+    }
+
     /// The pattern this predicate contributes to the compiled `RegexSet`.
     fn source(&self) -> &str {
         self.as_regex().map_or(NEVER, Regex::as_str)
@@ -804,9 +811,10 @@ impl ActiveFilters {
         // Effective, not merely present: the built-in set means a definition
         // filter always exists, and a whole-file grammar pass for a row
         // nobody has turned on would be paid by every source file opened.
-        self.filters.iter().enumerate().any(|(index, filter)| {
-            matches!(filter.predicate, Predicate::Definition(_)) && self.effective(index)
-        })
+        self.filters
+            .iter()
+            .enumerate()
+            .any(|(index, filter)| filter.predicate.is_definition() && self.effective(index))
     }
 
     /// Whether a line's verdict reads the compiled set: an effective regex
