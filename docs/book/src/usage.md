@@ -51,6 +51,8 @@ Options:
   -n, --line-numbers
           With `--emit lines`: prefix each line with its line number and a
           tab
+  -f, --follow
+          Follow a file that grows, as `tail -f` does
   -s, --set <NAME[:LIST]>
           Enable a saved filter set at startup, as `NAME` for its `default`
           profile or `NAME:LIST` for the filters a comma-separated list of

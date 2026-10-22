@@ -184,10 +184,7 @@ impl App<'_> {
         let progress = match self.finishing.as_ref()? {
             Finish::Lines(job) => format!(
                 "finishing {}: {} of {}",
-                job.path.file_name().map_or_else(
-                    || job.path.display().to_string(),
-                    |name| { name.to_string_lossy().into_owned() }
-                ),
+                crate::path::file_label(&job.path),
                 size(job.read.load(Ordering::Relaxed).min(job.total)),
                 size(job.total),
             ),

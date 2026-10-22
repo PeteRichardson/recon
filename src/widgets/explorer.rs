@@ -272,7 +272,13 @@ pub(crate) struct Explorer<'a> {
     /// model `Document` uses for lines. `visible[0]` is always `..`, and
     /// `state.selected()` indexes *this*, not `entries`.
     visible: Vec<usize>,
+    /// The files in follow mode, by absolute path (#493). Each one listed
+    /// here wears `FOLLOW_MARK`, so the others can be found.
+    followed: std::collections::HashSet<PathBuf>,
 }
+
+/// After the name of a file in follow mode (#493).
+pub(crate) const FOLLOW_MARK: &str = " ↓";
 
 impl Explorer<'_> {
     /// Open the pane on `path`, which may name either a file or a directory.
@@ -392,7 +398,11 @@ impl Explorer<'_> {
                         Match::Unknown => entry.style(dim),
                     },
                 };
-                let text = entry.display();
+                let mut text = entry.display();
+                if !self.followed.is_empty() && self.followed.contains(&self.dir.join(&entry.name))
+                {
+                    text.push_str(FOLLOW_MARK);
+                }
                 widest = widest.max(UnicodeWidthStr::width(text.as_str()));
                 ListItem::new(text).style(style)
             })
@@ -419,6 +429,12 @@ impl Explorer<'_> {
         self.search_reverse = reverse;
         self.rebuild_list();
         Ok(self.step_search(reverse))
+    }
+
+    /// Mark the files in follow mode (#493).
+    pub(crate) fn set_followed(&mut self, followed: &std::collections::HashSet<PathBuf>) {
+        followed.clone_into(&mut self.followed);
+        self.rebuild_list();
     }
 
     /// Set the filename search, or clear it with `None`, without moving the

@@ -26,6 +26,7 @@ impl App<'_> {
             | self.drain_scan_results()
             | self.drain_views()
             | self.poll_stamps()
+            | self.poll_follow()
             | self.drain_request()
             | self.poll_finish();
         let timeout = Duration::from_secs_f32(1.0 / 60.0);
@@ -75,6 +76,7 @@ impl App<'_> {
         // two dozen early returns and every one of them may have moved
         // focus (#67).
         self.drop_visual_outside_the_view();
+        self.note_follow_cursor();
         self.refresh_scan(false);
         true
     }

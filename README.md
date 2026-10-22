@@ -342,6 +342,8 @@ Options:
           given) for the files on stdin or under PATH, then exit
   -n, --line-numbers
           With `--emit lines`: prefix each line with its line number and a tab
+  -f, --follow
+          Follow a file that grows, as `tail -f` does
   -s, --set <NAME[:LIST]>
           Enable a saved filter set at startup, as `NAME` for its `default`
           profile or `NAME:LIST` for the filters a comma-separated list of
@@ -526,6 +528,7 @@ Global (`src/app/events.rs`), handled before the focused pane sees the key:
 | `O` | Open the selected file's enclosing **project** in your editor, at the line the cursor is on | `global.editor.project` |
 | `r` | **Refresh from disk** — re-list, re-stat and rescan the explorer's listing (so a file created since the listing was built appears), and reload the file in the view with the cursor kept on its line. The status row shows `changed on disk · r` when the open file's size or mtime has moved | `global.reload` |
 | `-` | Show the file in its **next view** — text, then a hex dump, then text again — see [Views](#views). A binary file opens as hex | `global.view.next` |
+| `Ctrl-t` | **Follow** the file in the view as it grows, or stop — see [Following a growing file](#following-a-growing-file) | `global.follow` |
 
 `?` used to search backward. `n`/`N` cover both directions now, which is what
 freed it for the overlay — it is the conventional help key in the pagers and
@@ -2325,6 +2328,32 @@ part of the output that is byte-for-byte verbatim. Not emitted yet: the
 filter set itself, and a structured format that carries the mode and each
 file's matching filter in the output — both are follow-ups to #143.
 
+### Following a growing file
+
+`Ctrl-t` turns **follow mode** on or off for the file in the view, from any
+pane. A followed file is read whole, and then every 250 ms recon reads only
+the bytes added to its end — as `tail -F` does. The new lines get the same
+filter colours, dimming or hiding, and search highlight as the others, and
+the file's mark in the explorer updates as they come. `recon --follow
+app.log` starts with follow mode on for `app.log`.
+
+- **Autoscroll.** While the cursor is on the last line — in hide mode, the
+  last visible line — the view scrolls so that the end stays on screen.
+  Move the cursor up and autoscroll pauses: follow mode stays on, and the
+  ` FOLLOW ` badge counts the new lines (` FOLLOW · 3 new lines `). `G`
+  resumes it.
+- **Per file.** Follow mode belongs to the file, for the session. Go to
+  another file and back, and it is on again; several files can be followed,
+  and the explorer draws `↓` after each one. Nothing is saved.
+- **Rotation.** recon follows the path, not the open file. A file that
+  becomes shorter, or another file moved to its path (logrotate), is read
+  again from the start, still followed, with a message on the status row. A
+  deleted file stays followed and is read when it comes back.
+- **No badge.** A followed file never shows ` changed on disk · r `: the view
+  is always current.
+- **Text view only.** In the hex, image or a command view, `Ctrl-t` says that
+  follow mode works in the text view.
+
 ### Batch mode
 
 `-b` (or `--batch`) skips the TUI altogether: the files come from stdin or
@@ -2384,6 +2413,18 @@ the end, so memory holds one file at a time. When the reader stops —
 `recon --emit lines big.log | head -2` — recon stops reading too: no later
 file is opened, and the summary counts the lines recon produced before the pipe
 closed. A closed pipe is not an error; the exit code is unchanged.
+
+**Following.** `--follow` (`-f`) with `--emit lines` and one file prints the
+matching lines, then each new matching line as it is written, flushed at
+once, until SIGINT or SIGTERM — `tail -F | grep` with your filter sets.
+`-n` works with it. A last line with no line end yet is held until its end
+comes, so it is printed once. A file that becomes shorter or is replaced is
+read again from the start, with a message on stderr. A directory, more than
+one file, or an `--emit` other than `lines` is refused.
+
+```sh
+recon -b -f -n --set errors --hide /var/log/app.log | tee errors.txt
+```
 
 **Summaries and exit codes.** The summary names the mode as it does in the
 TUI, with `pass --hide to emit matches only` in place of the key:

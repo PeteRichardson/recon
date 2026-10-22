@@ -734,6 +734,7 @@ fn scan_lines(
 mod tests {
     use super::*;
     use crate::filter::ActiveFilters;
+    use crate::fixtures::append;
     use std::io::Cursor;
 
     fn matcher(includes: &[&str], excludes: &[&str]) -> Matcher {
@@ -1148,16 +1149,6 @@ mod tests {
         let path = dir.join(name);
         std::fs::write(&path, content).expect("write");
         path
-    }
-
-    fn append(path: &Path, content: &[u8]) {
-        use std::io::Write as _;
-        std::fs::OpenOptions::new()
-            .append(true)
-            .open(path)
-            .expect("open to append")
-            .write_all(content)
-            .expect("append");
     }
 
     fn read_to(scanned_to: u64) -> Progress {

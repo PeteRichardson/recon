@@ -95,6 +95,17 @@ pub(crate) fn fixture_file(name: &str, bytes: &[u8]) -> PathBuf {
     path
 }
 
+/// Add `bytes` to the end of `path`, as a program writing a log does.
+pub(crate) fn append(path: &Path, bytes: &[u8]) {
+    use std::io::Write as _;
+    fs::OpenOptions::new()
+        .append(true)
+        .open(path)
+        .expect("open to append")
+        .write_all(bytes)
+        .expect("append");
+}
+
 /// The directory `fixture_dir(name)` made earlier in this test, for the
 /// tests that add a second file to it once the `App` is up.
 ///

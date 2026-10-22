@@ -421,6 +421,33 @@ impl FileView<'_> {
         &self.source
     }
 
+    /// Let go of the lines, so that the document that shares them can add
+    /// to them without a copy (#493). `extend_source` gives them back.
+    pub(crate) fn release_source(&mut self) {
+        self.source = Arc::default();
+    }
+
+    /// Take `lines` as the file's lines: the same lines as before, with the
+    /// ones from `from` on new or changed, as a followed file grows (#493).
+    /// The colour of the lines before `from` stays. `App::apply_view`
+    /// builds the buffer from them.
+    pub(crate) fn extend_source(&mut self, lines: Arc<Vec<String>>, from: usize) {
+        self.source = lines;
+        self.syntax_rows.clear();
+        if let Some(highlighter) = &mut self.highlighter {
+            highlighter.extend(self.source.len(), from);
+        }
+    }
+
+    /// Put the cursor on the pane's last row at the next render, as far as
+    /// the buffer allows: the end of a followed file stays at the bottom,
+    /// and a short file stays where it starts (#493).
+    pub(crate) fn land_cursor_on_last_row(&mut self) {
+        if self.viewport_height > 0 {
+            self.land_cursor_on_row(self.viewport_height - 1);
+        }
+    }
+
     /// Choose the colours syntax colouring paints with, or `Theme::Off`.
     ///
     /// Applies to the file already on screen as well as to later ones. `App::new`

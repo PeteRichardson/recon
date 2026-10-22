@@ -187,6 +187,7 @@ impl App<'_> {
             A::GlobalFilePrev => self.skip_file(true),
             A::GlobalToggleHide => self.toggle_hiding(),
             A::GlobalNextView => self.next_view(),
+            A::GlobalFollow => self.toggle_follow(),
             A::GlobalZoomView => self.zoom_file_view(),
             A::GlobalZoomFocused => self.zoom_focused(),
             A::GlobalEditorProject => self.open_project(),

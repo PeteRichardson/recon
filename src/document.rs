@@ -159,6 +159,62 @@ impl Document {
         self.recompute_visible();
     }
 
+    /// Add the lines a followed file grew by (#493). `replace_last`: the
+    /// first of them is the last line again, which had no line end and has
+    /// grown.
+    ///
+    /// Only the new lines are evaluated, so a tick of a large followed log
+    /// costs the lines it added. A replaced line, or a definition filter,
+    /// which parses the whole file, takes a full `evaluate`. The lines are
+    /// copied when the view still shares them: `App` lets go of its
+    /// reference first, so a tick does not copy the file.
+    pub fn append(&mut self, lines: Vec<String>, replace_last: bool, filters: &ActiveFilters) {
+        let shared = Arc::make_mut(&mut self.lines);
+        if replace_last {
+            shared.pop();
+        }
+        let start = shared.len();
+        shared.extend(lines);
+        // A grammar's answers were for the lines before.
+        self.kinds = None;
+        if replace_last || filters.needs_kinds() {
+            self.evaluate(filters);
+            return;
+        }
+        let over_limit = &mut self.over_limit;
+        over_limit.resize(filters.filters().len(), 0);
+        self.verdicts.extend(self.lines[start..].iter().map(|line| {
+            filters.verdict_noting(line, KindSet::EMPTY, |index| over_limit[index] += 1)
+        }));
+        let (mode, anything_including) = (self.mode, self.anything_including);
+        let shown = self.verdicts[start..]
+            .iter()
+            .enumerate()
+            .filter(|(_, verdict)| shows(mode, **verdict, anything_including))
+            .map(|(offset, _)| start + offset);
+        let before = self.visible.len();
+        self.visible.extend(shown);
+        if self.visible.len() != before {
+            self.generation = self.generation.wrapping_add(1);
+        }
+    }
+
+    /// How many lines are interesting: what the summaries count as matches,
+    /// in the TUI and in batch mode alike.
+    #[must_use]
+    pub fn interesting_count(&self) -> usize {
+        self.verdicts
+            .iter()
+            .filter(|verdict| crate::app::viewport::is_interesting(verdict))
+            .count()
+    }
+
+    /// The lines, shared, for the file view to hold the same copy (#122).
+    #[must_use]
+    pub(crate) fn shared_lines(&self) -> &Arc<Vec<String>> {
+        &self.lines
+    }
+
     /// The rebuild-skip key: unchanged for as long as `visible` is, moved
     /// every time `recompute_visible` (and so `evaluate`) changes it.
     #[must_use]
@@ -948,6 +1004,45 @@ mod tests {
 
         assert_eq!(document.mode(), Mode::Dimmed);
         assert_eq!(document.visible(), &[0, 2]);
+    }
+
+    // ---- follow mode (#493) -------------------------------------------------
+
+    /// New lines get the verdicts the old ones did, and only the shown
+    /// ones join the visible set.
+    #[test]
+    fn appended_lines_are_filtered_like_the_others() {
+        let mut document = doc(&["ERROR one", "fine"]);
+        document.set_mode(Mode::FilteredOnly);
+        let filters = set_with(&["ERROR"]);
+        document.evaluate(&filters);
+        let before = document.generation();
+
+        document.append(
+            vec!["fine again".into(), "ERROR two".into()],
+            false,
+            &filters,
+        );
+
+        assert_eq!(document.lines().len(), 4);
+        assert_eq!(document.visible(), &[0, 3]);
+        assert_ne!(document.generation(), before);
+    }
+
+    /// The last line had no line end: its new text replaces it, and its
+    /// verdict is for the new text.
+    #[test]
+    fn an_appended_line_can_replace_the_last_one() {
+        let mut document = doc(&["fine", "ERR"]);
+        document.set_mode(Mode::FilteredOnly);
+        let filters = set_with(&["ERROR"]);
+        document.evaluate(&filters);
+        assert!(document.visible().is_empty(), "{:?}", document.visible());
+
+        document.append(vec!["ERROR".into()], true, &filters);
+
+        assert_eq!(document.lines(), ["fine", "ERROR"]);
+        assert_eq!(document.visible(), &[1]);
     }
 
     /// Issue #36. With nothing including, there is nothing to hide against, so

@@ -549,6 +549,7 @@ mod explorer_search;
 mod filter_editor;
 mod filters;
 mod focus;
+mod follow;
 mod hex;
 mod hiding;
 mod jumps;
