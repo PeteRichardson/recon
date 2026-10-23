@@ -552,6 +552,7 @@ mod focus;
 mod follow;
 mod hex;
 mod hiding;
+mod icons;
 mod jumps;
 mod layout;
 mod logging;

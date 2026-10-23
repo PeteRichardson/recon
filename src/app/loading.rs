@@ -90,6 +90,9 @@ pub(super) struct Loading {
     /// A terminal cell's width in pixels, for a command's `{px}` (#457).
     /// Asked of the terminal once, and again after a resize.
     cell_px: Option<u32>,
+    /// Whether directory listings lead with filetype glyphs (#512). Every
+    /// job is built from this; pushed in by `App` once at startup.
+    icons: crate::filetype::Icons,
 }
 
 /// No rows of the user's, and an executor that runs nothing: what a
@@ -111,7 +114,22 @@ impl Loading {
             shown: None,
             last_entry: None,
             cell_px: None,
+            icons: crate::filetype::Icons::off(),
         }
+    }
+
+    /// Whether directory listings lead with filetype glyphs (#512). Set once
+    /// by `App::new` before the first job is sent; every job after it carries
+    /// the answer.
+    pub(super) fn set_icons(&mut self, icons: crate::filetype::Icons) {
+        self.icons = icons;
+    }
+
+    /// Whether the flag pushed in says icons are on, for the tests that pin
+    /// the push-in wiring.
+    #[cfg(test)]
+    pub(super) fn has_icons(&self) -> bool {
+        self.icons.on
     }
 
     fn job(&self, path: &Path, extent: Extent, prefetch: bool, px: u32) -> Job {
@@ -122,6 +140,7 @@ impl Loading {
             steps: self.steps.clone(),
             px,
             prefetch,
+            icons: self.icons.clone(),
         }
     }
 

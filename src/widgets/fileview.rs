@@ -584,7 +584,8 @@ impl FileView<'_> {
     /// Test-only: the app sends a job instead.
     #[cfg(test)]
     pub(crate) fn load(&mut self, path: &Path) {
-        let contents = crate::views::read::read_lines(path, test_view(path));
+        let contents =
+            crate::views::read::read_lines(path, test_view(path), &crate::filetype::Icons::off());
         self.show(path, &contents);
     }
 
@@ -598,8 +599,13 @@ impl FileView<'_> {
     /// branch without building a multi-megabyte fixture.
     #[cfg(test)]
     fn preview_with_caps(&mut self, path: &Path, max_lines: usize, max_bytes: u64) {
-        let contents =
-            crate::views::read::read_preview_with_caps(path, max_lines, max_bytes, test_view(path));
+        let contents = crate::views::read::read_preview_with_caps(
+            path,
+            max_lines,
+            max_bytes,
+            test_view(path),
+            &crate::filetype::Icons::off(),
+        );
         self.show(path, &contents);
     }
 
@@ -2279,10 +2285,16 @@ mod tests {
         let path = fixture("show_hex.rs", "fn main() {}\n");
         let mut view = placeholder_view();
         view.set_theme(Theme::builtin());
-        view.show(&path, &crate::views::read::read_lines(&path, View::Raw));
+        view.show(
+            &path,
+            &crate::views::read::read_lines(&path, View::Raw, &crate::filetype::Icons::off()),
+        );
         assert!(view.syntax_name().is_some(), "the text is coloured");
 
-        view.show(&path, &crate::views::read::read_lines(&path, View::Hex));
+        view.show(
+            &path,
+            &crate::views::read::read_lines(&path, View::Hex, &crate::filetype::Icons::off()),
+        );
         assert!(view.is_hex());
         assert_eq!(contents(&view), hex::line(0, b"fn main() {}\n"));
         assert_eq!(view.syntax_name(), None, "a dump is not Rust");
@@ -3221,8 +3233,9 @@ mod tests {
         let ascii = named("ascii.txt0");
         assert_eq!(UnicodeWidthStr::width("日本語.txt"), 10);
 
-        let wide_row = listing_row(&wide, 12);
-        let ascii_row = listing_row(&ascii, 12);
+        let icons = crate::filetype::Icons::off();
+        let wide_row = listing_row(&wide, 12, &icons);
+        let ascii_row = listing_row(&ascii, 12, &icons);
 
         assert_eq!(
             UnicodeWidthStr::width(wide_row.as_str()),

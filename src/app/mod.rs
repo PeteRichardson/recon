@@ -543,6 +543,18 @@ impl App<'_> {
         self
     }
 
+    /// Whether directory listings lead with filetype glyphs (#512).
+    /// Resolved once in `main`, after the terminal is up and before the
+    /// first frame; every pane and every read job takes the one answer.
+    /// An `App` built without this — a test, mostly — has icons off, which
+    /// is also what an unresolved probe leaves.
+    #[must_use]
+    pub fn with_icons(mut self, icons: crate::filetype::Icons) -> Self {
+        self.explorer.set_icons(icons.clone());
+        self.loading.set_icons(icons);
+        self
+    }
+
     /// Give the filter editor a model to write patterns with (#319).
     #[must_use]
     pub fn with_model(mut self, model: Option<std::sync::Arc<dyn crate::generate::Model>>) -> Self {

@@ -103,7 +103,13 @@ fn main() -> Result<ExitCode> {
         if let Ok(size) = terminal.size() {
             log::debug!("terminal: {} columns, {} rows", size.width, size.height);
         }
+        // One answer for the whole session, asked once, after the terminal is
+        // up (raw mode must be on for a reply to arrive unsolicited) and
+        // before the first frame. Batch mode never gets here, so `--emit`
+        // and `--batch` are untouched by construction.
+        let icons = recon::filetype::resolve_startup(config.icons_setting(), &probe_glyph_widths);
         let exit = App::new(&startup)
+            .with_icons(icons)
             .with_image_picker(image_picker())
             .with_model(recon::generate::system())
             .with_terminate(terminate)
@@ -535,6 +541,90 @@ fn init_terminal() -> Result<Terminal<CrosstermBackend<io::BufWriter<Screen>>>> 
     let backend = CrosstermBackend::new(io::BufWriter::new(screen()));
     let terminal = Terminal::new(backend)?;
     Ok(terminal)
+}
+
+/// Tier 1 of the filetype-icon resolution (#512): ask the terminal how wide
+/// each candidate glyph actually drew.
+///
+/// For each glyph, write it plus a tracking character at the top-left of the
+/// (fresh, empty) alternate screen, then ask where the cursor went —
+/// `crossterm::cursor::position`, the one query-and-parse helper crossterm
+/// has, which sends `ESC [ 6 n` and reads the `ESC <row> ; <col> R` reply
+/// through the same event machinery the main loop will use, polling with a
+/// timeout. The column after the pair names the advance the glyph got: two
+/// cells (glyph + tracker, one each) is a real glyph, one overlaps the next
+/// row's text, three shifts every column after it (#97). Both wrong answers
+/// are corrupting, and both are why the glyph list is walked here and not
+/// trusted from the font's metadata — no terminal tells a child process
+/// what font it draws with.
+///
+/// Known limit, by design: a missing glyph drawn as a tofu box advances
+/// exactly one cell and is indistinguishable from a real one here. That is
+/// cosmetic, and it is what Tier 2 (the `auto` detection) is for: tofu only
+/// reaches the screen when the user forced `icons = "on"`.
+///
+/// Runs once, after `init_terminal` has raw mode on and before the event
+/// loop reads a key. The query is written to *stdout*, as crossterm
+/// dictates, so it is asked only when stdout is a terminal too — with
+/// `--emit` into a pipe, the question would go into the pipe and no answer
+/// would ever come; the image picker gates on the same pair for the same
+/// reason. A terminal that never answers costs one timeout and nothing
+/// more: the first failed query gives up, no glyph is dropped, and `auto`
+/// then keeps icons off on its own.
+fn probe_glyph_widths() -> Vec<char> {
+    use std::io::Write as _;
+
+    if !(std::io::stdin().is_terminal() && std::io::stdout().is_terminal()) {
+        log::debug!("icon width probe: stdin or stdout is not a terminal, no one to answer");
+        return Vec::new();
+    }
+    let mut writer = screen();
+
+    let mut dropped = Vec::new();
+    for glyph in recon::filetype::all_glyphs() {
+        // Draw from a known corner every time, wiping what the last pair
+        // left: the alternate screen is still blank, and the first paint
+        // covers whatever survives.
+        let mut draw = || -> std::io::Result<()> {
+            crossterm::execute!(
+                writer,
+                crossterm::cursor::MoveTo(0, 0),
+                crossterm::terminal::Clear(ClearType::UntilNewLine)
+            )?;
+            writer.write_all(glyph.encode_utf8(&mut [0u8; 4]).as_bytes())?;
+            writer.write_all(b"X")?;
+            writer.flush()
+        };
+        if draw().is_err() {
+            log::debug!("icon width probe: cannot write to the screen; no glyph is dropped");
+            return Vec::new();
+        }
+        match crossterm::cursor::position() {
+            // Cursor sits on column 2: the glyph advanced one cell.
+            Ok((_, 2)) => {}
+            Ok((_, cols)) => {
+                log::debug!(
+                    "icon U+{:04X} advanced {} columns, not 2 for glyph+tracker",
+                    glyph as u32,
+                    cols
+                );
+                dropped.push(glyph);
+            }
+            Err(_) => {
+                log::debug!(
+                    "icon width probe: the terminal stopped answering; no glyph is dropped"
+                );
+                return Vec::new();
+            }
+        }
+    }
+    // Nothing the probe drew may survive to the first frame.
+    let _ = crossterm::execute!(
+        writer,
+        crossterm::cursor::MoveTo(0, 0),
+        crossterm::terminal::Clear(ClearType::All)
+    );
+    dropped
 }
 
 /// How the image view draws a picture (#458): kitty, iTerm2 or sixel when

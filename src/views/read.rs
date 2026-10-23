@@ -121,11 +121,14 @@ impl Contents {
 ///
 /// `view` is `Raw` for the file's text, or `Hex` for its dump (#242). A
 /// binary file asked for as raw falls back to its dump.
-pub(crate) fn read_lines(path: &Path, view: View) -> Contents {
+///
+/// `icons` decides whether a directory listing leads each row with a filetype
+/// glyph (#512); a file's own lines never carry one.
+pub(crate) fn read_lines(path: &Path, view: View, icons: &crate::filetype::Icons) -> Contents {
     // See `read_preview_with_caps`: a directory opens fine and then fails to read, so
     // it is recognised up front rather than surfacing an OS error string.
     if path.is_dir() {
-        return directory_listing(path, usize::MAX);
+        return directory_listing(path, usize::MAX, icons);
     }
     if view == View::Hex {
         return read_hex(path, None);
@@ -175,6 +178,7 @@ pub(crate) fn read_preview_with_caps(
     max_lines: usize,
     max_bytes: u64,
     view: View,
+    icons: &crate::filetype::Icons,
 ) -> Contents {
     // Checked before opening, not after failing to read. `File::open` on a
     // directory *succeeds* on macOS and the read then fails `EISDIR`, so
@@ -182,7 +186,7 @@ pub(crate) fn read_preview_with_caps(
     // `<Is a directory (os error 21)>` — platform-specific and meaningless
     // to a reader.
     if path.is_dir() {
-        return directory_listing(path, max_lines);
+        return directory_listing(path, max_lines, icons);
     }
     let hex_bytes = (max_lines as u64)
         .saturating_mul(hex::BYTES_PER_LINE as u64)
@@ -549,14 +553,27 @@ pub(crate) fn format_modified(time: SystemTime) -> Option<String> {
 /// then loses the time first, the size next, and the name last — which is the
 /// priority order this wants, achieved by layout rather than by logic that
 /// would need a width the listing does not have when it is built.
-pub(crate) fn listing_row(entry: &Entry, name_width: usize) -> String {
+pub(crate) fn listing_row(
+    entry: &Entry,
+    name_width: usize,
+    icons: &crate::filetype::Icons,
+) -> String {
     let size = entry.size.map_or_else(|| "-".to_string(), format_size);
     let modified = entry.modified.and_then(format_modified).unwrap_or_default();
+    // The icon column leads the name: one glyph plus one space, exactly two
+    // columns, identical on every row (#512). It is part of the measured
+    // name column — `name_width` already counts it — so the padding below
+    // keeps every size column in line, dropped glyphs included.
+    let mut name = String::new();
+    if let Some(icon) = crate::filetype::glyph(entry, icons) {
+        name.push(icon);
+        name.push(' ');
+    }
+    name.push_str(&entry.display());
     // Padded by hand rather than with `{:<name_width$}`, which counts `char`s.
     // `name_width` is terminal columns, so a CJK name would otherwise be padded
     // as though its ideographs were one column each and push its own size
     // column one place right per glyph (#97).
-    let name = entry.display();
     let pad = " ".repeat(name_width.saturating_sub(UnicodeWidthStr::width(name.as_str())));
     format!("{name}{pad}  {size:>SIZE_COLUMN$}  {modified}")
         .trim_end()
@@ -573,7 +590,11 @@ pub(crate) fn listing_row(entry: &Entry, name_width: usize) -> String {
 ///
 /// `..` is absent deliberately: it is the explorer's way back out, and there
 /// is nothing here that could act on it.
-pub(crate) fn directory_listing(path: &Path, max_lines: usize) -> Contents {
+pub(crate) fn directory_listing(
+    path: &Path,
+    max_lines: usize,
+    icons: &crate::filetype::Icons,
+) -> Contents {
     let entries = match crate::widgets::explorer::sorted_entries(path) {
         Ok(entries) => entries,
         // Same shape as an unreadable file: say why, verbatim from the OS.
@@ -598,16 +619,21 @@ pub(crate) fn directory_listing(path: &Path, max_lines: usize) -> Contents {
     let total = entries.len();
     let shown = &entries[..entries.len().min(max_lines)];
     // Padded to the longest name actually on screen, so the columns line up
-    // without every listing being as wide as the widest possible name.
+    // without every listing being as wide as the widest possible name. The
+    // icon column rides on the measured name: two columns per row when icons
+    // are on, none when they are off (#512).
     let name_width = shown
         .iter()
-        .map(|entry| UnicodeWidthStr::width(entry.display().as_str()))
+        .map(|entry| {
+            let prefix = usize::from(icons.on) * 2;
+            prefix + UnicodeWidthStr::width(entry.display().as_str())
+        })
         .max()
         .unwrap_or(0)
         .min(NAME_COLUMN_MAX);
     let lines: Vec<String> = shown
         .iter()
-        .map(|entry| listing_row(entry, name_width))
+        .map(|entry| listing_row(entry, name_width, icons))
         .collect();
     let truncated = total > lines.len();
     Contents {
@@ -721,5 +747,107 @@ mod tests {
     #[test]
     fn a_file_that_cannot_be_read_has_an_empty_head() {
         assert_eq!(head(Path::new("/no/such/file")), Head::default());
+    }
+
+    // ---- filetype icons in the listing (#512) ----------------------------
+
+    use crate::filetype::Icons;
+
+    /// A directory holding `files`, created under the fixture root.
+    fn listed_dir(name: &str, files: &[&str]) -> std::path::PathBuf {
+        let dir = crate::fixtures::fixture_dir(name);
+        for file in files {
+            std::fs::write(dir.join(file), "x").expect("write fixture file");
+        }
+        dir
+    }
+
+    #[test]
+    fn listing_rows_lead_with_the_glyph_when_icons_are_on() {
+        let dir = listed_dir("icons_listing", &["alpha.rs", "beta.txt"]);
+        let contents = directory_listing(
+            &dir,
+            usize::MAX,
+            &Icons {
+                on: true,
+                dropped: vec![],
+            },
+        );
+        assert!(
+            contents.lines[0].starts_with('\u{e7a8}'),
+            "no Rust glyph: {:?}",
+            contents.lines[0]
+        );
+        assert!(
+            contents.lines[1].starts_with('\u{f15c}'),
+            "no text glyph: {:?}",
+            contents.lines[1]
+        );
+    }
+
+    #[test]
+    fn listing_rows_are_exactly_as_before_when_icons_are_off() {
+        let dir = listed_dir("icons_listing_off", &["alpha.rs", "beta.txt"]);
+        let on = directory_listing(
+            &dir,
+            usize::MAX,
+            &Icons {
+                on: true,
+                dropped: vec![],
+            },
+        );
+        let off = directory_listing(&dir, usize::MAX, &Icons::off());
+        // Dropping the two-column icon prefix from an "on" row gives the "off"
+        // row: icons add a prefix and change nothing behind it.
+        let strip = |line: &str| line.chars().skip(2).collect::<String>();
+        let stripped: Vec<String> = on.lines.iter().map(|line| strip(line)).collect();
+        assert_eq!(
+            stripped,
+            off.lines.iter().map(String::as_str).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn the_listing_stays_aligned_with_icons_on() {
+        // The same guarantee `the_listing_name_column_aligns_across_wide_glyphs`
+        // pins for bare names, now across the icon prefix: every row carries
+        // exactly one single-column glyph plus one space, so the size column
+        // cannot drift.
+        let dir = listed_dir("icons_listing_align", &["日本語.rs", "ascii.txt0"]);
+        let contents = directory_listing(
+            &dir,
+            usize::MAX,
+            &Icons {
+                on: true,
+                dropped: vec![],
+            },
+        );
+        let widths: Vec<usize> = contents
+            .lines
+            .iter()
+            .map(|line| UnicodeWidthStr::width(line.as_str()))
+            .collect();
+        assert_eq!(
+            widths[0], widths[1],
+            "rows do not align with icons on\n{:#?}",
+            contents.lines
+        );
+    }
+
+    #[test]
+    fn the_message_rows_of_a_directory_wear_no_glyph() {
+        use crate::filetype::Icons;
+        let empty = listed_dir("icons_listing_empty", &[]);
+        let contents = directory_listing(
+            &empty,
+            usize::MAX,
+            &Icons {
+                on: true,
+                dropped: vec![],
+            },
+        );
+        // The message stands in for the file, not for an entry in it — no
+        // icon, no padding, exactly the string.
+        assert_eq!(contents.lines[0], EMPTY_DIRECTORY_MESSAGE);
     }
 }

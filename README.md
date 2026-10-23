@@ -330,6 +330,13 @@ Options:
           More directories to read filter sets from, colon-separated, e.g.
           `~/team-filters:./.recon`. recon reads `filters.toml` and each
           `*.filters.toml` in them [env: RECON_FILTER_PATH]
+      --icons <WHICH>
+          Whether directory listings lead each row with a filetype glyph (Nerd
+          Font). `auto` — the default — turns them on only when the terminal is
+          positively found able to draw them; `off` never does; `on` always
+          does, replacing any glyph that draws at the wrong width with a space.
+          Falls back to `[view] icons` in `config.toml`, then to `auto` [env:
+          RECON_ICONS] [possible values: auto, on, off]
       --theme <THEME>
           Colours for the file view's syntax colouring: a bundled theme name, a
           path to a `.tmTheme` file, or `none` to turn colouring off [env:
@@ -2056,6 +2063,37 @@ and the name last.
 There is no selection marker; the selected row is drawn in reverse video.
 A `>>` marker used to sit in the gutter, and it is coming back as an opt-in
 setting once there is somewhere to configure it.
+
+#### Filetype icons
+
+With a Nerd Font, both the explorer and the listing lead each row with a
+glyph for what the entry is — a folder for directories, an up arrow for `..`,
+a language or format glyph by extension, and a generic file glyph for
+anything the table misses:
+
+```
+..                         /
+ src/                   -  2026-08-20 14:32
+ Cargo.toml           1.2K  2026-08-19 09:14
+ README.md           18.4K  2026-08-20 11:02
+```
+
+No terminal tells a child process what font it draws with, so `icons` in
+`[view]` decides — `auto` by default, which turns them on only when the
+terminal is positively found able to draw them (iTerm2 or Terminal.app
+preferences, Ghostty or kitty config, WezTerm's own `ls-fonts`, or fontconfig
+on Linux). On a machine with only base fonts, `auto` is today's exact pane,
+unchanged, and the log says why they stayed off. The chosen font may be
+assumed to carry the glyphs — the risk `auto` covers is the machine that
+does not have one. `on` forces the glyphs and replaces any that draw at the
+wrong width with a space; `off` never draws them:
+
+```toml
+[view]
+icons = "on"     # auto | on | off
+```
+
+or `--icons on`, or `RECON_ICONS=on`.
 
 Filter pane (`src/widgets/filterlist.rs`), reached with `f` or `Tab` — the
 pane sizes to its contents, and with no filters defined it holds a single

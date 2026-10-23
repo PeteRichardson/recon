@@ -71,6 +71,10 @@ pub(crate) struct Job {
     /// Whether the job is a prefetch: a command with `prefetch = false`
     /// does not run for one.
     pub(crate) prefetch: bool,
+    /// Whether a directory listing leads each row with a filetype glyph
+    /// (#512). Resolved once at startup and pushed here with everything else
+    /// the job needs that the pane cannot decide for itself.
+    pub(crate) icons: crate::filetype::Icons,
 }
 
 /// The file's row in the table and the view of its cycle that the job ran.
@@ -133,7 +137,7 @@ pub(crate) fn run(job: &Job, cache: Option<&Cache>) -> Done {
             mime: crate::mime::DIRECTORY,
         };
         let started = Instant::now();
-        let contents = read::directory_listing(path, max_lines);
+        let contents = read::directory_listing(path, max_lines, &job.icons);
         log_job(job, "directory", "", &contents, None, started.elapsed());
         return done(contents, None, Some(facts));
     }
@@ -286,9 +290,9 @@ fn read_view(job: &Job, view: View) -> (Contents, Extent) {
     }
     let contents = match job.extent {
         Extent::Preview => {
-            read::read_preview_with_caps(path, PREVIEW_LINES, MAX_PREVIEW_BYTES, view)
+            read::read_preview_with_caps(path, PREVIEW_LINES, MAX_PREVIEW_BYTES, view, &job.icons)
         }
-        Extent::Full => read::read_lines(path, view),
+        Extent::Full => read::read_lines(path, view, &job.icons),
     };
     (contents, job.extent)
 }
@@ -320,6 +324,7 @@ pub(crate) mod tests {
             steps,
             px: 0,
             prefetch: false,
+            icons: crate::filetype::Icons::off(),
         }
     }
 

@@ -275,12 +275,35 @@ pub(crate) struct Explorer<'a> {
     /// The files in follow mode, by absolute path (#493). Each one listed
     /// here wears `FOLLOW_MARK`, so the others can be found.
     followed: std::collections::HashSet<PathBuf>,
+    /// Whether rows lead with a filetype glyph, and which glyphs the startup
+    /// probe found undrawable (#512). Pushed in by `App` once at startup,
+    /// exactly as `background` and `mode` are; nothing here is decided at
+    /// render time.
+    icons: crate::filetype::Icons,
 }
 
 /// After the name of a file in follow mode (#493).
 pub(crate) const FOLLOW_MARK: &str = " ↓";
 
 impl Explorer<'_> {
+    /// Whether rows lead with a filetype glyph (#512). Rebuilds the rows,
+    /// which were drawn without icons when `new` listed the first directory.
+    /// A no-op when the flag is unchanged, so `App` can push it freely.
+    pub(crate) fn set_icons(&mut self, icons: crate::filetype::Icons) {
+        if self.icons == icons {
+            return;
+        }
+        self.icons = icons;
+        self.rebuild_list();
+    }
+
+    /// Whether directory listings lead with a filetype glyph (#512), for the
+    /// tests that pin the push-in wiring.
+    #[cfg(test)]
+    pub(crate) fn has_icons(&self) -> bool {
+        self.icons.on
+    }
+
     /// Open the pane on `path`, which may name either a file or a directory.
     ///
     /// A directory is listed itself, with the cursor on its first entry. A
@@ -398,7 +421,15 @@ impl Explorer<'_> {
                         Match::Unknown => entry.style(dim),
                     },
                 };
-                let mut text = entry.display();
+                let mut text = String::new();
+                if let Some(icon) = crate::filetype::glyph(entry, &self.icons) {
+                    // One glyph, one space: the two-column icon prefix every
+                    // row gets when icons are on, dropped glyph included, so
+                    // the names stay in one column (#512).
+                    text.push(icon);
+                    text.push(' ');
+                }
+                text.push_str(&entry.display());
                 if !self.followed.is_empty() && self.followed.contains(&self.dir.join(&entry.name))
                 {
                     text.push_str(FOLLOW_MARK);
@@ -3332,5 +3363,142 @@ mod tests {
 
         explorer.go_to_parent();
         assert!(names(&explorer).len() > 1);
+    } // ---- filetype icons (#512) ----------------------------------------------
+
+    /// The first row of the listing under icons, as cells.
+    ///
+    /// Icons lead every row, so the first cells of a row *are* the icon column —
+    /// this is the seam the alignment guarantee lives at.
+    fn leading_cells(explorer: &mut Explorer<'_>, area: Rect) -> Vec<String> {
+        let mut buf = Buffer::empty(area);
+        explorer.render(area, &mut buf);
+        (0..area.height)
+            .map(|y| {
+                (0..area.width)
+                    .map(|x| buf[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn with_icons_on_rows_lead_with_the_glyph() {
+        let mut explorer = explorer_over("icons_explorer", &["alpha.rs", "beta.txt"]);
+        explorer.set_icons(crate::filetype::Icons {
+            on: true,
+            dropped: Vec::new(),
+        });
+        let rows = leading_cells(&mut explorer, Rect::new(0, 0, 20, 10));
+        // Icons lead, but the pane's border leads the icons: skip one cell.
+        let body: Vec<String> = rows
+            .iter()
+            .map(|row| row.chars().skip(1).collect())
+            .collect();
+        // `..` wears the up glyph, `alpha.rs` the Rust glyph, `beta.txt` the text
+        // glyph — each followed by one separating space.
+        assert!(
+            body.iter().any(|row| row.starts_with('\u{f148}')),
+            "no up glyph on `..`:\n{rows:?}"
+        );
+        assert!(
+            body.iter().any(|row| row.starts_with("\u{e7a8} alpha.rs")),
+            "no Rust glyph:\n{rows:?}"
+        );
+        assert!(
+            body.iter().any(|row| row.starts_with("\u{f15c} beta.txt")),
+            "no text glyph:\n{rows:?}"
+        );
+    }
+
+    #[test]
+    fn with_icons_off_rows_are_exactly_as_before() {
+        // The default is off, and `set_icons(Icons::off())` changes nothing: a
+        // machine with only base fonts must get today's pane, byte for byte.
+        let mut off = explorer_over("icons_off", &["alpha.rs"]);
+        let mut unset = explorer_over("icons_off_too", &["alpha.rs"]);
+        let rows_off = leading_cells(&mut off, Rect::new(0, 0, 20, 10));
+        let rows_unset = leading_cells(&mut unset, Rect::new(0, 0, 20, 10));
+        assert_eq!(rows_off, rows_unset);
+        assert!(!rows_off.iter().any(|row| row.contains('\u{e7a8}')));
+    }
+
+    #[test]
+    fn setting_icons_rebuilds_the_drawn_rows() {
+        // `set_icons` after `Explorer::new`: the rows were already built without
+        // glyphs, so the setter must rebuild them rather than only store the flag.
+        let mut explorer = explorer_over("icons_rebuild", &["alpha.rs"]);
+        let before = leading_cells(&mut explorer, Rect::new(0, 0, 20, 10));
+        explorer.set_icons(crate::filetype::Icons {
+            on: true,
+            dropped: Vec::new(),
+        });
+        let after = leading_cells(&mut explorer, Rect::new(0, 0, 20, 10));
+        assert_ne!(before, after, "set_icons changed nothing on screen");
+        assert!(after.iter().any(|row| {
+            row.chars()
+                .skip(1)
+                .collect::<String>()
+                .starts_with("\u{e7a8} alpha.rs")
+        }));
+    }
+
+    #[test]
+    fn icons_count_toward_the_widest_row() {
+        // `widest` feeds `preferred_width`; the two-column icon prefix must be
+        // measured with the row, or a full-width pane clips the last column.
+        let mut explorer = explorer_over("icons_width", &["alpha.rs"]);
+        let bare = explorer.preferred_width();
+        explorer.set_icons(crate::filetype::Icons {
+            on: true,
+            dropped: Vec::new(),
+        });
+        assert_eq!(
+            explorer.preferred_width(),
+            bare + 2,
+            "the icon column was not measured"
+        );
+    }
+
+    #[test]
+    fn the_follow_mark_still_trails_the_name_with_icons_on() {
+        let mut explorer = explorer_over("icons_follow", &["alpha.rs"]);
+        let followed: std::collections::HashSet<PathBuf> = explorer
+            .entries()
+            .iter()
+            .find(|entry| entry.name == "alpha.rs")
+            .map(|entry| explorer.dir.join(&entry.name))
+            .into_iter()
+            .collect();
+        explorer.set_followed(&followed);
+        explorer.set_icons(crate::filetype::Icons {
+            on: true,
+            dropped: Vec::new(),
+        });
+        let rows = leading_cells(&mut explorer, Rect::new(0, 0, 20, 10));
+        let followed = rows
+            .iter()
+            .map(|row| row.chars().skip(1).collect::<String>())
+            .find(|row| row.contains("alpha.rs"))
+            .expect("the followed row is drawn");
+        assert!(
+            followed.contains("\u{e7a8} alpha.rs ↓"),
+            "icon, name, follow mark in that order: {followed:?}"
+        );
+    }
+
+    #[test]
+    fn a_search_still_matches_the_name_with_icons_on() {
+        // Search matches `matchable()`, which the icon never reaches — pinned
+        // here so an icon can never leak into the pattern space.
+        let mut explorer = searchable("icons_search");
+        explorer.set_icons(crate::filetype::Icons {
+            on: true,
+            dropped: Vec::new(),
+        });
+        explorer.set_search(Some("beta".parse().expect("a valid pattern")));
+        let hit = explorer.hit_from(explorer.selected().expect("a selection"));
+        // Entry 0 is `..`, so the first `beta` match is entry 2 (`beta.rs`) —
+        // the point is that the icon changed nothing about which row it is.
+        assert_eq!(hit, Some(2), "the icon hid the name from the search");
     }
 }
