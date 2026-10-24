@@ -61,7 +61,8 @@ Options:
           Unlist a saved filter set at startup: no row in the filter pane
           and no effect on the view or on `--emit`. Repeatable
       --hide
-          Start in hide mode: only matching lines and files
+          Start in hide mode: only matching lines and files. Batch mode
+          always hides, so there it changes nothing
       --hide-pane <PANES>
           Panes to hide at startup, comma-separated: `explorer`, `view`,
           `filters`. Replaces `[layout] hide_panes` in `config.toml`. At
