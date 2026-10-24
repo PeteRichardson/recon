@@ -39,7 +39,11 @@ fn lines_come_into_the_view_and_the_title_says_whether_stdin_is_open() {
 
     writer.write_all(b"first\nsecond\n").expect("write");
     until(&mut app, |app| app.document.lines() == ["first", "second"]);
-    assert!(rendered(&mut app).contains("<stdin> (open)"), "{}", rendered(&mut app));
+    assert!(
+        rendered(&mut app).contains("<stdin> (open)"),
+        "{}",
+        rendered(&mut app)
+    );
 
     drop(writer);
     until(&mut app, |app| rendered(app).contains("<stdin> (closed)"));
@@ -66,6 +70,8 @@ fn a_size_milestone_is_reported_on_the_status_line() {
 
     writer.write_all(&vec![b'x'; 1_000_001]).expect("write");
 
-    until(&mut app, |app| status(app).is_some_and(|text| text.contains("1.0 MB")));
+    until(&mut app, |app| {
+        status(app).is_some_and(|text| text.contains("1.0 MB"))
+    });
     assert_eq!(status(&app), Some("<stdin>: 1.0 MB so far"));
 }

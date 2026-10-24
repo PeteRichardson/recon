@@ -231,7 +231,12 @@ mod tests {
     fn each_tenfold_size_is_a_milestone_once() {
         let shared = shared();
 
-        copy(io::repeat(b'x').take(12_000_000), io::sink(), &shared, || {});
+        copy(
+            io::repeat(b'x').take(12_000_000),
+            io::sink(),
+            &shared,
+            || {},
+        );
 
         let milestones = std::mem::take(&mut shared.lock().expect("lock").milestones);
         assert_eq!(milestones, [1_000_000, 10_000_000]);
@@ -263,7 +268,10 @@ mod tests {
         assert!(name.starts_with("recon-stdin-"), "{name}");
         assert!(name.ends_with(&format!("-{pid}.txt")), "{name}");
         // `recon-stdin-` + `YYYYMMDD-HHMMSS` + `-<pid>.txt`.
-        assert_eq!(name.len(), "recon-stdin-".len() + 15 + format!("-{pid}.txt").len());
+        assert_eq!(
+            name.len(),
+            "recon-stdin-".len() + 15 + format!("-{pid}.txt").len()
+        );
         let mode = std::fs::metadata(&path).expect("stat").permissions().mode();
         assert_eq!(mode & 0o777, 0o600);
     }
@@ -271,12 +279,15 @@ mod tests {
     /// The thread reports what it did: here, that the empty stdin ended.
     #[test]
     fn a_started_copy_reports_the_end_of_stdin() {
-        let file = StdinFile::start(&fixture_dir("stdin_state"), &b""[..], || {}, false)
-            .expect("started");
+        let file =
+            StdinFile::start(&fixture_dir("stdin_state"), &b""[..], || {}, false).expect("started");
 
         let start = std::time::Instant::now();
         while file.state() == State::Open {
-            assert!(start.elapsed() < std::time::Duration::from_secs(10), "timed out");
+            assert!(
+                start.elapsed() < std::time::Duration::from_secs(10),
+                "timed out"
+            );
             std::thread::yield_now();
         }
         assert_eq!(file.state(), State::Closed);
