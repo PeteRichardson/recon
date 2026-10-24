@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.5.0 — 2026-10-24
+
+### Features
+
+- **follow:** Watch a growing file with Ctrl-t and --follow
+- **icons:** Coloured filetype icons in the explorer and listing
+- **batch:** Always emit in hide mode, with or without --hide
+
+### Fixes
+
+- **filter:** Count the built-in slots apart in the pattern-limit note
+
 ## v0.4.0 — 2026-10-21
 
 ### Features
