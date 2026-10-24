@@ -177,8 +177,26 @@ crosses from search to filter; the search itself is cleared.
 **History**:
 The patterns Enter committed in a `/` prompt, newest first, that Up and Down
 recall in the next one. The file search, the filename search and the set
-picker's search each keep their own; a filter prompt keeps none.
+picker's search each keep their own; a filter prompt keeps none. The command
+palette keeps one too, of the command lines it ran.
 _Avoid_: recent searches, last patterns
+
+### Commands
+
+**Command**:
+A thing recon can do, with a name the user types in the command palette.
+Some commands take arguments. A key in the keymap runs a command that takes
+none, and the keymap uses the same name for it.
+_Avoid_: action (that is the code's word), function
+
+**Command palette**:
+The line that `:` opens at the bottom of the recon window from any pane (never
+from a screen that covers the window, or from a prompt), where the user
+types a command by name, with its arguments. Above the line, a list shows the
+commands that agree with what the user typed, each with its key. Enter runs
+the command; Esc closes the palette and changes nothing.
+_Avoid_: palette alone (that is the filter colors), command line (that is the
+shell's), ex mode
 
 ### Panes
 
@@ -199,6 +217,12 @@ Hide every pane except the focused pane, and remember which panes were shown.
 A zoom when only one pane is shown does the opposite: it shows the remembered
 panes again, or all panes if none are remembered.
 _Avoid_: maximise
+
+**Folder** (of the explorer):
+The directory whose entries the explorer lists. The user changes it by
+stepping into or out of a directory, or with `:e` (or its alias `:cd`); it is never the working
+directory of recon, which does not change.
+_Avoid_: root, cwd, current directory (that is the working directory)
 
 ### The view
 
