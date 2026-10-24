@@ -345,9 +345,13 @@ Options:
           [possible values: lines, files, cwd]
   -b, --batch
           Batch mode: no TUI. Print the result of `--emit` (`lines` if not
-          given) for the files on stdin or under PATH, then exit
+          given) for PATH, the `--files-from` list, or the lines on stdin with
+          `-` as PATH, then exit
   -n, --line-numbers
           With `--emit lines`: prefix each line with its line number and a tab
+      --files-from <FILE>
+          Batch mode's inputs: the files listed in FILE, one per line, or on
+          stdin when FILE is `-`. Relative paths are from the current directory
   -f, --follow
           Follow a file that grows, as `tail -f` does
   -s, --set <NAME[:LIST]>
@@ -2399,16 +2403,18 @@ app.log` starts with follow mode on for `app.log`.
 
 ### Batch mode
 
-`-b` (or `--batch`) skips the TUI altogether: the files come from stdin or
-the argument, the filters from `--set`, and the result goes to stdout exactly
+`-b` (or `--batch`) skips the TUI altogether: the input is the argument, a
+list from `--files-from`, or the lines on stdin with `-`, the filters come
+from `--set`, and the result goes to stdout exactly
 as `q` would have sent it. Without `--emit`, it emits `lines`; `--emit files`
 and `--emit cwd` ask for the other two.
 
 ```sh
 recon -b --set errors server.log                 # the matching lines
-ls -1 *.log | recon -b --emit files --set BugFilters:Bug57
-find . -name '*.log' | recon -b -n --set BugFilters | cut -f1,2
+ls -1 *.log | recon -b --emit files --files-from - --set BugFilters:Bug57
+find . -name '*.log' | recon -b -n --files-from - --set BugFilters | cut -f1,2
 recon -b --emit files /var/log
+log stream | recon -b --set errors -             # a command's output, as it comes
 ```
 
 **When it starts.** `-b` starts batch mode, from a terminal too. `--emit`
@@ -2418,13 +2424,25 @@ app.log` from a terminal still opens the TUI, because the terminal is where
 its keys come from. `< /dev/null` from a terminal also forces batch mode.
 
 **Inputs.** A `PATH` directory means its files, non-recursive, in the
-explorer's order, and a `PATH` file means itself. With a `PATH`, stdin is
-not read, so `while read f; do recon --emit lines "$f"; done < list` works,
-and `ssh host recon --emit files /var/log` does not wait. With no `PATH`,
-each non-blank line of stdin is a path — what `ls -1` and `find` print —
-with `-b` or without it; a terminal on stdin is not read, and with nothing
-on stdin the current directory is the input. `-` as `PATH` reads the list
-from stdin, as with `cat`. `--emit cwd` never reads stdin.
+explorer's order, and a `PATH` file means itself. With no `PATH`, the
+current directory is the input. `--files-from FILE` reads a list instead:
+each non-blank line is a path — what `ls -1` and `find` print — and `-` as
+`FILE` reads the list from stdin. Stdin is read for nothing else, pipe or
+not, so `while read f; do recon --emit lines "$f"; done < list` works, and
+`ssh host recon --emit files /var/log` does not wait. `--emit cwd` never
+reads stdin.
+
+**Lines from stdin.** `-` as `PATH` is the input itself, as for `grep`:
+the lines a command writes into the pipe are filtered as they come, each
+match written and flushed at once, so an output that never ends — `log
+stream` — works as well as one that does, and `--follow` changes nothing.
+`--emit lines` only: `--emit files -` is refused with a pointer to
+`--files-from -`, and a terminal on stdin is refused, since the read would
+wait for Ctrl-D. With a definition
+filter on, stdin is read to its end first, because the filter parses the
+whole input. Until #517, `-` was the file list that `--files-from -` reads
+now. With `sudo cmd | recon -b -`, run `sudo -v` first: sudo's
+password prompt and recon both want the terminal.
 
 **Flags.** `--set NAME` enables a saved set with its `default` profile;
 `--set NAME:LIST` turns on the filters of a comma-separated list of profiles
@@ -2481,7 +2499,8 @@ TUI, and in batch mode that is always hide mode:
 | `lines`, one file | `recon: emitted 27 lines of app.log, hide mode` |
 | `lines`, several files | `recon: emitted 27 lines of 3 files, hide mode` |
 | `files` from a `PATH` directory | `recon: emitted 3 files from /var/log, hide mode` |
-| `files` from stdin | `recon: emitted 3 files of 14 inputs, hide mode` |
+| `files` from `--files-from` | `recon: emitted 3 files of 14 inputs, hide mode` |
+| `lines` from stdin (`-`) | `recon: emitted 27 lines of <stdin>, hide mode` |
 | `files` with no include filter enabled | `recon: emitted 14 files from /var/log, hide mode, no filter` |
 | `cwd` | `recon: emitted /var/log` |
 

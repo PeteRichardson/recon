@@ -2,25 +2,26 @@
 //! terminal.
 //!
 //! The pieces `App` composes — `ActiveFilters`, `Document`, `scan::scan` —
-//! with no explorer, no view and no terminal. Files come from stdin or
-//! from the `PATH` argument. The output goes to stdout as it is made
+//! with no explorer, no view and no terminal. Files come from the `PATH`
+//! argument or a `--files-from` list; with `-` as `PATH`, the input is the
+//! lines on stdin (#517). The output goes to stdout as it is made
 //! (#219, #379); the end of the run — summary, failure count, how the
 //! writing went — leaves through the same `Exit` a TUI session hands back,
 //! so `main` finishes both the same way.
 
 use crate::app::viewport::is_interesting;
-use crate::config::CURRENT_DIR;
-use crate::document::{self, Document, Mode};
+use crate::document::{self, Document, Mode, read_lossy_line, shows};
 use crate::emit::{Emit, Exit, path_bytes};
 use crate::filter::{ActiveFilters, Matcher};
 use crate::follow::{Change, Tail};
 use crate::path::{file_label, lexical_absolute};
 use crate::scan::{self, Progress};
 use crate::startup::Startup;
+use crate::syntax::KindSet;
 use crate::widgets::explorer::sorted_entries;
 use color_eyre::{Result, eyre::eyre};
 use std::fs::File;
-use std::io::{self, BufRead, IsTerminal, Write};
+use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 
@@ -35,8 +36,8 @@ pub(crate) struct Inputs {
 /// Where the input list came from — the summary and `cwd` differ by it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Source {
-    /// One path per line on stdin.
-    Stdin,
+    /// One path per line, from `--files-from`.
+    List,
     /// `PATH` named a directory: its files, in the explorer's order.
     Directory(PathBuf),
     /// `PATH` named a file — or nothing that exists: that path alone.
@@ -57,18 +58,25 @@ pub fn run(startup: &Startup, out: &mut impl Write, stop: &AtomicBool) -> Result
     let Some(what) = config.emit else {
         return Err(eyre!("batch mode needs --emit"));
     };
-    // `--emit cwd` needs no list, so it never reads stdin (#353).
-    let inputs = if what == Emit::Cwd {
-        path_inputs(Path::new(config.path_or_current_dir()))?
-    } else {
-        let stdin = io::stdin();
-        stdin_or_path(
-            config.path.as_deref().map(Path::new),
-            stdin.is_terminal(),
-            stdin.lock(),
-        )?
-    };
     let filters = filters_for(startup)?;
+    // `check_flags` has refused `-` with any `--emit` but `lines`. Stdin
+    // is always followed, so `--follow` changes nothing here.
+    if config.path_is_stdin() {
+        return Ok(collect_stdin(
+            io::BufReader::new(io::stdin()),
+            &filters,
+            config.line_numbers,
+            out,
+            &mut io::stderr(),
+        ));
+    }
+    let path = Path::new(config.path_or_current_dir());
+    // `--emit cwd` needs no list, so it never reads one (#353).
+    let inputs = if what == Emit::Cwd {
+        path_inputs(path)?
+    } else {
+        inputs(path, config.files_from.as_deref(), io::stdin().lock())?
+    };
     if config.follow {
         return follow_lines(
             &inputs,
@@ -145,33 +153,22 @@ pub(crate) fn collect(
     }
 }
 
-/// The input list. An explicit `PATH` wins, and stdin is not read (#353):
-/// a shell loop's list is not eaten, and a run over ssh does not wait on a
-/// stdin nobody writes. `-` is the exception, and means stdin, as for `cat`.
-/// With no `PATH`, stdin is read when it is not a terminal (#439): `-b` from
-/// a terminal has the keyboard on stdin, and a read would wait for Ctrl-D.
-/// With no `PATH` and no lines on stdin, the current directory is the input.
-fn stdin_or_path(
-    path: Option<&Path>,
-    stdin_is_terminal: bool,
-    stdin: impl BufRead,
-) -> io::Result<Inputs> {
-    let current_dir = Path::new(CURRENT_DIR);
-    let files = match path {
-        Some(path) if path == Path::new("-") => stdin_files(stdin)?,
-        Some(path) => return path_inputs(path),
-        None if stdin_is_terminal => return path_inputs(current_dir),
-        None => {
-            let files = stdin_files(stdin)?;
-            if files.is_empty() {
-                return path_inputs(current_dir);
-            }
-            files
-        }
+/// The input list: the files `--files-from` lists, read from `stdin` when
+/// it is `-`, else what `path` names. Stdin is read for nothing else
+/// (#517): a shell loop's list is not eaten, and a run over ssh does not
+/// wait on a stdin nobody writes (#353).
+fn inputs(path: &Path, files_from: Option<&str>, stdin: impl BufRead) -> Result<Inputs> {
+    let files = match files_from {
+        None => return path_inputs(path).map_err(Into::into),
+        Some(crate::config::STDIN_PATH) => listed_files(stdin)?,
+        Some(list) => File::open(list)
+            .map(io::BufReader::new)
+            .and_then(listed_files)
+            .map_err(|err| eyre!("--files-from {list}: {}", reason(&err)))?,
     };
     Ok(Inputs {
         files,
-        from: Source::Stdin,
+        from: Source::List,
     })
 }
 
@@ -196,19 +193,19 @@ fn path_inputs(path: &Path) -> io::Result<Inputs> {
     })
 }
 
-/// Every non-blank line of `stdin`, as an absolute path.
+/// Every non-blank line of `list`, as an absolute path.
 ///
 /// Lines are bytes, not `String`s, for the reason `Entry::name` is an
 /// `OsString`: a Unix filename need not be UTF-8, and `ls -1` writes it
 /// verbatim. A trailing `\r` is dropped so a CRLF list works; nothing else
 /// is trimmed, since a name can end in a space. A line that is only
 /// whitespace is skipped.
-fn stdin_files(mut stdin: impl BufRead) -> io::Result<Vec<PathBuf>> {
+fn listed_files(mut list: impl BufRead) -> io::Result<Vec<PathBuf>> {
     let mut files = Vec::new();
     let mut line = Vec::new();
     loop {
         line.clear();
-        if stdin.read_until(b'\n', &mut line)? == 0 {
+        if list.read_until(b'\n', &mut line)? == 0 {
             break;
         }
         let bytes = strip_line_end(&line);
@@ -271,15 +268,116 @@ fn collect_lines(
     }
 }
 
+/// What the summary calls stdin.
+pub(crate) const STDIN_LABEL: &str = "<stdin>";
+
+/// `--emit lines` over the lines of `stdin`, `-` as `PATH` (#517).
+///
+/// A definition filter needs the grammar of the whole input, which one
+/// line at a time cannot give, so with one enabled stdin is read to its
+/// end first, as `q` under `--emit lines` reads a file (#351). Otherwise
+/// each line is filtered as it comes: see [`stream_stdin`].
+pub(crate) fn collect_stdin<R: io::Read>(
+    stdin: io::BufReader<R>,
+    filters: &ActiveFilters,
+    line_numbers: bool,
+    out: &mut impl Write,
+    warnings: &mut impl Write,
+) -> Exit {
+    let mut emitted = 0;
+    let (read, written) = if filters.needs_kinds() {
+        match stdin_whole(stdin) {
+            Ok(document) => {
+                let document = hidden(document, filters);
+                let all = 0..document.lines().len();
+                (Ok(()), write_new(&document, all, line_numbers, out, &mut emitted))
+            }
+            Err(err) => (Err(err), Ok(())),
+        }
+    } else {
+        stream_stdin(stdin, filters, line_numbers, out, &mut emitted)
+    };
+    let failed = match read {
+        Ok(()) => 0,
+        Err(err) => {
+            warn(warnings, Path::new(STDIN_LABEL), &err);
+            1
+        }
+    };
+    Exit::Streamed {
+        summary: lines_summary(emitted, STDIN_LABEL),
+        failed,
+        written: written.and_then(|()| out.flush()),
+    }
+}
+
+/// Filter `stdin` one line at a time, so a stream that never ends (`log
+/// stream | recon -b -`) is filtered as it comes. The output is flushed
+/// whenever no more input is waiting, the moment the next read could
+/// block: a match is never held back for a line that has not come, and a
+/// file's worth of matches already read is still written in large blocks.
+///
+/// How the read and the writing went, apart: a write error stops the read.
+fn stream_stdin<R: io::Read>(
+    mut stdin: io::BufReader<R>,
+    filters: &ActiveFilters,
+    line_numbers: bool,
+    out: &mut impl Write,
+    emitted: &mut usize,
+) -> (io::Result<()>, io::Result<()>) {
+    let anything_including = filters.any_including();
+    let mut buf = Vec::new();
+    for source in 0.. {
+        buf.clear();
+        match stdin.read_until(b'\n', &mut buf) {
+            Ok(0) => break,
+            Ok(_) => {}
+            Err(err) => return (Err(err), Ok(())),
+        }
+        // As `read_lossy_line` ends a line, with no copy of a valid one.
+        let text = String::from_utf8_lossy(&buf);
+        let text = text.trim_end_matches(['\n', '\r']);
+        let verdict = filters.verdict(text, KindSet::EMPTY);
+        let mut write = || {
+            if shows(Mode::FilteredOnly, verdict, anything_including) {
+                write_line(out, None, line_numbers, source, text)?;
+                *emitted += 1;
+            }
+            if stdin.buffer().is_empty() {
+                out.flush()?;
+            }
+            Ok(())
+        };
+        if let Err(err) = write() {
+            return (Ok(()), Err(err));
+        }
+    }
+    (Ok(()), Ok(()))
+}
+
+/// Every line of `stdin`, as a document a definition filter can parse.
+fn stdin_whole(mut stdin: impl BufRead) -> io::Result<Document> {
+    let mut lines = Vec::new();
+    let mut buf = Vec::new();
+    while let Some(line) = read_lossy_line(&mut stdin, &mut buf)? {
+        lines.push(line);
+    }
+    Ok(Document::for_file(Path::new(STDIN_LABEL), lines))
+}
+
 /// `path` read and evaluated against `filters` in hide mode, which is batch
 /// mode's only mode.
 fn read_hidden(path: &Path, filters: &ActiveFilters) -> io::Result<Document> {
-    let mut document = Document::read(path)?;
+    Ok(hidden(Document::read(path)?, filters))
+}
+
+/// `document` evaluated against `filters` in hide mode.
+fn hidden(mut document: Document, filters: &ActiveFilters) -> Document {
     // The mode first: `evaluate` derives the visible set from the verdicts
     // *and* the mode, so setting it afterwards would need a second pass.
     document.set_mode(Mode::FilteredOnly);
     document.evaluate(filters);
-    Ok(document)
+    document
 }
 
 /// The `--emit lines` summary: what was emitted, of what.
@@ -483,7 +581,7 @@ fn collect_files(
     let written = written.and_then(|()| out.flush());
     let origin = match &inputs.from {
         Source::Directory(dir) => format!("from {}", dir.display()),
-        Source::Stdin | Source::File => format!("of {}", count(inputs.files.len(), "input")),
+        Source::List | Source::File => format!("of {}", count(inputs.files.len(), "input")),
     };
     let no_filter = if live { "" } else { ", no filter" };
     Exit::Streamed {
@@ -539,7 +637,7 @@ fn file_defines(path: &Path, filters: &ActiveFilters) -> io::Result<bool> {
 fn collect_cwd(inputs: &Inputs, out: &mut impl Write) -> Exit {
     let dir = match &inputs.from {
         Source::Directory(dir) => dir.clone(),
-        Source::Stdin | Source::File => inputs
+        Source::List | Source::File => inputs
             .files
             .first()
             .and_then(|file| file.parent())
@@ -617,7 +715,7 @@ mod tests {
     #[test]
     fn stdin_lines_are_paths_absolutised_in_order_with_blanks_skipped() {
         let got =
-            stdin_files(Cursor::new(&b"b.log\n\n  \n/abs/a.log\r\nc.log"[..])).expect("reads");
+            listed_files(Cursor::new(&b"b.log\n\n  \n/abs/a.log\r\nc.log"[..])).expect("reads");
 
         let cwd = std::env::current_dir().expect("cwd");
         assert_eq!(
@@ -742,26 +840,16 @@ mod tests {
         fn consume(&mut self, _: usize) {}
     }
 
-    /// #439: `-b` from a terminal with no `PATH`. Stdin is the keyboard,
-    /// not a file list: a read there waits for Ctrl-D. The current
-    /// directory is the input.
+    /// #517: with no `PATH` and no `--files-from`, stdin is not read,
+    /// pipe or terminal: the current directory is the input.
     #[test]
-    fn a_terminal_on_stdin_is_not_read_and_the_current_directory_is_the_input() {
-        let got = stdin_or_path(None, true, Unread).expect("reads");
+    fn with_no_path_stdin_is_not_read_and_the_current_directory_is_the_input() {
+        let got = inputs(Path::new("."), None, Unread).expect("reads");
 
         assert_eq!(
             got.from,
             Source::Directory(lexical_absolute(Path::new(".")))
         );
-    }
-
-    /// #353: with no `PATH`, a pipe on stdin is the input list.
-    #[test]
-    fn with_no_path_a_pipe_on_stdin_is_read() {
-        let got = stdin_or_path(None, false, Cursor::new(&b"/only/this.log\n"[..])).expect("reads");
-
-        assert_eq!(got.from, Source::Stdin);
-        assert_eq!(got.files, vec![PathBuf::from("/only/this.log")]);
     }
 
     /// #353: an explicit `PATH` wins. `while read f; do recon --emit lines
@@ -771,46 +859,41 @@ mod tests {
     fn a_path_argument_leaves_a_pipe_on_stdin_unread() {
         let file = fixture_file("batch_inputs_path_given.log", b"x\n");
 
-        let got = stdin_or_path(Some(&file), false, Unread).expect("reads");
+        let got = inputs(&file, None, Unread).expect("reads");
 
         assert_eq!(got.from, Source::File);
         assert_eq!(got.files, vec![lexical_absolute(&file)]);
     }
 
-    /// #353: `-` as `PATH` is stdin, as for `cat`, `grep` and `diff`.
+    /// #517: `--files-from -` reads the list on stdin, which `-` as `PATH`
+    /// did before.
     #[test]
-    fn a_dash_path_reads_stdin() {
-        let got = stdin_or_path(
-            Some(Path::new("-")),
-            false,
-            Cursor::new(&b"/only/this.log\n"[..]),
-        )
-        .expect("reads");
+    fn files_from_dash_reads_the_list_on_stdin() {
+        let got = inputs(Path::new("."), Some("-"), Cursor::new(&b"/only/this.log\n"[..])).expect("reads");
 
-        assert_eq!(got.from, Source::Stdin);
+        assert_eq!(got.from, Source::List);
         assert_eq!(got.files, vec![PathBuf::from("/only/this.log")]);
     }
 
-    /// An explicit `-` names no file to fall back on: an empty stdin is an
-    /// empty list, not a file called `-`.
+    /// `--files-from` names no file to fall back on: an empty list is no
+    /// input, not the current directory.
     #[test]
-    fn a_dash_path_with_an_empty_stdin_is_no_input() {
-        let got = stdin_or_path(Some(Path::new("-")), false, Cursor::new(&b""[..])).expect("reads");
+    fn files_from_an_empty_list_is_no_input() {
+        let got = inputs(Path::new("."), Some("-"), Cursor::new(&b""[..])).expect("reads");
 
-        assert_eq!(got.from, Source::Stdin);
+        assert_eq!(got.from, Source::List);
         assert!(got.files.is_empty(), "{:?}", got.files);
     }
 
-    /// With no `PATH`, a pipe with no lines — a cron job, a script with
-    /// stdin closed — leaves the current directory as the input.
+    /// `--files-from FILE` reads the list from FILE, and leaves stdin.
     #[test]
-    fn with_no_path_an_empty_pipe_means_the_current_directory() {
-        let got = stdin_or_path(None, false, Cursor::new(&b"\n"[..])).expect("reads");
+    fn files_from_a_file_reads_its_list_and_not_stdin() {
+        let list = fixture_file("batch_inputs_list.txt", b"/only/this.log\n");
 
-        assert_eq!(
-            got.from,
-            Source::Directory(lexical_absolute(Path::new(".")))
-        );
+        let got = inputs(Path::new("."), list.to_str(), Unread).expect("reads");
+
+        assert_eq!(got.from, Source::List);
+        assert_eq!(got.files, vec![PathBuf::from("/only/this.log")]);
     }
 
     /// The README's promise: a filename is carried as the bytes the
@@ -821,7 +904,7 @@ mod tests {
     fn a_non_utf8_stdin_line_keeps_its_bytes() {
         use std::os::unix::ffi::OsStrExt;
 
-        let got = stdin_files(Cursor::new(&b"/tmp/we\xffird.log\n"[..])).expect("reads");
+        let got = listed_files(Cursor::new(&b"/tmp/we\xffird.log\n"[..])).expect("reads");
 
         assert_eq!(got[0].as_os_str().as_bytes(), b"/tmp/we\xffird.log");
     }
@@ -875,7 +958,7 @@ mod tests {
             .collect();
         Inputs {
             files,
-            from: Source::Stdin,
+            from: Source::List,
         }
     }
 
@@ -1112,7 +1195,7 @@ mod tests {
         fs::write(&binary, b"ab\0cd\n").expect("write");
         let inputs = Inputs {
             files: vec![lexical_absolute(&binary), lexical_absolute(&dir)],
-            from: Source::Stdin,
+            from: Source::List,
         };
         let mut warnings = Vec::new();
 
@@ -1158,7 +1241,7 @@ mod tests {
 
         let from_stdin = Inputs {
             files: vec![dir.join("a.log"), dir.join("b.log")],
-            from: Source::Stdin,
+            from: Source::List,
         };
         let mut out = Vec::new();
         let (lines, _, _) = emitted(collect_cwd(&from_stdin, &mut out), &out);
@@ -1340,7 +1423,7 @@ mod tests {
         fs::write(&log, bytes).expect("write");
         let inputs = Inputs {
             files: vec![log.clone()],
-            from: Source::Stdin,
+            from: Source::List,
         };
 
         let mut warnings = Vec::new();
@@ -1365,7 +1448,7 @@ mod tests {
         fs::write(&binary, b"hit\0\n").expect("write");
         let inputs = Inputs {
             files: vec![binary.clone()],
-            from: Source::Stdin,
+            from: Source::List,
         };
         let filters = filters_matching("hit");
 
@@ -1477,7 +1560,7 @@ mod tests {
         fs::write(&binary, b"fn main() {}\0\n").expect("write");
         let inputs = Inputs {
             files: vec![binary.clone()],
-            from: Source::Stdin,
+            from: Source::List,
         };
 
         let mut out = Vec::new();

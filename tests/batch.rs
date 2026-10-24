@@ -84,7 +84,8 @@ fn text(bytes: &[u8]) -> String {
 }
 
 /// #511: batch mode always hides, so `--emit files` lists only the matching
-/// inputs, not every readable one — and `--hide` changes nothing.
+/// inputs, not every readable one — and `--hide` changes nothing. The list
+/// comes from `--files-from -` (#517).
 #[test]
 fn files_lists_the_matching_inputs_from_stdin_with_or_without_hide() {
     let dir = fixture("files_from_stdin");
@@ -96,8 +97,8 @@ fn files_lists_the_matching_inputs_from_stdin_with_or_without_hide() {
     let list = format!("{}\n{}\n", a.display(), b.display());
 
     for args in [
-        &["--emit", "files", "--set", "Bugs:only_hit"][..],
-        &["--emit", "files", "--set", "Bugs:only_hit", "--hide"][..],
+        &["--emit", "files", "--files-from", "-", "--set", "Bugs:only_hit"][..],
+        &["--emit", "files", "--files-from", "-", "--set", "Bugs:only_hit", "--hide"][..],
     ] {
         let out = recon(&home, args, list.as_bytes());
 
@@ -137,6 +138,91 @@ fn lines_print_only_the_matches_with_or_without_hide() {
     }
 }
 
+/// #517: `-` is the input itself, as for `grep`: its lines are filtered,
+/// not read as a list of files.
+#[test]
+fn a_dash_path_filters_the_lines_on_stdin() {
+    let dir = fixture("dash_lines");
+    let home = config_home(&dir);
+
+    let out = recon(
+        &home,
+        &["-b", "--set", "Bugs:only_hit", "-"],
+        b"hit\nmiss\nhit again\n",
+    );
+
+    assert_eq!(text(&out.stdout), "hit\nhit again\n");
+    assert_eq!(
+        text(&out.stderr),
+        "recon: emitted 2 lines of <stdin>, hide mode\n"
+    );
+    assert_eq!(out.status.code(), Some(0));
+}
+
+/// #517: a matching line on stdin is written as soon as it is read, while
+/// the pipe is still open, so `log stream | recon -b -` is filtered as it
+/// comes and not at an end that never comes.
+#[test]
+fn a_dash_path_writes_each_match_before_stdin_closes() {
+    use std::io::{BufRead as _, BufReader};
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    let dir = fixture("dash_streams");
+    let home = config_home(&dir);
+    let mut child = Command::new(env!("CARGO_BIN_EXE_recon"))
+        .args(["-b", "--set", "Bugs:only_hit", "-"])
+        .env_clear()
+        .envs(
+            ["PATH", "HOME"]
+                .into_iter()
+                .filter_map(|name| std::env::var_os(name).map(|value| (name, value))),
+        )
+        .env("XDG_CONFIG_HOME", &home)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn recon");
+    let mut stdin = child.stdin.take().expect("piped stdin");
+    let stdout = child.stdout.take().expect("piped stdout");
+    let (lines, got) = mpsc::channel();
+    std::thread::spawn(move || {
+        for line in BufReader::new(stdout).lines() {
+            lines.send(line.expect("utf-8 line")).ok();
+        }
+    });
+
+    stdin.write_all(b"miss\nhit\n").expect("write stdin");
+    stdin.flush().expect("flush stdin");
+    // Generous: a pass is milliseconds, and only a buffered run waits it out.
+    let first = got.recv_timeout(Duration::from_secs(10));
+    drop(stdin);
+    let status = child.wait().expect("wait for recon");
+
+    assert_eq!(first.as_deref(), Ok("hit"), "written before stdin closed");
+    assert_eq!(status.code(), Some(0));
+}
+
+/// #517: `--emit files -` was the way to give a list before `-` meant
+/// lines. Refused, with the new way in the message, so a script that used
+/// it fails loudly instead of printing nothing.
+#[test]
+fn emit_files_over_a_dash_path_points_to_files_from() {
+    let dir = fixture("dash_files");
+    let home = config_home(&dir);
+
+    let out = recon(&home, &["--emit", "files", "-"], b"/some/file.log\n");
+
+    assert!(out.stdout.is_empty(), "stdout: {}", text(&out.stdout));
+    assert!(
+        text(&out.stderr).contains("for a list of files, use --files-from -"),
+        "stderr: {}",
+        text(&out.stderr)
+    );
+    assert_eq!(out.status.code(), Some(1));
+}
+
 /// #224: a definition filter is answered by parsing each file, so
 /// `--emit files` lists only the files that define the kinds asked for,
 /// and the summary does not say `no filter`.
@@ -162,7 +248,7 @@ fn files_hide_with_a_definitions_profile_lists_the_files_that_define_it() {
 
     let out = recon(
         &home,
-        &["--emit", "files", "--set", "definitions:typedefs"],
+        &["--emit", "files", "--files-from", "-", "--set", "definitions:typedefs"],
         list.as_bytes(),
     );
 
@@ -185,7 +271,7 @@ fn set_with_a_list_emits_the_union_of_a_profile_and_a_filter() {
 
     let out = recon(
         &home,
-        &["--emit", "lines", "-q", "--set", "Bugs:only_hit,other"],
+        &["--emit", "lines", "--files-from", "-", "-q", "--set", "Bugs:only_hit,other"],
         format!("{}\n", a.display()).as_bytes(),
     );
 
@@ -208,7 +294,7 @@ fn set_names_a_definition_kind_without_a_profile() {
 
     let out = recon(
         &home,
-        &["--emit", "files", "-q", "--set", "definitions:structs"],
+        &["--emit", "files", "--files-from", "-", "-q", "--set", "definitions:structs"],
         format!("{}\n{}\n", a.display(), b.display()).as_bytes(),
     );
 
@@ -228,7 +314,7 @@ fn lines_n_over_two_files_prefixes_path_and_line_number() {
 
     let out = recon(
         &home,
-        &["--emit", "lines", "-n", "--set", "Bugs:only_hit"],
+        &["--emit", "lines", "--files-from", "-", "-n", "--set", "Bugs:only_hit"],
         list.as_bytes(),
     );
 
@@ -343,7 +429,7 @@ fn an_unreadable_input_warns_skips_and_exits_2() {
 
     let out = recon(
         &home,
-        &["--emit", "lines", "--set", "Bugs:only_hit"],
+        &["--emit", "lines", "--files-from", "-", "--set", "Bugs:only_hit"],
         list.as_bytes(),
     );
 
@@ -575,7 +661,7 @@ fn batch_puts_keymap_warnings_on_stderr() {
     fs::write(&log, "hit\n").expect("write");
     let list = format!("{}\n", log.display());
 
-    let out = recon(&home, &["--emit", "files"], list.as_bytes());
+    let out = recon(&home, &["--emit", "files", "--files-from", "-"], list.as_bytes());
 
     assert_eq!(out.status.code(), Some(0), "stderr: {}", text(&out.stderr));
     let stderr = text(&out.stderr);
@@ -615,7 +701,7 @@ fn batch_keymap_warnings_obey_no_warnings() {
 
     let out = recon(
         &home,
-        &["--emit", "files", "--no-warnings"],
+        &["--emit", "files", "--files-from", "-", "--no-warnings"],
         list.as_bytes(),
     );
 
@@ -738,7 +824,7 @@ fn a_reference_uses_the_target_s_pattern_and_a_disabled_broken_one_is_ignored() 
 
     let out = recon(
         &home,
-        &["--emit", "lines", "-q", "--set", "team:u"],
+        &["--emit", "lines", "--files-from", "-", "-q", "--set", "team:u"],
         format!("{}\n", a.display()).as_bytes(),
     );
 
@@ -787,7 +873,7 @@ fn recon_log_gets_the_startup_snapshot_with_timestamps_and_modules() {
 
     let out = recon_with(
         &home,
-        &["--emit", "lines", "-q"],
+        &["--emit", "lines", "--files-from", "-", "-q"],
         format!("{}\n", a.display()).as_bytes(),
         &[("RECON_LOG", &log), ("RUST_LOG", Path::new("recon=debug"))],
     );
