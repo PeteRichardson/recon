@@ -23,6 +23,7 @@ mod render;
 mod scanning;
 mod search;
 mod selection;
+mod stdin;
 mod sync;
 pub(crate) mod viewport;
 
@@ -327,6 +328,8 @@ pub struct App<'a> {
     loading: loading::Loading,
     /// The followed files, and the tail of the one on screen (#493).
     following: follow::Following,
+    /// The file `-` is copied into, when stdin is the input (#517).
+    stdin: Option<stdin::Stdin>,
     /// Files the view was asked to show, for the shutdown summary (#490).
     opened: u64,
     /// Scan answers the explorer took, for the shutdown summary.
@@ -506,6 +509,7 @@ impl App<'_> {
                 startup.icons,
             ),
             following: follow::Following::default(),
+            stdin: None,
             opened: 0,
             scanned: 0,
         };

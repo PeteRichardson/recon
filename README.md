@@ -2401,6 +2401,44 @@ app.log` starts with follow mode on for `app.log`.
 - **Text view only.** In the hex, image or a command view, `Ctrl-t` says that
   follow mode works in the text view.
 
+### Reading a command's output
+
+`-` as the file reads the lines on stdin, so you can filter what a command
+prints without saving it first:
+
+```sh
+sudo sfltool dumpbtm | recon --set btm -
+log stream | recon -
+```
+
+recon copies stdin into `recon-stdin-<YYYYMMDD-HHMMSS>-<pid>.txt` in
+`$TMPDIR`, readable by you only, and opens that file with follow mode on: a
+command that keeps writing keeps adding lines, and everything that works on
+a file — `r`, `-` for hex, `o` and `O` — works on it. The title says
+`<stdin> (open)` while the command may still write, and `<stdin> (closed)`
+once it has finished. `Ctrl-t` stops the new lines coming into the view, not
+the copy.
+
+- **The explorer starts hidden**, since the lines are what you came for.
+  `e` shows it on `$TMPDIR`, with the file selected. `--hide-pane` or
+  `[layout] hide_panes` chooses the panes instead.
+- **Size.** There is no limit. The log, and the status line, say when the
+  file passes 1 MB, 10 MB, 100 MB, 1 GB and on. If a write fails — a full
+  disk — the copy stops, the title says `<stdin> (stopped: disk full)`, and
+  stdin is closed, so the command gets SIGPIPE. The lines copied so far stay.
+- **The file stays** after recon quits, for the OS to clean up with the rest
+  of `$TMPDIR`, so you can open it again. To delete it when recon quits:
+
+  ```toml
+  [stdin]
+  delete_temp_file = true
+  ```
+
+- **`sudo`.** Run `sudo -v` first: sudo's password prompt and recon both
+  want the terminal.
+- **A terminal on stdin** is refused, since the read would wait for Ctrl-D.
+  `--files-from` works in batch mode only, for now (github issue #519).
+
 ### Batch mode
 
 `-b` (or `--batch`) skips the TUI altogether: the input is the argument, a
@@ -2861,7 +2899,7 @@ needs every line's answer at once — see *Definition filters*.
   `CLI > env > file > defaults` precedence chain. The settings so far are
   `background` and `warnings` at the top level, the two editor templates
   below, `[clipboard] command`, `[filters] palette`, `[layout] hide_panes`,
-  `[syntax] theme`, `[view] center_jumps`, and the action names in
+  `[stdin] delete_temp_file`, `[syntax] theme`, `[view] center_jumps`, and the action names in
   `[keymap]`; every other key in the file is reported as an unknown key. Settings land one issue at a time
   against github issue #18; see
   `docs/specs/2026-08-22-configuration-mechanism.md` for the rules and the list

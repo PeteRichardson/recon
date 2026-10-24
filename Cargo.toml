@@ -107,7 +107,11 @@ ratatui = "0.30.2"
 # block be rendered at a fixed 80 columns and compared byte-for-byte against the
 # real help — see `readme_usage_block_matches_the_real_help` in `config.rs`.
 clap = { version = "4.6.6", features = ["derive", "env", "wrap_help"] }
-crossterm = "0.29"
+# `use-dev-tty` (#517): with stdin a pipe (`cmd | recon -`), the keys come
+# from `/dev/tty`, which crossterm's default reader cannot poll on macOS:
+# "Failed to initialize input reader". This reader polls it with `poll(2)`.
+# `filedescriptor` is already in the build, so this adds no crate.
+crossterm = { version = "0.29", features = ["use-dev-tty"] }
 # A SIGTERM must restore the terminal before recon exits (#382). Already in
 # the build through crossterm, so this adds no crate. `flag::register` is the
 # only part used: the handler stores a flag and the event loop acts on it.
@@ -213,6 +217,13 @@ jpeg-decoder = { version = "0.3", default-features = false }
 # line, as without the feature.
 [features]
 foundation-models = ["dep:fm-rs"]
+
+# `-` in the TUI (#517): when the copy of stdin stops early, `/dev/null` is
+# put over fd 0 so the writer gets SIGPIPE. `dup2_stdin` is the safe form of
+# that `dup2`, which std has no way to say. Already in the build through
+# crossterm, so this adds no crate.
+[target.'cfg(unix)'.dependencies]
+rustix = { version = "1.1.4", default-features = false, features = ["std", "stdio"] }
 
 [target.'cfg(all(target_os = "macos", target_arch = "aarch64"))'.dependencies]
 fm-rs = { version = "0.3", optional = true }

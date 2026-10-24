@@ -290,6 +290,12 @@ pub struct Config {
     #[arg(skip)]
     pub filetypes: Vec<crate::views::FileType>,
 
+    /// `[stdin] delete_temp_file` (#517): whether the TUI deletes the file
+    /// it copies `-` into when it quits. `None` is unset, which leaves it
+    /// for the OS to clean up with the rest of `$TMPDIR`. File-only.
+    #[arg(skip)]
+    pub delete_stdin_temp_file: Option<bool>,
+
     /// The `[commands]` table of `config.toml`: the command views a row
     /// can name (#457).
     #[arg(skip)]
@@ -516,6 +522,8 @@ pub struct FileConfig {
     pub view: Option<ViewConfig>,
     /// `[layout]`. Same again.
     pub layout: Option<LayoutConfig>,
+    /// `[stdin]`. Same again.
+    pub stdin: Option<StdinConfig>,
     /// `[keymap]`. Same again. Handed to `Keymap::new` rather than
     /// merged key by key here: a rebind either names a real action and a
     /// parseable key, or the whole file is refused — there is no per-key
@@ -570,6 +578,14 @@ pub struct LayoutConfig {
     /// See [`Config::hide_pane`]. The names are `explorer`, `view` and
     /// `filters`; anything else is a parse error that names the line.
     pub hide_panes: Option<Vec<crate::panes::Pane>>,
+}
+
+/// The `[stdin]` table: the file `-` is copied into in the TUI (#517).
+#[derive(Deserialize, Debug, Default, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct StdinConfig {
+    /// See [`Config::delete_stdin_temp_file`].
+    pub delete_temp_file: Option<bool>,
 }
 
 /// The `[syntax]` table.
@@ -756,9 +772,8 @@ pub enum ConfigError {
     /// `-` as `PATH` with the keyboard on stdin (#517): the read would wait
     /// for Ctrl-D.
     DashNeedsAPipe,
-    /// A stdin input the TUI does not take yet: `--files-from` (#519), and
-    /// `-` until the TUI half of #517. The flag, for the message.
-    NeedsBatch(&'static str),
+    /// `--files-from` in the TUI, which cannot list the files yet (#519).
+    FilesFromNeedsBatch,
     /// `--set` naming a set `filters.toml` does not define (#143). `known`
     /// is every set it does define, for the message.
     UnknownSet { name: String, known: Vec<String> },
@@ -900,7 +915,7 @@ impl fmt::Display for ConfigError {
                 "- is lines and applies to --emit lines; for a list of files, use --files-from -"
             ),
             Self::DashNeedsAPipe => write!(f, "- reads stdin, but stdin is a terminal"),
-            Self::NeedsBatch(flag) => write!(f, "{flag} applies to batch mode"),
+            Self::FilesFromNeedsBatch => write!(f, "--files-from applies to batch mode"),
             // The built-in set is listed apart: it is among the known names
             // — `--set definitions` is accepted (#220) — but no set file
             // defines it, and the message says what the set files define.
@@ -1156,6 +1171,25 @@ impl Config {
         self.path.as_deref().unwrap_or(CURRENT_DIR)
     }
 
+    /// Whether the TUI deletes the file `-` was copied into when it quits:
+    /// `[stdin] delete_temp_file`, else no (#517).
+    #[must_use]
+    pub fn delete_stdin_temp_file(&self) -> bool {
+        self.delete_stdin_temp_file.unwrap_or(false)
+    }
+
+    /// Open `file`, which stdin is copied into, in place of `-` (#517):
+    /// followed, since more may come, and with the explorer hidden, since
+    /// the lines are what the user came for — unless `--hide-pane` or
+    /// `[layout] hide_panes` chose the panes. After [`Config::load`], so
+    /// that the file's choice is known.
+    pub fn read_stdin_into(&mut self, file: &Path) {
+        self.path = Some(file.display().to_string());
+        self.follow = true;
+        self.hide_pane
+            .get_or_insert_with(|| vec![crate::panes::Pane::Explorer]);
+    }
+
     /// Whether `PATH` is `-`: the lines on stdin are the input (#517).
     #[must_use]
     pub fn path_is_stdin(&self) -> bool {
@@ -1224,19 +1258,14 @@ impl Config {
     }
 
     /// Refuse a read of stdin that cannot work (#517): `-` from a terminal,
-    /// and the stdin inputs the TUI does not take yet. After the mode is
-    /// known, unlike `check_flags`: both depend on it.
+    /// and `--files-from` in the TUI, which cannot list files yet (#519).
+    /// After the mode is known, unlike `check_flags`: both depend on it.
     pub fn check_stdin(&self, stdin_is_terminal: bool, batch: bool) -> Result<(), ConfigError> {
         if self.path_is_stdin() && stdin_is_terminal {
             return Err(ConfigError::DashNeedsAPipe);
         }
-        if !batch {
-            if self.files_from.is_some() {
-                return Err(ConfigError::NeedsBatch("--files-from"));
-            }
-            if self.path_is_stdin() {
-                return Err(ConfigError::NeedsBatch(STDIN_PATH));
-            }
+        if !batch && self.files_from.is_some() {
+            return Err(ConfigError::FilesFromNeedsBatch);
         }
         Ok(())
     }
@@ -1402,6 +1431,7 @@ impl Config {
             syntax,
             view,
             layout,
+            stdin,
             keymap,
             warnings,
             filetype,
@@ -1467,6 +1497,12 @@ impl Config {
             && let Some(hide_panes) = hide_panes
         {
             self.hide_pane.get_or_insert_with(|| hide_panes.clone());
+        }
+
+        if let Some(StdinConfig { delete_temp_file }) = stdin
+            && let Some(delete) = delete_temp_file
+        {
+            self.delete_stdin_temp_file.get_or_insert(*delete);
         }
 
         // Not folded: `[keymap]` is an overlay for `keymap::config::build`,
@@ -1672,10 +1708,10 @@ mod tests {
         assert!(config.check_stdin(false, true).is_ok(), "a pipe is read");
     }
 
-    /// #517: the TUI cannot list `--files-from` yet (#519), and does not
-    /// read `-` yet: both are refused rather than half done.
+    /// #517: the TUI cannot list `--files-from` yet (#519), so it is
+    /// refused rather than half done. `-` is read in both modes.
     #[test]
-    fn stdin_inputs_in_the_tui_are_refused_for_now() {
+    fn files_from_in_the_tui_is_refused_for_now() {
         let files_from = parse_clean(["recon", "--files-from", "-"]).expect("parses");
         let dash = parse_clean(["recon", "-"]).expect("parses");
 
@@ -1686,13 +1722,8 @@ mod tests {
                 .to_string(),
             "--files-from applies to batch mode"
         );
-        assert_eq!(
-            dash.check_stdin(false, false)
-                .expect_err("refused")
-                .to_string(),
-            "- applies to batch mode"
-        );
         assert!(files_from.check_stdin(false, true).is_ok());
+        assert!(dash.check_stdin(false, false).is_ok(), "the TUI reads -");
     }
 
     /// #517: `-` is lines, so only `--emit lines` takes it. `files` is the
@@ -3157,6 +3188,39 @@ mod tests {
         let mut config = Config::default();
         config.apply(&file);
         assert_eq!(config.hide_panes(), [Pane::Explorer, Pane::Filters]);
+    }
+
+    /// #517: `[stdin] delete_temp_file` reaches the resolved config, and
+    /// with no `[stdin]` the temporary file is left for the OS.
+    #[test]
+    fn stdin_delete_temp_file_reaches_the_resolved_config() {
+        assert!(!Config::default().delete_stdin_temp_file());
+
+        let path = fixture("stdin-delete.toml", "[stdin]\ndelete_temp_file = true\n");
+        let file = load_from(&path).expect("a valid [stdin]");
+        let mut config = Config::default();
+        config.apply(&file);
+        assert!(config.delete_stdin_temp_file());
+    }
+
+    /// #517: `-` in the TUI opens the file stdin is copied into, followed,
+    /// with the explorer hidden — unless the flag or the file chose the
+    /// panes to hide.
+    #[test]
+    fn reading_stdin_into_a_file_follows_it_and_hides_the_explorer() {
+        use crate::panes::Pane;
+        let file = Path::new("/tmp/recon-stdin.txt");
+        let mut config = parse_clean(["recon", "-"]).expect("parses");
+
+        config.read_stdin_into(file);
+
+        assert_eq!(config.path.as_deref(), Some("/tmp/recon-stdin.txt"));
+        assert!(config.follow);
+        assert_eq!(config.hide_panes(), [Pane::Explorer]);
+
+        let mut chosen = parse_clean(["recon", "--hide-pane", "filters", "-"]).expect("parses");
+        chosen.read_stdin_into(file);
+        assert_eq!(chosen.hide_panes(), [Pane::Filters]);
     }
 
     /// A name other than the three is refused, and the error names it.
