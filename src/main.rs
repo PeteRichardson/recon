@@ -59,14 +59,19 @@ fn main() -> Result<ExitCode> {
         startup.config.icons_setting(),
         startup.config.background(),
     );
-    let config = &startup.config;
-    recon::logging::startup_snapshot(&startup);
-
     // Batch mode (#143, #439): `--batch`, or `--emit` with no terminal on
     // stdin. The result is computed and printed, with no TUI.
     let stdin_is_terminal = io::stdin().is_terminal();
-    let batch = config.batch_reason(stdin_is_terminal);
-    config.check_stdin(stdin_is_terminal, batch.is_some())?;
+    let batch = startup.config.batch_reason(stdin_is_terminal);
+    startup.config.check_stdin(stdin_is_terminal, batch.is_some())?;
+    // `-` in the TUI (#517): batch mode reads stdin itself.
+    let stdin_file = if batch.is_none() && startup.config.path_is_stdin() {
+        Some(recon::stdin::copy_into(&mut startup.config)?)
+    } else {
+        None
+    };
+    let config = &startup.config;
+    recon::logging::startup_snapshot(&startup);
     match batch {
         Some(reason) => log::debug!("mode: batch: {reason}"),
         None => log::debug!("mode: TUI"),
@@ -114,6 +119,7 @@ fn main() -> Result<ExitCode> {
             log::debug!("terminal: {} columns, {} rows", size.width, size.height);
         }
         let exit = App::new(&startup)
+            .with_stdin(stdin_file)
             .with_image_picker(image_picker())
             .with_model(recon::generate::system())
             .with_terminate(terminate)

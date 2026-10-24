@@ -27,6 +27,7 @@ impl App<'_> {
             | self.drain_views()
             | self.poll_stamps()
             | self.poll_follow()
+            | self.poll_stdin()
             | self.drain_request()
             | self.poll_finish();
         let timeout = Duration::from_secs_f32(1.0 / 60.0);

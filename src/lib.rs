@@ -38,6 +38,7 @@ pub mod startup;
 // Compiled by `build.rs`, which makes the stamp; here only for its tests.
 #[cfg(test)]
 mod stamp;
+pub mod stdin;
 pub mod syntax;
 mod toml_fmt;
 pub mod views;

@@ -264,6 +264,9 @@ pub(crate) struct FileView<'a> {
     /// file changed even when the notice is dismissed by the same key that
     /// raised it (#120).
     title_accent: bool,
+    /// A title to show in place of a file's path: `<stdin> (open)` for the
+    /// file `-` is copied into (#517).
+    title_alias: Option<(PathBuf, String)>,
     /// Whether the line-number gutter is drawn. Toggled with `#`.
     hide_line_numbers: bool,
     /// Set when the buffer currently holds the single blank placeholder line
@@ -351,6 +354,12 @@ impl FileView<'_> {
         let mut view = Self::default();
         view.load(Path::new(&filename));
         view
+    }
+
+    /// Show `title` in place of `path` whenever `path` is on screen.
+    /// Absolute, as the view holds its file (#157).
+    pub(crate) fn set_title_alias(&mut self, path: &Path, title: String) {
+        self.title_alias = Some((crate::path::lexical_absolute(path), title));
     }
 
     /// The file being shown.
@@ -1494,7 +1503,10 @@ impl FileView<'_> {
     /// path is rendered, and the one place a lossy conversion is both
     /// correct and harmless — see the `filename` field.
     fn block(&self, width: u16) -> ratatui::widgets::Block<'static> {
-        let path = self.filename.display().to_string();
+        let path = match &self.title_alias {
+            Some((path, title)) if *path == self.filename => title.clone(),
+            _ => self.filename.display().to_string(),
+        };
         let marker = if self.hex { " [hex]" } else { "" };
         let (title, facts) = title_text(
             &path,

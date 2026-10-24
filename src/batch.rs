@@ -268,9 +268,6 @@ fn collect_lines(
     }
 }
 
-/// What the summary calls stdin.
-pub(crate) const STDIN_LABEL: &str = "<stdin>";
-
 /// `--emit lines` over the lines of `stdin`, `-` as `PATH` (#517).
 ///
 /// A definition filter needs the grammar of the whole input, which one
@@ -303,12 +300,12 @@ pub(crate) fn collect_stdin<R: io::Read>(
     let failed = match read {
         Ok(()) => 0,
         Err(err) => {
-            warn(warnings, Path::new(STDIN_LABEL), &err);
+            warn(warnings, Path::new(crate::stdin::LABEL), &err);
             1
         }
     };
     Exit::Streamed {
-        summary: lines_summary(emitted, STDIN_LABEL),
+        summary: lines_summary(emitted, crate::stdin::LABEL),
         failed,
         written: written.and_then(|()| out.flush()),
     }
@@ -365,7 +362,7 @@ fn stdin_whole(mut stdin: impl BufRead) -> io::Result<Document> {
     while let Some(line) = read_lossy_line(&mut stdin, &mut buf)? {
         lines.push(line);
     }
-    Ok(Document::for_file(Path::new(STDIN_LABEL), lines))
+    Ok(Document::for_file(Path::new(crate::stdin::LABEL), lines))
 }
 
 /// `path` read and evaluated against `filters` in hide mode, which is batch

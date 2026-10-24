@@ -567,6 +567,7 @@ mod show_hide;
 mod star;
 mod startup;
 mod status_line;
+mod stdin;
 mod viewport;
 mod views;
 mod visual;

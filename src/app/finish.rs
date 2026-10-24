@@ -317,7 +317,7 @@ pub(super) fn stream(
 }
 
 /// A byte count for the progress line: `812 B`, `4.1 KB`, `20.0 GB`.
-fn size(bytes: u64) -> String {
+pub(super) fn size(bytes: u64) -> String {
     const UNITS: [&str; 4] = ["KB", "MB", "GB", "TB"];
     if bytes < 1000 {
         return format!("{bytes} B");
