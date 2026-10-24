@@ -91,13 +91,14 @@ pub struct Config {
     /// selected; a file is opened with its own directory listed alongside.
     /// With none, the current directory.
     ///
-    /// In batch mode, PATH is the input and stdin is not read. `-` as PATH
-    /// reads the file list from stdin; so does no PATH, when stdin is not a
-    /// terminal. `--emit cwd` never reads stdin.
+    /// `-` as PATH is the lines on stdin, as for `grep`. Otherwise stdin is
+    /// not read: in batch mode, a list of files comes from `--files-from`.
+    /// With `sudo cmd | recon -`, run `sudo -v` first: sudo's password
+    /// prompt and recon both want the terminal.
     //
-    // `None` rather than a default of `.`: batch mode reads stdin only when
-    // no PATH was given, and a default cannot tell `recon` from `recon .`
-    // (#353). [`Config::path_or_current_dir`] gives the TUI its `.`.
+    // `None` rather than a default of `.`, from when batch mode read a list
+    // on stdin only with no PATH (#353, until #517). The two mean the same
+    // now; [`Config::path_or_current_dir`] gives both modes their `.`.
     #[arg(value_name = "PATH")]
     pub path: Option<String>,
 
@@ -326,7 +327,8 @@ pub struct Config {
     pub emit: Option<crate::emit::Emit>,
 
     /// Batch mode: no TUI. Print the result of `--emit` (`lines` if not
-    /// given) for the files on stdin or under PATH, then exit.
+    /// given) for PATH, the `--files-from` list, or the lines on stdin with
+    /// `-` as PATH, then exit.
     ///
     /// Batch mode also starts without this flag when `--emit` is given and
     /// stdin is not a terminal — a pipe, a cron job, or `< /dev/null`.
@@ -339,6 +341,12 @@ pub struct Config {
     /// numbers are the real ones, not 1..N of the output.
     #[arg(short = 'n', long)]
     pub line_numbers: bool,
+
+    /// Batch mode's inputs: the files listed in FILE, one per line, or on
+    /// stdin when FILE is `-`. Relative paths are from the current directory.
+    // Not `-` as PATH, which was the list before #517 and is now the lines.
+    #[arg(long, value_name = "FILE", conflicts_with = "path")]
+    pub files_from: Option<String>,
 
     /// Follow a file that grows, as `tail -f` does.
     ///
@@ -742,6 +750,15 @@ pub enum ConfigError {
     FollowNeedsLines,
     /// `--follow` with a directory: follow mode follows one file (#493).
     FollowNeedsOneFile,
+    /// `-` as `PATH` with an `--emit` other than `lines` (#517). `files`
+    /// is told of `--files-from -`, which is what `-` meant before.
+    DashNeedsLines,
+    /// `-` as `PATH` with the keyboard on stdin (#517): the read would wait
+    /// for Ctrl-D.
+    DashNeedsAPipe,
+    /// A stdin input the TUI does not take yet: `--files-from` (#519), and
+    /// `-` until the TUI half of #517. The flag, for the message.
+    NeedsBatch(&'static str),
     /// `--set` naming a set `filters.toml` does not define (#143). `known`
     /// is every set it does define, for the message.
     UnknownSet { name: String, known: Vec<String> },
@@ -878,6 +895,12 @@ impl fmt::Display for ConfigError {
             Self::LineNumbersNeedLines => write!(f, "--line-numbers applies to --emit lines"),
             Self::FollowNeedsLines => write!(f, "--follow applies to --emit lines"),
             Self::FollowNeedsOneFile => write!(f, "{FOLLOW_NEEDS_ONE_FILE}"),
+            Self::DashNeedsLines => write!(
+                f,
+                "- is lines and applies to --emit lines; for a list of files, use --files-from -"
+            ),
+            Self::DashNeedsAPipe => write!(f, "- reads stdin, but stdin is a terminal"),
+            Self::NeedsBatch(flag) => write!(f, "{flag} applies to batch mode"),
             // The built-in set is listed apart: it is among the known names
             // — `--set definitions` is accepted (#220) — but no set file
             // defines it, and the message says what the set files define.
@@ -1119,14 +1142,24 @@ fn warnings_from_env(value: Option<&str>) -> Result<Option<bool>, ConfigError> {
 }
 
 /// What no `PATH` stands for: the TUI's start, and batch mode's input
-/// when stdin has no list.
+/// with no `--files-from`.
 pub(crate) const CURRENT_DIR: &str = ".";
+
+/// `-` as `PATH` (#517), and as `--files-from`'s `FILE`: stdin, as for
+/// `grep`.
+pub(crate) const STDIN_PATH: &str = "-";
 
 impl Config {
     /// What `PATH` names, or [`CURRENT_DIR`] when it was not given.
     #[must_use]
     pub fn path_or_current_dir(&self) -> &str {
         self.path.as_deref().unwrap_or(CURRENT_DIR)
+    }
+
+    /// Whether `PATH` is `-`: the lines on stdin are the input (#517).
+    #[must_use]
+    pub fn path_is_stdin(&self) -> bool {
+        self.path.as_deref() == Some(STDIN_PATH)
     }
 
     /// `--batch` with no `--emit` asks for `lines`, the common case (#439).
@@ -1175,10 +1208,31 @@ impl Config {
         {
             return Err(ConfigError::FollowNeedsLines);
         }
-        // A `PATH` that names a directory. Batch mode refuses one that came
-        // from stdin, or the current directory, itself.
+        if self.path_is_stdin() && self.emit.is_some_and(|emit| emit != crate::emit::Emit::Lines) {
+            return Err(ConfigError::DashNeedsLines);
+        }
+        // A `PATH` that names a directory. Batch mode refuses a list from
+        // `--files-from`, or the current directory, itself.
         if self.follow && std::path::Path::new(self.path_or_current_dir()).is_dir() {
             return Err(ConfigError::FollowNeedsOneFile);
+        }
+        Ok(())
+    }
+
+    /// Refuse a read of stdin that cannot work (#517): `-` from a terminal,
+    /// and the stdin inputs the TUI does not take yet. After the mode is
+    /// known, unlike `check_flags`: both depend on it.
+    pub fn check_stdin(&self, stdin_is_terminal: bool, batch: bool) -> Result<(), ConfigError> {
+        if self.path_is_stdin() && stdin_is_terminal {
+            return Err(ConfigError::DashNeedsAPipe);
+        }
+        if !batch {
+            if self.files_from.is_some() {
+                return Err(ConfigError::NeedsBatch("--files-from"));
+            }
+            if self.path_is_stdin() {
+                return Err(ConfigError::NeedsBatch(STDIN_PATH));
+            }
         }
         Ok(())
     }
@@ -1602,6 +1656,58 @@ mod tests {
         Config::from_arg_matches(&matches)
     }
 
+    /// #517: `-` reads the lines on stdin, which from a terminal is the
+    /// keyboard: a read there waits for Ctrl-D and looks like a hang.
+    #[test]
+    fn a_dash_path_with_a_terminal_on_stdin_is_refused() {
+        let config = parse_clean(["recon", "-b", "-"]).expect("parses");
+
+        let err = config.check_stdin(true, true).expect_err("refused");
+
+        assert_eq!(err.to_string(), "- reads stdin, but stdin is a terminal");
+        assert!(config.check_stdin(false, true).is_ok(), "a pipe is read");
+    }
+
+    /// #517: the TUI cannot list `--files-from` yet (#519), and does not
+    /// read `-` yet: both are refused rather than half done.
+    #[test]
+    fn stdin_inputs_in_the_tui_are_refused_for_now() {
+        let files_from = parse_clean(["recon", "--files-from", "-"]).expect("parses");
+        let dash = parse_clean(["recon", "-"]).expect("parses");
+
+        assert_eq!(
+            files_from.check_stdin(false, false).expect_err("refused").to_string(),
+            "--files-from applies to batch mode"
+        );
+        assert_eq!(
+            dash.check_stdin(false, false).expect_err("refused").to_string(),
+            "- applies to batch mode"
+        );
+        assert!(files_from.check_stdin(false, true).is_ok());
+    }
+
+    /// #517: `-` is lines, so only `--emit lines` takes it. `files` is the
+    /// one a script from before #517 would pass, and is told of
+    /// `--files-from -`. `--follow` is accepted: stdin is always followed.
+    #[test]
+    fn a_dash_path_needs_emit_lines() {
+        for emit in ["files", "cwd"] {
+            let config = parse_clean(["recon", "--emit", emit, "-"]).expect("parses");
+
+            let err = config.check_flags().expect_err("refused");
+
+            assert!(err.to_string().contains("use --files-from -"), "{emit}: {err}");
+        }
+        let follow = parse_clean(["recon", "--emit", "lines", "-f", "-"]).expect("parses");
+        assert!(follow.check_flags().is_ok());
+    }
+
+    /// `--files-from` with `PATH`: two inputs, so clap refuses the pair.
+    #[test]
+    fn files_from_with_a_path_is_refused() {
+        assert!(parse_clean(["recon", "--files-from", "-", "a.log"]).is_err());
+    }
+
     /// Write a config fixture under `target/` so tests never depend on the
     /// developer's real `~/.config/recon/config.toml`.
     fn fixture(name: &str, contents: &str) -> PathBuf {
@@ -1747,8 +1853,8 @@ mod tests {
     // ---- the CLI layer -------------------------------------------------
 
     /// The argument is optional and the TUI opens the current directory
-    /// without it, so bare `recon` opens what `recon .` does. The two still
-    /// differ to batch mode, which reads stdin only without one (#353).
+    /// without it, so bare `recon` opens what `recon .` does, in batch mode
+    /// too since #517.
     #[test]
     fn no_argument_opens_the_current_directory() {
         let config = parse_clean(["recon"]).expect("parses with no argument");

@@ -64,7 +64,9 @@ fn main() -> Result<ExitCode> {
 
     // Batch mode (#143, #439): `--batch`, or `--emit` with no terminal on
     // stdin. The result is computed and printed, with no TUI.
-    let batch = config.batch_reason(io::stdin().is_terminal());
+    let stdin_is_terminal = io::stdin().is_terminal();
+    let batch = config.batch_reason(stdin_is_terminal);
+    config.check_stdin(stdin_is_terminal, batch.is_some())?;
     match batch {
         Some(reason) => log::debug!("mode: batch: {reason}"),
         None => log::debug!("mode: TUI"),
