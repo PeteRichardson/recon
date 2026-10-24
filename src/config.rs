@@ -1208,7 +1208,11 @@ impl Config {
         {
             return Err(ConfigError::FollowNeedsLines);
         }
-        if self.path_is_stdin() && self.emit.is_some_and(|emit| emit != crate::emit::Emit::Lines) {
+        if self.path_is_stdin()
+            && self
+                .emit
+                .is_some_and(|emit| emit != crate::emit::Emit::Lines)
+        {
             return Err(ConfigError::DashNeedsLines);
         }
         // A `PATH` that names a directory. Batch mode refuses a list from
@@ -1676,11 +1680,16 @@ mod tests {
         let dash = parse_clean(["recon", "-"]).expect("parses");
 
         assert_eq!(
-            files_from.check_stdin(false, false).expect_err("refused").to_string(),
+            files_from
+                .check_stdin(false, false)
+                .expect_err("refused")
+                .to_string(),
             "--files-from applies to batch mode"
         );
         assert_eq!(
-            dash.check_stdin(false, false).expect_err("refused").to_string(),
+            dash.check_stdin(false, false)
+                .expect_err("refused")
+                .to_string(),
             "- applies to batch mode"
         );
         assert!(files_from.check_stdin(false, true).is_ok());
@@ -1696,7 +1705,10 @@ mod tests {
 
             let err = config.check_flags().expect_err("refused");
 
-            assert!(err.to_string().contains("use --files-from -"), "{emit}: {err}");
+            assert!(
+                err.to_string().contains("use --files-from -"),
+                "{emit}: {err}"
+            );
         }
         let follow = parse_clean(["recon", "--emit", "lines", "-f", "-"]).expect("parses");
         assert!(follow.check_flags().is_ok());

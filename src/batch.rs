@@ -290,7 +290,10 @@ pub(crate) fn collect_stdin<R: io::Read>(
             Ok(document) => {
                 let document = hidden(document, filters);
                 let all = 0..document.lines().len();
-                (Ok(()), write_new(&document, all, line_numbers, out, &mut emitted))
+                (
+                    Ok(()),
+                    write_new(&document, all, line_numbers, out, &mut emitted),
+                )
             }
             Err(err) => (Err(err), Ok(())),
         }
@@ -869,7 +872,12 @@ mod tests {
     /// did before.
     #[test]
     fn files_from_dash_reads_the_list_on_stdin() {
-        let got = inputs(Path::new("."), Some("-"), Cursor::new(&b"/only/this.log\n"[..])).expect("reads");
+        let got = inputs(
+            Path::new("."),
+            Some("-"),
+            Cursor::new(&b"/only/this.log\n"[..]),
+        )
+        .expect("reads");
 
         assert_eq!(got.from, Source::List);
         assert_eq!(got.files, vec![PathBuf::from("/only/this.log")]);
