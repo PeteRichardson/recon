@@ -8,6 +8,7 @@ Panes are hidable and zoomable in-app or from the command line.
 - Navigate with arrows and h|j|k|l vim keys to select a file for viewing.
 - Incremental search with `/`
 - Highlighted lines indicate files that match an active include filter
+- Coloured filetype icons beside each entry, when the terminal can draw them (`[view] icons` in config.toml, `auto` by default)
 - Reveal and Focus the explorer pane with `e`. Hide it with `E`
 
 ## **File View**

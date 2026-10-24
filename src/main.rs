@@ -41,7 +41,7 @@ fn main() -> Result<ExitCode> {
         };
         choose_log_target(&config, false);
     }
-    let startup = match start? {
+    let mut startup = match start? {
         Start::Print { stdout, warnings } => {
             for warning in warnings {
                 log::warn!("{warning}");
@@ -51,6 +51,14 @@ fn main() -> Result<ExitCode> {
         }
         Start::Run(startup) => startup,
     };
+    // Environment variables and a terminal's preferences file, read once:
+    // no subprocess and nothing asked of the terminal, so the first frame
+    // waits on nothing (#512). Batch mode lists no directory, and pays for
+    // the reads only.
+    startup.icons = recon::filetype::resolve_startup(
+        startup.config.icons_setting(),
+        startup.config.background(),
+    );
     let config = &startup.config;
     recon::logging::startup_snapshot(&startup);
 

@@ -90,18 +90,29 @@ pub(super) struct Loading {
     /// A terminal cell's width in pixels, for a command's `{px}` (#457).
     /// Asked of the terminal once, and again after a resize.
     cell_px: Option<u32>,
+    /// Whether a directory listing leads each row with a filetype icon
+    /// (#512).
+    icons: crate::filetype::Icons,
 }
 
 /// No rows of the user's, and an executor that runs nothing: what a
 /// `App::default()` holds until `App::new` builds the real one.
 impl Default for Loading {
     fn default() -> Self {
-        Self::new(Box::default(), Arc::new(Table::default()))
+        Self::new(
+            Box::default(),
+            Arc::new(Table::default()),
+            crate::filetype::Icons::Off,
+        )
     }
 }
 
 impl Loading {
-    pub(super) fn new(executor: Box<dyn Executor>, table: Arc<Table>) -> Self {
+    pub(super) fn new(
+        executor: Box<dyn Executor>,
+        table: Arc<Table>,
+        icons: crate::filetype::Icons,
+    ) -> Self {
         Self {
             executor,
             steps: Steps::new(&table),
@@ -111,6 +122,7 @@ impl Loading {
             shown: None,
             last_entry: None,
             cell_px: None,
+            icons,
         }
     }
 
@@ -122,6 +134,7 @@ impl Loading {
             steps: self.steps.clone(),
             px,
             prefetch,
+            icons: self.icons,
         }
     }
 

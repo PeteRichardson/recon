@@ -330,6 +330,12 @@ Options:
           More directories to read filter sets from, colon-separated, e.g.
           `~/team-filters:./.recon`. recon reads `filters.toml` and each
           `*.filters.toml` in them [env: RECON_FILTER_PATH]
+      --icons <WHICH>
+          Whether directory listings lead each row with a filetype icon, which
+          needs a Nerd Font. `auto` — the default — draws them when the terminal
+          is known to be able to; `on` always does; `off` never does. Falls back
+          to `[view] icons` in `config.toml`, then to `auto` [env: RECON_ICONS]
+          [possible values: auto, on, off]
       --theme <THEME>
           Colours for the file view's syntax colouring: a bundled theme name, a
           path to a `.tmTheme` file, or `none` to turn colouring off [env:
@@ -2056,6 +2062,41 @@ and the name last.
 There is no selection marker; the selected row is drawn in reverse video.
 A `>>` marker used to sit in the gutter, and it is coming back as an opt-in
 setting once there is somewhere to configure it.
+
+#### Filetype icons
+
+With a Nerd Font, the explorer and the file view's directory listing lead
+each row with an icon for what the entry is, coloured by type as Yazi draws
+them: orange for Rust, rust-red for TOML, grey for a lock file, a blue folder
+for a directory. The icons and colours come from the
+[devicons](https://crates.io/crates/devicons) table (about 600 names and
+extensions), in its light colours when `background = "light"`. A file no rule
+knows gets a plain file icon; a directory, `..`, an executable and a special
+file wear the colour their name already has. A row a filter or a search has
+coloured draws its icon in that colour too.
+
+No terminal tells recon which font it draws with, so `auto`, the default,
+decides from what the terminal is, and draws nothing until it is sure:
+
+| Terminal | `auto` draws icons when |
+| --- | --- |
+| Ghostty, WezTerm, kitty 0.36+ | always: each ships the Nerd Font symbols |
+| iTerm2 | a profile names a Nerd Font, or one is installed in `~/Library/Fonts` or `/Library/Fonts` |
+| Terminal.app | a profile names a Nerd Font (it draws no glyph from any other font) |
+| anything else | never: set `icons = "on"` |
+
+Inside tmux, the variables the outer terminal set still name it. `auto` reads
+environment variables and the terminal's preferences file, once, and asks
+the terminal nothing, so it adds nothing to startup. The log says when it
+leaves icons off. `on` draws them anywhere (a font without the glyphs shows
+boxes, in column); `off` never does:
+
+```toml
+[view]
+icons = "on"     # auto | on | off
+```
+
+or `--icons on`, or `RECON_ICONS=on`.
 
 Filter pane (`src/widgets/filterlist.rs`), reached with `f` or `Tab` — the
 pane sizes to its contents, and with no filters defined it holds a single

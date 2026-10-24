@@ -282,6 +282,9 @@ pub(crate) struct FileView<'a> {
     /// two values could disagree. A condition re-evaluated per render has
     /// nothing to keep in sync, which is the same shape `gutter_blank` uses.
     showing_directory: bool,
+    /// The colour of each listing line's icon, by source line (#512).
+    /// Empty unless a listing with icons on is shown.
+    icon_colours: Arc<Vec<Option<Color>>>,
     /// A `scroll_cursor_to_row` request not yet applied. Applied against the
     /// real area the next time this pane renders — see the `Widget` impl —
     /// rather than acted on immediately, since the caller (a filter or
@@ -556,6 +559,7 @@ impl FileView<'_> {
     pub(crate) fn show(&mut self, path: &Path, contents: &Contents) {
         self.filename = path.to_path_buf();
         self.showing_directory = contents.directory;
+        self.icon_colours = Arc::clone(&contents.icon_colours);
         self.mime.clone_from(&contents.mime);
         self.picture = contents.image.clone().map(|image| self.picture_of(image));
         self.adopt(Arc::clone(&contents.lines), contents.text, contents.hex);
@@ -1244,18 +1248,16 @@ impl FileView<'_> {
     ///   this and paints the bar.
     fn apply_syntax(&mut self) {
         self.textarea.clear_custom_highlight();
+        let left_alone = self.left_alone();
         let Some(highlighter) = self.highlighter.as_mut() else {
             return;
         };
         let rows = self.textarea.lines().len();
-        let cursor_row = self.active.then(|| self.textarea.cursor().0);
-        let selected = self.selection.map(|(start, end)| start.0..=end.0);
         // Buffer row → source line: the gutter override when there is one
         // (always, in production — see `App::apply_view`), otherwise the
         // window's offset, which is what a freshly loaded, unwindowed buffer
         // has.
         let numbers = self.textarea.line_numbers();
-        let styles = self.textarea.line_styles();
         let pattern = self.textarea.search_pattern();
         // Every writer of the lines empties the cache, so a length that
         // disagrees can only be a first frame; start it afresh either way.
@@ -1265,10 +1267,7 @@ impl FileView<'_> {
         let mut budget = SYNTAX_BUDGET;
         let mut pushes: Vec<(usize, Span)> = Vec::new();
         for (row, line) in self.textarea.lines().iter().enumerate() {
-            if Some(row) == cursor_row
-                || styles.get(row).copied().flatten().is_some()
-                || selected.as_ref().is_some_and(|rows| rows.contains(&row))
-            {
+            if left_alone.contains(row) {
                 continue;
             }
             let slot = &mut self.syntax_rows[row];
@@ -1315,7 +1314,77 @@ impl FileView<'_> {
     }
 }
 
+/// The rows a frame's colours leave alone — syntax and icons both — for the
+/// reasons `apply_syntax` gives: the active cursor line, a line a filter has
+/// styled, and a selected row.
+struct LeftAlone {
+    cursor: Option<usize>,
+    selected: Option<std::ops::RangeInclusive<usize>>,
+    styled: Vec<bool>,
+}
+
+impl LeftAlone {
+    fn contains(&self, row: usize) -> bool {
+        Some(row) == self.cursor
+            || self.styled.get(row).copied().unwrap_or(false)
+            || self
+                .selected
+                .as_ref()
+                .is_some_and(|rows| rows.contains(&row))
+    }
+}
+
 impl FileView<'_> {
+    fn left_alone(&self) -> LeftAlone {
+        LeftAlone {
+            cursor: self.active.then(|| self.textarea.cursor().0),
+            selected: self.selection.map(|(start, end)| start.0..=end.0),
+            styled: self
+                .textarea
+                .line_styles()
+                .iter()
+                .map(Option::is_some)
+                .collect(),
+        }
+    }
+
+    /// Paint each listing row's icon in its colour (#512), after
+    /// `apply_syntax` has cleared the frame's highlights: a listing is never
+    /// syntax-coloured, so the two never paint the same row.
+    ///
+    /// The rows `LeftAlone` names keep their icon in the row's own style, as
+    /// the explorer does: the cursor bar stays whole, and a filter's colour
+    /// is the information on the row it styles.
+    fn apply_icons(&mut self) {
+        // Empty for anything but a listing with icons on: `show` sets this
+        // and `showing_directory` from the same `Contents`.
+        if self.icon_colours.is_empty() {
+            return;
+        }
+        let left_alone = self.left_alone();
+        let numbers = self.textarea.line_numbers();
+        let mut pushes = Vec::new();
+        for (row, line) in self.textarea.lines().iter().enumerate() {
+            if left_alone.contains(row) {
+                continue;
+            }
+            let source = numbers.get(row).copied().unwrap_or(self.window_start + row);
+            let (Some(Some(colour)), Some(glyph)) =
+                (self.icon_colours.get(source), line.chars().next())
+            else {
+                continue;
+            };
+            pushes.push((row, glyph.len_utf8(), *colour));
+        }
+        for (row, end, colour) in pushes {
+            self.textarea.custom_highlight(
+                ((row, 0), (row, end)),
+                Style::default().fg(colour),
+                SYNTAX_PRIORITY,
+            );
+        }
+    }
+
     /// The style the cursor line is drawn in while this pane is active, for
     /// buffer row `row`: the row's own filter colour if it has one, else
     /// green, reversed either way. `render` uses it for the cursor line and
@@ -1530,6 +1599,7 @@ impl Widget for &mut FileView<'_> {
         self.textarea
             .set_search_style(Style::default().fg(Color::Black).bg(Color::Yellow));
         self.apply_syntax();
+        self.apply_icons();
         self.paint_selection();
         self.textarea.set_block(self.block(area.width));
         // Apply any scroll requested since the last render — see
@@ -3221,8 +3291,8 @@ mod tests {
         let ascii = named("ascii.txt0");
         assert_eq!(UnicodeWidthStr::width("日本語.txt"), 10);
 
-        let wide_row = listing_row(&wide, 12);
-        let ascii_row = listing_row(&ascii, 12);
+        let wide_row = listing_row(&wide, 12, None);
+        let ascii_row = listing_row(&ascii, 12, None);
 
         assert_eq!(
             UnicodeWidthStr::width(wide_row.as_str()),
@@ -3734,5 +3804,110 @@ mod tests {
             pieces(&[(3, 4), (5, 6), (7, 8)]),
             [span(2, 3), span(4, 5), span(6, 7), span(8, 10)]
         );
+    }
+
+    // ---- filetype icons in the listing (#512) ------------------------------
+
+    use crate::filetype::Icons;
+    use crate::filter::Background;
+
+    /// A view showing the listing of `Cargo.toml`, `main.rs` and `notes.md`,
+    /// icons on. The cursor starts on `Cargo.toml`, and the textarea draws
+    /// its own cursor over that row's first cell, so the rows below it are
+    /// the ones whose icon colour can be read.
+    fn listing_with_icons(name: &str) -> FileView<'static> {
+        let dir = dir_fixture(name, &["Cargo.toml", "main.rs", "notes.md"], &[]);
+        let mut view = placeholder_view();
+        let listing = read::directory_listing(&dir, usize::MAX, Icons::On(Background::Dark));
+        view.show(&dir, &listing);
+        view
+    }
+
+    /// The cells of row `y` of a 40 by 6 render, past the left border.
+    fn row_cells(view: &mut FileView<'_>, y: u16) -> Vec<(String, Style)> {
+        let area = Rect::new(0, 0, 40, 6);
+        let mut buf = Buffer::empty(area);
+        view.render(area, &mut buf);
+        (1..area.width)
+            .map(|x| (buf[(x, y)].symbol().to_string(), buf[(x, y)].style()))
+            .collect()
+    }
+
+    #[test]
+    fn listing_rows_lead_with_their_icon_in_its_own_colour() {
+        let mut view = listing_with_icons("icons_listing");
+
+        let rust = row_cells(&mut view, 2);
+        assert_eq!(rust[0].0, "\u{e68b}");
+        assert_eq!(rust[0].1.fg, Some(Color::Rgb(0xde, 0xa5, 0x84)));
+        assert_eq!(rust[2].0, "m", "one space, then the name");
+        assert!(matches!(rust[2].1.fg, None | Some(Color::Reset)));
+
+        let markdown = row_cells(&mut view, 3);
+        assert_eq!(markdown[0].0, "\u{f48a}");
+        assert_eq!(markdown[0].1.fg, Some(Color::Rgb(0xdd, 0xdd, 0xdd)));
+    }
+
+    #[test]
+    fn the_cursor_bar_is_not_broken_by_an_icon() {
+        let mut view = listing_with_icons("icons_listing_cursor");
+        view.set_active(true);
+        // Off the first column, where the textarea draws its own cursor.
+        view.textarea.move_cursor(CursorMove::Forward);
+
+        let bar = row_cells(&mut view, 1);
+        assert_eq!(bar[0].1, bar[2].1, "the icon cell is not part of the bar");
+    }
+
+    #[test]
+    fn a_filtered_listing_row_draws_its_icon_in_the_filter_style() {
+        let mut view = listing_with_icons("icons_listing_filtered");
+        let magenta = Style::default().fg(Color::Magenta);
+        view.set_line_styles(vec![None, Some(magenta), None]);
+
+        let matched = row_cells(&mut view, 2);
+        assert_eq!(matched[0].1.fg, Some(Color::Magenta));
+        // The unfiltered row below it keeps its icon's colour.
+        assert_eq!(
+            row_cells(&mut view, 3)[0].1.fg,
+            Some(Color::Rgb(0xdd, 0xdd, 0xdd))
+        );
+    }
+
+    #[test]
+    fn the_listing_stays_aligned_with_icons_on() {
+        // The guarantee `the_listing_name_column_aligns_across_wide_glyphs`
+        // pins for bare names, across the icon: every row carries one
+        // one-column glyph and a space, so the size column cannot drift.
+        let dir = dir_fixture(
+            "icons_listing_align",
+            &["日本語.txt", "ascii.txt0"],
+            &["sub"],
+        );
+        let listing = read::directory_listing(&dir, usize::MAX, Icons::On(Background::Dark));
+
+        let widths: Vec<usize> = listing
+            .lines
+            .iter()
+            .map(|line| UnicodeWidthStr::width(line.as_str()))
+            .collect();
+        assert!(
+            widths.windows(2).all(|pair| pair[0] == pair[1]),
+            "{:#?}",
+            listing.lines
+        );
+        assert!(
+            listing.lines[0].starts_with("\u{f07b} sub/"),
+            "{:?}",
+            listing.lines[0]
+        );
+    }
+
+    #[test]
+    fn an_empty_directory_says_so_without_an_icon() {
+        let dir = dir_fixture("icons_listing_empty", &[], &[]);
+        let listing = read::directory_listing(&dir, usize::MAX, Icons::On(Background::Dark));
+
+        assert_eq!(*listing.lines, vec![EMPTY_DIRECTORY_MESSAGE.to_string()]);
     }
 }

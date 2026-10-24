@@ -2,11 +2,13 @@
 
 use super::listmotion::ListMotion;
 use crate::document::Mode;
+use crate::filetype::{ICON_COLUMNS, Icon, Icons};
 use crate::filter::Background;
 use crate::widgets::Action;
 #[cfg(test)]
 use crossterm::event::KeyCode;
 use ratatui::prelude::{Buffer, Color, Modifier, Rect, Style, Widget};
+use ratatui::text::{Line, Span};
 use ratatui::widgets::{List, ListItem, StatefulWidget};
 use regex::Regex;
 use std::ffi::OsString;
@@ -192,7 +194,7 @@ pub(crate) struct ListedFile {
 impl Entry {
     /// `dim` is the background's dim style, which `..` and a special entry
     /// wear — see the note above `Kind`'s `Parent` variant.
-    fn style(&self, dim: Style) -> Style {
+    pub(crate) fn style(&self, dim: Style) -> Style {
         match self.kind {
             Kind::Dir => DIR_STYLE,
             Kind::Executable => EXEC_STYLE,
@@ -275,6 +277,12 @@ pub(crate) struct Explorer<'a> {
     /// The files in follow mode, by absolute path (#493). Each one listed
     /// here wears `FOLLOW_MARK`, so the others can be found.
     followed: std::collections::HashSet<PathBuf>,
+    /// Whether rows lead with a filetype icon, and in which colours (#512).
+    /// Pushed in by `App` once at startup, as `background` is.
+    icons: Icons,
+    /// Each entry's icon, by index into `entries`: looked up when the
+    /// directory is read, not on every rebuild a search keystroke makes.
+    icon_marks: Vec<Option<Icon>>,
 }
 
 /// After the name of a file in follow mode (#493).
@@ -333,6 +341,7 @@ impl Explorer<'_> {
         }
         self.dir = dir;
         self.entries = read_dir_entries(&self.dir);
+        self.mark_icons();
         // Fresh entries are all `Unknown`, so every row is visible whatever
         // the mode; `rebuild_visible` also rebuilds the drawn list. The
         // selection is chosen below, so whether it moved means nothing here.
@@ -386,25 +395,42 @@ impl Explorer<'_> {
         let items: Vec<ListItem> = self
             .visible
             .iter()
-            .map(|&index| &self.entries[index])
-            .map(|entry| {
+            .map(|&index| (index, &self.entries[index]))
+            .map(|(index, entry)| {
                 let dim = self.background.dim_style();
-                let style = match matcher {
+                // `None` while nothing but the entry's kind styles the row:
+                // only then does an icon wear a colour of its own.
+                let decided = match matcher {
                     // Asked for by name: the search highlight outranks the answer.
-                    Some(pattern) if pattern.is_match(&entry.matchable()) => MATCH_STYLE,
+                    Some(pattern) if pattern.is_match(&entry.matchable()) => Some(MATCH_STYLE),
                     _ => match entry.matched {
-                        Match::Yes(style) => style,
-                        Match::No => dim,
-                        Match::Unknown => entry.style(dim),
+                        Match::Yes(style) => Some(style),
+                        Match::No => Some(dim),
+                        Match::Unknown => None,
                     },
                 };
+                let style = decided.unwrap_or_else(|| entry.style(dim));
                 let mut text = entry.display();
                 if !self.followed.is_empty() && self.followed.contains(&self.dir.join(&entry.name))
                 {
                     text.push_str(FOLLOW_MARK);
                 }
-                widest = widest.max(UnicodeWidthStr::width(text.as_str()));
-                ListItem::new(text).style(style)
+                let icon = self.icon_marks.get(index).copied().flatten();
+                let prefix = if icon.is_some() { ICON_COLUMNS } else { 0 };
+                widest = widest.max(prefix + UnicodeWidthStr::width(text.as_str()));
+                let Some(icon) = icon else {
+                    return ListItem::new(text).style(style);
+                };
+                let icon_style = match (decided, icon.colour) {
+                    (None, Some(colour)) => style.fg(colour),
+                    _ => style,
+                };
+                let line = Line::from(vec![
+                    Span::styled(icon.glyph.to_string(), icon_style),
+                    Span::raw(" "),
+                    Span::raw(text),
+                ]);
+                ListItem::new(line).style(style)
             })
             .collect();
         self.widest = widest;
@@ -872,6 +898,25 @@ impl Explorer<'_> {
             self.background = background;
             self.rebuild_list();
         }
+    }
+
+    /// Whether rows lead with a filetype icon (#512). Redraws, since every
+    /// row gains or loses one.
+    pub(crate) fn set_icons(&mut self, icons: Icons) {
+        if self.icons != icons {
+            self.icons = icons;
+            self.mark_icons();
+            self.rebuild_list();
+        }
+    }
+
+    /// Look up every entry's icon, once per listing and setting.
+    fn mark_icons(&mut self) {
+        self.icon_marks = self
+            .entries
+            .iter()
+            .map(|entry| self.icons.of(entry))
+            .collect();
     }
 
     /// Dim or hide rows answered `No`. The same `Mode` the file view uses.
@@ -3332,5 +3377,129 @@ mod tests {
 
         explorer.go_to_parent();
         assert!(names(&explorer).len() > 1);
+    }
+
+    // ---- filetype icons (#512) -------------------------------------------
+
+    /// An explorer over `main.rs`, `notes.md` and a `src` directory, with
+    /// icons on in `background`'s colours.
+    fn explorer_with_icons(name: &str, background: Background) -> Explorer<'static> {
+        let mut explorer = sort_fixture(name, &["src"], &["main.rs", "notes.md"]);
+        explorer.set_icons(Icons::On(background));
+        explorer
+    }
+
+    /// The cells of `name`'s row from the first one past the border.
+    fn row_from_border(explorer: &mut Explorer<'_>, name: &str) -> Vec<(String, Style)> {
+        row_cells(explorer, name).into_iter().skip(1).collect()
+    }
+
+    #[test]
+    fn rows_lead_with_their_icon_in_its_own_colour() {
+        let mut explorer = explorer_with_icons("icons_dark", Background::Dark);
+
+        let rust = row_from_border(&mut explorer, "main.rs");
+        assert_eq!(rust[0].0, "\u{e68b}");
+        assert_eq!(rust[0].1.fg, Some(Color::Rgb(0xde, 0xa5, 0x84)));
+        // One space, then the name, in the style it has without icons.
+        assert_eq!(rust[1].0, " ");
+        assert_eq!(rust[2].0, "m");
+        assert!(matches!(rust[2].1.fg, None | Some(Color::Reset)));
+
+        let markdown = row_from_border(&mut explorer, "notes.md");
+        assert_eq!(markdown[0].0, "\u{f48a}");
+        assert_eq!(markdown[0].1.fg, Some(Color::Rgb(0xdd, 0xdd, 0xdd)));
+    }
+
+    #[test]
+    fn a_directory_wears_a_folder_in_its_own_blue() {
+        let mut explorer = explorer_with_icons("icons_dir", Background::Dark);
+
+        let dir = row_from_border(&mut explorer, "src/");
+        assert_eq!(dir[0].0, "\u{f07b}");
+        assert_eq!(dir[0].1.fg, Some(Color::LightBlue));
+        assert_eq!(
+            dir[2].1.fg,
+            Some(Color::LightBlue),
+            "the name keeps its blue"
+        );
+    }
+
+    #[test]
+    fn a_light_background_takes_the_light_colours() {
+        let mut explorer = explorer_with_icons("icons_light", Background::Light);
+
+        let rust = row_from_border(&mut explorer, "main.rs");
+        assert_eq!(rust[0].1.fg, Some(Color::Rgb(0x6f, 0x52, 0x42)));
+    }
+
+    #[test]
+    fn with_icons_off_the_row_is_the_name_alone() {
+        let mut explorer = explorer_over("icons_off", &["main.rs"]);
+
+        assert_eq!(row_from_border(&mut explorer, "main.rs")[0].0, "m");
+        assert_eq!(row_text(&mut explorer, "main.rs"), "main.rs");
+    }
+
+    #[test]
+    fn the_pane_widens_by_the_icon_and_its_space() {
+        let mut explorer = explorer_over("icons_width", &["a.rs", "much_longer_name.rs"]);
+        let without = explorer.preferred_width();
+
+        explorer.set_icons(Icons::On(Background::Dark));
+
+        assert_eq!(explorer.preferred_width(), without + 2);
+    }
+
+    #[test]
+    fn a_filtered_row_draws_its_icon_in_the_filter_style() {
+        // The filter's answer is the information on that row: a dimmed row
+        // stays dim from end to end, a matched one wears the match colour.
+        let mut explorer = explorer_with_icons("icons_filtered", Background::Dark);
+        let files = explorer.files();
+        let index = |name: &str| {
+            files
+                .iter()
+                .find(|(_, path)| path.ends_with(name))
+                .expect("listed")
+                .0
+        };
+        let magenta = Style::default().fg(Color::Magenta);
+        assert!(explorer.set_answer(index("main.rs"), Match::Yes(magenta)));
+        assert!(explorer.set_answer(index("notes.md"), Match::No));
+        explorer.restyle();
+
+        let matched = row_from_border(&mut explorer, "main.rs");
+        assert_eq!(matched[0].1.fg, Some(Color::Magenta));
+        let dimmed = row_from_border(&mut explorer, "notes.md");
+        assert_eq!(
+            dimmed[0].1, dimmed[2].1,
+            "the icon is not dimmed with its name"
+        );
+    }
+
+    #[test]
+    fn the_follow_mark_still_trails_the_name() {
+        let mut explorer = explorer_with_icons("icons_follow", Background::Dark);
+        let followed = std::iter::once(explorer.dir().join("main.rs")).collect();
+        explorer.set_followed(&followed);
+
+        assert_eq!(
+            row_text(&mut explorer, "main.rs"),
+            format!("\u{e68b} main.rs{FOLLOW_MARK}")
+        );
+    }
+
+    #[test]
+    fn search_still_matches_the_name_and_not_the_icon() {
+        let mut explorer = explorer_with_icons("icons_search", Background::Dark);
+        explorer.search("^main", false).expect("a valid pattern");
+
+        let row = row_from_border(&mut explorer, "main.rs");
+        assert_eq!(
+            row[2].1.fg, MATCH_STYLE.fg,
+            "an anchored search missed the name"
+        );
+        assert_eq!(row[0].1.fg, MATCH_STYLE.fg);
     }
 }
