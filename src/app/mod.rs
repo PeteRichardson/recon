@@ -383,6 +383,7 @@ impl App<'_> {
         let argument = argument.as_path();
         let mut explorer = Explorer::new(config.path_or_current_dir().to_string());
         explorer.set_background(config.background());
+        explorer.set_icons(startup.icons);
         let mut view = FileView::default();
         // Before the load, not after: `load` looks up the file's grammar, and
         // `set_theme` after it would look it up a second time (#186). Here
@@ -499,7 +500,11 @@ impl App<'_> {
             last_poll: None,
             stamp_check: None,
             view_stale: false,
-            loading: loading::Loading::new(executor(), std::sync::Arc::clone(&startup.table)),
+            loading: loading::Loading::new(
+                executor(),
+                std::sync::Arc::clone(&startup.table),
+                startup.icons,
+            ),
             following: follow::Following::default(),
             opened: 0,
             scanned: 0,

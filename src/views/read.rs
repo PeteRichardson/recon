@@ -6,6 +6,7 @@ use super::cycle::Head;
 use crate::document::{self, Sniff, read_lossy_line, read_utf16_lines, sniff};
 use crate::hex;
 use crate::widgets::explorer::Entry;
+use ratatui::style::Color;
 use std::fs::File;
 use std::io::{BufReader, Cursor, Read};
 use std::path::Path;
@@ -86,6 +87,10 @@ pub(crate) struct Contents {
     pub(crate) bytes: u64,
     /// How the picture was decoded, for the log (#491).
     pub(crate) decoded: Option<Decoded>,
+    /// The colour of each listing row's icon, by line (#512): the glyph
+    /// leads its line, and the file view paints this over it. Empty unless
+    /// `lines` are a listing with icons on.
+    pub(crate) icon_colours: Arc<Vec<Option<Color>>>,
 }
 
 /// How long a picture took to decode, and at which scale (#491).
@@ -125,7 +130,7 @@ pub(crate) fn read_lines(path: &Path, view: View) -> Contents {
     // See `read_preview_with_caps`: a directory opens fine and then fails to read, so
     // it is recognised up front rather than surfacing an OS error string.
     if path.is_dir() {
-        return directory_listing(path, usize::MAX);
+        return directory_listing(path, usize::MAX, crate::filetype::Icons::Off);
     }
     if view == View::Hex {
         return read_hex(path, None);
@@ -182,7 +187,7 @@ pub(crate) fn read_preview_with_caps(
     // `<Is a directory (os error 21)>` — platform-specific and meaningless
     // to a reader.
     if path.is_dir() {
-        return directory_listing(path, max_lines);
+        return directory_listing(path, max_lines, crate::filetype::Icons::Off);
     }
     let hex_bytes = (max_lines as u64)
         .saturating_mul(hex::BYTES_PER_LINE as u64)
@@ -549,14 +554,18 @@ pub(crate) fn format_modified(time: SystemTime) -> Option<String> {
 /// then loses the time first, the size next, and the name last — which is the
 /// priority order this wants, achieved by layout rather than by logic that
 /// would need a width the listing does not have when it is built.
-pub(crate) fn listing_row(entry: &Entry, name_width: usize) -> String {
+///
+/// `icon` leads the row when icons are on (#512): the glyph and one space,
+/// two columns, inside `name_width`, so the size column stays in line.
+pub(crate) fn listing_row(entry: &Entry, name_width: usize, icon: Option<char>) -> String {
     let size = entry.size.map_or_else(|| "-".to_string(), format_size);
     let modified = entry.modified.and_then(format_modified).unwrap_or_default();
     // Padded by hand rather than with `{:<name_width$}`, which counts `char`s.
     // `name_width` is terminal columns, so a CJK name would otherwise be padded
     // as though its ideographs were one column each and push its own size
     // column one place right per glyph (#97).
-    let name = entry.display();
+    let mut name = icon.map(|glyph| format!("{glyph} ")).unwrap_or_default();
+    name.push_str(&entry.display());
     let pad = " ".repeat(name_width.saturating_sub(UnicodeWidthStr::width(name.as_str())));
     format!("{name}{pad}  {size:>SIZE_COLUMN$}  {modified}")
         .trim_end()
@@ -573,7 +582,11 @@ pub(crate) fn listing_row(entry: &Entry, name_width: usize) -> String {
 ///
 /// `..` is absent deliberately: it is the explorer's way back out, and there
 /// is nothing here that could act on it.
-pub(crate) fn directory_listing(path: &Path, max_lines: usize) -> Contents {
+pub(crate) fn directory_listing(
+    path: &Path,
+    max_lines: usize,
+    icons: crate::filetype::Icons,
+) -> Contents {
     let entries = match crate::widgets::explorer::sorted_entries(path) {
         Ok(entries) => entries,
         // Same shape as an unreadable file: say why, verbatim from the OS.
@@ -599,19 +612,38 @@ pub(crate) fn directory_listing(path: &Path, max_lines: usize) -> Contents {
     let shown = &entries[..entries.len().min(max_lines)];
     // Padded to the longest name actually on screen, so the columns line up
     // without every listing being as wide as the widest possible name.
+    // The icon and its space are part of the name column: the same two
+    // columns on every row when icons are on, none when they are off.
+    let prefix = if icons == crate::filetype::Icons::Off {
+        0
+    } else {
+        crate::filetype::ICON_COLUMNS
+    };
     let name_width = shown
         .iter()
-        .map(|entry| UnicodeWidthStr::width(entry.display().as_str()))
+        .map(|entry| prefix + UnicodeWidthStr::width(entry.display().as_str()))
         .max()
         .unwrap_or(0)
         .min(NAME_COLUMN_MAX);
-    let lines: Vec<String> = shown
+    let (lines, icon_colours): (Vec<String>, Vec<Option<Color>>) = shown
         .iter()
-        .map(|entry| listing_row(entry, name_width))
-        .collect();
+        .map(|entry| {
+            let icon = icons.of(entry);
+            let row = listing_row(entry, name_width, icon.map(|icon| icon.glyph));
+            (row, icon.and_then(|icon| icon.colour))
+        })
+        .unzip();
+    // With icons off every colour is `None`: keep none, so the view has
+    // nothing to walk.
+    let icon_colours = if prefix == 0 {
+        Vec::new()
+    } else {
+        icon_colours
+    };
     let truncated = total > lines.len();
     Contents {
         lines: Arc::new(lines),
+        icon_colours: Arc::new(icon_colours),
         directory: true,
         truncated,
         // Unlike a file, the real count is known exactly rather than scaled

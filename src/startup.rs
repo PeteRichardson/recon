@@ -27,6 +27,10 @@ pub struct Startup {
     pub(crate) table: std::sync::Arc<crate::views::cycle::Table>,
     /// Sets read from each `filters.toml`, in pane order (#128, #46).
     pub filter_sets: Vec<LoadedSet>,
+    /// Whether listings draw filetype icons (#512). Off until `main`
+    /// resolves the setting against the host terminal, which a test never
+    /// does: its rows stay exactly as they were.
+    pub icons: crate::filetype::Icons,
 }
 
 /// A `Config` with nothing read from disk: the default keymap, no warnings
@@ -40,6 +44,7 @@ impl From<Config> for Startup {
             warnings: Vec::new(),
             table: std::sync::Arc::new(table),
             filter_sets: Vec::new(),
+            icons: crate::filetype::Icons::Off,
         }
     }
 }
@@ -160,5 +165,6 @@ pub fn start() -> Result<Start> {
         warnings,
         table: std::sync::Arc::new(table),
         filter_sets,
+        icons: crate::filetype::Icons::Off,
     })))
 }

@@ -123,6 +123,10 @@ regex = "1"
 # pulls this in, and the four sites that measure text now agree with the renderer
 # that draws it.
 unicode-width = "0.2"
+# Filetype icons and their colours (#512): about 600 name and extension
+# rules from the vim-devicons table, in a dark and a light palette that
+# match `Background`. Costs one more crate, `lazy_static`.
+devicons = "0.6.13"
 jiff = "0.2.35"
 serde = { version = "1.0.229", features = ["derive"] }
 # Read-only on purpose: `default-features = false` drops the `display` feature,

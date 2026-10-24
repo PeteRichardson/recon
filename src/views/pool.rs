@@ -239,6 +239,7 @@ mod tests {
             table: Arc::new(table),
             px: 0,
             prefetch: false,
+            icons: crate::filetype::Icons::Off,
         }
     }
 

@@ -271,6 +271,19 @@ pub struct Config {
     #[arg(skip)]
     pub center_jumps: Option<bool>,
 
+    /// Whether directory listings lead each row with a filetype icon, which
+    /// needs a Nerd Font. `auto` — the default — draws them when the
+    /// terminal is known to be able to; `on` always does; `off` never does.
+    /// Falls back to `[view] icons` in `config.toml`, then to `auto`.
+    #[arg(
+        long,
+        env = "RECON_ICONS",
+        hide_env_values = true,
+        value_name = "WHICH",
+        value_enum
+    )]
+    pub icons: Option<crate::filetype::Setting>,
+
     /// The `[[filetype]]` rows of `config.toml`, in file order (#455).
     /// File-only: a table of globs is not something to type per run.
     #[arg(skip)]
@@ -536,6 +549,8 @@ pub struct LogConfig {
 pub struct ViewConfig {
     /// See [`Config::center_jumps`].
     pub center_jumps: Option<bool>,
+    /// See [`Config::icons`].
+    pub icons: Option<crate::filetype::Setting>,
 }
 
 /// The `[layout]` table: which panes are on the screen (#300).
@@ -1372,10 +1387,17 @@ impl Config {
             self.theme.get_or_insert(*theme);
         }
 
-        if let Some(ViewConfig { center_jumps }) = view
-            && let Some(center_jumps) = center_jumps
+        if let Some(ViewConfig {
+            center_jumps,
+            icons,
+        }) = view
         {
-            self.center_jumps.get_or_insert(*center_jumps);
+            if let Some(center_jumps) = center_jumps {
+                self.center_jumps.get_or_insert(*center_jumps);
+            }
+            if let Some(icons) = icons {
+                self.icons.get_or_insert(*icons);
+            }
         }
 
         // The flag replaces the file's list whole rather than adding to it:
@@ -1480,6 +1502,13 @@ impl Config {
     #[must_use]
     pub fn background(&self) -> crate::filter::Background {
         self.background.unwrap_or_default()
+    }
+
+    /// Whether listings draw filetype icons, once the chain has run: `auto`
+    /// unless said otherwise (#512).
+    #[must_use]
+    pub fn icons_setting(&self) -> crate::filetype::Setting {
+        self.icons.unwrap_or_default()
     }
 
     /// The colours successive filters take: `[filters] palette` when the
