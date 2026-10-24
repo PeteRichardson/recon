@@ -97,8 +97,23 @@ fn files_lists_the_matching_inputs_from_stdin_with_or_without_hide() {
     let list = format!("{}\n{}\n", a.display(), b.display());
 
     for args in [
-        &["--emit", "files", "--files-from", "-", "--set", "Bugs:only_hit"][..],
-        &["--emit", "files", "--files-from", "-", "--set", "Bugs:only_hit", "--hide"][..],
+        &[
+            "--emit",
+            "files",
+            "--files-from",
+            "-",
+            "--set",
+            "Bugs:only_hit",
+        ][..],
+        &[
+            "--emit",
+            "files",
+            "--files-from",
+            "-",
+            "--set",
+            "Bugs:only_hit",
+            "--hide",
+        ][..],
     ] {
         let out = recon(&home, args, list.as_bytes());
 
@@ -248,7 +263,14 @@ fn files_hide_with_a_definitions_profile_lists_the_files_that_define_it() {
 
     let out = recon(
         &home,
-        &["--emit", "files", "--files-from", "-", "--set", "definitions:typedefs"],
+        &[
+            "--emit",
+            "files",
+            "--files-from",
+            "-",
+            "--set",
+            "definitions:typedefs",
+        ],
         list.as_bytes(),
     );
 
@@ -271,7 +293,15 @@ fn set_with_a_list_emits_the_union_of_a_profile_and_a_filter() {
 
     let out = recon(
         &home,
-        &["--emit", "lines", "--files-from", "-", "-q", "--set", "Bugs:only_hit,other"],
+        &[
+            "--emit",
+            "lines",
+            "--files-from",
+            "-",
+            "-q",
+            "--set",
+            "Bugs:only_hit,other",
+        ],
         format!("{}\n", a.display()).as_bytes(),
     );
 
@@ -294,7 +324,15 @@ fn set_names_a_definition_kind_without_a_profile() {
 
     let out = recon(
         &home,
-        &["--emit", "files", "--files-from", "-", "-q", "--set", "definitions:structs"],
+        &[
+            "--emit",
+            "files",
+            "--files-from",
+            "-",
+            "-q",
+            "--set",
+            "definitions:structs",
+        ],
         format!("{}\n{}\n", a.display(), b.display()).as_bytes(),
     );
 
@@ -314,7 +352,15 @@ fn lines_n_over_two_files_prefixes_path_and_line_number() {
 
     let out = recon(
         &home,
-        &["--emit", "lines", "--files-from", "-", "-n", "--set", "Bugs:only_hit"],
+        &[
+            "--emit",
+            "lines",
+            "--files-from",
+            "-",
+            "-n",
+            "--set",
+            "Bugs:only_hit",
+        ],
         list.as_bytes(),
     );
 
@@ -429,7 +475,14 @@ fn an_unreadable_input_warns_skips_and_exits_2() {
 
     let out = recon(
         &home,
-        &["--emit", "lines", "--files-from", "-", "--set", "Bugs:only_hit"],
+        &[
+            "--emit",
+            "lines",
+            "--files-from",
+            "-",
+            "--set",
+            "Bugs:only_hit",
+        ],
         list.as_bytes(),
     );
 
@@ -661,7 +714,11 @@ fn batch_puts_keymap_warnings_on_stderr() {
     fs::write(&log, "hit\n").expect("write");
     let list = format!("{}\n", log.display());
 
-    let out = recon(&home, &["--emit", "files", "--files-from", "-"], list.as_bytes());
+    let out = recon(
+        &home,
+        &["--emit", "files", "--files-from", "-"],
+        list.as_bytes(),
+    );
 
     assert_eq!(out.status.code(), Some(0), "stderr: {}", text(&out.stderr));
     let stderr = text(&out.stderr);
@@ -824,7 +881,15 @@ fn a_reference_uses_the_target_s_pattern_and_a_disabled_broken_one_is_ignored() 
 
     let out = recon(
         &home,
-        &["--emit", "lines", "--files-from", "-", "-q", "--set", "team:u"],
+        &[
+            "--emit",
+            "lines",
+            "--files-from",
+            "-",
+            "-q",
+            "--set",
+            "team:u",
+        ],
         format!("{}\n", a.display()).as_bytes(),
     );
 
