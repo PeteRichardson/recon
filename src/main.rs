@@ -563,6 +563,13 @@ fn init_terminal() -> Result<Terminal<CrosstermBackend<io::BufWriter<Screen>>>> 
 /// cosmetic, and it is what Tier 2 (the `auto` detection) is for: tofu only
 /// reaches the screen when the user forced `icons = "on"`.
 ///
+/// The probe draws each pair invisibly — same colour for ground and ink —
+/// because the alternate screen renders live: without that, the whole table
+/// flashes through the top-left corner for as long as the roundtrips take.
+/// A terminal that enforces a minimum contrast between the two colours
+/// (iTerm2's slider, when raised above its default) defeats the trick and
+/// shows faint glyphs instead; nothing breaks either way.
+///
 /// Runs once, after `init_terminal` has raw mode on and before the event
 /// loop reads a key. The query is written to *stdout*, as crossterm
 /// dictates, so it is asked only when stdout is a terminal too — with
@@ -583,13 +590,28 @@ fn probe_glyph_widths() -> Vec<char> {
     let mut dropped = Vec::new();
     for glyph in recon::filetype::all_glyphs() {
         // Draw from a known corner every time, wiping what the last pair
-        // left: the alternate screen is still blank, and the first paint
-        // covers whatever survives.
+        // left — and draw it *invisibly*: foreground and background set to
+        // the same colour, so the glyph advances the cell (which is all the
+        // measurement needs) but paints no visible pixel. Without this the
+        // user watches the whole table flash through the top-left corner
+        // for as long as the roundtrips take: the alternate screen renders
+        // live, and the first paint only covers what is left at the end,
+        // not what is drawn while it runs.
+        //
+        // The colour reset comes *before* each clear, not after: erase
+        // operations fill with the current background (background-colour
+        // erase), so clearing while black-on-black is set would paint a
+        // black strip across the top on a light-background terminal.
         let mut draw = || -> std::io::Result<()> {
             crossterm::execute!(
                 writer,
                 crossterm::cursor::MoveTo(0, 0),
-                crossterm::terminal::Clear(ClearType::UntilNewLine)
+                crossterm::style::ResetColor,
+                crossterm::terminal::Clear(ClearType::UntilNewLine),
+                crossterm::style::SetColors(crossterm::style::Colors::new(
+                    crossterm::style::Color::Black,
+                    crossterm::style::Color::Black,
+                ))
             )?;
             writer.write_all(glyph.encode_utf8(&mut [0u8; 4]).as_bytes())?;
             writer.write_all(b"X")?;
@@ -618,9 +640,12 @@ fn probe_glyph_widths() -> Vec<char> {
             }
         }
     }
-    // Nothing the probe drew may survive to the first frame.
+    // Nothing the probe drew may survive to the first frame, and nothing
+    // of its colour state may either: reset first, then clear, for the
+    // same background-colour-erase reason as above.
     let _ = crossterm::execute!(
         writer,
+        crossterm::style::ResetColor,
         crossterm::cursor::MoveTo(0, 0),
         crossterm::terminal::Clear(ClearType::All)
     );
