@@ -13,6 +13,30 @@ Issues and specs for this repo live as GitHub issues. Use the `gh` CLI for all o
 
 Infer the repo from `git remote -v`; `gh` does this automatically when run inside a clone.
 
+## Issue body shape
+
+Every issue opens with the summary marker, then its prose — whatever files it, `gh issue create`
+by hand or a skill:
+
+```markdown
+> **SUMMARY:** One or two sentences on the effect on the user. No file names, no function
+> names, no detail of the solution.
+
+---
+
+<the rest of the body>
+```
+
+- In ASD-STE100 Simplified Technical English. The one or two most important user impacts. An
+  enhancement gets the advantage to the user. If nothing is user-visible, say so, then give the
+  effect on the maintainer who reads or changes the code.
+- `## Summary` as a section heading is **not** the marker. `**SUMMARY:**` in a blockquote is.
+- Labels in the `severity:`, `category:` and `effort:` namespaces, and the
+  `<!-- project-review-finding ... -->` fingerprint, come afterwards — `/issue-triage` applies
+  them. `~/.claude/skills/issue-triage/SKILL.md` owns those formats and this shape; this
+  section exists so the shape is visible on the path an agent takes when it creates an issue.
+- Labels this repo actually uses are in `docs/agents/triage-labels.md`.
+
 ## Pull requests as a triage surface
 
 **PRs as a request surface: no.** _(Set to `yes` if this repo treats external PRs as feature requests; `/triage` reads this flag.)_
