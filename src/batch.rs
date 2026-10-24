@@ -44,9 +44,11 @@ pub(crate) enum Source {
 }
 
 /// Run in batch mode: read the input list, build the filters `--set` asks for,
-/// and write what `--emit` names to `out`. Read-failure warnings go to
-/// stderr as they are met; the `Exit` carries the summary, the failure
-/// count and any write error for `main` to deliver.
+/// and write what `--emit` names to `out`, always in hide mode (#511): with
+/// no grey and no `u` on stdout, dim mode would only hide the matches among
+/// the rest. Read-failure warnings go to stderr as they are met; the `Exit`
+/// carries the summary, the failure count and any write error for `main` to
+/// deliver.
 ///
 /// `stop` ends `--follow`, which runs until it is set: `main` sets it from
 /// SIGINT and SIGTERM (#493).
@@ -67,16 +69,10 @@ pub fn run(startup: &Startup, out: &mut impl Write, stop: &AtomicBool) -> Result
         )?
     };
     let filters = filters_for(startup)?;
-    let mode = if config.hide {
-        Mode::FilteredOnly
-    } else {
-        Mode::Dimmed
-    };
     if config.follow {
         return follow_lines(
             &inputs,
             &filters,
-            mode,
             config.line_numbers,
             out,
             &mut io::stderr(),
@@ -90,7 +86,6 @@ pub fn run(startup: &Startup, out: &mut impl Write, stop: &AtomicBool) -> Result
         what,
         &inputs,
         &filters,
-        mode,
         config.line_numbers,
         out,
         &mut io::stderr(),
@@ -139,14 +134,13 @@ pub(crate) fn collect(
     what: Emit,
     inputs: &Inputs,
     filters: &ActiveFilters,
-    mode: Mode,
     line_numbers: bool,
     out: &mut impl Write,
     warnings: &mut impl Write,
 ) -> Exit {
     match what {
-        Emit::Lines => collect_lines(inputs, filters, mode, line_numbers, out, warnings),
-        Emit::Files => collect_files(inputs, filters, mode, out, warnings),
+        Emit::Lines => collect_lines(inputs, filters, line_numbers, out, warnings),
+        Emit::Files => collect_files(inputs, filters, out, warnings),
         Emit::Cwd => collect_cwd(inputs, out),
     }
 }
@@ -226,18 +220,16 @@ fn stdin_files(mut stdin: impl BufRead) -> io::Result<Vec<PathBuf>> {
     Ok(files)
 }
 
-/// `--emit lines`: every input's visible lines in `mode`, in input order,
+/// `--emit lines`: every input's visible lines in hide mode, in input order,
 /// each prefixed by `path<TAB>` when there is more than one input and by
 /// `N<TAB>` under `-n` — so `path<TAB>N<TAB>line`, and with one input
-/// exactly what the TUI emits. The match count is the TUI's: interesting
-/// verdicts, summed over the files that were read.
+/// exactly what the TUI emits under `--hide`.
 ///
 /// Each file's lines are written once it is evaluated, so memory holds one
 /// file at a time, not the whole output.
 fn collect_lines(
     inputs: &Inputs,
     filters: &ActiveFilters,
-    mode: Mode,
     line_numbers: bool,
     out: &mut impl Write,
     warnings: &mut impl Write,
@@ -246,10 +238,9 @@ fn collect_lines(
     let mut emitted = 0;
     let mut read = 0;
     let mut failed = 0;
-    let mut interesting = 0;
     let mut written = Ok(());
     'files: for path in &inputs.files {
-        let mut document = match Document::read(path) {
+        let document = match read_hidden(path, filters) {
             Ok(document) => document,
             Err(err) => {
                 warn(warnings, path, &err);
@@ -257,13 +248,7 @@ fn collect_lines(
                 continue;
             }
         };
-        // The mode first: `evaluate` derives the visible set from the
-        // verdicts *and* the mode, so setting it afterwards would need a
-        // second pass.
-        document.set_mode(mode);
-        document.evaluate(filters);
         read += 1;
-        interesting += document.interesting_count();
         let text = document.lines();
         let prefix = several.then(|| path_bytes(path));
         for &source in document.visible() {
@@ -280,20 +265,26 @@ fn collect_lines(
         _ => count(read, "file"),
     };
     Exit::Streamed {
-        summary: lines_summary(mode, emitted, &subject, interesting),
+        summary: lines_summary(emitted, &subject),
         failed,
         written,
     }
 }
 
-/// The `--emit lines` summary: what was emitted, of what, in which mode.
-fn lines_summary(mode: Mode, emitted: usize, subject: &str, interesting: usize) -> String {
-    match mode {
-        Mode::Dimmed => format!(
-            "recon: emitted {emitted} lines of {subject}, dim mode ({interesting} match) — pass --hide to emit matches only"
-        ),
-        Mode::FilteredOnly => format!("recon: emitted {emitted} lines of {subject}, hide mode"),
-    }
+/// `path` read and evaluated against `filters` in hide mode, which is batch
+/// mode's only mode.
+fn read_hidden(path: &Path, filters: &ActiveFilters) -> io::Result<Document> {
+    let mut document = Document::read(path)?;
+    // The mode first: `evaluate` derives the visible set from the verdicts
+    // *and* the mode, so setting it afterwards would need a second pass.
+    document.set_mode(Mode::FilteredOnly);
+    document.evaluate(filters);
+    Ok(document)
+}
+
+/// The `--emit lines` summary: what was emitted, of what.
+fn lines_summary(emitted: usize, subject: &str) -> String {
+    format!("recon: emitted {emitted} lines of {subject}, hide mode")
 }
 
 /// `--emit lines --follow` (#493): the one input's visible lines, then each
@@ -312,7 +303,6 @@ fn lines_summary(mode: Mode, emitted: usize, subject: &str, interesting: usize) 
 pub(crate) fn follow_lines(
     inputs: &Inputs,
     filters: &ActiveFilters,
-    mode: Mode,
     line_numbers: bool,
     out: &mut impl Write,
     warnings: &mut impl Write,
@@ -327,15 +317,13 @@ pub(crate) fn follow_lines(
     };
     let subject = file_label(&path);
     let read = |warnings: &mut _| {
-        let document = Document::read(&path).map_err(|err| warn(warnings, &path, &err));
-        let mut document = document.ok()?;
-        document.set_mode(mode);
-        document.evaluate(filters);
-        Some(document)
+        read_hidden(&path, filters)
+            .map_err(|err| warn(warnings, &path, &err))
+            .ok()
     };
     let Some(mut document) = read(warnings) else {
         return Ok(Exit::Streamed {
-            summary: lines_summary(mode, 0, &subject, 0),
+            summary: lines_summary(0, &subject),
             failed: 1,
             written: Ok(()),
         });
@@ -382,9 +370,8 @@ pub(crate) fn follow_lines(
         let end = document.lines().len();
         written = write_new(&document, done..end, line_numbers, out, &mut emitted);
     }
-    let interesting = document.interesting_count();
     Ok(Exit::Streamed {
-        summary: lines_summary(mode, emitted, &subject, interesting),
+        summary: lines_summary(emitted, &subject),
         failed: 0,
         written,
     })
@@ -432,13 +419,13 @@ fn write_line(
     out.write_all(b"\n")
 }
 
-/// `--emit files`: every readable input in dim mode; in hide mode, the
-/// inputs the matcher selects — or every readable input when nothing
-/// selects, which is the explorer's rule: it hides nothing it cannot mark.
+/// `--emit files`: the inputs the matcher selects — or every readable input
+/// when nothing selects, which is the explorer's rule in hide mode: it
+/// hides nothing it cannot mark.
 ///
 /// One scan per file, stopping at the first selecting line, which is what
 /// the explorer's scan costs. With nothing to scan, each input is still
-/// opened, so an unreadable one is warned about and skipped in every mode.
+/// opened, so an unreadable one is warned about and skipped.
 /// The summary's `from <dir>` / `of N inputs` follows where the list came
 /// from; there is no `unscanned` here, since every scan runs to its answer
 /// before its file's line prints.
@@ -452,7 +439,6 @@ fn write_line(
 fn collect_files(
     inputs: &Inputs,
     filters: &ActiveFilters,
-    mode: Mode,
     out: &mut impl Write,
     warnings: &mut impl Write,
 ) -> Exit {
@@ -468,7 +454,6 @@ fn collect_files(
         let _ = writeln!(warnings, "recon: {off}; no file is matched");
     }
     let mut emitted = 0;
-    let mut matched = 0;
     let mut failed = 0;
     let mut written = Ok(());
     for path in &inputs.files {
@@ -485,14 +470,7 @@ fn collect_files(
                 continue;
             }
         };
-        if yes {
-            matched += 1;
-        }
-        let listed = match mode {
-            Mode::Dimmed => true,
-            Mode::FilteredOnly => yes || !live,
-        };
-        if listed {
+        if yes || !live {
             written = out
                 .write_all(&path_bytes(path))
                 .and_then(|()| out.write_all(b"\n"));
@@ -507,22 +485,9 @@ fn collect_files(
         Source::Directory(dir) => format!("from {}", dir.display()),
         Source::Stdin | Source::File => format!("of {}", count(inputs.files.len(), "input")),
     };
-    let summary = match (live, mode) {
-        (true, Mode::FilteredOnly) => {
-            format!("recon: emitted {emitted} files {origin}, hide mode")
-        }
-        (true, Mode::Dimmed) => format!(
-            "recon: emitted {emitted} files {origin}, dim mode ({matched} match) — pass --hide to emit matches only"
-        ),
-        (false, Mode::Dimmed) => {
-            format!("recon: emitted {emitted} files {origin}, dim mode, no filter")
-        }
-        (false, Mode::FilteredOnly) => {
-            format!("recon: emitted {emitted} files {origin}, hide mode, no filter")
-        }
-    };
+    let no_filter = if live { "" } else { ", no filter" };
     Exit::Streamed {
-        summary,
+        summary: format!("recon: emitted {emitted} files {origin}, hide mode{no_filter}"),
         failed,
         written,
     }
@@ -641,7 +606,6 @@ fn path_from_bytes(bytes: &[u8]) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::document::Mode;
     use crate::emit::{Emit, Exit};
     use crate::filter::ActiveFilters;
     use crate::fixtures::{append, fixture_dir, fixture_file, fixture_path};
@@ -730,7 +694,6 @@ mod tests {
                 from: Source::File,
             },
             &ActiveFilters::new(),
-            Mode::Dimmed,
             false,
             &mut out,
             &mut warnings,
@@ -934,7 +897,6 @@ mod tests {
         let exit = follow_lines(
             &inputs,
             &filters_matching("hit"),
-            Mode::FilteredOnly,
             true,
             &mut out,
             &mut warnings,
@@ -969,7 +931,6 @@ mod tests {
         let exit = follow_lines(
             &inputs,
             &filters_matching("hit"),
-            Mode::FilteredOnly,
             false,
             &mut out,
             &mut warnings,
@@ -999,7 +960,6 @@ mod tests {
         let err = follow_lines(
             &listed,
             &ActiveFilters::new(),
-            Mode::Dimmed,
             false,
             &mut Vec::new(),
             &mut Vec::new(),
@@ -1012,7 +972,6 @@ mod tests {
         let err = follow_lines(
             &two,
             &ActiveFilters::new(),
-            Mode::Dimmed,
             false,
             &mut Vec::new(),
             &mut Vec::new(),
@@ -1025,39 +984,13 @@ mod tests {
     // ---- lines -------------------------------------------------------------
 
     #[test]
-    fn lines_over_one_file_in_dim_mode_is_the_whole_file_with_the_match_count() {
-        let inputs = one_file("batch_lines_dim.log", b"hit\nmiss\nhit again\n");
-        let mut warnings = Vec::new();
+    fn lines_over_one_file_is_the_matches() {
+        let inputs = one_file("batch_lines_one.log", b"hit\nmiss\nhit again\n");
 
         let mut out = Vec::new();
         let exit = collect_lines(
             &inputs,
             &filters_matching("hit"),
-            Mode::Dimmed,
-            false,
-            &mut out,
-            &mut warnings,
-        );
-
-        let (lines, summary, failed) = emitted(exit, &out);
-        assert_eq!(lines, ["hit", "miss", "hit again"]);
-        assert_eq!(
-            summary,
-            "recon: emitted 3 lines of batch_lines_dim.log, dim mode (2 match) — pass --hide to emit matches only"
-        );
-        assert_eq!(failed, 0);
-        assert!(warnings.is_empty(), "{warnings:?}");
-    }
-
-    #[test]
-    fn lines_over_one_file_in_hide_mode_is_the_matches() {
-        let inputs = one_file("batch_lines_hide.log", b"hit\nmiss\nhit again\n");
-
-        let mut out = Vec::new();
-        let exit = collect_lines(
-            &inputs,
-            &filters_matching("hit"),
-            Mode::FilteredOnly,
             false,
             &mut out,
             &mut Vec::new(),
@@ -1067,7 +1000,7 @@ mod tests {
         assert_eq!(lines, ["hit", "hit again"]);
         assert_eq!(
             summary,
-            "recon: emitted 2 lines of batch_lines_hide.log, hide mode"
+            "recon: emitted 2 lines of batch_lines_one.log, hide mode"
         );
     }
 
@@ -1079,7 +1012,6 @@ mod tests {
         let exit = collect_lines(
             &inputs,
             &filters_matching("hit"),
-            Mode::FilteredOnly,
             true,
             &mut out,
             &mut Vec::new(),
@@ -1103,7 +1035,6 @@ mod tests {
         let exit = collect_lines(
             &inputs,
             &filters_matching("hit"),
-            Mode::FilteredOnly,
             true,
             &mut out,
             &mut Vec::new(),
@@ -1132,7 +1063,6 @@ mod tests {
         let exit = collect_lines(
             &inputs,
             &filters_matching("hit"),
-            Mode::Dimmed,
             false,
             &mut out,
             &mut Vec::new(),
@@ -1146,10 +1076,7 @@ mod tests {
                 format!("{}\thit", inputs.files[1].display()),
             ]
         );
-        assert_eq!(
-            summary,
-            "recon: emitted 2 lines of 2 files, dim mode (2 match) — pass --hide to emit matches only"
-        );
+        assert_eq!(summary, "recon: emitted 2 lines of 2 files, hide mode");
     }
 
     #[test]
@@ -1163,7 +1090,6 @@ mod tests {
         let exit = collect_lines(
             &inputs,
             &filters_matching("hit"),
-            Mode::FilteredOnly,
             false,
             &mut out,
             &mut warnings,
@@ -1194,7 +1120,6 @@ mod tests {
         let exit = collect_lines(
             &inputs,
             &filters_matching("x"),
-            Mode::Dimmed,
             false,
             &mut out,
             &mut warnings,
@@ -1210,10 +1135,7 @@ mod tests {
             )
         );
         assert!(lines.is_empty(), "{lines:?}");
-        assert_eq!(
-            summary,
-            "recon: emitted 0 lines of 0 files, dim mode (0 match) — pass --hide to emit matches only"
-        );
+        assert_eq!(summary, "recon: emitted 0 lines of 0 files, hide mode");
         assert_eq!(failed, 2);
     }
 
@@ -1277,18 +1199,12 @@ mod tests {
     }
 
     #[test]
-    fn files_in_hide_mode_lists_the_inputs_the_matcher_selects() {
-        let inputs = three_logs("batch_files_hide");
+    fn files_lists_the_inputs_the_matcher_selects() {
+        let inputs = three_logs("batch_files_selected");
         let mut warnings = Vec::new();
 
         let mut out = Vec::new();
-        let exit = collect_files(
-            &inputs,
-            &filters_matching("hit"),
-            Mode::FilteredOnly,
-            &mut out,
-            &mut warnings,
-        );
+        let exit = collect_files(&inputs, &filters_matching("hit"), &mut out, &mut warnings);
 
         let (lines, summary, failed) = emitted(exit, &out);
         let all = displayed(&inputs);
@@ -1299,40 +1215,13 @@ mod tests {
     }
 
     #[test]
-    fn files_in_dim_mode_lists_every_input_with_the_match_count() {
-        let inputs = three_logs("batch_files_dim");
-
-        let mut out = Vec::new();
-        let exit = collect_files(
-            &inputs,
-            &filters_matching("hit"),
-            Mode::Dimmed,
-            &mut out,
-            &mut Vec::new(),
-        );
-
-        let (lines, summary, _) = emitted(exit, &out);
-        assert_eq!(lines, displayed(&inputs));
-        assert_eq!(
-            summary,
-            "recon: emitted 3 files of 3 inputs, dim mode (2 match) — pass --hide to emit matches only"
-        );
-    }
-
-    #[test]
     fn files_from_a_path_directory_says_from() {
         let mut inputs = three_logs("batch_files_from_dir");
         let dir = lexical_absolute(&fixture_path("batch_files_from_dir"));
         inputs.from = Source::Directory(dir.clone());
 
         let mut out = Vec::new();
-        let exit = collect_files(
-            &inputs,
-            &filters_matching("hit"),
-            Mode::FilteredOnly,
-            &mut out,
-            &mut Vec::new(),
-        );
+        let exit = collect_files(&inputs, &filters_matching("hit"), &mut out, &mut Vec::new());
 
         let (_, summary, _) = emitted(exit, &out);
         assert_eq!(
@@ -1354,7 +1243,7 @@ mod tests {
         }
         let mut warnings = Vec::new();
         let mut out = Vec::new();
-        collect_files(&inputs, &filters, Mode::Dimmed, &mut out, &mut warnings);
+        collect_files(&inputs, &filters, &mut out, &mut warnings);
         let text = String::from_utf8(warnings).expect("utf-8");
         assert!(
             text.contains("recon: file matching off: ") && text.contains("no file is matched"),
@@ -1365,31 +1254,19 @@ mod tests {
         exclude_only.add_excluding("x").expect("valid pattern");
         let mut warnings = Vec::new();
         let mut out = Vec::new();
-        collect_files(
-            &inputs,
-            &exclude_only,
-            Mode::Dimmed,
-            &mut out,
-            &mut warnings,
-        );
+        collect_files(&inputs, &exclude_only, &mut out, &mut warnings);
         assert!(warnings.is_empty(), "nothing selects is not a failure");
     }
 
     #[test]
-    fn files_in_hide_mode_with_no_matcher_lists_everything() {
+    fn files_with_no_matcher_lists_everything() {
         let inputs = three_logs("batch_files_no_matcher");
         let mut exclude_only = ActiveFilters::new();
         exclude_only.add_excluding("x").expect("valid pattern");
         assert!(exclude_only.matcher().is_none(), "sanity: nothing selects");
 
         let mut out = Vec::new();
-        let exit = collect_files(
-            &inputs,
-            &exclude_only,
-            Mode::FilteredOnly,
-            &mut out,
-            &mut Vec::new(),
-        );
+        let exit = collect_files(&inputs, &exclude_only, &mut out, &mut Vec::new());
         let (lines, summary, _) = emitted(exit, &out);
         assert_eq!(lines, displayed(&inputs), "nothing to hide against");
         assert_eq!(
@@ -1398,23 +1275,17 @@ mod tests {
         );
 
         let mut out = Vec::new();
-        let exit = collect_files(
-            &inputs,
-            &ActiveFilters::new(),
-            Mode::Dimmed,
-            &mut out,
-            &mut Vec::new(),
-        );
+        let exit = collect_files(&inputs, &ActiveFilters::new(), &mut out, &mut Vec::new());
         let (lines, summary, _) = emitted(exit, &out);
         assert_eq!(lines, displayed(&inputs));
         assert_eq!(
             summary,
-            "recon: emitted 3 files of 3 inputs, dim mode, no filter"
+            "recon: emitted 3 files of 3 inputs, hide mode, no filter"
         );
     }
 
     #[test]
-    fn files_warns_about_and_skips_an_unreadable_input_in_both_modes() {
+    fn files_warns_about_and_skips_an_unreadable_input_with_or_without_a_filter() {
         let mut inputs = three_logs("batch_files_unreadable");
         let dir = lexical_absolute(&fixture_path("batch_files_unreadable"));
         let missing = dir.join("missing.log");
@@ -1428,31 +1299,16 @@ mod tests {
 
         let mut warnings = Vec::new();
         let mut out = Vec::new();
-        let exit = collect_files(
-            &inputs,
-            &filters_matching("hit"),
-            Mode::Dimmed,
-            &mut out,
-            &mut warnings,
-        );
+        let exit = collect_files(&inputs, &filters_matching("hit"), &mut out, &mut warnings);
         let (lines, summary, failed) = emitted(exit, &out);
         assert_eq!(warnings_of(&warnings), expected_warnings);
-        assert_eq!(lines.len(), 3, "the three readable files: {lines:?}");
-        assert_eq!(
-            summary,
-            "recon: emitted 3 files of 5 inputs, dim mode (2 match) — pass --hide to emit matches only"
-        );
+        assert_eq!(lines.len(), 2, "the two readable matches: {lines:?}");
+        assert_eq!(summary, "recon: emitted 2 files of 5 inputs, hide mode");
         assert_eq!(failed, 2);
 
         let mut warnings = Vec::new();
         let mut out = Vec::new();
-        let exit = collect_files(
-            &inputs,
-            &ActiveFilters::new(),
-            Mode::FilteredOnly,
-            &mut out,
-            &mut warnings,
-        );
+        let exit = collect_files(&inputs, &ActiveFilters::new(), &mut out, &mut warnings);
         let (lines, summary, failed) = emitted(exit, &out);
         assert_eq!(
             warnings_of(&warnings),
@@ -1490,13 +1346,7 @@ mod tests {
         let mut warnings = Vec::new();
         let mut out = Vec::new();
         let (lines, _, failed) = emitted(
-            collect_files(
-                &inputs,
-                &filters_matching("hit"),
-                Mode::FilteredOnly,
-                &mut out,
-                &mut warnings,
-            ),
+            collect_files(&inputs, &filters_matching("hit"), &mut out, &mut warnings),
             &out,
         );
 
@@ -1522,13 +1372,7 @@ mod tests {
         let mut warnings = Vec::new();
         let mut out = Vec::new();
         let (lines, _, failed) = emitted(
-            collect_files(
-                &inputs,
-                &filters,
-                Mode::FilteredOnly,
-                &mut out,
-                &mut warnings,
-            ),
+            collect_files(&inputs, &filters, &mut out, &mut warnings),
             &out,
         );
         assert_eq!(lines, [binary.display().to_string()], "files lists it");
@@ -1538,14 +1382,7 @@ mod tests {
         let mut warnings = Vec::new();
         let mut out = Vec::new();
         let (lines, _, failed) = emitted(
-            collect_lines(
-                &inputs,
-                &filters,
-                Mode::FilteredOnly,
-                false,
-                &mut out,
-                &mut warnings,
-            ),
+            collect_lines(&inputs, &filters, false, &mut out, &mut warnings),
             &out,
         );
         assert!(lines.is_empty(), "lines refuses it");
@@ -1590,14 +1427,13 @@ mod tests {
     }
 
     #[test]
-    fn files_in_hide_mode_lists_only_the_inputs_that_define_a_function() {
-        let inputs = sources("batch_files_defs_hide");
+    fn files_lists_only_the_inputs_that_define_a_function() {
+        let inputs = sources("batch_files_defs");
         let mut out = Vec::new();
 
         let exit = collect_files(
             &inputs,
             &functions_only(ActiveFilters::new()),
-            Mode::FilteredOnly,
             &mut out,
             &mut Vec::new(),
         );
@@ -1612,27 +1448,6 @@ mod tests {
         assert_eq!(failed, 0);
     }
 
-    #[test]
-    fn files_in_dim_mode_counts_the_inputs_that_define_a_function() {
-        let inputs = sources("batch_files_defs_dim");
-        let mut out = Vec::new();
-
-        let exit = collect_files(
-            &inputs,
-            &functions_only(ActiveFilters::new()),
-            Mode::Dimmed,
-            &mut out,
-            &mut Vec::new(),
-        );
-
-        let (lines, summary, _) = emitted(exit, &out);
-        assert_eq!(lines, displayed(&inputs));
-        assert_eq!(
-            summary,
-            "recon: emitted 3 files of 3 inputs, dim mode (1 match) — pass --hide to emit matches only"
-        );
-    }
-
     /// A regex filter beside a definition filter is answered by the same
     /// parse, so a file the regex alone selects is still listed.
     #[test]
@@ -1643,7 +1458,6 @@ mod tests {
         let exit = collect_files(
             &inputs,
             &functions_only(filters_matching("hit")),
-            Mode::FilteredOnly,
             &mut out,
             &mut Vec::new(),
         );
@@ -1654,8 +1468,8 @@ mod tests {
     }
 
     /// `Document::read` refuses a NUL-bearing file. On the parse path that
-    /// is "no definitions", not a read failure: listed in dim mode, dropped
-    /// in hide mode, no warning, no exit 2.
+    /// is "no definitions", not a read failure: not listed, no warning, no
+    /// exit 2.
     #[test]
     fn files_takes_a_binary_input_as_defining_nothing() {
         let dir = fixture_dir("batch_files_defs_binary");
@@ -1666,22 +1480,19 @@ mod tests {
             from: Source::Stdin,
         };
 
-        for (mode, listed) in [(Mode::Dimmed, 1), (Mode::FilteredOnly, 0)] {
-            let mut out = Vec::new();
-            let mut warnings = Vec::new();
-            let exit = collect_files(
-                &inputs,
-                &functions_only(ActiveFilters::new()),
-                mode,
-                &mut out,
-                &mut warnings,
-            );
+        let mut out = Vec::new();
+        let mut warnings = Vec::new();
+        let exit = collect_files(
+            &inputs,
+            &functions_only(ActiveFilters::new()),
+            &mut out,
+            &mut warnings,
+        );
 
-            let (lines, _, failed) = emitted(exit, &out);
-            assert_eq!(lines.len(), listed, "{mode:?}");
-            assert_eq!(failed, 0, "{mode:?}");
-            assert!(warnings.is_empty(), "{}", warnings_of(&warnings));
-        }
+        let (lines, _, failed) = emitted(exit, &out);
+        assert!(lines.is_empty(), "{lines:?}");
+        assert_eq!(failed, 0);
+        assert!(warnings.is_empty(), "{}", warnings_of(&warnings));
     }
 
     // ---- streaming ---------------------------------------------------------
@@ -1724,7 +1535,6 @@ mod tests {
         let exit = collect_lines(
             &inputs,
             &filters_matching("hit"),
-            Mode::FilteredOnly,
             false,
             &mut ClosedPipe,
             &mut warnings,
@@ -1748,7 +1558,6 @@ mod tests {
         let exit = collect_files(
             &inputs,
             &filters_matching("hit"),
-            Mode::Dimmed,
             &mut ClosedPipe,
             &mut warnings,
         );
@@ -1777,7 +1586,6 @@ mod tests {
                 Emit::Lines,
                 &inputs,
                 &filters,
-                Mode::FilteredOnly,
                 false,
                 &mut out,
                 &mut warnings,
@@ -1792,7 +1600,6 @@ mod tests {
                 Emit::Files,
                 &inputs,
                 &filters,
-                Mode::FilteredOnly,
                 false,
                 &mut out,
                 &mut warnings,
@@ -1803,15 +1610,7 @@ mod tests {
 
         let mut out = Vec::new();
         let (lines, _, _) = emitted(
-            collect(
-                Emit::Cwd,
-                &inputs,
-                &filters,
-                Mode::FilteredOnly,
-                false,
-                &mut out,
-                &mut warnings,
-            ),
+            collect(Emit::Cwd, &inputs, &filters, false, &mut out, &mut warnings),
             &out,
         );
         assert_eq!(

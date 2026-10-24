@@ -367,7 +367,9 @@ pub struct Config {
     #[arg(short = 'u', long = "unlist", value_name = "NAME")]
     pub unlist: Vec<String>,
 
-    /// Start in hide mode: only matching lines and files.
+    /// Start in hide mode: only matching lines and files. Batch mode always
+    /// hides, so there it changes nothing.
+    // Accepted in batch mode so scripts that pass it keep working (#511).
     #[arg(long)]
     pub hide: bool,
 

@@ -83,9 +83,11 @@ fn text(bytes: &[u8]) -> String {
     String::from_utf8(bytes.to_vec()).expect("utf-8 output")
 }
 
+/// #511: batch mode always hides, so `--emit files` lists only the matching
+/// inputs, not every readable one — and `--hide` changes nothing.
 #[test]
-fn files_hide_lists_the_matching_inputs_from_stdin() {
-    let dir = fixture("files_hide");
+fn files_lists_the_matching_inputs_from_stdin_with_or_without_hide() {
+    let dir = fixture("files_from_stdin");
     let home = config_home(&dir);
     let a = dir.join("a.log");
     let b = dir.join("b.log");
@@ -93,18 +95,46 @@ fn files_hide_lists_the_matching_inputs_from_stdin() {
     fs::write(&b, "miss\n").expect("write");
     let list = format!("{}\n{}\n", a.display(), b.display());
 
-    let out = recon(
-        &home,
-        &["--emit", "files", "--set", "Bugs:only_hit", "--hide"],
-        list.as_bytes(),
-    );
+    for args in [
+        &["--emit", "files", "--set", "Bugs:only_hit"][..],
+        &["--emit", "files", "--set", "Bugs:only_hit", "--hide"][..],
+    ] {
+        let out = recon(&home, args, list.as_bytes());
 
-    assert_eq!(text(&out.stdout), format!("{}\n", a.display()));
-    assert_eq!(
-        text(&out.stderr),
-        "recon: emitted 1 files of 2 inputs, hide mode\n"
-    );
-    assert_eq!(out.status.code(), Some(0));
+        assert_eq!(text(&out.stdout), format!("{}\n", a.display()), "{args:?}");
+        assert_eq!(
+            text(&out.stderr),
+            "recon: emitted 1 files of 2 inputs, hide mode\n",
+            "{args:?}"
+        );
+        assert_eq!(out.status.code(), Some(0));
+    }
+}
+
+/// #511: batch mode always hides, so `--emit lines` without `--hide` prints
+/// only the matches — and `--hide`, still accepted, changes nothing.
+#[test]
+fn lines_print_only_the_matches_with_or_without_hide() {
+    let dir = fixture("lines_no_hide");
+    let home = config_home(&dir);
+    let log = dir.join("server.log");
+    fs::write(&log, "hit\nmiss\nhit again\n").expect("write");
+    let path = log.to_str().expect("utf-8 path");
+
+    for args in [
+        &["--emit", "lines", "--set", "Bugs:only_hit", path][..],
+        &["--emit", "lines", "--set", "Bugs:only_hit", "--hide", path][..],
+    ] {
+        let out = recon(&home, args, b"");
+
+        assert_eq!(text(&out.stdout), "hit\nhit again\n", "{args:?}");
+        assert_eq!(
+            text(&out.stderr),
+            "recon: emitted 2 lines of server.log, hide mode\n",
+            "{args:?}"
+        );
+        assert_eq!(out.status.code(), Some(0));
+    }
 }
 
 /// #224: a definition filter is answered by parsing each file, so
@@ -132,7 +162,7 @@ fn files_hide_with_a_definitions_profile_lists_the_files_that_define_it() {
 
     let out = recon(
         &home,
-        &["--emit", "files", "--set", "definitions:typedefs", "--hide"],
+        &["--emit", "files", "--set", "definitions:typedefs"],
         list.as_bytes(),
     );
 
@@ -155,14 +185,7 @@ fn set_with_a_list_emits_the_union_of_a_profile_and_a_filter() {
 
     let out = recon(
         &home,
-        &[
-            "--emit",
-            "lines",
-            "-q",
-            "--set",
-            "Bugs:only_hit,other",
-            "--hide",
-        ],
+        &["--emit", "lines", "-q", "--set", "Bugs:only_hit,other"],
         format!("{}\n", a.display()).as_bytes(),
     );
 
@@ -185,14 +208,7 @@ fn set_names_a_definition_kind_without_a_profile() {
 
     let out = recon(
         &home,
-        &[
-            "--emit",
-            "files",
-            "-q",
-            "--set",
-            "definitions:structs",
-            "--hide",
-        ],
+        &["--emit", "files", "-q", "--set", "definitions:structs"],
         format!("{}\n{}\n", a.display(), b.display()).as_bytes(),
     );
 
@@ -212,7 +228,7 @@ fn lines_n_over_two_files_prefixes_path_and_line_number() {
 
     let out = recon(
         &home,
-        &["--emit", "lines", "-n", "--set", "Bugs:only_hit", "--hide"],
+        &["--emit", "lines", "-n", "--set", "Bugs:only_hit"],
         list.as_bytes(),
     );
 
@@ -244,7 +260,7 @@ fn a_path_file_with_empty_stdin_is_read_in_batch_mode_and_quiet_drops_the_summar
     assert_eq!(
         text(&out.stdout),
         "hit\nmiss\n",
-        "dim mode, no filter: the whole file"
+        "no filter: the whole file"
     );
     assert!(out.stderr.is_empty(), "stderr: {}", text(&out.stderr));
     assert_eq!(out.status.code(), Some(0));
@@ -303,7 +319,6 @@ fn batch_without_emit_emits_the_matching_lines() {
             "-b",
             "--set",
             "Bugs:only_hit",
-            "--hide",
             a.to_str().expect("utf-8 path"),
         ],
         b"",
@@ -328,7 +343,7 @@ fn an_unreadable_input_warns_skips_and_exits_2() {
 
     let out = recon(
         &home,
-        &["--emit", "lines", "--set", "Bugs:only_hit", "--hide"],
+        &["--emit", "lines", "--set", "Bugs:only_hit"],
         list.as_bytes(),
     );
 
@@ -380,8 +395,8 @@ fn an_unknown_set_is_refused_before_anything_is_read() {
 }
 
 /// `--unlist` takes a set out of the filters that decide the output (#283).
-/// `Bugs` here autoloads with `hit` on, so without the flag `--hide` keeps
-/// only `hit`; with it, no filter is on and every line is emitted.
+/// `Bugs` here autoloads with `hit` on, so without the flag only `hit` is
+/// emitted; with it, no filter is on and every line is emitted.
 #[test]
 fn unlist_removes_an_autoload_set_from_the_output() {
     let dir = fixture("unlist");
@@ -399,14 +414,10 @@ fn unlist_removes_an_autoload_set_from_the_output() {
     fs::write(&log, "hit\nmiss\n").expect("write");
     let path = log.display().to_string();
 
-    let out = recon(&home, &["--emit", "lines", "--hide", &path], b"");
+    let out = recon(&home, &["--emit", "lines", &path], b"");
     assert_eq!(text(&out.stdout), "hit\n");
 
-    let out = recon(
-        &home,
-        &["--emit", "lines", "--hide", "--unlist", "Bugs", &path],
-        b"",
-    );
+    let out = recon(&home, &["--emit", "lines", "--unlist", "Bugs", &path], b"");
     assert_eq!(text(&out.stdout), "hit\nmiss\n");
     assert_eq!(out.status.code(), Some(0));
 }
@@ -727,7 +738,7 @@ fn a_reference_uses_the_target_s_pattern_and_a_disabled_broken_one_is_ignored() 
 
     let out = recon(
         &home,
-        &["--emit", "lines", "-q", "--set", "team:u", "--hide"],
+        &["--emit", "lines", "-q", "--set", "team:u"],
         format!("{}\n", a.display()).as_bytes(),
     );
 
@@ -814,14 +825,7 @@ fn follow_prints_new_matching_lines_until_sigint() {
     let log = dir.join("app.log");
     fs::write(&log, "hit one\nmiss\n").expect("write");
     let mut child = Command::new(env!("CARGO_BIN_EXE_recon"))
-        .args([
-            "--batch",
-            "--follow",
-            "--set",
-            "Bugs:only_hit",
-            "--hide",
-            "-n",
-        ])
+        .args(["--batch", "--follow", "--set", "Bugs:only_hit", "-n"])
         .arg(&log)
         .env_clear()
         .envs(

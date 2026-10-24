@@ -358,7 +358,8 @@ Options:
           Unlist a saved filter set at startup: no row in the filter pane and no
           effect on the view or on `--emit`. Repeatable
       --hide
-          Start in hide mode: only matching lines and files
+          Start in hide mode: only matching lines and files. Batch mode always
+          hides, so there it changes nothing
       --hide-pane <PANES>
           Panes to hide at startup, comma-separated: `explorer`, `view`,
           `filters`. Replaces `[layout] hide_panes` in `config.toml`. At least
@@ -2327,7 +2328,8 @@ output cannot say which, so every emit prints one summary line to stderr
 naming the mode and the counts, and it reaches the terminal even when stdout is
 piped or captured. `dim mode (3 match)` when you wanted the three is the cue to
 press `u` and quit again. Empty output is legitimate — hide mode with no
-matches emits nothing and exits 0.
+matches emits nothing and exits 0. Batch mode has no keys to press, so it
+always emits in hide mode (see [Batch mode](#batch-mode)).
 
 **`q` finishes the work first.** The view holds only a preview of a large
 file, and the explorer's scan may not have answered every file yet. After `q`,
@@ -2403,10 +2405,10 @@ as `q` would have sent it. Without `--emit`, it emits `lines`; `--emit files`
 and `--emit cwd` ask for the other two.
 
 ```sh
-recon -b --set errors --hide server.log          # the matching lines
-ls -1 *.log | recon -b --emit files --set BugFilters:Bug57 --hide
-find . -name '*.log' | recon -b -n --set BugFilters --hide | cut -f1,2
-recon -b --emit files --hide /var/log
+recon -b --set errors server.log                 # the matching lines
+ls -1 *.log | recon -b --emit files --set BugFilters:Bug57
+find . -name '*.log' | recon -b -n --set BugFilters | cut -f1,2
+recon -b --emit files /var/log
 ```
 
 **When it starts.** `-b` starts batch mode, from a terminal too. `--emit`
@@ -2428,11 +2430,16 @@ from stdin, as with `cat`. `--emit cwd` never reads stdin.
 `--set NAME:LIST` turns on the filters of a comma-separated list of profiles
 and filter names instead — `--set errors:default,INFO`. Repeat it for several
 sets. `--unlist NAME` takes a set out of the filters that decide the output
-— your usual sets without one of them — and repeats the same way. `--hide`
-starts in hide mode, so only matches are emitted; without it
-the run is in dim mode and emits everything, with the match count in the
-summary. `-n` numbers lines as in the TUI. `-q` drops the summary; warnings
-still print. All five work in the TUI too. An unknown set, profile or
+— your usual sets without one of them — and repeats the same way. `-n`
+numbers lines as in the TUI. `-q` drops the summary; warnings still print.
+All four work in the TUI too.
+
+**Always hide mode.** A batch run emits only the matches: the lines the
+filters keep, and the files they select. There is no grey on stdout and no
+`u` to press, so dim mode would only hide the matches among the rest. `--hide`
+is still accepted, so scripts that pass it keep working, but it changes
+nothing here (#511, ADR 0009). There is no `--dim`: to emit what the
+excludes leave, enable no include filters. An unknown set, profile or
 filter name is refused before anything is read, and the error lists the names the set
 files define, with the built-in `definitions` set named apart. So is
 `--set` together with `--unlist` on the same set.
@@ -2441,8 +2448,7 @@ files define, with the built-in `definitions` set named apart. So is
 `--set definitions:structs` — parses each file and lists those that define the
 kinds asked for. That is one whole read and one grammar pass per file, which
 the navigator cannot afford for its marks, so `q` from a session lists every
-file. A file with no grammar, such as a log, defines nothing and drops out
-in hide mode.
+file. A file with no grammar, such as a log, defines nothing and drops out.
 
 **Several files.** With more than one input, `--emit lines` prefixes each
 line with its path and a tab, and `-n` puts the line number and a tab after
@@ -2464,19 +2470,19 @@ read again from the start, with a message on stderr. A directory, more than
 one file, or an `--emit` other than `lines` is refused.
 
 ```sh
-recon -b -f -n --set errors --hide /var/log/app.log | tee errors.txt
+recon -b -f -n --set errors /var/log/app.log | tee errors.txt
 ```
 
 **Summaries and exit codes.** The summary names the mode as it does in the
-TUI, with `pass --hide to emit matches only` in place of the key:
+TUI, and in batch mode that is always hide mode:
 
 | Run | Summary |
 | --- | --- |
-| `lines`, one file, hide mode | `recon: emitted 27 lines of app.log, hide mode` |
-| `lines`, several files, dim mode | `recon: emitted 812 lines of 3 files, dim mode (27 match) — pass --hide to emit matches only` |
+| `lines`, one file | `recon: emitted 27 lines of app.log, hide mode` |
+| `lines`, several files | `recon: emitted 27 lines of 3 files, hide mode` |
 | `files` from a `PATH` directory | `recon: emitted 3 files from /var/log, hide mode` |
 | `files` from stdin | `recon: emitted 3 files of 14 inputs, hide mode` |
-| `files` with no include filter enabled | `recon: emitted 14 files from /var/log, dim mode, no filter` |
+| `files` with no include filter enabled | `recon: emitted 14 files from /var/log, hide mode, no filter` |
 | `cwd` | `recon: emitted /var/log` |
 
 A file that cannot be read is reported as it is met — `recon: cannot read

@@ -21,7 +21,7 @@ recon draws its window on stderr, so stdout is free for a result. With
 The display mode decides the result. Dim mode prints each line or file;
 hide mode prints only the matches. The output cannot show which mode was
 on, so recon always prints a summary line to stderr that names the mode and
-the counts.
+the counts. Batch mode always prints in hide mode.
 
 ## Batch mode
 
@@ -30,9 +30,14 @@ command line or from stdin, applies the filter sets that `--set` names, and
 prints the result:
 
 ```sh
-recon -b --set errors --hide server.log
-ls -1 *.log | recon -b --emit files --set BugFilters:Bug57 --hide
+recon -b --set errors server.log
+ls -1 *.log | recon -b --emit files --set BugFilters:Bug57
 ```
+
+Batch mode always uses hide mode: it prints only the matching lines, or only
+the matching files. In batch mode there is no grey and no `u` key, so dim
+mode would hide the matches among the other lines. `--hide` is still
+accepted, but in batch mode it does nothing.
 
 Batch mode uses the same filter sets as the window. Thus you can make a set
 by experiment in the window, and then use it without change in a script or
@@ -49,7 +54,7 @@ with your filter sets. recon flushes each line at once, so the next command
 in a pipe gets it immediately. Push `Ctrl-c`, or send SIGTERM, to stop:
 
 ```sh
-recon -b -f --set errors --hide server.log | tee errors.log
+recon -b -f --set errors server.log | tee errors.log
 ```
 
 If the file becomes shorter or a different file replaces it (logrotate),
@@ -59,3 +64,5 @@ with an `--emit` other than `lines`.
 
 For the reason that batch mode has its own flag, see
 [ADR 0005](https://github.com/PeteRichardson/recon/blob/main/docs/adr/0005-batch-mode-has-a-flag.md).
+For the reason that batch mode always hides, see
+[ADR 0009](https://github.com/PeteRichardson/recon/blob/main/docs/adr/0009-batch-mode-always-hides.md).
