@@ -1,4 +1,5 @@
-//! The profile picker: a small overlay listing one set's profiles (#130).
+//! The profile picker: a small overlay listing one set's profiles (#130),
+//! then its named filters below a separator (#539).
 //!
 //! Profiles are deliberately not drawn in the filter pane. A comma-separated
 //! list after a set's name is too wide for a column the explorer sizes, and
@@ -8,7 +9,9 @@
 //! per line, drawn the way the `?` overlay is. It takes every key while open,
 //! as the search prompt does, so `q` cannot quit from inside it.
 //!
-//! Choosing a profile is an *action*: `App` applies it and the picker closes.
+//! Choosing a profile or a filter is an *action*: `App` applies it — exactly
+//! its filters on, the set's others off, as `--set NAME:ITEM` does — and the
+//! picker closes.
 //! Nothing remembers which profile was applied — see the spec's "a profile is
 //! an action, not a live binding".
 
@@ -23,7 +26,8 @@ pub(crate) enum PickerOutcome {
     Open,
     /// `Esc`: closed without choosing.
     Closed,
-    /// `Enter`: this profile was chosen, and the picker is closed.
+    /// `Enter`: this profile or named filter was chosen, and the picker is
+    /// closed. A loaded set never has a name that is both.
     Chosen(String),
 }
 
@@ -32,20 +36,34 @@ pub(crate) struct ProfilePicker {
     /// The set whose profiles these are, so `App` knows where to apply the
     /// choice.
     pub(crate) set: usize,
+    /// The profiles, then the named filters.
     names: Vec<String>,
+    /// How many of `names` are profiles: a separator row is drawn after
+    /// them when filters follow.
+    profiles: usize,
     selected: usize,
 }
 
 impl ProfilePicker {
-    /// A picker over `names`, which must not be empty — `App` reports a set
-    /// with no profiles on the status row rather than opening an empty box.
-    pub(crate) fn new(set: usize, names: Vec<String>) -> Self {
+    /// A picker over `profiles`, then `filters`. Together they must not be
+    /// empty — `App` reports a set with neither on the status row rather
+    /// than opening an empty box.
+    pub(crate) fn new(set: usize, profiles: Vec<String>, filters: Vec<String>) -> Self {
+        let count = profiles.len();
+        let mut names = profiles;
+        names.extend(filters);
         debug_assert!(!names.is_empty(), "a picker needs something to pick");
         Self {
             set,
             names,
+            profiles: count,
             selected: 0,
         }
+    }
+
+    /// The row after the profiles, when there are profiles and filters.
+    fn separator(&self) -> Option<usize> {
+        (self.profiles > 0 && self.profiles < self.names.len()).then_some(self.profiles)
     }
 
     #[cfg(test)]
@@ -105,9 +123,8 @@ impl ProfilePicker {
         let width = u16::try_from(widest + 4)
             .unwrap_or(u16::MAX)
             .min(area.width);
-        let height = u16::try_from(self.names.len() + 2)
-            .unwrap_or(u16::MAX)
-            .min(area.height);
+        let rows = self.names.len() + usize::from(self.separator().is_some());
+        let height = u16::try_from(rows + 2).unwrap_or(u16::MAX).min(area.height);
         Rect {
             x: area.x + area.width.saturating_sub(width) / 2,
             y: area.y + area.height.saturating_sub(height) / 2,
@@ -125,8 +142,24 @@ impl ProfilePicker {
         let block = Block::bordered().title(" Profiles ");
         let inner = block.inner(panel);
         block.render(panel, buf);
+        let separator = self.separator();
+        if let Some(row) = separator
+            && let Ok(y) = u16::try_from(row)
+            && y < inner.height
+        {
+            let rule = "─".repeat(usize::from(inner.width));
+            buf.set_stringn(
+                inner.x,
+                inner.y + y,
+                &rule,
+                usize::from(inner.width),
+                Style::default(),
+            );
+        }
         for (offset, name) in self.names.iter().enumerate() {
-            let Ok(y) = u16::try_from(offset) else { break };
+            // Each filter sits one row lower, below the separator.
+            let row = offset + usize::from(separator.is_some_and(|sep| offset >= sep));
+            let Ok(y) = u16::try_from(row) else { break };
             if y >= inner.height {
                 break;
             }
@@ -152,7 +185,7 @@ mod tests {
     use crate::keymap::ActionId as A;
 
     fn picker() -> ProfilePicker {
-        ProfilePicker::new(1, vec!["default".into(), "loud".into()])
+        ProfilePicker::new(1, vec!["default".into(), "loud".into()], vec![])
     }
 
     #[test]
@@ -213,12 +246,40 @@ mod tests {
         );
     }
 
+    /// The set's named filters follow its profiles below a separator row
+    /// (#539). `j` steps from the last profile to the first filter, never
+    /// onto the separator, and `Enter` on a filter chooses its name.
+    #[test]
+    fn named_filters_follow_the_profiles_below_a_separator() {
+        let mut p = ProfilePicker::new(
+            1,
+            vec!["default".into(), "loud".into()],
+            vec!["INFO".into()],
+        );
+        let area = Rect::new(0, 0, 40, 10);
+        let mut buf = Buffer::empty(area);
+        p.render(area, &mut buf);
+        let row = |y: u16| -> String { (0..40).map(|x| buf[(x, y)].symbol()).collect() };
+        // Three names and a separator: 6 rows tall, so it starts at row 2.
+        assert!(row(3).contains("default"), "{}", row(3));
+        assert!(row(4).contains("loud"), "{}", row(4));
+        assert!(row(5).contains("───"), "{}", row(5));
+        assert!(row(6).contains("INFO"), "{}", row(6));
+
+        p.perform(A::PickerDown);
+        p.perform(A::PickerDown);
+        assert_eq!(
+            p.perform(A::PickerChoose),
+            PickerOutcome::Chosen("INFO".into())
+        );
+    }
+
     /// Width is display columns, not characters: a CJK name occupies two
     /// columns per ideograph, and a box sized by `chars().count()` clips it
     /// (#97, #193).
     #[test]
     fn the_panel_is_sized_in_display_columns() {
-        let p = ProfilePicker::new(1, vec!["日本語ログ".into()]);
+        let p = ProfilePicker::new(1, vec!["日本語ログ".into()], vec![]);
         let area = Rect {
             x: 0,
             y: 0,
@@ -234,7 +295,7 @@ mod tests {
     /// than the box wants, which is what `saturating_sub` is there for (#203).
     #[test]
     fn the_panel_stays_inside_the_area_at_every_size() {
-        let p = ProfilePicker::new(1, vec!["a-very-long-profile-name".into()]);
+        let p = ProfilePicker::new(1, vec!["a-very-long-profile-name".into()], vec![]);
 
         for width in 0..40u16 {
             for height in 0..8u16 {

@@ -530,6 +530,64 @@ fn a_opens_the_picker_and_enter_applies_the_profile() {
     assert_eq!(included, 1, "the view re-evaluated under the profile");
 }
 
+/// `Enter` on a named filter in the picker turns on that filter alone and
+/// turns off the set's others, as `--set a:beta` does (#539).
+#[test]
+fn enter_on_a_filter_in_the_picker_turns_on_only_that_filter() {
+    let mut app = app_with_profiles("picker_filter");
+    key(&mut app, KeyCode::Char('f'));
+    app.filters_pane.select(0); // Header(a)
+    assert_eq!(flags_of(&app, 1), vec![true, false], "sanity: default");
+
+    key(&mut app, KeyCode::Char('a'));
+    key(&mut app, KeyCode::Char('j')); // only-beta
+    key(&mut app, KeyCode::Enter);
+    assert_eq!(flags_of(&app, 1), vec![false, true], "sanity: only-beta");
+
+    key(&mut app, KeyCode::Char('a'));
+    // default, only-beta, separator, alpha: two steps to `alpha`.
+    key(&mut app, KeyCode::Char('j'));
+    key(&mut app, KeyCode::Char('j'));
+    key(&mut app, KeyCode::Enter);
+
+    assert!(app.picker.is_none());
+    assert_eq!(flags_of(&app, 1), vec![true, false]);
+}
+
+/// A set with named filters and no profiles opens the picker too (#539).
+#[test]
+fn a_on_a_set_with_only_named_filters_opens_the_picker() {
+    let mut app = app_with_profiles("picker_filters_only");
+    key(&mut app, KeyCode::Char('f'));
+    app.filters_pane.select(3); // Header(b), which has no profiles
+    assert_eq!(flags_of(&app, 2), vec![false], "sanity: off");
+
+    key(&mut app, KeyCode::Char('a'));
+    assert!(app.picker.is_some(), "{:?}", app.status_message);
+    key(&mut app, KeyCode::Enter);
+
+    assert_eq!(flags_of(&app, 2), vec![true]);
+}
+
+/// A set with no profiles and no named filters has nothing to pick: `a`
+/// says so on the status row and opens nothing.
+#[test]
+fn a_on_a_set_with_nothing_to_pick_says_so() {
+    let mut set = filter::test_support::loaded("a", 10, true, &["alpha"]);
+    set.filters[0].named = false;
+    let mut app = app_over_file("picker_nothing", "alpha\n");
+    app.filters = ActiveFilters::with_sets(None, &[set]);
+    app.refresh_view();
+    key(&mut app, KeyCode::Char('f'));
+    app.filters_pane.select(0); // Header(a)
+
+    key(&mut app, KeyCode::Char('a'));
+
+    assert!(app.picker.is_none());
+    let message = app.status_message.as_ref().expect("a message");
+    assert_eq!(message.text, "no profiles or named filters in this set");
+}
+
 // ---- the two-level pane (#129) -------------------------------------------
 
 fn app_with_two_sets(fixture: &str) -> App<'static> {

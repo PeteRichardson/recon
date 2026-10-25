@@ -145,7 +145,7 @@ pub(crate) enum FilterCommand {
     /// `filters.toml`, and `App` says so on the status row rather than
     /// letting the key do nothing.
     SetIsReadOnly,
-    /// `a` on a set's header row: open the profile picker for it (#130).
+    /// `a` on a set's header row: open the profile picker for it (#130, #539).
     /// `App` owns the picker, and reports a set with no profiles instead.
     PickProfile(usize),
     /// `s` on a set's header row: solo it, or un-solo it (#132).

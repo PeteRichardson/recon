@@ -947,12 +947,15 @@ repeats too, and `--set` and `--unlist` on the same set are refused. The same
 flags drive a run with no TUI at all; see [Batch mode](#batch-mode).
 
 A header carries `*` when its set has profiles. `a` on that row opens a small
-picker over the panes listing the set's profile names; `j`/`k` move, `Enter`
-applies the chosen profile — exactly its members on, the set's other filters
-off — and `Esc` closes without touching a flag. The picker takes every key
-while it is open, as a prompt does. A profile is an action, not a live
-binding: after applying one you can toggle rows freely and nothing fights you.
-`a` on a set with no profiles says so on the status row.
+picker over the panes listing the set's profile names, then, below a line,
+its named filters — the same names `--set NAME:LIST` takes. `j`/`k` move,
+`Enter` applies the chosen profile — exactly its members on, the set's other
+filters off — or turns on the chosen filter alone, as `--set NAME:FILTER`
+does, and `Esc` closes without touching a flag. Thus one filter of a set
+needs no profile of its own. The picker takes every key while it is open, as
+a prompt does. A profile is an action, not a live binding: after applying one
+you can toggle rows freely and nothing fights you. `a` on a set with no
+profiles and no named filters says so on the status row.
 
 **Solo**, from audio mixers: `s` on a set's header enables that set alone and
 suspends every other set — the scratch set included — remembering what was on.
@@ -2154,7 +2157,7 @@ tabled above:
 | `d` | Delete the selected filter |
 | `c` | Change the selected filter's pattern — reopens the prompt over it |
 | `m` | Toggle the selected filter between *include* and *context* — see below |
-| `a` | On a set's header row, open the profile picker; `Enter` applies the chosen profile to that set |
+| `a` | On a set's header row, open the profile picker; `Enter` applies the chosen profile to that set, or turns on the chosen named filter alone |
 | `s` | On a set's header row, solo that set — every other set, the scratch set included, is suspended and the pane shows only this one; `s` again restores |
 | `R` | Reset every set to its startup state; filters you typed are kept |
 | `S` | Save the scratch filters as a named set in `filters.toml` — the one thing recon ever writes |

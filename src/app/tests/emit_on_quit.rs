@@ -672,22 +672,6 @@ fn a_modified_key_does_not_move_the_picker_selection() {
     );
 }
 
-#[test]
-fn a_on_a_set_without_profiles_reports_and_opens_nothing() {
-    let mut app = app_with_profiles("picker_none");
-    key(&mut app, KeyCode::Char('f'));
-    // Rows: Header(a), alpha, beta, Header(b), neither — b's header is row 3.
-    app.filters_pane.select(3);
-    key(&mut app, KeyCode::Char('a'));
-    assert!(app.picker.is_none());
-    assert!(
-        app.status_message
-            .as_ref()
-            .is_some_and(|m| m.text.contains("no profiles")),
-        "no message"
-    );
-}
-
 /// The picker is drawn over the panes.
 #[test]
 fn the_open_picker_is_visible() {

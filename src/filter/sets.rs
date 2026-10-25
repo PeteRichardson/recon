@@ -503,7 +503,7 @@ impl ActiveFilters {
         }
         self.sets[set].enabled = enabled;
         if enabled && self.sets[set].profiles.contains_key("default") {
-            self.apply_profile(set, "default");
+            self.apply_item(set, "default");
         }
         true
     }
@@ -580,15 +580,19 @@ impl ActiveFilters {
         }
     }
 
-    /// Enable exactly the profile's members within `set` and disable the
-    /// set's other filters. An action, not a binding: nothing remembers that
-    /// a profile was applied, and later toggles are the user's to make.
-    pub fn apply_profile(&mut self, set: usize, profile: &str) -> bool {
-        let Some(members) = self
-            .sets
-            .get(set)
-            .and_then(|meta| meta.profiles.get(profile))
-            .cloned()
+    /// Enable exactly the filters one `--set` item names within `set` — a
+    /// profile's members, one named filter, or every filter for `@all` — and
+    /// disable the set's others, as `--set NAME:ITEM` does (#539). The name is
+    /// taken as it is, with no sign. An action, not a binding: nothing
+    /// remembers that it was applied, and later toggles are the user's to
+    /// make. `false` when `item` names nothing in the set.
+    pub fn apply_item(&mut self, set: usize, item: &str) -> bool {
+        let Some(meta) = self.sets.get(set) else {
+            return false;
+        };
+        let all = self.display_names(set);
+        let Some(members) =
+            item_filters(&meta.profiles, &meta.filter_names, &all, item).map(<[String]>::to_vec)
         else {
             return false;
         };
@@ -661,16 +665,20 @@ impl ActiveFilters {
         let Some(items) = &spec.items else {
             return Ok((index, kept.then_some(start)));
         };
-        let all: Vec<String> = self
-            .filters_in(index)
-            .map(|(_, filter)| filter.display_name())
-            .collect();
+        let all = self.display_names(index);
         let members = list_members(&meta.profiles, &meta.filter_names, &all, start, items)
             .map_err(|item| EnableError::UnknownItem {
                 set: spec.name.clone(),
                 item,
             })?;
         Ok((index, Some(members)))
+    }
+
+    /// The display names of the filters of `set`, in pane order.
+    pub(crate) fn display_names(&self, set: usize) -> Vec<String> {
+        self.filters_in(set)
+            .map(|(_, filter)| filter.display_name())
+            .collect()
     }
 
     /// The display names of the enabled filters of `set`, in pane order.
@@ -739,7 +747,7 @@ impl ActiveFilters {
             meta.enabled = index == set;
         }
         if !was_enabled && self.sets[set].profiles.contains_key("default") {
-            self.apply_profile(set, "default");
+            self.apply_item(set, "default");
         }
         true
     }
@@ -1360,11 +1368,11 @@ mod tests {
         let mut set = with_default_profile();
         set.add("typed").expect("valid");
         set.set_enabled_set(1, true);
-        assert!(set.apply_profile(1, "loud"));
+        assert!(set.apply_item(1, "loud"));
         assert_eq!(flags(&set, 1), vec![true, true, true]);
-        assert!(set.apply_profile(1, "default"));
+        assert!(set.apply_item(1, "default"));
         assert_eq!(flags(&set, 1), vec![true, false, true]);
-        assert!(!set.apply_profile(1, "nope"));
+        assert!(!set.apply_item(1, "nope"));
         assert_eq!(flags(&set, 0), vec![true], "the scratch set is untouched");
     }
 
@@ -1678,7 +1686,7 @@ mod tests {
                 .collect()
         };
         assert_eq!(on(&set), ["functions"], "autoload applied `default`");
-        assert!(set.apply_profile(index, "typedefs"));
+        assert!(set.apply_item(index, "typedefs"));
         assert_eq!(
             on(&set),
             ["structs", "enums", "types"],
