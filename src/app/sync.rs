@@ -44,6 +44,9 @@ impl App<'_> {
         // Both halves of the rebuild-skip key, or the surviving half could
         // still match and skip a rebuild this just decided is owed.
         self.last_window = None;
+        // A fresh document's counters start from 0 again, so the map's key
+        // could match one built for the previous file.
+        self.minimap.forget();
     }
 
     /// Re-evaluate the filters and rebuild what the view shows.

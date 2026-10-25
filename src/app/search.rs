@@ -39,6 +39,11 @@ impl Search {
         })
     }
 
+    /// Whether `line` is a hit: what `n` stops on and the minimap marks.
+    pub(super) fn is_hit(&self, line: &str) -> bool {
+        self.regex.is_match(line)
+    }
+
     /// The character column of the first occurrence in `line`, if the line
     /// is a hit. The cursor lands there: on a long line the hit may be far
     /// off the left edge.
@@ -171,7 +176,7 @@ impl App<'_> {
             document
                 .source_at(row)
                 .and_then(|source| document.lines().get(source))
-                .is_some_and(|line| search.regex.is_match(line))
+                .is_some_and(|line| search.is_hit(line))
         };
         match self.step_visible(backwards, is_hit) {
             Step::Nothing => {

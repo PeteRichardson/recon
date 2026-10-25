@@ -26,11 +26,18 @@ impl App<'_> {
     pub(crate) fn handle_click(&mut self, mouse: MouseEvent) -> bool {
         match mouse.kind {
             MouseEventKind::Down(MouseButton::Left) => {}
+            MouseEventKind::Drag(MouseButton::Left) if self.minimap.dragging => {
+                self.jump_on_minimap(mouse.row);
+                return true;
+            }
             MouseEventKind::Drag(MouseButton::Left) if self.press.is_some() => {
                 self.drag_view(mouse);
                 return true;
             }
-            MouseEventKind::Up(MouseButton::Left) => return self.press.take().is_some(),
+            MouseEventKind::Up(MouseButton::Left) => {
+                let map = std::mem::take(&mut self.minimap.dragging);
+                return self.press.take().is_some() || map;
+            }
             _ => return false,
         }
         let at = Position::new(mouse.column, mouse.row);
@@ -54,6 +61,16 @@ impl App<'_> {
         // done its work already.
         let inner = self.pane_area(pane).inner(Margin::new(1, 1));
         if !inner.contains(at) {
+            return true;
+        }
+        // The map is inside the border, at the right of the text (#523).
+        if pane == Focus::View
+            && self
+                .view
+                .drawn_minimap()
+                .is_some_and(|(_, map)| map.contains(at))
+        {
+            self.press_minimap(mouse.row);
             return true;
         }
         let line = mouse.row - inner.y;

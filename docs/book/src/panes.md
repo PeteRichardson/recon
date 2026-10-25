@@ -16,6 +16,7 @@ Panes are hidable and zoomable in-app or from the command line.
 - Cycle through configured views of a file type using `-`.
 - Views are configurable, and include built-in (raw, hex, image) and user supplied (via pre-processing commands in config.toml.  e.g. running json through a jq command before displaying.)
 - Reveal and Focus the file view with `t`. Hide it with `T`
+- A file longer than the pane has a **minimap** at the right of its text: the search hits as braille dots, the density of the filter matches as bars, and a thick rule on the rows that are on screen. Click or drag on it to go to that part of the file. Hide or show it with `M`.
 
 
 ## **Filter Pane**

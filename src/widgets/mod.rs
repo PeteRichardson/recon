@@ -2,6 +2,7 @@ pub(crate) mod explorer;
 pub(crate) mod fileview;
 pub(crate) mod filterlist;
 pub(crate) mod listmotion;
+pub(crate) mod minimap;
 pub(crate) mod picker;
 pub(crate) mod setpicker;
 

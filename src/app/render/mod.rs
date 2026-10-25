@@ -124,6 +124,7 @@ impl Widget for &mut App<'_> {
         self.set_active_pane();
         self.view.set_title_accent(self.crossing.is_some());
         self.view.set_selection(self.painted_selection());
+        self.sync_minimap(view_area);
         for (pane, pane_area) in [
             (Focus::Explorer, explorer_area),
             (Focus::View, view_area),
