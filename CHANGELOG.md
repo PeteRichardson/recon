@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.6.0 — 2026-10-25
+
+### Breaking changes
+
+- **batch:** Read the lines on stdin with `-`, list files with --files-from
+
+### Features
+
+- **tui:** Read the lines on stdin with `-`
+- **tui:** Add a command palette on `:`, with `e`/`cd` and `goto`
+- **tui:** Add a minimap of search hits and filter density
+
 ## v0.5.0 — 2026-10-24
 
 ### Features
