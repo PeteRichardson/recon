@@ -19,6 +19,7 @@ The default keys that this guide names. `?` in recon shows the full keymap.
 | `p` | Change the current search into an include filter |
 | `-` | Show the next view of the file |
 | `Ctrl-t` | Follow the file as it grows, or stop |
+| `:` | Open the command palette — see [About the command palette](palette.md) |
 | `o` | Hand off the file to the app for its type |
 | `O` | Open the project that contains the file in the editor |
 | `q` | Quit, and print the `--emit` result |

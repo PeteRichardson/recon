@@ -183,6 +183,7 @@ pub(crate) enum ActionId {
     GlobalPageUp,
     /// Open the set picker (#284).
     GlobalSets,
+    GlobalPalette,
     // Bound the same way in more than one pane scope — see the bare-name
     // rule in the doc comment above.
     HitNext,
@@ -257,6 +258,8 @@ pub(crate) enum ActionId {
     /// editing keys, and a no-op in a filter prompt, which keeps no history.
     PromptHistoryPrev,
     PromptHistoryNext,
+    PromptComplete,
+    PromptCompletePrev,
     // Picker
     PickerUp,
     PickerDown,
@@ -368,6 +371,7 @@ impl ActionId {
             Self::GlobalPageDown => "global.page.down",
             Self::GlobalPageUp => "global.page.up",
             Self::GlobalSets => "global.sets",
+            Self::GlobalPalette => "global.palette",
             Self::HitNext => "hit.next",
             Self::HitPrev => "hit.prev",
             Self::ExplorerUp => "explorer.up",
@@ -456,6 +460,8 @@ impl ActionId {
             Self::PromptDeleteStart => "prompt.delete.start",
             Self::PromptHistoryPrev => "prompt.history.prev",
             Self::PromptHistoryNext => "prompt.history.next",
+            Self::PromptComplete => "prompt.complete",
+            Self::PromptCompletePrev => "prompt.complete.prev",
             Self::PickerUp => "picker.up",
             Self::PickerDown => "picker.down",
             Self::PickerChoose => "picker.choose",
@@ -523,6 +529,7 @@ pub(crate) const DEFAULT: &[(Scope, &str, ActionId)] = &[
     (Scope::Global, "]", ActionId::GlobalPageDown),
     (Scope::Global, "[", ActionId::GlobalPageUp),
     (Scope::Global, "L", ActionId::GlobalSets),
+    (Scope::Global, ":", ActionId::GlobalPalette),
     // `n`/`N` are scoped away from Global (#59 review): `src/lib.rs`'s
     // global arm is guarded `self.focus != Focus::Explorer`, so in the explorer
     // it never fires and the key falls through to `explorer.rs`'s own
@@ -627,6 +634,10 @@ pub(crate) const DEFAULT: &[(Scope, &str, ActionId)] = &[
     (Scope::Prompt, "Ctrl-p", ActionId::PromptHistoryPrev),
     (Scope::Prompt, "Down", ActionId::PromptHistoryNext),
     (Scope::Prompt, "Ctrl-n", ActionId::PromptHistoryNext),
+    // Only the command palette completes (#520); in a `/` or filter
+    // prompt both keys do nothing, as before they were bound.
+    (Scope::Prompt, "Tab", ActionId::PromptComplete),
+    (Scope::Prompt, "Shift-Tab", ActionId::PromptCompletePrev),
     (Scope::Picker, "k", ActionId::PickerUp),
     (Scope::Picker, "Up", ActionId::PickerUp),
     (Scope::Picker, "j", ActionId::PickerDown),
@@ -709,10 +720,14 @@ pub(crate) const DEFAULT: &[(Scope, &str, ActionId)] = &[
 /// spoken for. Recording them here and in the help overlay is what makes the
 /// promise real: a key 1.1 adds has to be a key 1.0 already said was taken,
 /// or a user who bound it loses it in an upgrade. `-` was the other one, and
-/// the hex view has it now (#242).
-pub(crate) const RESERVED: &[(&str, &str)] = &[(":", "a command palette")];
+/// the hex view has it now (#242). `:` was the last, and the command palette
+/// has it now (#520), so nothing is reserved; the check stays for the next
+/// promise.
+pub(crate) const RESERVED: &[(&str, &str)] = &[];
 
-/// Which reserved keys `labels` binds, each paired with what claims it.
+/// Which keys of `reserved` (in use, `RESERVED`) `labels` binds, each paired
+/// with what claims it. The list is an argument so that the tests can keep a
+/// reserved key while `RESERVED` has none.
 ///
 /// Compared as **keys**, not as label text. One label can name many keys, and
 /// no range is spelled `-` or `:`: `'*-/'` covers `-` and `'5-<'` covers `:`,
@@ -732,15 +747,18 @@ pub(crate) const RESERVED: &[(&str, &str)] = &[(":", "a command palette")];
 /// `Keymap::new`'s loop so a test can call it with the same list `Keymap::new`
 /// would build for `hit.next`, without a logging harness.
 ///
-/// Walking `RESERVED` on the outside keeps that same "once each" true of the
+/// Walking `reserved` on the outside keeps that same "once each" true of the
 /// labels as well: a line naming one reserved key twice, as `['-', '*-/']`
 /// does, is one warning and not two.
-fn reserved_hits(labels: &[String]) -> Vec<(&'static str, &'static str)> {
+fn reserved_hits(
+    reserved: &'static [(&'static str, &'static str)],
+    labels: &[String],
+) -> Vec<(&'static str, &'static str)> {
     let bound: Vec<crate::help::Chord> = labels
         .iter()
         .flat_map(|label| crate::help::chords_for_label(label))
         .collect();
-    RESERVED
+    reserved
         .iter()
         .copied()
         .filter(|(reserved, _)| {
@@ -758,6 +776,18 @@ fn reserved_hits(labels: &[String]) -> Vec<(&'static str, &'static str)> {
 /// each one spells before it can ask what key reaches it.
 pub(crate) fn action_named(name: &str) -> Option<ActionId> {
     every_action().find(|action| action.name() == name)
+}
+
+/// The scopes `action` has a `DEFAULT` row in: where its key works, and so
+/// which pane a command palette run of it acts on (#520).
+pub(crate) fn scopes_of(action: ActionId) -> Vec<Scope> {
+    let mut scopes: Vec<Scope> = Vec::new();
+    for (scope, _, bound) in DEFAULT {
+        if *bound == action && !scopes.contains(scope) {
+            scopes.push(*scope);
+        }
+    }
+    scopes
 }
 
 /// Every action, once each, in `DEFAULT`'s order.
@@ -870,7 +900,10 @@ impl Keymap {
             let modal = DEFAULT
                 .iter()
                 .any(|(scope, _, bound)| *bound == action && *scope == Scope::FilterEditor);
-            for (key, claim) in reserved_hits(labels).into_iter().filter(|_| !modal) {
+            for (key, claim) in reserved_hits(RESERVED, labels)
+                .into_iter()
+                .filter(|_| !modal)
+            {
                 reserved.push(format!(
                     "{name} binds '{key}', which is reserved for {claim}; \
                      a later release will want it back, but recon binds it anyway"
@@ -1371,7 +1404,7 @@ mod tests {
     /// is what would have caught `n`/`N` being bound in both `Global` and
     /// `Explorer` — the set comparison alone did not).
     ///
-    /// A `RESERVED` row (`-`, `:`) is documented on purpose while binding
+    /// A `RESERVED` row is documented on purpose while binding
     /// nothing: its `names` is empty, so it contributes nothing to either
     /// set and needs no exception here (#242).
     #[test]
@@ -1954,35 +1987,31 @@ mod tests {
         assert!(warnings.is_empty(), "{warnings:?}");
     }
 
+    /// A reserved key the tests can bind, now that `RESERVED` is empty:
+    /// `;` binds nothing, and `'5-<'` covers it as it covered `:`.
+    const TEST_RESERVED: &[(&str, &str)] = &[(";", "a later feature")];
+
+    /// `:` was reserved until the command palette took it (#520), so a
+    /// `[keymap]` line that binds it is an ordinary rebind and warns about
+    /// nothing.
     #[test]
-    fn binding_a_reserved_key_warns_and_obeys() {
+    fn binding_the_palettes_key_does_not_warn() {
         let mut bindings = std::collections::BTreeMap::new();
         bindings.insert("global.quit".to_string(), vec![":".to_string()]);
         let overlay = config::KeymapConfig { bindings };
 
-        // A warning, not a refusal: it is the user's keyboard, and 1.0 only
-        // promises that 1.1 will want the key back.
-        let (keymap, warnings) = Keymap::new(&overlay).expect("a reserved key is allowed");
+        let (keymap, warnings) = Keymap::new(&overlay).expect("`:` is an ordinary key");
         let colon = normalise(KeyEvent::new(KeyCode::Char(':'), KeyModifiers::empty()));
 
         assert_eq!(
             keymap.resolve(Scope::Global, colon),
             Some(ActionId::GlobalQuit)
         );
-        assert_eq!(
-            warnings,
-            vec![
-                "global.quit binds ':', which is reserved for a command palette; \
-                 a later release will want it back, but recon binds it anyway"
-                    .to_string()
-            ],
-            "the reserved-key warning must come back for the caller to log"
-        );
+        assert!(warnings.is_empty(), "{warnings:?}");
     }
 
-    /// The case `binding_a_reserved_key_warns_and_obeys` above cannot tell
-    /// apart from a bug: `global.quit` holds one scope, so it would pass
-    /// even if the check fired once per scope instead of once per key.
+    /// One warning per key, not per scope: a check that fired once per
+    /// scope would pass a one-scope action such as `global.quit`.
     /// `hit.next` is the real two-scope action (Ruling 12: a `DEFAULT` row
     /// in both `Scope::View` and `Scope::Filters`), and a `[keymap]` line
     /// for it still supplies exactly one label list — the same one
@@ -1993,15 +2022,15 @@ mod tests {
     #[test]
     fn a_two_scope_actions_reserved_key_is_one_hit_not_two() {
         let mut bindings = std::collections::BTreeMap::new();
-        bindings.insert("hit.next".to_string(), vec![":".to_string()]);
+        bindings.insert("hit.next".to_string(), vec![";".to_string()]);
         let overlay = config::KeymapConfig { bindings };
 
         // The same slice `Keymap::new` would read for this config line —
         // one list, regardless of `hit.next` holding two `DEFAULT` scopes.
         let labels = &overlay.bindings["hit.next"];
         assert_eq!(
-            reserved_hits(labels),
-            vec![(":", "a command palette")],
+            reserved_hits(TEST_RESERVED, labels),
+            vec![(";", "a later feature")],
             "hit.next holds two scopes, but one config line must warn once"
         );
     }
@@ -2010,21 +2039,22 @@ mod tests {
     /// it.
     ///
     /// `reserved_hits` compared label text, and no range is spelled `:`, so
-    /// `'5-<'` took the command palette's key in silence — the one failure
-    /// `RESERVED` exists to prevent. The warning names the reserved key that
-    /// was found rather than the label written, because `'5-<'` is not a key.
+    /// `'5-<'` took the command palette's key in silence while it was
+    /// reserved — the one failure `RESERVED` exists to prevent. The warning
+    /// names the reserved key that was found rather than the label written,
+    /// because `'5-<'` is not a key.
     #[test]
     fn a_range_covering_a_reserved_key_warns_about_that_key() {
-        // '5' through '<' covers ':'.
+        // '5' through '<' covers ';'.
         assert_eq!(
-            reserved_hits(&["5-<".to_string()]),
-            vec![(":", "a command palette")],
-            "a range covering ':' binds it, so it must be reported as ':'"
+            reserved_hits(TEST_RESERVED, &["5-<".to_string()]),
+            vec![(";", "a later feature")],
+            "a range covering ';' binds it, so it must be reported as ';'"
         );
         // And a line reaching one reserved key two ways is still one warning.
         assert_eq!(
-            reserved_hits(&[":".to_string(), "5-<".to_string()]),
-            vec![(":", "a command palette")]
+            reserved_hits(TEST_RESERVED, &[";".to_string(), "5-<".to_string()]),
+            vec![(";", "a later feature")]
         );
     }
 
@@ -2035,8 +2065,8 @@ mod tests {
     fn a_range_covering_no_reserved_key_stays_silent() {
         for range in ["0-9", "a-f", "A-Z"] {
             assert!(
-                reserved_hits(&[range.to_string()]).is_empty(),
-                "{range} covers neither reserved key"
+                reserved_hits(TEST_RESERVED, &[range.to_string()]).is_empty(),
+                "{range} covers no reserved key"
             );
         }
     }

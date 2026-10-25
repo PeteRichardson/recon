@@ -540,6 +540,7 @@ Global (`src/app/events.rs`), handled before the focused pane sees the key:
 | `r` | **Refresh from disk** — re-list, re-stat and rescan the explorer's listing (so a file created since the listing was built appears), and reload the file in the view with the cursor kept on its line. The status row shows `changed on disk · r` when the open file's size or mtime has moved | `global.reload` |
 | `-` | Show the file in its **next view** — text, then a hex dump, then text again — see [Views](#views). A binary file opens as hex | `global.view.next` |
 | `Ctrl-t` | **Follow** the file in the view as it grows, or stop — see [Following a growing file](#following-a-growing-file) | `global.follow` |
+| `:` | Open the **command palette**: type a command by name, such as `e ~/projects/app` or `goto 120` — see [The command palette](#the-command-palette) | `global.palette` |
 
 `?` used to search backward. `n`/`N` cover both directions now, which is what
 freed it for the overlay — it is the conventional help key in the pagers and
@@ -718,14 +719,12 @@ A key is spelled as one of:
   name, because recon has no spelling for a modified space bar and so could
   not name that key back to you
 
-One key, `:`, is reserved rather than bound: 1.0 promises it to a later
-release (a command palette), so the key that release wants is one this
-release already said was taken. `-` was reserved the same way, and the hex
-view has it now. Binding a reserved key anyway is allowed — it's your
-keyboard — recon just warns once, on startup, and then obeys. The filter
-editor is the exception: it takes every key while it is open, so any
-reserved key you bind there can never meet the later release's, and recon
-does not warn.
+Before the command palette, `:` was reserved rather than bound: a promise to
+the later release that has the palette, so the key that release wants was
+one the earlier release already said was taken. `-` was reserved the same way, and the hex
+view has it now. No key is reserved now. If a key is reserved again, binding
+it anyway is allowed — it's your keyboard — and recon warns once, on startup,
+and then obeys.
 
 Giving an action a key can therefore take that key away from a different
 action. recon works out what your file costs before it starts, and it either
@@ -2400,6 +2399,35 @@ app.log` starts with follow mode on for `app.log`.
   is always current.
 - **Text view only.** In the hex, image or a command view, `Ctrl-t` says that
   follow mode works in the text view.
+
+### The command palette
+
+`:` opens the **command palette** on the bottom row, from any of the three
+panes. You type a command and its argument, and Enter runs it. Above the line,
+a list shows the commands that match what you typed, each with the key that
+also runs it and its line of help. Esc closes the palette and changes nothing.
+`:` does nothing in the filter editor, the set picker or a `/` prompt, where
+you may be typing a regular expression: push Esc first.
+
+| Command | What it does |
+| --- | --- |
+| `e <path>`, `cd <path>` | Set the explorer's folder. A directory lists with its first entry selected; a file sets its folder, selects it and opens it, as a path on the command line does. `~` and relative paths resolve against the explorer's folder. Alone, it goes to your home folder; `-` goes back to the last folder |
+| `goto <n>`, `:<n>` | Go to line n of the file — the number the line numbers show. If a filter hides it, the cursor goes to the next visible line and the status row says so |
+| `q` | Quit, as `global.quit` |
+| any action name | Run a keymap action by the name a `[keymap]` line uses, such as `global.follow` or `explorer.down`. A pane's action works on its own pane, which shows and takes the focus. `global.filters.toggle <n>` takes the filter number |
+
+- **The list** matches the start of a name first, then the letters of a name
+  in order (`gfol` finds `global.follow`), then the help text (`folder` finds
+  `e`). An empty line lists every command.
+- **Tab** and **Shift-Tab** choose the next or previous row and write its name
+  into the line. On a path, Tab completes the name of an entry in the folder.
+- **Up** and **Down** recall the command lines that ran, newest first. The
+  palette keeps its own history, for the session only.
+- **An error** — an unknown command, a path that does not exist — keeps the
+  palette open with your line, and shows the error in place of it until the
+  next key.
+- `e` never changes recon's working directory, so `O` and the paths on the
+  command line mean what they meant before.
 
 ### Reading a command's output
 

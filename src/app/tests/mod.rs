@@ -557,6 +557,7 @@ mod layout;
 mod logging;
 mod mouse;
 mod open;
+mod palette;
 mod peek;
 mod prompt;
 mod scanning;

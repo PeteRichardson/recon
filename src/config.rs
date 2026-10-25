@@ -1658,7 +1658,6 @@ mod tests {
     use super::*;
     use crate::keymap::Keymap;
     use crate::keymap::config::{KeymapConfig, build};
-    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use std::fs;
     use std::sync::Mutex;
 
@@ -2682,33 +2681,6 @@ mod tests {
         let config = parse_clean(["recon", "--warnings", "--no-warnings"])
             .expect("both flags together must parse");
         assert!(!config.warnings());
-    }
-
-    #[test]
-    fn no_warnings_silences_the_reserved_key_warning() {
-        let mut bindings = std::collections::BTreeMap::new();
-        bindings.insert("global.reload".to_string(), vec![":".to_string()]);
-        let config = Config {
-            no_warnings: true,
-            ..Config::default()
-        };
-
-        // The map still builds and still binds the reserved key: the switch
-        // hides the warning, it does not change what recon does.
-        let (keymap, warnings) = build(&KeymapConfig { bindings }, config.warnings())
-            .expect("a reserved key is allowed");
-        assert_eq!(
-            warnings,
-            Vec::<String>::new(),
-            "the panel gets nothing either way"
-        );
-        let colon =
-            crate::keymap::normalise(KeyEvent::new(KeyCode::Char(':'), KeyModifiers::empty()));
-        assert_eq!(
-            keymap.resolve(crate::keymap::Scope::Global, colon),
-            Some(crate::keymap::ActionId::GlobalReload),
-            "recon must still obey the user"
-        );
     }
 
     /// A loaded set named `name` with one filter `x` and one profile.

@@ -1,7 +1,7 @@
 //! What each keymap action does, and what a widget's action does.
 
 use super::loading::Landing;
-use super::prompt::SearchPrompt;
+use super::prompt::{PromptKind, SearchPrompt};
 use super::search::Search;
 use super::{App, AppState};
 use crate::views::Extent;
@@ -57,6 +57,7 @@ impl App<'_> {
             A::GlobalHideView => self.hide_pane(Focus::View),
             A::GlobalHideFilters => self.hide_pane(Focus::Filters),
             A::GlobalHelp => self.help = true,
+            A::GlobalPalette => self.prompt = Some(SearchPrompt::new(PromptKind::Command)),
             A::GlobalSets => {
                 self.set_picker = Some(widgets::setpicker::SetPicker::new(&self.filters));
             }
@@ -370,6 +371,8 @@ impl App<'_> {
             | A::PromptDeleteStart
             | A::PromptHistoryPrev
             | A::PromptHistoryNext
+            | A::PromptComplete
+            | A::PromptCompletePrev
             | A::PickerUp
             | A::PickerDown
             | A::PickerChoose

@@ -65,6 +65,9 @@ pub(super) enum PromptKind {
         index: usize,
         sense: filter::Sense,
     },
+    /// `:`, the command palette (#520): the line is a command and its
+    /// arguments, and Enter runs it through `run_command`.
+    Command,
 }
 
 /// Where the user was when `/` opened (glossary: *origin*), in whichever
@@ -187,6 +190,9 @@ pub(super) struct SearchPrompt {
     /// filter editor field (#361), which `window` moves to keep the cursor
     /// on the screen. The bottom row does not scroll.
     pub(super) scroll: usize,
+    /// What Tab is choosing among in the command palette (#520), from the
+    /// first Tab until the next edit.
+    pub(super) completion: Option<super::palette::Completion>,
 }
 
 impl SearchPrompt {
@@ -211,6 +217,7 @@ impl SearchPrompt {
                 ..
             } => "exclude: ",
             PromptKind::SaveSet => "save as: ",
+            PromptKind::Command => ":",
         }
     }
 
@@ -234,13 +241,15 @@ impl SearchPrompt {
     /// A prompt pre-filled with `pattern`, cursor at its end — where `c`
     /// starts, so a `Backspace` or a typed character acts on the tail.
     pub(super) fn editing(pattern: String, kind: PromptKind) -> Self {
-        let cursor = pattern.chars().count();
-        Self {
-            pattern,
-            kind,
-            cursor,
-            ..Self::default()
-        }
+        let mut prompt = Self::new(kind);
+        prompt.set_pattern(pattern);
+        prompt
+    }
+
+    /// Replace the pattern, cursor at its end.
+    pub(super) fn set_pattern(&mut self, pattern: String) {
+        self.cursor = pattern.chars().count();
+        self.pattern = pattern;
     }
 
     /// Where the row draws the cursor: the column after the sigil and the
@@ -430,6 +439,29 @@ impl App<'_> {
                         return;
                     }
 
+                    // A command line is not a pattern either: the command
+                    // says what failed, and the palette stays open with it.
+                    // The palette closes before the command runs, so a
+                    // command that opens a prompt of its own keeps it open.
+                    if kind == PromptKind::Command {
+                        let mut palette = self.prompt.take();
+                        match self.run_command(&pattern) {
+                            Ok(()) => {
+                                if !pattern.trim().is_empty() {
+                                    self.command_history.push(pattern.trim());
+                                }
+                                self.swallow_next_enter = true;
+                            }
+                            Err(message) => {
+                                if let Some(palette) = palette.as_mut() {
+                                    palette.error = Some(message);
+                                }
+                                self.prompt = palette;
+                            }
+                        }
+                        return;
+                    }
+
                     // `SaveSet` is not a pattern: its failures are messages,
                     // shown in the prompt in place of `INVALID_PATTERN`.
                     if kind == PromptKind::SaveSet {
@@ -475,7 +507,9 @@ impl App<'_> {
                     }
                     let outcome = match kind {
                         PromptKind::Search => self.run_search(&pattern).map_err(Into::into),
-                        PromptKind::SaveSet => unreachable!("handled above"),
+                        PromptKind::SaveSet | PromptKind::Command => {
+                            unreachable!("handled above")
+                        }
                         PromptKind::Filter => self.add_filter(&pattern),
                         PromptKind::Exclude => self.add_excluding_filter(&pattern),
                         PromptKind::Edit { index, .. } => self.replace_filter(index, &pattern),
@@ -555,6 +589,8 @@ impl App<'_> {
                 A::PromptDeleteStart => self.edit_pattern(SearchPrompt::delete_to_start),
                 A::PromptHistoryPrev => self.recall(Recall::Older),
                 A::PromptHistoryNext => self.recall(Recall::Newer),
+                A::PromptComplete => self.complete(false),
+                A::PromptCompletePrev => self.complete(true),
                 // `resolve(Scope::Prompt, ..)` only ever answers with one of
                 // the arms above — see `DEFAULT`'s `Scope::Prompt` rows — so
                 // this is unreached today. Not a wildcard omitted by
@@ -594,6 +630,7 @@ impl App<'_> {
     fn edit_prompt(&mut self, edit: impl FnOnce(&mut SearchPrompt)) {
         if let Some(prompt) = self.prompt.as_mut() {
             prompt.error = None;
+            prompt.completion = None;
             edit(prompt);
         }
     }
@@ -615,12 +652,16 @@ impl App<'_> {
     /// Down past the newest empties the prompt, and Down on an empty prompt
     /// that recalled nothing does nothing. A filter prompt has no origin
     /// and so no history: both keys are inert in it, as they were unbound.
+    /// The command palette has no origin either, and a history of its own
+    /// (#520).
     fn recall(&mut self, direction: Recall) {
         let Some(prompt) = self.prompt.as_ref() else {
             return;
         };
-        let Some(origin) = prompt.origin.as_ref() else {
-            return;
+        let history = match (prompt.kind, prompt.origin.as_ref()) {
+            (PromptKind::Command, _) => &self.command_history,
+            (_, Some(origin)) => self.history_for_ref(origin),
+            (_, None) => return,
         };
         let target = match direction {
             Recall::Older => Some(prompt.recall.map_or(0, |steps| steps + 1)),
@@ -629,7 +670,6 @@ impl App<'_> {
                 Some(steps) => steps.checked_sub(1),
             },
         };
-        let history = self.history_for_ref(origin);
         let pattern = match target {
             Some(steps) => match history.recall(steps) {
                 Some(pattern) => pattern.to_owned(),
@@ -639,8 +679,7 @@ impl App<'_> {
         };
         self.edit_pattern(|prompt| {
             prompt.recall = target;
-            prompt.cursor = pattern.chars().count();
-            prompt.pattern = pattern;
+            prompt.set_pattern(pattern);
         });
     }
 
