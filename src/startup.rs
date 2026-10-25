@@ -158,6 +158,7 @@ pub fn start() -> Result<Start> {
         crate::views::cycle::Table::build(&config.filetypes, &config.commands);
     let mut warnings = keymap_warnings;
     warnings.extend(view_warnings);
+    warnings.extend(config.set_hints());
 
     Ok(Start::Run(Box::new(Startup {
         config,

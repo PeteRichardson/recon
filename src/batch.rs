@@ -107,10 +107,10 @@ fn filters_for(startup: &Startup) -> Result<ActiveFilters> {
     let mut filters = ActiveFilters::with_sets(Some(config.filter_palette()), &startup.filter_sets);
     filters.set_background(config.background());
     filters.set_step_limit(config.advanced_step_limit());
-    for (set, items) in config.sets_to_enable() {
+    for spec in config.sets_to_enable() {
         filters
-            .enable_named(&set, items.as_deref())
-            .map_err(|err| eyre!("--set {set}: {err}"))?;
+            .enable_spec(&spec)
+            .map_err(|err| eyre!("--set {}: {err}", spec.name))?;
     }
     for set in &config.unlist {
         filters

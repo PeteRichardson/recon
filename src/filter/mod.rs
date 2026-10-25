@@ -21,8 +21,8 @@ pub use advanced::{DEFAULT_STEP_LIMIT, Engine, LineRegex, Lookaround, OverLimit,
 pub use matcher::{Bits, MAX_PATTERNS, Matcher, Owner, ScanOff, ScanStamp};
 pub use reference::{Broken, Expander};
 pub use sets::{
-    DEFINITIONS_DESCRIPTION, DEFINITIONS_SET, EnableError, FilterSet, LoadedFilter, LoadedSet,
-    Origin, is_builtin_name, list_members,
+    ALL_ITEM, DEFINITIONS_DESCRIPTION, DEFINITIONS_SET, EnableError, FilterSet, LoadedFilter,
+    LoadedSet, Origin, SetSpec, is_builtin_name, unknown_item,
 };
 
 use crate::syntax::{Kind, KindSet};

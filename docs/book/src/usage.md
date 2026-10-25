@@ -53,7 +53,7 @@ Options:
           tab
   -f, --follow
           Follow a file that grows, as `tail -f` does
-  -s, --set <NAME[:LIST]>
+  -s, --set <[+]NAME[:LIST]>
           Enable a saved filter set at startup, as `NAME` for its `default`
           profile or `NAME:LIST` for the filters a comma-separated list of
           profiles and filter names turns on. Repeatable

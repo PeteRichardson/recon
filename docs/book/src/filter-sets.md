@@ -32,6 +32,11 @@ the filter pane lists. A set that is not listed has no effect on the view.
 ## Sets on the command line
 
 `--set NAME` turns on a set at startup, and `--set NAME:PROFILE` turns on one
-of its profiles. `--unlist NAME` removes a set from the filter pane. The same
+of its profiles. After the colon, a comma-separated list of profiles and
+filter names applies from left to right, and `-` turns an item off:
+`--set NAME:default,-noise` is the `default` profile without `noise`, and
+`--set NAME:@all,-noise` is every filter but `noise`. `--set +NAME:ITEMS`
+changes the state that an earlier `--set` gave the set, and does not replace
+it. `--unlist NAME` removes a set from the filter pane. The same
 options select the filters in [batch mode](batch_mode.md), so a set that you
 made in the window also works in a script.

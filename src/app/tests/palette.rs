@@ -762,6 +762,39 @@ fn a_bad_set_or_item_keeps_the_palette_open_with_an_error() {
     assert!(app.filters.sets().iter().all(|meta| meta.listed));
 }
 
+/// `set +a:ITEMS` changes the flags the pane shows now for `a`; without
+/// the `+`, the list replaces them (#538).
+#[test]
+fn set_with_plus_starts_from_the_flags_the_pane_shows() {
+    let mut app = app_with_profiles("palette_set_plus");
+    let a = set_named(&app, "a");
+    run(&mut app, "set a:beta");
+    assert_eq!(flags_of(&app, a), [false, true], "sanity: beta alone");
+
+    run(&mut app, "set +a:alpha");
+    assert_eq!(flags_of(&app, a), [true, true], "alpha added to beta");
+
+    run(&mut app, "set a:alpha");
+    assert_eq!(flags_of(&app, a), [true, false], "no `+`: alpha alone");
+}
+
+/// `set a:-alpha` turns off a filter the empty start has off already: it
+/// runs, closes the palette, and the status row names the forms the user
+/// probably meant, as a hint and not as an error (#538).
+#[test]
+fn a_list_that_changes_nothing_closes_the_palette_with_a_hint() {
+    let mut app = app_with_profiles("palette_set_hint");
+    let a = set_named(&app, "a");
+
+    run(&mut app, "set a:-alpha");
+
+    assert!(app.prompt.is_none(), "the palette is still open");
+    assert_eq!(flags_of(&app, a), [false, false]);
+    let message = app.status_message.as_ref().expect("a hint");
+    assert!(!message.error, "a hint is not an error");
+    assert!(message.text.contains("+a:-alpha"), "{}", message.text);
+}
+
 /// After `set` and `unlist`, Tab completes the name of a known set, listed
 /// or not, as a path completes: one that fits is written whole, and more
 /// that fit are stepped through.

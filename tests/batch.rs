@@ -310,6 +310,39 @@ fn set_with_a_list_emits_the_union_of_a_profile_and_a_filter() {
     assert_eq!(out.status.code(), Some(0));
 }
 
+/// #538: `--set +NAME:ITEMS` changes what an earlier `--set` gave the
+/// set; without the `+`, the last `--set` replaces it.
+#[test]
+fn set_with_plus_changes_what_an_earlier_set_gave() {
+    let dir = fixture("set_plus_keeps");
+    let home = config_home(&dir);
+    let a = dir.join("a.log");
+    fs::write(&a, "hit\nother\nmiss\n").expect("write");
+    let stdin = format!("{}\n", a.display());
+
+    for (second, expected) in [("+Bugs:other", "hit\nother\n"), ("Bugs:other", "other\n")] {
+        let out = recon(
+            &home,
+            &[
+                "--emit",
+                "lines",
+                "--files-from",
+                "-",
+                "-q",
+                "--set",
+                "Bugs:only_hit",
+                "--set",
+                second,
+            ],
+            stdin.as_bytes(),
+        );
+
+        assert_eq!(text(&out.stdout), expected, "{second}");
+        assert_eq!(text(&out.stderr), "", "{second}");
+        assert_eq!(out.status.code(), Some(0), "{second}");
+    }
+}
+
 /// #441: a kind of the built-in set is named alone, with no profile in
 /// any file.
 #[test]

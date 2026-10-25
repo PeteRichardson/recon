@@ -25,6 +25,7 @@
 //! so a bad spelling fails at the same place whichever layer it came from.
 
 use crate::editor;
+use crate::filter::SetSpec;
 use crate::syntax;
 use clap::Parser;
 use ratatui::style::Color;
@@ -372,10 +373,15 @@ pub struct Config {
     /// profile or `NAME:LIST` for the filters a comma-separated list of
     /// profiles and filter names turns on. Repeatable.
     ///
-    /// The list's filters are the union of every member of each profile and
-    /// each named filter; the set's other filters are off. A filter with no
-    /// `name` in its file cannot be in the list.
-    #[arg(short = 's', long = "set", value_name = "NAME[:LIST]")]
+    /// The list starts with all filters of the set off, and its items apply
+    /// from left to right: a profile turns on its members, a filter name
+    /// turns on that filter, and `-` before an item turns its filters off
+    /// (`+` before an item only marks it as one that turns on). `@all` is
+    /// every filter of the set. `+NAME:LIST` starts from the state the
+    /// earlier `--set` flags gave the set instead, and for one set without
+    /// `+`, the last `--set` wins. A filter with no `name` in its file can be
+    /// reached only through a profile or `@all`.
+    #[arg(short = 's', long = "set", value_name = "[+]NAME[:LIST]")]
     pub set: Vec<String>,
 
     /// Unlist a saved filter set at startup: no row in the filter pane and
@@ -1319,15 +1325,25 @@ impl Config {
         self.hide_pane.as_deref().unwrap_or_default()
     }
 
-    /// `--set` as the pairs `App::new` and batch mode apply: the set's
-    /// name and, after the first colon, the comma-separated profiles and
-    /// filter names to apply instead of `default` (#441). A set name
+    /// `--set` as the specs `App::new` and batch mode apply, in order: a
+    /// `+` that keeps the set's earlier state, the set's name and, after the
+    /// first colon, the comma-separated items (#441, #538). A set name
     /// holding a colon is misparsed here; the unknown-set error then lists
     /// the real names, so it is found rather than hidden. The loader
     /// refuses a comma in a profile or filter name, so the split is exact.
     #[must_use]
-    pub fn sets_to_enable(&self) -> Vec<(String, Option<Vec<String>>)> {
-        self.set.iter().map(|spec| parse_set_spec(spec)).collect()
+    pub fn sets_to_enable(&self) -> Vec<SetSpec> {
+        self.set.iter().map(|text| SetSpec::parse(text)).collect()
+    }
+
+    /// One startup hint for each `--set` whose list changes nothing: no
+    /// `+`, and a `-` item first (#538). See [`SetSpec::hint`].
+    #[must_use]
+    pub fn set_hints(&self) -> Vec<String> {
+        self.set
+            .iter()
+            .filter_map(|text| Some(format!("--set {text}: {}", SetSpec::parse(text).hint()?)))
+            .collect()
     }
 
     /// Refuse a `--set` naming a set `sets` does not hold, or a list item
@@ -1336,7 +1352,7 @@ impl Config {
     /// right after `filtersets::load_file`, where `check_flags` did not
     /// have to wait.
     pub fn check_sets(&self, sets: &[crate::filter::LoadedSet]) -> Result<(), ConfigError> {
-        for (name, items) in self.sets_to_enable() {
+        for SetSpec { name, items, .. } in self.sets_to_enable() {
             let Some(set) = sets.iter().find(|set| set.name == name) else {
                 return Err(ConfigError::UnknownSet {
                     name,
@@ -1345,10 +1361,10 @@ impl Config {
             };
             if let Some(items) = items {
                 let filters = set.item_filter_names();
-                if let Err(item) = crate::filter::list_members(&set.profiles, &filters, &items) {
+                if let Some(item) = crate::filter::unknown_item(&set.profiles, &filters, &items) {
                     return Err(ConfigError::UnknownSetItem {
                         set: name,
-                        name: item,
+                        name: item.clone(),
                         profiles: set.profiles.keys().cloned().collect(),
                         filters,
                     });
@@ -1363,7 +1379,7 @@ impl Config {
                     known: sets.iter().map(|set| set.name.clone()).collect(),
                 });
             }
-            if to_enable.iter().any(|(set, _)| set == name) {
+            if to_enable.iter().any(|spec| &spec.name == name) {
                 return Err(ConfigError::SetAndUnlist(name.clone()));
             }
         }
@@ -1660,19 +1676,6 @@ impl Config {
             std::env::var("VISUAL").ok().as_deref(),
             std::env::var("EDITOR").ok().as_deref(),
         )
-    }
-}
-
-/// One `NAME[:LIST]`, of `--set` or of the palette's `set` (#525): the
-/// set's name and, after the first colon, the comma-separated profiles and
-/// filter names. See [`Config::sets_to_enable`].
-pub(crate) fn parse_set_spec(spec: &str) -> (String, Option<Vec<String>>) {
-    match spec.split_once(':') {
-        Some((set, list)) => (
-            set.to_string(),
-            Some(list.split(',').map(str::to_string).collect()),
-        ),
-        None => (spec.to_string(), None),
     }
 }
 
@@ -2504,8 +2507,16 @@ mod tests {
         assert_eq!(
             config.sets_to_enable(),
             vec![
-                ("Bugs".to_string(), None),
-                ("WiFi".to_string(), Some(vec!["bug:32".to_string()])),
+                SetSpec {
+                    name: "Bugs".to_string(),
+                    keep: false,
+                    items: None,
+                },
+                SetSpec {
+                    name: "WiFi".to_string(),
+                    keep: false,
+                    items: Some(vec!["bug:32".to_string()]),
+                },
             ]
         );
     }
@@ -2518,10 +2529,35 @@ mod tests {
 
         assert_eq!(
             config.sets_to_enable(),
-            vec![(
-                "errors".to_string(),
-                Some(vec!["default".to_string(), "INFO".to_string()])
-            )]
+            vec![SetSpec {
+                name: "errors".to_string(),
+                keep: false,
+                items: Some(vec!["default".to_string(), "INFO".to_string()]),
+            }]
+        );
+    }
+
+    /// A `+` before the name keeps the set's earlier state (#538); the
+    /// signs of the items are left for the set to read.
+    #[test]
+    fn set_reads_a_plus_before_the_name_as_keep() {
+        let config =
+            parse_clean(["recon", "--set", "+errors:-INFO,+-x", "--set", "+WiFi"]).expect("parses");
+
+        assert_eq!(
+            config.sets_to_enable(),
+            vec![
+                SetSpec {
+                    name: "errors".to_string(),
+                    keep: true,
+                    items: Some(vec!["-INFO".to_string(), "+-x".to_string()]),
+                },
+                SetSpec {
+                    name: "WiFi".to_string(),
+                    keep: true,
+                    items: None,
+                },
+            ]
         );
     }
 
@@ -2562,12 +2598,68 @@ mod tests {
         );
     }
 
+    /// A signed item, an escaped one and `@all` pass the same check a plain
+    /// item does; the name after the sign must still be known (#538).
+    #[test]
+    fn check_sets_reads_signed_items_and_at_all() {
+        let sets = [set_with_profile("Bugs", "p")];
+        for spec in ["+Bugs:-x", "Bugs:p,-x,+x", "Bugs:@all,-p", "+Bugs"] {
+            let config = Config {
+                set: vec![spec.to_string()],
+                ..Config::default()
+            };
+            assert!(config.check_sets(&sets).is_ok(), "{spec}");
+        }
+
+        let config = Config {
+            set: vec!["Bugs:p,-nope".to_string()],
+            ..Config::default()
+        };
+        let err = config.check_sets(&sets).expect_err("refused");
+        assert!(
+            matches!(
+                err,
+                ConfigError::UnknownSetItem { ref name, .. } if name == "-nope"
+            ),
+            "{err}"
+        );
+    }
+
+    /// A list that starts by turning a filter off, with no `+`, turns off
+    /// a filter that is already off: a hint names the two forms the user
+    /// probably meant (#538). A `+`, or a first item that turns on, gets
+    /// none.
+    #[test]
+    fn set_hints_name_a_list_that_starts_with_a_minus_item() {
+        let config = parse_clean([
+            "recon",
+            "--set",
+            "Bugs:-x",
+            "--set",
+            "+Bugs:-x",
+            "--set",
+            "Bugs:p,-x",
+            "--set",
+            "Bugs:+-x",
+        ])
+        .expect("parses");
+
+        assert_eq!(
+            config.set_hints(),
+            [
+                "--set Bugs:-x: the list starts with all filters off, so `-x` changes \
+              nothing; for the default profile without it, write `Bugs:default,-x`; \
+              to change the earlier state, write `+Bugs:-x`"
+            ]
+        );
+    }
+
     /// `--set X --unlist X` asks for two opposite things; neither wins
     /// silently (#283). A profile on the `--set` does not hide the clash.
     #[test]
     fn check_sets_refuses_set_and_unlist_of_one_set() {
         let sets = [set_with_profile("Bugs", "p"), set_with_profile("WiFi", "q")];
-        for spec in ["Bugs", "Bugs:p"] {
+        for spec in ["Bugs", "Bugs:p", "+Bugs:-x"] {
             let config = Config {
                 set: vec![spec.to_string()],
                 unlist: vec!["Bugs".to_string()],
