@@ -1,6 +1,7 @@
 //! Drawing `App`: the panes, the status row, and the panels over them.
 
 mod filter_editor;
+mod palette;
 pub(super) mod status;
 
 use super::App;
@@ -156,6 +157,7 @@ impl Widget for &mut App<'_> {
             help::render(area, buf, &self.keymap);
         }
         self.render_warnings(area, buf);
+        self.render_palette(area, buf);
 
         // An open prompt takes the rest of the row; nothing but the badge
         // competes with it. The badge stays because the mode it reports is

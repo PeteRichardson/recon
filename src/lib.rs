@@ -14,6 +14,7 @@
 
 pub mod batch;
 pub mod clipboard;
+mod commands;
 pub mod config;
 pub mod document;
 pub mod editor;

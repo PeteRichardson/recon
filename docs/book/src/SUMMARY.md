@@ -10,6 +10,7 @@
 - [About the filter editor](filter-editor.md)
 - [About references and advanced filters](advanced-filters.md)
 - [About views](views.md)
+- [About the command palette](palette.md)
 - [About output and batch mode](batch_mode.md)
 
 # Reference

@@ -296,23 +296,8 @@ impl Explorer<'_> {
     /// already open in the view, so starting on `..` was strictly less
     /// useful.
     pub(crate) fn new(path: String) -> Self {
-        let path = Path::new(&path);
         let mut explorer = Self::default();
-
-        if path.is_dir() {
-            explorer.set_dir(path.to_path_buf(), Select::First);
-            return explorer;
-        }
-
-        // A bare filename such as `Cargo.toml` has an empty parent, so fall
-        // back to the current directory.
-        let dir = match path.parent() {
-            Some(parent) if !parent.as_os_str().is_empty() => parent.to_path_buf(),
-            _ => PathBuf::from("."),
-        };
-        let select = path
-            .file_name()
-            .map_or(Select::First, |name| Select::Named(name.to_owned()));
+        let (dir, select) = locate(Path::new(&path));
         explorer.set_dir(dir, select);
         explorer
     }
@@ -737,6 +722,21 @@ impl Explorer<'_> {
         self.activate_selection()
     }
 
+    /// Go to `path`, as the path on the shell command line does (#520): a
+    /// directory lists with its first entry selected, as a step into it
+    /// would; a file lists its folder with the file selected, and asks for
+    /// the file to be loaded. `path` must exist; the caller says why not.
+    pub(crate) fn go_to(&mut self, path: &Path) -> Option<Action> {
+        let (dir, select) = locate(path);
+        let file = matches!(select, Select::Named(_));
+        self.set_dir(dir, select);
+        if file {
+            Some(Action::Load(self.selected_path()?))
+        } else {
+            self.preview_selection()
+        }
+    }
+
     /// Columns needed to show the longest entry in full.
     ///
     /// Measures the row *as drawn*, so a directory's trailing `/` is counted;
@@ -1116,6 +1116,24 @@ impl Explorer<'_> {
 ///
 /// An unreadable directory still yields `PARENT`, so the user can always climb
 /// back out rather than being stranded in an empty pane. Nothing here panics.
+/// The folder the pane lists for `path`, and the entry it selects there: a
+/// directory itself, from its first entry; a file, its parent, on the file.
+fn locate(path: &Path) -> (PathBuf, Select) {
+    if path.is_dir() {
+        return (path.to_path_buf(), Select::First);
+    }
+    // A bare filename such as `Cargo.toml` has an empty parent, so fall
+    // back to the current directory.
+    let dir = match path.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent.to_path_buf(),
+        _ => PathBuf::from("."),
+    };
+    let select = path
+        .file_name()
+        .map_or(Select::First, |name| Select::Named(name.to_owned()));
+    (dir, select)
+}
+
 fn read_dir_entries(dir: &Path) -> Vec<Entry> {
     let mut entries = vec![Entry {
         name: PARENT.into(),

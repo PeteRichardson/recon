@@ -18,6 +18,7 @@ mod layout;
 mod loading;
 mod mouse;
 mod navigation;
+mod palette;
 mod prompt;
 mod render;
 mod scanning;
@@ -133,6 +134,14 @@ pub struct App<'a> {
     explorer_search_history: History,
     /// The patterns Enter committed in the set picker's `/` prompt (#285).
     sets_search_history: History,
+    /// The command lines the palette ran (#520), as the `/` prompts keep
+    /// their patterns.
+    command_history: History,
+    /// The home folder that `e ~` and `e` alone go to, read once from
+    /// `$HOME` so a test can set its own.
+    home: Option<String>,
+    /// The explorer's folder before the last `e`, which `e -` goes back to.
+    last_folder: Option<std::path::PathBuf>,
     filters: ActiveFilters,
     document: Document,
     /// The `Document::generation` the file view's buffer was last rebuilt
@@ -457,6 +466,9 @@ impl App<'_> {
             search_history: History::default(),
             explorer_search_history: History::default(),
             sets_search_history: History::default(),
+            command_history: History::default(),
+            home: std::env::var("HOME").ok(),
+            last_folder: None,
             filters,
             document: Document::default(),
             last_generation: None,

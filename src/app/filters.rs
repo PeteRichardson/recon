@@ -487,7 +487,17 @@ impl App<'_> {
         let Some(action) = self.resolve_key(crate::keymap::Scope::Filters, pressed) else {
             return;
         };
+        self.perform_on_filters(action, pressed);
+    }
 
+    /// Carry out one of the filter pane's actions: what its key does, and
+    /// what the command palette runs by the action's name (#520).
+    pub(super) fn perform_on_filters(
+        &mut self,
+        action: crate::keymap::ActionId,
+        pressed: crate::keymap::Key,
+    ) {
+        use crate::keymap::ActionId as A;
         match action {
             // `i` and `x` open a prompt, and `self.prompt` is `App`'s —
             // `FilterList` cannot carry these out itself. Deliberately not

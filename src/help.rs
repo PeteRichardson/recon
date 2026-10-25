@@ -539,12 +539,10 @@ pub const KEYMAP: &[Section] = &[
                 action: "Follow the file as it grows, or stop",
                 names: &["global.follow"],
             },
-            // `names: &[]`: reserved for 1.1, bound to nothing, so there is
-            // no action to name — see `keymap::RESERVED`.
             Binding {
                 keys: &[":"],
-                action: "Reserved — a command palette, in a later release",
-                names: &[],
+                action: "Command palette: e / cd <path>, goto <n>, q, any action",
+                names: &["global.palette"],
             },
         ],
     },
@@ -1023,6 +1021,11 @@ pub const KEYMAP: &[Section] = &[
                 keys: &["Down", "Ctrl-n"],
                 action: "Recall the newer search pattern",
                 names: &["prompt.history.next"],
+            },
+            Binding {
+                keys: &["Tab", "Shift-Tab"],
+                action: "Palette: next / previous command or path",
+                names: &["prompt.complete", "prompt.complete.prev"],
             },
             Binding {
                 keys: &["Enter"],
@@ -1938,16 +1941,12 @@ mod tests {
     }
 
     /// A row that names no action has nothing to look up, and its label is
-    /// the whole point of the row: the reserved key (#242) is documented as
-    /// taken and bound to nothing, and `printable` never was a key.
+    /// the whole point of the row: `printable` never was a key, and a chain
+    /// is two of them.
     #[test]
     fn a_row_that_names_no_action_keeps_its_literal_keys() {
         let rows = rows(&keymap(&[("global.reload", &["F5"])]));
 
-        assert_eq!(
-            keys_of(&rows, "Reserved — a command palette, in a later release"),
-            ":"
-        );
         assert_eq!(keys_of(&rows, "Insert at the cursor"), "printable");
         assert_eq!(keys_of(&rows, "Stay in the filter pane"), "f f");
     }
