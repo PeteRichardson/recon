@@ -268,6 +268,7 @@ impl App<'_> {
             // either widget.
             A::HitNext => self.step_interesting(false),
             A::HitPrev => self.step_interesting(true),
+            A::ViewToggleMinimap => self.minimap.shown = !self.minimap.shown,
             // Everything else in the view scope is the widget's own, carried
             // out by `FileView::perform` — the same shape as
             // `Explorer::perform` (#373).

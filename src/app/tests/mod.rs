@@ -410,9 +410,10 @@ const TALL: Rect = Rect {
     height: 36,
 };
 
-fn draw_tall(app: &mut App) {
+fn draw_tall(app: &mut App) -> Buffer {
     let mut buf = Buffer::empty(TALL);
     app.render(TALL, &mut buf);
+    buf
 }
 
 /// The pattern the search holds, for tests.
@@ -555,6 +556,7 @@ mod hiding;
 mod jumps;
 mod layout;
 mod logging;
+mod minimap;
 mod mouse;
 mod open;
 mod palette;

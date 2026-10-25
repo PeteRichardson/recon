@@ -272,6 +272,12 @@ pub struct Config {
     #[arg(skip)]
     pub center_jumps: Option<bool>,
 
+    /// Whether the file view draws the minimap at the right of a long
+    /// file's text (#523). `None` is unset: `minimap` resolves it. File-only,
+    /// like `center_jumps`; `M` hides or shows it for a session.
+    #[arg(skip)]
+    pub minimap: Option<bool>,
+
     /// Whether directory listings lead each row with a filetype icon, which
     /// needs a Nerd Font. `auto` — the default — draws them when the
     /// terminal is known to be able to; `on` always does; `off` never does.
@@ -567,6 +573,8 @@ pub struct LogConfig {
 pub struct ViewConfig {
     /// See [`Config::center_jumps`].
     pub center_jumps: Option<bool>,
+    /// See [`Config::minimap`].
+    pub minimap: Option<bool>,
     /// See [`Config::icons`].
     pub icons: Option<crate::filetype::Setting>,
 }
@@ -1479,11 +1487,15 @@ impl Config {
 
         if let Some(ViewConfig {
             center_jumps,
+            minimap,
             icons,
         }) = view
         {
             if let Some(center_jumps) = center_jumps {
                 self.center_jumps.get_or_insert(*center_jumps);
+            }
+            if let Some(minimap) = minimap {
+                self.minimap.get_or_insert(*minimap);
             }
             if let Some(icons) = icons {
                 self.icons.get_or_insert(*icons);
@@ -1575,6 +1587,13 @@ impl Config {
     #[must_use]
     pub fn center_jumps(&self) -> bool {
         self.center_jumps.unwrap_or(true)
+    }
+
+    /// Whether the file view draws the minimap — on unless the file says
+    /// otherwise. Beside `center_jumps` for the same reason.
+    #[must_use]
+    pub fn minimap(&self) -> bool {
+        self.minimap.unwrap_or(true)
     }
 
     /// Whether a keymap warning is shown — on unless a flag, the environment
@@ -3275,6 +3294,17 @@ mod tests {
         let mut config = Config::default();
         config.apply(&file);
         assert!(!config.center_jumps(), "the file did not turn it off");
+    }
+
+    #[test]
+    fn the_minimap_is_on_unless_the_file_turns_it_off() {
+        assert!(Config::default().minimap(), "the default is on");
+
+        let path = fixture("view-minimap-off.toml", "[view]\nminimap = false\n");
+        let file = load_from(&path).expect("a valid file");
+        let mut config = Config::default();
+        config.apply(&file);
+        assert!(!config.minimap(), "the file did not turn it off");
     }
 
     #[test]

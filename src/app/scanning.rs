@@ -360,7 +360,7 @@ impl App<'_> {
     /// The style the view would draw a line selected by `owner` with. The
     /// explorer draws the file's name in it, so the two panes agree at a
     /// glance and the colour says *which* filter picked the file.
-    fn match_style(&self, owner: Option<filter::Owner>) -> Style {
+    pub(super) fn match_style(&self, owner: Option<filter::Owner>) -> Style {
         owner
             .and_then(|index| self.filters.style_for(filter::Verdict::Included(index)))
             .unwrap_or_default()

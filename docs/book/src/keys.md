@@ -25,6 +25,12 @@ The default keys that this guide names. `?` in recon shows the full keymap.
 | `q` | Quit, and print the `--emit` result |
 | `Q` | Quit without the `--emit` result |
 
+## File view keys
+
+| Key | Action |
+| --- | --- |
+| `M` | Hide or show the minimap |
+
 ## Filter keys
 
 | Key | Action |

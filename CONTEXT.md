@@ -236,6 +236,13 @@ _Avoid_: on screen, shown lines
 The slice of the visible lines that fits on the screen right now.
 _Avoid_: viewport, visible (when the window is meant)
 
+**Minimap**:
+The narrow strip at the right of a long file's text that shows the whole file
+in the height of the pane: where the search hits are, how dense the
+interesting lines are, and the *band* — the rows of the map that the window
+covers. It groups the lines of the file, not the visible lines. `M` hides it.
+_Avoid_: scroll bar, overview ruler
+
 **Dim mode / Hide mode**:
 The two ways to treat a line that no filter matches, when an include or
 context filter is enabled: keep it and grey it, or remove it from the visible

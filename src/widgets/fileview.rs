@@ -7,6 +7,7 @@ use crate::views::Facts;
 use crate::views::read::{self, Contents};
 #[cfg(test)]
 use crate::views::read::{MAX_PREVIEW_BYTES, PREVIEW_LINES};
+use crate::widgets::minimap::{self, Minimap};
 use ratatui::prelude::{Buffer, Color, Modifier, Rect, Style, Widget};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -341,6 +342,13 @@ pub(crate) struct FileView<'a> {
     /// question, the same way `set_line_numbers` is. Rows between the two
     /// ends are painted whole.
     selection: Option<((usize, usize), (usize, usize))>,
+    /// The minimap to draw at the right of the text (#523), as `App` built
+    /// it for this frame, or `None` for no map. `App` decides when there is
+    /// one; this pane only draws it.
+    minimap: Option<Arc<Minimap>>,
+    /// Where the map was drawn in the last frame, for a click to hit-test
+    /// against. Empty when no map was drawn.
+    minimap_area: Rect,
 }
 
 impl FileView<'_> {
@@ -376,6 +384,13 @@ impl FileView<'_> {
     /// listing, or a message standing in for a file that could not be shown.
     pub(crate) fn is_text(&self) -> bool {
         self.text
+    }
+
+    /// Whether the pane shows a file's lines as they are: text, and not a
+    /// hex dump, a listing, a message or a picture. Only these get a
+    /// minimap (#523).
+    pub(crate) fn shows_raw_text(&self) -> bool {
+        self.text && !self.hex && !self.showing_directory && self.picture.is_none()
     }
 
     /// Whether the pane shows a picture, which has no lines (#458).
@@ -877,6 +892,17 @@ impl FileView<'_> {
             .lines()
             .get(row)
             .map_or(0, |line| line.chars().count())
+    }
+
+    /// The minimap to draw on the next render — see the field.
+    pub(crate) fn set_minimap(&mut self, map: Option<Arc<Minimap>>) {
+        self.minimap = map;
+    }
+
+    /// The minimap the last render drew, and where.
+    pub(crate) fn drawn_minimap(&self) -> Option<(&Minimap, Rect)> {
+        let map = self.minimap.as_deref()?;
+        (!self.minimap_area.is_empty()).then_some((map, self.minimap_area))
     }
 
     /// The selection to paint on the next render — see the field.
@@ -1613,7 +1639,13 @@ impl Widget for &mut FileView<'_> {
         self.apply_syntax();
         self.apply_icons();
         self.paint_selection();
-        self.textarea.set_block(self.block(area.width));
+        // The map's columns are padding inside the border, so the text,
+        // the scroll and a click's column all leave them out (#523).
+        let mut block = self.block(area.width);
+        if self.minimap.is_some() {
+            block = block.padding(ratatui::widgets::Padding::right(minimap::WIDTH));
+        }
+        self.textarea.set_block(block);
         // Apply any scroll requested since the last render — see
         // `scroll_cursor_to_row` and `apply_pending_scroll` — only now, once
         // the block above is set: `apply_pending_scroll`'s scratch render
@@ -1633,6 +1665,38 @@ impl Widget for &mut FileView<'_> {
         (&self.textarea).render(area, buf);
         self.viewport_primed = true;
         self.viewport_height = u16::try_from(inner_height).unwrap_or(u16::MAX);
+        self.render_minimap(area, buf);
+    }
+}
+
+impl FileView<'_> {
+    /// Draw the minimap into the padding `render` left for it, with the
+    /// band on the file lines on screen.
+    fn render_minimap(&mut self, area: Rect, buf: &mut Buffer) {
+        self.minimap_area = Rect::ZERO;
+        let Some(map) = self.minimap.as_deref() else {
+            return;
+        };
+        let inner = self
+            .textarea
+            .block()
+            .map_or(area, |block| block.inner(area));
+        let map_area = Rect {
+            x: inner.right(),
+            width: minimap::WIDTH,
+            ..inner
+        }
+        .intersection(area);
+        // The gutter numbers are the source lines of the buffer's rows:
+        // `apply_view` always supplies them.
+        let top = usize::from(self.textarea.scroll_top().0);
+        let numbers = self.textarea.line_numbers();
+        let bottom = (top + usize::from(inner.height))
+            .min(numbers.len())
+            .saturating_sub(1);
+        let band = numbers.get(top).zip(numbers.get(bottom));
+        map.render(band.map(|(first, last)| (*first, *last)), map_area, buf);
+        self.minimap_area = map_area;
     }
 }
 

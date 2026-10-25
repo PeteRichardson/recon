@@ -1652,6 +1652,7 @@ File view pane (`src/widgets/fileview.rs`) — its own verbs; the shared motions
 | `$` | Move to the end of the line | `view.line.end` |
 | `{` / `}` | Move by paragraph, back / forward | `view.paragraph.prev` / `view.paragraph.next` |
 | `#` | Toggle the line-number gutter | `view.toggle.linenumbers` |
+| `M` | Hide / show the minimap | `view.toggle.minimap` |
 | `*` | Set the search to the word under the cursor — a run of letters, digits and `_`, so a mangled symbol stays whole — and move to its next hit, as `n` would. `* p` makes it a numbered filter | `global.search.word` |
 | `v` / `V` | Start a selection by character / by whole lines; press the same key again to end it, or the other to switch between them. The motions grow it | `global.visual.char` / `global.visual.line` |
 | `y` | Copy the selection to the clipboard and end the selection. `Ctrl-y` still scrolls | `global.yank` |
@@ -1713,6 +1714,30 @@ margin's edge like a held `j` would, in `config.toml`:
 ```toml
 [view]
 center_jumps = false
+```
+
+A file longer than the pane gets a **minimap** at the right of its text, inside
+the border: the whole file in the height of the pane. From the left, it is a
+grey rule, a column of search hits and a column of filter matches.
+
+- The rule is thick on the rows of the file that are on screen, like a
+  scroll bar's thumb, and those rows have a grey background.
+- The search column shows each `/` hit as a braille dot, at 4 dots to a row.
+  A dot row with many hits has 2 dots.
+- The filter column is a bar, `▏` to `█`. It is as wide as the group of lines
+  has interesting lines, compared with the busiest group, in the colour of the
+  filter with the most matches there.
+
+The map groups the lines of the file, not the visible lines. So in hide mode it
+still shows where in the file the matches are. A click on the map, or a drag
+that starts on it, jumps to that part of the file, to the nearest visible line.
+`M` hides or shows the map. It is not drawn for a hex dump, a directory listing
+or an image, when every visible line is already on screen, or when the pane has
+fewer than 40 columns inside its border. To start with it off:
+
+```toml
+[view]
+minimap = false
 ```
 
 Explorer pane (`src/widgets/explorer.rs`) — its own verbs; the shared motions are tabled above:
@@ -2927,7 +2952,7 @@ needs every line's answer at once — see *Definition filters*.
   `CLI > env > file > defaults` precedence chain. The settings so far are
   `background` and `warnings` at the top level, the two editor templates
   below, `[clipboard] command`, `[filters] palette`, `[layout] hide_panes`,
-  `[stdin] delete_temp_file`, `[syntax] theme`, `[view] center_jumps`, and the action names in
+  `[stdin] delete_temp_file`, `[syntax] theme`, `[view] center_jumps`, `[view] minimap`, and the action names in
   `[keymap]`; every other key in the file is reported as an unknown key. Settings land one issue at a time
   against github issue #18; see
   `docs/specs/2026-08-22-configuration-mechanism.md` for the rules and the list

@@ -62,6 +62,10 @@ pub struct Document {
     /// document, so a fresh one starting at 0 is never mistaken for the
     /// previous one at 0: the viewport clears its key alongside.
     generation: u64,
+    /// Moves every time verdicts are written: each `evaluate` and each
+    /// `append`. The minimap's rebuild key (#523): a filter change can
+    /// recolour lines and leave `generation` where it was.
+    revision: u64,
     /// Where `lines` came from, for the grammar lookup a definition filter
     /// needs (#123). `None` for a document with no file behind it.
     path: Option<std::path::PathBuf>,
@@ -88,6 +92,7 @@ impl Document {
             visible: Vec::new(),
             scratch: Vec::new(),
             generation: 0,
+            revision: 0,
             path: None,
             kinds: None,
         }
@@ -156,6 +161,7 @@ impl Document {
                 filters.verdict_noting(line, kinds, |index| over_limit[index] += 1)
             }));
         self.anything_including = filters.any_including();
+        self.revision = self.revision.wrapping_add(1);
         self.recompute_visible();
     }
 
@@ -192,6 +198,7 @@ impl Document {
             .enumerate()
             .filter(|(_, verdict)| shows(mode, **verdict, anything_including))
             .map(|(offset, _)| start + offset);
+        self.revision = self.revision.wrapping_add(1);
         let before = self.visible.len();
         self.visible.extend(shown);
         if self.visible.len() != before {
@@ -220,6 +227,12 @@ impl Document {
     #[must_use]
     pub fn generation(&self) -> u64 {
         self.generation
+    }
+
+    /// The minimap's rebuild key: unchanged for as long as the verdicts are.
+    #[must_use]
+    pub(crate) fn revision(&self) -> u64 {
+        self.revision
     }
 
     /// Recompute `visible` from the existing verdicts and the current mode,

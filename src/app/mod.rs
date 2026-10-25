@@ -16,6 +16,7 @@ mod follow;
 mod launch;
 mod layout;
 mod loading;
+mod minimap;
 mod mouse;
 mod navigation;
 mod palette;
@@ -190,6 +191,9 @@ pub struct App<'a> {
     /// Whether a jump to a line off screen centres it — `[view]
     /// center_jumps`, resolved by `Config::center_jumps`.
     center_jumps: bool,
+    /// The file view's minimap (#523): whether it is on, and the last one
+    /// built.
+    minimap: minimap::State,
     /// What `--emit` asked for, or `None`. Read once, when the session ends.
     emit: Option<emit::Emit>,
     /// `-n`: prefix each emitted line with its source line number and a tab.
@@ -481,6 +485,7 @@ impl App<'_> {
             keymap: startup.bindings.clone(),
             dispatched: None,
             center_jumps: config.center_jumps(),
+            minimap: minimap::State::new(config.minimap()),
             emit: config.emit,
             line_numbers: config.line_numbers,
             launcher: Box::new(launcher),
