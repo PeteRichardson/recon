@@ -1327,16 +1327,7 @@ impl Config {
     /// refuses a comma in a profile or filter name, so the split is exact.
     #[must_use]
     pub fn sets_to_enable(&self) -> Vec<(String, Option<Vec<String>>)> {
-        self.set
-            .iter()
-            .map(|spec| match spec.split_once(':') {
-                Some((set, list)) => (
-                    set.to_string(),
-                    Some(list.split(',').map(str::to_string).collect()),
-                ),
-                None => (spec.clone(), None),
-            })
-            .collect()
+        self.set.iter().map(|spec| parse_set_spec(spec)).collect()
     }
 
     /// Refuse a `--set` naming a set `sets` does not hold, or a list item
@@ -1669,6 +1660,19 @@ impl Config {
             std::env::var("VISUAL").ok().as_deref(),
             std::env::var("EDITOR").ok().as_deref(),
         )
+    }
+}
+
+/// One `NAME[:LIST]`, of `--set` or of the palette's `set` (#525): the
+/// set's name and, after the first colon, the comma-separated profiles and
+/// filter names. See [`Config::sets_to_enable`].
+pub(crate) fn parse_set_spec(spec: &str) -> (String, Option<Vec<String>>) {
+    match spec.split_once(':') {
+        Some((set, list)) => (
+            set.to_string(),
+            Some(list.split(',').map(str::to_string).collect()),
+        ),
+        None => (spec.to_string(), None),
     }
 }
 

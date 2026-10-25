@@ -74,6 +74,12 @@ pub struct FilterSet {
 }
 
 impl FilterSet {
+    /// What a `--set NAME:LIST` list can name in this set: its profiles,
+    /// then its named filters.
+    pub(crate) fn list_items(&self) -> impl Iterator<Item = &String> {
+        self.profiles.keys().chain(&self.filter_names)
+    }
+
     pub(super) fn scratch() -> Self {
         Self {
             name: String::new(),
@@ -501,6 +507,28 @@ impl ActiveFilters {
     /// refuses the same names in `main` before the terminal comes up; this
     /// is the same lookup, so a name that passed there cannot fail here.
     pub fn enable_named(&mut self, set: &str, items: Option<&[String]>) -> Result<(), EnableError> {
+        let (index, members) = self.resolve_named(set, items)?;
+        self.enable_resolved(index, members.as_deref());
+        Ok(())
+    }
+
+    /// `enable_named` for what `resolve_named` gave: for a caller with a
+    /// step to take after the names are known good and before the change.
+    pub(crate) fn enable_resolved(&mut self, index: usize, members: Option<&[String]>) {
+        self.set_listed(index, true);
+        self.set_enabled_set(index, true);
+        if let Some(members) = members {
+            self.apply_members(index, members);
+        }
+    }
+
+    /// The index of the set called `set` and the filters `items` names in
+    /// it, or the first name that is not there.
+    pub(crate) fn resolve_named(
+        &self,
+        set: &str,
+        items: Option<&[String]>,
+    ) -> Result<(usize, Option<Vec<String>>), EnableError> {
         let index = self.named(set)?;
         let members = items
             .map(|items| {
@@ -513,12 +541,7 @@ impl ActiveFilters {
                 })
             })
             .transpose()?;
-        self.set_listed(index, true);
-        self.set_enabled_set(index, true);
-        if let Some(members) = members {
-            self.apply_members(index, &members);
-        }
-        Ok(())
+        Ok((index, members))
     }
 
     /// Unlist the set called `set`, as `set_listed` does (#283). The same
@@ -532,12 +555,17 @@ impl ActiveFilters {
 
     /// The index of the named set called `set`. The scratch set has no name
     /// a flag can give, so it is never found.
-    fn named(&self, set: &str) -> Result<usize, EnableError> {
+    pub(crate) fn named(&self, set: &str) -> Result<usize, EnableError> {
         self.sets
             .iter()
             .position(|meta| meta.name == set)
             .filter(|&index| index != 0)
             .ok_or_else(|| EnableError::UnknownSet(set.to_string()))
+    }
+
+    /// Every set but the scratch set, which has no name to give.
+    pub(crate) fn named_sets(&self) -> &[FilterSet] {
+        &self.sets[1..]
     }
 
     /// Solo `set` (#132): snapshot every set's flag — the scratch set's

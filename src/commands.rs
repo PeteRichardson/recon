@@ -29,6 +29,11 @@ pub(crate) enum Argument {
     Path,
     /// A number.
     Number,
+    /// A set's name, then `:` and a list of its profiles and filters, which
+    /// Tab completes.
+    SetList,
+    /// A set's name, which Tab completes.
+    Set,
 }
 
 /// What running a command does.
@@ -38,6 +43,10 @@ pub(crate) enum Run {
     Path,
     /// `goto`: go to a line of the file.
     Line,
+    /// `set`: list and enable a set.
+    EnableSet,
+    /// `unlist`: unlist a set.
+    UnlistSet,
     /// A keymap action, whose keys the row shows.
     Action(ActionId),
 }
@@ -47,7 +56,7 @@ impl Command {
     pub(crate) fn action(&self) -> Option<ActionId> {
         match self.run {
             Run::Action(action) => Some(action),
-            Run::Path | Run::Line => None,
+            Run::Path | Run::Line | Run::EnableSet | Run::UnlistSet => None,
         }
     }
 
@@ -58,6 +67,8 @@ impl Command {
             Argument::None => names,
             Argument::Path => format!("{names} <path>"),
             Argument::Number => format!("{names} <n>"),
+            Argument::SetList => format!("{names} <set>[:<list>]"),
+            Argument::Set => format!("{names} <set>"),
         }
     }
 }
@@ -91,6 +102,18 @@ fn build() -> Vec<Command> {
             argument: Argument::Number,
             help: "Go to line n of the file (also :<n>)",
             run: Run::Line,
+        },
+        Command {
+            names: vec!["set"],
+            argument: Argument::SetList,
+            help: "List and enable a filter set, as --set does",
+            run: Run::EnableSet,
+        },
+        Command {
+            names: vec!["unlist"],
+            argument: Argument::Set,
+            help: "Unlist a filter set, as --unlist does",
+            run: Run::UnlistSet,
         },
     ];
     for action in crate::keymap::every_action().filter(|a| is_command(*a)) {

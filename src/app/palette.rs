@@ -134,23 +134,25 @@ impl App<'_> {
                 word: Some(line.to_string()),
             });
         };
-        if crate::commands::named(name).map(|command| command.argument) != Some(Argument::Path) {
-            return Err(None);
-        }
         let argument = line[name.len()..].trim_start();
         let base = &line[..line.len() - argument.len()];
-        let (folder, partial) = argument
-            .rfind('/')
-            .map_or(("", argument), |slash| argument.split_at(slash + 1));
-        // No folder typed is the explorer's, not the home folder that `e`
-        // alone goes to.
-        let dir = if folder.is_empty() {
-            self.explorer.dir().to_path_buf()
-        } else {
-            self.resolve_path(folder).map_err(|_| None)?
+        let takes = crate::commands::named(name).map(|command| command.argument);
+        let (base, partial, options) = match (takes, argument.split_once(':')) {
+            (Some(Argument::Path), _) => self.path_choices(base, argument)?,
+            (Some(Argument::Set | Argument::SetList), None) => {
+                (base.to_string(), argument, self.set_names(argument))
+            }
+            (Some(Argument::SetList), Some((set, list))) => {
+                let done = list.rfind(',').map_or(0, |comma| comma + 1);
+                let partial = &list[done..];
+                (
+                    format!("{base}{set}:{}", &list[..done]),
+                    partial,
+                    self.set_items(set, partial),
+                )
+            }
+            _ => return Err(None),
         };
-        let options = entries_starting_with(&dir, partial);
-        let base = format!("{base}{folder}");
         let shared = shared_prefix(&options);
         if options.is_empty() {
             return Err(None);
@@ -164,6 +166,58 @@ impl App<'_> {
             at: 0,
             word: None,
         })
+    }
+
+    /// What Tab chooses among for the path `argument`, after `base`: the
+    /// line before the part a choice replaces, that part, and the entries of
+    /// its folder.
+    fn path_choices<'a>(
+        &self,
+        base: &str,
+        argument: &'a str,
+    ) -> Result<(String, &'a str, Vec<String>), Option<String>> {
+        let (folder, partial) = argument
+            .rfind('/')
+            .map_or(("", argument), |slash| argument.split_at(slash + 1));
+        // No folder typed is the explorer's, not the home folder that `e`
+        // alone goes to.
+        let dir = if folder.is_empty() {
+            self.explorer.dir().to_path_buf()
+        } else {
+            self.resolve_path(folder).map_err(|_| None)?
+        };
+        Ok((
+            format!("{base}{folder}"),
+            partial,
+            entries_starting_with(&dir, partial),
+        ))
+    }
+
+    /// The names of the known sets that start with `partial`, as the set
+    /// picker sorts them.
+    fn set_names(&self, partial: &str) -> Vec<String> {
+        let mut names: Vec<String> = self
+            .filters
+            .named_sets()
+            .iter()
+            .filter(|meta| meta.name.starts_with(partial))
+            .map(|meta| meta.name.clone())
+            .collect();
+        names.sort_unstable();
+        names
+    }
+
+    /// The items of the set called `set` that start with `partial`: what a
+    /// `set` list can name.
+    fn set_items(&self, set: &str, partial: &str) -> Vec<String> {
+        let Ok(index) = self.filters.named(set) else {
+            return Vec::new();
+        };
+        self.filters.sets()[index]
+            .list_items()
+            .filter(|item| item.starts_with(partial))
+            .cloned()
+            .collect()
     }
 
     /// Run one command line from the palette. `Err` is the message the
@@ -186,6 +240,8 @@ impl App<'_> {
         match command.run {
             Run::Path => self.go_to_path(argument),
             Run::Line => self.go_to_line(argument),
+            Run::EnableSet => self.enable_set(argument),
+            Run::UnlistSet => self.unlist_set(argument),
             Run::Action(action) => self.run_action(action, command.argument, argument),
         }
     }
@@ -260,6 +316,34 @@ impl App<'_> {
             self.last_folder = Some(before);
         }
         self.reveal_and_focus(Focus::Explorer);
+        Ok(())
+    }
+
+    /// `set NAME[:LIST]`: list the set if it is unlisted and enable it, with
+    /// its `default` profile or the profiles and filters of the list — the
+    /// same as `--set` (#441). The filter pane does not take the focus: the
+    /// view shows the change. A name recon does not know changes nothing,
+    /// not even a peek.
+    fn enable_set(&mut self, argument: &str) -> Result<(), String> {
+        let (set, items) = crate::config::parse_set_spec(argument);
+        let (index, members) = self
+            .filters
+            .resolve_named(nonempty("set", &set)?, items.as_deref())
+            .map_err(|err| err.to_string())?;
+        self.relist(|app| {
+            app.filters.enable_resolved(index, members.as_deref());
+            app.log_filters(format_args!("enable set {set:?}"));
+        });
+        Ok(())
+    }
+
+    /// `unlist NAME`: unlist the set, as `--unlist` and the set picker do.
+    fn unlist_set(&mut self, set: &str) -> Result<(), String> {
+        let index = self
+            .filters
+            .named(nonempty("unlist", set)?)
+            .map_err(|err| err.to_string())?;
+        self.apply_listing(&[(index, false)]);
         Ok(())
     }
 
@@ -342,6 +426,15 @@ fn entries_starting_with(dir: &Path, partial: &str) -> Vec<String> {
             })
         })
         .collect()
+}
+
+/// `set`, or the error of `command` given no set name.
+fn nonempty<'a>(command: &str, set: &'a str) -> Result<&'a str, String> {
+    if set.is_empty() {
+        Err(format!("{command}: give a set name"))
+    } else {
+        Ok(set)
+    }
 }
 
 /// The longest start every one of `options` has.
