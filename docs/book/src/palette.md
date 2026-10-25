@@ -47,6 +47,16 @@ the set are off.
 If recon does not know the set or an item of the list, the palette stays
 open and shows the error.
 
+## Choose a view
+
+`:view hex` shows the open file in the hex [view](views.md). A view of the
+file type's cycle steps the cycle there, as `-` does, and it holds for every
+file of that type. Any other view that recon knows, for example a command
+view that no `[[filetype]]` row names, shows only the open file. When you
+open another file, or push `-`, the cycle's view comes back.
+
+If recon does not know the view, the palette stays open and shows the error.
+
 ## Run a keymap action
 
 Each action of the keymap is a command, with the name that a `[keymap]` line
@@ -68,5 +78,7 @@ line is empty, the list shows all the commands.
 - After `set` or `unlist`, Tab completes the name of a known set. After
   `set NAME:` and after each `,`, Tab completes a profile or a named filter
   of that set.
+- After `view`, Tab completes a view name: the views of the file's cycle
+  first, then the other views.
 - Up and Down recall the command lines that ran. The palette keeps its own
   history for the session.

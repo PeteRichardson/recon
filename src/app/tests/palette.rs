@@ -78,7 +78,7 @@ fn the_palette_can_be_bound_to_another_key() {
 // ---- `e` and its alias `cd` (#520) ------------------------------------
 
 /// Run `line` in the palette, as the user types it and pushes Enter.
-fn run(app: &mut App, line: &str) {
+pub(super) fn run(app: &mut App, line: &str) {
     key(app, KeyCode::Char(':'));
     typed(app, line);
     key(app, KeyCode::Enter);

@@ -139,6 +139,11 @@ impl App<'_> {
         let takes = crate::commands::named(name).map(|command| command.argument);
         let (base, partial, options) = match (takes, argument.split_once(':')) {
             (Some(Argument::Path), _) => self.path_choices(base, argument)?,
+            (Some(Argument::View), _) => (
+                base.to_string(),
+                argument,
+                self.loading.view_names(argument),
+            ),
             (Some(Argument::Set | Argument::SetList), None) => {
                 (base.to_string(), argument, self.set_names(argument))
             }
@@ -242,6 +247,7 @@ impl App<'_> {
             Run::Line => self.go_to_line(argument),
             Run::EnableSet => self.enable_set(argument),
             Run::UnlistSet => self.unlist_set(argument),
+            Run::View => self.choose_view(argument),
             Run::Action(action) => self.run_action(action, command.argument, argument),
         }
     }

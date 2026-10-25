@@ -20,6 +20,13 @@ is the default, and `-` goes to the next view. A text file starts in `raw`, a
 binary file in `hex`, and a picture in `image`. A `[[filetype]]` row in the
 configuration sets the cycle for a file type.
 
+`:view hex` in the [command palette](palette.md) chooses a view by its name.
+A view of the cycle is the same as some presses of `-`: it holds for every
+file of that type. You can also choose a view that is not in the cycle, for
+example a command view to try before a `[[filetype]]` row names it. That
+view shows only the open file. When you open another file, or push `-`, the
+cycle's view comes back.
+
 ## Command views
 
 A *command view* shows a file as the output of a program that you name in

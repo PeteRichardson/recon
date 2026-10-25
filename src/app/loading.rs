@@ -138,6 +138,24 @@ impl Loading {
         }
     }
 
+    /// The names of every view `view NAME` can choose that start with
+    /// `partial`: the cycle of the file on screen first, in its order, then
+    /// the others.
+    pub(super) fn view_names(&self, partial: &str) -> Vec<String> {
+        let cycle = self
+            .shown
+            .map_or(&[][..], |shown| self.table.views(shown.row));
+        let others = self.table.every_view().filter(|view| !cycle.contains(view));
+        cycle
+            .iter()
+            .copied()
+            .chain(others)
+            .map(|view| self.table.view_name(view))
+            .filter(|name| name.starts_with(partial))
+            .map(ToString::to_string)
+            .collect()
+    }
+
     /// The view on screen, for the status line: `None` for raw, which is
     /// what a file is unless the status line says otherwise.
     pub(super) fn view_badge(&self) -> Option<&str> {
@@ -193,6 +211,7 @@ impl App<'_> {
         self.opened += 1;
         let px = self.view_px();
         let loading = &mut self.loading;
+        loading.steps.open(path);
         loading.generation += 1;
         let generation = loading.generation;
         let job = loading.job(path, extent, false, px);
@@ -400,17 +419,43 @@ impl App<'_> {
 
     /// `-`: the next view in the file's cycle, back to the first after the
     /// last. The step holds for every file of the same row for the session.
+    /// From a view of no cycle, `-` shows the view the step is at.
     pub(super) fn next_view(&mut self) {
         let Some(shown) = self.loading.shown else {
-            self.report("no file to show in another view", false);
+            self.report(NO_FILE, false);
             return;
         };
-        if self.loading.table.views(shown.row).len() < 2 {
-            self.report("this file has one view", false);
-            return;
+        // From a view `view NAME` chose outside the cycle, back to the
+        // step's view.
+        if !self.loading.steps.back() {
+            if self.loading.table.views(shown.row).len() < 2 {
+                self.report("this file has one view", false);
+                return;
+            }
+            self.loading.steps.next(&self.loading.table, shown.row);
         }
-        self.loading.steps.next(&self.loading.table, shown.row);
         let path = self.view.filename().to_path_buf();
         self.open_view(&path, self.current_extent(), Landing::Top);
     }
+
+    /// `view NAME`: show the open file in the view called `name`. A view
+    /// of the file's cycle steps the cycle there, as `-` does; any other
+    /// view holds for this file only, until another file opens.
+    pub(super) fn choose_view(&mut self, name: &str) -> Result<(), String> {
+        let shown = self.loading.shown.ok_or_else(|| NO_FILE.to_string())?;
+        let view = self
+            .loading
+            .table
+            .view_named(name)
+            .ok_or_else(|| format!("not a view: {name}"))?;
+        let path = self.view.filename().to_path_buf();
+        self.loading
+            .steps
+            .choose(&self.loading.table, shown.row, &path, view);
+        self.open_view(&path, self.current_extent(), Landing::Top);
+        Ok(())
+    }
 }
+
+/// What `-` and `view NAME` say when the pane shows no file's content.
+const NO_FILE: &str = "no file to show in another view";

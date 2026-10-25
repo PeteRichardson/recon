@@ -417,3 +417,119 @@ fn px_counts_the_cells_the_terminal_reported() {
     let columns = u32::from(app.view_area.width - 2);
     assert_eq!(view_lines(&app), [(columns * 22).to_string()]);
 }
+
+// ---- `:view` from the palette (#526) --------------------------------
+
+use super::palette::run;
+
+/// `:view` with a view of the file's cycle steps the cycle there, as `-`
+/// does, so the step holds for the next file of the row.
+#[test]
+fn view_with_a_cycle_view_steps_the_cycle_there() {
+    let mut app = app_over_files("views_palette_step", &[("a.txt", "a\n"), ("b.txt", "b\n")]);
+    app.focus = Focus::Explorer;
+    arrow_to(&mut app, "a.txt");
+
+    run(&mut app, "view hex");
+    assert!(app.prompt.is_none(), "the palette is still open");
+    assert_eq!(view_lines(&app), [crate::hex::line(0, b"a\n")]);
+
+    arrow_to(&mut app, "b.txt");
+    assert_eq!(
+        view_lines(&app),
+        [crate::hex::line(0, b"b\n")],
+        "the step did not hold for the next file"
+    );
+}
+
+/// Two text files and a command no row names: a view of no file's cycle.
+fn off_cycle_app(name: &str) -> App<'static> {
+    let mut app = app_with_commands(
+        name,
+        &[("a.txt", b"a,b\n"), ("b.txt", b"c,d\n")],
+        Vec::new(),
+        commands(&[("split", &["tr", ",", "\n"], None)]),
+    );
+    app.focus = Focus::Explorer;
+    arrow_to(&mut app, "a.txt");
+    app
+}
+
+/// `:view` with a view of no cycle shows the open file in it, through a
+/// reload, and the next file opens in its cycle's view: a command can be
+/// tried before a row names it.
+#[test]
+fn view_with_a_view_of_no_cycle_holds_for_the_open_file_only() {
+    let mut app = off_cycle_app("views_palette_off_cycle");
+
+    run(&mut app, "view split");
+    assert!(app.prompt.is_none(), "the palette is still open");
+    assert_eq!(view_lines(&app), ["a", "b"]);
+    assert!(status_line(&mut app).starts_with(" split "));
+
+    key(&mut app, KeyCode::Char('r'));
+    assert_eq!(view_lines(&app), ["a", "b"], "the reload left the view");
+
+    arrow_to(&mut app, "b.txt");
+    assert_eq!(view_lines(&app), ["c,d"], "the view held for the next file");
+    arrow_to(&mut app, "a.txt");
+    assert_eq!(
+        view_lines(&app),
+        ["a,b"],
+        "the view held after a.txt was left"
+    );
+}
+
+/// `-` from a view of no cycle goes back to the view the cycle's step is
+/// at, the one shown before `:view`; the next `-` steps the cycle.
+#[test]
+fn minus_from_a_view_of_no_cycle_goes_back_to_the_steps_view() {
+    let mut app = off_cycle_app("views_palette_minus");
+    key(&mut app, KeyCode::Char('-'));
+    assert_eq!(view_lines(&app), [crate::hex::line(0, b"a,b\n")]);
+
+    run(&mut app, "view split");
+    assert_eq!(view_lines(&app), ["a", "b"]);
+
+    key(&mut app, KeyCode::Char('-'));
+    assert_eq!(
+        view_lines(&app),
+        [crate::hex::line(0, b"a,b\n")],
+        "`-` did not go back to the step's view"
+    );
+    key(&mut app, KeyCode::Char('-'));
+    assert_eq!(view_lines(&app), ["a,b"], "`-` did not step the cycle");
+}
+
+/// A name that is no view keeps the palette open with the error, and the
+/// view as it was.
+#[test]
+fn view_with_a_name_that_is_no_view_keeps_the_palette_open() {
+    let mut app = off_cycle_app("views_palette_unknown");
+
+    run(&mut app, "view nope");
+    assert_eq!(prompt(&app).error.as_deref(), Some("not a view: nope"));
+    key(&mut app, KeyCode::Esc);
+    assert_eq!(view_lines(&app), ["a,b"]);
+}
+
+/// Tab after `view` gives the views of the file's cycle first, in its
+/// order, then every other view recon knows.
+#[test]
+fn tab_after_view_gives_the_cycle_first_then_the_other_views() {
+    let mut app = off_cycle_app("views_palette_tab");
+    key(&mut app, KeyCode::Char(':'));
+    typed(&mut app, "view ");
+    let mut lines = Vec::new();
+    for _ in 0..3 {
+        key(&mut app, KeyCode::Tab);
+        lines.push(prompt(&app).pattern.clone());
+    }
+    assert_eq!(lines, ["view raw", "view hex", "view image"]);
+    key(&mut app, KeyCode::Esc);
+
+    key(&mut app, KeyCode::Char(':'));
+    typed(&mut app, "view sp");
+    key(&mut app, KeyCode::Tab);
+    assert_eq!(prompt(&app).pattern, "view split");
+}
