@@ -20,6 +20,7 @@
 //! `App` owns the prompt, its origin and its history; the picker owns the
 //! search that is set, and `n`/`N`.
 
+use super::listmotion::keep_in_view;
 use crate::filter::ActiveFilters;
 use ratatui::prelude::{Buffer, Color, Modifier, Rect, Style, Widget};
 use ratatui::widgets::{Block, Clear};
@@ -227,11 +228,7 @@ impl SetPicker {
         if height == 0 {
             return;
         }
-        if self.selected < self.top {
-            self.top = self.selected;
-        } else if self.selected >= self.top + height {
-            self.top = self.selected + 1 - height;
-        }
+        self.top = keep_in_view(self.top, self.selected, height, self.entries.len());
 
         let label_width = self
             .entries

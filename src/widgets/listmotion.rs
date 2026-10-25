@@ -9,6 +9,20 @@
 
 use ratatui::widgets::ListState;
 
+/// The first row to draw so that `selected` shows in `height` rows: `top`
+/// moved as little as it can, and never past the last full page of `rows`.
+/// For the two pickers, which scroll a list of their own (#284, #539).
+pub(crate) fn keep_in_view(top: usize, selected: usize, height: usize, rows: usize) -> usize {
+    let top = if selected < top {
+        selected
+    } else if selected >= top + height {
+        selected + 1 - height
+    } else {
+        top
+    };
+    top.min(rows.saturating_sub(height))
+}
+
 /// A page, in rows, before the pane has been drawn once. `App::run` renders
 /// before it reads a key, so this only ever matters to a test — but a zero
 /// page would make `PageDown` a silent no-op, and #120 forbids silent keys.

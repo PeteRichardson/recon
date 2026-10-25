@@ -15,7 +15,8 @@
 //! Nothing remembers which profile was applied — see the spec's "a profile is
 //! an action, not a live binding".
 
-use ratatui::prelude::{Buffer, Modifier, Rect, Style, Widget};
+use super::listmotion::keep_in_view;
+use ratatui::prelude::{Buffer, Line, Modifier, Rect, Style, Widget};
 use ratatui::widgets::{Block, Clear};
 use unicode_width::UnicodeWidthStr;
 
@@ -42,6 +43,10 @@ pub(crate) struct ProfilePicker {
     /// them when filters follow.
     profiles: usize,
     selected: usize,
+    /// The first row drawn, when the list is taller than the box. Kept
+    /// between frames so that a move inside the visible rows does not
+    /// scroll; `render` only moves it to keep the selection in view.
+    top: usize,
 }
 
 impl ProfilePicker {
@@ -58,12 +63,25 @@ impl ProfilePicker {
             names,
             profiles: count,
             selected: 0,
+            top: 0,
         }
     }
 
     /// The row after the profiles, when there are profiles and filters.
     fn separator(&self) -> Option<usize> {
         (self.profiles > 0 && self.profiles < self.names.len()).then_some(self.profiles)
+    }
+
+    /// Every row: the names, and the separator between the profiles and
+    /// the filters.
+    fn rows(&self) -> usize {
+        self.names.len() + usize::from(self.separator().is_some())
+    }
+
+    /// The row of `names[index]`: each filter sits one row lower, below the
+    /// separator.
+    fn row_of(&self, index: usize) -> usize {
+        index + usize::from(self.separator().is_some_and(|sep| index >= sep))
     }
 
     #[cfg(test)]
@@ -119,12 +137,22 @@ impl ProfilePicker {
             .map(|name| UnicodeWidthStr::width(name.as_str()))
             .max()
             .unwrap_or(0);
-        // Two for the borders, two for a column of padding each side.
-        let width = u16::try_from(widest + 4)
+        let rows = self.rows();
+        let height = u16::try_from(rows + 2).unwrap_or(u16::MAX).min(area.height);
+        // Two for the borders, two for a column of padding each side; and
+        // room on the top border for the title, and the count when the list
+        // scrolls (#539).
+        let scrolls = rows + 2 > usize::from(area.height);
+        let border = TITLE.width()
+            + if scrolls {
+                count(rows, '↑').width()
+            } else {
+                0
+            }
+            + 2;
+        let width = u16::try_from((widest + 4).max(border))
             .unwrap_or(u16::MAX)
             .min(area.width);
-        let rows = self.names.len() + usize::from(self.separator().is_some());
-        let height = u16::try_from(rows + 2).unwrap_or(u16::MAX).min(area.height);
         Rect {
             x: area.x + area.width.saturating_sub(width) / 2,
             y: area.y + area.height.saturating_sub(height) / 2,
@@ -134,49 +162,72 @@ impl ProfilePicker {
     }
 
     /// Draw the picker centred in `area`, over whatever is already there.
-    pub(crate) fn render(&self, area: Rect, buf: &mut Buffer) {
+    /// A list taller than the box scrolls to keep the selection in view,
+    /// and the borders count the rows hidden above and below (#539).
+    ///
+    /// `&mut` because it scrolls, as the set picker does: only the drawn
+    /// height says how far.
+    pub(crate) fn render(&mut self, area: Rect, buf: &mut Buffer) {
         let panel = self.panel(area);
+        let rows = self.rows();
+        let height = usize::from(panel.height.saturating_sub(2));
+        self.top = keep_in_view(self.top, self.row_of(self.selected), height, rows);
+        let (top, below) = (self.top, rows.saturating_sub(self.top + height));
+
+        let mut block = Block::bordered().title(TITLE);
+        if top > 0 {
+            block = block.title_top(Line::from(count(top, '↑')).right_aligned());
+        }
+        if below > 0 {
+            block = block.title_bottom(Line::from(count(below, '↓')).right_aligned());
+        }
         // The panes are already drawn underneath; without this their borders
         // and text show through wherever the overlay writes nothing.
         Clear.render(panel, buf);
-        let block = Block::bordered().title(" Profiles ");
         let inner = block.inner(panel);
         block.render(panel, buf);
-        let separator = self.separator();
-        if let Some(row) = separator
-            && let Ok(y) = u16::try_from(row)
-            && y < inner.height
-        {
+
+        // The screen line of a list row, if it is in view.
+        let line = |row: usize| {
+            (top..top + height)
+                .contains(&row)
+                .then(|| inner.y + u16::try_from(row - top).unwrap_or(u16::MAX))
+        };
+        if let Some(y) = self.separator().and_then(line) {
             let rule = "─".repeat(usize::from(inner.width));
             buf.set_stringn(
                 inner.x,
-                inner.y + y,
+                y,
                 &rule,
                 usize::from(inner.width),
                 Style::default(),
             );
         }
-        for (offset, name) in self.names.iter().enumerate() {
-            // Each filter sits one row lower, below the separator.
-            let row = offset + usize::from(separator.is_some_and(|sep| offset >= sep));
-            let Ok(y) = u16::try_from(row) else { break };
-            if y >= inner.height {
-                break;
-            }
-            let style = if offset == self.selected {
+        for (index, name) in self.names.iter().enumerate() {
+            let Some(y) = line(self.row_of(index)) else {
+                continue;
+            };
+            let style = if index == self.selected {
                 Style::new().add_modifier(Modifier::REVERSED)
             } else {
                 Style::default()
             };
             buf.set_stringn(
                 inner.x + 1,
-                inner.y + y,
+                y,
                 name,
                 usize::from(inner.width.saturating_sub(2)),
                 style,
             );
         }
     }
+}
+
+const TITLE: &str = " Profiles ";
+
+/// A border label for `rows` hidden rows on the side `arrow` points to.
+fn count(rows: usize, arrow: char) -> String {
+    format!(" {arrow} {rows} ")
 }
 
 #[cfg(test)]
@@ -221,7 +272,7 @@ mod tests {
 
     #[test]
     fn it_draws_a_centred_titled_box_with_the_selection_reversed() {
-        let p = picker();
+        let mut p = picker();
         let area = Rect::new(0, 0, 40, 10);
         let mut buf = Buffer::empty(area);
         p.render(area, &mut buf);
@@ -272,6 +323,45 @@ mod tests {
             p.perform(A::PickerChoose),
             PickerOutcome::Chosen("INFO".into())
         );
+    }
+
+    /// A list taller than the area scrolls to keep the selection visible,
+    /// and the borders count the rows hidden above and below (#539). The
+    /// shape is a real set's: 4 profiles and 30 named filters, 35 rows.
+    #[test]
+    fn a_long_list_scrolls_and_the_borders_count_the_hidden_rows() {
+        let profiles = (0..4).map(|n| format!("p{n}")).collect();
+        let filters = (0..30).map(|n| format!("f{n}")).collect();
+        let mut p = ProfilePicker::new(1, profiles, filters);
+        let area = Rect::new(0, 0, 40, 14);
+        let draw = |p: &mut ProfilePicker| {
+            let mut buf = Buffer::empty(area);
+            p.render(area, &mut buf);
+            (0..14)
+                .map(|y| (0..40).map(|x| buf[(x, y)].symbol()).collect::<String>())
+                .collect::<Vec<_>>()
+        };
+
+        // 12 rows inside the borders: 23 of the 35 are below.
+        let rows = draw(&mut p);
+        assert!(!rows[0].contains('↑'), "{}", rows[0]);
+        assert!(rows[13].contains("↓ 23"), "{}", rows[13]);
+
+        for _ in 0..33 {
+            p.perform(A::PickerDown);
+        }
+        let rows = draw(&mut p);
+        assert!(rows[0].contains("↑ 23"), "{}", rows[0]);
+        assert!(!rows[13].contains('↓'), "{}", rows[13]);
+        assert!(
+            rows[12].contains("f29"),
+            "the selection is drawn: {}",
+            rows[12]
+        );
+
+        // Back up one row: the window stays where it is.
+        p.perform(A::PickerUp);
+        assert_eq!(draw(&mut p)[0], rows[0]);
     }
 
     /// Width is display columns, not characters: a CJK name occupies two
