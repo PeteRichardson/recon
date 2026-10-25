@@ -32,6 +32,21 @@ number that the line numbers show, not a count of the visible lines. If a
 filter hides line 120, the cursor goes to the next visible line, and the
 status line tells you.
 
+## Enable or unlist a filter set
+
+`:set DeployLogs` lists the [filter set](glossary.md) `DeployLogs` if it is
+unlisted, and enables it with its `default` profile. This is the same as
+`--set DeployLogs` on the command line, and you do not open the set picker.
+
+`:set DeployLogs:triage,timeouts` enables the set with the profiles and the
+named filters of the list, as `--set NAME:LIST` does. The other filters of
+the set are off.
+
+`:unlist DeployLogs` unlists the set, as `--unlist` does.
+
+If recon does not know the set or an item of the list, the palette stays
+open and shows the error.
+
 ## Run a keymap action
 
 Each action of the keymap is a command, with the name that a `[keymap]` line
@@ -50,5 +65,8 @@ line is empty, the list shows all the commands.
 - The help text agrees too: `folder` finds `e, cd`.
 - Tab and Shift-Tab choose the next or the previous row and write its name in
   the line. On a path, Tab completes the name of a file or a directory.
+- After `set` or `unlist`, Tab completes the name of a known set. After
+  `set NAME:` and after each `,`, Tab completes a profile or a named filter
+  of that set.
 - Up and Down recall the command lines that ran. The palette keeps its own
   history for the session.

@@ -81,6 +81,20 @@ impl App<'_> {
         if changes.is_empty() {
             return;
         }
+        self.relist(|app| {
+            for &(set, listed) in changes {
+                if app.filters.set_listed(set, listed) {
+                    let name = app.set_name(set);
+                    let verb = if listed { "list" } else { "unlist" };
+                    app.log_filters(format_args!("{verb} set {name:?}"));
+                }
+            }
+        });
+    }
+
+    /// Run `change`, which lists or unlists sets, then update the view once:
+    /// the steps the set picker and the palette's `set` and `unlist` share.
+    pub(super) fn relist(&mut self, change: impl FnOnce(&mut Self)) {
         // A list change ends a peek (#305): the flags come back first, so the
         // sets are listed and unlisted as they are, not as the peek shows
         // them. The capture is by filter id (#346), so it would survive the
@@ -93,13 +107,7 @@ impl App<'_> {
             .filters_pane
             .selected()
             .and_then(|index| before.get(index).copied());
-        for &(set, listed) in changes {
-            if self.filters.set_listed(set, listed) {
-                let name = self.set_name(set);
-                let verb = if listed { "list" } else { "unlist" };
-                self.log_filters(format_args!("{verb} set {name:?}"));
-            }
-        }
+        change(self);
         if let Some(row) = selected {
             let after = widgets::filterlist::rows(&self.filters);
             self.filters_pane.follow(row, &after);

@@ -687,6 +687,134 @@ fn the_palette_and_the_search_keep_separate_histories() {
     assert_eq!(prompt(&app).pattern, "b");
 }
 
+// ---- `set` and `unlist` (#525) ----------------------------------------
+
+/// The index of the set called `name`.
+fn set_named(app: &App, name: &str) -> usize {
+    app.filters
+        .sets()
+        .iter()
+        .position(|meta| meta.name == name)
+        .expect("known set")
+}
+
+/// `set` on an unlisted set lists it first, then enables it with its
+/// `default` profile, as `--set` does: its lines match at once.
+#[test]
+fn set_lists_and_enables_an_unlisted_set() {
+    let mut app = app_with_three_sets("palette_set");
+    let c = set_named(&app, "c");
+    app.filters.set_listed(c, false);
+    app.refresh_view();
+    assert_eq!(included(&app), 3, "sanity: alpha, beta, scratch");
+
+    run(&mut app, "set c:gamma");
+    assert!(app.prompt.is_none(), "the palette is still open");
+    assert!(app.filters.sets()[c].listed);
+    assert!(app.filters.sets()[c].enabled);
+    assert_eq!(flags_of(&app, c), [true]);
+    assert_eq!(included(&app), 4, "gamma does not match");
+}
+
+/// `unlist` unlists a set, as `--unlist` does: it is disabled, its header
+/// leaves the pane and its lines stop matching.
+#[test]
+fn unlist_unlists_a_set() {
+    let mut app = app_with_three_sets("palette_unlist");
+    let a = set_named(&app, "a");
+    run(&mut app, "unlist a");
+    assert!(app.prompt.is_none(), "the palette is still open");
+    assert!(!app.filters.sets()[a].listed);
+    assert!(!app.filters.sets()[a].enabled);
+    assert_eq!(included(&app), 2, "alpha still matches");
+    assert!(
+        !widgets::filterlist::rows(&app.filters).contains(&widgets::filterlist::Row::Header(a)),
+        "a still has a row"
+    );
+}
+
+/// An unknown set, or a list item the set does not have, keeps the palette
+/// open with an error that names it, and no set changes.
+#[test]
+fn a_bad_set_or_item_keeps_the_palette_open_with_an_error() {
+    let mut app = app_with_three_sets("palette_set_bad");
+    let c = set_named(&app, "c");
+    for (line, named) in [
+        ("set nope", "nope"),
+        ("set c:gamma,nope", "nope"),
+        ("unlist nope", "nope"),
+        ("set", "set name"),
+        ("unlist", "set name"),
+    ] {
+        run(&mut app, line);
+        assert_eq!(prompt(&app).pattern, line, "the line is gone");
+        assert!(
+            prompt(&app)
+                .error
+                .as_deref()
+                .is_some_and(|e| e.contains(named)),
+            "{line}: {:?}",
+            prompt(&app).error
+        );
+        key(&mut app, KeyCode::Esc);
+    }
+    assert!(!app.filters.sets()[c].enabled, "c was enabled");
+    assert!(app.filters.sets().iter().all(|meta| meta.listed));
+}
+
+/// After `set` and `unlist`, Tab completes the name of a known set, listed
+/// or not, as a path completes: one that fits is written whole, and more
+/// that fit are stepped through.
+#[test]
+fn tab_completes_a_set_name() {
+    let mut app = app_with_three_sets("palette_tab_set");
+    let c = set_named(&app, "c");
+    app.filters.set_listed(c, false);
+    key(&mut app, KeyCode::Char(':'));
+    typed(&mut app, "set ");
+    key(&mut app, KeyCode::Tab);
+    assert_eq!(prompt(&app).pattern, "set a");
+    key(&mut app, KeyCode::Tab);
+    assert_eq!(prompt(&app).pattern, "set b");
+    key(&mut app, KeyCode::Tab);
+    assert_eq!(prompt(&app).pattern, "set c", "an unlisted set is known");
+    key(&mut app, KeyCode::Esc);
+
+    key(&mut app, KeyCode::Char(':'));
+    typed(&mut app, "unlist de");
+    key(&mut app, KeyCode::Tab);
+    assert_eq!(prompt(&app).pattern, "unlist definitions");
+}
+
+/// After `set NAME:` and after each `,`, Tab completes a profile or a
+/// named filter of that set; `unlist` takes no list, so it completes none.
+#[test]
+fn tab_completes_a_profile_or_filter_after_the_colon() {
+    let mut app = app_with_profiles("palette_tab_items");
+    key(&mut app, KeyCode::Char(':'));
+    typed(&mut app, "set a:");
+    key(&mut app, KeyCode::Tab);
+    assert_eq!(prompt(&app).pattern, "set a:default");
+    key(&mut app, KeyCode::Tab);
+    assert_eq!(prompt(&app).pattern, "set a:only-beta");
+    key(&mut app, KeyCode::Tab);
+    assert_eq!(prompt(&app).pattern, "set a:alpha");
+    key(&mut app, KeyCode::Tab);
+    assert_eq!(prompt(&app).pattern, "set a:beta");
+    key(&mut app, KeyCode::Esc);
+
+    key(&mut app, KeyCode::Char(':'));
+    typed(&mut app, "set a:alpha,on");
+    key(&mut app, KeyCode::Tab);
+    assert_eq!(prompt(&app).pattern, "set a:alpha,only-beta");
+    key(&mut app, KeyCode::Esc);
+
+    key(&mut app, KeyCode::Char(':'));
+    typed(&mut app, "unlist a:");
+    key(&mut app, KeyCode::Tab);
+    assert_eq!(prompt(&app).pattern, "unlist a:");
+}
+
 // ---- help (#520) ------------------------------------------------------
 
 /// The `?` overlay names the palette's own commands on the row of its key,
