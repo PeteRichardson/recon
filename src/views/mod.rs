@@ -161,7 +161,7 @@ pub(crate) fn run(job: &Job, cache: Option<&Cache>) -> Done {
     });
     let done = |contents, shown| done(contents, shown, facts);
     let row = job.table.row_for(path, || head);
-    let view = job.steps.view(&job.table, row);
+    let view = job.steps.view(&job.table, row, path);
     let shown = Some(Shown { row, view, head });
     if job.prefetch
         && job

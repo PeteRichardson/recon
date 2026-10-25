@@ -10,7 +10,7 @@ use super::command::{Command, Commands};
 use regex::Regex;
 use serde::Deserialize;
 use std::cell::LazyCell;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 /// One `[[filetype]]` row of the config. A row sets the cycle, the
@@ -420,6 +420,20 @@ impl Table {
         }
     }
 
+    /// The view called `name`: a built-in view, or a name from
+    /// `[commands]`.
+    pub(crate) fn view_named(&self, name: &str) -> Option<View> {
+        self.every_view().find(|view| self.view_name(*view) == name)
+    }
+
+    /// Every view `view_named` finds, built-in first, then `[commands]`.
+    pub(crate) fn every_view(&self) -> impl Iterator<Item = View> {
+        super::BUILT_IN
+            .iter()
+            .filter_map(|name| View::built_in(name))
+            .chain((0..self.commands.len()).map(View::Command))
+    }
+
     /// The row whose cycle `path` shows: the first that matches it and
     /// has `views`. `head` is asked only when a mime row or a built-in row
     /// is reached, so a glob row costs no read.
@@ -498,26 +512,58 @@ fn quick_look_shows(ext: &str) -> bool {
         .any(|known| known.eq_ignore_ascii_case(ext))
 }
 
-/// How far `-` has stepped in each row's cycle, for this session. Shared
+/// How far `-` has stepped in each row's cycle, for this session, and the
+/// one file that `view NAME` shows in a view of no cycle (#526). Shared
 /// with each job as a snapshot: a step taken later does not change a job
 /// already sent.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Steps(Arc<Vec<usize>>);
+pub(crate) struct Steps {
+    at: Arc<Vec<usize>>,
+    only: Option<(PathBuf, View)>,
+}
 
 impl Steps {
     /// Every row at its first view.
     pub(crate) fn new(table: &Table) -> Self {
-        Self(Arc::new(vec![0; table.len()]))
+        Self {
+            at: Arc::new(vec![0; table.len()]),
+            only: None,
+        }
     }
 
-    /// The view `row` shows now.
-    pub(crate) fn view(&self, table: &Table, row: usize) -> View {
-        table.views(row)[self.0[row]]
+    /// The view `path`, a file of `row`, shows now.
+    pub(crate) fn view(&self, table: &Table, row: usize, path: &Path) -> View {
+        match &self.only {
+            Some((only, view)) if only == path => *view,
+            _ => table.views(row)[self.at[row]],
+        }
+    }
+
+    /// Show `path`, a file of `row`, in `view`: a view of the cycle steps
+    /// the cycle there, and any other view holds for `path` only.
+    pub(crate) fn choose(&mut self, table: &Table, row: usize, path: &Path, view: View) {
+        self.only = None;
+        match table.views(row).iter().position(|known| *known == view) {
+            Some(at) => Arc::make_mut(&mut self.at)[row] = at,
+            None => self.only = Some((path.to_path_buf(), view)),
+        }
+    }
+
+    /// `path` opens: a view of no cycle for another file stops.
+    pub(crate) fn open(&mut self, path: &Path) {
+        if self.only.as_ref().is_some_and(|(only, _)| only != path) {
+            self.only = None;
+        }
+    }
+
+    /// Stop a view of no cycle. `false` when none shows.
+    pub(crate) fn back(&mut self) -> bool {
+        self.only.take().is_some()
     }
 
     /// Step `row` to its next view, back to the first after the last.
     pub(crate) fn next(&mut self, table: &Table, row: usize) {
-        let step = &mut Arc::make_mut(&mut self.0)[row];
+        let step = &mut Arc::make_mut(&mut self.at)[row];
         *step = (*step + 1) % table.views(row).len();
     }
 }
@@ -706,15 +752,19 @@ mod tests {
         let mut steps = Steps::new(&table);
 
         steps.next(&table, log);
-        assert_eq!(steps.view(&table, log), View::Hex);
+        assert_eq!(steps.view(&table, log, Path::new("a.log")), View::Hex);
         assert_eq!(
-            steps.view(&table, txt),
+            steps.view(&table, txt, Path::new("a.txt")),
             View::Raw,
             "another row is unchanged"
         );
 
         steps.next(&table, log);
-        assert_eq!(steps.view(&table, log), View::Raw, "the step wraps");
+        assert_eq!(
+            steps.view(&table, log, Path::new("a.log")),
+            View::Raw,
+            "the step wraps"
+        );
     }
 
     #[test]
@@ -724,7 +774,7 @@ mod tests {
         let mut steps = Steps::new(&table);
         let sent = steps.clone();
         steps.next(&table, row);
-        assert_eq!(sent.view(&table, row), View::Raw);
+        assert_eq!(sent.view(&table, row, Path::new("a.txt")), View::Raw);
     }
 
     fn commands(entries: &[(&'static str, &str, Option<&str>)]) -> Commands {

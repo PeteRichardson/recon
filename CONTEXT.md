@@ -273,9 +273,11 @@ _Avoid_: plugin, preprocessor, filter (that is a pattern in the filter pane)
 
 **View cycle**:
 The ordered views a file type offers. The first one is the default, `-`
-steps to the next, and a view that is not in the cycle is never offered. A
+steps to the next, and `-` never offers a view that is not in the cycle. A
 step with `-` holds for every file of that type until the user steps again
-or recon stops.
+or recon stops. `:view` with a view of the cycle is a step too; `:view` with
+any other view shows only the open file in it, until another file opens or
+`-` goes back to the step's view.
 _Avoid_: view list, view order
 
 **Highlighting**:

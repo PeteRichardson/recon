@@ -1195,7 +1195,7 @@ fn test_view(path: &Path) -> crate::views::View {
     use crate::views::cycle::{Steps, Table};
     let table = Table::default();
     let row = table.row_for(path, || crate::views::read::head(path));
-    Steps::new(&table).view(&table, row)
+    Steps::new(&table).view(&table, row, path)
 }
 
 /// Decimal digits in `n`, for sizing the gutter. `0` and `1` both need one.

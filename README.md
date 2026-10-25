@@ -2440,6 +2440,7 @@ you may be typing a regular expression: push Esc first.
 | `goto <n>`, `:<n>` | Go to line n of the file — the number the line numbers show. If a filter hides it, the cursor goes to the next visible line and the status row says so |
 | `set <set>[:<list>]` | List the set if it is unlisted and enable it, as `--set` does: `set DeployLogs` applies its `default` profile, and `set DeployLogs:triage,timeouts` turns on the profiles and named filters of the list and turns off the set's other filters |
 | `unlist <set>` | Unlist the set, as `--unlist` does |
+| `view <view>` | Show the open file in the view of that name. A view of the file type's cycle steps the cycle there, as `-` does. Any other view, such as a command view that no `[[filetype]]` row names, shows only the open file, until you open another file or push `-` |
 | `q` | Quit, as `global.quit` |
 | any action name | Run a keymap action by the name a `[keymap]` line uses, such as `global.follow` or `explorer.down`. A pane's action works on its own pane, which shows and takes the focus. `global.filters.toggle <n>` takes the filter number |
 
@@ -2450,10 +2451,11 @@ you may be typing a regular expression: push Esc first.
   into the line. On a path, Tab completes the name of an entry in the folder.
   After `set` and `unlist`, Tab completes the name of a known set; after
   `set <set>:` and after each `,`, a profile or a named filter of that set.
+  After `view`, Tab completes a view name, the file's cycle first.
 - **Up** and **Down** recall the command lines that ran, newest first. The
   palette keeps its own history, for the session only.
 - **An error** — an unknown command, a path that does not exist, a set or a
-  list item that recon does not know — keeps the
+  list item or a view that recon does not know — keeps the
   palette open with your line, and shows the error in place of it until the
   next key.
 - `e` never changes recon's working directory, so `O` and the paths on the

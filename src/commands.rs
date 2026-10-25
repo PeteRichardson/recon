@@ -34,6 +34,8 @@ pub(crate) enum Argument {
     SetList,
     /// A set's name, which Tab completes.
     Set,
+    /// A view's name, which Tab completes.
+    View,
 }
 
 /// What running a command does.
@@ -47,6 +49,8 @@ pub(crate) enum Run {
     EnableSet,
     /// `unlist`: unlist a set.
     UnlistSet,
+    /// `view`: show the open file in a view.
+    View,
     /// A keymap action, whose keys the row shows.
     Action(ActionId),
 }
@@ -56,7 +60,7 @@ impl Command {
     pub(crate) fn action(&self) -> Option<ActionId> {
         match self.run {
             Run::Action(action) => Some(action),
-            Run::Path | Run::Line | Run::EnableSet | Run::UnlistSet => None,
+            Run::Path | Run::Line | Run::EnableSet | Run::UnlistSet | Run::View => None,
         }
     }
 
@@ -69,6 +73,7 @@ impl Command {
             Argument::Number => format!("{names} <n>"),
             Argument::SetList => format!("{names} <set>[:<list>]"),
             Argument::Set => format!("{names} <set>"),
+            Argument::View => format!("{names} <view>"),
         }
     }
 }
@@ -114,6 +119,12 @@ fn build() -> Vec<Command> {
             argument: Argument::Set,
             help: "Unlist a filter set, as --unlist does",
             run: Run::UnlistSet,
+        },
+        Command {
+            names: vec!["view"],
+            argument: Argument::View,
+            help: "Show the open file in a view, by name",
+            run: Run::View,
         },
     ];
     for action in crate::keymap::every_action().filter(|a| is_command(*a)) {
