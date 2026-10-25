@@ -570,14 +570,16 @@ impl App<'_> {
                 self.log_filters(format_args!("reset"));
             }
             // Opens the picker, or says why not; the set is untouched until
-            // a profile is chosen, so nothing to re-evaluate here.
+            // a profile or a named filter is chosen (#539), so nothing to
+            // re-evaluate here.
             FilterCommand::PickProfile(set) => {
-                let names: Vec<String> =
-                    self.filters.sets()[set].profiles.keys().cloned().collect();
-                if names.is_empty() {
-                    self.report("no profiles in this set", false);
+                let meta = &self.filters.sets()[set];
+                let profiles: Vec<String> = meta.profiles.keys().cloned().collect();
+                let filters = meta.filter_names.clone();
+                if profiles.is_empty() && filters.is_empty() {
+                    self.report("no profiles or named filters in this set", false);
                 } else {
-                    self.picker = Some(widgets::picker::ProfilePicker::new(set, names));
+                    self.picker = Some(widgets::picker::ProfilePicker::new(set, profiles, filters));
                 }
                 return;
             }

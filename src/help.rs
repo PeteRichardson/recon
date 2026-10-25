@@ -777,7 +777,7 @@ pub const KEYMAP: &[Section] = &[
             },
             Binding {
                 keys: &["a"],
-                action: "Pick a profile for the selected set",
+                action: "Pick a profile or one filter for the selected set",
                 names: &["filters.profile"],
             },
             Binding {
@@ -821,7 +821,7 @@ pub const KEYMAP: &[Section] = &[
             },
             Binding {
                 keys: &["Enter"],
-                action: "Choose the profile set",
+                action: "Choose the profile or the filter",
                 names: &["picker.choose"],
             },
             Binding {

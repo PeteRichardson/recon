@@ -15,6 +15,10 @@ set. When you select a profile, recon turns on only those filters. Thus one
 set can serve different questions. For example, a Wi-Fi set can have one
 profile for a roaming bug and a different profile for a disconnect bug.
 
+`a` on a set's header opens the profile picker. Below the profiles, it also
+lists the set's named filters. Select a filter to turn on only that filter,
+so you do not need a profile for one filter.
+
 A set can also turn itself on at startup (`autoload`), and it can have a
 priority that sets its position in the filter pane.
 
