@@ -952,8 +952,9 @@ its named filters — the same names `--set NAME:LIST` takes. `j`/`k` move,
 `Enter` applies the chosen profile — exactly its members on, the set's other
 filters off — or turns on the chosen filter alone, as `--set NAME:FILTER`
 does, and `Esc` closes without touching a flag. Thus one filter of a set
-needs no profile of its own. The picker takes every key while it is open, as
-a prompt does. A profile is an action, not a live binding: after applying one
+needs no profile of its own. A list taller than the window scrolls to keep
+the selection in view, and the borders count the rows hidden above and
+below. The picker takes every key while it is open, as a prompt does. A profile is an action, not a live binding: after applying one
 you can toggle rows freely and nothing fights you. `a` on a set with no
 profiles and no named filters says so on the status row.
 

@@ -144,7 +144,7 @@ impl Widget for &mut App<'_> {
         // directory, and both are still true while the keymap is up; hiding
         // them would mean the one screen that explains `Ctrl-H` is also the one
         // screen that stops showing whether it is on.
-        if let Some(picker) = &self.picker {
+        if let Some(picker) = self.picker.as_mut() {
             picker.render(area, buf);
         }
         if let Some(picker) = self.set_picker.as_mut() {
