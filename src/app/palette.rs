@@ -325,21 +325,27 @@ impl App<'_> {
         Ok(())
     }
 
-    /// `set NAME[:LIST]`: list the set if it is unlisted and enable it, with
-    /// its `default` profile or the profiles and filters of the list — the
-    /// same as `--set` (#441). The filter pane does not take the focus: the
+    /// `set [+]NAME[:ITEMS]`: list the set if it is unlisted and enable it,
+    /// with its `default` profile or the items of the list — the same as
+    /// `--set` (#441, #538). `+NAME` starts from the flags the pane shows
+    /// now, and a list that changes nothing gets the same hint as at startup.
+    /// The filter pane does not take the focus: the
     /// view shows the change. A name recon does not know changes nothing,
     /// not even a peek.
     fn enable_set(&mut self, argument: &str) -> Result<(), String> {
-        let (set, items) = crate::config::parse_set_spec(argument);
+        let spec = crate::filter::SetSpec::parse(argument);
+        nonempty("set", &spec.name)?;
         let (index, members) = self
             .filters
-            .resolve_named(nonempty("set", &set)?, items.as_deref())
+            .resolve_named(&spec)
             .map_err(|err| err.to_string())?;
         self.relist(|app| {
             app.filters.enable_resolved(index, members.as_deref());
-            app.log_filters(format_args!("enable set {set:?}"));
+            app.log_filters(format_args!("enable set {:?}", spec.name));
         });
+        if let Some(hint) = spec.hint() {
+            self.report(&hint, false);
+        }
         Ok(())
     }
 

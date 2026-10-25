@@ -354,7 +354,7 @@ Options:
           stdin when FILE is `-`. Relative paths are from the current directory
   -f, --follow
           Follow a file that grows, as `tail -f` does
-  -s, --set <NAME[:LIST]>
+  -s, --set <[+]NAME[:LIST]>
           Enable a saved filter set at startup, as `NAME` for its `default`
           profile or `NAME:LIST` for the filters a comma-separated list of
           profiles and filter names turns on. Repeatable
@@ -925,7 +925,20 @@ profile for it, and `--set WiFi_debug:default,retry` adds `retry` to the
 `default` profile's filters. The set's other filters are off, as with a
 profile. Each filter in the list must have a `name`; a filter that has only
 a pattern is reached through a profile. An unknown item is refused at
-startup, and the message lists the set's profiles and its named filters. `--hide` alongside it starts the session in hide mode. A
+startup, and the message lists the set's profiles and its named filters.
+
+The items apply from left to right, and `-` before an item turns its
+filters off: `--set WiFi_debug:default,-retry` is the `default` profile
+without `retry`, and `--set WiFi_debug:@all,-retry` is every filter but
+`retry`. `-` before a profile turns off all its members. A `+` before an
+item only marks it as one that turns on, so `+-x` reaches a filter named
+`-x`. `+` before the set's name keeps the state that the earlier `--set`
+flags gave the set, and changes it: `--set WiFi_debug:triage --set
++WiFi_debug:retry` adds `retry` to `triage`. A `+NAME` for a set that is not
+on yet starts from its `default` profile. A list that starts with a `-` item
+and has no `+` changes nothing, so recon shows a startup warning that names
+the two forms you probably meant. A set name cannot start with `+`, and no
+profile or filter can be named `@all`. `--hide` alongside it starts the session in hide mode. A
 set without a `default` profile comes on with every filter off, exactly as
 `Enter` on its header would leave it — give it a `default` if it is meant to
 be used this way. `--unlist WiFi_debug` does the opposite for one run: the

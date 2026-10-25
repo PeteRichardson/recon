@@ -13,7 +13,7 @@
 //! effective-enabled, profiles as actions — belongs to the `filter` module.
 
 use crate::config::parse_colour;
-use crate::filter::{Engine, Example, LoadedFilter, LoadedSet, Predicate, Sense};
+use crate::filter::{ALL_ITEM, Engine, Example, LoadedFilter, LoadedSet, Predicate, Sense};
 use crate::syntax::Kind;
 use serde::Deserialize;
 use std::collections::BTreeMap;
@@ -236,6 +236,14 @@ fn parse_sets(text: &str, path: &Path) -> Result<Vec<LoadedSet>, Error> {
         if name.is_empty() {
             return Err(invalid(&name, None, "a set's name cannot be empty".into()));
         }
+        // `--set +NAME` keeps the set's state (#538).
+        if name.starts_with('+') {
+            return Err(invalid(
+                &name,
+                None,
+                "a set's name cannot start with `+`; `--set +NAME` reads it as a change".into(),
+            ));
+        }
         // One line (#284): the picker gives each set one row, and a line
         // break would draw over the next set's row.
         if schema
@@ -421,6 +429,11 @@ fn check_item_names(set: &LoadedSet) -> Result<(), String> {
         ));
     }
     let filters = set.item_filter_names();
+    if set.profiles.contains_key(ALL_ITEM) || filters.iter().any(|name| name == ALL_ITEM) {
+        return Err(format!(
+            "{ALL_ITEM:?} is the item for every filter in `--set`; rename the profile or filter"
+        ));
+    }
     let clashes: Vec<String> = set
         .profiles
         .keys()
@@ -933,6 +946,32 @@ mod tests {
     fn a_comma_in_a_pattern_is_accepted() {
         let sets = parsed("[sets.a]\n[[sets.a.filters]]\npattern = 'x{1,2}'\n");
         assert_eq!(sets[0].filters[0].name, "x{1,2}");
+    }
+
+    /// `--set +NAME` keeps a set's state (#538), so a set name cannot start
+    /// with `+`; and `@all` is the item for every filter, so no profile or
+    /// filter can have that name.
+    #[test]
+    fn a_plus_set_name_and_an_at_all_name_are_rejected() {
+        let message = rejected("[sets.'+a']\n[[sets.'+a'.filters]]\npattern = 'x'\n");
+        assert!(
+            message.contains("a set's name cannot start with `+`"),
+            "{message}"
+        );
+
+        let message = rejected(
+            "[sets.a]\n[sets.a.profiles]\n'@all' = ['x']\n[[sets.a.filters]]\nname = 'x'\npattern = 'x'\n",
+        );
+        assert!(
+            message.contains("\"@all\" is the item for every filter"),
+            "{message}"
+        );
+
+        let message = rejected("[sets.a]\n[[sets.a.filters]]\nname = '@all'\npattern = 'x'\n");
+        assert!(
+            message.contains("\"@all\" is the item for every filter"),
+            "{message}"
+        );
     }
 
     #[test]

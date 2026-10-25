@@ -42,6 +42,11 @@ unlisted, and enables it with its `default` profile. This is the same as
 named filters of the list, as `--set NAME:LIST` does. The other filters of
 the set are off.
 
+`:set +DeployLogs:-timeouts` starts from the filters that the pane shows now
+for the set, and turns `timeouts` off. Without the `+`, the list starts with
+all filters of the set off. The items apply from left to right: `-` before
+an item turns its filters off, and `@all` is every filter of the set.
+
 `:unlist DeployLogs` unlists the set, as `--unlist` does.
 
 If recon does not know the set or an item of the list, the palette stays

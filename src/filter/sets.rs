@@ -192,29 +192,134 @@ impl LoadedSet {
     }
 }
 
-/// The filters `--set NAME:LIST` turns on (#441): the union of each item's,
-/// where an item is a profile name — all its members — or one of
-/// `filter_names`. A loaded set never has a name that is both. `Err` holds
-/// the first item that is neither.
-pub fn list_members(
+/// One item of `--set NAME:LIST` without its sign (#538): whether it turns
+/// its filters on, and the name. A `+` only marks an item as one that turns
+/// on, so `+-x` is the filter `-x`.
+fn signed(item: &str) -> (bool, &str) {
+    if let Some(name) = item.strip_prefix('+') {
+        (true, name)
+    } else if let Some(name) = item.strip_prefix('-') {
+        (false, name)
+    } else {
+        (true, item)
+    }
+}
+
+/// The filters the item `name` stands for (#441, #538): all the members of a
+/// profile, one of `filter_names`, or `all` for [`ALL_ITEM`]. A loaded set
+/// never has a name that is two of these. `None` when it is none of them.
+fn item_filters<'a>(
+    profiles: &'a BTreeMap<String, Vec<String>>,
+    filter_names: &'a [String],
+    all: &'a [String],
+    name: &str,
+) -> Option<&'a [String]> {
+    if name == ALL_ITEM {
+        return Some(all);
+    }
+    if let Some(profile) = profiles.get(name) {
+        return Some(profile);
+    }
+    filter_names
+        .iter()
+        .find(|filter| *filter == name)
+        .map(std::slice::from_ref)
+}
+
+/// The first of `items` that is not a profile, a named filter or
+/// [`ALL_ITEM`], after its sign: what `Config::check_sets` refuses before
+/// the terminal comes up. It asks only whether an item names something, so
+/// it needs no list of the set's filters.
+#[must_use]
+pub fn unknown_item<'a>(
     profiles: &BTreeMap<String, Vec<String>>,
     filter_names: &[String],
+    items: &'a [String],
+) -> Option<&'a String> {
+    items
+        .iter()
+        .find(|item| item_filters(profiles, filter_names, &[], signed(item).1).is_none())
+}
+
+/// The filters `--set NAME:LIST` turns on (#441, #538): from `start`, each
+/// item, from left to right, turns its filters on, or off when it starts
+/// with `-`. `Err` holds the first item that names nothing.
+fn list_members(
+    profiles: &BTreeMap<String, Vec<String>>,
+    filter_names: &[String],
+    all: &[String],
+    start: Vec<String>,
     items: &[String],
 ) -> Result<Vec<String>, String> {
-    let mut members = Vec::new();
+    let mut members = start;
     for item in items {
-        if let Some(profile) = profiles.get(item) {
-            members.extend(profile.iter().cloned());
-        } else if filter_names.contains(item) {
-            members.push(item.clone());
-        } else {
-            return Err(item.clone());
+        let (on, name) = signed(item);
+        let named = item_filters(profiles, filter_names, all, name).ok_or_else(|| item.clone())?;
+        members.retain(|member| !named.contains(member));
+        if on {
+            members.extend_from_slice(named);
         }
     }
     Ok(members)
 }
 
-/// Why [`ActiveFilters::enable_named`] could not apply a `--set` (#143).
+/// The `--set` item for every filter of the set, named or not (#538). The
+/// loader refuses it as a profile or filter name.
+pub const ALL_ITEM: &str = "@all";
+
+/// One `[+]NAME[:ITEMS]` of `--set` or of the palette's `set` (#538): the
+/// set's name, whether a `+` before it keeps the set's earlier state, and
+/// the items after the first colon, each still with its sign.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SetSpec {
+    pub name: String,
+    pub keep: bool,
+    pub items: Option<Vec<String>>,
+}
+
+impl SetSpec {
+    /// Read one `[+]NAME[:ITEMS]` (#441, #525, #538). A set name holding a
+    /// colon is misparsed here; the unknown-set error then lists the real
+    /// names, so it is found rather than hidden. The loader refuses a comma
+    /// in a profile or filter name, so the split is exact.
+    #[must_use]
+    pub fn parse(text: &str) -> Self {
+        let (keep, text) = match text.strip_prefix('+') {
+            Some(rest) => (true, rest),
+            None => (false, text),
+        };
+        let (name, items) = match text.split_once(':') {
+            Some((name, list)) => (name, Some(list.split(',').map(str::to_string).collect())),
+            None => (text, None),
+        };
+        Self {
+            name: name.to_string(),
+            keep,
+            items,
+        }
+    }
+
+    /// A hint for a list with no `+` that starts with a `-` item (#538).
+    /// The list starts with all filters off, so that item changes nothing;
+    /// the user probably meant the `default` profile without it, or a change
+    /// to the earlier state.
+    #[must_use]
+    pub fn hint(&self) -> Option<String> {
+        let items = self.items.as_ref()?;
+        let first = items.first()?;
+        if self.keep || !first.starts_with('-') {
+            return None;
+        }
+        let (name, list) = (&self.name, items.join(","));
+        Some(format!(
+            "the list starts with all filters off, so `{first}` changes nothing; \
+             for the default profile without it, write `{name}:default,{list}`; \
+             to change the earlier state, write `+{name}:{list}`"
+        ))
+    }
+}
+
+/// Why [`ActiveFilters::enable_spec`] could not apply a `--set` (#143).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EnableError {
     /// No set of that name — or the scratch set, which has none.
@@ -499,20 +604,29 @@ impl ActiveFilters {
         }
     }
 
-    /// List and enable the set called `set` — `default` profile and all,
-    /// exactly as `set_enabled_set` does — then, when `items` is given,
-    /// enable the union of its profiles and named filters and disable the
-    /// set's others (#143, #441). Every name is checked before anything
-    /// moves, so a refused call changes nothing. `Config::check_sets`
-    /// refuses the same names in `main` before the terminal comes up; this
-    /// is the same lookup, so a name that passed there cannot fail here.
+    /// `enable_spec` for `NAME[:ITEMS]` with no `+`, for the tests.
+    #[cfg(test)]
     pub fn enable_named(&mut self, set: &str, items: Option<&[String]>) -> Result<(), EnableError> {
-        let (index, members) = self.resolve_named(set, items)?;
+        self.enable_spec(&SetSpec {
+            name: set.to_string(),
+            keep: false,
+            items: items.map(<[String]>::to_vec),
+        })
+    }
+
+    /// Apply one `[+]NAME[:ITEMS]` (#143, #441, #538): list and enable the
+    /// set, then set its filters as [`Self::resolve_named`] gives them. Every
+    /// name is checked before anything moves, so a refused call changes
+    /// nothing. `Config::check_sets` refuses the same names in `main` before
+    /// the terminal comes up; this is the same lookup, so a name that passed
+    /// there cannot fail here.
+    pub fn enable_spec(&mut self, spec: &SetSpec) -> Result<(), EnableError> {
+        let (index, members) = self.resolve_named(spec)?;
         self.enable_resolved(index, members.as_deref());
         Ok(())
     }
 
-    /// `enable_named` for what `resolve_named` gave: for a caller with a
+    /// `enable_spec` for what `resolve_named` gave: for a caller with a
     /// step to take after the names are known good and before the change.
     pub(crate) fn enable_resolved(&mut self, index: usize, members: Option<&[String]>) {
         self.set_listed(index, true);
@@ -522,30 +636,53 @@ impl ActiveFilters {
         }
     }
 
-    /// The index of the set called `set` and the filters `items` names in
-    /// it, or the first name that is not there.
+    /// The index of the set `spec` names and the filters to turn on in it,
+    /// or the first name that is not there. `None` is the `default`
+    /// profile, as `Enter` on the header gives it.
+    ///
+    /// The items apply from all filters off; with `keep` (a `+` before the
+    /// name), from the flags of the set if it is enabled, else from its
+    /// `default` profile, so a set that was off comes on as `--set NAME`
+    /// would bring it.
     pub(crate) fn resolve_named(
         &self,
-        set: &str,
-        items: Option<&[String]>,
+        spec: &SetSpec,
     ) -> Result<(usize, Option<Vec<String>>), EnableError> {
-        let index = self.named(set)?;
-        let members = items
-            .map(|items| {
-                let meta = &self.sets[index];
-                list_members(&meta.profiles, &meta.filter_names, items).map_err(|item| {
-                    EnableError::UnknownItem {
-                        set: set.to_string(),
-                        item,
-                    }
-                })
-            })
-            .transpose()?;
-        Ok((index, members))
+        let index = self.named(&spec.name)?;
+        let meta = &self.sets[index];
+        let kept = spec.keep && meta.listed && meta.enabled;
+        let start = if kept {
+            self.enabled_names(index)
+        } else if spec.keep {
+            meta.profiles.get("default").cloned().unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        let Some(items) = &spec.items else {
+            return Ok((index, kept.then_some(start)));
+        };
+        let all: Vec<String> = self
+            .filters_in(index)
+            .map(|(_, filter)| filter.display_name())
+            .collect();
+        let members = list_members(&meta.profiles, &meta.filter_names, &all, start, items)
+            .map_err(|item| EnableError::UnknownItem {
+                set: spec.name.clone(),
+                item,
+            })?;
+        Ok((index, Some(members)))
+    }
+
+    /// The display names of the enabled filters of `set`, in pane order.
+    pub(crate) fn enabled_names(&self, set: usize) -> Vec<String> {
+        self.filters_in(set)
+            .filter(|(_, filter)| filter.enabled)
+            .map(|(_, filter)| filter.display_name())
+            .collect()
     }
 
     /// Unlist the set called `set`, as `set_listed` does (#283). The same
-    /// lookup as `enable_named`, so `Config::check_sets` refuses in `main`
+    /// lookup as `enable_spec`, so `Config::check_sets` refuses in `main`
     /// every name that would fail here.
     pub fn unlist_named(&mut self, set: &str) -> Result<(), EnableError> {
         let index = self.named(set)?;
@@ -894,10 +1031,7 @@ mod tests {
     }
 
     fn enabled_names(set: &ActiveFilters) -> Vec<String> {
-        set.filters_in(1)
-            .filter(|(_, filter)| filter.enabled)
-            .map(|(_, filter)| filter.display_name())
-            .collect()
+        set.enabled_names(1)
     }
 
     #[test]
@@ -960,6 +1094,76 @@ mod tests {
             .expect("known filter");
 
         assert_eq!(enabled_names(&set), ["y"]);
+    }
+
+    /// `--set a:p,-z`: a `-` item turns off what the items before it
+    /// turned on (#538).
+    #[test]
+    fn enable_named_turns_off_a_minus_item() {
+        let mut set = with_profiles();
+
+        set.enable_named("a", Some(&items(&["p", "-z"])))
+            .expect("known items");
+
+        assert_eq!(enabled_names(&set), ["y"]);
+    }
+
+    /// The items apply from left to right, so a later item wins; and `+`
+    /// reaches a filter whose name starts with `-` (#538).
+    #[test]
+    fn enable_named_applies_items_in_order_and_plus_escapes_a_sign() {
+        let mut set = ActiveFilters::with_sets(None, &[loaded("a", 50, false, &["x", "-w"])]);
+
+        set.enable_named("a", Some(&items(&["-x", "x", "+-w"])))
+            .expect("known items");
+
+        assert_eq!(enabled_names(&set), ["x", "-w"]);
+    }
+
+    /// `@all` turns on every filter of the set, also one with no name
+    /// (#538).
+    #[test]
+    fn enable_named_turns_on_every_filter_for_at_all() {
+        let mut loaded = loaded("a", 50, false, &["x", "y", "z"]);
+        loaded.filters[2].named = false;
+        let mut set = ActiveFilters::with_sets(None, &[loaded]);
+
+        set.enable_named("a", Some(&items(&["@all", "-y"])))
+            .expect("known items");
+
+        assert_eq!(enabled_names(&set), ["x", "z"]);
+    }
+
+    fn spec(text: &str) -> SetSpec {
+        SetSpec::parse(text)
+    }
+
+    /// `+a:ITEMS` on an enabled set starts from the flags it has now, and
+    /// `+a` alone changes nothing (#538).
+    #[test]
+    fn enable_spec_with_keep_starts_from_an_enabled_sets_flags() {
+        let mut set = with_profiles();
+        set.enable_named("a", Some(&items(&["p"]))).expect("known");
+
+        set.enable_spec(&spec("+a")).expect("known");
+        assert_eq!(enabled_names(&set), ["y", "z"]);
+
+        set.enable_spec(&spec("+a:x,-z")).expect("known");
+        assert_eq!(enabled_names(&set), ["x", "y"]);
+    }
+
+    /// A disabled set has no state to keep: `+a:ITEMS` starts from its
+    /// `default` profile, as `--set a` does (#538).
+    #[test]
+    fn enable_spec_with_keep_starts_a_disabled_set_from_default() {
+        let mut set = with_profiles();
+        set.enable_named("a", Some(&items(&["p"]))).expect("known");
+        set.set_enabled_set(1, false);
+
+        set.enable_spec(&spec("+a:-x,z")).expect("known");
+
+        assert!(set.sets()[1].enabled);
+        assert_eq!(enabled_names(&set), ["z"]);
     }
 
     /// A filter whose name is its pattern cannot be a list item (#441).

@@ -402,12 +402,7 @@ impl App<'_> {
                     ..filtersets::FilterToSave::new(filter.predicate.display(), filter.sense)
                 })
                 .collect(),
-            default: self
-                .filters
-                .filters_in(0)
-                .filter(|(_, filter)| filter.enabled)
-                .map(|(_, filter)| filter.display_name())
-                .collect(),
+            default: self.filters.enabled_names(0),
         };
         let before = match std::fs::read_to_string(&path) {
             Ok(text) => text,
