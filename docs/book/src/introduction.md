@@ -111,8 +111,8 @@ other filter changes, the reference changes with it, so two filters cannot
 become different by accident. For patterns that standard regular
 expressions cannot write, such as "contains A and B in either order", you can
 mark a filter as *advanced*. An advanced filter uses a second engine with
-lookahead and lookbehind, and has a step limit so that a slow pattern cannot
-stop recon. See [About references and advanced filters](advanced-filters.md).
+lookahead and lookbehind, and has a step limit so that a pattern that
+backtracks too much cannot stop recon. See [About references and advanced filters](advanced-filters.md).
 
 ### Filters that operate on what you see
 

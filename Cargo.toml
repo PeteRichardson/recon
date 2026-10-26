@@ -176,6 +176,11 @@ two-face = "0.5"
 # links for syntect, named here so recon can call it; `default-features =
 # false` as syntect has it, so no second build of the C library.
 onig = { version = "6.5", default-features = false }
+# `onig` has no safe method for Oniguruma's step limit for a whole search,
+# only for one match attempt (#551). The C function is in `onig_sys`, at the
+# version `onig` already uses; `default-features = false` for the same
+# reason as above.
+onig_sys = { version = "69.9", default-features = false }
 
 # The image view (#458). `ratatui-image` finds the terminal's graphics
 # protocol — kitty, iTerm2 or sixel — and falls back to half-blocks, so an

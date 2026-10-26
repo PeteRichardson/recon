@@ -1598,8 +1598,16 @@ Oniguruma can backtrack, so some patterns take a very long time on some
 lines. To prevent this, an advanced filter has a step limit: a line that
 takes more steps than the limit counts as no match for that filter. The row
 then shows how many lines of the open file did that, for example
-`⚠ 3 lines over the step limit`. The limit is a count of steps, not a time,
-so a line gives the same result on every computer. To change it:
+`⚠ 3 lines over the step limit`. The limit is for the whole line, not for
+each position where a match can start. The limit is a count of steps, not a
+time, so a line gives the same result on every computer.
+
+A step is one backtrack. Oniguruma does not count the characters it reads
+forward. Thus a pattern with no `^` that starts with `.*`, for example
+`(?=.*a)(?=.*b)`, can still be slow on a very long line that has no `b`:
+each start position reads to the end of the line, and no step is counted.
+Start such a pattern with `^`, so that Oniguruma tries only one position.
+To change the limit:
 
 ```toml
 # ~/.config/recon/config.toml

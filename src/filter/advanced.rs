@@ -106,7 +106,9 @@ impl Lookaround {
         Ok(self.search(line, 0, limit, None)?.is_some())
     }
 
-    /// One search from byte `from`, with `limit` steps.
+    /// One search from byte `from`, with `limit` steps for the whole
+    /// search. Oniguruma's match limit is for one start position, and a
+    /// search tries each one, so it alone does not limit a line (#551).
     fn search(
         &self,
         line: &str,
@@ -115,7 +117,15 @@ impl Lookaround {
         region: Option<&mut onig::Region>,
     ) -> Result<Option<usize>, OverLimit> {
         let mut param = onig::MatchParam::default();
+        // Still set: Oniguruma's own match limit applies otherwise, and
+        // would cap a `limit` above it.
         param.set_retry_limit_in_match(limit);
+        // SAFETY: `as_raw` is the live parameter that `param` owns and
+        // frees on drop, and this setter only writes a field in it. `onig`
+        // has no safe method for it.
+        unsafe {
+            onig_sys::onig_set_retry_limit_in_search_of_match_param(param.as_raw(), limit.into());
+        }
         self.regex
             .search_with_param(
                 line,
@@ -383,6 +393,66 @@ mod tests {
             set.verdict_noting("abc", KindSet::EMPTY, |index| over.push(index)),
             Verdict::Included(0),
             "a line inside the limit still matches"
+        );
+        assert_eq!(over, Vec::<usize>::new());
+    }
+
+    /// A pattern with no `^` that starts with `.*` (ADR 0008's shape) reads
+    /// to the end of the line from each start position, so a long line
+    /// that does not match costs the square of its length (#551).
+    const UNANCHORED: &str = "(?=.*a)(?=.*bc)";
+
+    /// PR #550's line was 129,648 characters long. It has no `bc`, so it
+    /// does not match, and a `b` at every other character, so each start
+    /// position backtracks at each `b` after it: steps the limit counts.
+    fn long_line() -> String {
+        "ab".repeat(65_000)
+    }
+
+    /// `f`'s answer, after a check that it took less than a second.
+    fn within_a_second<T>(f: impl FnOnce() -> T) -> T {
+        let started = std::time::Instant::now();
+        let answer = f();
+        let took = started.elapsed();
+        assert!(took < std::time::Duration::from_secs(1), "took {took:?}");
+        answer
+    }
+
+    /// The limit is for the whole line, not for each start position: the
+    /// search stops, and the line is no match and is reported.
+    #[test]
+    fn a_long_line_is_over_the_limit_for_the_whole_search() {
+        let set = advanced(UNANCHORED);
+        let line = long_line();
+        let mut over = Vec::new();
+        assert_eq!(
+            within_a_second(|| {
+                set.verdict_noting(&line, KindSet::EMPTY, |index| over.push(index))
+            }),
+            Verdict::Unmatched
+        );
+        assert_eq!(over, vec![0]);
+    }
+
+    /// The scan reads the same long line as fast, as no match.
+    #[test]
+    fn the_scan_stops_on_a_long_line_over_the_limit() {
+        let set = advanced(UNANCHORED);
+        let matcher = set.matcher().expect("selects");
+        let line = long_line();
+        assert!(!within_a_second(|| matcher.selects(matcher.bits(&line))));
+    }
+
+    /// With `^`, there is one start position, so the same long line is
+    /// inside the limit and matches as before. The pattern asks for `b`,
+    /// not `bc`, so that the line matches.
+    #[test]
+    fn an_anchored_pattern_on_a_long_line_is_inside_the_limit() {
+        let set = advanced("^(?=.*a)(?=.*b)");
+        let mut over = Vec::new();
+        assert_eq!(
+            set.verdict_noting(&long_line(), KindSet::EMPTY, |index| over.push(index)),
+            Verdict::Included(0)
         );
         assert_eq!(over, Vec::<usize>::new());
     }
