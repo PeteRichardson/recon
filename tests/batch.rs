@@ -636,6 +636,25 @@ fn clear_unlists_every_set_but_the_ones_set_names() {
     );
     assert_eq!(text(&out.stdout), "hit\nother\n", "only Noise applies");
 
+    // `@all` is every filter of the file's set, also when `--clear` has
+    // unlisted it before `--set` runs.
+    let out = recon(
+        &home,
+        &["--emit", "lines", "--clear", "--set", "+Noise:-@all", &path],
+        b"",
+    );
+    assert_eq!(
+        text(&out.stdout),
+        "hit\nmiss\nother\n",
+        "Noise is on, all off"
+    );
+    let out = recon(
+        &home,
+        &["--emit", "lines", "--clear", "--set", "Bugs:@all", &path],
+        b"",
+    );
+    assert_eq!(text(&out.stdout), "hit\n", "every Bugs filter is on");
+
     let out = recon_with(
         &home,
         &["--emit", "lines", "--set", "Noise", &path],

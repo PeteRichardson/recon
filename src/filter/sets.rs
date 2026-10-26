@@ -665,7 +665,16 @@ impl ActiveFilters {
         let Some(items) = &spec.items else {
             return Ok((index, kept.then_some(start)));
         };
-        let all = self.display_names(index);
+        // An unlisted set has no filters in the pane; listing it gives the
+        // file's filters, so `@all` is those (#533).
+        let all = if meta.listed {
+            self.display_names(index)
+        } else {
+            self.as_loaded[index]
+                .iter()
+                .map(Filter::display_name)
+                .collect()
+        };
         let members = list_members(&meta.profiles, &meta.filter_names, &all, start, items)
             .map_err(|item| EnableError::UnknownItem {
                 set: spec.name.clone(),
@@ -1180,6 +1189,21 @@ mod tests {
 
         assert!(set.sets()[1].enabled);
         assert_eq!(enabled_names(&set), ["z"]);
+    }
+
+    /// An unlisted set has no filters in the pane, but `@all` is still every
+    /// filter of its file: `--set` lists it with those (#533).
+    #[test]
+    fn enable_spec_reads_all_from_the_file_for_an_unlisted_set() {
+        let mut set = with_profiles();
+        set.set_listed(1, false);
+        set.enable_spec(&spec("+a:-@all")).expect("known");
+        assert!(set.sets()[1].enabled);
+        assert!(enabled_names(&set).is_empty(), "{:?}", enabled_names(&set));
+
+        set.set_listed(1, false);
+        set.enable_spec(&spec("a:@all")).expect("known");
+        assert_eq!(enabled_names(&set), ["x", "y", "z"]);
     }
 
     /// A filter whose name is its pattern cannot be a list item (#441).
