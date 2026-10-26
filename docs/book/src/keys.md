@@ -40,5 +40,6 @@ The default keys that this guide names. `?` in recon shows the full keymap.
 | `f I` / `f C` | Open the filter editor on a new / the selected filter |
 | `Enter` | In the filter pane: turn the selected filter on or off |
 | `m` | In the filter pane: change the selected filter between include and context |
+| `&` | In the filter pane: add a require row from the selected filter, with a text |
 | `S` | In the filter pane: save the typed filters as a new set |
 | `L` | Open the set picker |

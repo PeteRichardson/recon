@@ -15,11 +15,13 @@
 mod advanced;
 mod matcher;
 mod reference;
+mod require;
 mod sets;
 
 pub use advanced::{DEFAULT_STEP_LIMIT, Engine, LineRegex, Lookaround, OverLimit, PatternError};
 pub use matcher::{Bits, MAX_PATTERNS, Matcher, Owner, ScanOff, ScanStamp};
 pub use reference::{Broken, Expander};
+pub use require::{RequireError, label};
 pub use sets::{
     ALL_ITEM, DEFINITIONS_DESCRIPTION, DEFINITIONS_SET, EnableError, FilterSet, LoadedFilter,
     LoadedSet, Origin, SetSpec, is_builtin_name, unknown_item,
@@ -259,10 +261,28 @@ pub enum Predicate {
     /// Oniguruma, references and all, or why it cannot be. Its slot in the
     /// compiled set is `NEVER`; the verdict tests it on its own, with the
     /// step limit. See `advanced`.
+    ///
+    /// `also` is a require row's extra text (#548): the line must match
+    /// `typed` and `also`, in either order. Two fields, so the pane edits
+    /// the text and never parses a pattern. `None` for every other filter;
+    /// empty means `typed` alone. See `joined`.
     Advanced {
         typed: String,
+        also: Option<String>,
         compiled: Result<Lookaround, Broken>,
     },
+}
+
+/// What an advanced predicate compiles (#548): `typed`, or with a
+/// require row's extra text `also`, a line that has both, in either order.
+/// Lookaheads, not `typed.*also`: that fails when `typed` can match the
+/// text too, and takes it before `also` can. An empty `also` is `typed`
+/// alone.
+pub(crate) fn joined<'a>(typed: &'a str, also: Option<&str>) -> std::borrow::Cow<'a, str> {
+    match also {
+        Some(also) if !also.is_empty() => format!("(?=.*(?:{typed}))(?=.*(?:{also}))").into(),
+        _ => typed.into(),
+    }
 }
 
 /// A regex that matches nothing: an empty character class. Stands in for a
@@ -355,9 +375,13 @@ impl Predicate {
             Self::Definition(kind) => format!("\u{1}{kind}"),
             // Not `NEVER`: the scan tests an advanced filter on its own,
             // so its bits change with its pattern.
-            Self::Advanced { typed, compiled } => match compiled {
+            Self::Advanced {
+                typed,
+                also,
+                compiled,
+            } => match compiled {
                 Ok(lookaround) => format!("\u{2}{}", lookaround.as_str()),
-                Err(_) => format!("\u{3}{typed}"),
+                Err(_) => format!("\u{3}{}", joined(typed, also.as_deref())),
             },
             Self::Regex(_) | Self::Referring { .. } => self.source().to_string(),
         }
@@ -426,6 +450,24 @@ pub struct Filter {
 }
 
 impl Filter {
+    /// A new, enabled scratch filter with nothing but its pattern, sense
+    /// and colour: what a prompt, the palette or `&` adds.
+    fn scratch(predicate: Predicate, sense: Sense, style: Style) -> Self {
+        Self {
+            id: FilterId::fresh(),
+            predicate,
+            sense,
+            enabled: true,
+            style,
+            name: None,
+            description: None,
+            prompt: None,
+            examples: Vec::new(),
+            generated_from: None,
+            set: 0,
+        }
+    }
+
     /// Take the filter editor's fields (#317, #318, #321).
     fn apply(&mut self, details: Details) {
         self.name = details.name;
@@ -442,6 +484,7 @@ impl Filter {
     fn same_text(&self, other: &Self) -> bool {
         self.predicate.display() == other.predicate.display()
             && self.predicate.engine() == other.predicate.engine()
+            && self.predicate.also() == other.predicate.also()
             && self.sense == other.sense
             && self.name == other.name
             && self.description == other.description
@@ -458,7 +501,7 @@ impl Filter {
     pub fn display_name(&self) -> String {
         self.name
             .clone()
-            .unwrap_or_else(|| self.predicate.display())
+            .unwrap_or_else(|| require::label(&self.predicate.display(), self.predicate.also()))
     }
 
     /// Whether the model wrote this filter's pattern from its prompt
@@ -781,19 +824,7 @@ impl ActiveFilters {
         } else {
             self.next_style()
         };
-        self.insert_scratch(Filter {
-            id: FilterId::fresh(),
-            predicate,
-            sense,
-            enabled: true,
-            style,
-            name: None,
-            description: None,
-            prompt: None,
-            examples: Vec::new(),
-            generated_from: None,
-            set: 0,
-        });
+        self.insert_scratch(Filter::scratch(predicate, sense, style));
         Ok(())
     }
 
@@ -813,19 +844,11 @@ impl ActiveFilters {
     #[cfg(test)]
     pub(crate) fn add_definition(&mut self, kind: Kind) {
         let style = self.next_style();
-        self.insert_scratch(Filter {
-            id: FilterId::fresh(),
-            predicate: Predicate::Definition(kind),
-            sense: Sense::Include,
-            enabled: true,
+        self.insert_scratch(Filter::scratch(
+            Predicate::Definition(kind),
+            Sense::Include,
             style,
-            name: None,
-            description: None,
-            prompt: None,
-            examples: Vec::new(),
-            generated_from: None,
-            set: 0,
-        });
+        ));
     }
 
     /// Whether any filter is a definition predicate, and so needs the
@@ -978,7 +1001,7 @@ impl ActiveFilters {
             .filters
             .get(index)
             .map_or(Engine::Standard, |filter| filter.predicate.engine());
-        let predicate = Predicate::parse_as(pattern, engine)?;
+        let predicate = self.reparse(index, pattern, engine)?;
         let changed = self.change(index, |filter| {
             filter.predicate = predicate;
         });
@@ -1003,7 +1026,7 @@ impl ActiveFilters {
         engine: Engine,
         details: Details,
     ) -> Result<bool, PatternError> {
-        let predicate = Predicate::parse_as(pattern, engine)?;
+        let predicate = self.reparse(index, pattern, engine)?;
         let changed = self.change(index, |filter| {
             filter.predicate = predicate;
             filter.apply(details);
@@ -1012,6 +1035,21 @@ impl ActiveFilters {
             self.recompile();
         }
         Ok(changed)
+    }
+
+    /// The predicate for a new `pattern` of the filter at `index`, read by
+    /// `engine`. A require row keeps its extra text while it stays advanced
+    /// (#548): a new base is not a new text.
+    fn reparse(
+        &self,
+        index: usize,
+        pattern: &str,
+        engine: Engine,
+    ) -> Result<Predicate, PatternError> {
+        match self.filters.get(index).and_then(|f| f.predicate.also()) {
+            Some(also) if engine == Engine::Advanced => Predicate::parse_also(pattern, Some(also)),
+            _ => Predicate::parse_as(pattern, engine),
+        }
     }
 
     /// Whether a filter other than the one at `index` — or any filter of

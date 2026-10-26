@@ -152,6 +152,13 @@ pub(crate) enum FilterCommand {
     Solo(usize),
     /// `R` anywhere in the pane: every set back to its startup state (#132).
     Reset,
+    /// `&` on a filter's row (#548): add a require row whose base is this
+    /// filter, and ask for its text.
+    Require(usize),
+    /// `Enter` on the Require head (#548): switch the require rows.
+    ToggleRequire,
+    /// A filter verb on the Require head, which is not a filter.
+    NotAFilter,
     /// `d`, `c` or `C` on a built-in filter's row (#127): recon's filters can be
     /// switched and collapsed, not deleted or rewritten.
     BuiltInIsReadOnly,

@@ -809,15 +809,22 @@ impl Explorer<'_> {
     /// files there are: the progress `q` under `--emit files` shows while it
     /// waits for the rest (#352).
     pub(crate) fn answered(&self) -> (usize, usize) {
+        self.count_files(|matched| !matches!(matched, Match::Unknown))
+    }
+
+    /// How many of the listing's files are marked, and how many files
+    /// there are: the Require head's count (#548).
+    pub(crate) fn marked(&self) -> (usize, usize) {
+        self.count_files(Match::is_yes)
+    }
+
+    /// How many of the listing's files `test` holds for, by their answer,
+    /// and how many files there are.
+    fn count_files(&self, test: impl Fn(Match) -> bool) -> (usize, usize) {
         let files = self.entries.iter().filter(|entry| entry.kind.is_readable());
-        let (mut answered, mut total) = (0, 0);
-        for entry in files {
-            total += 1;
-            if !matches!(entry.matched, Match::Unknown) {
-                answered += 1;
-            }
-        }
-        (answered, total)
+        files.fold((0, 0), |(held, total), entry| {
+            (held + usize::from(test(entry.matched)), total + 1)
+        })
     }
 
     /// The files among the rows currently on screen, in row order (#143).

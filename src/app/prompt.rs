@@ -68,6 +68,13 @@ pub(super) enum PromptKind {
     /// `:`, the command palette (#520): the line is a command and its
     /// arguments, and Enter runs it through `run_command`.
     Command,
+    /// The extra text of the require row at `index` (#548): `&` asks for
+    /// it, and `c` on the row changes it. The base is not in the field, so
+    /// the user changes the host and nothing else. Empty is allowed: the
+    /// row then requires its base alone.
+    Also {
+        index: usize,
+    },
 }
 
 /// Where the user was when `/` opened (glossary: *origin*), in whichever
@@ -186,6 +193,9 @@ pub(super) struct SearchPrompt {
     /// off the end to an empty prompt. Typing after a recall leaves it
     /// where it is, so the next Up still goes to the entry before.
     pub(super) recall: Option<usize>,
+    /// What the row shows before the pattern in place of the kind's sigil:
+    /// a require row's base (#548), which no fixed text can name.
+    pub(super) label: Option<String>,
     /// How many columns of the pattern are scrolled off the left of a
     /// filter editor field (#361), which `window` moves to keep the cursor
     /// on the screen. The bottom row does not scroll.
@@ -203,7 +213,10 @@ impl SearchPrompt {
     /// thing. What differs is where it lands, and the pre-filled pattern
     /// already says that: a prompt that opens with text in it is editing
     /// something, and one that opens empty is making something new.
-    pub(super) fn sigil(&self) -> &'static str {
+    pub(super) fn sigil(&self) -> &str {
+        if let Some(label) = &self.label {
+            return label;
+        }
         match self.kind {
             PromptKind::Search => "/",
             PromptKind::Filter
@@ -218,6 +231,7 @@ impl SearchPrompt {
             } => "exclude: ",
             PromptKind::SaveSet => "save as: ",
             PromptKind::Command => ":",
+            PromptKind::Also { .. } => "require & ",
         }
     }
 
@@ -513,6 +527,7 @@ impl App<'_> {
                         PromptKind::Filter => self.add_filter(&pattern),
                         PromptKind::Exclude => self.add_excluding_filter(&pattern),
                         PromptKind::Edit { index, .. } => self.replace_filter(index, &pattern),
+                        PromptKind::Also { index } => self.set_require_text(index, &pattern),
                     };
                     if outcome.is_ok() {
                         let origin = self.prompt.take().and_then(|prompt| prompt.origin);
@@ -548,7 +563,10 @@ impl App<'_> {
                         self.swallow_next_enter = true;
                         if matches!(
                             kind,
-                            PromptKind::Filter | PromptKind::Exclude | PromptKind::Edit { .. }
+                            PromptKind::Filter
+                                | PromptKind::Exclude
+                                | PromptKind::Edit { .. }
+                                | PromptKind::Also { .. }
                         ) {
                             self.return_to_chain_origin();
                         }

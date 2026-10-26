@@ -152,6 +152,59 @@ impl App<'_> {
         Ok(())
     }
 
+    /// "Require from this" (#548): add a require row whose base is the
+    /// filter at `index`, with `text` as its extra text, or with none and
+    /// a prompt for it. The pane's cursor goes to the new row. `Err` is
+    /// why there is no row; the base is unchanged.
+    pub(super) fn require_from(&mut self, index: usize, text: Option<&str>) -> Result<(), String> {
+        let row = self
+            .filters
+            .add_require(index, text.unwrap_or(""))
+            .map_err(|error| error.to_string())?;
+        let pattern = self.pattern_of(row);
+        self.log_filters(format_args!("add require {pattern:?}"));
+        self.refresh_view();
+        let rows = widgets::filterlist::rows(&self.filters);
+        self.filters_pane
+            .follow(widgets::filterlist::Row::Filter(row), &rows);
+        if text.is_none() {
+            self.ask_require_text(row);
+        }
+        Ok(())
+    }
+
+    /// Open the prompt for the extra text of the require row at `index`,
+    /// with its base before the field.
+    fn ask_require_text(&mut self, index: usize) {
+        let Some(filter) = self.filters.filters().get(index) else {
+            return;
+        };
+        let mut prompt = SearchPrompt::editing(
+            filter.predicate.also().unwrap_or_default().to_string(),
+            PromptKind::Also { index },
+        );
+        prompt.label = Some(format!(
+            "require {} & ",
+            filter.predicate.typed().unwrap_or_default()
+        ));
+        self.prompt = Some(prompt);
+    }
+
+    /// Give the require row at `index` a new extra text: the Enter of the
+    /// prompt `ask_require_text` opens. A full re-evaluate, and a new scan,
+    /// as for a new pattern.
+    pub(super) fn set_require_text(
+        &mut self,
+        index: usize,
+        text: &str,
+    ) -> Result<(), filter::PatternError> {
+        if self.filters.set_also(index, text)? {
+            self.log_filters(format_args!("require text {text:?}"));
+            self.refresh_view();
+        }
+        Ok(())
+    }
+
     /// After a change to the filter at `index`: say it is in memory only,
     /// when the change leaves a file set different from its file (#348).
     /// `S` writes only the scratch set, so nothing in recon saves it.
@@ -407,6 +460,7 @@ impl App<'_> {
                         .then(|| filter.generated_from.clone())
                         .flatten(),
                     engine: filter.predicate.engine(),
+                    also: filter.predicate.also().map(str::to_string),
                     ..filtersets::FilterToSave::new(filter.predicate.display(), filter.sense)
                 })
                 .collect(),
@@ -595,6 +649,24 @@ impl App<'_> {
                 self.open_filter_editor_on(index);
                 return;
             }
+            FilterCommand::Require(index) => {
+                if let Err(message) = self.require_from(index, None) {
+                    self.report(&message, false);
+                }
+                return;
+            }
+            FilterCommand::ToggleRequire => {
+                if self.filters.toggle_require_rows() {
+                    self.log_filters(format_args!("toggle the require rows"));
+                }
+            }
+            FilterCommand::NotAFilter => {
+                self.report(
+                    "the Require head is not a filter; select a row under it",
+                    false,
+                );
+                return;
+            }
             FilterCommand::BuiltInIsReadOnly => {
                 self.report(
                     "built-in filters can be switched off or collapsed, not deleted or edited",
@@ -619,14 +691,22 @@ impl App<'_> {
                 // there; falling out silently rather than indexing keeps that
                 // a property of the pane's own bounds, not a promise this
                 // function has to make.
-                if let Some(filter) = self.filters.filters().get(index) {
-                    self.prompt = Some(SearchPrompt::editing(
-                        filter.predicate.display(),
-                        PromptKind::Edit {
-                            index,
-                            sense: filter.sense,
-                        },
-                    ));
+                match self.filters.filters().get(index) {
+                    // A require row's base is a reference, and stays
+                    // (#548): `c` changes its text only.
+                    Some(filter) if filter.predicate.also().is_some() => {
+                        self.ask_require_text(index);
+                    }
+                    Some(filter) => {
+                        self.prompt = Some(SearchPrompt::editing(
+                            filter.predicate.display(),
+                            PromptKind::Edit {
+                                index,
+                                sense: filter.sense,
+                            },
+                        ));
+                    }
+                    None => {}
                 }
                 return;
             }
