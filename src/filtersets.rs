@@ -84,6 +84,9 @@ struct FilterSchema {
     /// Which engine reads `pattern` (#474): `advanced` for Oniguruma, with
     /// lookaround. Absent is `standard`.
     engine: Option<EngineSchema>,
+    /// A require row's extra text (#548): a line must match `pattern` and
+    /// this, in either order. Read by the advanced engine.
+    also: Option<String>,
 }
 
 /// `engine` as the file spells it, for the reason `SenseSchema` gives.
@@ -329,10 +332,24 @@ fn parse_sets(text: &str, path: &Path) -> Result<Vec<LoadedSet>, Error> {
             // What the pane will call it, and so what a message calls it
             // (#200): the `name` when there is one, the pattern otherwise.
             let named = entry.name.is_some();
-            let display = entry.name.unwrap_or_else(|| entry.pattern.clone());
-            let engine = entry.engine.map_or(Engine::Standard, Engine::from);
-            let predicate = Predicate::parse_as(&entry.pattern, engine)
-                .map_err(|err| invalid(&name, Some(&display), err.to_string()))?;
+            let display = entry
+                .name
+                .unwrap_or_else(|| crate::filter::label(&entry.pattern, entry.also.as_deref()));
+            let predicate = match (&entry.also, entry.engine) {
+                (Some(_), Some(EngineSchema::Standard)) => {
+                    return Err(invalid(
+                        &name,
+                        Some(&display),
+                        "`also` is read by the advanced engine; remove `engine`".into(),
+                    ));
+                }
+                (Some(also), _) => Predicate::parse_also(&entry.pattern, Some(also)),
+                (None, engine) => Predicate::parse_as(
+                    &entry.pattern,
+                    engine.map_or(Engine::Standard, Engine::from),
+                ),
+            }
+            .map_err(|err| invalid(&name, Some(&display), err.to_string()))?;
             let colour = entry
                 .colour
                 .as_deref()
@@ -540,8 +557,10 @@ pub struct FilterToSave {
     pub examples: Vec<Example>,
     /// Written only for a filter the model wrote (#321).
     pub generated_from: Option<String>,
-    /// Written only for an advanced filter (#474).
+    /// Written only for an advanced filter (#474) with no `also`.
     pub engine: Engine,
+    /// A require row's extra text (#548), written as `also`.
+    pub also: Option<String>,
 }
 
 impl FilterToSave {
@@ -557,6 +576,7 @@ impl FilterToSave {
             examples: Vec::new(),
             generated_from: None,
             engine: Engine::Standard,
+            also: None,
         }
     }
 }
@@ -627,8 +647,12 @@ pub fn append_set(text: &str, set: &SetToSave<'_>) -> Result<String, String> {
             filter.insert("prompt", value(prompt.as_str()));
         }
         filter.insert("pattern", literal_string(&entry.pattern)?);
-        // Beside the pattern, as it says how the pattern is read.
-        if entry.engine == Engine::Advanced {
+        // Under the pattern, as the second half of it (#548). It implies
+        // the advanced engine, so that key is left out.
+        if let Some(also) = &entry.also {
+            filter.insert("also", literal_string(also)?);
+        } else if entry.engine == Engine::Advanced {
+            // Beside the pattern, as it says how the pattern is read.
             filter.insert("engine", value(Engine::Advanced.name()));
         }
         // Beside the pattern, as it is a hash of the pattern and the prompt.
@@ -1329,6 +1353,55 @@ sense = "context"
         let sets = parse(&after, Path::new("t")).expect("round-trips");
         let saved = sets.iter().find(|set| set.name == "hosts").expect("saved");
         assert_eq!(saved.filters[0].sense, Sense::Require);
+    }
+
+    /// A require row (#548) saves its base and its extra text as two
+    /// keys, with no `engine`: `also` is always read by the advanced one.
+    /// It reads back the same, with the profile naming it as the pane does.
+    #[test]
+    fn a_require_row_saves_its_base_and_text_as_two_keys() {
+        let after = append_set(
+            "",
+            &SetToSave {
+                name: "hosts",
+                filters: vec![
+                    FilterToSave {
+                        also: Some("Zeus".into()),
+                        engine: Engine::Advanced,
+                        ..FilterToSave::new("^Host: ", Sense::Require)
+                    },
+                    FilterToSave {
+                        also: Some(String::new()),
+                        engine: Engine::Advanced,
+                        ..FilterToSave::new("^Robot: ", Sense::Require)
+                    },
+                ],
+                default: vec!["^Host:  & Zeus".into()],
+            },
+        )
+        .expect("edits");
+        assert!(
+            after.contains("pattern = '^Host: '\nalso = 'Zeus'\n"),
+            "{after}"
+        );
+        assert!(!after.contains("engine"), "{after}");
+
+        let sets = parse(&after, Path::new("t")).expect("round-trips");
+        let saved = sets.iter().find(|set| set.name == "hosts").expect("saved");
+        let zeus = &saved.filters[0];
+        assert_eq!(zeus.name, "^Host:  & Zeus");
+        assert_eq!(zeus.predicate.typed(), Some("^Host: "));
+        assert_eq!(zeus.predicate.also(), Some("Zeus"));
+        assert_eq!(zeus.predicate.engine(), Engine::Advanced);
+        assert_eq!(saved.filters[1].predicate.also(), Some(""));
+    }
+
+    #[test]
+    fn also_with_the_standard_engine_is_rejected() {
+        let message = rejected(
+            "[sets.a]\n[[sets.a.filters]]\npattern = 'x'\nalso = 'y'\nengine = 'standard'\n",
+        );
+        assert!(message.contains("also"), "{message}");
     }
 
     #[test]

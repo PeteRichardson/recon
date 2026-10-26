@@ -251,8 +251,16 @@ impl App<'_> {
                     crate::keymap::ActionId::GlobalFocusFilters,
                     crate::keymap::ActionId::FiltersInclude,
                 ]);
-                self.filters_pane
-                    .render(&self.filters, add.as_deref(), area, buf);
+                self.filters_pane.render(
+                    &self.filters,
+                    add.as_deref(),
+                    self.filters
+                        .require_rows()
+                        .next()
+                        .map(|_| self.explorer.marked()),
+                    area,
+                    buf,
+                );
             }
         }
     }

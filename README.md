@@ -819,6 +819,11 @@ pattern = 'beacon loss'
 sense   = "context"                      # include (default) | context | require | exclude
 
 [[sets.WiFi_debug.filters]]
+pattern = '${beacon-loss}'               # a require row (#548): the base…
+also    = 'wlan1'                        # …and the text, both on one line
+sense   = "require"
+
+[[sets.WiFi_debug.filters]]
 name    = "retry"
 pattern = 'retry|backoff'
 sense   = "exclude"
@@ -2196,6 +2201,7 @@ tabled above:
 | `d` | Delete the selected filter |
 | `c` | Change the selected filter's pattern — reopens the prompt over it |
 | `m` | Toggle the selected filter between *include* and *context* — see below |
+| `&` | Require the selected filter and a text: add a row to the *Require section* and ask for the text — see below |
 | `a` | On a set's header row, open the profile picker; `Enter` applies the chosen profile to that set, or turns on the chosen named filter alone |
 | `s` | On a set's header row, solo that set — every other set, the scratch set included, is suspended and the pane shows only this one; `s` again restores |
 | `R` | Reset every set to its startup state; filters you typed are kept |
@@ -2249,6 +2255,34 @@ the files that are left. In batch mode, a file that fails a require filter is
 left out, and the lines of the other files do not change. Set the sense in the
 filter editor or in `filters.toml` (`sense = "require"`); `m` does not change
 it. See ADR 0013.
+
+#### The Require section
+
+The quick way to make a require filter is from a filter you already have.
+Select a named filter of any sense, for example `robot_name` (`^Robot name: `),
+and press `&` (or type `:require Zeus` in the palette). recon adds a row to the
+**Require section** at the top of the filter pane and asks for the text:
+
+```text
+Require  12 of 40 files
+  01[x] req ${DeployLogs:robot_name} & Zeus
+02[x] inc panic
+[x] DeployLogs *
+  03[x] ctx robot_name
+```
+
+The row keeps two parts: the **base**, a reference to the filter
+(`${DeployLogs:robot_name}`), and the **text** (`Zeus`). A line passes the
+row when it matches both, in either order. To change to host `Hera`, press `c`
+on the row: the prompt shows the text only, so you change the host and nothing
+else. With no text, the row requires the base alone. The base filter does not
+change, because a reference takes only its pattern.
+
+The head of the section counts the explorer's files that are marked, of all
+its files. `Enter` on the head switches every require row off, or on again.
+The rows are in the scratch set, so they go when recon stops, unless you save
+the set with `S`. A filter with no name cannot be a base: name it first in the
+filter editor (`C`). A require filter in a named set stays in its set.
 
 *Context* is for the patterns every log carries — the build's commit, the host —
 that you want to see in the view but that say nothing about which logs are

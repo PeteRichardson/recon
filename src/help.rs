@@ -776,6 +776,11 @@ pub const KEYMAP: &[Section] = &[
                 names: &["filters.context"],
             },
             Binding {
+                keys: &["&"],
+                action: "Add a require row from the selected filter",
+                names: &["filters.require"],
+            },
+            Binding {
                 keys: &["a"],
                 action: "Pick a profile or one filter for the selected set",
                 names: &["filters.profile"],

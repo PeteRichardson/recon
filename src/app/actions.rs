@@ -335,6 +335,7 @@ impl App<'_> {
             | A::FiltersEdit
             | A::FiltersDelete
             | A::FiltersContext
+            | A::FiltersRequire
             | A::FiltersProfile
             | A::FiltersSolo
             | A::FiltersReset

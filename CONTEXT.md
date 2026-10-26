@@ -21,6 +21,14 @@ colors the line as context does, and it is also a condition on the file: the
 explorer marks a file only when each enabled require filter matches one of
 its lines (ADR 0013).
 
+**Require row**:
+A require filter in the scratch set, made from another filter with `&`: a
+*base*, which is a reference to that filter, and a *text*. A line passes it
+when it matches both, in either order. The *Require section* at the top of
+the filter pane lists the scratch set's require filters, and `c` on a row changes only its
+text. The base filter does not change.
+_Avoid_: AND filter, refinement, clause
+
 **Filter set**:
 A named group of filters loaded together and toggled as one. The unnamed set
 the user builds by hand is the *scratch set*.

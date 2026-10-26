@@ -8,7 +8,9 @@
 //! compiles to `NEVER`: its filter matches nothing, and no index in the
 //! compiled set moves.
 
-use super::{ActiveFilters, Engine, Filter, LineRegex, Lookaround, PatternError, Predicate};
+use super::{
+    ActiveFilters, Engine, Filter, LineRegex, Lookaround, PatternError, Predicate, joined,
+};
 use regex::Regex;
 use std::collections::HashMap;
 use std::fmt;
@@ -162,24 +164,43 @@ impl Predicate {
         if engine == Engine::Standard {
             return Ok(Self::parse(pattern)?);
         }
-        let found = references(pattern);
+        Self::parse_also(pattern, None)
+    }
+
+    /// The advanced predicate for `pattern` and a require row's extra text
+    /// `also` (#548), or `pattern` alone for `None`. Checked as `parse_as`
+    /// checks an advanced pattern, both parts at once.
+    pub fn parse_also(pattern: &str, also: Option<&str>) -> Result<Self, PatternError> {
+        let source = joined(pattern, also);
+        let found = references(&source);
         let compiled = if found.is_empty() {
-            Ok(Lookaround::new(pattern)?)
+            Ok(Lookaround::new(&source)?)
         } else {
-            Lookaround::new(&blanked(pattern, &found))?;
+            Lookaround::new(&blanked(&source, &found))?;
             Err(Broken::Unexpanded)
         };
         Ok(Self::Advanced {
             typed: pattern.to_string(),
+            also: also.map(str::to_string),
             compiled,
         })
+    }
+
+    /// A require row's extra text (#548): `Some` only for an advanced
+    /// predicate made with one, and then possibly empty.
+    #[must_use]
+    pub fn also(&self) -> Option<&str> {
+        match self {
+            Self::Advanced { also, .. } => also.as_deref(),
+            _ => None,
+        }
     }
 
     /// Whether the pattern as typed has a reference in it.
     #[must_use]
     pub fn has_references(&self) -> bool {
         self.typed()
-            .is_some_and(|typed| !references(typed).is_empty())
+            .is_some_and(|typed| !references(&joined(typed, self.also())).is_empty())
     }
 
     /// The pattern with its references expanded, or why one cannot be:
@@ -249,13 +270,21 @@ impl Predicate {
                 Regex::as_str,
                 |source| Ok(Regex::new(source)?),
             ),
-            Self::Advanced { typed, compiled } if !references(typed).is_empty() => reexpand(
+            Self::Advanced {
+                typed,
+                also,
                 compiled,
-                expander.expand(own, typed),
-                Lookaround::as_str,
-                |source| Ok(Lookaround::new(source)?),
-            ),
-            _ => false,
+            } => {
+                let source = joined(typed, also.as_deref());
+                !references(&source).is_empty()
+                    && reexpand(
+                        compiled,
+                        expander.expand(own, &source),
+                        Lookaround::as_str,
+                        |source| Ok(Lookaround::new(source)?),
+                    )
+            }
+            Self::Regex(_) | Self::Definition(_) => false,
         }
     }
 }
@@ -280,6 +309,21 @@ fn reexpand<T>(
         });
     }
     !same
+}
+
+/// The reference a filter of set `own` writes for the filter `name` of
+/// set `set` (#548): `${name}` in its own set, else `${set:name}`. `None`
+/// when `references` could not read it back: `}` ends a reference, and a
+/// `:` would read as a set name.
+pub(super) fn spell(own: &str, set: &str, name: &str) -> Option<String> {
+    if name.contains(['}', ':']) || set.contains(['}', ':']) {
+        return None;
+    }
+    Some(if set == own {
+        format!("${{{name}}}")
+    } else {
+        format!("${{{set}:{name}}}")
+    })
 }
 
 impl Reference {
@@ -392,7 +436,9 @@ impl ActiveFilters {
                 Predicate::Advanced { .. } if filter.predicate.has_references() => {
                     Err(Broken::HasReferences as Reason)
                 }
-                Predicate::Advanced { typed, .. } => Ok(typed.clone()),
+                Predicate::Advanced { typed, also, .. } => {
+                    Ok(joined(typed, also.as_deref()).into_owned())
+                }
             };
             targets.insert((meta.name.clone(), name.clone()), pattern);
         }

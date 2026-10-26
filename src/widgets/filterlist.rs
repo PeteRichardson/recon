@@ -92,6 +92,10 @@ pub(crate) enum Row {
     /// A built-in set's filter, by known-list index (#127). Toggled like
     /// any filter; unnumbered, uncoloured, and refused by `d` and `c`.
     BuiltIn(usize),
+    /// The head of the Require section (#548): the scratch set's require
+    /// filters are listed under it, above its other filters. `Enter`
+    /// switches them all.
+    Require,
 }
 
 /// The pane, top to bottom: the scratch set's filters; then, for each
@@ -122,7 +126,18 @@ pub(crate) fn rows(filters: &ActiveFilters) -> Vec<Row> {
         out.extend(filters.filters_in(set).map(|(index, _)| filter_row(index)));
         return out;
     }
-    out.extend(filters.filters_in(0).map(|(index, _)| Row::Filter(index)));
+    // The scratch set's require filters first, under a head of their own
+    // (#548): they remove files from the explorer, and are seen together.
+    if filters.require_rows().next().is_some() {
+        out.push(Row::Require);
+    }
+    out.extend(filters.require_rows().map(Row::Filter));
+    out.extend(
+        filters
+            .filters_in(0)
+            .filter(|(_, filter)| filter.sense != Sense::Require)
+            .map(|(index, _)| Row::Filter(index)),
+    );
     for (set, meta) in filters.sets().iter().enumerate().skip(1) {
         if !meta.listed {
             continue;
@@ -307,6 +322,10 @@ impl FilterList {
             (A::FiltersContext, Row::Filter(index) | Row::BuiltIn(index)) => {
                 Some(FilterCommand::ToggleContext(index))
             }
+            // `&` as in *and*: a require row for the selected filter (#548).
+            (A::FiltersRequire, Row::Filter(index) | Row::BuiltIn(index)) => {
+                Some(FilterCommand::Require(index))
+            }
             // A built-in filter is recon's: switch it, but do not delete or
             // rewrite it (#127).
             (A::FiltersDelete | A::FiltersEdit | A::FiltersEditorOpen, Row::BuiltIn(_)) => {
@@ -325,6 +344,15 @@ impl FilterList {
             // is the global refresh-from-disk; it acts on every set, so the
             // row does not matter.
             (A::FiltersSolo, Row::Header(set)) => Some(FilterCommand::Solo(set)),
+            // The Require head is not a filter, and not a set from a file.
+            (
+                A::FiltersDelete
+                | A::FiltersEdit
+                | A::FiltersEditorOpen
+                | A::FiltersContext
+                | A::FiltersRequire,
+                Row::Require,
+            ) => Some(FilterCommand::NotAFilter),
             (A::FiltersReset, _) => Some(FilterCommand::Reset),
             _ => None,
         }
@@ -337,6 +365,7 @@ impl FilterList {
         match row {
             Row::Filter(index) | Row::BuiltIn(index) => Some(FilterCommand::Toggle(index)),
             Row::Header(set) => Some(FilterCommand::ToggleSet(set)),
+            Row::Require => Some(FilterCommand::ToggleRequire),
             Row::Hint => None,
         }
     }
@@ -363,7 +392,7 @@ impl FilterList {
     /// `render` picks a shorter form, or none, when a drag or a narrow
     /// terminal leaves less.
     pub(crate) fn preferred_width(&self, filters: &ActiveFilters) -> u16 {
-        let longest = Self::texts(filters)
+        let longest = Self::texts(filters, None)
             .iter()
             .filter(|(row, _)| *row != Row::Hint)
             .map(|(_, text)| UnicodeWidthStr::width(text.as_str()))
@@ -378,7 +407,7 @@ impl FilterList {
     /// to bottom and continuously across sets. Numbers are labels, not
     /// addresses — nothing binds a digit to a filter — so enabling a set
     /// renumbers the rows below it the same way deleting a filter does.
-    fn texts(filters: &ActiveFilters) -> Vec<(Row, String)> {
+    fn texts(filters: &ActiveFilters, kept: Option<(usize, usize)>) -> Vec<(Row, String)> {
         let numbered = numbered(filters);
         let mut next = 0;
         rows(filters)
@@ -397,7 +426,7 @@ impl FilterList {
                     }
                     _ => "  ".to_string(),
                 };
-                (row, Self::row_text(filters, row, &label))
+                (row, Self::row_text(filters, row, &label, kept))
             })
             .collect()
     }
@@ -410,8 +439,19 @@ impl FilterList {
     /// The sense is spelled out because excluding filters carry no colour —
     /// nothing else on the row would distinguish them. A header carries `*`
     /// when the set has profiles, so the picker key (#130) is discoverable.
-    fn row_text(filters: &ActiveFilters, row: Row, number: &str) -> String {
+    fn row_text(
+        filters: &ActiveFilters,
+        row: Row,
+        number: &str,
+        kept: Option<(usize, usize)>,
+    ) -> String {
         match row {
+            // How many of the explorer's files are marked (#548): what the
+            // require rows leave, while they take effect.
+            Row::Require => match kept {
+                Some((marked, files)) => format!("Require  {marked} of {files} files"),
+                None => "Require".to_string(),
+            },
             // `render` swaps in the form that fits the keys in force.
             Row::Hint => String::new(),
             Row::Header(set) => {
@@ -426,7 +466,13 @@ impl FilterList {
             }
             Row::Filter(index) | Row::BuiltIn(index) => {
                 let filter = &filters.filters()[index];
-                let indent = if filter.set == 0 { "" } else { INDENT };
+                // A require row sits under the Require head as a set's
+                // filters sit under theirs.
+                let indent = if filter.set == 0 && filter.sense != Sense::Require {
+                    ""
+                } else {
+                    INDENT
+                };
                 let generated = if filter.is_generated() {
                     GENERATED_MARK
                 } else {
@@ -437,7 +483,11 @@ impl FilterList {
                     .broken()
                     .map(|broken| format!("{BROKEN_MARK}{broken}"))
                     .unwrap_or_default();
-                let advanced = if filter.predicate.engine() == Engine::Advanced {
+                // A require row's text is always advanced (#548): the mark
+                // would say nothing.
+                let advanced = if filter.predicate.engine() == Engine::Advanced
+                    && filter.predicate.also().is_none()
+                {
                     ADVANCED_MARK
                 } else {
                     ""
@@ -471,6 +521,14 @@ impl FilterList {
         let dim = filters.dim_style();
         match row {
             Row::Hint => dim,
+            Row::Require
+                if filters
+                    .require_rows()
+                    .any(|index| filters.filters()[index].enabled) =>
+            {
+                Style::default()
+            }
+            Row::Require => dim,
             Row::Header(set) if filters.sets()[set].enabled => Style::default(),
             Row::Header(_) => dim,
             Row::Filter(index) | Row::BuiltIn(index) => {
@@ -493,6 +551,7 @@ impl FilterList {
         &mut self,
         filters: &ActiveFilters,
         add_keys: Option<&str>,
+        kept: Option<(usize, usize)>,
         area: Rect,
         buf: &mut Buffer,
     ) {
@@ -511,7 +570,7 @@ impl FilterList {
                     .find(|hint| UnicodeWidthStr::width(hint.as_str()) <= interior)
             })
             .unwrap_or_default();
-        let items: Vec<ListItem> = Self::texts(filters)
+        let items: Vec<ListItem> = Self::texts(filters, kept)
             .into_iter()
             .map(|(row, text)| {
                 let text = if row == Row::Hint { hint.clone() } else { text };
@@ -576,7 +635,7 @@ mod tests {
         let area = Rect::new(0, 0, 30, 3);
         let mut buf = Buffer::empty(area);
 
-        list.render(&filters, Some("g a"), area, &mut buf);
+        list.render(&filters, Some("g a"), None, area, &mut buf);
 
         let text: String = (0..area.width).map(|col| buf[(col, 1)].symbol()).collect();
         assert!(text.contains("press g a to add"), "{text:?}");
@@ -591,7 +650,7 @@ mod tests {
         let area = Rect::new(0, 0, 30, 3);
         let mut buf = Buffer::empty(area);
 
-        list.render(&filters, None, area, &mut buf);
+        list.render(&filters, None, None, area, &mut buf);
 
         let text: String = (0..area.width).map(|col| buf[(col, 1)].symbol()).collect();
         assert!(text.trim_matches(['│', ' ']).is_empty(), "{text:?}");
@@ -610,7 +669,7 @@ mod tests {
 
     /// The text of pane row `row`, as `render` would draw it.
     fn text_at(filters: &ActiveFilters, row: usize) -> String {
-        FilterList::texts(filters)
+        FilterList::texts(filters, None)
             .into_iter()
             .nth(row)
             .map_or_else(|| panic!("no row {row}"), |(_, text)| text)
@@ -619,7 +678,7 @@ mod tests {
     fn rendered(list: &mut FilterList, filters: &ActiveFilters, width: u16) -> Vec<String> {
         let area = Rect::new(0, 0, width, 8);
         let mut buf = Buffer::empty(area);
-        list.render(filters, Some(ADD_KEYS), area, &mut buf);
+        list.render(filters, Some(ADD_KEYS), None, area, &mut buf);
         (0..area.height)
             .map(|y| {
                 (0..area.width)
@@ -768,7 +827,7 @@ mod tests {
         let area = Rect::new(0, 0, 30, 8);
         let mut buf = Buffer::empty(area);
 
-        list.render(&filters, Some(ADD_KEYS), area, &mut buf);
+        list.render(&filters, Some(ADD_KEYS), None, area, &mut buf);
 
         assert!(
             (0..area.width).any(|x| buf[(x, 1)].style().fg == DIM_STYLE.fg),
@@ -787,7 +846,7 @@ mod tests {
         let area = Rect::new(0, 0, 30, 8);
         let mut buf = Buffer::empty(area);
 
-        list.render(&filters, Some(ADD_KEYS), area, &mut buf);
+        list.render(&filters, Some(ADD_KEYS), None, area, &mut buf);
 
         let expected = filters.filters()[0].style.fg;
         assert!(
@@ -806,7 +865,7 @@ mod tests {
         let list = FilterList::default();
 
         let width = list.preferred_width(&filters) as usize;
-        let (_, last_row_text) = FilterList::texts(&filters).pop().expect("rows");
+        let (_, last_row_text) = FilterList::texts(&filters, None).pop().expect("rows");
 
         assert!(
             width >= last_row_text.chars().count() + BORDERS as usize,
@@ -891,7 +950,7 @@ mod tests {
         let area = Rect::new(0, 0, 11, 3);
         let mut buf = Buffer::empty(area);
 
-        list.render(&filters, Some(ADD_KEYS), area, &mut buf);
+        list.render(&filters, Some(ADD_KEYS), None, area, &mut buf);
 
         let row: String = (0..area.width).map(|col| buf[(col, 1)].symbol()).collect();
         assert!(
@@ -917,7 +976,7 @@ mod tests {
         let area = Rect::new(0, 0, shortest + BORDERS - 1, 3);
         let mut buf = Buffer::empty(area);
 
-        list.render(&filters, Some(ADD_KEYS), area, &mut buf);
+        list.render(&filters, Some(ADD_KEYS), None, area, &mut buf);
 
         let text: String = (0..area.width)
             .map(|col| buf[(col, 1)].symbol())
@@ -935,7 +994,7 @@ mod tests {
         let area = Rect::new(0, 0, 30, 3);
         let mut buf = Buffer::empty(area);
 
-        list.render(&filters, Some(ADD_KEYS), area, &mut buf);
+        list.render(&filters, Some(ADD_KEYS), None, area, &mut buf);
 
         let text: String = (0..area.height)
             .map(|row| {
@@ -962,7 +1021,7 @@ mod tests {
         let area = Rect::new(0, 0, 30, 3);
         let mut buf = Buffer::empty(area);
 
-        list.render(&filters, Some(ADD_KEYS), area, &mut buf);
+        list.render(&filters, Some(ADD_KEYS), None, area, &mut buf);
 
         let hint_cell = (0..area.width)
             .map(|col| &buf[(col, 1)])
@@ -1010,7 +1069,7 @@ mod tests {
         let mut list = FilterList::default();
         let rows = rows(&set);
 
-        for (row, (_, text)) in FilterList::texts(&set).into_iter().enumerate() {
+        for (row, (_, text)) in FilterList::texts(&set, None).into_iter().enumerate() {
             list.select(row);
             let command = list
                 .handle_key(KeyEvent::from(KeyCode::Enter), &rows)
@@ -1051,13 +1110,15 @@ mod tests {
     }
 
     /// #547: a require filter changes which files the explorer marks, so
-    /// its row must say so.
+    /// its row must say so. A scratch one sits under the Require head
+    /// (#548), with no count until the explorer gives one.
     #[test]
     fn a_require_filter_reads_req_in_its_row() {
         let mut filters = set_of(&["foo"], &[]);
         filters.set_sense(0, Sense::Require);
 
-        assert_eq!(text_at(&filters, 0), "01[x] req foo");
+        assert_eq!(text_at(&filters, 0), "Require");
+        assert_eq!(text_at(&filters, 1), "  01[x] req foo");
     }
 
     /// #473: the pattern as typed, then the marker and the reason, so the
@@ -1180,7 +1241,7 @@ mod tests {
         let mut list = FilterList::default();
         let area = Rect::new(0, 0, 30, 8);
         let mut buf = Buffer::empty(area);
-        list.render(&filters, Some(ADD_KEYS), area, &mut buf);
+        list.render(&filters, Some(ADD_KEYS), None, area, &mut buf);
         assert_eq!(buf[(1, 5)].style().fg, DIM_STYLE.fg, "[ ] b is dimmed");
         assert_ne!(buf[(1, 2)].style().fg, DIM_STYLE.fg, "[x] a is not");
     }
@@ -1311,7 +1372,7 @@ mod tests {
         // 8 rows tall, 6 inside the border: a page is 6, half is 3.
         let area = Rect::new(0, 0, 40, 8);
         let mut buf = Buffer::empty(area);
-        list.render(&filters, Some(ADD_KEYS), area, &mut buf);
+        list.render(&filters, Some(ADD_KEYS), None, area, &mut buf);
         list.select(0);
 
         press(&mut list, KeyCode::Char('d'), KeyModifiers::CONTROL, &rows);
@@ -1356,7 +1417,7 @@ mod tests {
         // The gutter has no separator between the number and the `[` that
         // follows it (`"1[x] inc scratch"`), so the label is the leading run
         // of digits rather than the first whitespace-delimited token.
-        let labelled: Vec<(String, Row)> = FilterList::texts(&filters)
+        let labelled: Vec<(String, Row)> = FilterList::texts(&filters, None)
             .into_iter()
             .filter_map(|(row, text)| {
                 let label: String = text

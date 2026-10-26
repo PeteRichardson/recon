@@ -506,6 +506,7 @@ fn filter_verb(action: crate::keymap::ActionId) -> Option<&'static str> {
         A::FiltersEdit => "changes the selected filter",
         A::FiltersDelete => "deletes the selected filter",
         A::FiltersContext => "toggles include and context",
+        A::FiltersRequire => "adds a require row from the selected filter",
         A::FiltersProfile => "picks a profile for the set",
         A::FiltersSolo => "solos the set",
         A::FiltersEditorNew => "opens the filter editor",

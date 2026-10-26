@@ -983,7 +983,12 @@ impl ActiveFilters {
     /// set. A pending `!` capture describes a set that no longer exists and
     /// is dropped for the same reason it always was.
     pub(super) fn insert_scratch(&mut self, filter: Filter) {
-        let at = self.scratch_end();
+        self.insert_scratch_at(self.scratch_end(), filter);
+    }
+
+    /// `insert_scratch` at `at`, which must be in the scratch range: a
+    /// require row goes before the scratch set's other filters (#548).
+    pub(super) fn insert_scratch_at(&mut self, at: usize, filter: Filter) {
         self.filters.insert(at, filter);
         self.recompile();
         self.forget_capture();

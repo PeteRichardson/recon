@@ -34,6 +34,16 @@ line that an exclude filter removes does not count. Set the sense in the
 filter editor (key `r` on the sense row) or in `filters.toml`
 (`sense = "require"`).
 
+The quick way to make a require filter is from a filter that you have. Select
+a named filter in the filter pane, for example `robot_name`, and push `&` (or
+type `:require Zeus`). recon adds a row to the *Require section* at the top of
+the filter pane, and asks for a text. The row requires a line that matches
+the filter and the text, in any order. To change the text, push `c` on the
+row. With no text, the row requires the filter alone. The filter itself does
+not change. The head of the section shows how many files the explorer marks.
+In `filters.toml`, the row has two keys: `pattern = '${DeployLogs:robot_name}'`
+and `also = 'Zeus'`.
+
 ## Dim mode and hide mode
 
 When an include, context or require filter is on, a line that none of them

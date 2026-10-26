@@ -39,6 +39,8 @@ pub(crate) enum Argument {
     View,
     /// A filter's pattern.
     Pattern,
+    /// Text that may be left out: a require row's extra text (#548).
+    Text,
 }
 
 /// What running a command does.
@@ -89,6 +91,7 @@ impl Command {
             Argument::Set => format!("{names} <set>"),
             Argument::View => format!("{names} <view>"),
             Argument::Pattern => format!("{names} <pattern>"),
+            Argument::Text => format!("{names} [<text>]"),
         }
     }
 }
@@ -172,13 +175,17 @@ fn build() -> Vec<Command> {
         if action == ActionId::GlobalQuit {
             names.push("q");
         }
+        // The short name of a command that takes an argument (#548).
+        if action == ActionId::FiltersRequire {
+            names.push("require");
+        }
         commands.push(Command {
             names,
             // The digit its key gives it.
-            argument: if action == ActionId::GlobalFiltersToggle {
-                Argument::Number
-            } else {
-                Argument::None
+            argument: match action {
+                ActionId::GlobalFiltersToggle => Argument::Number,
+                ActionId::FiltersRequire => Argument::Text,
+                _ => Argument::None,
             },
             help: help_for(action),
             run: Run::Action(action),

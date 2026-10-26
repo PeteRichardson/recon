@@ -11,6 +11,7 @@ use crate::filter::Sense;
 use crate::keymap::{ActionId, Key, Scope};
 use crate::widgets::Focus;
 use crate::widgets::explorer::Kind;
+use crate::widgets::filterlist::Row;
 use std::path::{Path, PathBuf};
 
 /// What Tab chooses among in the palette, from the first Tab until the
@@ -272,6 +273,17 @@ impl App<'_> {
                 .map_err(|_| format!("{}: give a filter number", action.name()))?;
             self.toggle_numbered(number);
             return Ok(());
+        }
+        // `require <text>` (#548): from the filter the pane has selected,
+        // with the text given. With no text it is `&`, below.
+        if action == ActionId::FiltersRequire && !argument.is_empty() {
+            let rows = crate::widgets::filterlist::rows(&self.filters);
+            let selected = self.filters_pane.selected().and_then(|row| rows.get(row));
+            let Some(Row::Filter(index) | Row::BuiltIn(index)) = selected.copied() else {
+                return Err(format!("{}: select a filter first", action.name()));
+            };
+            self.reveal_and_focus(Focus::Filters);
+            return self.require_from(index, Some(argument));
         }
         // No key fired it, and no other action reads the key.
         let pressed = Key {
