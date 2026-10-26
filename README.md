@@ -361,11 +361,15 @@ Options:
   -u, --unlist <NAME>
           Unlist a saved filter set at startup: no row in the filter pane and no
           effect on the view or on `--emit`. Repeatable
+  -l, --list <NAME>
+          List a saved filter set at startup and leave it disabled: a header row
+          in the filter pane, and no effect on the view or on `--emit` until you
+          turn it on. Repeatable
       --clear
-          Unlist every saved filter set at startup, before `--set`: only the
-          sets `--set` names are listed. It wins over `listed` and `autoload` in
-          `filters.toml`, so a run starts from no sets and adds what it wants
-          [env: RECON_CLEAR]
+          Unlist every saved filter set at startup, before `--set` and `--list`:
+          only the sets they name are listed. It wins over `listed` and
+          `autoload` in `filters.toml`, so a run starts from no sets and adds
+          what it wants [env: RECON_CLEAR]
       --hide
           Start in hide mode: only matching lines and files. Batch mode always
           hides, so there it changes nothing
@@ -842,7 +846,8 @@ recon is exactly this model with one set.
   output, and its patterns do not count toward the explorer's pattern limit
   (see [Known Limitations](#known-limitations)). It wins over `autoload = true` — the file is not refused, so to put
   a set away you change one key. An unlisted set is never enabled; `--set`
-  lists it and enables it, and `--unlist` unlists a listed one for one run.
+  lists it and enables it, `--list` lists it and leaves it off, and
+  `--unlist` unlists a listed one for one run.
   The scratch set is always listed. `L` changes it during a session; see
   [the set picker](#the-set-picker).
 - **`description`** — one line of plain text that the set picker shows
@@ -953,9 +958,16 @@ set without a `default` profile comes on with every filter off, exactly as
 be used this way. `--unlist WiFi_debug` does the opposite for one run: the
 set has no row and no effect, whatever its `listed` and `autoload` say. It
 repeats too, and `--set` and `--unlist` on the same set are refused.
-`--clear` unlists every set before `--set` runs, so `recon --clear --set
-WiFi_debug` lists only `WiFi_debug`: start from no sets and add the ones you
-want, rather than take away the ones you do not. `RECON_CLEAR=true` does the
+`--list WiFi_debug` lists the set and leaves it disabled: a header row only,
+the state that `listed = true` without `autoload` gives, until `Enter` on the
+header turns it on with its `default` profile. It wins over `listed = false`
+and `autoload = true`, and repeats. `--set` on the same set wins, because an
+enabled set is also listed; `--list` and `--unlist` on the same set are
+refused. `--clear` unlists every set before `--list` and `--set` run, so
+`recon --clear --set WiFi_debug` lists only `WiFi_debug`, and `recon --clear
+--set Bugs --list WiFi_debug` opens with `Bugs` on and `WiFi_debug` as a
+header row: start from no sets and add the ones you want, rather than take
+away the ones you do not. `RECON_CLEAR=true` does the
 same in the environment. The same
 flags drive a run with no TUI at all; see [Batch mode](#batch-mode).
 
@@ -2482,6 +2494,7 @@ you may be typing a regular expression: push Esc first.
 | `e <path>`, `cd <path>` | Set the explorer's folder. A directory lists with its first entry selected; a file sets its folder, selects it and opens it, as a path on the command line does. `~` and relative paths resolve against the explorer's folder. Alone, it goes to your home folder; `-` goes back to the last folder |
 | `goto <n>`, `:<n>` | Go to line n of the file — the number the line numbers show. If a filter hides it, the cursor goes to the next visible line and the status row says so |
 | `set <set>[:<list>]` | List the set if it is unlisted and enable it, as `--set` does: `set DeployLogs` applies its `default` profile, and `set DeployLogs:triage,timeouts` turns on the profiles and named filters of the list and turns off the set's other filters |
+| `list <set>` | List the set if it is unlisted and leave it off, as `--list` does. A listed set does not change, so a set that is on stays on |
 | `unlist <set>` | Unlist the set, as `--unlist` does |
 | `view <view>` | Show the open file in the view of that name. A view of the file type's cycle steps the cycle there, as `-` does. Any other view, such as a command view that no `[[filetype]]` row names, shows only the open file, until you open another file or push `-` |
 | `include <pattern>`, `exclude <pattern>`, `context <pattern>` | Add a filter of that sense to the scratch set, as `i` or `x` and Enter do in the filter pane, but from any pane. The focus stays where it is |
@@ -2493,7 +2506,7 @@ you may be typing a regular expression: push Esc first.
   `e`). An empty line lists every command.
 - **Tab** and **Shift-Tab** choose the next or previous row and write its name
   into the line. On a path, Tab completes the name of an entry in the folder.
-  After `set` and `unlist`, Tab completes the name of a known set; after
+  After `set`, `list` and `unlist`, Tab completes the name of a known set; after
   `set <set>:` and after each `,`, a profile or a named filter of that set.
   After `view`, Tab completes a view name, the file's cycle first.
 - **Up** and **Down** recall the command lines that ran, newest first. The
@@ -2591,9 +2604,11 @@ password prompt and recon both want the terminal.
 `--set NAME:LIST` turns on the filters of a comma-separated list of profiles
 and filter names instead — `--set errors:default,INFO`. Repeat it for several
 sets. `--unlist NAME` takes a set out of the filters that decide the output
-— your usual sets without one of them — and repeats the same way. `-n`
+— your usual sets without one of them — and repeats the same way.
+`--list NAME` lists a set and leaves it off, so here it changes nothing in
+the output. `-n`
 numbers lines as in the TUI. `-q` drops the summary; warnings still print.
-All four work in the TUI too.
+All of them work in the TUI too.
 
 **Always hide mode.** A batch run emits only the matches: the lines the
 filters keep, and the files they select. There is no grey on stdout and no
@@ -2603,7 +2618,7 @@ nothing here (#511, ADR 0009). There is no `--dim`: to emit what the
 excludes leave, enable no include filters. An unknown set, profile or
 filter name is refused before anything is read, and the error lists the names the set
 files define, with the built-in `definitions` set named apart. So is
-`--set` together with `--unlist` on the same set.
+`--set` or `--list` together with `--unlist` on the same set.
 
 **Definition filters.** `--emit files` with a definition filter on —
 `--set definitions:structs` — parses each file and lists those that define the

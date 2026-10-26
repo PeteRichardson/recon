@@ -72,8 +72,8 @@ pub enum Start {
 /// # Errors
 ///
 /// A flag combination clap cannot express, an unreadable `config.toml` or
-/// `filters.toml`, a `[keymap]` recon cannot obey, or a `--set` or
-/// `--unlist` naming a set no file defines.
+/// `filters.toml`, a `[keymap]` recon cannot obey, or a `--set`, `--list`
+/// or `--unlist` naming a set no file defines.
 pub fn start() -> Result<Start> {
     let mut config = Config::from_args()?;
 

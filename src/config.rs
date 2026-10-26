@@ -393,10 +393,20 @@ pub struct Config {
     #[arg(short = 'u', long = "unlist", value_name = "NAME")]
     pub unlist: Vec<String>,
 
-    /// Unlist every saved filter set at startup, before `--set`: only the
-    /// sets `--set` names are listed. It wins over `listed` and `autoload`
-    /// in `filters.toml`, so a run starts from no sets and adds what it
-    /// wants.
+    /// List a saved filter set at startup and leave it disabled: a header
+    /// row in the filter pane, and no effect on the view or on `--emit`
+    /// until you turn it on. Repeatable.
+    ///
+    /// It wins over `listed` and `autoload` in `filters.toml`, and applies
+    /// after `--clear`. `--set` on the same set wins, as an enabled set is
+    /// also listed; `--list` and `--unlist` on the same set are refused.
+    #[arg(short = 'l', long = "list", value_name = "NAME")]
+    pub list: Vec<String>,
+
+    /// Unlist every saved filter set at startup, before `--set` and
+    /// `--list`: only the sets they name are listed. It wins over `listed`
+    /// and `autoload` in `filters.toml`, so a run starts from no sets and
+    /// adds what it wants.
     //
     // `env =` works here, unlike for `--warnings`: there is no file rung
     // under it, so a value of `false` only has to mean "not given" (#533).
@@ -824,9 +834,10 @@ pub enum ConfigError {
         profiles: Vec<String>,
         filters: Vec<String>,
     },
-    /// `--set` and `--unlist` naming the same set (#283): one asks for it
-    /// enabled, the other for it gone, and neither wins silently.
-    SetAndUnlist(String),
+    /// `--unlist` and `flag` — `--set` (#283) or `--list` (#545) — naming
+    /// the same set: one asks for it listed, the other for it gone, and
+    /// neither wins silently.
+    ConflictsWithUnlist { flag: &'static str, name: String },
     /// `--hide-pane` or `[layout] hide_panes` naming all three panes (#300).
     /// Refused rather than corrected: a window with no pane has nothing to
     /// press, and quietly showing one would ignore what was asked.
@@ -996,8 +1007,8 @@ impl fmt::Display for ConfigError {
             Self::BadWarningsVar(value) => {
                 write!(f, "{WARNINGS_VAR} must be true or false, not {value:?}")
             }
-            Self::SetAndUnlist(name) => {
-                write!(f, "--set and --unlist both name the set {name:?}")
+            Self::ConflictsWithUnlist { flag, name } => {
+                write!(f, "{flag} and --unlist both name the set {name:?}")
             }
             Self::UnknownAction { name, known, path } => {
                 write!(
@@ -1380,8 +1391,9 @@ impl Config {
     }
 
     /// Refuse a `--set` naming a set `sets` does not hold, or a list item
-    /// that is neither a profile nor a named filter of its set; and an `--unlist` naming an unknown set, or one
-    /// a `--set` also names. Needs the loaded sets, so it runs in `main`
+    /// that is neither a profile nor a named filter of its set; a `--list`
+    /// naming an unknown set; and an `--unlist` naming an unknown set, or one
+    /// a `--set` or `--list` also names. Needs the loaded sets, so it runs in `main`
     /// right after `filtersets::load_file`, where `check_flags` did not
     /// have to wait.
     pub fn check_sets(&self, sets: &[crate::filter::LoadedSet]) -> Result<(), ConfigError> {
@@ -1405,16 +1417,26 @@ impl Config {
             }
         }
         let to_enable = self.sets_to_enable();
-        for name in &self.unlist {
+        for name in self.list.iter().chain(&self.unlist) {
             if !sets.iter().any(|set| &set.name == name) {
                 return Err(ConfigError::UnknownSet {
                     name: name.clone(),
                     known: sets.iter().map(|set| set.name.clone()).collect(),
                 });
             }
-            if to_enable.iter().any(|spec| &spec.name == name) {
-                return Err(ConfigError::SetAndUnlist(name.clone()));
-            }
+        }
+        for name in &self.unlist {
+            let flag = if to_enable.iter().any(|spec| &spec.name == name) {
+                "--set"
+            } else if self.list.contains(name) {
+                "--list"
+            } else {
+                continue;
+            };
+            return Err(ConfigError::ConflictsWithUnlist {
+                flag,
+                name: name.clone(),
+            });
         }
         Ok(())
     }
@@ -2342,6 +2364,7 @@ mod tests {
             (&["-s", "WiFi:retry"], &["--set", "WiFi:retry"]),
             (&["-s", "a", "-s", "b"], &["--set", "a", "--set", "b"]),
             (&["-u", "WiFi"], &["--unlist", "WiFi"]),
+            (&["-l", "WiFi"], &["--list", "WiFi"]),
             (&["-w"], &["--warnings"]),
         ] {
             assert_eq!(parsed(short), parsed(long), "{short:?} vs {long:?}");
@@ -2617,6 +2640,61 @@ mod tests {
         assert_eq!(config.unlist, ["Bugs", "WiFi"]);
         let unlist = Config::default().unlist;
         assert!(unlist.is_empty(), "{unlist:?}");
+    }
+
+    #[test]
+    fn list_repeats_and_defaults_empty() {
+        let config = parse_clean(["recon", "--list", "Bugs", "-l", "WiFi"]).expect("parses");
+        assert_eq!(config.list, ["Bugs", "WiFi"]);
+        let list = Config::default().list;
+        assert!(list.is_empty(), "{list:?}");
+    }
+
+    /// `--list` names a set the way `--unlist` does (#545): a known one
+    /// passes, an unknown one is refused with the same message.
+    #[test]
+    fn check_sets_refuses_an_unknown_list_name() {
+        let sets = [set_with_profile("Bugs", "p")];
+        let config = Config {
+            list: vec!["Bugs".to_string()],
+            ..Config::default()
+        };
+        assert!(config.check_sets(&sets).is_ok());
+
+        let config = Config {
+            list: vec!["Foo".to_string()],
+            ..Config::default()
+        };
+        let err = config.check_sets(&sets).expect_err("refused");
+        assert_eq!(
+            err.to_string(),
+            "unknown set \"Foo\"; the set files define: Bugs"
+        );
+    }
+
+    /// `--list X --unlist X` asks for two opposite things and is refused
+    /// (#545). `--list X --set X` is not: an enabled set is also listed.
+    #[test]
+    fn check_sets_refuses_list_and_unlist_of_one_set() {
+        let sets = [set_with_profile("Bugs", "p"), set_with_profile("WiFi", "q")];
+        let config = Config {
+            list: vec!["Bugs".to_string()],
+            unlist: vec!["Bugs".to_string()],
+            ..Config::default()
+        };
+        let err = config.check_sets(&sets).expect_err("refused");
+        assert_eq!(
+            err.to_string(),
+            "--list and --unlist both name the set \"Bugs\""
+        );
+
+        let config = Config {
+            list: vec!["Bugs".to_string()],
+            set: vec!["Bugs".to_string()],
+            unlist: vec!["WiFi".to_string()],
+            ..Config::default()
+        };
+        assert!(config.check_sets(&sets).is_ok(), "--set wins over --list");
     }
 
     /// `--unlist` names a set the way `--set` does (#283): a known one,

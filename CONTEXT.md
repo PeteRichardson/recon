@@ -58,7 +58,8 @@ _Avoid_: active, inactive, expanded, collapsed
 **Autoload**:
 A set's startup value of *enabled*. `listed` is its startup value of *listed*,
 and an unlisted set never autoloads. `--set` enables a set whatever its
-autoload says; `--unlist` unlists it whatever its `listed` and autoload say.
+autoload says; `--unlist` unlists it whatever its `listed` and autoload say;
+`--list` lists it disabled whatever both say.
 _Avoid_: default (that is a profile name), startup set
 
 **Set picker**:

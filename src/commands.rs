@@ -50,6 +50,8 @@ pub(crate) enum Run {
     Line,
     /// `set`: list and enable a set.
     EnableSet,
+    /// `list`: list a set, disabled.
+    ListSet,
     /// `unlist`: unlist a set.
     UnlistSet,
     /// `view`: show the open file in a view.
@@ -69,6 +71,7 @@ impl Command {
             Run::Path
             | Run::Line
             | Run::EnableSet
+            | Run::ListSet
             | Run::UnlistSet
             | Run::View
             | Run::AddFilter(_) => None,
@@ -125,6 +128,12 @@ fn build() -> Vec<Command> {
             argument: Argument::SetList,
             help: "List and enable a filter set, as --set does",
             run: Run::EnableSet,
+        },
+        Command {
+            names: vec!["list"],
+            argument: Argument::Set,
+            help: "List a filter set and leave it off, as --list does",
+            run: Run::ListSet,
         },
         Command {
             names: vec!["unlist"],

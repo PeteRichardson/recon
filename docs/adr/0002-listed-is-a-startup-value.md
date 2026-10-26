@@ -28,6 +28,9 @@ other kind of file.
   contradiction in `filters.toml` that recon resolves and does not refuse.
 - `--set NAME` lists and enables a set, whatever `listed` and `autoload` say.
   `--set X` together with `--unlist X` is refused.
+- `--list NAME` lists a set and leaves it disabled, whatever `listed` and
+  `autoload` say (#545). `--set X` wins over `--list X`, because an enabled
+  set is also listed. `--list X` together with `--unlist X` is refused.
 - Snapshots do not bring a set back. Un-solo restores only the sets that are
   still listed, and `R` does not change the listed state.
 

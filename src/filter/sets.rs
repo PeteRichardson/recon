@@ -707,6 +707,49 @@ impl ActiveFilters {
         Ok(())
     }
 
+    /// Apply the startup set flags of `config` in their one order (#545):
+    /// `--clear` unlists every set, then each `--list` lists its set
+    /// disabled, each `--set` enables its set — so it wins over `--list`,
+    /// and a `+NAME` changes what an earlier `--set` gave (#538) — and each
+    /// `--unlist` unlists its set. `Config::check_sets` refused `--set X` or
+    /// `--list X` with `--unlist X`, so the last step undoes nothing asked.
+    ///
+    /// A flag that fails does not stop the others. Returns one message per
+    /// failure, `--set X: why`; the TUI logs them and batch mode stops.
+    pub fn apply_startup(&mut self, config: &crate::config::Config) -> Vec<String> {
+        let mut failed = Vec::new();
+        if config.clear {
+            self.unlist_all();
+        }
+        for set in &config.list {
+            if let Err(err) = self.list_named(set) {
+                failed.push(format!("--list {set}: {err}"));
+            }
+        }
+        for spec in config.sets_to_enable() {
+            if let Err(err) = self.enable_spec(&spec) {
+                failed.push(format!("--set {}: {err}", spec.name));
+            }
+        }
+        for set in &config.unlist {
+            if let Err(err) = self.unlist_named(set) {
+                failed.push(format!("--unlist {set}: {err}"));
+            }
+        }
+        failed
+    }
+
+    /// List the set called `set` and leave it disabled, as `--list` asks
+    /// (#545): the state its file gives with `listed = true` and no
+    /// `autoload`. A set that is already listed is unlisted first, so an
+    /// enabled one comes back disabled, with its filters as loaded.
+    pub fn list_named(&mut self, set: &str) -> Result<(), EnableError> {
+        let index = self.named(set)?;
+        self.set_listed(index, false);
+        self.set_listed(index, true);
+        Ok(())
+    }
+
     /// Unlist every set but the scratch set, which is always listed, as
     /// `--clear` asks (#533).
     pub fn unlist_all(&mut self) {

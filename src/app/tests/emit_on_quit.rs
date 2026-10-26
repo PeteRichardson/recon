@@ -169,6 +169,64 @@ fn clear_flag_lists_only_the_set_sets_at_startup() {
     );
 }
 
+/// `recon --clear --set Bugs --list WiFi` opens the TUI with `Bugs` on and
+/// `WiFi` as a header row only: listed, disabled, and no effect on the
+/// loaded file (#545). `WiFi` wins over `listed = false`.
+#[test]
+fn list_flag_lists_a_set_disabled_at_startup() {
+    let file = fixture_file("startup_list.log", b"hit\nmiss\n");
+    let mut wifi = filter::test_support::loaded("WiFi", 60, false, &["miss"]);
+    wifi.listed = false;
+    let mut bugs = filter::test_support::loaded("Bugs", 50, false, &["hit"]);
+    bugs.profiles
+        .insert("default".to_string(), vec!["hit".to_string()]);
+    let app = App::new(&Startup {
+        filter_sets: vec![bugs, wifi],
+        ..Startup::from(Config {
+            path: Some(file.display().to_string()),
+            clear: true,
+            set: vec!["Bugs".to_string()],
+            list: vec!["WiFi".to_string()],
+            hide: true,
+            ..Config::default()
+        })
+    });
+
+    let wifi = app.filters.named("WiFi").expect("known");
+    assert!(app.filters.sets()[wifi].listed, "the set is listed");
+    assert!(!app.filters.sets()[wifi].enabled, "and disabled");
+    assert_eq!(
+        app.document.visible_lines(),
+        ["hit"],
+        "only Bugs decides the view"
+    );
+}
+
+/// `--list` on an autoload set gives the same header-only state (#545):
+/// the set is listed and disabled. `--set` on the same set wins, because
+/// an enabled set is also listed.
+#[test]
+fn list_flag_disables_an_autoload_set_unless_set_names_it() {
+    let file = fixture_file("startup_list_autoload.log", b"hit\nmiss\n");
+    let startup = |set: Vec<String>| Startup {
+        filter_sets: vec![filter::test_support::loaded("Bugs", 50, true, &["hit"])],
+        ..Startup::from(Config {
+            path: Some(file.display().to_string()),
+            set,
+            list: vec!["Bugs".to_string()],
+            ..Config::default()
+        })
+    };
+
+    let app = App::new(&startup(Vec::new()));
+    assert!(app.filters.sets()[1].listed);
+    assert!(!app.filters.sets()[1].enabled, "--list alone disables it");
+
+    let app = App::new(&startup(vec!["Bugs".to_string()]));
+    assert!(app.filters.sets()[1].listed);
+    assert!(app.filters.sets()[1].enabled, "--set wins");
+}
+
 // ---- --emit lines --------------------------------------------------
 
 fn emitted(app: &mut App) -> (Vec<String>, String) {
