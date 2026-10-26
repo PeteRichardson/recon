@@ -5,8 +5,9 @@
 //! needs no quotes.
 
 use super::App;
-use super::prompt::{PromptKind, SearchPrompt};
+use super::prompt::{EMPTY_PATTERN, INVALID_PATTERN, PromptKind, SearchPrompt};
 use crate::commands::{Argument, Run};
+use crate::filter::Sense;
 use crate::keymap::{ActionId, Key, Scope};
 use crate::widgets::Focus;
 use crate::widgets::explorer::Kind;
@@ -248,6 +249,7 @@ impl App<'_> {
             Run::EnableSet => self.enable_set(argument),
             Run::UnlistSet => self.unlist_set(argument),
             Run::View => self.choose_view(argument),
+            Run::AddFilter(sense) => self.add_filter_from_palette(sense, argument),
             Run::Action(action) => self.run_action(action, command.argument, argument),
         }
     }
@@ -357,6 +359,18 @@ impl App<'_> {
             .map_err(|err| err.to_string())?;
         self.apply_listing(&[(index, false)]);
         Ok(())
+    }
+
+    /// `include RE`, `exclude RE` and `context RE`: add a filter of `sense`
+    /// to the scratch set, as `i` and Enter do in the filter pane (#527).
+    /// An empty pattern is refused as the prompt refuses it (#347). The
+    /// focus stays where it is: the view shows the change.
+    fn add_filter_from_palette(&mut self, sense: Sense, pattern: &str) -> Result<(), String> {
+        if pattern.is_empty() {
+            return Err(EMPTY_PATTERN.to_string());
+        }
+        self.add_filter_as(pattern, sense)
+            .map_err(|_| INVALID_PATTERN.to_string())
     }
 
     /// `goto <n>` and `:<n>`: put the cursor on line `n` of the file — the

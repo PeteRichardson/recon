@@ -5,6 +5,7 @@
 //! name is only for a command that takes an argument, or for a well-known
 //! vim alias, and it shares its command's row (ADR 0011).
 
+use crate::filter::Sense;
 use crate::keymap::{ActionId, Scope};
 use std::sync::LazyLock;
 
@@ -36,6 +37,8 @@ pub(crate) enum Argument {
     Set,
     /// A view's name, which Tab completes.
     View,
+    /// A filter's pattern.
+    Pattern,
 }
 
 /// What running a command does.
@@ -51,6 +54,9 @@ pub(crate) enum Run {
     UnlistSet,
     /// `view`: show the open file in a view.
     View,
+    /// `include`, `exclude` and `context`: add a filter of that sense to
+    /// the scratch set.
+    AddFilter(Sense),
     /// A keymap action, whose keys the row shows.
     Action(ActionId),
 }
@@ -60,7 +66,12 @@ impl Command {
     pub(crate) fn action(&self) -> Option<ActionId> {
         match self.run {
             Run::Action(action) => Some(action),
-            Run::Path | Run::Line | Run::EnableSet | Run::UnlistSet | Run::View => None,
+            Run::Path
+            | Run::Line
+            | Run::EnableSet
+            | Run::UnlistSet
+            | Run::View
+            | Run::AddFilter(_) => None,
         }
     }
 
@@ -74,6 +85,7 @@ impl Command {
             Argument::SetList => format!("{names} <set>[:<list>]"),
             Argument::Set => format!("{names} <set>"),
             Argument::View => format!("{names} <view>"),
+            Argument::Pattern => format!("{names} <pattern>"),
         }
     }
 }
@@ -125,6 +137,24 @@ fn build() -> Vec<Command> {
             argument: Argument::View,
             help: "Show the open file in a view, by name",
             run: Run::View,
+        },
+        Command {
+            names: vec!["include"],
+            argument: Argument::Pattern,
+            help: "Add an including filter to the scratch set",
+            run: Run::AddFilter(Sense::Include),
+        },
+        Command {
+            names: vec!["exclude"],
+            argument: Argument::Pattern,
+            help: "Add an excluding filter to the scratch set",
+            run: Run::AddFilter(Sense::Exclude),
+        },
+        Command {
+            names: vec!["context"],
+            argument: Argument::Pattern,
+            help: "Add a context filter to the scratch set",
+            run: Run::AddFilter(Sense::Context),
         },
     ];
     for action in crate::keymap::every_action().filter(|a| is_command(*a)) {

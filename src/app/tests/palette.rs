@@ -864,3 +864,70 @@ fn the_help_overlay_documents_the_palette() {
         );
     }
 }
+
+// ---- `include`, `exclude` and `context` (#527) -------------------------
+
+/// The patterns and senses of the scratch set's filters, in pane order.
+fn scratch_filters(app: &App) -> Vec<(String, filter::Sense)> {
+    app.filters
+        .filters_in(0)
+        .map(|(_, filter)| (filter.predicate.display(), filter.sense))
+        .collect()
+}
+
+/// `include RE` adds an including filter to the scratch set, as `i` and
+/// Enter do in the filter pane: its lines match at once, and the focus
+/// stays where it was.
+#[test]
+fn include_adds_an_including_filter_to_the_scratch_set() {
+    let mut app = app_over_file("palette_include", "alpha\nbeta\n");
+    key(&mut app, KeyCode::Char('t'));
+    run(&mut app, "include al.ha");
+    assert!(app.prompt.is_none(), "the palette is still open");
+    assert_eq!(
+        scratch_filters(&app),
+        [("al.ha".to_string(), filter::Sense::Include)]
+    );
+    assert_eq!(included(&app), 1);
+    assert_eq!(app.focus, Focus::View, "the focus moved");
+}
+
+/// `exclude RE` adds an excluding filter, whose lines leave the view, and
+/// `context RE` a context filter, which colours its lines but does not
+/// make them interesting.
+#[test]
+fn exclude_and_context_add_a_filter_of_their_sense() {
+    let mut app = app_over_file("palette_exclude", "alpha\nbeta\ngamma\n");
+    run(&mut app, "exclude beta");
+    run(&mut app, "context gamma");
+    assert!(app.prompt.is_none(), "the palette is still open");
+    assert_eq!(
+        scratch_filters(&app),
+        [
+            ("beta".to_string(), filter::Sense::Exclude),
+            ("gamma".to_string(), filter::Sense::Context),
+        ]
+    );
+    assert_eq!(
+        app.document.verdicts()[1..],
+        [Verdict::Excluded, Verdict::Context(1)]
+    );
+}
+
+/// A pattern that does not compile, or no pattern, keeps the palette open
+/// with the line and an error, and adds no filter (the #520 rule).
+#[test]
+fn a_bad_or_missing_pattern_keeps_the_palette_open_with_an_error() {
+    let mut app = app_over_file("palette_include_bad", "alpha\n");
+    for (line, says) in [
+        ("include a(b", INVALID_PATTERN),
+        ("exclude [z", INVALID_PATTERN),
+        ("context", EMPTY_PATTERN),
+    ] {
+        run(&mut app, line);
+        assert_eq!(prompt(&app).pattern, line, "the line is gone");
+        assert_eq!(prompt(&app).error.as_deref(), Some(says), "{line}");
+        key(&mut app, KeyCode::Esc);
+    }
+    assert_eq!(scratch_filters(&app), []);
+}

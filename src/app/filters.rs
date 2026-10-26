@@ -83,8 +83,24 @@ impl App<'_> {
 
     /// Add an including filter, colouring it distinctly from its predecessors.
     pub(super) fn add_filter(&mut self, pattern: &str) -> Result<(), filter::PatternError> {
-        self.filters.add(pattern)?;
-        self.log_filters(format_args!("add include {pattern:?}"));
+        self.add_filter_as(pattern, filter::Sense::Include)
+    }
+
+    /// Add a filter of `sense` to the scratch set: the one step the `/`
+    /// prompts and the palette's `include`, `exclude` and `context` share.
+    pub(super) fn add_filter_as(
+        &mut self,
+        pattern: &str,
+        sense: filter::Sense,
+    ) -> Result<(), filter::PatternError> {
+        self.filters
+            .add_as(pattern, sense, filter::Engine::Standard)?;
+        let sense = match sense {
+            filter::Sense::Include => "include",
+            filter::Sense::Exclude => "exclude",
+            filter::Sense::Context => "context",
+        };
+        self.log_filters(format_args!("add {sense} {pattern:?}"));
         self.refresh_view();
         Ok(())
     }
@@ -112,10 +128,7 @@ impl App<'_> {
         &mut self,
         pattern: &str,
     ) -> Result<(), filter::PatternError> {
-        self.filters.add_excluding(pattern)?;
-        self.log_filters(format_args!("add exclude {pattern:?}"));
-        self.refresh_view();
-        Ok(())
+        self.add_filter_as(pattern, filter::Sense::Exclude)
     }
 
     /// Overwrite one filter's pattern, keeping its position — and with it the

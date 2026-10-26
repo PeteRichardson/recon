@@ -62,6 +62,17 @@ open another file, or push `-`, the cycle's view comes back.
 
 If recon does not know the view, the palette stays open and shows the error.
 
+## Add a filter
+
+`:include ERROR` adds an including [filter](glossary.md) with the pattern
+`ERROR` to the scratch set, as `i` and Enter do in the filter pane.
+`:exclude RE` adds an excluding filter, and `:context RE` adds a context
+filter. The pattern is the rest of the line, so it can have spaces in it.
+You do not open the filter pane, and the focus does not move.
+
+If the pattern is not a valid regular expression, the palette stays open and
+shows the error. No filter is added.
+
 ## Run a keymap action
 
 Each action of the keymap is a command, with the name that a `[keymap]` line
