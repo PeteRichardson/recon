@@ -70,7 +70,7 @@ pub fn startup_snapshot(startup: &Startup) {
     // (#501): the `Cargo.toml` version alone is the same for two builds.
     log::debug!("version: {}", crate::config::VERSION);
     log::debug!("arguments: {:?}", std::env::args_os().collect::<Vec<_>>());
-    match crate::config::config_path() {
+    match config.config_file_path() {
         Some(path) => log::debug!("config file: {}", path.display()),
         None => log::debug!("config file: none (no config home)"),
     }

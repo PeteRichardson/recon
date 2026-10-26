@@ -379,6 +379,10 @@ Options:
           A file for the log. Falls back to `[log] file` in `config.toml`. With
           neither, the TUI writes to `~/.local/state/recon/recon.log` when
           `RUST_LOG` is set, and batch mode writes to stderr [env: RECON_LOG]
+  -c, --config <PATH>
+          A config file to read instead of `config.toml`. recon then does not
+          read `config.toml`. `filters.toml` stays in the config directory [env:
+          RECON_CONFIG]
   -h, --help
           Print help (see more with '--help')
   -V, --version
@@ -1993,6 +1997,19 @@ views = ["mmd", "raw"]
 command cannot use one. A command whose program is not on `PATH` gives one
 warning at startup, and the cycles skip it. So does `quicklook` on a system
 with no Quick Look.
+
+To try a new command or row and not change your own `config.toml`, copy it,
+edit the copy, and give the copy to `-c` (or `--config`, or `RECON_CONFIG`):
+
+```sh
+cp ~/.config/recon/config.toml ./try-views.toml
+recon -c ./try-views.toml app.json
+```
+
+recon then reads only that file, not `config.toml`. It is not a layer on top
+of `config.toml`, so the copy must hold all the settings you want. Saved
+filter sets still come from `~/.config/recon/filters.toml`. A file that
+`-c` names must exist; recon does not start without it.
 
 #### The image view
 

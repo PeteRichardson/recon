@@ -5,9 +5,10 @@
 //! a hand-written `Deserialize`, and `config.rs` held the CLI, the schema, the
 //! precedence chain and this — about 180 lines that only the keymap reads.
 
-use crate::config::{ConfigError, config_path};
+use crate::config::ConfigError;
 use serde::Deserialize;
 use std::fmt;
+use std::path::PathBuf;
 
 /// The `[keymap]` table: which keys reach which action.
 ///
@@ -222,8 +223,10 @@ impl serde::de::Visitor<'_> for KeyLabel<'_> {
 }
 
 /// Every binding in force, and whatever the file cost that is worth
-/// saying out loud. `warnings` is `Config::warnings()`: whether the
-/// reserved-key notice goes to stderr.
+/// saying out loud. `file` is the config file `overlay` came from, which an
+/// error names: `Config::config_file_path()`, so that it is the file `-c`
+/// names when there is one (#537). `warnings` is `Config::warnings()`:
+/// whether the reserved-key notice goes to stderr.
 ///
 /// Three steps, in this order. `Keymap::new` folds `[keymap]` over the
 /// defaults, leaving a contested key claimed by two actions. `check`
@@ -241,10 +244,11 @@ impl serde::de::Visitor<'_> for KeyLabel<'_> {
 /// [`ConfigError::Inconsistent`].
 pub fn build(
     overlay: &KeymapConfig,
+    file: Option<PathBuf>,
     warnings: bool,
 ) -> Result<(crate::keymap::Keymap, Vec<String>), ConfigError> {
     let (mut keymap, reserved) =
-        crate::keymap::Keymap::new(overlay).map_err(|err| err.in_file(config_path()))?;
+        crate::keymap::Keymap::new(overlay).map_err(|err| err.in_file(file.clone()))?;
 
     // Logged here rather than inside `Keymap::new`, which is not told
     // whether the user asked for silence.
@@ -272,7 +276,7 @@ pub fn build(
     if !report.errors().is_empty() {
         return Err(ConfigError::Inconsistent {
             problems: report.errors().iter().map(ToString::to_string).collect(),
-            path: config_path(),
+            path: file,
         });
     }
     keymap.evict(report.evict());

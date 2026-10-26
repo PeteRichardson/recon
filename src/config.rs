@@ -475,6 +475,20 @@ pub struct Config {
     )]
     pub log_file: Option<PathBuf>,
 
+    /// A config file to read instead of `config.toml`. recon then does not
+    /// read `config.toml`. `filters.toml` stays in the config directory.
+    //
+    // #537. Replaces rather than layers: `[commands]` and `[[filetype]]` come
+    // whole from one file, and a layer would need merge rules for both.
+    #[arg(
+        short = 'c',
+        long = "config",
+        env = "RECON_CONFIG",
+        hide_env_values = true,
+        value_name = "PATH"
+    )]
+    pub config_file: Option<PathBuf>,
+
     /// `[log] max_mb` in `config.toml` (#500), or `None` for the default.
     /// No flag, for the reason `filter_palette` gives.
     #[arg(skip)]
@@ -1105,23 +1119,25 @@ pub fn config_path() -> Option<PathBuf> {
 
 /// Read and parse one config file. A file that is not there yields defaults.
 fn load_from(path: &Path) -> Result<FileConfig, ConfigError> {
-    let text = match std::fs::read_to_string(path) {
-        Ok(text) => text,
+    match parse_file(path) {
         // Having written no config file is the overwhelmingly common case and
         // is not a failure — recon runs on compiled-in defaults. Only this one
         // `io::ErrorKind` is forgiven; a permission error or a directory in
         // the file's place is a real problem and is reported as one.
-        Err(source) if source.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(FileConfig::default());
+        Err(ConfigError::Read { source, .. }) if source.kind() == std::io::ErrorKind::NotFound => {
+            Ok(FileConfig::default())
         }
-        Err(source) => {
-            return Err(ConfigError::Read {
-                path: path.to_path_buf(),
-                source,
-            });
-        }
-    };
+        result => result,
+    }
+}
 
+/// Read and parse one config file. Any read error is an error, a file that
+/// is not there too.
+fn parse_file(path: &Path) -> Result<FileConfig, ConfigError> {
+    let text = std::fs::read_to_string(path).map_err(|source| ConfigError::Read {
+        path: path.to_path_buf(),
+        source,
+    })?;
     toml::from_str(&text).map_err(|source| ConfigError::Parse {
         path: path.to_path_buf(),
         source,
@@ -1146,6 +1162,13 @@ pub fn load_file() -> Result<FileConfig, ConfigError> {
         log::debug!("no config file at {}", path.display());
     }
     load_from(&path)
+}
+
+/// The file layer from the file `-c` names (#537). Unlike [`load_from`], a
+/// file that is not there is an error: the user named it.
+fn load_named(path: &Path) -> Result<FileConfig, ConfigError> {
+    log::debug!("reading config from {} (-c)", path.display());
+    parse_file(path)
 }
 
 /// The log file defaults (#500).
@@ -1396,6 +1419,11 @@ impl Config {
     /// they are what a user reaches for when recon refuses that file.
     pub fn from_args() -> Result<Self, ConfigError> {
         let mut config = Self::parse();
+        // Here, so that the load, its errors and the log name one path.
+        let home = std::env::var("HOME").ok();
+        config.config_file = config
+            .config_file
+            .map(|path| expand_tilde(&path, home.as_deref()));
         config.default_batch_emit();
         config.check_flags()?;
         Ok(config)
@@ -1415,11 +1443,22 @@ impl Config {
     /// on `Config` (#409).
     pub fn load(&mut self) -> Result<crate::keymap::config::KeymapConfig, ConfigError> {
         self.warnings_setting = warnings_from_env(std::env::var(WARNINGS_VAR).ok().as_deref())?;
-        let file = load_file()?;
+        let file = match &self.config_file {
+            Some(path) => load_named(path)?,
+            None => load_file()?,
+        };
         self.apply(&file);
         self.check_panes()?;
         self.check_views()?;
         Ok(file.keymap.unwrap_or_default())
+    }
+
+    /// The config file this run reads: the one `-c` names, else
+    /// `config.toml` in the config home (#537). What an error or the log
+    /// names, so that it is the file recon actually read.
+    #[must_use]
+    pub fn config_file_path(&self) -> Option<PathBuf> {
+        self.config_file.clone().or_else(config_path)
     }
 
     /// Fold the file layer under the layers already resolved.
@@ -3894,7 +3933,9 @@ mod tests {
             .unwrap_or_default();
 
         assert_ne!(
-            build(&overlay, true).expect("a valid stanza").0,
+            build(&overlay, config_path(), true)
+                .expect("a valid stanza")
+                .0,
             Keymap::default(),
             "the overlay never reached the table"
         );
@@ -3908,7 +3949,7 @@ mod tests {
             .keymap
             .unwrap_or_default();
 
-        let err = build(&overlay, true).expect_err("a typo must refuse to start");
+        let err = build(&overlay, config_path(), true).expect_err("a typo must refuse to start");
         assert!(err.to_string().contains("global.qiut"), "{err}");
     }
 
@@ -3927,7 +3968,9 @@ mod tests {
                 .map(|(action, key)| ((*action).to_string(), vec![(*key).to_string()]))
                 .collect(),
         };
-        build(&overlay, true).expect_err("must refuse").to_string()
+        build(&overlay, config_path(), true)
+            .expect_err("must refuse")
+            .to_string()
     }
 
     /// A typo gets the nearest names, not every name recon has (#385).
@@ -3984,7 +4027,8 @@ mod tests {
 
     #[test]
     fn keymap_build_without_a_stanza_is_the_defaults() {
-        let built = build(&KeymapConfig::default(), true).expect("saying nothing is valid");
+        let built =
+            build(&KeymapConfig::default(), config_path(), true).expect("saying nothing is valid");
         assert_eq!(built.0, Keymap::default());
         assert!(
             built.1.is_empty(),
@@ -4002,7 +4046,7 @@ mod tests {
         bindings.insert("global.reload".to_string(), vec!["x".to_string()]);
         // A pane line under a default global binding.
         bindings.insert("explorer.up".to_string(), vec!["?".to_string()]);
-        let err = build(&KeymapConfig { bindings }, true).expect_err("must refuse");
+        let err = build(&KeymapConfig { bindings }, config_path(), true).expect_err("must refuse");
         let rendered = err.to_string();
 
         assert!(rendered.contains("global.quit"), "{rendered}");

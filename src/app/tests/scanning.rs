@@ -560,6 +560,7 @@ fn the_stale_badge_names_a_rebound_reload_key() {
     };
     let (bindings, _) = crate::keymap::config::build(
         &crate::keymap::config::KeymapConfig { bindings },
+        None,
         config.warnings(),
     )
     .expect("valid");
