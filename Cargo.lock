@@ -1908,6 +1908,7 @@ dependencies = [
  "log",
  "mime_guess",
  "onig",
+ "onig_sys",
  "ratatui",
  "ratatui-image",
  "regex",

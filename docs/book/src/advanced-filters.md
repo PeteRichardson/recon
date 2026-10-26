@@ -62,8 +62,14 @@ the filter pane shows `[adv]`.
 Oniguruma can backtrack, so some patterns take a very long time on some
 lines. To prevent this, an advanced filter has a step limit. A line that
 needs more steps than the limit counts as no match, and the filter's row
-shows the number of lines that did this. The limit is a count of steps, not
-a time, so a line gives the same result on each computer.
+shows the number of lines that did this. The limit is for the whole line,
+not for each position where a match can start. The limit is a count of
+steps, not a time, so a line gives the same result on each computer.
+
+A step is one backtrack. Oniguruma does not count the characters it reads
+forward. Thus a pattern with no `^` that starts with `.*`, for example
+`(?=.*a)(?=.*b)`, can still be slow on a very long line that has no `b`.
+Start such a pattern with `^`, so that Oniguruma tries only one position.
 
 For the decision to use references and a second engine in place of a
 language of clauses, see

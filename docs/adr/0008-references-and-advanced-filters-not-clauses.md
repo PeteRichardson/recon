@@ -53,5 +53,9 @@ and still on inside the group, and a group cannot be saved in one set's file.
 - In an advanced filter, Oniguruma reads a referenced pattern written for the
   `regex` crate. Simple patterns mean the same in both; `\d`/`\w` Unicode
   rules, `\z`, class set operations and backreferences may not.
-- Oniguruma backtracks. The step limit, not the engine, keeps a bad pattern
-  from stalling a large file.
+- Oniguruma backtracks. The step limit, not the engine, keeps a pattern that
+  backtracks too much from stalling a large file. The limit is for the whole
+  search of a line, not for each start position (#551). It counts backtracks
+  only, not characters read forward: a pattern with no `^` that starts with
+  `.*` can still read a long line once from each start position, and no
+  step limit stops that.
