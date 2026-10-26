@@ -366,17 +366,13 @@ impl FilterEditor {
         }
     }
 
-    /// The sense row: the three senses, the filter's in bold, and in
-    /// reversed video while the keys go to it; the other two dimmed. Then
+    /// The sense row: the four senses, the filter's in bold, and in
+    /// reversed video while the keys go to it; the others dimmed. Then
     /// the two engines (#474), the filter's in bold: `Ctrl-e` changes it
     /// from any field, so it never takes the reversed video.
     fn sense_spans(&self) -> Vec<Span<'static>> {
         let mut spans = vec![Span::raw(format!("{:LABEL_WIDTH$}", "sense:"))];
-        for (sense, word) in [
-            (Sense::Include, "include"),
-            (Sense::Context, "context"),
-            (Sense::Exclude, "exclude"),
-        ] {
+        for sense in Sense::ALL {
             let style = if sense != self.sense {
                 Style::default().fg(Color::DarkGray)
             } else if self.focus == EditorFocus::Sense {
@@ -384,7 +380,7 @@ impl FilterEditor {
             } else {
                 Style::default().add_modifier(Modifier::BOLD)
             };
-            spans.push(Span::styled(word, style));
+            spans.push(Span::styled(sense.name(), style));
             spans.push(Span::raw("  "));
         }
         spans.push(Span::raw("· "));

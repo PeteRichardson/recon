@@ -95,12 +95,7 @@ impl App<'_> {
     ) -> Result<(), filter::PatternError> {
         self.filters
             .add_as(pattern, sense, filter::Engine::Standard)?;
-        let sense = match sense {
-            filter::Sense::Include => "include",
-            filter::Sense::Exclude => "exclude",
-            filter::Sense::Context => "context",
-        };
-        self.log_filters(format_args!("add {sense} {pattern:?}"));
+        self.log_filters(format_args!("add {} {pattern:?}", sense.name()));
         self.refresh_view();
         Ok(())
     }

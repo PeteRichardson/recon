@@ -71,8 +71,10 @@ pub type Owner = usize;
 /// #86 — which is what makes a line's `bits` independent of the enabled mask,
 /// and so reusable across toggles.
 ///
-/// `Context` filters are in neither mask: they neither select nor exclude, so
+/// `Context` filters are in no mask: they neither select nor exclude, so
 /// a line only a context filter hit contributes nothing to a file's answer.
+/// `Require` filters have a mask of their own, which [`Matcher::marks`]
+/// reads across the whole file, not per line (#547).
 #[derive(Debug, Clone)]
 pub struct Matcher {
     set: RegexSet,
@@ -80,6 +82,8 @@ pub struct Matcher {
     selects: Bits,
     /// Bit `i` set: `filters[i]` is enabled and `Sense::Exclude`.
     exclude: Bits,
+    /// Bit `i` set: `filters[i]` is enabled and `Sense::Require`.
+    require: Bits,
     /// Each advanced filter that compiled, by index (#474). Its slot in
     /// `set` never matches, so `bits` tests it here, with `step_limit`; a
     /// line over the limit leaves its bit clear.
@@ -109,6 +113,59 @@ impl Matcher {
         bits & self.exclude == 0 && bits & self.selects != 0
     }
 
+    /// Whether a file whose lines had the hits `seen` is marked: a line
+    /// selects it, or no `Include` is enabled, and each enabled `Require`
+    /// filter hit a line that no `Exclude` hit (#547).
+    ///
+    /// `seen` is a set, not a sequence, so the answer for part of a file can
+    /// only go from no to yes as more is read: the scan stops once it is yes.
+    #[must_use]
+    pub fn marks(&self, seen: &[Bits]) -> bool {
+        let selected = self.selects == 0 || seen.iter().any(|&bits| self.selects(bits));
+        selected && self.requires_met(seen)
+    }
+
+    /// The `Require` half of [`marks`](Self::marks): each enabled `Require`
+    /// filter hit a line in `seen` that no `Exclude` hit.
+    fn requires_met(&self, seen: &[Bits]) -> bool {
+        seen.iter()
+            .fold(0, |required, &bits| required | self.required_by(bits))
+            == self.require
+    }
+
+    /// The `Require` bits a line with these hits gives: none when an
+    /// `Exclude` hit it.
+    fn required_by(&self, bits: Bits) -> Bits {
+        if bits & self.exclude == 0 {
+            bits & self.require
+        } else {
+            0
+        }
+    }
+
+    /// Whether any `Require` filter is enabled.
+    #[must_use]
+    pub fn requires(&self) -> bool {
+        self.require != 0
+    }
+
+    /// The `Require` half of [`marks`](Self::marks) over lines in memory,
+    /// stopping once each `Require` filter has its line. What batch mode
+    /// keeps a document by: `--emit lines` shows a file's context lines
+    /// whether or not an include line is there, so the include half does
+    /// not apply.
+    #[must_use]
+    pub fn lines_meet_requires<'a>(&self, lines: impl IntoIterator<Item = &'a str>) -> bool {
+        let mut required = 0;
+        for line in lines {
+            if required == self.require {
+                break;
+            }
+            required |= self.required_by(self.bits(line));
+        }
+        required == self.require
+    }
+
     /// Which filter selected a line with these hits, if any: the lowest
     /// selecting one.
     #[must_use]
@@ -119,11 +176,21 @@ impl Matcher {
         Some((bits & self.selects).trailing_zeros() as usize)
     }
 
-    /// `(selects, exclude)`, for the caller that wants to know whether a
-    /// toggle changed anything a scan cares about.
+    /// Which filter a marked file is coloured by: the lowest owner across
+    /// `seen`, or, with no `Include` enabled, the lowest `Require` filter.
     #[must_use]
-    pub fn masks(&self) -> (Bits, Bits) {
-        (self.selects, self.exclude)
+    pub fn file_owner(&self, seen: &[Bits]) -> Option<Owner> {
+        if self.selects == 0 {
+            return (self.require != 0).then(|| self.require.trailing_zeros() as usize);
+        }
+        seen.iter().filter_map(|&bits| self.owner(bits)).min()
+    }
+
+    /// `(selects, exclude, require)`, for the caller that wants to know
+    /// whether a toggle changed anything a scan cares about.
+    #[must_use]
+    pub fn masks(&self) -> (Bits, Bits, Bits) {
+        (self.selects, self.exclude, self.require)
     }
 }
 
@@ -137,6 +204,7 @@ pub struct ScanStamp {
     pub patterns: u64,
     pub selects: Bits,
     pub exclude: Bits,
+    pub require: Bits,
 }
 
 impl ActiveFilters {
@@ -144,27 +212,29 @@ impl ActiveFilters {
     /// `matcher` without cloning the set.
     #[must_use]
     pub fn scan_stamp(&self) -> Option<ScanStamp> {
-        let (_, selects, exclude) = self.scan_masks()?;
+        let (_, selects, exclude, require) = self.scan_masks()?;
         Some(ScanStamp {
             patterns: self.generation,
             selects,
             exclude,
+            require,
         })
     }
 
     /// The snapshot a scan thread matches with, or `None` when there is no
     /// scan to run.
     ///
-    /// `None` when nothing selects — no enabled `Include`, which is the same
+    /// `None` when nothing selects — no enabled `Include` or `Require`, which is the same
     /// "nothing to match against" guard `Document` applies for #36 — and when
     /// the pattern count exceeds the bitset width.
     #[must_use]
     pub fn matcher(&self) -> Option<Matcher> {
-        let (set, selects, exclude) = self.scan_masks()?;
+        let (set, selects, exclude, require) = self.scan_masks()?;
         Some(Matcher {
             set: set.clone(),
             selects,
             exclude,
+            require,
             advanced: self
                 .filters
                 .iter()
@@ -185,13 +255,16 @@ impl ActiveFilters {
         self.scan_masks().is_some()
     }
 
-    /// Why file matching is off, when an include filter asks for it and it
-    /// is off anyway (#306). `None` when it runs, and when nothing selects —
-    /// no enabled regex `Include` — since that is not a failure.
+    /// Why file matching is off, when an include or require filter asks for
+    /// it and it is off anyway (#306). `None` when it runs, and when nothing
+    /// selects — no enabled regex `Include` or `Require` — since that is not
+    /// a failure.
     #[must_use]
     pub fn scan_off(&self) -> Option<ScanOff> {
         let asks = self.filters.iter().enumerate().any(|(index, filter)| {
-            self.effective(index) && filter.sense == Sense::Include && filter.predicate.reads_text()
+            self.effective(index)
+                && matches!(filter.sense, Sense::Include | Sense::Require)
+                && filter.predicate.reads_text()
         });
         if !asks {
             return None;
@@ -211,10 +284,10 @@ impl ActiveFilters {
         }
     }
 
-    /// The compiled set and the `(selects, exclude)` masks over it, or
+    /// The compiled set and the `(selects, exclude, require)` masks over it, or
     /// `None` when there is no scan to run. `matcher` and `is_scanning`
     /// share it so they cannot disagree.
-    fn scan_masks(&self) -> Option<(&RegexSet, Bits, Bits)> {
+    fn scan_masks(&self) -> Option<(&RegexSet, Bits, Bits, Bits)> {
         debug_assert!(
             self.compiled.as_ref().is_none_or(|set| self.in_step(set)),
             "the compiled set is out of step with the filters"
@@ -225,6 +298,7 @@ impl ActiveFilters {
         }
         let mut selects: Bits = 0;
         let mut exclude: Bits = 0;
+        let mut require: Bits = 0;
         for (index, filter) in self.filters.iter().enumerate() {
             // A definition predicate is not a test of the line's text,
             // and a scan reads text it never parses: its bit stays out of
@@ -237,13 +311,14 @@ impl ActiveFilters {
             match filter.sense {
                 Sense::Include => selects |= 1 << index,
                 Sense::Exclude => exclude |= 1 << index,
+                Sense::Require => require |= 1 << index,
                 Sense::Context => {}
             }
         }
-        if selects == 0 {
+        if selects == 0 && require == 0 {
             return None;
         }
-        Some((set, selects, exclude))
+        Some((set, selects, exclude, require))
     }
 
     /// Every pattern's source, in compiled order. What a scan
@@ -495,7 +570,7 @@ mod tests {
         let stamp = set.scan_stamp().expect("selects");
         assert_eq!(
             set.matcher().expect("selects").masks(),
-            (stamp.selects, stamp.exclude)
+            (stamp.selects, stamp.exclude, stamp.require)
         );
 
         set.set_all_enabled(false);

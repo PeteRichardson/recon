@@ -1297,7 +1297,7 @@ fn the_panel_shows_the_four_fields() {
         "name:        slow",
         "description: why it exists",
         "prompt:      lines that time out",
-        "sense:       include  context  exclude",
+        "sense:       include  context  require  exclude",
         "pattern:     timeout",
     ] {
         assert!(screen.contains(row), "no {row:?} in\n{screen}");
@@ -1531,6 +1531,12 @@ fn the_sense_keys_choose_and_cycle_the_sense() {
     key(&mut app, KeyCode::Char(' '));
     assert_eq!(sense(&app), Sense::Context);
     key(&mut app, KeyCode::Right);
+    assert_eq!(
+        sense(&app),
+        Sense::Require,
+        "require follows context (#547)"
+    );
+    key(&mut app, KeyCode::Right);
     assert_eq!(sense(&app), Sense::Exclude);
     key(&mut app, KeyCode::Right);
     assert_eq!(sense(&app), Sense::Include, "Right wraps");
@@ -1540,6 +1546,8 @@ fn the_sense_keys_choose_and_cycle_the_sense() {
     assert_eq!(sense(&app), Sense::Context);
     key(&mut app, KeyCode::Char('i'));
     assert_eq!(sense(&app), Sense::Include);
+    key(&mut app, KeyCode::Char('r'));
+    assert_eq!(sense(&app), Sense::Require);
     key(&mut app, KeyCode::Char('x'));
     assert_eq!(sense(&app), Sense::Exclude);
 

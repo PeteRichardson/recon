@@ -1239,11 +1239,11 @@ impl FilterEditor {
     }
 
     /// A key on the sense field: Space and Right choose the next sense,
-    /// Left the previous, in the order include, context, exclude, and `i`,
-    /// `c` and `x` choose include, context and exclude. Any other key does
-    /// nothing.
+    /// Left the previous, in the order include, context, require, exclude,
+    /// and `i`, `c`, `r` and `x` choose include, context, require and
+    /// exclude. Any other key does nothing.
     fn sense_key(&mut self, key: SenseKey) {
-        const ORDER: [Sense; 3] = [Sense::Include, Sense::Context, Sense::Exclude];
+        const ORDER: [Sense; 4] = Sense::ALL;
         let at = ORDER
             .iter()
             .position(|&sense| sense == self.sense)
@@ -1804,6 +1804,7 @@ impl App<'_> {
                 KeyCode::Char(' ') => Some(SenseKey::Next),
                 KeyCode::Char('i') => Some(SenseKey::Choose(Sense::Include)),
                 KeyCode::Char('c') => Some(SenseKey::Choose(Sense::Context)),
+                KeyCode::Char('r') => Some(SenseKey::Choose(Sense::Require)),
                 KeyCode::Char('x') => Some(SenseKey::Choose(Sense::Exclude)),
                 _ => None,
             },

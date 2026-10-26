@@ -174,6 +174,43 @@ fn a_dash_path_filters_the_lines_on_stdin() {
     assert_eq!(out.status.code(), Some(0));
 }
 
+/// #547: a require filter is a condition on the whole input, so stdin is
+/// read to its end first. Input from another host gives no line at all;
+/// input from `Zeus` gives its lines as without the require filter, plus
+/// the require line, which shows as context.
+#[test]
+fn a_dash_path_with_a_require_filter_drops_input_that_fails_it() {
+    let dir = fixture("dash_require");
+    let home = dir.join("config");
+    fs::create_dir_all(home.join("recon")).expect("create config dir");
+    fs::write(
+        home.join("recon/filters.toml"),
+        "[sets.Hosts]\n\n\
+         [sets.Hosts.profiles]\n\
+         from_zeus = [\"hit\", \"zeus\"]\n\n\
+         [[sets.Hosts.filters]]\n\
+         name = \"hit\"\n\
+         pattern = \"hit\"\n\n\
+         [[sets.Hosts.filters]]\n\
+         name = \"zeus\"\n\
+         pattern = \"^Host: Zeus\"\n\
+         sense = \"require\"\n",
+    )
+    .expect("write filters.toml");
+    let args = ["-b", "--set", "Hosts:from_zeus", "-"];
+
+    let hera = recon(&home, &args, b"Host: Hera\nhit\nmiss\n");
+    assert_eq!(text(&hera.stdout), "");
+    assert_eq!(hera.status.code(), Some(0), "{}", text(&hera.stderr));
+
+    let zeus = recon(&home, &args, b"Host: Zeus\nhit\nmiss\n");
+    assert_eq!(text(&zeus.stdout), "Host: Zeus\nhit\n");
+    assert_eq!(
+        text(&zeus.stderr),
+        "recon: emitted 2 lines of <stdin>, hide mode\n"
+    );
+}
+
 /// #517: a matching line on stdin is written as soon as it is read, while
 /// the pipe is still open, so `log stream | recon -b -` is filtered as it
 /// comes and not at an end that never comes.

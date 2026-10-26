@@ -479,7 +479,7 @@ impl FilterList {
                     return dim;
                 }
                 match filter.sense {
-                    Sense::Include | Sense::Context => filter.style,
+                    Sense::Include | Sense::Context | Sense::Require => filter.style,
                     Sense::Exclude => Style::default().fg(Color::DarkGray),
                 }
             }
@@ -541,6 +541,7 @@ fn sense_word(sense: Sense) -> &'static str {
         Sense::Include => "inc",
         Sense::Context => "ctx",
         Sense::Exclude => "exc",
+        Sense::Require => "req",
     }
 }
 
@@ -1047,6 +1048,16 @@ mod tests {
         filters.toggle_context(0);
 
         assert_eq!(text_at(&filters, 0), "01[x] ctx foo");
+    }
+
+    /// #547: a require filter changes which files the explorer marks, so
+    /// its row must say so.
+    #[test]
+    fn a_require_filter_reads_req_in_its_row() {
+        let mut filters = set_of(&["foo"], &[]);
+        filters.set_sense(0, Sense::Require);
+
+        assert_eq!(text_at(&filters, 0), "01[x] req foo");
     }
 
     /// #473: the pattern as typed, then the marker and the reason, so the

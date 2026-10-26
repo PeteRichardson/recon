@@ -173,6 +173,12 @@ pub(crate) const LIGHT_DIM_STYLE: Style = Style::new()
 /// selects a file, so "selects?" is not orthogonal to sense but one more value
 /// of it — and the compiler then finds every `match` that needs to know.
 ///
+/// `Require` is the fourth kind (#547, ADR 0013). In the view it is a
+/// `Context` filter. In the explorer it is a condition on the whole file: a
+/// file is marked only when each enabled `Require` filter hits one of its
+/// lines. It never adds a file; with no `Include` enabled, the `Require`
+/// filters alone decide.
+///
 /// Sense is the user's choice, per filter, in this set. It is not a property
 /// of the pattern: `^host: production-.*` is `Include` when the question is
 /// "which production logs have errors" and `Context` when it is "which logs
@@ -182,6 +188,25 @@ pub enum Sense {
     Include,
     Context,
     Exclude,
+    Require,
+}
+
+impl Sense {
+    /// Every sense, in the order the filter editor's sense row shows and
+    /// cycles them: require beside context, which it is in the view.
+    pub const ALL: [Self; 4] = [Self::Include, Self::Context, Self::Require, Self::Exclude];
+
+    /// What a set file writes after `sense =`, and the word the filter
+    /// editor and the log use.
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Include => "include",
+            Self::Context => "context",
+            Self::Require => "require",
+            Self::Exclude => "exclude",
+        }
+    }
 }
 
 /// What the filter set decided about one line.
@@ -861,22 +886,27 @@ impl ActiveFilters {
     /// There is no global AND (#474, ADR 0008): an advanced filter's
     /// lookahead is how one filter asks for two things at once.
     fn include_verdict(&self, hit: impl Fn(usize) -> bool) -> Verdict {
-        let live = |sense: Sense| {
+        let live = |senses: &'static [Sense]| {
             self.filters
                 .iter()
                 .enumerate()
-                .filter(move |&(index, filter)| self.effective(index) && filter.sense == sense)
+                .filter(move |&(index, filter)| {
+                    self.effective(index) && senses.contains(&filter.sense)
+                })
         };
         // Include outranks context, whatever their order in the set: a
         // line an include filter selected is a hit, and must say so — `n`
         // stops on `Included`, not on `Context` — and its colour is then
         // the same one the explorer gives the file, whose owner is the
         // lowest *selecting* filter and never a context one.
-        live(Sense::Include)
+        //
+        // A require filter is context in the view: what it adds is a
+        // condition on the file, which the explorer's scan applies (#547).
+        live(&[Sense::Include])
             .find(|&(index, _)| hit(index))
             .map(|(index, _)| Verdict::Included(index))
             .or_else(|| {
-                live(Sense::Context)
+                live(&[Sense::Context, Sense::Require])
                     .find(|&(index, _)| hit(index))
                     .map(|(index, _)| Verdict::Context(index))
             })
@@ -1098,6 +1128,8 @@ impl ActiveFilters {
 
     /// Flip a filter between `Include` and `Context`, reporting whether it
     /// changed. An `Exclude` filter is left alone: it already selects nothing.
+    /// So is a `Require` filter: one key press too many must not change
+    /// which files the explorer marks (#547).
     ///
     /// No `recompile` — the pattern is untouched, so the compiled set is still
     /// right — and no `forget_capture`, for the same reason `set_pattern` gives:
@@ -1109,7 +1141,7 @@ impl ActiveFilters {
         filter.sense = match filter.sense {
             Sense::Include => Sense::Context,
             Sense::Context => Sense::Include,
-            Sense::Exclude => return false,
+            Sense::Exclude | Sense::Require => return false,
         };
         true
     }
@@ -2005,6 +2037,51 @@ mod tests {
             Some(DIM_STYLE),
             "context dims the rest"
         );
+    }
+
+    // ---- the fourth sense (#547) ------------------------------------------
+
+    /// In the view, a require filter is a context filter: its lines show in
+    /// its colour, and they are not hits, so `n` steps over them. An
+    /// include filter still outranks it.
+    #[test]
+    fn a_require_filter_shows_its_lines_as_context() {
+        let mut set = set_with(&["error"]);
+        set.add_as("Host: Zeus", Sense::Require, Engine::Standard)
+            .expect("valid pattern");
+
+        for verdict in [
+            set.verdict("Host: Zeus", KindSet::EMPTY),
+            set.verdict_by_scanning("Host: Zeus", KindSet::EMPTY),
+        ] {
+            assert_eq!(verdict, Verdict::Context(1));
+        }
+        assert_eq!(
+            set.verdict("error on Host: Zeus", KindSet::EMPTY),
+            Verdict::Included(0)
+        );
+        assert_ne!(set.style_for(Verdict::Context(1)), None, "it has a colour");
+    }
+
+    /// `m` must not move a filter out of require, nor into it.
+    #[test]
+    fn toggle_context_leaves_a_require_filter_alone() {
+        let mut set = ActiveFilters::new();
+        set.add_as("Host", Sense::Require, Engine::Standard)
+            .expect("valid pattern");
+
+        assert!(!set.toggle_context(0));
+        assert_eq!(set.filters()[0].sense, Sense::Require);
+    }
+
+    /// A require filter alone still dims the lines it does not show.
+    #[test]
+    fn a_require_filter_alone_dims_the_rest() {
+        let mut set = ActiveFilters::new();
+        set.add_as("Host", Sense::Require, Engine::Standard)
+            .expect("valid pattern");
+
+        assert_eq!(set.style_for(Verdict::Unmatched), Some(DIM_STYLE));
     }
 
     #[test]

@@ -16,7 +16,10 @@ _Avoid_: pattern (that is the text of a filter), search
 
 **Sense**:
 What a match means for a line: *include* colors the line, *exclude* removes
-it, *context* colors it too, but it is not an interesting line.
+it, *context* colors it too, but it is not an interesting line. *require*
+colors the line as context does, and it is also a condition on the file: the
+explorer marks a file only when each enabled require filter matches one of
+its lines (ADR 0013).
 
 **Filter set**:
 A named group of filters loaded together and toggled as one. The unnamed set
@@ -149,8 +152,8 @@ _Avoid_: check (only a line mark is a check), highlight, selection
 
 **Interesting line**:
 A line an enabled include filter matches. `n` and `N` step between
-interesting lines when no search is set. A line a context filter matches is
-not interesting, but hide mode keeps it.
+interesting lines when no search is set. A line a context or require filter
+matches is not interesting, but hide mode keeps it.
 
 ### Search
 
@@ -229,8 +232,8 @@ _Avoid_: root, cwd, current directory (that is the working directory)
 
 **Visible lines**:
 The lines the file view can show, in file order: every line an exclude filter
-does not remove, and in hide mode only the lines an include or context filter
-matches. Dimmed lines are visible.
+does not remove, and in hide mode only the lines an include, context or
+require filter matches. Dimmed lines are visible.
 _Avoid_: on screen, shown lines
 
 **Window**:
