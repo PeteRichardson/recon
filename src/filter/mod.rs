@@ -278,9 +278,15 @@ pub enum Predicate {
 /// Lookaheads, not `typed.*also`: that fails when `typed` can match the
 /// text too, and takes it before `also` can. An empty `also` is `typed`
 /// alone.
+///
+/// Anchored at `^`, so the lookaheads run once, from the start of the
+/// line. Unanchored, Oniguruma tries them again at every position, and
+/// each `.*` reads to the end of the line: a line that fails costs the
+/// square of its length, and the step limit is per position, so it does
+/// not stop that. One 130,000-character line took 30 seconds.
 pub(crate) fn joined<'a>(typed: &'a str, also: Option<&str>) -> std::borrow::Cow<'a, str> {
     match also {
-        Some(also) if !also.is_empty() => format!("(?=.*(?:{typed}))(?=.*(?:{also}))").into(),
+        Some(also) if !also.is_empty() => format!("^(?=.*(?:{typed}))(?=.*(?:{also}))").into(),
         _ => typed.into(),
     }
 }
