@@ -698,6 +698,14 @@ impl ActiveFilters {
         Ok(())
     }
 
+    /// Unlist every set but the scratch set, which is always listed, as
+    /// `--clear` asks (#533).
+    pub fn unlist_all(&mut self) {
+        for set in 1..self.sets.len() {
+            self.set_listed(set, false);
+        }
+    }
+
     /// The index of the named set called `set`. The scratch set has no name
     /// a flag can give, so it is never found.
     pub(crate) fn named(&self, set: &str) -> Result<usize, EnableError> {

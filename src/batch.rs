@@ -100,13 +100,17 @@ pub fn run(startup: &Startup, out: &mut impl Write, stop: &AtomicBool) -> Result
     ))
 }
 
-/// The startup filter set: the loaded sets, then each `--set` enabled and
-/// each `--unlist` unlisted — the same steps `App::new` takes.
+/// The startup filter set: the loaded sets, all unlisted for `--clear`,
+/// then each `--set` enabled and each `--unlist` unlisted — the same steps
+/// `App::new` takes.
 fn filters_for(startup: &Startup) -> Result<ActiveFilters> {
     let config = &startup.config;
     let mut filters = ActiveFilters::with_sets(Some(config.filter_palette()), &startup.filter_sets);
     filters.set_background(config.background());
     filters.set_step_limit(config.advanced_step_limit());
+    if config.clear {
+        filters.unlist_all();
+    }
     for spec in config.sets_to_enable() {
         filters
             .enable_spec(&spec)

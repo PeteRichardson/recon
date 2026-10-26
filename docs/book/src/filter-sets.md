@@ -41,6 +41,8 @@ filter names applies from left to right, and `-` turns an item off:
 `--set NAME:default,-noise` is the `default` profile without `noise`, and
 `--set NAME:@all,-noise` is every filter but `noise`. `--set +NAME:ITEMS`
 changes the state that an earlier `--set` gave the set, and does not replace
-it. `--unlist NAME` removes a set from the filter pane. The same
+it. `--unlist NAME` removes a set from the filter pane. `--clear` removes
+every set before `--set` runs, so `--clear --set NAME` lists only `NAME`;
+`RECON_CLEAR=true` does the same. The same
 options select the filters in [batch mode](batch_mode.md), so a set that you
 made in the window also works in a script.

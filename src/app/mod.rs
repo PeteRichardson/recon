@@ -420,6 +420,10 @@ impl App<'_> {
             ActiveFilters::with_sets(Some(config.filter_palette()), &startup.filter_sets);
         filters.set_background(config.background());
         filters.set_step_limit(config.advanced_step_limit());
+        // Before `--set`, which lists again the sets it names (#533).
+        if config.clear {
+            filters.unlist_all();
+        }
         // In order, so a `+NAME` changes what an earlier `--set` gave (#538).
         for spec in config.sets_to_enable() {
             // `Config::check_sets` refused an unknown name in

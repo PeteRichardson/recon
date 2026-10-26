@@ -136,6 +136,39 @@ fn unlist_flag_applies_at_startup() {
     );
 }
 
+/// `recon --clear --set Noise` opens the TUI with only `Noise` listed: the
+/// autoload set `Bugs` has no row (#533).
+#[test]
+fn clear_flag_lists_only_the_set_sets_at_startup() {
+    let file = fixture_file("startup_clear.log", b"hit\nmiss\n");
+    let app = App::new(&Startup {
+        filter_sets: vec![
+            filter::test_support::loaded("Bugs", 50, true, &["hit"]),
+            filter::test_support::loaded("Noise", 60, false, &["miss"]),
+        ],
+        ..Startup::from(Config {
+            path: Some(file.display().to_string()),
+            clear: true,
+            set: vec!["Noise".to_string()],
+            ..Config::default()
+        })
+    });
+
+    let listed: Vec<&str> = app
+        .filters
+        .named_sets()
+        .iter()
+        .filter(|set| set.listed)
+        .map(|set| set.name.as_str())
+        .collect();
+    assert_eq!(listed, ["Noise"]);
+    assert!(
+        app.filters
+            .named("Noise")
+            .is_ok_and(|set| app.filters.sets()[set].enabled)
+    );
+}
+
 // ---- --emit lines --------------------------------------------------
 
 fn emitted(app: &mut App) -> (Vec<String>, String) {
