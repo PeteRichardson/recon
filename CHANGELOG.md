@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.7.0 — 2026-10-26
+
+### Features
+
+- **tui:** Add `set` and `unlist` to the command palette
+- **tui:** Add `view` to the command palette
+- **set:** Turn filters off in --set lists, and keep state with +NAME
+- **tui:** List named filters in the profile picker
+- **tui:** Scroll the profile picker and count hidden rows
+- **tui:** Add `include`, `exclude` and `context` to the command palette
+- **config:** Add -c / --config to read a file other than config.toml
+- **set:** Add --clear to start with every filter set unlisted
+- **set:** Add --list to list a filter set at startup, disabled
+
+### Fixes
+
+- **set:** Read @all from the file for a set that is not listed
+
 ## v0.6.0 — 2026-10-25
 
 ### Breaking changes
