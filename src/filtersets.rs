@@ -249,6 +249,14 @@ fn parse_sets(text: &str, path: &Path) -> Result<Vec<LoadedSet>, Error> {
                 "a set's name cannot start with `+`; `--set +NAME` reads it as a change".into(),
             ));
         }
+        // An alias chains commands with `;` (#555).
+        if name.contains(';') {
+            return Err(invalid(
+                &name,
+                None,
+                "a set's name cannot contain a `;`".into(),
+            ));
+        }
         // One line (#284): the picker gives each set one row, and a line
         // break would draw over the next set's row.
         if schema
@@ -382,13 +390,12 @@ fn parse_sets(text: &str, path: &Path) -> Result<Vec<LoadedSet>, Error> {
                     format!("two filters named {display:?}; give one a distinct `name`"),
                 ));
             }
-            // `--set NAME:A,B` splits on the comma (#441). A pattern is not
-            // a name `--set` reads, so it may hold one.
-            if named && display.contains(',') {
+            // A pattern is not a name, so it may hold one of these.
+            if let Some(what) = named.then(|| refused_item_char(&display)).flatten() {
                 return Err(invalid(
                     &name,
                     Some(&display),
-                    "a filter's `name` cannot contain a comma".into(),
+                    format!("a filter's `name` cannot contain {what}"),
                 ));
             }
             filters.push(LoadedFilter {
@@ -436,15 +443,33 @@ fn parse_sets(text: &str, path: &Path) -> Result<Vec<LoadedSet>, Error> {
     Ok(sets)
 }
 
-/// Refuse a set whose names `--set NAME:A,B` could not read (#441): a
-/// profile name with a comma, or a name that is both a profile and a named
-/// filter of this set — every such name, so one edit fixes them all. The
-/// built-in set's filter names are its kinds'. Names in other sets never
-/// clash, and run on every set, whether or not a `--set` names it.
+/// The characters a profile or named filter name cannot hold, each with
+/// its words for the message: `--set NAME:A,B` splits on the comma (#441),
+/// and an alias chains commands with `;` (#555).
+const REFUSED_ITEM_CHARS: [(char, &str); 2] = [(',', "a comma"), (';', "a `;`")];
+
+/// The words for the first of [`REFUSED_ITEM_CHARS`] in `name`, if any.
+fn refused_item_char(name: &str) -> Option<&'static str> {
+    REFUSED_ITEM_CHARS
+        .iter()
+        .find(|(ch, _)| name.contains(*ch))
+        .map(|(_, what)| *what)
+}
+
+/// Refuse a set whose names `--set NAME:A,B` or an alias could not read
+/// (#441, #555): a profile name with a comma or a `;`, or a name that is
+/// both a profile and a named filter of this set — every such name, so one
+/// edit fixes them all. The built-in set's filter names are its kinds'.
+/// Names in other sets never clash, and run on every set, whether or not a
+/// `--set` names it.
 fn check_item_names(set: &LoadedSet) -> Result<(), String> {
-    if let Some(profile) = set.profiles.keys().find(|profile| profile.contains(',')) {
+    if let Some((profile, what)) = set
+        .profiles
+        .keys()
+        .find_map(|profile| refused_item_char(profile).map(|what| (profile, what)))
+    {
         return Err(format!(
-            "profile {profile:?}: a profile name cannot contain a comma"
+            "profile {profile:?}: a profile name cannot contain {what}"
         ));
     }
     let filters = set.item_filter_names();
@@ -960,6 +985,39 @@ mod tests {
             message,
             "invalid filter sets file t/filters.toml: [sets.a] filter 'a,b': \
              a filter's `name` cannot contain a comma"
+        );
+    }
+
+    /// An alias chains commands with `;` (#555), so no name can hold one.
+    #[test]
+    fn a_semicolon_in_a_filter_name_is_rejected() {
+        let message = rejected("[sets.a]\n[[sets.a.filters]]\nname = 'a;b'\npattern = 'x'\n");
+        assert_eq!(
+            message,
+            "invalid filter sets file t/filters.toml: [sets.a] filter 'a;b': \
+             a filter's `name` cannot contain a `;`"
+        );
+    }
+
+    #[test]
+    fn a_semicolon_in_a_set_name_is_rejected() {
+        let message = rejected("[sets.'a;b']\n[[sets.'a;b'.filters]]\npattern = 'x'\n");
+        assert_eq!(
+            message,
+            "invalid filter sets file t/filters.toml: [sets.a;b]: \
+             a set's name cannot contain a `;`"
+        );
+    }
+
+    #[test]
+    fn a_semicolon_in_a_profile_name_is_rejected() {
+        let message = rejected(
+            "[sets.a]\n[sets.a.profiles]\n'p;q' = ['x']\n[[sets.a.filters]]\nname = 'x'\npattern = 'x'\n",
+        );
+        assert_eq!(
+            message,
+            "invalid filter sets file t/filters.toml: [sets.a]: \
+             profile \"p;q\": a profile name cannot contain a `;`"
         );
     }
 
