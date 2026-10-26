@@ -816,7 +816,7 @@ must_not_match = [                       # and lines it must not match
 [[sets.WiFi_debug.filters]]
 name    = "beacon-loss"
 pattern = 'beacon loss'
-sense   = "context"                      # include (default) | context | exclude
+sense   = "context"                      # include (default) | context | require | exclude
 
 [[sets.WiFi_debug.filters]]
 name    = "retry"
@@ -1168,7 +1168,7 @@ that compiled left them, so a half-typed `(` does not clear the screen.
 | `Esc` | Close and change nothing; with a range open, close the range first; with a request running, cancel it first | `filtereditor.cancel` |
 | `Tab` / `Shift-Tab` | Move the keys to the next / previous of the name, description, prompt, sense, pattern, request and lines | `filtereditor.focus` / `filtereditor.focus.prev` |
 | `Space` / `Left` / `Right` | On the sense: the next / previous sense | — |
-| `i` / `c` / `x` | On the sense: include / context / exclude | — |
+| `i` / `c` / `r` / `x` | On the sense: include / context / require / exclude | — |
 | `+` | On the lines: the pattern must match the cursor line | `filtereditor.mark.match` |
 | `-` | On the lines: the pattern must not match the cursor line | `filtereditor.mark.nomatch` |
 | `=` | On the lines: remove the cursor line's mark | `filtereditor.mark.clear` |
@@ -1189,10 +1189,10 @@ description, its prompt and its sense, as `filters.toml` has them. `Tab` and
 `Shift-Tab` move the keys round the ring *name, description, prompt, sense,
 pattern, lines*; the editor opens on the pattern.
 
-The sense row shows `include  context  exclude`, with the filter's sense in
-bold. A new filter includes, as `f i` gives. On the sense, `Space` and
-`Right` choose the next sense and `Left` the previous; `i`, `c` and `x`
-choose include, context and exclude. Other keys do nothing there. `Enter`
+The sense row shows `include  context  require  exclude`, with the filter's
+sense in bold. A new filter includes, as `f i` gives. On the sense, `Space`
+and `Right` choose the next sense and `Left` the previous; `i`, `c`, `r` and
+`x` choose include, context, require and exclude. Other keys do nothing there. `Enter`
 with *exclude* adds the filter as `f x` does: with no colour, and its lines
 leave the view. An excluding filter that becomes including or context takes
 the next palette colour.
@@ -2213,15 +2213,16 @@ pattern behind: `Enter` on one (after `Ctrl-u`, say) reports `a filter needs a
 pattern`. A pattern that will not compile reports `E486: invalid pattern`. Both
 leave the prompt open over the intact filter, exactly as `i` does.
 
-### Three senses, and which files the explorer marks
+### Four senses, and which files the explorer marks
 
-Every numbered filter has a sense, shown in its row as `inc`, `ctx` or `exc`:
+Every numbered filter has a sense, shown in its row as `inc`, `ctx`, `req` or `exc`:
 
-| Sense | In the view | A stop for `n`? | Marks the file in the explorer? |
+| Sense | In the view | A stop for `n`? | Effect in the explorer |
 | --- | --- | --- | --- |
-| `inc` — include | shows the line, in the filter's colour | **yes** | **yes** |
-| `ctx` — context | shows the line, in the filter's colour | no | no |
-| `exc` — exclude | removes the line | no | no |
+| `inc` — include | shows the line, in the filter's colour | **yes** | **marks the file** |
+| `ctx` — context | shows the line, in the filter's colour | no | none |
+| `req` — require | shows the line, in the filter's colour | no | **a file is marked only if this filter matches one of its lines** |
+| `exc` — exclude | removes the line | no | none |
 
 A context line is there to be read *around* a hit, not to be one: `n`/`N` step over it,
 `j`/`k` still walk it, and hide mode keeps it. That is the same rule the explorer uses to
@@ -2229,20 +2230,33 @@ mark files, so the two panes agree on what "interesting" means. Where an include
 a context filter both match a line, the include filter's colour wins, which is again the
 explorer's colour for the file.
 
-With at least one include filter enabled, the explorer marks
+With at least one include or require filter enabled, the explorer marks
 each file: a name drawn in a filter's colour has at least one line that filter
 selected; a dimmed name has none; a plain name has not been scanned yet. In hide
 mode (`u`), non-matching files leave the listing the way non-matching lines
-leave the view. The scan runs in the background and stops each file at its first
-matching line, and toggling a filter on or off usually re-answers the whole
+leave the view. The scan runs in the background and stops each file as soon as
+it is marked, and toggling a filter on or off usually re-answers the whole
 folder without reading anything.
+
+*Require* is for the next question about the files an include filter found:
+"of these logs, which ran on host `Zeus`?". Give `^Host: Zeus` the sense
+require, and the explorer marks only the logs that have an include line **and**
+a `Host: Zeus` line, anywhere in the file. With two require filters, a log
+needs a line for each. With no include filter enabled, the require filters
+alone decide, so `^Host: Zeus` alone marks every log from `Zeus`. A line that
+an exclude filter removes does not count. `.` / `,` and hide mode then see only
+the files that are left. In batch mode, a file that fails a require filter is
+left out, and the lines of the other files do not change. Set the sense in the
+filter editor or in `filters.toml` (`sense = "require"`); `m` does not change
+it. See ADR 0013.
 
 *Context* is for the patterns every log carries — the build's commit, the host —
 that you want to see in the view but that say nothing about which logs are
 interesting. Which sense a pattern has is your call, per set: `^host:
 production-.*` is an include when the question is "which production logs have
 errors" and context when it is "which logs have bug 57, and where did they run".
-New filters are include; `m` flips the selected one.
+New filters are include; `m` flips the selected one between include and
+context, and leaves a require or exclude filter alone.
 
 `Enter` took the toggle over from `space`, which is now the global peek. A key
 that toggled a filter in this pane and flipped hide mode in the other two is

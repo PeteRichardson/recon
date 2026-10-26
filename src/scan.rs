@@ -3,12 +3,13 @@
 //!
 //! Two layers, kept apart so the interesting behaviour is testable without a
 //! thread. [`scan`] is a pure core over any `BufRead`: it records which
-//! patterns hit each line as a bitset and stops at the first line that selects
-//! the file. [`Scanner`] is the thread that drives it per file and streams
+//! patterns hit each line as a bitset and stops once the lines read mark the
+//! file. [`Scanner`] is the thread that drives it per file and streams
 //! [`Scanned`] results over a channel.
 //!
 //! The bitsets are the point. A file matches under a mask iff some line's
-//! bitset has a selecting bit and no excluding bit — a few `u64` ops — so a
+//! bitset has a selecting bit and no excluding bit, and each require bit is
+//! in a bitset with no excluding bit (#547) — a few integer ops — so a
 //! filter toggle re-answers a whole folder with no I/O. See the design at
 //! `docs/specs/2026-09-02-explorer-filter-matches-design.md`.
 
@@ -42,7 +43,7 @@ impl Progress {
     /// As [`Record::answer`], which is this under the stamp it was read at.
     #[must_use]
     pub fn answer(&self, m: &Matcher) -> Option<bool> {
-        if self.seen.iter().any(|&bits| m.selects(bits)) {
+        if m.marks(&self.seen) {
             return Some(true);
         }
         if self.eof {
@@ -115,11 +116,7 @@ impl Record {
     /// owner across every seen bitset.
     #[must_use]
     pub fn owner(&self, m: &Matcher) -> Option<Owner> {
-        self.progress
-            .seen
-            .iter()
-            .filter_map(|&bits| m.owner(bits))
-            .min()
+        m.file_owner(&self.progress.seen)
     }
 }
 
@@ -561,7 +558,7 @@ pub(crate) mod double {
 }
 
 /// Read lines from `reader` — already positioned at `from.scanned_to` — and
-/// record what each one matched, stopping at the first line that selects the
+/// record what each one matched, stopping once the lines read mark the
 /// file, at EOF, or when `cancel` is set. [`scan_file`] is the same over a
 /// file, with the sniff and the resume check.
 #[must_use]
@@ -721,11 +718,12 @@ fn scan_lines(
         };
         progress.scanned_to += read;
         let bits = matcher.bits(&line);
+        // Only a new bitset can change the answer: `seen` is a set.
         if !progress.seen.contains(&bits) {
             progress.seen.push(bits);
-        }
-        if matcher.selects(bits) {
-            return progress;
+            if matcher.marks(&progress.seen) {
+                return progress;
+            }
         }
     }
 }
@@ -733,7 +731,7 @@ fn scan_lines(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::filter::ActiveFilters;
+    use crate::filter::{ActiveFilters, Engine, Sense};
     use crate::fixtures::append;
     use std::io::Cursor;
 
@@ -886,6 +884,113 @@ mod tests {
         );
 
         assert!(progress.seen.contains(&0b1));
+    }
+
+    // ---- require (#547) ----------------------------------------------------
+
+    /// `includes`, then `requires`, in that order: bit `i` of a line is
+    /// `includes[i]`, and the require bits follow.
+    fn requiring(includes: &[&str], requires: &[&str]) -> ActiveFilters {
+        let mut set = ActiveFilters::new();
+        for pattern in includes {
+            set.add(pattern).expect("valid pattern");
+        }
+        for pattern in requires {
+            set.add_as(pattern, Sense::Require, Engine::Standard)
+                .expect("valid pattern");
+        }
+        set
+    }
+
+    #[test]
+    fn a_require_filter_keeps_the_scan_going_past_the_first_include_line() {
+        let text = "error here\nother\nHost: Zeus\nmore\n";
+        let m = requiring(&["error"], &["Host: Zeus"])
+            .matcher()
+            .expect("something selects");
+        let progress = scan(Cursor::new(text), &m, Progress::default(), &never());
+
+        assert_eq!(
+            progress.scanned_to,
+            "error here\nother\nHost: Zeus\n".len() as u64,
+            "stopped before the require line, or read past it"
+        );
+        assert_eq!(progress.answer(&m), Some(true));
+    }
+
+    #[test]
+    fn a_file_with_no_line_for_a_require_filter_is_not_marked() {
+        let m = requiring(&["error"], &["Host: Zeus"])
+            .matcher()
+            .expect("something selects");
+        let progress = scan(
+            Cursor::new("error here\nHost: Hera\n"),
+            &m,
+            Progress::default(),
+            &never(),
+        );
+
+        assert!(progress.eof);
+        assert_eq!(progress.answer(&m), Some(false));
+    }
+
+    #[test]
+    fn each_require_filter_must_match_a_line() {
+        let m = requiring(&[], &["Host: Zeus", "Commit: 0374"])
+            .matcher()
+            .expect("require filters alone select");
+
+        assert_eq!(
+            record(&[0b01], true).answer(&m),
+            Some(false),
+            "only the first require filter matched"
+        );
+        assert_eq!(record(&[0b01, 0b10], true).answer(&m), Some(true));
+    }
+
+    #[test]
+    fn with_no_include_filter_the_require_filters_alone_decide() {
+        let m = requiring(&[], &["Host: Zeus"])
+            .matcher()
+            .expect("require filters alone select");
+
+        assert_eq!(record(&[0, 0b1], false).answer(&m), Some(true));
+        assert_eq!(record(&[0], true).answer(&m), Some(false));
+        assert_eq!(record(&[0], false).answer(&m), None);
+    }
+
+    #[test]
+    fn an_excluded_line_does_not_satisfy_a_require_filter() {
+        let mut set = requiring(&["error"], &["Host: Zeus"]);
+        set.add_excluding("noise").expect("valid pattern");
+        let m = set.matcher().expect("something selects");
+
+        // error; Host: Zeus with noise
+        assert_eq!(record(&[0b001, 0b110], true).answer(&m), Some(false));
+    }
+
+    /// A toggle re-answers from the same bitsets, with no read.
+    #[test]
+    fn disabling_a_require_filter_needs_no_new_scan() {
+        let mut set = requiring(&["error"], &["Host: Zeus"]);
+        let rec = record(&[0b01], true);
+
+        assert_eq!(rec.answer(&set.matcher().expect("selects")), Some(false));
+        set.set_enabled(1, false);
+        assert_eq!(rec.answer(&set.matcher().expect("selects")), Some(true));
+    }
+
+    /// The colour is the include filter's. With none enabled, it is the
+    /// lowest require filter's.
+    #[test]
+    fn the_owner_is_an_include_filter_while_one_is_enabled() {
+        let m = requiring(&["error"], &["Host: Zeus"])
+            .matcher()
+            .expect("selects");
+        assert_eq!(record(&[0b10, 0b01], true).owner(&m), Some(0));
+
+        let m = requiring(&[], &["Host: Zeus"]).matcher().expect("selects");
+        assert_eq!(record(&[0, 0b1], true).owner(&m), Some(0));
     }
 
     // ---- records ---------------------------------------------------------

@@ -112,6 +112,7 @@ enum SenseSchema {
     Include,
     Context,
     Exclude,
+    Require,
 }
 
 impl From<SenseSchema> for Sense {
@@ -120,6 +121,7 @@ impl From<SenseSchema> for Sense {
             SenseSchema::Include => Self::Include,
             SenseSchema::Context => Self::Context,
             SenseSchema::Exclude => Self::Exclude,
+            SenseSchema::Require => Self::Require,
         }
     }
 }
@@ -633,13 +635,9 @@ pub fn append_set(text: &str, set: &SetToSave<'_>) -> Result<String, String> {
         if let Some(hash) = &entry.generated_from {
             filter.insert("generated_from", value(hash.as_str()));
         }
-        let sense = match entry.sense {
-            Sense::Include => None,
-            Sense::Context => Some("context"),
-            Sense::Exclude => Some("exclude"),
-        };
-        if let Some(sense) = sense {
-            filter.insert("sense", value(sense));
+        // Include is the default, and is left out.
+        if entry.sense != Sense::Include {
+            filter.insert("sense", value(entry.sense.name()));
         }
         // The examples last: they are the longest lines in the file.
         for (key, must) in [("must_match", true), ("must_not_match", false)] {
@@ -1312,6 +1310,25 @@ sense = "context"
         let saved = sets.iter().find(|set| set.name == "s").expect("saved");
         assert_eq!(saved.filters[0].predicate.engine(), Engine::Advanced);
         assert_eq!(saved.filters[1].predicate.engine(), Engine::Standard);
+    }
+
+    /// The fourth sense (#547) reads, and saves back as it was read.
+    #[test]
+    fn a_require_filter_round_trips() {
+        let after = append_set(
+            "",
+            &SetToSave {
+                name: "hosts",
+                filters: vec![FilterToSave::new("^Host: Zeus", Sense::Require)],
+                default: vec![],
+            },
+        )
+        .expect("edits");
+        assert!(after.contains("sense = \"require\""), "{after}");
+
+        let sets = parse(&after, Path::new("t")).expect("round-trips");
+        let saved = sets.iter().find(|set| set.name == "hosts").expect("saved");
+        assert_eq!(saved.filters[0].sense, Sense::Require);
     }
 
     #[test]

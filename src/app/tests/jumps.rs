@@ -762,6 +762,47 @@ fn dot_and_comma_step_files_from_every_pane() {
     assert_eq!(app.focus, Focus::Filters);
 }
 
+/// #547: three logs with an error, only two from `Zeus`. With a require
+/// filter on the host, `.` goes from one `Zeus` log to the other and skips
+/// the log from `Hera`. Each answer is a real scan of the file.
+#[test]
+fn dot_skips_a_file_that_fails_a_require_filter() {
+    let mut app = app_over_files(
+        "require_skip",
+        &[
+            ("a.log", "Host: Zeus\nhit a\n"),
+            ("b.log", "Host: Hera\nhit b\n"),
+            ("c.log", "hit c\nHost: Zeus\n"),
+        ],
+    );
+    let (_scanner, tx) = record_scans(&mut app);
+    app.add_filter("hit").expect("valid pattern");
+    app.add_filter_as("^Host: Zeus", filter::Sense::Require)
+        .expect("valid pattern");
+    app.refresh_scan(false);
+    let matcher = app.filters.matcher().expect("something selects");
+    for row in 0..3 {
+        let path = app.explorer.files()[row].1.clone();
+        let progress = scan::scan_file(
+            fs::File::open(&path).expect("open"),
+            &matcher,
+            scan::Progress::default(),
+            &std::sync::atomic::AtomicBool::new(false),
+        );
+        let mut result = scanned(&app, row, progress.seen, true);
+        result.progress.scanned_to = progress.scanned_to;
+        tx.send(result).expect("send");
+    }
+    app.drain_scan_results();
+    open_file(&mut app, 0);
+    key(&mut app, KeyCode::Char('t'));
+
+    key(&mut app, KeyCode::Char('.'));
+    assert_eq!(shown(&app), "c.log", "b.log is not from Zeus");
+    key(&mut app, KeyCode::Char('.'));
+    assert_eq!(shown(&app), "a.log", "wrapped, and skipped b.log again");
+}
+
 /// `.` does not wait for the current file to be exhausted.
 #[test]
 fn dot_skips_the_rest_of_the_current_file() {

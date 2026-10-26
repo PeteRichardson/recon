@@ -229,8 +229,9 @@ fn collect_lines(
     let mut read = 0;
     let mut failed = 0;
     let mut written = Ok(());
+    let require = require_matcher(filters);
     'files: for path in &inputs.files {
-        let document = match read_hidden(path, filters) {
+        let document = match Document::read(path) {
             Ok(document) => document,
             Err(err) => {
                 warn(warnings, path, &err);
@@ -239,6 +240,11 @@ fn collect_lines(
             }
         };
         read += 1;
+        // Before `hidden`, so a file that fails is not evaluated for nothing.
+        if !requires_met(&document, require.as_ref()) {
+            continue;
+        }
+        let document = hidden(document, filters);
         let text = document.lines();
         let prefix = several.then(|| path_bytes(path));
         for &source in document.visible() {
@@ -265,8 +271,9 @@ fn collect_lines(
 ///
 /// A definition filter needs the grammar of the whole input, which one
 /// line at a time cannot give, so with one enabled stdin is read to its
-/// end first, as `q` under `--emit lines` reads a file (#351). Otherwise
-/// each line is filtered as it comes: see [`stream_stdin`].
+/// end first, as `q` under `--emit lines` reads a file (#351). So does a
+/// require filter, which is a condition on the whole input (#547).
+/// Otherwise each line is filtered as it comes: see [`stream_stdin`].
 pub(crate) fn collect_stdin<R: io::Read>(
     stdin: io::BufReader<R>,
     filters: &ActiveFilters,
@@ -275,11 +282,13 @@ pub(crate) fn collect_stdin<R: io::Read>(
     warnings: &mut impl Write,
 ) -> Exit {
     let mut emitted = 0;
-    let (read, written) = if filters.needs_kinds() {
+    let require = require_matcher(filters);
+    let (read, written) = if filters.needs_kinds() || require.is_some() {
         match stdin_whole(stdin) {
             Ok(document) => {
+                let shown = requires_met(&document, require.as_ref());
                 let document = hidden(document, filters);
-                let all = 0..document.lines().len();
+                let all = 0..if shown { document.lines().len() } else { 0 };
                 (
                     Ok(()),
                     write_new(&document, all, line_numbers, out, &mut emitted),
@@ -514,7 +523,7 @@ fn write_line(
 /// when nothing selects, which is the explorer's rule in hide mode: it
 /// hides nothing it cannot mark.
 ///
-/// One scan per file, stopping at the first selecting line, which is what
+/// One scan per file, stopping once the file is marked, which is what
 /// the explorer's scan costs. With nothing to scan, each input is still
 /// opened, so an unreadable one is warned about and skipped.
 /// The summary's `from <dir>` / `of N inputs` follows where the list came
@@ -535,6 +544,13 @@ fn collect_files(
 ) -> Exit {
     let parse = filters.needs_kinds();
     let matcher = if parse { None } else { filters.matcher() };
+    // The parse path reads each file whole, so it checks the require
+    // filters on the lines; a scan's matcher applies them itself.
+    let require = if parse {
+        require_matcher(filters)
+    } else {
+        None
+    };
     // Whether some filter decides the answer. `false` is the explorer's
     // "nothing to mark", and the summary's `no filter`.
     let live = parse || matcher.is_some();
@@ -549,7 +565,7 @@ fn collect_files(
     let mut written = Ok(());
     for path in &inputs.files {
         let answer = match &matcher {
-            _ if parse => file_defines(path, filters),
+            _ if parse => file_defines(path, filters, require.as_ref()),
             Some(matcher) => file_matches(path, matcher),
             None => open_input(path).map(|_| false),
         };
@@ -594,7 +610,7 @@ fn open_input(path: &Path) -> io::Result<File> {
     File::open(path)
 }
 
-/// Whether any line of `path` selects under `matcher` — `Record::answer`'s
+/// Whether the lines of `path` mark it under `matcher` — `Record::answer`'s
 /// rule, over a scan run to its answer. The same read as the explorer's, so a
 /// UTF-16 log is decoded here too (#357).
 fn file_matches(path: &Path, matcher: &Matcher) -> io::Result<bool> {
@@ -604,8 +620,8 @@ fn file_matches(path: &Path, matcher: &Matcher) -> io::Result<bool> {
         Progress::default(),
         &AtomicBool::new(false),
     );
-    // The positive half of `scan::Record::answer`: a selecting bitmask was seen.
-    Ok(progress.seen.iter().any(|&bits| matcher.selects(bits)))
+    // The positive half of `scan::Record::answer`.
+    Ok(matcher.marks(&progress.seen))
 }
 
 /// Whether any line of `path` is included by `filters`, read and evaluated
@@ -615,14 +631,37 @@ fn file_matches(path: &Path, matcher: &Matcher) -> io::Result<bool> {
 ///
 /// A file `Document::read` refuses as binary has no grammar to parse, so
 /// it defines nothing: `Ok(false)`, not a failure.
-fn file_defines(path: &Path, filters: &ActiveFilters) -> io::Result<bool> {
+fn file_defines(
+    path: &Path,
+    filters: &ActiveFilters,
+    require: Option<&Matcher>,
+) -> io::Result<bool> {
     let mut document = match Document::read(path) {
         Ok(document) => document,
         Err(err) if document::is_binary(&err) => return Ok(false),
         Err(err) => return Err(err),
     };
+    if !requires_met(&document, require) {
+        return Ok(false);
+    }
     document.evaluate(filters);
     Ok(document.verdicts().iter().any(is_interesting))
+}
+
+/// The matcher batch mode checks a document's require filters with (#547),
+/// made once per run: `None` when no require filter is enabled, and when
+/// there is no matcher — more patterns than a scan takes — which is the
+/// explorer's answer then too. A require filter with a definition predicate
+/// is not in it, as the explorer's scan does not read definitions.
+fn require_matcher(filters: &ActiveFilters) -> Option<Matcher> {
+    filters.matcher().filter(Matcher::requires)
+}
+
+/// Whether each require filter in `require` hits a line of `document` that
+/// no exclude filter hits. Batch mode leaves out a file that fails, and
+/// does not change the lines of a file that passes.
+fn requires_met(document: &Document, require: Option<&Matcher>) -> bool {
+    require.is_none_or(|m| m.lines_meet_requires(document.lines().iter().map(String::as_str)))
 }
 
 /// `--emit cwd`: the directory `PATH` named, or the first input's. Nothing
@@ -1293,6 +1332,68 @@ mod tests {
         assert_eq!(summary, "recon: emitted 2 files of 3 inputs, hide mode");
         assert_eq!(failed, 0);
         assert!(warnings.is_empty(), "{warnings:?}");
+    }
+
+    // ---- require (#547) ----------------------------------------------------
+
+    /// Three logs with a hit; `a.log` and `c.log` are from `Zeus`.
+    fn hosts(name: &str) -> Inputs {
+        from_stdin(
+            name,
+            &[
+                ("a.log", "Host: Zeus\nhit a\n"),
+                ("b.log", "Host: Hera\nhit b\n"),
+                ("c.log", "hit c\nHost: Zeus\n"),
+            ],
+        )
+    }
+
+    fn hit_from_zeus() -> ActiveFilters {
+        let mut filters = filters_matching("hit");
+        filters
+            .add_as(
+                "^Host: Zeus",
+                crate::filter::Sense::Require,
+                crate::filter::Engine::Standard,
+            )
+            .expect("valid pattern");
+        filters
+    }
+
+    #[test]
+    fn files_leaves_out_a_file_that_fails_a_require_filter() {
+        let inputs = hosts("batch_files_require");
+
+        let mut out = Vec::new();
+        let exit = collect_files(&inputs, &hit_from_zeus(), &mut out, &mut Vec::new());
+
+        let (lines, summary, _) = emitted(exit, &out);
+        let all = displayed(&inputs);
+        assert_eq!(lines, [all[0].clone(), all[2].clone()]);
+        assert_eq!(summary, "recon: emitted 2 files of 3 inputs, hide mode");
+    }
+
+    /// A file that passes keeps the lines it would have without the
+    /// require filter, plus its require lines, which show as context.
+    #[test]
+    fn lines_leaves_out_the_lines_of_a_file_that_fails_a_require_filter() {
+        let inputs = hosts("batch_lines_require");
+
+        let mut out = Vec::new();
+        let exit = collect_lines(&inputs, &hit_from_zeus(), false, &mut out, &mut Vec::new());
+
+        let (lines, summary, _) = emitted(exit, &out);
+        let all = displayed(&inputs);
+        assert_eq!(
+            lines,
+            [
+                format!("{}\tHost: Zeus", all[0]),
+                format!("{}\thit a", all[0]),
+                format!("{}\thit c", all[2]),
+                format!("{}\tHost: Zeus", all[2]),
+            ]
+        );
+        assert_eq!(summary, "recon: emitted 4 lines of 3 files, hide mode");
     }
 
     #[test]

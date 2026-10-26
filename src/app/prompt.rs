@@ -208,7 +208,7 @@ impl SearchPrompt {
             PromptKind::Search => "/",
             PromptKind::Filter
             | PromptKind::Edit {
-                sense: filter::Sense::Include | filter::Sense::Context,
+                sense: filter::Sense::Include | filter::Sense::Context | filter::Sense::Require,
                 ..
             } => "filter: ",
             PromptKind::Exclude
