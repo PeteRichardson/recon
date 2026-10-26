@@ -393,6 +393,16 @@ pub struct Config {
     #[arg(short = 'u', long = "unlist", value_name = "NAME")]
     pub unlist: Vec<String>,
 
+    /// Unlist every saved filter set at startup, before `--set`: only the
+    /// sets `--set` names are listed. It wins over `listed` and `autoload`
+    /// in `filters.toml`, so a run starts from no sets and adds what it
+    /// wants.
+    //
+    // `env =` works here, unlike for `--warnings`: there is no file rung
+    // under it, so a value of `false` only has to mean "not given" (#533).
+    #[arg(long, env = "RECON_CLEAR", hide_env_values = true)]
+    pub clear: bool,
+
     /// Start in hide mode: only matching lines and files. Batch mode always
     /// hides, so there it changes nothing.
     // Accepted in batch mode so scripts that pass it keep working (#511).

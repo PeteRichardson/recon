@@ -361,6 +361,11 @@ Options:
   -u, --unlist <NAME>
           Unlist a saved filter set at startup: no row in the filter pane and no
           effect on the view or on `--emit`. Repeatable
+      --clear
+          Unlist every saved filter set at startup, before `--set`: only the
+          sets `--set` names are listed. It wins over `listed` and `autoload` in
+          `filters.toml`, so a run starts from no sets and adds what it wants
+          [env: RECON_CLEAR]
       --hide
           Start in hide mode: only matching lines and files. Batch mode always
           hides, so there it changes nothing
@@ -947,7 +952,11 @@ set without a `default` profile comes on with every filter off, exactly as
 `Enter` on its header would leave it — give it a `default` if it is meant to
 be used this way. `--unlist WiFi_debug` does the opposite for one run: the
 set has no row and no effect, whatever its `listed` and `autoload` say. It
-repeats too, and `--set` and `--unlist` on the same set are refused. The same
+repeats too, and `--set` and `--unlist` on the same set are refused.
+`--clear` unlists every set before `--set` runs, so `recon --clear --set
+WiFi_debug` lists only `WiFi_debug`: start from no sets and add the ones you
+want, rather than take away the ones you do not. `RECON_CLEAR=true` does the
+same in the environment. The same
 flags drive a run with no TUI at all; see [Batch mode](#batch-mode).
 
 A header carries `*` when its set has profiles. `a` on that row opens a small

@@ -594,6 +594,57 @@ fn unlist_removes_an_autoload_set_from_the_output() {
     assert_eq!(out.status.code(), Some(0));
 }
 
+/// `--clear` unlists every set (#533), so only a `--set` set decides the
+/// output. `Bugs` and `Noise` here both autoload: `Bugs` keeps `hit`, and
+/// `Noise` hides `miss`.
+#[test]
+fn clear_unlists_every_set_but_the_ones_set_names() {
+    let dir = fixture("clear");
+    let home = config_home(&dir);
+    fs::write(
+        home.join("recon/filters.toml"),
+        "[sets.Bugs]\nautoload = true\n\n\
+         [sets.Bugs.profiles]\n\
+         default = [\"hit\"]\n\n\
+         [[sets.Bugs.filters]]\n\
+         name = \"hit\"\n\
+         pattern = \"hit\"\n\n\
+         [sets.Noise]\nautoload = true\n\n\
+         [sets.Noise.profiles]\n\
+         default = [\"miss\"]\n\n\
+         [[sets.Noise.filters]]\n\
+         name = \"miss\"\n\
+         sense = \"exclude\"\n\
+         pattern = \"miss\"\n",
+    )
+    .expect("write filters.toml");
+    let log = dir.join("a.log");
+    fs::write(&log, "hit\nmiss\nother\n").expect("write");
+    let path = log.display().to_string();
+
+    let out = recon(&home, &["--emit", "lines", &path], b"");
+    assert_eq!(text(&out.stdout), "hit\n", "both sets apply");
+
+    let out = recon(&home, &["--emit", "lines", "--clear", &path], b"");
+    assert_eq!(text(&out.stdout), "hit\nmiss\nother\n", "no set applies");
+    assert_eq!(out.status.code(), Some(0));
+
+    let out = recon(
+        &home,
+        &["--emit", "lines", "--clear", "--set", "Noise", &path],
+        b"",
+    );
+    assert_eq!(text(&out.stdout), "hit\nother\n", "only Noise applies");
+
+    let out = recon_with(
+        &home,
+        &["--emit", "lines", "--set", "Noise", &path],
+        b"",
+        &[("RECON_CLEAR", Path::new("true"))],
+    );
+    assert_eq!(text(&out.stdout), "hit\nother\n", "RECON_CLEAR is --clear");
+}
+
 #[test]
 fn set_and_unlist_of_one_set_is_refused_before_anything_is_read() {
     let dir = fixture("set_and_unlist");
