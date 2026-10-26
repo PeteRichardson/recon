@@ -86,9 +86,12 @@ fn rebind(app: &mut App<'_>, lines: &[(&str, &[&str])]) {
             )
         })
         .collect();
-    let (map, _) =
-        crate::keymap::config::build(&crate::keymap::config::KeymapConfig { bindings }, true)
-            .expect("a keymap recon can obey");
+    let (map, _) = crate::keymap::config::build(
+        &crate::keymap::config::KeymapConfig { bindings },
+        None,
+        true,
+    )
+    .expect("a keymap recon can obey");
     app.keymap = map;
 }
 
