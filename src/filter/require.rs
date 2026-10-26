@@ -258,4 +258,31 @@ mod tests {
             filters.filters()[hera].display_name()
         );
     }
+
+    /// A log can hold one very long line (a JSON dump of 130,000
+    /// characters). The scan reads every line, and a line that fails the
+    /// row must not cost a time that grows with the square of its length:
+    /// that took 30 seconds on one such line before the joined pattern
+    /// was anchored.
+    #[test]
+    fn a_long_line_that_fails_the_row_is_answered_at_once() {
+        let mut filters = deploy_logs();
+        let row = filters
+            .add_require(base(&filters), "vhb5_006")
+            .expect("named");
+        filters.set_enabled(base(&filters), false);
+        let line = format!("Robot name: vh6b_006 {}", "x".repeat(60_000));
+        let started = std::time::Instant::now();
+        assert_eq!(filters.verdict(&line, KindSet::EMPTY), Verdict::Unmatched);
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(1),
+            "took {:?}",
+            started.elapsed()
+        );
+        let line = format!("Robot name: vhb5_006 {}", "x".repeat(60_000));
+        assert_eq!(
+            filters.verdict(&line, KindSet::EMPTY),
+            Verdict::Context(row)
+        );
+    }
 }
