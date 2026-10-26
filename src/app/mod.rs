@@ -420,27 +420,12 @@ impl App<'_> {
             ActiveFilters::with_sets(Some(config.filter_palette()), &startup.filter_sets);
         filters.set_background(config.background());
         filters.set_step_limit(config.advanced_step_limit());
-        // Before `--set`, which lists again the sets it names (#533).
-        if config.clear {
-            filters.unlist_all();
-        }
-        // In order, so a `+NAME` changes what an earlier `--set` gave (#538).
-        for spec in config.sets_to_enable() {
-            // `Config::check_sets` refused an unknown name in
-            // `startup::start` before the terminal came up; a failure here
-            // is a hand-built `Startup`
-            // in a test, and the set is left off rather than the app brought
-            // down over it.
-            if let Err(err) = filters.enable_spec(&spec) {
-                log::warn!("--set {}: {err}", spec.name);
-            }
-        }
-        // `check_sets` refused `--set X --unlist X`, so the order of the two
-        // loops decides nothing.
-        for set in &config.unlist {
-            if let Err(err) = filters.unlist_named(set) {
-                log::warn!("--unlist {set}: {err}");
-            }
+        // `Config::check_sets` refused an unknown name in `startup::start`
+        // before the terminal came up; a failure here is a hand-built
+        // `Startup` in a test, and the set is left as it was rather than the
+        // app brought down over it.
+        for failed in filters.apply_startup(config) {
+            log::warn!("{failed}");
         }
 
         // `Config::load` refused a list naming all three; `hiding` keeps the

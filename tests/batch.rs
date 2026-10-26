@@ -664,6 +664,65 @@ fn clear_unlists_every_set_but_the_ones_set_names() {
     assert_eq!(text(&out.stdout), "hit\nother\n", "RECON_CLEAR is --clear");
 }
 
+/// `--list` lists a set and leaves it disabled (#545), so in batch mode it
+/// has no effect on the output. On an autoload set it turns the set off;
+/// `--set` on the same set wins.
+#[test]
+fn list_leaves_a_set_disabled_in_the_output() {
+    let dir = fixture("list");
+    let home = config_home(&dir);
+    fs::write(
+        home.join("recon/filters.toml"),
+        "[sets.Bugs]\nautoload = true\n\n\
+         [sets.Bugs.profiles]\n\
+         default = [\"hit\"]\n\n\
+         [[sets.Bugs.filters]]\n\
+         pattern = \"hit\"\n",
+    )
+    .expect("write filters.toml");
+    let log = dir.join("a.log");
+    fs::write(&log, "hit\nmiss\n").expect("write");
+    let path = log.display().to_string();
+
+    let out = recon(&home, &["--emit", "lines", "--list", "Bugs", &path], b"");
+    assert_eq!(text(&out.stdout), "hit\nmiss\n", "Bugs is listed and off");
+    assert_eq!(out.status.code(), Some(0));
+
+    let out = recon(
+        &home,
+        &[
+            "--emit", "lines", "--clear", "-l", "Bugs", "--set", "Bugs", &path,
+        ],
+        b"",
+    );
+    assert_eq!(text(&out.stdout), "hit\n", "--set wins over --list");
+}
+
+#[test]
+fn list_and_unlist_of_one_set_is_refused_before_anything_is_read() {
+    let dir = fixture("list_and_unlist");
+    let home = config_home(&dir);
+    fs::write(
+        home.join("recon/filters.toml"),
+        "[[sets.Bugs.filters]]\npattern = \"hit\"\n",
+    )
+    .expect("write filters.toml");
+
+    let out = recon(
+        &home,
+        &["--emit", "files", "--list", "Bugs", "--unlist", "Bugs"],
+        b"",
+    );
+
+    assert_eq!(out.stdout, b"");
+    assert!(
+        text(&out.stderr).contains("--list and --unlist both name the set \"Bugs\""),
+        "stderr: {}",
+        text(&out.stderr)
+    );
+    assert_eq!(out.status.code(), Some(1));
+}
+
 #[test]
 fn set_and_unlist_of_one_set_is_refused_before_anything_is_read() {
     let dir = fixture("set_and_unlist");

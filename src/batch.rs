@@ -100,26 +100,15 @@ pub fn run(startup: &Startup, out: &mut impl Write, stop: &AtomicBool) -> Result
     ))
 }
 
-/// The startup filter set: the loaded sets, all unlisted for `--clear`,
-/// then each `--set` enabled and each `--unlist` unlisted — the same steps
-/// `App::new` takes.
+/// The startup filter set: the loaded sets with the startup set flags
+/// applied by `ActiveFilters::apply_startup`, as `App::new` does.
 fn filters_for(startup: &Startup) -> Result<ActiveFilters> {
     let config = &startup.config;
     let mut filters = ActiveFilters::with_sets(Some(config.filter_palette()), &startup.filter_sets);
     filters.set_background(config.background());
     filters.set_step_limit(config.advanced_step_limit());
-    if config.clear {
-        filters.unlist_all();
-    }
-    for spec in config.sets_to_enable() {
-        filters
-            .enable_spec(&spec)
-            .map_err(|err| eyre!("--set {}: {err}", spec.name))?;
-    }
-    for set in &config.unlist {
-        filters
-            .unlist_named(set)
-            .map_err(|err| eyre!("--unlist {set}: {err}"))?;
+    if let Some(failed) = filters.apply_startup(config).into_iter().next() {
+        return Err(eyre!("{failed}"));
     }
     // A run that cannot apply a filter the user turned on must not give
     // output that looks right (#473): stop, and name every one.

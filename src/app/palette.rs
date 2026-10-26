@@ -247,7 +247,8 @@ impl App<'_> {
             Run::Path => self.go_to_path(argument),
             Run::Line => self.go_to_line(argument),
             Run::EnableSet => self.enable_set(argument),
-            Run::UnlistSet => self.unlist_set(argument),
+            Run::ListSet => self.set_listing("list", argument, true),
+            Run::UnlistSet => self.set_listing("unlist", argument, false),
             Run::View => self.choose_view(argument),
             Run::AddFilter(sense) => self.add_filter_from_palette(sense, argument),
             Run::Action(action) => self.run_action(action, command.argument, argument),
@@ -351,13 +352,16 @@ impl App<'_> {
         Ok(())
     }
 
-    /// `unlist NAME`: unlist the set, as `--unlist` and the set picker do.
-    fn unlist_set(&mut self, set: &str) -> Result<(), String> {
+    /// `list NAME` and `unlist NAME`: list or unlist the set, as the set
+    /// picker does. `unlist` is `--unlist`. `list` gives an unlisted set
+    /// back disabled, as `--list` does (#545); a listed one does not
+    /// change, so a set that is on stays on.
+    fn set_listing(&mut self, command: &str, set: &str, listed: bool) -> Result<(), String> {
         let index = self
             .filters
-            .named(nonempty("unlist", set)?)
+            .named(nonempty(command, set)?)
             .map_err(|err| err.to_string())?;
-        self.apply_listing(&[(index, false)]);
+        self.apply_listing(&[(index, listed)]);
         Ok(())
     }
 

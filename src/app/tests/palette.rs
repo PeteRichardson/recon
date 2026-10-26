@@ -716,6 +716,38 @@ fn set_lists_and_enables_an_unlisted_set() {
     assert_eq!(included(&app), 4, "gamma does not match");
 }
 
+/// `list` lists an unlisted set and leaves it disabled, as `--list` does
+/// (#545): its header comes back and its lines do not match yet. A listed
+/// set does not change: `list` does not turn off a set that is on.
+#[test]
+fn list_lists_an_unlisted_set_disabled() {
+    let mut app = app_with_three_sets("palette_list_set");
+    let c = set_named(&app, "c");
+    app.filters.set_listed(c, false);
+    app.refresh_view();
+    let before = included(&app);
+
+    run(&mut app, "list c");
+    assert!(app.prompt.is_none(), "the palette is still open");
+    assert!(app.filters.sets()[c].listed);
+    assert!(!app.filters.sets()[c].enabled);
+    assert!(
+        widgets::filterlist::rows(&app.filters).contains(&widgets::filterlist::Row::Header(c)),
+        "c has no row"
+    );
+    assert_eq!(included(&app), before, "c decides nothing yet");
+
+    let a = set_named(&app, "a");
+    let enabled = app.filters.sets()[a].enabled;
+    run(&mut app, "list a");
+    assert!(app.filters.sets()[a].listed);
+    assert_eq!(
+        app.filters.sets()[a].enabled,
+        enabled,
+        "a listed set stays as it is"
+    );
+}
+
 /// `unlist` unlists a set, as `--unlist` does: it is disabled, its header
 /// leaves the pane and its lines stop matching.
 #[test]
@@ -743,8 +775,10 @@ fn a_bad_set_or_item_keeps_the_palette_open_with_an_error() {
         ("set nope", "nope"),
         ("set c:gamma,nope", "nope"),
         ("unlist nope", "nope"),
+        ("list nope", "nope"),
         ("set", "set name"),
         ("unlist", "set name"),
+        ("list", "set name"),
     ] {
         run(&mut app, line);
         assert_eq!(prompt(&app).pattern, line, "the line is gone");
