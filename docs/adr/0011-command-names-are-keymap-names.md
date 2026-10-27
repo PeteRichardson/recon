@@ -33,6 +33,11 @@ So each user alias has a row of its own, after the built-in commands, with its
 chain as the help. Its name cannot be the name of a command, so a user alias
 never hides a command.
 
+**Note (#559):** a `[keymap]` line can name a user alias, so the keymap, the
+palette and the aliases share one namespace, as this ADR expected. That rule
+from #557 is what makes a `[keymap]` line name exactly one thing. An alias's
+key is only in the global scope.
+
 ## Considered options
 
 - **Short palette names beside the keymap names.** Rejected: two names for

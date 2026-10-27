@@ -20,6 +20,37 @@ use std::fmt;
 use super::{ActionId, Keymap, Scope};
 use crate::help::Chord;
 
+/// What claims a key: an action, or a user alias (#559).
+///
+/// An alias's key is in the global scope only, and every alias key is a
+/// written line: no default binds one. So an alias can win a key or tie
+/// for one, and it never loses one. That is why only the winning sides of a
+/// `Problem` are a `Claimant`, and a loser stays an `ActionId`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Claimant {
+    Action(ActionId),
+    Alias(String),
+}
+
+impl Claimant {
+    /// The name its `[keymap]` line has.
+    fn name(&self) -> &str {
+        match self {
+            Self::Action(action) => action.name(),
+            Self::Alias(name) => name,
+        }
+    }
+
+    /// Whether a `[keymap]` line gave it the key, which every alias's key
+    /// is.
+    fn is_written(&self, written: &[ActionId]) -> bool {
+        match self {
+            Self::Action(action) => written.contains(action),
+            Self::Alias(_) => true,
+        }
+    }
+}
+
 /// Two different actions that claim one key.
 ///
 /// An action that merely replaces its own keys is never a `Problem`: that is
@@ -38,7 +69,7 @@ pub(crate) enum Problem {
     Ambiguous {
         scope: Scope,
         key: String,
-        actions: Vec<ActionId>,
+        actions: Vec<Claimant>,
     },
     /// A written pane line sits under a global binding. An error: the global
     /// scope is read first, so the line could never be reached.
@@ -46,7 +77,7 @@ pub(crate) enum Problem {
         scope: Scope,
         key: String,
         written: ActionId,
-        global: ActionId,
+        global: Claimant,
     },
     /// A written line took a key that a default held. A warning: `winner` is
     /// what the user asked for, and `loser` is what it cost. `remaining` is
@@ -71,7 +102,7 @@ pub(crate) enum Problem {
     Displaced {
         taken_in: Vec<Scope>,
         key: String,
-        winner: ActionId,
+        winner: Claimant,
         loser: ActionId,
         remaining: Vec<String>,
         lost_in: Vec<Scope>,
@@ -315,7 +346,7 @@ impl Report {
     /// with no warning takes a key in silence; a warning with no eviction
     /// reports a loss that never happened, and `fill_scopes` would then find
     /// no scope to name it in.
-    fn displace(&mut self, scope: Scope, key: String, winner: ActionId, loser: ActionId) {
+    fn displace(&mut self, scope: Scope, key: String, winner: Claimant, loser: ActionId) {
         self.evict.push((scope, key.clone(), loser));
         self.warnings.push(Problem::Displaced {
             taken_in: vec![scope],
@@ -333,7 +364,7 @@ impl Report {
 struct Claim {
     scope: Scope,
     key: Chord,
-    actions: Vec<ActionId>,
+    actions: Vec<Claimant>,
 }
 
 /// Group the built table's rows by scope and concrete key, keeping table
@@ -355,11 +386,22 @@ struct Claim {
 /// transitive and cannot define a grouping.
 fn claims(built: &Keymap) -> Vec<Claim> {
     let mut groups: Vec<Claim> = Vec::new();
-    for (scope, label, action) in &built.entries {
+    // A user alias's keys (#559) are rows of the global scope, as a
+    // written global action's are.
+    let actions = built
+        .entries
+        .iter()
+        .map(|(scope, label, action)| (*scope, label, Claimant::Action(*action)));
+    let aliases = built.aliases.iter().flat_map(|(name, labels)| {
+        labels
+            .iter()
+            .map(|label| (Scope::Global, label, Claimant::Alias(name.clone())))
+    });
+    for (scope, label, claimant) in actions.chain(aliases) {
         for key in crate::help::chords_for_label(label) {
             match groups
                 .iter_mut()
-                .find(|claim| claim.scope == *scope && claim.key == key)
+                .find(|claim| claim.scope == scope && claim.key == key)
             {
                 Some(claim) => {
                     // An action bound to one key two times in one scope cannot
@@ -368,14 +410,14 @@ fn claims(built: &Keymap) -> Vec<Claim> {
                     // actions". Two labels of one action reaching one key —
                     // `'global.quit' = ['1-9', '5']` — is the shape that now
                     // arrives here, and it is not a contest with itself.
-                    if !claim.actions.contains(action) {
-                        claim.actions.push(*action);
+                    if !claim.actions.contains(&claimant) {
+                        claim.actions.push(claimant.clone());
                     }
                 }
                 None => groups.push(Claim {
-                    scope: *scope,
+                    scope,
                     key,
-                    actions: vec![*action],
+                    actions: vec![claimant.clone()],
                 }),
             }
         }
@@ -397,18 +439,18 @@ pub(crate) fn check(built: &Keymap, written: &[ActionId]) -> Report {
         if claim.actions.len() < 2 {
             continue;
         }
-        let mine: Vec<ActionId> = claim
+        let mine: Vec<Claimant> = claim
             .actions
             .iter()
-            .copied()
-            .filter(|action| written.contains(action))
+            .filter(|claimant| claimant.is_written(written))
+            .cloned()
             .collect();
 
         if mine.len() >= 2 {
             report.errors.push(Problem::Ambiguous {
                 scope: claim.scope,
                 key: claim.key.label(),
-                actions: mine.clone(),
+                actions: mine,
             });
             continue;
         }
@@ -418,8 +460,11 @@ pub(crate) fn check(built: &Keymap, written: &[ActionId]) -> Report {
         // one key two times, and `the_defaults_hold_no_duplicate_key` proves
         // it — so the loop body simply does not run.
         if let [winner] = mine.as_slice() {
-            for loser in claim.actions.iter().copied().filter(|a| a != winner) {
-                report.displace(claim.scope, claim.key.label(), *winner, loser);
+            for claimant in claim.actions.iter().filter(|a| *a != winner) {
+                // Never an alias: every alias claim is written.
+                if let Claimant::Action(loser) = claimant {
+                    report.displace(claim.scope, claim.key.label(), winner.clone(), *loser);
+                }
             }
         }
     }
@@ -430,7 +475,7 @@ pub(crate) fn check(built: &Keymap, written: &[ActionId]) -> Report {
     // `FilterEditor` take every key while they are open, so a key bound in
     // one of them and also globally is the design and not a contest. `Help`
     // binds nothing at all.
-    let winner_in = |scope: Scope, key: Chord| -> Option<ActionId> {
+    let winner_in = |scope: Scope, key: Chord| -> Option<&Claimant> {
         let claim = claims
             .iter()
             .find(|claim| claim.scope == scope && claim.key == key)?;
@@ -439,9 +484,8 @@ pub(crate) fn check(built: &Keymap, written: &[ActionId]) -> Report {
         claim
             .actions
             .iter()
-            .copied()
-            .find(|action| written.contains(action))
-            .or_else(|| claim.actions.first().copied())
+            .find(|claimant| claimant.is_written(written))
+            .or_else(|| claim.actions.first())
     };
 
     for claim in &claims {
@@ -451,9 +495,11 @@ pub(crate) fn check(built: &Keymap, written: &[ActionId]) -> Report {
         let Some(global) = winner_in(Scope::Global, claim.key) else {
             continue;
         };
-        let Some(pane) = winner_in(claim.scope, claim.key) else {
+        // Never an alias: an alias's key is in the global scope only.
+        let Some(Claimant::Action(pane)) = winner_in(claim.scope, claim.key) else {
             continue;
         };
+        let pane = *pane;
 
         if written.contains(&pane) {
             // The user wrote a pane line that the global scope will always
@@ -462,12 +508,12 @@ pub(crate) fn check(built: &Keymap, written: &[ActionId]) -> Report {
                 scope: claim.scope,
                 key: claim.key.label(),
                 written: pane,
-                global,
+                global: global.clone(),
             });
-        } else if written.contains(&global) {
+        } else if global.is_written(written) {
             // The user wrote the global line and got what they asked for.
             // The pane default is what it cost.
-            report.displace(claim.scope, claim.key.label(), global, pane);
+            report.displace(claim.scope, claim.key.label(), global.clone(), pane);
         }
         // Neither written: two defaults crossing, which `DEFAULT` does not do
         // and `no_default_key_is_in_both_global_and_a_pane` pins.
@@ -515,7 +561,7 @@ fn fill_scopes(report: &mut Report) {
             merged.push(problem);
             continue;
         };
-        let (key, winner, loser) = (key.clone(), *winner, *loser);
+        let (key, winner, loser) = (key.clone(), winner.clone(), *loser);
         let raised_in = taken_in.clone();
 
         let same = merged.iter_mut().find(|seen| {
@@ -721,7 +767,10 @@ mod tests {
             vec![Problem::Ambiguous {
                 scope: Scope::Global,
                 key: "=".to_string(),
-                actions: vec![ActionId::GlobalQuit, ActionId::GlobalReload],
+                actions: vec![
+                    Claimant::Action(ActionId::GlobalQuit),
+                    Claimant::Action(ActionId::GlobalReload)
+                ],
             }],
             "one layer gives no order, so recon must refuse"
         );
@@ -739,7 +788,7 @@ mod tests {
             vec![Problem::Displaced {
                 taken_in: vec![Scope::Global],
                 key: "o".to_string(),
-                winner: ActionId::GlobalQuit,
+                winner: Claimant::Action(ActionId::GlobalQuit),
                 loser: ActionId::GlobalHandOff,
                 remaining: vec![],
                 lost_in: vec![Scope::Global],
@@ -765,7 +814,7 @@ mod tests {
                 Problem::Displaced {
                     taken_in: vec![Scope::Explorer],
                     key: "j".to_string(),
-                    winner: ActionId::GlobalQuit,
+                    winner: Claimant::Action(ActionId::GlobalQuit),
                     loser: ActionId::ExplorerDown,
                     remaining: vec!["Down".to_string()],
                     lost_in: vec![Scope::Explorer],
@@ -773,7 +822,7 @@ mod tests {
                 Problem::Displaced {
                     taken_in: vec![Scope::View],
                     key: "j".to_string(),
-                    winner: ActionId::GlobalQuit,
+                    winner: Claimant::Action(ActionId::GlobalQuit),
                     loser: ActionId::ViewDown,
                     remaining: vec!["Down".to_string()],
                     lost_in: vec![Scope::View],
@@ -781,7 +830,7 @@ mod tests {
                 Problem::Displaced {
                     taken_in: vec![Scope::Filters],
                     key: "j".to_string(),
-                    winner: ActionId::GlobalQuit,
+                    winner: Claimant::Action(ActionId::GlobalQuit),
                     loser: ActionId::FiltersDown,
                     remaining: vec!["Down".to_string()],
                     lost_in: vec![Scope::Filters],
@@ -805,7 +854,7 @@ mod tests {
                 scope: Scope::Explorer,
                 key: "q".to_string(),
                 written: ActionId::ExplorerUp,
-                global: ActionId::GlobalQuit,
+                global: Claimant::Action(ActionId::GlobalQuit),
             }]
         );
     }
@@ -822,7 +871,7 @@ mod tests {
                 scope: Scope::Explorer,
                 key: "=".to_string(),
                 written: ActionId::ExplorerUp,
-                global: ActionId::GlobalReload,
+                global: Claimant::Action(ActionId::GlobalReload),
             }],
             "who holds the global key does not change the verdict"
         );
@@ -889,7 +938,7 @@ mod tests {
                 scope: Scope::Explorer,
                 key: "5".to_string(),
                 written: ActionId::ExplorerUp,
-                global: ActionId::GlobalFiltersToggle,
+                global: Claimant::Action(ActionId::GlobalFiltersToggle),
             }],
             "'5' and '0-9' are one key however differently they are spelled"
         );
@@ -908,7 +957,10 @@ mod tests {
             vec![Problem::Ambiguous {
                 scope: Scope::Global,
                 key: "3".to_string(),
-                actions: vec![ActionId::GlobalQuit, ActionId::GlobalReload],
+                actions: vec![
+                    Claimant::Action(ActionId::GlobalQuit),
+                    Claimant::Action(ActionId::GlobalReload)
+                ],
             }],
             "1 and 2 are quit's alone, 4 and 5 are reload's: only 3 is contested"
         );
@@ -945,7 +997,7 @@ mod tests {
             vec![Problem::Displaced {
                 taken_in: vec![Scope::Global],
                 key: "5".to_string(),
-                winner: ActionId::GlobalEditorProject,
+                winner: Claimant::Action(ActionId::GlobalEditorProject),
                 loser: ActionId::GlobalFiltersToggle,
                 remaining: ["0", "1", "2", "3", "4", "6", "7", "8", "9"]
                     .iter()
@@ -985,7 +1037,7 @@ mod tests {
             vec![Problem::Displaced {
                 taken_in: vec![Scope::View],
                 key: "n".to_string(),
-                winner: ActionId::ViewLineEnd,
+                winner: Claimant::Action(ActionId::ViewLineEnd),
                 loser: ActionId::HitNext,
                 remaining: vec![],
                 lost_in: vec![Scope::View, Scope::Filters],
@@ -1024,7 +1076,7 @@ mod tests {
                 Problem::Displaced {
                     taken_in: vec![Scope::View],
                     key: "n".to_string(),
-                    winner: ActionId::ViewLineEnd,
+                    winner: Claimant::Action(ActionId::ViewLineEnd),
                     loser: ActionId::HitNext,
                     remaining: vec![],
                     lost_in: vec![Scope::View, Scope::Filters],
@@ -1032,7 +1084,7 @@ mod tests {
                 Problem::Displaced {
                     taken_in: vec![Scope::Filters],
                     key: "n".to_string(),
-                    winner: ActionId::FiltersSolo,
+                    winner: Claimant::Action(ActionId::FiltersSolo),
                     loser: ActionId::HitNext,
                     remaining: vec![],
                     lost_in: vec![Scope::View, Scope::Filters],
@@ -1104,7 +1156,7 @@ mod tests {
             vec![Problem::Displaced {
                 taken_in: vec![Scope::View, Scope::Filters],
                 key: "n".to_string(),
-                winner: ActionId::GlobalQuit,
+                winner: Claimant::Action(ActionId::GlobalQuit),
                 loser: ActionId::HitNext,
                 remaining: vec![],
                 lost_in: vec![Scope::View, Scope::Filters],
@@ -1128,7 +1180,7 @@ mod tests {
             vec![Problem::Displaced {
                 taken_in: vec![Scope::View, Scope::Filters],
                 key: "N".to_string(),
-                winner: ActionId::HitNext,
+                winner: Claimant::Action(ActionId::HitNext),
                 loser: ActionId::HitPrev,
                 remaining: vec![],
                 lost_in: vec![Scope::View, Scope::Filters],
@@ -1198,7 +1250,7 @@ mod tests {
         let problem = Problem::Displaced {
             taken_in: vec![Scope::View, Scope::Filters],
             key: "n".to_string(),
-            winner: ActionId::ViewLineEnd,
+            winner: Claimant::Action(ActionId::ViewLineEnd),
             loser: ActionId::HitNext,
             remaining: vec![],
             lost_in: vec![Scope::Filters, Scope::View],
@@ -1228,7 +1280,7 @@ mod tests {
         let problem = Problem::Displaced {
             taken_in: vec![Scope::View],
             key: "n".to_string(),
-            winner: ActionId::ViewLineEnd,
+            winner: Claimant::Action(ActionId::ViewLineEnd),
             loser: ActionId::HitNext,
             remaining: vec![],
             lost_in: vec![],
@@ -1298,7 +1350,7 @@ mod tests {
         let problem = Problem::Displaced {
             taken_in: vec![],
             key: "n".to_string(),
-            winner: ActionId::ViewLineEnd,
+            winner: Claimant::Action(ActionId::ViewLineEnd),
             loser: ActionId::HitNext,
             remaining: vec![],
             lost_in: vec![Scope::View, Scope::Filters],
@@ -1466,7 +1518,7 @@ mod tests {
             ActionId::GlobalReload,
             ActionId::GlobalPeek,
         ] {
-            assert!(actions.contains(&claimant), "{actions:?}");
+            assert!(actions.contains(&Claimant::Action(claimant)), "{actions:?}");
         }
 
         // The message is what a user actually sees, so it has to name them

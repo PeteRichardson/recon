@@ -77,6 +77,15 @@ fn app_over(name: &str, files: &[&str]) -> App<'static> {
 /// Put a `[keymap]` in force on a running app: each action gets exactly
 /// the keys given, as a `config.toml` line would give it (#386).
 fn rebind(app: &mut App<'_>, lines: &[(&str, &[&str])]) {
+    rebind_with_aliases(app, &std::collections::BTreeMap::new(), lines);
+}
+
+/// `rebind`, with the `[aliases]` the lines may name (#559).
+fn rebind_with_aliases(
+    app: &mut App<'_>,
+    aliases: &std::collections::BTreeMap<String, String>,
+    lines: &[(&str, &[&str])],
+) {
     let bindings = lines
         .iter()
         .map(|(action, keys)| {
@@ -88,6 +97,7 @@ fn rebind(app: &mut App<'_>, lines: &[(&str, &[&str])]) {
         .collect();
     let (map, _) = crate::keymap::config::build(
         &crate::keymap::config::KeymapConfig { bindings },
+        aliases,
         None,
         true,
     )

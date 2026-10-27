@@ -118,8 +118,12 @@ pub fn start() -> Result<Start> {
     // recon cannot obey refuses to start while a message can still be read
     // (#61). Above the filter sets for the same reason the two print
     // commands are: this reads nothing from `filters.toml`.
-    let (bindings, keymap_warnings) =
-        crate::keymap::config::build(&overlay, config.config_file_path(), config.warnings())?;
+    let (bindings, keymap_warnings) = crate::keymap::config::build(
+        &overlay,
+        &config.aliases,
+        config.config_file_path(),
+        config.warnings(),
+    )?;
 
     // Same reasoning as `--print-editor-config` above: this command reads
     // nothing from `filters.toml`, so it must not have to survive one to run

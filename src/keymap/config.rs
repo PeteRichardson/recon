@@ -7,6 +7,7 @@
 
 use crate::config::ConfigError;
 use serde::Deserialize;
+use std::collections::BTreeMap;
 use std::fmt;
 use std::path::PathBuf;
 
@@ -244,11 +245,28 @@ impl serde::de::Visitor<'_> for KeyLabel<'_> {
 /// [`ConfigError::Inconsistent`].
 pub fn build(
     overlay: &KeymapConfig,
+    aliases: &BTreeMap<String, String>,
     file: Option<PathBuf>,
     warnings: bool,
 ) -> Result<(crate::keymap::Keymap, Vec<String>), ConfigError> {
-    let (mut keymap, reserved) =
-        crate::keymap::Keymap::new(overlay).map_err(|err| err.in_file(file.clone()))?;
+    // A line that names a user alias (#559) is not an action's line, so
+    // `Keymap::new` never sees it. `load` has refused an alias that has an
+    // action's name, so no line can be both.
+    let (alias_lines, action_lines): (BTreeMap<_, _>, BTreeMap<_, _>) = overlay
+        .bindings
+        .clone()
+        .into_iter()
+        .partition(|(name, _)| aliases.contains_key(name));
+    let actions = KeymapConfig {
+        bindings: action_lines,
+    };
+    let (mut keymap, mut reserved) = crate::keymap::Keymap::new(&actions)
+        .map_err(|err| with_alias_names(err, aliases).in_file(file.clone()))?;
+    reserved.extend(
+        keymap
+            .bind_aliases(&alias_lines)
+            .map_err(|err| err.in_file(file.clone()))?,
+    );
 
     // Logged here rather than inside `Keymap::new`, which is not told
     // whether the user asked for silence.
@@ -261,7 +279,7 @@ pub fn build(
         }
     }
 
-    let written: Vec<crate::keymap::ActionId> = overlay
+    let written: Vec<crate::keymap::ActionId> = actions
         .bindings
         .keys()
         .filter_map(|name| crate::keymap::action_named(name))
@@ -284,4 +302,21 @@ pub fn build(
         keymap,
         report.warnings().iter().map(ToString::to_string).collect(),
     ))
+}
+
+/// `err`, with the names of `aliases` among the names it suggests: a typo of
+/// an alias's name is as likely in `[keymap]` as a typo of an action's
+/// (#559).
+fn with_alias_names(err: ConfigError, aliases: &BTreeMap<String, String>) -> ConfigError {
+    match err {
+        ConfigError::UnknownAction {
+            name,
+            mut known,
+            path,
+        } => {
+            known.extend(aliases.keys().cloned());
+            ConfigError::UnknownAction { name, known, path }
+        }
+        other => other,
+    }
 }

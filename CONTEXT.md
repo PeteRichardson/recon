@@ -206,7 +206,8 @@ A name in the `[aliases]` table of `config.toml` for a chain of command lines,
 with `;` between them. The command palette runs each line in order, and the
 first line that fails stops the chain. An alias can take arguments: `$1` to
 `$9` in its chain are the words typed after its name, and `$*` is the rest of
-the line. A short name of a command, such as `cd`
+the line. A `[keymap]` line with its name gives it a key in the global scope.
+A short name of a command, such as `cd`
 for `e`, is a vim alias, not an alias of this kind.
 _Avoid_: macro, script
 

@@ -784,6 +784,52 @@ fn reserved_hits(
 /// `pub(crate)` rather than private (#61): the help overlay reads a row's
 /// `names` — the same strings a `[keymap]` line uses — and needs the action
 /// each one spells before it can ask what key reaches it.
+/// Read one `[keymap]` line's keys: refuse a spelling nothing can parse,
+/// and add a warning to `reserved` for each reserved key it binds, unless
+/// it is `modal`.
+fn read_line(
+    name: &str,
+    labels: &[String],
+    modal: bool,
+    reserved: &mut Vec<String>,
+) -> Result<(), crate::config::ConfigError> {
+    // Checked before the rebind rather than left to `resolve`: a
+    // spelling nothing can parse would otherwise bind the action to
+    // no key at all, silently, which is the state a typo produces.
+    if let Some(bad) = labels
+        .iter()
+        .find(|label| !crate::help::label_is_readable(label))
+    {
+        return Err(crate::config::ConfigError::BadKeyLabel {
+            action: name.to_string(),
+            label: bad.clone(),
+            path: None,
+        });
+    }
+    // `reserved_hits` above is what keeps this to one warning per
+    // reserved key rather than one per scope. Collected rather than
+    // logged here: `Keymap::new` cannot read a `Config`, so it cannot
+    // know whether the user asked for silence. `keymap::config::build`
+    // is the caller that can, and logs each of these with
+    // `log::warn!` before `main` brings up the terminal — the same
+    // reason `check_sets` is called there rather than from
+    // `Config::load` — so a warning still reaches stderr rather than
+    // being dropped by `Muted` (#246).
+    // The reserved key that was found, not the label the line was
+    // written with: a range names many keys and only one of them is
+    // reserved, so `'*-/'` has to be reported as `-`.
+    for (key, claim) in reserved_hits(RESERVED, labels)
+        .into_iter()
+        .filter(|_| !modal)
+    {
+        reserved.push(format!(
+            "{name} binds '{key}', which is reserved for {claim}; \
+             a later release will want it back, but recon binds it anyway"
+        ));
+    }
+    Ok(())
+}
+
 pub(crate) fn action_named(name: &str) -> Option<ActionId> {
     every_action().find(|action| action.name() == name)
 }
@@ -841,6 +887,10 @@ fn known_action_names() -> Vec<String> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Keymap {
     entries: Vec<(Scope, String, ActionId)>,
+    /// The keys `[keymap]` lines give user aliases (#559), as `(alias
+    /// name, labels)`. Only in the global scope, so not in `entries`: a key
+    /// there names an `ActionId`, and an alias is not one.
+    aliases: Vec<(String, Vec<String>)>,
 }
 
 /// `DEFAULT`, and nothing else: what recon binds when the file says nothing.
@@ -851,6 +901,7 @@ impl Default for Keymap {
                 .iter()
                 .map(|(scope, label, action)| (*scope, (*label).to_string(), *action))
                 .collect(),
+            aliases: Vec::new(),
         }
     }
 }
@@ -878,50 +929,36 @@ impl Keymap {
                     known: known_action_names(),
                     path: None,
                 })?;
-            // Checked before the rebind rather than left to `resolve`: a
-            // spelling nothing can parse would otherwise bind the action to
-            // no key at all, silently, which is the state a typo produces.
-            if let Some(bad) = labels
-                .iter()
-                .find(|label| !crate::help::label_is_readable(label))
-            {
-                return Err(crate::config::ConfigError::BadKeyLabel {
-                    action: name.clone(),
-                    label: bad.clone(),
-                    path: None,
-                });
-            }
-            // `reserved_hits` above is what keeps this to one warning per
-            // reserved key rather than one per scope. Collected rather than
-            // logged here: `Keymap::new` cannot read a `Config`, so it cannot
-            // know whether the user asked for silence. `keymap::config::build`
-            // is the caller that can, and logs each of these with
-            // `log::warn!` before `main` brings up the terminal — the same
-            // reason `check_sets` is called there rather than from
-            // `Config::load` — so a warning still reaches stderr rather than
-            // being dropped by `Muted` (#246).
-            // The reserved key that was found, not the label the line was
-            // written with: a range names many keys and only one of them is
-            // reserved, so `'*-/'` has to be reported as `-`.
-            //
-            // A filter editor action is not checked (#314): the editor takes
-            // every key while it is open, so a reserved key there can never
-            // meet the key 1.1 gives it, and `-` is its own default.
+            // A filter editor action is not checked for a reserved key
+            // (#314): the editor takes every key while it is open, so a
+            // reserved key there can never meet the key 1.1 gives it, and
+            // `-` is its own default.
             let modal = DEFAULT
                 .iter()
                 .any(|(scope, _, bound)| *bound == action && *scope == Scope::FilterEditor);
-            for (key, claim) in reserved_hits(RESERVED, labels)
-                .into_iter()
-                .filter(|_| !modal)
-            {
-                reserved.push(format!(
-                    "{name} binds '{key}', which is reserved for {claim}; \
-                     a later release will want it back, but recon binds it anyway"
-                ));
-            }
+            read_line(name, labels, modal, &mut reserved)?;
             keymap.rebind(action, labels);
         }
         Ok((keymap, reserved))
+    }
+
+    /// Give each alias of `lines` its keys (#559), in the global scope, and
+    /// say which reserved keys they take, as `Keymap::new` does.
+    ///
+    /// # Errors
+    ///
+    /// [`crate::config::ConfigError::BadKeyLabel`], for the reason
+    /// `Keymap::new` refuses one.
+    pub(crate) fn bind_aliases(
+        &mut self,
+        lines: &std::collections::BTreeMap<String, Vec<String>>,
+    ) -> Result<Vec<String>, crate::config::ConfigError> {
+        let mut reserved = Vec::new();
+        for (name, labels) in lines {
+            read_line(name, labels, false, &mut reserved)?;
+            self.aliases.push((name.clone(), labels.clone()));
+        }
+        Ok(reserved)
     }
 
     /// Put `labels` in place of every key `action` currently holds.
@@ -1015,6 +1052,25 @@ impl Keymap {
                 *entry_scope == scope && crate::help::label_matches(label, key)
             })
             .map(|(_, _, action)| *action)
+    }
+
+    /// The user alias a key runs (#559), or `None` when no `[keymap]` line
+    /// gives the key to one.
+    pub(crate) fn alias_for(&self, key: Key) -> Option<&str> {
+        self.aliases
+            .iter()
+            .find(|(_, labels)| {
+                labels
+                    .iter()
+                    .any(|label| crate::help::label_matches(label, key))
+            })
+            .map(|(name, _)| name.as_str())
+    }
+
+    /// Each alias that has a key (#559), by name, with its keys in the order
+    /// its line gives them.
+    pub(crate) fn alias_keys(&self) -> &[(String, Vec<String>)] {
+        &self.aliases
     }
 
     /// The key label bound to `action`, or `None` when nothing is.
@@ -1173,29 +1229,46 @@ pub fn print_keymap(keymap: &Keymap, defaults: &Keymap) -> String {
             last_scope = Some(scope);
         }
 
-        let value = if let [only] = labels.as_slice() {
-            toml_string(only)
-        } else {
-            format!(
-                "[{}]",
-                labels
-                    .iter()
-                    .map(|label| toml_string(label))
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            )
-        };
         // `writeln!` rather than `push_str(&format!(...))`: writing into the
         // `String` directly avoids allocating a throwaway one per row.
         // Infallible — `String`'s `Write` impl never errs.
         let _ = writeln!(
             out,
-            "{} = {value}{}",
+            "{} = {}{}",
             toml_string(action.name()),
+            toml_keys(&labels),
             annotation(keymap, defaults, action),
         );
     }
+
+    // The keys of user aliases (#559), last: they are not in `DEFAULT`, so
+    // no scope's group holds them.
+    let aliases = keymap.alias_keys();
+    if !aliases.is_empty() {
+        out.push_str("\n# Your aliases from [aliases], in the global scope.\n");
+    }
+    for (name, labels) in aliases {
+        let labels: Vec<&str> = labels.iter().map(String::as_str).collect();
+        let _ = writeln!(out, "{} = {}", toml_string(name), toml_keys(&labels));
+    }
     out
+}
+
+/// One `[keymap]` value: a bare string for one key, an array for any other
+/// number.
+fn toml_keys(labels: &[&str]) -> String {
+    if let [only] = labels {
+        toml_string(only)
+    } else {
+        format!(
+            "[{}]",
+            labels
+                .iter()
+                .map(|label| toml_string(label))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    }
 }
 
 /// The scope an action's first `DEFAULT` row sits in, for the blank-line
@@ -1243,16 +1316,34 @@ fn losses(keymap: &Keymap, defaults: &Keymap, action: ActionId) -> Vec<String> {
             if matches!(scope, Scope::Explorer | Scope::View | Scope::Filters) {
                 scopes.push(Scope::Global);
             }
-            let Some((_, _, thief)) = keymap.entries.iter().find(|(entry_scope, entry, a)| {
-                scopes.contains(entry_scope)
-                    && *a != action
-                    && crate::help::chords_for_label(entry).contains(&key)
-            }) else {
+            let thief = keymap
+                .entries
+                .iter()
+                .find(|(entry_scope, entry, a)| {
+                    scopes.contains(entry_scope)
+                        && *a != action
+                        && crate::help::chords_for_label(entry).contains(&key)
+                })
+                .map(|(_, _, thief)| thief.name())
+                // A user alias's key (#559) is in the global scope, over
+                // every pane.
+                .or_else(|| {
+                    keymap
+                        .aliases
+                        .iter()
+                        .find(|(_, labels)| {
+                            labels
+                                .iter()
+                                .any(|label| crate::help::chords_for_label(label).contains(&key))
+                        })
+                        .map(|(alias, _)| alias.as_str())
+                });
+            let Some(thief) = thief else {
                 continue;
             };
             // Deduplicated: an action that lost one key in both of its scopes
             // to the same thief lost it once as far as a reader is concerned.
-            let said = format!("'{}' taken by {}", key.label(), thief.name());
+            let said = format!("'{}' taken by {thief}", key.label());
             if !taken.contains(&said) {
                 taken.push(said);
             }
@@ -1808,6 +1899,34 @@ mod tests {
                 "{name}'s printed keys must match DEFAULT, in order and deduplicated"
             );
         }
+    }
+
+    /// A key bound to a user alias is printed as its `[keymap]` line, and
+    /// a default it took says who took it (#559). The printed stanza builds
+    /// the same keymap again.
+    #[test]
+    fn the_printed_keymap_has_the_alias_keys_and_parses_back() {
+        let aliases = std::collections::BTreeMap::from([("proj".to_string(), "e ~".to_string())]);
+        let (keymap, _) = config::build(&overlay("proj", &["q", "F6"]), &aliases, None, true)
+            .expect("an alias can take a default key");
+        let printed = print_keymap(&keymap, &Keymap::default());
+        assert!(printed.contains("\n'proj' = ['q', 'F6']\n"), "{printed}");
+        let quit = printed
+            .lines()
+            .find(|line| line.starts_with("'global.quit'"))
+            .expect("a global.quit line");
+        assert!(quit.contains("'q' taken by proj"), "{quit}");
+
+        let parsed: crate::config::FileConfig =
+            toml::from_str(&printed).expect("recon must print what it accepts");
+        let (built, _) = config::build(
+            &parsed.keymap.expect("a [keymap] table"),
+            &aliases,
+            None,
+            true,
+        )
+        .expect("the printed keymap is valid");
+        assert_eq!(built, keymap, "printing then parsing changed a binding");
     }
 
     #[test]

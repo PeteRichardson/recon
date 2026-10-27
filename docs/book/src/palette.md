@@ -118,6 +118,21 @@ the command that takes it does: a path for `explorer.set $1`.
   (for example `e` or `global.follow`), a number, or a name with a space or a
   `;` in it. The message names the alias.
 
+To give an alias a key, write its name in `[keymap]`, as you do for an action:
+
+```toml
+[keymap]
+proj = 'F6'
+```
+
+The key works in every pane and runs the chain, as `:proj` does. If the chain
+fails, the palette opens with the error. A key cannot give arguments, so the
+key of an alias that takes them opens the palette with the name of the alias
+typed. Then you type the arguments. The `?` overlay shows the key in the
+**Aliases** section. If the key is a default key of an action, the alias gets
+it, and recon tells you. If another `[keymap]` line also binds the key, or the
+line names no action and no alias, recon does not start.
+
 ## Find a command
 
 Above the line, a list shows the commands that agree with what you typed.

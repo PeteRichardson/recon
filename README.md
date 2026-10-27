@@ -2612,6 +2612,22 @@ go = "explorer.set $1 ; explorer.focus"
   alias yet), or that uses `$2` but not `$1`. It also refuses an alias with the name of a command, such as `e`
   or `global.follow`, a number, or a name with a blank or a `;`. The message
   names the alias.
+- **A key.** A `[keymap]` line with the alias's name gives it a key, as a
+  line with an action's name does:
+
+  ```toml
+  [keymap]
+  proj = 'F6'
+  ```
+
+  The key works in every pane, and runs the chain as `:proj` does. If the
+  chain fails, the palette opens with the error. A key cannot give
+  arguments, so the key of an alias that takes them opens the palette with
+  the alias's name typed. The `?` overlay shows the key in an **Aliases**
+  section, and `--print-keymap` prints the line. The key takes a default
+  key from an action, with a warning, as an action's line does. recon
+  refuses to start when another `[keymap]` line also binds the key, and when
+  the line names no action and no alias.
 
 ### Reading a command's output
 

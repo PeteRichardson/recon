@@ -498,6 +498,7 @@ fn the_recall_keys_can_be_rebound() {
     };
     let (map, warnings) = crate::keymap::config::build(
         &crate::keymap::config::KeymapConfig { bindings },
+        &std::collections::BTreeMap::new(),
         None,
         config.warnings(),
     )
