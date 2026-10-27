@@ -169,22 +169,11 @@ impl Exit {
                 },
                 _,
             ) => {
-                let written = lines
-                    .iter()
-                    .try_for_each(|line| {
-                        stdout
-                            .write_all(line)
-                            .and_then(|()| stdout.write_all(b"\n"))
-                    })
-                    .and_then(|()| stdout.flush());
+                let written = write_lines(&lines, stdout).and_then(|()| stdout.flush());
                 finish(written, &summary, failed, quiet, stderr)
             }
             (Self::Spooled { mut spool, summary }, _) => {
-                use std::io::{Seek, SeekFrom};
-                let written = spool
-                    .seek(SeekFrom::Start(0))
-                    .and_then(|_| std::io::copy(&mut spool, stdout))
-                    .and_then(|_| stdout.flush());
+                let written = write_spool(&mut spool, stdout).and_then(|()| stdout.flush());
                 finish(written, &summary, 0, quiet, stderr)
             }
             (
@@ -268,6 +257,21 @@ pub(crate) fn path_bytes(path: &Path) -> Vec<u8> {
 #[cfg(not(unix))]
 pub(crate) fn path_bytes(path: &Path) -> Vec<u8> {
     path.to_string_lossy().into_owned().into_bytes()
+}
+
+/// Write `lines` to `out`, each one ended by a newline: the bytes of
+/// `--emit lines`, and of `:w` (#528).
+pub(crate) fn write_lines(lines: &[Vec<u8>], out: &mut impl Write) -> std::io::Result<()> {
+    lines
+        .iter()
+        .try_for_each(|line| out.write_all(line).and_then(|()| out.write_all(b"\n")))
+}
+
+/// Copy all of `spool` to `out`, from its start.
+pub(crate) fn write_spool(spool: &mut std::fs::File, out: &mut impl Write) -> std::io::Result<()> {
+    use std::io::Seek;
+    spool.rewind()?;
+    std::io::copy(spool, out).map(drop)
 }
 
 #[cfg(test)]

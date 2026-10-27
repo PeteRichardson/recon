@@ -177,9 +177,16 @@ impl Widget for &mut App<'_> {
         // Finishing an emit (#351, #352) outranks everything: it is what the
         // session is doing, and the only key that works is the one it names.
         let finishing = self.finishing_text();
+        // A `:w` read (#528) takes the place of the derived row: the user
+        // works on while it runs, so a prompt or a report outranks it.
+        let writing = self.writing_text();
         let (text, style) = match (self.prompt.as_ref(), self.status_message.as_ref()) {
             _ if finishing.is_some() => (
                 finishing.unwrap_or_default(),
+                Style::default().fg(Color::Yellow),
+            ),
+            (None, None) if writing.is_some() => (
+                writing.unwrap_or_default(),
                 Style::default().fg(Color::Yellow),
             ),
             (Some(prompt), _) if prompt.error.is_some() => {

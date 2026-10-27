@@ -248,6 +248,7 @@ impl App<'_> {
             Run::View => self.choose_view(argument),
             Run::AddFilter(sense) => self.add_filter_from_palette(sense, argument),
             Run::Action(action) => self.run_action(action, command.argument, argument),
+            Run::Write(replace) => self.write_lines(argument, replace),
             Run::Alias => {
                 let (alias, chain) = (command.names[0].to_string(), command.help.to_string());
                 self.run_alias(&alias, &chain, argument)
@@ -465,7 +466,7 @@ impl App<'_> {
     /// the last folder when it is `-`, and otherwise the path, a `~/` at its
     /// start read as the home folder and a relative one resolved against the
     /// explorer's folder.
-    fn resolve_path(&self, argument: &str) -> Result<PathBuf, String> {
+    pub(super) fn resolve_path(&self, argument: &str) -> Result<PathBuf, String> {
         let no_home = || "no home folder: HOME is not set".to_string();
         let path = match argument {
             "" => PathBuf::from(self.home.as_deref().ok_or_else(no_home)?),
