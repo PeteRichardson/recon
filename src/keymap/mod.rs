@@ -136,6 +136,8 @@ impl Scope {
 /// `hit.next`, `hit.prev` — means the action is bound the same way in more
 /// than one pane scope, so there is no single scope to prefix it with (#59
 /// review: `n`/`N` bind identically in the file view and the filter pane).
+/// `explorer.focus` is the one global action named for the pane it acts on,
+/// not for its scope: it is the step after `explorer.set` (#556).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum ActionId {
     // Global
@@ -147,7 +149,9 @@ pub(crate) enum ActionId {
     GlobalInterrupt,
     GlobalFocusNext,
     GlobalFocusPrev,
-    GlobalFocusExplorer,
+    /// `e`, from every pane: named for the pane it focuses, not for its
+    /// scope, as the step after `explorer.set` (#556).
+    ExplorerFocus,
     GlobalFocusView,
     GlobalFocusFilters,
     GlobalHelp,
@@ -343,7 +347,7 @@ impl ActionId {
             Self::GlobalInterrupt => "global.interrupt",
             Self::GlobalFocusNext => "global.focus.next",
             Self::GlobalFocusPrev => "global.focus.prev",
-            Self::GlobalFocusExplorer => "global.focus.explorer",
+            Self::ExplorerFocus => "explorer.focus",
             Self::GlobalFocusView => "global.focus.view",
             Self::GlobalFocusFilters => "global.focus.filters",
             Self::GlobalHelp => "global.help",
@@ -495,7 +499,7 @@ pub(crate) const DEFAULT: &[(Scope, &str, ActionId)] = &[
     (Scope::Global, "Ctrl-c", ActionId::GlobalInterrupt),
     (Scope::Global, "Tab", ActionId::GlobalFocusNext),
     (Scope::Global, "Shift-Tab", ActionId::GlobalFocusPrev),
-    (Scope::Global, "e", ActionId::GlobalFocusExplorer),
+    (Scope::Global, "e", ActionId::ExplorerFocus),
     (Scope::Global, "t", ActionId::GlobalFocusView),
     (Scope::Global, "f", ActionId::GlobalFocusFilters),
     (Scope::Global, "?", ActionId::GlobalHelp),

@@ -427,7 +427,7 @@ pub const KEYMAP: &[Section] = &[
             Binding {
                 keys: &["e"],
                 action: "Show the explorer if hidden, and focus it",
-                names: &["global.focus.explorer"],
+                names: &["explorer.focus"],
             },
             Binding {
                 keys: &["t"],

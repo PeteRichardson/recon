@@ -246,6 +246,7 @@ impl App<'_> {
             crate::commands::named(name).ok_or_else(|| format!("not a command: {name}"))?;
         match command.run {
             Run::Path => self.go_to_path(argument),
+            Run::SetExplorer => self.set_explorer(argument),
             Run::Line => self.go_to_line(argument),
             Run::EnableSet => self.enable_set(argument),
             Run::ListSet => self.set_listing("list", argument, true),
@@ -316,12 +317,19 @@ impl App<'_> {
         Ok(())
     }
 
-    /// `e` and its alias `cd`: set the explorer's folder to `argument`, or
-    /// to the folder of the file it names, which then opens — the same as
-    /// the path on the shell command line. The explorer shows and takes the
-    /// focus, so the change is seen. The working directory of recon does not
-    /// change.
+    /// `e` and its alias `cd`: `explorer.set`, then `explorer.focus`, so
+    /// the change is seen.
     fn go_to_path(&mut self, argument: &str) -> Result<(), String> {
+        self.set_explorer(argument)?;
+        self.run_action(ActionId::ExplorerFocus, Argument::None, "")
+    }
+
+    /// `explorer.set` (#556): set the explorer's folder to `argument`, or
+    /// to the folder of the file it names, which then opens — the same as
+    /// the path on the shell command line. The focus stays where it is, and
+    /// a hidden explorer stays hidden. The working directory of recon does
+    /// not change.
+    fn set_explorer(&mut self, argument: &str) -> Result<(), String> {
         let path = self.resolve_path(argument)?;
         if !path.exists() {
             return Err(format!("{argument}: no such file or directory"));
@@ -336,7 +344,6 @@ impl App<'_> {
         if self.explorer.dir() != before {
             self.last_folder = Some(before);
         }
-        self.reveal_and_focus(Focus::Explorer);
         Ok(())
     }
 
