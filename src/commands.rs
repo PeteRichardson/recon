@@ -18,7 +18,8 @@ use std::sync::LazyLock;
 pub(crate) struct Command {
     /// Every name that runs it, the main one first: `e` then `cd`.
     pub(crate) names: Vec<Cow<'static, str>>,
-    /// What it takes after its name.
+    /// What it takes after its name. For an alias, its last argument, for
+    /// the label and Tab only: the commands of its chain parse it (#558).
     pub(crate) argument: Argument,
     /// Its line of help: the help overlay's text for an action, and the
     /// chain of an alias.
@@ -46,6 +47,9 @@ pub(crate) enum Argument {
     Pattern,
     /// Text that may be left out: a require row's extra text (#548).
     Text,
+    /// A value an alias puts into its chain, of no kind Tab completes
+    /// (#558).
+    Value,
 }
 
 /// What running a command does.
@@ -92,9 +96,31 @@ impl Command {
         }
     }
 
+    /// The one-word arguments of an alias before `argument` (#558): `$1`
+    /// of `include $1 ; e $2`. 0 for every other row.
+    fn lead(&self) -> usize {
+        if self.run == Run::Alias {
+            params(&self.help).lead()
+        } else {
+            0
+        }
+    }
+
+    /// The part of `argument`, all of the line after the name, that Tab
+    /// completes as `self.argument`: for an alias, the text after its
+    /// one-word arguments (#558). `None` while they are not all typed.
+    pub(crate) fn completed_part<'l>(&self, argument: &'l str) -> Option<&'l str> {
+        let mut rest = argument;
+        for _ in 0..self.lead() {
+            rest = next_word(rest)?.1;
+        }
+        Some(rest)
+    }
+
     /// The first column of its row: its names, then its argument.
     pub(crate) fn label(&self) -> String {
-        let names = self.names.join(", ");
+        let mut names = self.names.join(", ");
+        names.extend((1..=self.lead()).map(|n| format!(" ${n}")));
         match self.argument {
             Argument::None => names,
             Argument::Path => format!("{names} <path>"),
@@ -104,6 +130,7 @@ impl Command {
             Argument::View => format!("{names} <view>"),
             Argument::Pattern => format!("{names} <pattern>"),
             Argument::Text => format!("{names} [<text>]"),
+            Argument::Value => format!("{names} <value>"),
         }
     }
 }
@@ -156,11 +183,30 @@ pub(crate) fn with_aliases(aliases: &BTreeMap<String, String>) -> Vec<Command> {
     let mut commands = catalog().to_vec();
     commands.extend(aliases.iter().map(|(name, chain)| Command {
         names: vec![Cow::Owned(name.clone())],
-        argument: Argument::None,
+        argument: last_argument(chain, params(chain)),
         help: Cow::Owned(chain.clone()),
         run: Run::Alias,
     }));
     commands
+}
+
+/// What the last argument of an alias's `chain` is (#558): the argument of
+/// the command whose whole argument it is, so that Tab completes it as
+/// that command does. `Value` when no command takes it whole, and `Text`
+/// for a `$*` that no command takes whole, since it can be left out.
+fn last_argument(chain: &str, params: Params) -> Argument {
+    let Some(last) = params.last() else {
+        return Argument::None;
+    };
+    let fallback = if params.star {
+        Argument::Text
+    } else {
+        Argument::Value
+    };
+    segments(chain)
+        .filter_map(|segment| resolve(catalog(), segment).ok())
+        .find(|(_, argument)| pieces(argument).eq([last]))
+        .map_or(fallback, |(command, _)| command.argument)
 }
 
 /// A built-in row.
@@ -342,12 +388,155 @@ pub(crate) fn segments(chain: &str) -> impl Iterator<Item = &str> {
     chain.split(';').map(str::trim)
 }
 
+/// The command lines an alias's `chain` runs when `typed` follows its name
+/// (#558): each segment, with `$<n>` replaced by the n-th argument. The
+/// arguments are the words of `typed`, and the last one gets all of the
+/// rest of the line, blanks and all, as a command's argument does: `$*`
+/// when the chain has it, else the highest `$<n>`. `Err` names the first
+/// `$<n>` that `typed` leaves out, or the text an alias with no argument
+/// was given.
+pub(crate) fn expand(chain: &str, typed: &str) -> Result<Vec<String>, String> {
+    let params = params(chain);
+    let mut rest = typed.trim();
+    let mut words = Vec::new();
+    for n in 1..=params.lead() {
+        let (word, after) = next_word(rest).unwrap_or((rest, ""));
+        if word.is_empty() {
+            return Err(format!("missing argument ${n}"));
+        }
+        words.push(word);
+        rest = after;
+    }
+    if !params.star {
+        if params.count > 0 {
+            if rest.is_empty() {
+                return Err(format!("missing argument ${}", params.count));
+            }
+            words.push(rest);
+        } else if !rest.is_empty() {
+            return Err(format!("takes no argument, not `{rest}`"));
+        }
+    }
+    Ok(segments(chain)
+        .map(|segment| {
+            pieces(segment)
+                .map(|piece| match piece {
+                    Piece::Text(text) => text,
+                    Piece::Arg(n) => words[n - 1],
+                    Piece::Star => rest,
+                })
+                .collect()
+        })
+        .collect())
+}
+
+/// The word at the start of `line`, and the rest of the line after its
+/// blanks: how an alias's arguments are split (#558). `None` when `line`
+/// has no blank, so its last word is not done.
+fn next_word(line: &str) -> Option<(&str, &str)> {
+    line.split_once(char::is_whitespace)
+        .map(|(word, rest)| (word, rest.trim_start()))
+}
+
+/// The arguments an alias's chain takes (#558): the highest `$<n>` in it,
+/// each `$<n>` in it as bit n of `used`, and whether it has `$*`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Params {
+    count: usize,
+    used: u16,
+    star: bool,
+}
+
+impl Params {
+    /// The one-word arguments before the last one, which gets the rest of
+    /// the line.
+    fn lead(self) -> usize {
+        if self.star {
+            self.count
+        } else {
+            self.count.saturating_sub(1)
+        }
+    }
+
+    /// The argument that gets the rest of the line: `$*`, else the highest
+    /// `$<n>`. `None` for a chain with no argument.
+    fn last(self) -> Option<Piece<'static>> {
+        match (self.count, self.star) {
+            (0, false) => None,
+            (_, true) => Some(Piece::Star),
+            (n, false) => Some(Piece::Arg(n)),
+        }
+    }
+
+    /// The first `$<n>` below the highest one that the chain does not use.
+    fn skipped(self) -> Option<usize> {
+        (1..self.count).find(|n| self.used & (1 << n) == 0)
+    }
+}
+
+fn params(chain: &str) -> Params {
+    let mut params = Params {
+        count: 0,
+        used: 0,
+        star: false,
+    };
+    for piece in segments(chain).flat_map(pieces) {
+        match piece {
+            Piece::Arg(n) => {
+                params.count = params.count.max(n);
+                params.used |= 1 << n;
+            }
+            Piece::Star => params.star = true,
+            Piece::Text(_) => {}
+        }
+    }
+    params
+}
+
+/// A part of a segment of an alias's chain (#558).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Piece<'a> {
+    /// Text that runs as it is. `$$` is the text `$`, and so is a `$`
+    /// before any other character.
+    Text(&'a str),
+    /// `$1` to `$9`: that argument.
+    Arg(usize),
+    /// `$*`: all of the line after the `$<n>` arguments.
+    Star,
+}
+
+/// The parts of `segment`, in order.
+fn pieces(segment: &str) -> impl Iterator<Item = Piece<'_>> {
+    let mut rest = segment;
+    std::iter::from_fn(move || {
+        if rest.is_empty() {
+            return None;
+        }
+        let text = rest.find('$').unwrap_or(rest.len());
+        if text > 0 {
+            let (text, after) = rest.split_at(text);
+            rest = after;
+            return Some(Piece::Text(text));
+        }
+        let (piece, len) = match rest.as_bytes().get(1) {
+            Some(b'$') => (Piece::Text("$"), 2),
+            Some(b'*') => (Piece::Star, 2),
+            Some(&digit @ b'1'..=b'9') => (Piece::Arg(usize::from(digit - b'0')), 2),
+            _ => (Piece::Text("$"), 1),
+        };
+        rest = &rest[len..];
+        Some(piece)
+    })
+}
+
 /// Refuse the alias `name = chain` when the palette cannot run it (#557).
 /// The name: one that is already a command's, which it would hide, a
 /// number, which is `goto`, and one with a blank or a `;` in it, where the
 /// palette ends a name or a chain. The chain: an empty command line, or one
 /// that names no built-in command. An alias of `aliases` is not a built-in:
-/// an alias cannot run another one yet.
+/// an alias cannot run another one yet. An argument in the place of a
+/// command name is no built-in either, and a chain that skips a `$<n>`
+/// below its highest one would lose that word (#558).
 pub(crate) fn check_alias(
     name: &str,
     chain: &str,
@@ -376,6 +565,10 @@ pub(crate) fn check_alias(
             ));
         }
         resolve(catalog(), segment).map_err(|_| format!("`{first}` is not a command"))?;
+    }
+    let params = params(chain);
+    if let Some(n) = params.skipped() {
+        return Err(format!("uses ${} but not ${n}", params.count));
     }
     Ok(())
 }

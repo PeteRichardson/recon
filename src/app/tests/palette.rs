@@ -1122,6 +1122,143 @@ fn an_alias_is_listed_with_its_chain_and_tab_writes_it() {
     assert_eq!(prompt(&app).pattern, "proj");
 }
 
+// ---- aliases that take arguments (#558) --------------------------------
+
+/// The palette's error after `line`, or `None` when it ran and closed.
+fn palette_error(app: &App) -> Option<String> {
+    app.prompt.as_ref().and_then(|prompt| prompt.error.clone())
+}
+
+/// `$1` in a chain is the first word typed after the alias's name, and
+/// the last argument gets all of the rest of the line, blanks and all.
+#[test]
+fn an_alias_puts_its_argument_into_the_chain_blanks_and_all() {
+    let mut app = app_over_file("palette_alias_arg", "al ha\nbeta\n");
+    alias(&mut app, &[("inc", "include $1")]);
+    run(&mut app, "inc al ha");
+    assert_eq!(palette_error(&app), None);
+    assert_eq!(
+        scratch_filters(&app),
+        [("al ha".to_string(), filter::Sense::Include)]
+    );
+}
+
+/// `$1` is one word and `$2`, the last, gets the rest. A `;` in a typed
+/// value stays in the value: it does not split the chain.
+#[test]
+fn the_last_argument_gets_the_rest_and_a_semicolon_in_it_stays() {
+    let mut app = app_over_file("palette_alias_two_args", "al\nb;c d\n");
+    alias(&mut app, &[("two", "include $1 ; context $2")]);
+    run(&mut app, "two al b;c d");
+    assert_eq!(palette_error(&app), None);
+    assert_eq!(
+        scratch_filters(&app),
+        [
+            ("al".to_string(), filter::Sense::Include),
+            ("b;c d".to_string(), filter::Sense::Context),
+        ]
+    );
+}
+
+/// Too few arguments run no line of the chain, and the error names the
+/// alias and the first argument that is missing.
+#[test]
+fn too_few_arguments_is_an_error_that_names_the_missing_one() {
+    let mut app = app_over_file("palette_alias_too_few", "al\n");
+    alias(&mut app, &[("two", "include $1 ; context $2")]);
+    for (line, missing) in [("two", "$1"), ("two al", "$2"), ("two  al  ", "$2")] {
+        run(&mut app, line);
+        let error = palette_error(&app).unwrap_or_default();
+        assert!(error.contains("two"), "{line:?}: {error}");
+        assert!(error.contains(missing), "{line:?}: {error}");
+        assert_eq!(scratch_filters(&app), [], "{line:?}");
+        key(&mut app, KeyCode::Esc);
+    }
+}
+
+/// An alias with no `$` in its chain takes no argument: text after its
+/// name is an error, and no line of the chain runs.
+#[test]
+fn an_alias_with_no_arguments_refuses_text_after_its_name() {
+    let mut app = app_over_file("palette_alias_no_args", "alpha\n");
+    alias(&mut app, &[("al", "include alpha")]);
+    run(&mut app, "al beta");
+    let error = palette_error(&app).unwrap_or_default();
+    assert!(error.contains("al"), "{error}");
+    assert!(error.contains("no argument"), "{error}");
+    assert_eq!(scratch_filters(&app), []);
+}
+
+/// `$*` gets all of the line after the `$<n>` words, so each `$<n>` is
+/// one word; `$*` alone gets all of the line.
+#[test]
+fn star_gets_the_rest_of_the_line_after_the_numbered_arguments() {
+    let mut app = app_over_file("palette_alias_star", "al\nb c\n");
+    alias(
+        &mut app,
+        &[("both", "include $1 ; context $*"), ("all", "exclude $*")],
+    );
+    run(&mut app, "both al b c");
+    assert_eq!(palette_error(&app), None);
+    run(&mut app, "all x  y");
+    assert_eq!(palette_error(&app), None);
+    assert_eq!(
+        scratch_filters(&app),
+        [
+            ("al".to_string(), filter::Sense::Include),
+            ("b c".to_string(), filter::Sense::Context),
+            ("x  y".to_string(), filter::Sense::Exclude),
+        ]
+    );
+}
+
+/// `$$` is one `$`, so a pattern can end a line after an argument.
+#[test]
+fn a_double_dollar_is_a_dollar() {
+    let mut app = app_over_file("palette_alias_dollar", "foo\n");
+    alias(&mut app, &[("end", "include $1$$")]);
+    run(&mut app, "end foo");
+    assert_eq!(palette_error(&app), None);
+    assert_eq!(
+        scratch_filters(&app),
+        [("foo$".to_string(), filter::Sense::Include)]
+    );
+}
+
+/// Tab completes an alias's last argument as the command that takes it
+/// does: a path for `explorer.set $2`, after the words of `$1`. Tab on
+/// the name of an alias with arguments writes a blank after it.
+#[test]
+fn tab_completes_an_alias_argument_as_its_command_does() {
+    let (mut app, _) = app_over_nested("palette_tab_alias");
+    alias(
+        &mut app,
+        &[
+            ("go", "explorer.set $1 ; explorer.focus"),
+            ("two", "include $1 ; explorer.set $2"),
+        ],
+    );
+    key(&mut app, KeyCode::Char(':'));
+    typed(&mut app, "go");
+    key(&mut app, KeyCode::Tab);
+    assert_eq!(prompt(&app).pattern, "go ");
+    typed(&mut app, "su");
+    key(&mut app, KeyCode::Tab);
+    assert_eq!(prompt(&app).pattern, "go sub/");
+    key(&mut app, KeyCode::Esc);
+
+    key(&mut app, KeyCode::Char(':'));
+    typed(&mut app, "two");
+    let rows = list_rows(&mut app);
+    assert!(
+        rows.iter().any(|row| row.contains("two $1 <path>")),
+        "{rows:#?}"
+    );
+    typed(&mut app, " al su");
+    key(&mut app, KeyCode::Tab);
+    assert_eq!(prompt(&app).pattern, "two al sub/");
+}
+
 /// The aliases come from the `[aliases]` of the config the app starts
 /// with.
 #[test]

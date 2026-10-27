@@ -2587,18 +2587,29 @@ each line in order, as if you typed it:
 [aliases]
 proj = "e ~/projects/recon ; explorer.focus"
 errs = "set +errors:-WARNING"
+go = "explorer.set $1 ; explorer.focus"
 ```
 
 - **Each line is a palette line.** All of the line after the command name is
   its argument, so `include mission auth` adds the filter `mission auth`.
   Because `;` ends a line, a line cannot have a `;` in its argument.
+- **Arguments.** `$1` to `$9` in the chain are the words you type after the
+  alias's name, so `:go ~/projects` runs `explorer.set ~/projects`, then
+  `explorer.focus`. The last argument gets all of the rest of the line, so a
+  value with a blank in it stays one argument: `$*` when the chain has it,
+  else the highest `$<n>`. `$*` can be empty. A `;` in a value you type stays
+  in the value. Write `$$` for a `$`. Too few arguments is an error that names
+  the one that is missing, and text after an alias with no arguments is an
+  error.
+- **Tab** completes the last argument as the command that takes it completes
+  its own: a path for `explorer.set $1`.
 - **The list** shows each alias on a row of its own, after the built-in
   commands, with its chain as the help.
 - **A line that fails stops the chain.** The lines before it stay done, and
   the palette shows the error with the alias and the line that failed.
 - **recon refuses to start** when an alias has a line that names no command,
   an empty line, or the name of another alias (an alias cannot run another
-  alias yet). It also refuses an alias with the name of a command, such as `e`
+  alias yet), or that uses `$2` but not `$1`. It also refuses an alias with the name of a command, such as `e`
   or `global.follow`, a number, or a name with a blank or a `;`. The message
   names the alias.
 
