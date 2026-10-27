@@ -36,6 +36,7 @@
 
 use ratatui::prelude::{Buffer, Color, Modifier, Rect, Style};
 use ratatui::widgets::{Block, Clear, Widget};
+use std::borrow::Cow;
 use unicode_width::UnicodeWidthStr;
 
 /// Columns between two rendered columns of the overlay.
@@ -1055,7 +1056,7 @@ pub const KEYMAP: &[Section] = &[
 enum Row<'a> {
     Heading(&'a str),
     Blank,
-    Entry { keys: String, action: &'a str },
+    Entry { keys: String, action: Cow<'a, str> },
 }
 
 /// Flatten `KEYMAP` into the lines the overlay draws, in order.
@@ -1074,7 +1075,20 @@ fn rows(keymap: &crate::keymap::Keymap) -> Vec<Row<'static>> {
         for binding in section.bindings {
             rows.push(Row::Entry {
                 keys: keys_for(binding, keymap, &defaults),
-                action: binding.action,
+                action: Cow::Borrowed(binding.action),
+            });
+        }
+    }
+    // The user's aliases that have a key (#559), after the built-in
+    // sections: no `Binding` can name one, since `KEYMAP` is fixed.
+    let aliases = keymap.alias_keys();
+    if !aliases.is_empty() {
+        rows.push(Row::Blank);
+        rows.push(Row::Heading("Aliases"));
+        for (name, labels) in aliases {
+            rows.push(Row::Entry {
+                keys: labels.join(" / "),
+                action: Cow::Owned(name.clone()),
             });
         }
     }
@@ -1868,6 +1882,30 @@ mod tests {
             .position(|row| matches!(row, Row::Heading(title) if *title == heading))
             .unwrap_or_else(|| panic!("no {heading:?} section"));
         keys_of(&rows[start..], action)
+    }
+
+    /// A key bound to a user alias has a row of its own, in a section after
+    /// the built-in ones, with the alias's name beside it (#559). With no
+    /// such key there is no section.
+    #[test]
+    fn a_key_bound_to_an_alias_has_a_row_with_its_name() {
+        let aliases = std::collections::BTreeMap::from([("proj".to_string(), "e ~".to_string())]);
+        let bindings =
+            std::collections::BTreeMap::from([("proj".to_string(), vec!["F6".to_string()])]);
+        let (keymap, _) = crate::keymap::config::build(
+            &crate::keymap::config::KeymapConfig { bindings },
+            &aliases,
+            None,
+            true,
+        )
+        .expect("an alias can have a key");
+        assert_eq!(keys_under(&rows(&keymap), "Aliases", "proj"), "F6");
+        assert!(
+            !rows(&crate::keymap::Keymap::default())
+                .iter()
+                .any(|row| matches!(row, Row::Heading("Aliases"))),
+            "no alias has a key"
+        );
     }
 
     const RELOAD: &str = "Refresh from disk — rescan the listing, reload the file";

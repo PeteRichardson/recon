@@ -1276,3 +1276,77 @@ fn the_app_runs_the_aliases_of_its_config() {
         [("alpha".to_string(), filter::Sense::Include)]
     );
 }
+
+// ---- a key bound to an alias (#559) -------------------------------------
+
+/// Give `app` the aliases of an `[aliases]` table and the key of each
+/// `[keymap]` line, as `config.toml` does at startup.
+fn alias_keys(app: &mut App, aliases: &[(&str, &str)], lines: &[(&str, &str)]) {
+    alias(app, aliases);
+    let aliases = aliases
+        .iter()
+        .map(|(name, chain)| ((*name).to_string(), (*chain).to_string()))
+        .collect();
+    let lines: Vec<(&str, &[&str])> = lines
+        .iter()
+        .map(|(name, key)| (*name, std::slice::from_ref(key)))
+        .collect();
+    rebind_with_aliases(app, &aliases, &lines);
+}
+
+/// A key bound to an alias runs its chain from every pane, as its name in
+/// the palette does, and leaves no palette open.
+#[test]
+fn a_key_bound_to_an_alias_runs_its_chain_from_every_pane() {
+    for focus in [Focus::Explorer, Focus::View, Focus::Filters] {
+        let mut app = app_over_file(&format!("palette_alias_key_{focus:?}"), "alpha\nbeta\n");
+        alias_keys(
+            &mut app,
+            &[("both", "include alpha ; context beta")],
+            &[("both", "F6")],
+        );
+        app.focus = focus;
+        key(&mut app, KeyCode::F(6));
+        assert!(app.prompt.is_none(), "{focus:?}: {:?}", palette_error(&app));
+        assert_eq!(
+            scratch_filters(&app),
+            [
+                ("alpha".to_string(), filter::Sense::Include),
+                ("beta".to_string(), filter::Sense::Context),
+            ],
+            "{focus:?}"
+        );
+    }
+}
+
+/// A key bound to an alias that takes arguments cannot give them: it opens
+/// the palette with the alias's name and a blank typed, and runs nothing.
+#[test]
+fn a_key_bound_to_an_alias_with_arguments_opens_the_palette_with_its_name() {
+    let mut app = app_over_file("palette_alias_key_args", "alpha\n");
+    alias_keys(&mut app, &[("inc", "include $1")], &[("inc", "F6")]);
+    key(&mut app, KeyCode::F(6));
+    assert_eq!(prompt(&app).kind, PromptKind::Command);
+    assert_eq!(prompt(&app).pattern, "inc ");
+    assert_eq!(palette_error(&app), None);
+    assert_eq!(scratch_filters(&app), []);
+    typed(&mut app, "alpha");
+    key(&mut app, KeyCode::Enter);
+    assert_eq!(
+        scratch_filters(&app),
+        [("alpha".to_string(), filter::Sense::Include)]
+    );
+}
+
+/// A chain that fails from a key opens the palette with the alias and the
+/// error, as it does when the alias is typed.
+#[test]
+fn a_key_bound_to_an_alias_that_fails_shows_the_error_in_the_palette() {
+    let mut app = app_over_file("palette_alias_key_fails", "alpha\n");
+    alias_keys(&mut app, &[("bad", "goto nope")], &[("bad", "F6")]);
+    key(&mut app, KeyCode::F(6));
+    assert_eq!(prompt(&app).pattern, "bad");
+    let error = palette_error(&app).unwrap_or_default();
+    assert!(error.contains("bad"), "{error}");
+    assert!(error.contains("not a line number"), "{error}");
+}

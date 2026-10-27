@@ -30,6 +30,7 @@ fn app_over_keymap(name: &str, files: &[&str], no_warnings: bool) -> App<'static
     };
     let (map, warnings) = crate::keymap::config::build(
         &crate::keymap::config::KeymapConfig { bindings },
+        &std::collections::BTreeMap::new(),
         None,
         config.warnings(),
     )

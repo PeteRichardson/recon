@@ -304,6 +304,12 @@ impl App<'_> {
                 self.perform(action, pressed);
                 return;
             }
+            // A user alias's key (#559). After the global actions, which
+            // cannot hold its key: `check` took it from them.
+            if let Some(alias) = self.keymap.alias_for(pressed).map(str::to_string) {
+                self.run_alias_key(&alias);
+                return;
+            }
         }
 
         if let event::Event::Mouse(mouse) = event

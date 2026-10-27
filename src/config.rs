@@ -4176,7 +4176,7 @@ mod tests {
             .unwrap_or_default();
 
         assert_ne!(
-            build(&overlay, config_path(), true)
+            build(&overlay, &BTreeMap::new(), config_path(), true)
                 .expect("a valid stanza")
                 .0,
             Keymap::default(),
@@ -4192,7 +4192,8 @@ mod tests {
             .keymap
             .unwrap_or_default();
 
-        let err = build(&overlay, config_path(), true).expect_err("a typo must refuse to start");
+        let err = build(&overlay, &BTreeMap::new(), config_path(), true)
+            .expect_err("a typo must refuse to start");
         assert!(err.to_string().contains("global.qiut"), "{err}");
     }
 
@@ -4205,15 +4206,14 @@ mod tests {
     }
 
     fn keymap_error(bindings: &[(&str, &str)]) -> String {
-        let overlay = KeymapConfig {
-            bindings: bindings
-                .iter()
-                .map(|(action, key)| ((*action).to_string(), vec![(*key).to_string()]))
-                .collect(),
-        };
-        build(&overlay, config_path(), true)
-            .expect_err("must refuse")
-            .to_string()
+        build(
+            &keymap_lines(bindings),
+            &BTreeMap::new(),
+            config_path(),
+            true,
+        )
+        .expect_err("must refuse")
+        .to_string()
     }
 
     /// A typo gets the nearest names, not every name recon has (#385).
@@ -4268,10 +4268,135 @@ mod tests {
         assert!(suggestions.is_empty(), "{suggestions:?}");
     }
 
+    /// `[aliases]` with the one alias `proj`, for the `[keymap]` tests of
+    /// #559.
+    fn proj_alias() -> BTreeMap<String, String> {
+        BTreeMap::from([("proj".to_string(), "e ~ ; explorer.focus".to_string())])
+    }
+
+    /// A `[keymap]` of `name = key` lines, one key each.
+    fn keymap_lines(lines: &[(&str, &str)]) -> KeymapConfig {
+        KeymapConfig {
+            bindings: lines
+                .iter()
+                .map(|(name, key)| ((*name).to_string(), vec![(*key).to_string()]))
+                .collect(),
+        }
+    }
+
+    /// A `[keymap]` line can name a user alias (#559): its key runs the
+    /// alias, in the global scope.
+    #[test]
+    fn a_keymap_line_binds_a_key_to_an_alias() {
+        let (keymap, warnings) = build(
+            &keymap_lines(&[("proj", "F6")]),
+            &proj_alias(),
+            config_path(),
+            true,
+        )
+        .expect("an alias can have a key");
+        let f6 = crate::keymap::Key {
+            code: crossterm::event::KeyCode::F(6),
+            ctrl: false,
+            alt: false,
+        };
+        assert_eq!(keymap.alias_for(f6), Some("proj"));
+        assert!(warnings.is_empty(), "{warnings:?}");
+    }
+
+    /// A line that names neither an action nor an alias is refused by its
+    /// name, and the nearest alias name is a suggestion too (#559).
+    #[test]
+    fn a_keymap_line_for_an_unknown_alias_is_refused_by_name() {
+        let error = build(
+            &keymap_lines(&[("prj", "F6")]),
+            &proj_alias(),
+            config_path(),
+            true,
+        )
+        .expect_err("no alias is called prj")
+        .to_string();
+        assert!(error.contains("\"prj\""), "{error}");
+        assert!(error.contains("did you mean \"proj\""), "{error}");
+    }
+
+    fn press(c: char) -> crate::keymap::Key {
+        crate::keymap::Key {
+            code: crossterm::event::KeyCode::Char(c),
+            ctrl: false,
+            alt: false,
+        }
+    }
+
+    /// An alias's key wins over a default, in the global scope and in each
+    /// pane, as an action's line does, and the warning says what it cost
+    /// (#559).
+    #[test]
+    fn an_alias_key_takes_a_default_key_and_says_so() {
+        let (keymap, warnings) = build(
+            &keymap_lines(&[("proj", "q"), ("errs", "k")]),
+            &BTreeMap::from([
+                ("proj".to_string(), "e ~".to_string()),
+                ("errs".to_string(), "set +errors".to_string()),
+            ]),
+            config_path(),
+            true,
+        )
+        .expect("an alias can take a default key");
+        assert_eq!(keymap.alias_for(press('q')), Some("proj"));
+        assert_eq!(
+            keymap.resolve(crate::keymap::Scope::Global, press('q')),
+            None
+        );
+        assert_eq!(keymap.alias_for(press('k')), Some("errs"));
+        assert_eq!(keymap.resolve(crate::keymap::Scope::View, press('k')), None);
+        let said = warnings.join("\n");
+        assert!(
+            said.contains("'proj' takes 'q' from 'global.quit'"),
+            "{said}"
+        );
+        assert!(
+            said.contains("'errs' takes 'k' from 'explorer.up'"),
+            "{said}"
+        );
+        assert!(said.contains("'errs' takes 'k' from 'view.up'"), "{said}");
+    }
+
+    /// An alias's key and a written action's key are one layer, so nothing
+    /// chooses between them, in the global scope or in a pane (#559). Two
+    /// aliases on one key are the same fault.
+    #[test]
+    fn an_alias_key_that_a_written_line_also_binds_is_refused() {
+        let aliases = BTreeMap::from([
+            ("proj".to_string(), "e ~".to_string()),
+            ("errs".to_string(), "set +errors".to_string()),
+        ]);
+        for (lines, other) in [
+            (
+                &[("proj", "x"), ("global.reload", "x")][..],
+                "'global.reload'",
+            ),
+            (&[("proj", "x"), ("explorer.up", "x")][..], "'explorer.up'"),
+            (&[("proj", "x"), ("errs", "x")][..], "'errs'"),
+        ] {
+            let error = build(&keymap_lines(lines), &aliases, config_path(), true)
+                .expect_err("one key, two lines")
+                .to_string();
+            assert!(error.contains("'proj'"), "{error}");
+            assert!(error.contains(other), "{error}");
+            assert!(error.contains("'x'"), "{error}");
+        }
+    }
+
     #[test]
     fn keymap_build_without_a_stanza_is_the_defaults() {
-        let built =
-            build(&KeymapConfig::default(), config_path(), true).expect("saying nothing is valid");
+        let built = build(
+            &KeymapConfig::default(),
+            &BTreeMap::new(),
+            config_path(),
+            true,
+        )
+        .expect("saying nothing is valid");
         assert_eq!(built.0, Keymap::default());
         assert!(
             built.1.is_empty(),
@@ -4289,7 +4414,13 @@ mod tests {
         bindings.insert("global.reload".to_string(), vec!["x".to_string()]);
         // A pane line under a default global binding.
         bindings.insert("explorer.up".to_string(), vec!["?".to_string()]);
-        let err = build(&KeymapConfig { bindings }, config_path(), true).expect_err("must refuse");
+        let err = build(
+            &KeymapConfig { bindings },
+            &BTreeMap::new(),
+            config_path(),
+            true,
+        )
+        .expect_err("must refuse");
         let rendered = err.to_string();
 
         assert!(rendered.contains("global.quit"), "{rendered}");

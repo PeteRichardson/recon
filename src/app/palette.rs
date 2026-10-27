@@ -255,6 +255,25 @@ impl App<'_> {
         }
     }
 
+    /// The key of a user alias (#559): run it, as its name in the palette
+    /// does. A key cannot give arguments, so an alias that takes them opens
+    /// the palette with its name typed instead, and a chain that fails
+    /// opens it with the error.
+    pub(super) fn run_alias_key(&mut self, alias: &str) {
+        let takes_arguments = crate::commands::find(&self.commands, alias)
+            .is_some_and(|command| command.argument != Argument::None);
+        if takes_arguments {
+            self.prompt = Some(SearchPrompt::editing(
+                format!("{alias} "),
+                PromptKind::Command,
+            ));
+        } else if let Err(message) = self.run_command(alias) {
+            let mut palette = SearchPrompt::editing(alias.to_string(), PromptKind::Command);
+            palette.error = Some(message);
+            self.prompt = Some(palette);
+        }
+    }
+
     /// A user alias (#557): run each command line of its chain in order, as
     /// if it was typed in the palette, with the `typed` arguments put in
     /// (#558). The first that fails stops the chain, and its error names

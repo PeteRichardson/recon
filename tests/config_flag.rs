@@ -156,3 +156,40 @@ fn an_alias_with_an_unknown_command_refuses_to_start() {
     assert!(stderr.contains("[aliases] `proj`"), "{stderr}");
     assert!(stderr.contains("`frobnicate`"), "{stderr}");
 }
+
+/// A `[keymap]` line can give a user alias a key (#559): `--print-keymap`
+/// prints it, and a line for an alias that does not exist stops recon at
+/// startup with its name.
+#[test]
+fn a_keymap_line_binds_an_alias_and_an_unknown_one_refuses_to_start() {
+    let (home, file) = fixture(
+        "alias_key",
+        "[aliases]\nproj = \"e ~ ; explorer.focus\"\n[keymap]\nproj = 'F6'\n",
+    );
+    let out = recon(
+        &home,
+        &[],
+        &["-c", file.to_str().unwrap(), "--print-keymap"],
+    );
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("\n'proj' = 'F6'\n"), "{stdout}");
+
+    let (home, file) = fixture(
+        "alias_key_unknown",
+        "[aliases]\nproj = \"e ~\"\n[keymap]\nprji = 'F6'\n",
+    );
+    let out = recon(
+        &home,
+        &[],
+        &["-c", file.to_str().unwrap(), "--print-keymap"],
+    );
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("\"prji\""), "{stderr}");
+    assert!(stderr.contains("did you mean \"proj\""), "{stderr}");
+}
