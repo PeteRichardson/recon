@@ -77,6 +77,9 @@ pub(crate) enum Run {
     /// A user alias: the command lines of its chain, which is its help, in
     /// order (#557).
     Alias,
+    /// `w` and `w!`: write the visible lines to a file (#528). `true` for
+    /// `w!`, which may replace a file.
+    Write(bool),
 }
 
 impl Command {
@@ -92,7 +95,8 @@ impl Command {
             | Run::UnlistSet
             | Run::View
             | Run::AddFilter(_)
-            | Run::Alias => None,
+            | Run::Alias
+            | Run::Write(_) => None,
         }
     }
 
@@ -280,6 +284,18 @@ fn build() -> Vec<Command> {
             Argument::Pattern,
             "Add a context filter to the scratch set",
             Run::AddFilter(Sense::Context),
+        ),
+        row(
+            &["w"],
+            Argument::Path,
+            "Write the visible lines to a new file",
+            Run::Write(false),
+        ),
+        row(
+            &["w!"],
+            Argument::Path,
+            "Write the visible lines to a file, and replace it if it exists",
+            Run::Write(true),
         ),
     ];
     for action in crate::keymap::every_action().filter(|a| is_command(*a)) {
@@ -654,6 +670,18 @@ mod tests {
     fn the_help_text_is_searched_too() {
         assert_eq!(found("folder")[0], "e");
         assert_eq!(found("GROWS"), ["global.follow"]);
+    }
+
+    /// `w!` is a row of its own, since it runs another command than `w`
+    /// (#528); `write` finds both by their help.
+    #[test]
+    fn w_and_w_bang_are_rows_of_their_own() {
+        assert_eq!(found("w")[..2], ["w", "w!"]);
+        assert_eq!(found("w!"), ["w!"]);
+        assert_eq!(found("write")[..2], ["w", "w!"]);
+        let label = |name| find(catalog(), name).expect("listed").label();
+        assert_eq!(label("w"), "w <path>");
+        assert_eq!(label("w!"), "w! <path>");
     }
 
     #[test]

@@ -29,7 +29,8 @@ impl App<'_> {
             | self.poll_follow()
             | self.poll_stdin()
             | self.drain_request()
-            | self.poll_finish();
+            | self.poll_finish()
+            | self.poll_write();
         let timeout = Duration::from_secs_f32(1.0 / 60.0);
         if event::poll(timeout)? {
             let event = event::read()?;

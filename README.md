@@ -2555,6 +2555,7 @@ you may be typing a regular expression: push Esc first.
 | `unlist <set>` | Unlist the set, as `--unlist` does |
 | `view <view>` | Show the open file in the view of that name. A view of the file type's cycle steps the cycle there, as `-` does. Any other view, such as a command view that no `[[filetype]]` row names, shows only the open file, until you open another file or push `-` |
 | `include <pattern>`, `exclude <pattern>`, `context <pattern>` | Add a filter of that sense to the scratch set, as `i` or `x` and Enter do in the filter pane, but from any pane. The focus stays where it is |
+| `w <path>`, `w! <path>` | Write the file view's visible lines to the file, as `--emit lines` prints them on quit, and go on working. A relative path resolves against the explorer's folder. `w` refuses a file that exists; `w!` replaces it. Over a preview of a large file, recon reads the whole file in the background first: the status row shows the progress, and Esc stops it with nothing written |
 | `q` | Quit, as `global.quit` |
 | any action name | Run a keymap action by the name a `[keymap]` line uses, such as `global.follow` or `explorer.down`. A pane's action works on its own pane, which shows and takes the focus. `global.filters.toggle <n>` takes the filter number |
 

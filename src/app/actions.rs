@@ -133,7 +133,10 @@ impl App<'_> {
                 }
                 if self.search.take().is_some() {
                     self.repaint_highlight();
+                    return;
                 }
+                // Last: the read `:w` started over a preview (#528).
+                self.cancel_write();
             }
             A::GlobalPeek => self.toggle_peek(),
             // Three states, because "nothing is enabled" and "nothing was

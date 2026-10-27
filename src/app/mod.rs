@@ -28,6 +28,7 @@ mod selection;
 mod stdin;
 mod sync;
 pub(crate) mod viewport;
+mod write;
 
 use crate::startup::Startup;
 use crate::{clipboard, document, editor, emit, filter, filtersets, panes, scan, widgets};
@@ -68,6 +69,8 @@ pub struct App<'a> {
     finishing: Option<finish::Finish>,
     /// What that work produced, for `exit` to hand back.
     finished: Option<emit::Exit>,
+    /// The read of a whole file that `:w` over a preview started (#528).
+    writing: Option<write::Writing>,
     /// Set from outside the loop when a SIGTERM arrives (#382). `main`
     /// installs it; `None` in a test that does not ask for one.
     terminate: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
@@ -438,6 +441,7 @@ impl App<'_> {
         let mut app = Self {
             state: AppState::Running,
             finishing: None,
+            writing: None,
             finished: None,
             terminate: None,
             explorer,

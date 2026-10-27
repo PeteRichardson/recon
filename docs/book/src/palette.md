@@ -73,6 +73,21 @@ You do not open the filter pane, and the focus does not move.
 If the pattern is not a valid regular expression, the palette stays open and
 shows the error. No filter is added.
 
+## Write the visible lines to a file
+
+`:w errors.txt` writes the lines that the file view shows now to
+`errors.txt`. These are the lines that `q` with `--emit lines` prints: in
+hide mode only the matches, in dim mode all of the lines. With `-n`, each
+line starts with its line number and a tab. You can continue to work.
+
+- A relative path starts at the explorer's folder, as for `:e`.
+- `:w` does not replace a file that exists. The palette stays open and shows
+  the error. `:w! errors.txt` replaces the file.
+- If the file view has only the first part of a large file, recon reads all
+  of the file in the background, then writes the file. The status row shows
+  the progress. Push Esc to stop; then recon writes nothing.
+- The status row shows how many lines recon wrote, and the full path.
+
 ## Run a keymap action
 
 Each action of the keymap is a command, with the name that a `[keymap]` line

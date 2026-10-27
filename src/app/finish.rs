@@ -73,12 +73,7 @@ impl App<'_> {
         }
         let finish = match self.emit {
             Some(emit::Emit::Lines) if self.lines_need_finishing() => {
-                Some(Finish::Lines(LinesJob::start(
-                    self.view.filename(),
-                    self.filters.snapshot(),
-                    self.document.mode(),
-                    self.line_numbers,
-                )))
+                Some(Finish::Lines(self.start_lines_job(Ok)))
             }
             Some(emit::Emit::Files) if self.files_need_finishing() => Some(Finish::Files),
             _ => None,
@@ -115,9 +110,33 @@ impl App<'_> {
         ))
     }
 
+    /// Start the read of the whole file the view shows, for the lines
+    /// visible now, with `then` run on the thread once the spool is full.
+    pub(super) fn start_lines_job(
+        &self,
+        then: impl FnOnce(Streamed) -> io::Result<Streamed> + Send + 'static,
+    ) -> LinesJob {
+        LinesJob::start(
+            self.view.filename(),
+            self.filters.snapshot(),
+            self.document.mode(),
+            self.line_numbers,
+            then,
+        )
+    }
+
+    /// The end of a progress line: the key that cancels the work, when
+    /// the keymap in force binds `action` to one.
+    pub(super) fn with_cancel_key(&self, progress: String, action: ActionId) -> String {
+        match self.keymap.label_for(action) {
+            Some(key) => format!("{progress} — {key} to cancel"),
+            None => progress,
+        }
+    }
+
     /// Whether `--emit lines` needs more of the file than the view holds:
     /// the view is showing a file's text, and only a preview of it (#351).
-    fn lines_need_finishing(&self) -> bool {
+    pub(super) fn lines_need_finishing(&self) -> bool {
         !self.view.showing_directory() && self.view.is_text() && self.view.is_truncated()
     }
 
@@ -140,19 +159,12 @@ impl App<'_> {
         let done = match &self.finishing {
             None => return false,
             Some(Finish::Files) => !self.files_need_finishing(),
-            Some(Finish::Lines(job)) => match job.done.try_recv() {
-                Ok(result) => {
+            Some(Finish::Lines(job)) => match job.poll() {
+                Some(result) => {
                     self.finished = Some(self.streamed_exit(&job.path, result));
                     true
                 }
-                Err(TryRecvError::Empty) => false,
-                Err(TryRecvError::Disconnected) => {
-                    self.finished = Some(self.streamed_exit(
-                        &job.path,
-                        Err(io::Error::other("the reading thread stopped")),
-                    ));
-                    true
-                }
+                None => false,
             },
         };
         if done {
@@ -173,7 +185,7 @@ impl App<'_> {
     /// state the session ends in.
     pub(super) fn stop_finishing(&mut self) {
         if let Some(Finish::Lines(job)) = &self.finishing {
-            job.cancel.store(true, Ordering::Relaxed);
+            job.stop();
         }
         self.finishing = None;
     }
@@ -183,20 +195,16 @@ impl App<'_> {
     pub(super) fn finishing_text(&self) -> Option<String> {
         let progress = match self.finishing.as_ref()? {
             Finish::Lines(job) => format!(
-                "finishing {}: {} of {}",
+                "finishing {}: {}",
                 crate::path::file_label(&job.path),
-                size(job.read.load(Ordering::Relaxed).min(job.total)),
-                size(job.total),
+                job.progress(),
             ),
             Finish::Files => {
                 let (answered, total) = self.explorer.answered();
                 format!("finishing: {answered} of {total} files scanned")
             }
         };
-        Some(match self.keymap.label_for(ActionId::FinishingCancel) {
-            Some(key) => format!("{progress} — {key} to cancel"),
-            None => progress,
-        })
+        Some(self.with_cancel_key(progress, ActionId::FinishingCancel))
     }
 
     /// The session's result from the reading thread's.
@@ -220,8 +228,26 @@ impl App<'_> {
     }
 }
 
+impl Streamed {
+    /// Copy the visible lines to `out`, as `q` prints them.
+    pub(super) fn copy_to(&mut self, out: &mut impl Write) -> io::Result<()> {
+        emit::write_spool(&mut self.spool, out)
+    }
+
+    /// How many lines the spool holds.
+    pub(super) fn emitted(&self) -> usize {
+        self.emitted
+    }
+}
+
 impl LinesJob {
-    fn start(path: &Path, filters: ActiveFilters, mode: Mode, line_numbers: bool) -> Self {
+    fn start(
+        path: &Path,
+        filters: ActiveFilters,
+        mode: Mode,
+        line_numbers: bool,
+        then: impl FnOnce(Streamed) -> io::Result<Streamed> + Send + 'static,
+    ) -> Self {
         let path = path.to_path_buf();
         let cancel = Arc::new(AtomicBool::new(false));
         let read = Arc::new(AtomicU64::new(0));
@@ -230,7 +256,8 @@ impl LinesJob {
         {
             let (path, cancel, read) = (path.clone(), Arc::clone(&cancel), Arc::clone(&read));
             std::thread::spawn(move || {
-                let result = stream(&path, &filters, mode, line_numbers, &cancel, &read);
+                let result = stream(&path, &filters, mode, line_numbers, &cancel, &read)
+                    .and_then(|streamed| streamed.map(then).transpose());
                 // The receiver is gone only when the session ended first.
                 let _ = send.send(result);
             });
@@ -242,6 +269,31 @@ impl LinesJob {
             total,
             done,
         }
+    }
+
+    /// The thread's answer, or `None` while it reads.
+    pub(super) fn poll(&self) -> Option<io::Result<Option<Streamed>>> {
+        match self.done.try_recv() {
+            Ok(result) => Some(result),
+            Err(TryRecvError::Empty) => None,
+            Err(TryRecvError::Disconnected) => {
+                Some(Err(io::Error::other("the reading thread stopped")))
+            }
+        }
+    }
+
+    /// Tell the thread to stop. It answers `None`, which nothing waits for.
+    pub(super) fn stop(&self) {
+        self.cancel.store(true, Ordering::Relaxed);
+    }
+
+    /// How far the read has got: `1.2 MB of 3.4 MB`.
+    pub(super) fn progress(&self) -> String {
+        format!(
+            "{} of {}",
+            size(self.read.load(Ordering::Relaxed).min(self.total)),
+            size(self.total),
+        )
     }
 }
 
