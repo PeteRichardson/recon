@@ -201,6 +201,13 @@ Some commands take arguments. A key in the keymap runs a command that takes
 none, and the keymap uses the same name for it.
 _Avoid_: action (that is the code's word), function
 
+**Alias**:
+A name in the `[aliases]` table of `config.toml` for a chain of command lines,
+with `;` between them. The command palette runs each line in order, and the
+first line that fails stops the chain. A short name of a command, such as `cd`
+for `e`, is a vim alias, not an alias of this kind.
+_Avoid_: macro, script
+
 **Command palette**:
 The line that `:` opens at the bottom of the recon window from any pane (never
 from a screen that covers the window, or from a prompt), where the user

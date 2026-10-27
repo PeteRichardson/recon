@@ -15,7 +15,7 @@ impl App<'_> {
     /// The commands the palette's line matches, best first: by the word
     /// typed so far, or — once a blank follows the word — the command that
     /// word names. `None` when no palette is open.
-    pub(in crate::app) fn palette_matches(&self) -> Option<Vec<&'static Command>> {
+    pub(in crate::app) fn palette_matches(&self) -> Option<Vec<&Command>> {
         let prompt = self.palette()?;
         // While Tab chooses a name, the list stays the one its word matched.
         let line = prompt
@@ -24,12 +24,11 @@ impl App<'_> {
             .and_then(|completion| completion.word.as_deref())
             .unwrap_or_else(|| prompt.pattern.trim_start());
         let rows = if let Some((word, _)) = line.split_once(char::is_whitespace) {
-            commands::named(word).into_iter().collect()
+            commands::find(&self.commands, word).into_iter().collect()
         } else {
-            let catalog = commands::catalog();
-            commands::matches(catalog, line)
+            commands::matches(&self.commands, line)
                 .into_iter()
-                .map(|index| &catalog[index])
+                .map(|index| &self.commands[index])
                 .collect()
         };
         Some(rows)
@@ -92,7 +91,7 @@ impl App<'_> {
             let line = Line::from(vec![
                 Span::raw(format!(" {names}{}  ", pad(names, names_width))),
                 Span::styled(format!("{keys}{}  ", pad(keys, keys_width)), dim),
-                Span::raw(command.help),
+                Span::raw(command.help.as_ref()),
             ]);
             buf.set_line(row.x, row.y, &line, row.width);
             if chosen == Some(i) {

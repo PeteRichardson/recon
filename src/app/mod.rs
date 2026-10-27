@@ -138,6 +138,9 @@ pub struct App<'a> {
     /// The command lines the palette ran (#520), as the `/` prompts keep
     /// their patterns.
     command_history: History,
+    /// The commands the palette runs: the built-in ones, then the user's
+    /// `[aliases]` (#557).
+    commands: Vec<crate::commands::Command>,
     /// The home folder that `e ~` and `e` alone go to, read once from
     /// `$HOME` so a test can set its own.
     home: Option<String>,
@@ -461,6 +464,7 @@ impl App<'_> {
             explorer_search_history: History::default(),
             sets_search_history: History::default(),
             command_history: History::default(),
+            commands: crate::commands::with_aliases(&config.aliases),
             home: std::env::var("HOME").ok(),
             last_folder: None,
             filters,

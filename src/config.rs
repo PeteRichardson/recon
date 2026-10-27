@@ -30,6 +30,7 @@ use crate::syntax;
 use clap::Parser;
 use ratatui::style::Color;
 use serde::Deserialize;
+use std::collections::BTreeMap;
 use std::fmt;
 use std::path::{Path, PathBuf};
 
@@ -307,6 +308,11 @@ pub struct Config {
     /// can name (#457).
     #[arg(skip)]
     pub commands: crate::views::command::Commands,
+
+    /// The `[aliases]` table of `config.toml`: each name, and the command
+    /// lines it runs with `;` between them (#557).
+    #[arg(skip)]
+    pub aliases: BTreeMap<String, String>,
 
     /// Colours for the file view's syntax colouring: a bundled theme name,
     /// a path to a `.tmTheme` file, or `none` to turn colouring off.
@@ -586,6 +592,9 @@ pub struct FileConfig {
     /// `[commands]`: the command views a `[[filetype]]` row can name
     /// (#457).
     pub commands: Option<crate::views::command::Commands>,
+    /// `[aliases]`: palette commands that run a chain of command lines
+    /// (#557).
+    pub aliases: Option<BTreeMap<String, String>>,
     /// `[log]`: the log file and its size (#500, #504). Same absent-vs-empty
     /// reasoning as `editor`.
     pub log: Option<LogConfig>,
@@ -847,6 +856,9 @@ pub enum ConfigError {
     /// A `[[filetype]]` row naming a view that is neither built in nor in
     /// `[commands]` (#457).
     UnknownView { glob: String, name: String },
+    /// An `[aliases]` entry the palette cannot run (#557). `problem` says
+    /// why, for the message.
+    BadAlias { name: String, problem: String },
     /// `[keymap]` naming an action that does not exist. `known` is every name
     /// that does: the message gives the nearest of them (#385), since a typo
     /// is the common case and the whole list is about 93 names.
@@ -1004,6 +1016,9 @@ impl fmt::Display for ConfigError {
                 f,
                 "the [[filetype]] row for `{glob}` names view `{name}`, which is not a built-in view or a name in [commands]"
             ),
+            Self::BadAlias { name, problem } => {
+                write!(f, "[aliases] `{name}`: {problem}")
+            }
             Self::BadWarningsVar(value) => {
                 write!(f, "{WARNINGS_VAR} must be true or false, not {value:?}")
             }
@@ -1362,6 +1377,20 @@ impl Config {
         Ok(())
     }
 
+    /// Refuse an `[aliases]` entry the palette cannot run (#557): at load,
+    /// not when the alias runs.
+    pub fn check_aliases(&self) -> Result<(), ConfigError> {
+        for (name, chain) in &self.aliases {
+            crate::commands::check_alias(name, chain, &self.aliases).map_err(|problem| {
+                ConfigError::BadAlias {
+                    name: name.clone(),
+                    problem,
+                }
+            })?;
+        }
+        Ok(())
+    }
+
     /// The panes to hide at startup, once the chain has run: the flag, else
     /// `[layout] hide_panes`, else none.
     #[must_use]
@@ -1482,6 +1511,7 @@ impl Config {
         self.apply(&file);
         self.check_panes()?;
         self.check_views()?;
+        self.check_aliases()?;
         Ok(file.keymap.unwrap_or_default())
     }
 
@@ -1522,6 +1552,7 @@ impl Config {
             warnings,
             filetype,
             commands,
+            aliases,
             log,
         } = file;
 
@@ -1613,6 +1644,12 @@ impl Config {
             && self.commands.0.is_empty()
         {
             self.commands.clone_from(commands);
+        }
+
+        if let Some(aliases) = aliases
+            && self.aliases.is_empty()
+        {
+            self.aliases.clone_from(aliases);
         }
 
         if let Some(LogConfig {
@@ -3583,6 +3620,94 @@ mod tests {
         config.apply(&load_from(&path).expect("a valid file"));
         config.check_views().expect("every name is known");
         assert_eq!(config.commands.0["jq"].argv, ["jq", "."]);
+    }
+
+    #[test]
+    fn the_aliases_table_is_read_by_name() {
+        let path = fixture(
+            "aliases.toml",
+            "[aliases]\nproj = \"e ~/projects/recon ; explorer.focus\"\nerrs = \"set +errors:-WARNING\"\n",
+        );
+        let mut config = Config::default();
+        config.apply(&load_from(&path).expect("a valid file"));
+        assert_eq!(
+            config.aliases["proj"],
+            "e ~/projects/recon ; explorer.focus"
+        );
+        assert_eq!(config.aliases["errs"], "set +errors:-WARNING");
+        config.check_aliases().expect("every alias is valid");
+    }
+
+    /// The `[aliases]` error for `name = chain`, as `load` gives it.
+    fn alias_error(name: &str, chain: &str) -> String {
+        let mut config = Config::default();
+        config.aliases.insert(name.to_string(), chain.to_string());
+        config
+            .check_aliases()
+            .expect_err("the alias must be refused")
+            .to_string()
+    }
+
+    #[test]
+    fn an_alias_with_an_unknown_command_is_refused_by_name() {
+        let err = alias_error("proj", "e ~/projects ; frobnicate now");
+        assert!(err.contains("[aliases]"), "{err}");
+        assert!(err.contains("`proj`"), "{err}");
+        assert!(err.contains("`frobnicate`"), "{err}");
+    }
+
+    #[test]
+    fn an_alias_cannot_run_another_alias_yet() {
+        let mut config = Config::default();
+        config.aliases.insert("home".into(), "e ~".into());
+        config
+            .aliases
+            .insert("proj".into(), "home ; explorer.focus".into());
+        let err = config
+            .check_aliases()
+            .expect_err("an alias in a chain must be refused")
+            .to_string();
+        assert!(err.contains("`proj`"), "{err}");
+        assert!(err.contains("alias `home`"), "{err}");
+    }
+
+    #[test]
+    fn an_alias_with_an_empty_segment_is_refused() {
+        for chain in ["", "e ~ ;", "e ~ ; ; explorer.focus"] {
+            let err = alias_error("proj", chain);
+            assert!(err.contains("`proj`"), "{chain:?}: {err}");
+            assert!(err.contains("empty"), "{chain:?}: {err}");
+        }
+    }
+
+    #[test]
+    fn an_alias_named_as_a_command_is_refused() {
+        // A main name, a short name, and a keymap name.
+        for name in ["e", "cd", "global.follow"] {
+            let err = alias_error(name, "goto 1");
+            assert!(err.contains(&format!("`{name}`")), "{err}");
+            assert!(err.contains("already a command"), "{err}");
+        }
+    }
+
+    #[test]
+    fn an_alias_name_the_palette_cannot_type_is_refused() {
+        // `12` is `goto 12`; the palette ends a name at a blank, and a chain
+        // at a `;`.
+        for name in ["12", "my proj", "a;b", ""] {
+            let err = alias_error(name, "goto 1");
+            assert!(err.contains("[aliases]"), "{name:?}: {err}");
+            assert!(err.contains("name"), "{name:?}: {err}");
+        }
+    }
+
+    #[test]
+    fn a_line_number_is_a_segment_as_in_the_palette() {
+        let mut config = Config::default();
+        config
+            .aliases
+            .insert("top".into(), "1 ; global.focus.view".into());
+        config.check_aliases().expect("`1` is `goto 1`");
     }
 
     #[test]

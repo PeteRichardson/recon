@@ -113,11 +113,10 @@ impl App<'_> {
     /// `None` when there is nothing to complete.
     fn completion_for(&self, line: &str) -> Result<Completion, Option<String>> {
         let Some((name, _)) = line.split_once(char::is_whitespace) else {
-            let catalog = crate::commands::catalog();
-            let options: Vec<String> = crate::commands::matches(catalog, line)
+            let options: Vec<String> = crate::commands::matches(&self.commands, line)
                 .into_iter()
                 .map(|index| {
-                    let command = &catalog[index];
+                    let command = &self.commands[index];
                     let space = if command.argument == Argument::None {
                         ""
                     } else {
@@ -138,7 +137,7 @@ impl App<'_> {
         };
         let argument = line[name.len()..].trim_start();
         let base = &line[..line.len() - argument.len()];
-        let takes = crate::commands::named(name).map(|command| command.argument);
+        let takes = crate::commands::find(&self.commands, name).map(|command| command.argument);
         let (base, partial, options) = match (takes, argument.split_once(':')) {
             (Some(Argument::Path), _) => self.path_choices(base, argument)?,
             (Some(Argument::View), _) => (
@@ -230,20 +229,11 @@ impl App<'_> {
     /// Run one command line from the palette. `Err` is the message the
     /// palette shows in place of the line; the palette stays open with it.
     pub(super) fn run_command(&mut self, line: &str) -> Result<(), String> {
-        let line = line.trim();
-        let (name, argument) = line
-            .split_once(char::is_whitespace)
-            .map_or((line, ""), |(name, rest)| (name, rest.trim()));
-        if name.is_empty() {
+        if line.trim().is_empty() {
             // Enter on an empty palette closes it, as Esc does.
             return Ok(());
         }
-        // `:<n>`, vim's form of `goto <n>`.
-        if name.bytes().all(|b| b.is_ascii_digit()) {
-            return self.go_to_line(name);
-        }
-        let command =
-            crate::commands::named(name).ok_or_else(|| format!("not a command: {name}"))?;
+        let (command, argument) = crate::commands::resolve(&self.commands, line)?;
         match command.run {
             Run::Path => self.go_to_path(argument),
             Run::SetExplorer => self.set_explorer(argument),
@@ -254,7 +244,23 @@ impl App<'_> {
             Run::View => self.choose_view(argument),
             Run::AddFilter(sense) => self.add_filter_from_palette(sense, argument),
             Run::Action(action) => self.run_action(action, command.argument, argument),
+            Run::Alias => {
+                let (alias, chain) = (command.names[0].to_string(), command.help.to_string());
+                self.run_alias(&alias, &chain)
+            }
         }
+    }
+
+    /// A user alias (#557): run each command line of its chain in order, as
+    /// if it was typed in the palette. The first that fails stops the
+    /// chain, and its error names the alias and the line; the lines before
+    /// it stay done.
+    fn run_alias(&mut self, alias: &str, chain: &str) -> Result<(), String> {
+        for segment in crate::commands::segments(chain) {
+            self.run_command(segment)
+                .map_err(|err| format!("{alias}: `{segment}`: {err}"))?;
+        }
+        Ok(())
     }
 
     /// Run a keymap action by its name, on the pane its key works in: that
