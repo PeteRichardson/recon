@@ -3,21 +3,26 @@
 //!
 //! A command that a key can run has one name, its keymap name; a short
 //! name is only for a command that takes an argument, or for a well-known
-//! vim alias, and it shares its command's row (ADR 0011).
+//! vim alias, and it shares its command's row (ADR 0011). A user alias
+//! from `[aliases]` is not a short name: it runs a chain of command lines,
+//! and has a row of its own (#557).
 
 use crate::filter::Sense;
 use crate::keymap::{ActionId, Scope};
+use std::borrow::Cow;
+use std::collections::BTreeMap;
 use std::sync::LazyLock;
 
 /// One row of the palette's list.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Command {
     /// Every name that runs it, the main one first: `e` then `cd`.
-    pub(crate) names: Vec<&'static str>,
+    pub(crate) names: Vec<Cow<'static, str>>,
     /// What it takes after its name.
     pub(crate) argument: Argument,
-    /// Its line of help: the help overlay's text for an action.
-    pub(crate) help: &'static str,
+    /// Its line of help: the help overlay's text for an action, and the
+    /// chain of an alias.
+    pub(crate) help: Cow<'static, str>,
     /// What running it does.
     pub(crate) run: Run,
 }
@@ -65,6 +70,9 @@ pub(crate) enum Run {
     AddFilter(Sense),
     /// A keymap action, whose keys the row shows.
     Action(ActionId),
+    /// A user alias: the command lines of its chain, which is its help, in
+    /// order (#557).
+    Alias,
 }
 
 impl Command {
@@ -79,7 +87,8 @@ impl Command {
             | Run::ListSet
             | Run::UnlistSet
             | Run::View
-            | Run::AddFilter(_) => None,
+            | Run::AddFilter(_)
+            | Run::Alias => None,
         }
     }
 
@@ -108,75 +117,124 @@ pub(crate) fn catalog() -> &'static [Command] {
     &CATALOG
 }
 
-/// The command `name` runs, by any of its names.
-pub(crate) fn named(name: &str) -> Option<&'static Command> {
-    catalog()
+/// The row of `commands` that `name` runs, by any of its names.
+pub(crate) fn find<'a>(commands: &'a [Command], name: &str) -> Option<&'a Command> {
+    commands
         .iter()
-        .find(|command| command.names.contains(&name))
+        .find(|command| command.names.iter().any(|n| n == name))
+}
+
+/// Whether `name` is `:<n>`, vim's form of `goto <n>`.
+fn is_line_number(name: &str) -> bool {
+    !name.is_empty() && name.bytes().all(|b| b.is_ascii_digit())
+}
+
+/// The row of `commands` that a command `line` runs, and its argument: the
+/// name is the line up to the first blank, and the argument is the rest of
+/// the line as typed, so a path with a space in it needs no quotes. A
+/// number alone is `goto`, with the number as its argument.
+pub(crate) fn resolve<'a, 'l>(
+    commands: &'a [Command],
+    line: &'l str,
+) -> Result<(&'a Command, &'l str), String> {
+    let line = line.trim();
+    let (name, argument) = line
+        .split_once(char::is_whitespace)
+        .map_or((line, ""), |(name, rest)| (name, rest.trim()));
+    if is_line_number(name) {
+        let goto = find(commands, "goto").expect("goto is built in");
+        return Ok((goto, name));
+    }
+    let command = find(commands, name).ok_or_else(|| format!("not a command: {name}"))?;
+    Ok((command, argument))
+}
+
+/// Every command the palette runs: the built-in ones, then a row for each
+/// of `aliases`, by name (#557). `load` has refused an alias the palette
+/// cannot run.
+pub(crate) fn with_aliases(aliases: &BTreeMap<String, String>) -> Vec<Command> {
+    let mut commands = catalog().to_vec();
+    commands.extend(aliases.iter().map(|(name, chain)| Command {
+        names: vec![Cow::Owned(name.clone())],
+        argument: Argument::None,
+        help: Cow::Owned(chain.clone()),
+        run: Run::Alias,
+    }));
+    commands
+}
+
+/// A built-in row.
+fn row(names: &[&'static str], argument: Argument, help: &'static str, run: Run) -> Command {
+    Command {
+        names: names.iter().copied().map(Cow::Borrowed).collect(),
+        argument,
+        help: Cow::Borrowed(help),
+        run,
+    }
 }
 
 fn build() -> Vec<Command> {
     let mut commands = vec![
-        Command {
-            names: vec!["e", "cd"],
-            argument: Argument::Path,
-            help: "Go to a folder, or open a file in its folder",
-            run: Run::Path,
-        },
-        Command {
-            names: vec!["explorer.set"],
-            argument: Argument::Path,
-            help: "Set the explorer's folder; the focus stays where it is",
-            run: Run::SetExplorer,
-        },
-        Command {
-            names: vec!["goto"],
-            argument: Argument::Number,
-            help: "Go to line n of the file (also :<n>)",
-            run: Run::Line,
-        },
-        Command {
-            names: vec!["set"],
-            argument: Argument::SetList,
-            help: "List and enable a filter set, as --set does",
-            run: Run::EnableSet,
-        },
-        Command {
-            names: vec!["list"],
-            argument: Argument::Set,
-            help: "List a filter set and leave it off, as --list does",
-            run: Run::ListSet,
-        },
-        Command {
-            names: vec!["unlist"],
-            argument: Argument::Set,
-            help: "Unlist a filter set, as --unlist does",
-            run: Run::UnlistSet,
-        },
-        Command {
-            names: vec!["view"],
-            argument: Argument::View,
-            help: "Show the open file in a view, by name",
-            run: Run::View,
-        },
-        Command {
-            names: vec!["include"],
-            argument: Argument::Pattern,
-            help: "Add an including filter to the scratch set",
-            run: Run::AddFilter(Sense::Include),
-        },
-        Command {
-            names: vec!["exclude"],
-            argument: Argument::Pattern,
-            help: "Add an excluding filter to the scratch set",
-            run: Run::AddFilter(Sense::Exclude),
-        },
-        Command {
-            names: vec!["context"],
-            argument: Argument::Pattern,
-            help: "Add a context filter to the scratch set",
-            run: Run::AddFilter(Sense::Context),
-        },
+        row(
+            &["e", "cd"],
+            Argument::Path,
+            "Go to a folder, or open a file in its folder",
+            Run::Path,
+        ),
+        row(
+            &["explorer.set"],
+            Argument::Path,
+            "Set the explorer's folder; the focus stays where it is",
+            Run::SetExplorer,
+        ),
+        row(
+            &["goto"],
+            Argument::Number,
+            "Go to line n of the file (also :<n>)",
+            Run::Line,
+        ),
+        row(
+            &["set"],
+            Argument::SetList,
+            "List and enable a filter set, as --set does",
+            Run::EnableSet,
+        ),
+        row(
+            &["list"],
+            Argument::Set,
+            "List a filter set and leave it off, as --list does",
+            Run::ListSet,
+        ),
+        row(
+            &["unlist"],
+            Argument::Set,
+            "Unlist a filter set, as --unlist does",
+            Run::UnlistSet,
+        ),
+        row(
+            &["view"],
+            Argument::View,
+            "Show the open file in a view, by name",
+            Run::View,
+        ),
+        row(
+            &["include"],
+            Argument::Pattern,
+            "Add an including filter to the scratch set",
+            Run::AddFilter(Sense::Include),
+        ),
+        row(
+            &["exclude"],
+            Argument::Pattern,
+            "Add an excluding filter to the scratch set",
+            Run::AddFilter(Sense::Exclude),
+        ),
+        row(
+            &["context"],
+            Argument::Pattern,
+            "Add a context filter to the scratch set",
+            Run::AddFilter(Sense::Context),
+        ),
     ];
     for action in crate::keymap::every_action().filter(|a| is_command(*a)) {
         let mut names = vec![action.name()];
@@ -188,17 +246,17 @@ fn build() -> Vec<Command> {
         if action == ActionId::FiltersRequire {
             names.push("require");
         }
-        commands.push(Command {
-            names,
+        commands.push(row(
+            &names,
             // The digit its key gives it.
-            argument: match action {
+            match action {
                 ActionId::GlobalFiltersToggle => Argument::Number,
                 ActionId::FiltersRequire => Argument::Text,
                 _ => Argument::None,
             },
-            help: help_for(action),
-            run: Run::Action(action),
-        });
+            help_for(action),
+            Run::Action(action),
+        ));
     }
     commands
 }
@@ -278,6 +336,50 @@ fn span(name: &str, word: &str) -> Option<usize> {
         .min()
 }
 
+/// The command lines of an alias's `chain`, in the order they run: the
+/// parts between its `;`s, trimmed.
+pub(crate) fn segments(chain: &str) -> impl Iterator<Item = &str> {
+    chain.split(';').map(str::trim)
+}
+
+/// Refuse the alias `name = chain` when the palette cannot run it (#557).
+/// The name: one that is already a command's, which it would hide, a
+/// number, which is `goto`, and one with a blank or a `;` in it, where the
+/// palette ends a name or a chain. The chain: an empty command line, or one
+/// that names no built-in command. An alias of `aliases` is not a built-in:
+/// an alias cannot run another one yet.
+pub(crate) fn check_alias(
+    name: &str,
+    chain: &str,
+    aliases: &BTreeMap<String, String>,
+) -> Result<(), String> {
+    if name.is_empty() {
+        return Err("an alias needs a name".to_string());
+    }
+    if is_line_number(name) {
+        return Err("a number is not a name: `:<n>` goes to that line".to_string());
+    }
+    if name.contains(|c: char| c.is_whitespace() || c == ';') {
+        return Err("a name cannot have a blank or a `;` in it".to_string());
+    }
+    if find(catalog(), name).is_some() {
+        return Err("the name is already a command".to_string());
+    }
+    for segment in segments(chain) {
+        if segment.is_empty() {
+            return Err("an empty command between `;`s".to_string());
+        }
+        let first = segment.split_whitespace().next().unwrap_or_default();
+        if aliases.contains_key(first) {
+            return Err(format!(
+                "names alias `{first}`; an alias cannot run another alias"
+            ));
+        }
+        resolve(catalog(), segment).map_err(|_| format!("`{first}` is not a command"))?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -287,7 +389,7 @@ mod tests {
         let commands = catalog();
         matches(commands, word)
             .into_iter()
-            .map(|index| commands[index].names[0])
+            .map(|index| commands[index].names[0].as_ref())
             .collect()
     }
 

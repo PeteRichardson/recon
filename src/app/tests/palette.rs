@@ -582,7 +582,7 @@ fn listed(word: &str) -> Vec<&'static str> {
     let catalog = crate::commands::catalog();
     crate::commands::matches(catalog, word)
         .into_iter()
-        .map(|index| catalog[index].names[0])
+        .map(|index| catalog[index].names[0].as_ref())
         .collect()
 }
 
@@ -1024,4 +1024,118 @@ fn a_bad_or_missing_pattern_keeps_the_palette_open_with_an_error() {
         key(&mut app, KeyCode::Esc);
     }
     assert_eq!(scratch_filters(&app), []);
+}
+
+// ---- user aliases (#557) ----------------------------------------------
+
+/// Give `app` the aliases of an `[aliases]` table, as `config.toml` does at
+/// startup.
+fn alias(app: &mut App, aliases: &[(&str, &str)]) {
+    let aliases = aliases
+        .iter()
+        .map(|(name, chain)| ((*name).to_string(), (*chain).to_string()))
+        .collect();
+    app.commands = crate::commands::with_aliases(&aliases);
+}
+
+/// An alias runs each command line of its chain, in order, as if it was
+/// typed in the palette: all of a line after the command name is one
+/// argument, blanks and all.
+#[test]
+fn an_alias_runs_its_chain_in_order_with_whole_arguments() {
+    let mut app = app_over_file("palette_alias_chain", "al ha\nbeta\n");
+    alias(&mut app, &[("both", "include al ha ; context be.a")]);
+    run(&mut app, "both");
+    assert!(
+        app.prompt.is_none(),
+        "{:?}",
+        app.prompt.as_ref().map(|p| &p.error)
+    );
+    assert_eq!(
+        scratch_filters(&app),
+        [
+            ("al ha".to_string(), filter::Sense::Include),
+            ("be.a".to_string(), filter::Sense::Context),
+        ]
+    );
+}
+
+/// A line of the chain that fails stops it there: the lines before it stay
+/// done, the lines after it do not run, and the palette stays open with
+/// the alias and an error that names the alias and the line.
+#[test]
+fn a_failed_line_stops_the_alias_with_an_error_that_names_it() {
+    let mut app = app_over_file("palette_alias_fails", "alpha\nbeta\n");
+    alias(
+        &mut app,
+        &[("bad", "include alpha ; goto nope ; include beta")],
+    );
+    run(&mut app, "bad");
+    assert_eq!(prompt(&app).pattern, "bad");
+    let error = prompt(&app).error.clone().unwrap_or_default();
+    assert!(error.contains("bad"), "{error}");
+    assert!(error.contains("goto nope"), "{error}");
+    assert!(error.contains("not a line number"), "{error}");
+    assert_eq!(
+        scratch_filters(&app),
+        [("alpha".to_string(), filter::Sense::Include)]
+    );
+}
+
+/// An alias of one `set` line does what the line does when it is typed.
+#[test]
+fn an_alias_of_a_set_line_works_as_the_typed_line() {
+    let mut typed_line = app_with_three_sets("palette_alias_set_typed");
+    let mut aliased = app_with_three_sets("palette_alias_set");
+    alias(&mut aliased, &[("gam", "set c:gamma")]);
+    for app in [&mut typed_line, &mut aliased] {
+        let c = set_named(app, "c");
+        app.filters.set_listed(c, false);
+        app.refresh_view();
+    }
+    run(&mut typed_line, "set c:gamma");
+    run(&mut aliased, "gam");
+    assert!(aliased.prompt.is_none(), "the palette is still open");
+    let c = set_named(&aliased, "c");
+    assert!(aliased.filters.sets()[c].enabled);
+    assert_eq!(flags_of(&aliased, c), flags_of(&typed_line, c));
+    assert_eq!(included(&aliased), included(&typed_line));
+}
+
+/// An alias has a row of its own in the list, with its chain as the help,
+/// and Tab writes its name, with no blank after it: it takes no argument.
+#[test]
+fn an_alias_is_listed_with_its_chain_and_tab_writes_it() {
+    let mut app = app_over_file("palette_alias_list", "a\n");
+    alias(&mut app, &[("proj", "e ~/projects/recon ; explorer.focus")]);
+    key(&mut app, KeyCode::Char(':'));
+    typed(&mut app, "proj");
+    let rows = list_rows(&mut app);
+    let top = rows
+        .iter()
+        .find(|row| !row.trim().is_empty())
+        .expect("a row");
+    assert!(top.contains("proj"), "{rows:#?}");
+    assert!(top.contains("e ~/projects/recon ; explorer.focus"), "{top}");
+
+    key(&mut app, KeyCode::Tab);
+    assert_eq!(prompt(&app).pattern, "proj");
+}
+
+/// The aliases come from the `[aliases]` of the config the app starts
+/// with.
+#[test]
+fn the_app_runs_the_aliases_of_its_config() {
+    let file = fixture_path("palette_alias_config", "alpha\n");
+    let mut app = App::new(&Startup::from(Config {
+        path: Some(file.display().to_string()),
+        aliases: [("al".to_string(), "include alpha".to_string())].into(),
+        ..Config::default()
+    }));
+    run(&mut app, "al");
+    assert!(app.prompt.is_none(), "the palette is still open");
+    assert_eq!(
+        scratch_filters(&app),
+        [("alpha".to_string(), filter::Sense::Include)]
+    );
 }

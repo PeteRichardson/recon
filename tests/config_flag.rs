@@ -140,3 +140,19 @@ fn the_log_names_the_named_file() {
     let expected = format!("config file: {}", file.display());
     assert!(text.contains(&expected), "{text}");
 }
+
+/// An `[aliases]` entry the palette cannot run stops recon at startup, not
+/// when the alias runs (#557), and the message names the alias.
+#[test]
+fn an_alias_with_an_unknown_command_refuses_to_start() {
+    let (home, file) = fixture("alias", "[aliases]\nproj = \"e ~ ; frobnicate\"\n");
+    let out = recon(
+        &home,
+        &[],
+        &["-c", file.to_str().unwrap(), "--print-keymap"],
+    );
+    assert!(!out.status.success());
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("[aliases] `proj`"), "{stderr}");
+    assert!(stderr.contains("`frobnicate`"), "{stderr}");
+}

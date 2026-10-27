@@ -80,6 +80,32 @@ uses, for example `:global.follow` or `:explorer.down`. An action that you
 removed the key from is still a command. A pane's action works on its pane,
 and that pane shows and gets the focus. `:q` quits, as `q` does.
 
+## Run your own aliases
+
+An alias gives a name to a chain of command lines. Write it in the
+`[aliases]` table of `config.toml`, with `;` between the lines:
+
+```toml
+[aliases]
+proj = "e ~/projects/recon ; explorer.focus"
+errs = "set +errors:-WARNING"
+```
+
+`:proj` runs `e ~/projects/recon`, then `explorer.focus`, as if you typed
+each line. All of a line after the command name is its argument, so the
+argument can have spaces in it. It cannot have a `;` in it, because `;` ends
+the line.
+
+- Each alias has its own row in the list, after the built-in commands, with
+  its chain as the help.
+- If a line fails, the chain stops there. The lines before it stay done, and
+  the palette shows the error with the alias and the line.
+- recon does not start if an alias has a line that names no command, an empty
+  line, or the name of another alias. An alias cannot run another alias yet.
+  recon also does not start if the name of an alias is the name of a command
+  (for example `e` or `global.follow`), a number, or a name with a space or a
+  `;` in it. The message names the alias.
+
 ## Find a command
 
 Above the line, a list shows the commands that agree with what you typed.

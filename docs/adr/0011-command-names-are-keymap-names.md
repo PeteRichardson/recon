@@ -27,6 +27,12 @@ the palette and the aliases must then all name a command the same way.
 So a rename of a keymap name is now a break in the palette and in aliases
 too, not only in keymap configs.
 
+**Note (#557):** a user alias from `[aliases]` is not a short name of one
+command. It runs a chain, which has no single command whose row it can share.
+So each user alias has a row of its own, after the built-in commands, with its
+chain as the help. Its name cannot be the name of a command, so a user alias
+never hides a command.
+
 ## Considered options
 
 - **Short palette names beside the keymap names.** Rejected: two names for

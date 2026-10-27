@@ -2576,6 +2576,32 @@ you may be typing a regular expression: push Esc first.
 - `e` never changes recon's working directory, so `O` and the paths on the
   command line mean what they meant before.
 
+#### Aliases
+
+An `[aliases]` table in `config.toml` gives a name to a chain of command
+lines, with `;` between them. You type the name in the palette, and recon runs
+each line in order, as if you typed it:
+
+```toml
+# ~/.config/recon/config.toml
+[aliases]
+proj = "e ~/projects/recon ; explorer.focus"
+errs = "set +errors:-WARNING"
+```
+
+- **Each line is a palette line.** All of the line after the command name is
+  its argument, so `include mission auth` adds the filter `mission auth`.
+  Because `;` ends a line, a line cannot have a `;` in its argument.
+- **The list** shows each alias on a row of its own, after the built-in
+  commands, with its chain as the help.
+- **A line that fails stops the chain.** The lines before it stay done, and
+  the palette shows the error with the alias and the line that failed.
+- **recon refuses to start** when an alias has a line that names no command,
+  an empty line, or the name of another alias (an alias cannot run another
+  alias yet). It also refuses an alias with the name of a command, such as `e`
+  or `global.follow`, a number, or a name with a blank or a `;`. The message
+  names the alias.
+
 ### Reading a command's output
 
 `-` as the file reads the lines on stdin, so you can filter what a command
