@@ -89,6 +89,7 @@ An alias gives a name to a chain of command lines. Write it in the
 [aliases]
 proj = "e ~/projects/recon ; explorer.focus"
 errs = "set +errors:-WARNING"
+go = "explorer.set $1 ; explorer.focus"
 ```
 
 `:proj` runs `e ~/projects/recon`, then `explorer.focus`, as if you typed
@@ -96,12 +97,23 @@ each line. All of a line after the command name is its argument, so the
 argument can have spaces in it. It cannot have a `;` in it, because `;` ends
 the line.
 
+An alias can take arguments. `$1` to `$9` in the chain are the words that you
+type after its name, so `:go ~/projects` runs `explorer.set ~/projects`, then
+`explorer.focus`. The last argument gets all of the rest of the line, so a
+value with a space in it stays one argument. `$*` is all of the line after
+the `$<n>` arguments, and it can be empty. A `;` in a value that you type
+stays in the value. Write `$$` for a `$`. Tab completes the last argument as
+the command that takes it does: a path for `explorer.set $1`.
+
 - Each alias has its own row in the list, after the built-in commands, with
   its chain as the help.
+- With too few arguments, no line runs, and the palette names the argument
+  that is missing. Text after an alias with no arguments is an error.
 - If a line fails, the chain stops there. The lines before it stay done, and
   the palette shows the error with the alias and the line.
 - recon does not start if an alias has a line that names no command, an empty
-  line, or the name of another alias. An alias cannot run another alias yet.
+  line, the name of another alias, or `$2` but not `$1`. An alias cannot run
+  another alias yet.
   recon also does not start if the name of an alias is the name of a command
   (for example `e` or `global.follow`), a number, or a name with a space or a
   `;` in it. The message names the alias.

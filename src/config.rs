@@ -3711,6 +3711,36 @@ mod tests {
     }
 
     #[test]
+    fn an_alias_that_skips_an_argument_is_refused() {
+        // `$2` with no `$1`: the first word typed would go nowhere.
+        let err = alias_error("two", "include $2");
+        assert!(err.contains("`two`"), "{err}");
+        assert!(err.contains("$1"), "{err}");
+        // `$*` with `$1` and `$3`, but no `$2`.
+        let err = alias_error("gap", "include $1 ; context $3 ; exclude $*");
+        assert!(err.contains("$2"), "{err}");
+    }
+
+    #[test]
+    fn an_argument_in_the_place_of_a_command_name_is_refused() {
+        for chain in ["$1", "$* now", "e ~ ; $1 x"] {
+            let err = alias_error("run", chain);
+            assert!(err.contains("`run`"), "{chain:?}: {err}");
+            assert!(err.contains("command"), "{chain:?}: {err}");
+        }
+    }
+
+    #[test]
+    fn an_alias_with_arguments_is_valid() {
+        let mut config = Config::default();
+        config.aliases.insert(
+            "go".into(),
+            "explorer.set $1 ; explorer.focus ; include $*$$".into(),
+        );
+        config.check_aliases().expect("every alias is valid");
+    }
+
+    #[test]
     fn a_filetype_row_can_name_a_hand_off_with_no_views() {
         let path = fixture(
             "filetype-handoff.toml",

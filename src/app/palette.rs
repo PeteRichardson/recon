@@ -135,9 +135,13 @@ impl App<'_> {
                 word: Some(line.to_string()),
             });
         };
-        let argument = line[name.len()..].trim_start();
+        let command = crate::commands::find(&self.commands, name);
+        let mut argument = line[name.len()..].trim_start();
+        if let Some(command) = command {
+            argument = command.completed_part(argument).ok_or(None)?;
+        }
         let base = &line[..line.len() - argument.len()];
-        let takes = crate::commands::find(&self.commands, name).map(|command| command.argument);
+        let takes = command.map(|command| command.argument);
         let (base, partial, options) = match (takes, argument.split_once(':')) {
             (Some(Argument::Path), _) => self.path_choices(base, argument)?,
             (Some(Argument::View), _) => (
@@ -246,18 +250,20 @@ impl App<'_> {
             Run::Action(action) => self.run_action(action, command.argument, argument),
             Run::Alias => {
                 let (alias, chain) = (command.names[0].to_string(), command.help.to_string());
-                self.run_alias(&alias, &chain)
+                self.run_alias(&alias, &chain, argument)
             }
         }
     }
 
     /// A user alias (#557): run each command line of its chain in order, as
-    /// if it was typed in the palette. The first that fails stops the
-    /// chain, and its error names the alias and the line; the lines before
-    /// it stay done.
-    fn run_alias(&mut self, alias: &str, chain: &str) -> Result<(), String> {
-        for segment in crate::commands::segments(chain) {
-            self.run_command(segment)
+    /// if it was typed in the palette, with the `typed` arguments put in
+    /// (#558). The first that fails stops the chain, and its error names
+    /// the alias and the line; the lines before it stay done.
+    fn run_alias(&mut self, alias: &str, chain: &str, typed: &str) -> Result<(), String> {
+        let lines =
+            crate::commands::expand(chain, typed).map_err(|err| format!("{alias}: {err}"))?;
+        for segment in lines {
+            self.run_command(&segment)
                 .map_err(|err| format!("{alias}: `{segment}`: {err}"))?;
         }
         Ok(())
