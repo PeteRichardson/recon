@@ -48,7 +48,7 @@ impl App<'_> {
             A::GlobalInterrupt => self.state = AppState::Cancelled,
             A::GlobalFocusNext => self.focus_next(),
             A::GlobalFocusPrev => self.focus_prev(),
-            A::GlobalFocusExplorer => self.reveal_and_focus(Focus::Explorer),
+            A::ExplorerFocus => self.reveal_and_focus(Focus::Explorer),
             A::GlobalFocusView => self.reveal_and_focus(Focus::View),
             // A second `f` while the pane already has focus is the sticky
             // gesture: the user is staying, so no chain to return to.

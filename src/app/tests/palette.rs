@@ -264,6 +264,66 @@ fn e_leaves_the_working_directory_alone() {
     assert_eq!(std::env::current_dir().expect("cwd"), cwd);
 }
 
+// ---- `explorer.set` and `explorer.focus`, the steps of `e` (#556) -----
+
+/// `explorer.set` sets the explorer's folder as `e` does, but the focus
+/// stays where it was, and a hidden explorer stays hidden.
+#[test]
+fn explorer_set_goes_there_and_leaves_the_focus_alone() {
+    let (mut app, dir) = app_over_nested("palette_explorer_set");
+    key(&mut app, KeyCode::Char('t'));
+    key(&mut app, KeyCode::Char('E'));
+    let file = crate::path::lexical_absolute(&dir.join("sub/inner_b.log"));
+
+    run(&mut app, &format!("explorer.set {}", file.display()));
+    assert!(
+        app.prompt.is_none(),
+        "{:?}",
+        app.prompt.as_ref().map(|p| &p.error)
+    );
+    assert_eq!(
+        app.explorer.dir(),
+        crate::path::lexical_absolute(&dir.join("sub"))
+    );
+    assert_eq!(selected_name(&app), "inner_b.log");
+    assert_eq!(open_path(&app), file);
+    assert_eq!(app.focus, Focus::View);
+    assert!(
+        !app.panes.is_shown(Focus::Explorer),
+        "the explorer was shown"
+    );
+}
+
+/// `explorer.focus` shows the explorer and gives it the focus, from the
+/// palette and from a key bound to it in `[keymap]`.
+#[test]
+fn explorer_focus_shows_and_focuses_the_explorer() {
+    let mut app = app_over_file("palette_explorer_focus", "a\n");
+    key(&mut app, KeyCode::Char('t'));
+    key(&mut app, KeyCode::Char('E'));
+    run(&mut app, "explorer.focus");
+    assert!(
+        app.prompt.is_none(),
+        "{:?}",
+        app.prompt.as_ref().map(|p| &p.error)
+    );
+    assert_eq!(app.focus, Focus::Explorer);
+    assert!(
+        app.panes.is_shown(Focus::Explorer),
+        "the explorer is hidden"
+    );
+
+    rebind(&mut app, &[("explorer.focus", &["F3"])]);
+    key(&mut app, KeyCode::Char('t'));
+    key(&mut app, KeyCode::Char('E'));
+    key(&mut app, KeyCode::F(3));
+    assert_eq!(app.focus, Focus::Explorer);
+    assert!(
+        app.panes.is_shown(Focus::Explorer),
+        "the explorer is hidden"
+    );
+}
+
 // ---- `goto <n>` and `:<n>` (#520) ------------------------------------
 
 /// `goto 3` and `:3` go to line 3 of the file — the number the line

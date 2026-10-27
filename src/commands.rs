@@ -46,8 +46,10 @@ pub(crate) enum Argument {
 /// What running a command does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Run {
-    /// `e`: go to a folder or a file.
+    /// `e`: go to a folder or a file, and focus the explorer.
     Path,
+    /// `explorer.set`: go to a folder or a file; the focus stays (#556).
+    SetExplorer,
     /// `goto`: go to a line of the file.
     Line,
     /// `set`: list and enable a set.
@@ -71,6 +73,7 @@ impl Command {
         match self.run {
             Run::Action(action) => Some(action),
             Run::Path
+            | Run::SetExplorer
             | Run::Line
             | Run::EnableSet
             | Run::ListSet
@@ -119,6 +122,12 @@ fn build() -> Vec<Command> {
             argument: Argument::Path,
             help: "Go to a folder, or open a file in its folder",
             run: Run::Path,
+        },
+        Command {
+            names: vec!["explorer.set"],
+            argument: Argument::Path,
+            help: "Set the explorer's folder; the focus stays where it is",
+            run: Run::SetExplorer,
         },
         Command {
             names: vec!["goto"],
@@ -290,7 +299,8 @@ mod tests {
             (0..commands.len()).collect::<Vec<_>>()
         );
         assert_eq!(commands[0].names, ["e", "cd"]);
-        assert_eq!(commands[1].names, ["goto"]);
+        assert_eq!(commands[1].names, ["explorer.set"]);
+        assert_eq!(commands[2].names, ["goto"]);
     }
 
     #[test]

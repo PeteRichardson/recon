@@ -520,18 +520,17 @@ impl App<'_> {
                     if let Some(hint) = self.keymap.hint_for(
                         A::ExplorerParent,
                         "goes up a directory",
-                        A::GlobalFocusExplorer,
+                        A::ExplorerFocus,
                     ) {
                         self.report(&hint, false);
                     }
                     return;
                 }
                 KeyCode::Char('l') => {
-                    if let Some(hint) = self.keymap.hint_for(
-                        A::ExplorerOpen,
-                        "opens the entry",
-                        A::GlobalFocusExplorer,
-                    ) {
+                    if let Some(hint) =
+                        self.keymap
+                            .hint_for(A::ExplorerOpen, "opens the entry", A::ExplorerFocus)
+                    {
                         self.report(&hint, false);
                     }
                     return;
