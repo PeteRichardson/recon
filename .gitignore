@@ -4,3 +4,6 @@
 /docs/reviews/code-review*.md
 /.zed
 **/.DS_Store
+.env*
+/.claude/settings.local.json
+/.worktrees/

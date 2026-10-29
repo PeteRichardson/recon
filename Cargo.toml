@@ -7,9 +7,16 @@ edition = "2024"
 # recon. Keep the two in step.
 rust-version = "1.88.0"
 license = "MIT"
-# Not published to crates.io. cargo-release reads this too: without it, it
-# requires `description` and `repository` and stops with an error (#338).
+description = "A terminal file viewer built around a stack of regex filters"
+repository = "https://github.com/PeteRichardson/recon"
+# Not published to crates.io yet. crates.io ignores `[patch]`, so a published
+# recon would build against upstream `tui-textarea-2` without the fork's
+# methods and fail. Remove this line only after the fork is a dependency that
+# crates.io can resolve. cargo-release reads this line too (#338).
 publish = false
+# What `cargo package` ships. Keep `README.md`: `include_str!` reads it in
+# `src/config.rs` and the search tests.
+include = ["/src", "/tests", "/build.rs", "/README.md", "/LICENSE", "/CHANGELOG.md"]
 
 # `cargo machete` reports `tui-textarea-2` as unused. It is a false positive
 # (#94), and the obvious "fix" is to delete a dependency the build needs.
