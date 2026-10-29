@@ -1,5 +1,26 @@
 # Changelog
 
+## v0.8.0 — 2026-10-29
+
+### Breaking changes
+
+- **palette:** Add explorer.set and rename the explorer focus action
+
+### Features
+
+- **filter:** Add a require sense that keeps only matching files
+- **filter:** Add a Require section that makes require rows from a filter
+- **filter:** Refuse a ; in a set, profile or filter name
+- **palette:** Add user aliases that chain commands from [aliases]
+- **palette:** Let an alias take arguments $1 to $9 and $*
+- **keymap:** Let a [keymap] line bind a key to a user alias
+- **palette:** Add :w and :w! to write the visible lines to a file
+
+### Fixes
+
+- **filter:** Anchor a require row's pattern so long lines stay fast
+- **filter:** Apply the advanced step limit to the whole search of a line
+
 ## v0.7.0 — 2026-10-26
 
 ### Features
