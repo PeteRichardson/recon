@@ -1,7 +1,8 @@
 # Tapes for the book's GIFs
 
 Each `.tape` file is a [VHS](https://github.com/charmbracelet/vhs) script
-that records one GIF for the user guide. The GIFs go to `../src/images/`.
+that records one GIF for the user guide. The GIFs go to `../src/images/`,
+except the README's demo, which goes to `docs/images/demo.gif`.
 
 | Tape | Shows |
 | --- | --- |
@@ -10,6 +11,7 @@ that records one GIF for the user guide. The GIFs go to `../src/images/`.
 | `filter-editor.tape` | live matches, and a failed check that a pattern change corrects |
 | `command-view.tape` | a JSON file through `jq`, and a filter on the jq lines |
 | `batch.tape` | batch mode in the shell |
+| `readme-demo.tape` | the README's demo: browse, open a log, build a filter stack, and move through the matches and the files |
 
 ## Make the GIFs again
 
@@ -32,12 +34,13 @@ docs/book/tapes/make-gifs.sh --check                          # validate only
 docs/book/tapes/make-gifs.sh --captions docs/book/tapes/browsing.tape   # caption times
 ```
 
-The script builds `target/release/recon` and puts it first on `PATH`. It
-copies `data/` to `/tmp/recon-demo` and `config/` to `/tmp/recon-demo-config`,
-so that each GIF shows the same short paths on each computer. It runs VHS with
-a clean environment: only `HOME`, `PATH` and `XDG_CONFIG_HOME` (the demo
-config). Thus your own config and your `RECON_*` or `EDITOR` settings do not
-change the GIF.
+The script builds `target/gifs/release/recon` and puts it first on `PATH`.
+It builds with no git, so the keymap overlay shows the version only, and not
+the path of your checkout. It copies `data/` to `/tmp/recon-demo` and
+`config/` to `/tmp/recon-demo-config`, so that each GIF shows the same short
+paths on each computer. It runs VHS with a clean environment: only `HOME`,
+`PATH` and `XDG_CONFIG_HOME` (the demo config). Thus your own config and your
+`RECON_*` or `EDITOR` settings do not change the GIF.
 
 ## Captions
 

@@ -13,6 +13,10 @@
 
 > _Read a log the way you read it in your head: one filter at a time._
 
+<p align="center">
+  <img src="docs/images/demo.gif" alt="recon: browse files, open a log, add include and context filters, then step through the matches and the files" width="900">
+</p>
+
 `recon` is a terminal file viewer built around a **stack of regex filters** you
 build up interactively. Matching lines get colour; everything else dims — and
 `u` removes the unmatched lines entirely, keeping the original line
@@ -269,12 +273,6 @@ for the model to download.
 ---
 
 ## Quick Start
-
-<!-- 🖊 TODO: Add a demo GIF here
-<p align="center">
-  <img src="docs/images/demo.gif" alt="recon demo" width="700">
-</p>
--->
 
 ```sh
 recon /var/log/system.log
