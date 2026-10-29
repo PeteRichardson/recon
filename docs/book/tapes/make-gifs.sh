@@ -99,8 +99,11 @@ done
 $check && exit 0
 
 if [ -z "${MAKE_GIFS_NO_BUILD:-}" ]; then
-  cargo build --release --quiet
-  PATH="$ROOT/target/release:$PATH"
+  # With no git, the build stamp is the version only. The keymap overlay
+  # shows the stamp, and with git it has the path of this checkout. A target
+  # directory of its own keeps the normal build's stamp as it is.
+  GIT_DIR=/nonexistent cargo build --release --quiet --target-dir "$ROOT/target/gifs"
+  PATH="$ROOT/target/gifs/release:$PATH"
 fi
 
 rm -rf "$DEMO" "$DEMO_CONFIG"
