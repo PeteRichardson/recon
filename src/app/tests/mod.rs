@@ -564,6 +564,7 @@ mod filter_editor;
 mod filters;
 mod focus;
 mod follow;
+mod hbar;
 mod hex;
 mod hiding;
 mod jumps;

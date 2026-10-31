@@ -13,6 +13,7 @@ mod filters;
 mod finish;
 mod focus;
 mod follow;
+mod hbar;
 mod launch;
 mod layout;
 mod loading;
@@ -200,6 +201,9 @@ pub struct App<'a> {
     /// The file view's minimap (#523): whether it is on, and the last one
     /// built.
     minimap: minimap::State,
+    /// The widest visible line for the horizontal scroll bar (#579): the
+    /// last one measured and what it was measured from.
+    hbar: hbar::Width,
     /// What `--emit` asked for, or `None`. Read once, when the session ends.
     emit: Option<emit::Emit>,
     /// `-n`: prefix each emitted line with its source line number and a tab.
@@ -484,6 +488,7 @@ impl App<'_> {
             dispatched: None,
             center_jumps: config.center_jumps(),
             minimap: minimap::State::new(config.minimap()),
+            hbar: hbar::Width::default(),
             emit: config.emit,
             line_numbers: config.line_numbers,
             launcher: Box::new(launcher),

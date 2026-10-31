@@ -910,6 +910,13 @@ impl FileView<'_> {
         self.selection = selection;
     }
 
+    /// The tab width the view renders with, for column measurement that
+    /// has to agree with it: the widest-line cache (#579) costs a tab the
+    /// stop it reaches, exactly as the click mapping below does.
+    pub(crate) fn tab_length(&self) -> usize {
+        usize::from(self.textarea.tab_length())
+    }
+
     /// The buffer row and character column under a pointer `line` rows
     /// below the pane's top border and `column` cells right of its left one,
     /// or `None` below the last line (#67).

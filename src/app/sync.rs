@@ -47,6 +47,8 @@ impl App<'_> {
         // A fresh document's counters start from 0 again, so the map's key
         // could match one built for the previous file.
         self.minimap.forget();
+        // And the same for the widest-line key (#579).
+        self.hbar.forget();
     }
 
     /// Re-evaluate the filters and rebuild what the view shows.
