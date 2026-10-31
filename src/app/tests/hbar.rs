@@ -1,4 +1,5 @@
 use super::*;
+use crate::widgets::minimap;
 
 // ---- #579: the widest visible line --------------------------------
 
@@ -103,4 +104,41 @@ fn a_wide_file_draws_the_bar_and_a_fitting_one_does_not() {
         !(0..TALL.width).any(|x| (0..TALL.height).any(|y| buf[(x, y)].symbol() == "▁")),
         "60-column text fits a 120-wide screen; no bar should be drawn"
     );
+}
+
+// ---- #580 fix: the bar row and the map's columns share a block ----
+
+/// `Block::padding` replaces rather than adds, so the bar's bottom row
+/// once wiped out the minimap's right padding: the map slid over the
+/// pane's border, its grey thumb block intruding toward the filters pane,
+/// and the map was built a row taller than the area it drew into.
+fn wide_long_app(name: &str) -> App<'static> {
+    let wide = "z".repeat(400);
+    let body: String = (0..500)
+        .map(|i| format!("line {i} {}", if i % 50 == 0 { &wide } else { "x" }))
+        .collect::<Vec<_>>()
+        .join("\n");
+    app_over_file(name, &body)
+}
+
+#[test]
+fn the_bar_reserves_its_row_without_eating_the_maps_columns() {
+    let mut app = wide_long_app("hbar_map_pad");
+    focus_file_view(&mut app);
+    let buf = draw_tall(&mut app);
+    let (map, map_area) = app.view.drawn_minimap().expect("the map is drawn");
+    let (_bar, bar_area) = app.view.drawn_hbar().expect("the bar is drawn");
+
+    // The map kept all three of its columns, immediately right of the
+    // bar's, and stops at the pane's border instead of riding over it.
+    assert_eq!(map_area.width, minimap::WIDTH, "the map lost a column");
+    assert_eq!(map_area.x, bar_area.right(), "the bar and map overlap");
+    assert_eq!(map_area.bottom(), bar_area.y, "the map covers the bar's row");
+
+    // The map was built for the height the text — and the map — get, so
+    // the thumb is not one row short at the bottom.
+    assert_eq!(map.rows(), usize::from(map_area.height));
+
+    // And the bar's row beside the map stays blank, not a thumb rule.
+    assert_ne!(buf[(map_area.x, bar_area.y)].symbol(), "┃");
 }

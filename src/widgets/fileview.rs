@@ -933,6 +933,24 @@ impl FileView<'_> {
         (!self.hbar_area.is_empty()).then_some((bar, self.hbar_area))
     }
 
+    /// Whether this pane will reserve the bar's row on `area` this frame —
+    /// the same `shows()` decision `render` makes, asked beforehand so the
+    /// minimap can be built for the height the text will actually get
+    /// (#580). Assumes the one-cell borders the block builder always puts
+    /// on, as the other height maths here do.
+    pub(crate) fn reserves_bar_row(&self, area: Rect) -> bool {
+        let Some(widest) = self.content_width else {
+            return false;
+        };
+        let map_columns = u16::from(self.minimap.is_some()) * minimap::WIDTH;
+        let text = area.width.saturating_sub(2 + map_columns);
+        Hbar::new(
+            widest + usize::from(self.textarea.gutter_width()),
+            usize::from(text),
+        )
+        .shows()
+    }
+
     /// The selection to paint on the next render — see the field.
     pub(crate) fn set_selection(&mut self, selection: Option<((usize, usize), (usize, usize))>) {
         self.selection = selection;
@@ -1681,9 +1699,15 @@ impl Widget for &mut FileView<'_> {
         // The map's columns are padding inside the border, so the text,
         // the scroll and a click's column all leave them out (#523).
         let mut block = self.block(area.width);
-        if self.minimap.is_some() {
-            block = block.padding(ratatui::widgets::Padding::right(minimap::WIDTH));
-        }
+        // `Block::padding` replaces rather than adds, so everything this
+        // pane reserves — the map's columns and, below, the bar's row —
+        // must go into one call.
+        let pad_right = if self.minimap.is_some() {
+            minimap::WIDTH
+        } else {
+            0
+        };
+        block = block.padding(ratatui::widgets::Padding::right(pad_right));
         // The bar takes one row inside the border, under the text — and only
         // when something is actually cut off (#580): `shows` says no for a
         // file whose lines all fit, so short files never lose the row and the
@@ -1704,7 +1728,12 @@ impl Widget for &mut FileView<'_> {
                 height: hbar::HEIGHT,
                 ..inner_pre
             };
-            block = block.padding(ratatui::widgets::Padding::bottom(hbar::HEIGHT));
+            // Replaces the padding above — carry the map's columns along.
+            block = block.padding(ratatui::widgets::Padding {
+                bottom: hbar::HEIGHT,
+                right: pad_right,
+                ..ratatui::widgets::Padding::default()
+            });
         }
         self.textarea.set_block(block);
         // Apply any scroll requested since the last render — see

@@ -124,7 +124,6 @@ impl Widget for &mut App<'_> {
         self.set_active_pane();
         self.view.set_title_accent(self.crossing.is_some());
         self.view.set_selection(self.painted_selection());
-        self.sync_minimap(view_area);
         self.sync_hbar_width();
         // Hand the measurement to the pane: `None` (or config off) keeps the
         // row the text's (#580).
@@ -132,6 +131,13 @@ impl Widget for &mut App<'_> {
             self.hbar_widest()
         } else {
             None
+        });
+        // The bar's row comes off the text, so the map is built for the
+        // height that remains, not the height the pane is.
+        let reserved = u16::from(self.view.reserves_bar_row(view_area));
+        self.sync_minimap(Rect {
+            height: view_area.height.saturating_sub(reserved),
+            ..view_area
         });
         for (pane, pane_area) in [
             (Focus::Explorer, explorer_area),
