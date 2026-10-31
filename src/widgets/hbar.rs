@@ -68,7 +68,9 @@ impl Hbar {
         if self.content == 0 {
             return cells.max(1);
         }
-        (self.view * cells).div_ceil(self.content).clamp(1, cells.max(1))
+        (self.view * cells)
+            .div_ceil(self.content)
+            .clamp(1, cells.max(1))
     }
 
     /// The thumb's first cell for scroll offset `col`: its share of the
@@ -141,7 +143,9 @@ mod tests {
 
     /// The symbols of the bar row, one string per cell.
     fn row(buf: &Buffer, width: u16) -> Vec<String> {
-        (0..width).map(|x| buf[(x, 0)].symbol().to_string()).collect()
+        (0..width)
+            .map(|x| buf[(x, 0)].symbol().to_string())
+            .collect()
     }
 
     fn drawn(bar: &Hbar, col: usize, width: u16) -> Vec<String> {
@@ -171,9 +175,15 @@ mod tests {
     fn the_thumb_is_the_view_share_of_the_track_and_the_rest_is_track() {
         let cells = drawn(&Hbar::new(100, 20), 0, 40);
         let filled = cells.iter().filter(|s| *s == THUMB).count();
-        assert_eq!(filled, 8, "a fifth of the content on screen is a fifth of the bar");
+        assert_eq!(
+            filled, 8,
+            "a fifth of the content on screen is a fifth of the bar"
+        );
         assert_eq!(cells.iter().filter(|s| *s == TRACK).count(), 32);
-        assert!(cells[8..].iter().all(|s| s == TRACK), "the run is contiguous from the start");
+        assert!(
+            cells[8..].iter().all(|s| s == TRACK),
+            "the run is contiguous from the start"
+        );
     }
 
     #[test]
@@ -183,7 +193,10 @@ mod tests {
         let area = Rect::new(0, 0, 40, HEIGHT);
         let mut buf = Buffer::empty(area);
         bar.render(0, area, &mut buf);
-        assert!(row(&buf, 40).iter().all(|s| s == " "), "no bar where nothing is cut off");
+        assert!(
+            row(&buf, 40).iter().all(|s| s == " "),
+            "no bar where nothing is cut off"
+        );
         assert_eq!(bar.col_at(10, 40), 0, "and a click there goes nowhere");
     }
 
@@ -206,7 +219,11 @@ mod tests {
         let bar = Hbar::new(100, 20);
         let cells = drawn(&bar, 40, 1);
         assert_eq!(cells, vec![THUMB.to_string()]);
-        assert_eq!(bar.col_at(0, 1), 40, "the single cell is the middle of the range");
+        assert_eq!(
+            bar.col_at(0, 1),
+            40,
+            "the single cell is the middle of the range"
+        );
         // A wider bar is not stuck: with one thumb cell and one free cell
         // the only placements are the two ends, and the clicks reach them.
         assert_eq!(bar.col_at(0, 2), 0);
@@ -237,7 +254,11 @@ mod tests {
     fn clicks_clamp_inside_the_range() {
         let bar = Hbar::new(100, 20);
         assert_eq!(bar.col_at(0, 40), 0);
-        assert_eq!(bar.col_at(99, 40), 80, "past the last cell is the last column");
+        assert_eq!(
+            bar.col_at(99, 40),
+            80,
+            "past the last cell is the last column"
+        );
     }
 
     #[test]

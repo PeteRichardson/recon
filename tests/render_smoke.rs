@@ -429,3 +429,36 @@ fn dragging_the_divider_resizes_the_panes_on_screen() {
     assert_ne!(before, after, "divider did not move");
     assert_eq!(after, 40, "divider did not land where it was dragged");
 }
+
+/// An `App` opened on a fresh fixture named `name` showing `body`.
+fn app_on_body(name: &str, body: &str) -> App<'static> {
+    let dir = fixture(name);
+    let path = dir.join("wide.txt");
+    std::fs::write(&path, body).expect("write fixture file");
+    let config = Startup::from(Config {
+        path: Some(path.display().to_string()),
+        ..Config::default()
+    });
+    App::new(&config)
+}
+
+/// Whether the frame shows the horizontal scroll bar's track (`▁`). The
+/// minimap's filter bars reach only to `▏`, so the track is the bar's
+/// own signature.
+fn bar_track_shown(buf: &Buffer) -> bool {
+    (0..buf.area().width).any(|x| (0..buf.area().height).any(|y| buf[(x, y)].symbol() == "▁"))
+}
+
+#[test]
+fn a_long_line_draws_the_scroll_bar_and_short_lines_do_not() {
+    let wide = "z".repeat(200);
+    let mut app = app_on_body("bar_shown", &format!("{wide}\nshort line\n"));
+    let mut buf = Buffer::empty(AREA);
+    (&mut app).render(AREA, &mut buf);
+    assert!(bar_track_shown(&buf), "no scroll bar for a cut-off line");
+
+    let mut app = app_on_body("bar_hidden", "short line\nanother\n");
+    let mut buf = Buffer::empty(AREA);
+    (&mut app).render(AREA, &mut buf);
+    assert!(!bar_track_shown(&buf), "a bar was drawn for lines that fit");
+}

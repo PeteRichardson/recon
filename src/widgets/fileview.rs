@@ -1246,11 +1246,7 @@ impl FileView<'_> {
         // `set_cursor_position`, which the fork already honours.
         if matches!(
             action,
-            A::ViewLeft
-                | A::ViewRight
-                | A::ViewWordForward
-                | A::ViewLineStart
-                | A::ViewLineEnd
+            A::ViewLeft | A::ViewRight | A::ViewWordForward | A::ViewLineStart | A::ViewLineEnd
         ) {
             self.textarea.clear_scroll_col_pin();
         }

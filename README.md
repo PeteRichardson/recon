@@ -1798,6 +1798,30 @@ fewer than 40 columns inside its border. To start with it off:
 minimap = false
 ```
 
+A file whose visible lines run past the right edge gets a **horizontal
+scroll bar** on the row just above the bottom border: a `▁` track with a `█`
+thumb. The thumb is as wide as the window is of the file, and sits as far
+along as you have scrolled.
+
+- A click on the bar jumps to that column; a drag scrubs. The thumb's centre
+  stays under the pointer within about a column.
+- The drag does not move the cursor: what you yank, the word under the
+  cursor, and search-from-cursor are untouched by looking sideways. A column
+  motion — `h`, `l`, a word motion, `0`, `$` — hands the view back to the
+  cursor, and clicking text moves the cursor and the view with it. `j`, `k`
+  and the wheel keep your column: scrolling down a file leaves the sideways
+  position alone.
+- The bar speaks of what is *visible*: hide or filter away the long lines and
+  it shrinks or vanishes with them. A file that fits the width gets no bar
+  and loses no row; hex dumps, directory listings and images never have one.
+
+To start with it off:
+
+```toml
+[view]
+scrollbar = false
+```
+
 Explorer pane (`src/widgets/explorer.rs`) — its own verbs; the shared motions are tabled above:
 
 | Key(s) | Action | Name(s) |
@@ -3133,7 +3157,7 @@ needs every line's answer at once — see *Definition filters*.
   `CLI > env > file > defaults` precedence chain. The settings so far are
   `background` and `warnings` at the top level, the two editor templates
   below, `[clipboard] command`, `[filters] palette`, `[layout] hide_panes`,
-  `[stdin] delete_temp_file`, `[syntax] theme`, `[view] center_jumps`, `[view] minimap`, and the action names in
+  `[stdin] delete_temp_file`, `[syntax] theme`, `[view] center_jumps`, `[view] minimap`, `[view] scrollbar`, and the action names in
   `[keymap]`; every other key in the file is reported as an unknown key. Settings land one issue at a time
   against github issue #18; see
   `docs/specs/2026-08-22-configuration-mechanism.md` for the rules and the list

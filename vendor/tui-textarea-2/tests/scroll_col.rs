@@ -11,9 +11,7 @@ use tui_textarea::{CursorMove, CursorRenderMode, TextArea};
 /// `(b'a' + i % 26)`, so a rendered row's first character names the column
 /// the view is scrolled to.
 fn alphabet_line() -> String {
-    (0..80)
-        .map(|i| char::from(b'a' + (i % 26)))
-        .collect()
+    (0..80).map(|i| char::from(b'a' + (i % 26))).collect()
 }
 
 fn plain(lines: Vec<String>) -> TextArea<'static> {

@@ -57,7 +57,11 @@ fn wide_glyphs_cost_the_two_columns_the_renderer_gives_them() {
     let mut app = app_over_file("hbar_wide", body);
     focus_file_view(&mut app);
     draw_tall(&mut app);
-    assert_eq!(app.hbar_widest(), Some(18), "9 ideographs, two columns each");
+    assert_eq!(
+        app.hbar_widest(),
+        Some(18),
+        "9 ideographs, two columns each"
+    );
 }
 
 #[test]
@@ -133,7 +137,11 @@ fn the_bar_reserves_its_row_without_eating_the_maps_columns() {
     // bar's, and stops at the pane's border instead of riding over it.
     assert_eq!(map_area.width, minimap::WIDTH, "the map lost a column");
     assert_eq!(map_area.x, bar_area.right(), "the bar and map overlap");
-    assert_eq!(map_area.bottom(), bar_area.y, "the map covers the bar's row");
+    assert_eq!(
+        map_area.bottom(),
+        bar_area.y,
+        "the map covers the bar's row"
+    );
 
     // The map was built for the height the text — and the map — get, so
     // the thumb is not one row short at the bottom.
@@ -149,7 +157,12 @@ fn the_bar_reserves_its_row_without_eating_the_maps_columns() {
 fn press_bar(app: &mut App<'_>, area: Rect, eighths: u32) -> usize {
     let cell = (u32::from(area.width) * eighths / 8) as usize;
     assert!(
-        mouse_at(app, MouseEventKind::Down(MouseButton::Left), area.x + cell as u16, area.y),
+        mouse_at(
+            app,
+            MouseEventKind::Down(MouseButton::Left),
+            area.x + cell as u16,
+            area.y
+        ),
         "the press on the bar was not consumed"
     );
     cell
@@ -188,25 +201,52 @@ fn a_drag_tracks_the_pointer_and_leaves_the_cursor_put() {
     for eighths in [3, 5, 7] {
         let cell = (u32::from(area.width) * eighths / 8) as usize;
         assert!(
-            mouse_at(&mut app, MouseEventKind::Drag(MouseButton::Left), area.x + cell as u16, area.y),
+            mouse_at(
+                &mut app,
+                MouseEventKind::Drag(MouseButton::Left),
+                area.x + cell as u16,
+                area.y
+            ),
             "the drag was not consumed"
         );
         let col = app.view.scroll_col();
-        assert_eq!(col, bar.col_at(cell, area.width), "the drag lagged the pointer");
+        assert_eq!(
+            col,
+            bar.col_at(cell, area.width),
+            "the drag lagged the pointer"
+        );
     }
-    assert_eq!(app.view.cursor_col(), cursor_before, "a drag moved the cursor");
+    assert_eq!(
+        app.view.cursor_col(),
+        cursor_before,
+        "a drag moved the cursor"
+    );
 
     // Release ends the drag and disturbs nothing: the view keeps the
     // column, the cursor stays where it was.
     let last = app.view.scroll_col();
-    assert!(mouse_at(&mut app, MouseEventKind::Up(MouseButton::Left), area.x, area.y));
+    assert!(mouse_at(
+        &mut app,
+        MouseEventKind::Up(MouseButton::Left),
+        area.x,
+        area.y
+    ));
     assert_eq!(app.view.scroll_col(), last, "the release moved the view");
-    assert_eq!(app.view.cursor_col(), cursor_before, "the release moved the cursor");
+    assert_eq!(
+        app.view.cursor_col(),
+        cursor_before,
+        "the release moved the cursor"
+    );
 
     // And a drag after the release is a fresh press, not a live drag:
     // outside the bar it belongs to the text, so it does not scroll.
     let before = app.view.scroll_col();
-    mouse_at(&mut app, MouseEventKind::Drag(MouseButton::Left), area.x + 1, area.y);
+    mouse_at(
+        &mut app,
+        MouseEventKind::Drag(MouseButton::Left),
+        area.x + 1,
+        area.y,
+    );
     assert_eq!(app.view.scroll_col(), before, "a stale drag kept scrolling");
 }
 
@@ -224,9 +264,19 @@ fn a_column_key_after_a_drag_gives_the_view_back_to_the_cursor() {
     let cursor_before = app.view.cursor_col();
     key(&mut app, KeyCode::Char('l'));
     draw_tall(&mut app);
-    assert_eq!(app.view.cursor_col(), cursor_before + 1, "l moved the cursor oddly");
-    assert!(!app.view.is_scroll_pinned(), "l left the drag owning the column");
-    assert!(app.view.scroll_col() < scrolled, "the view stayed away from the cursor");
+    assert_eq!(
+        app.view.cursor_col(),
+        cursor_before + 1,
+        "l moved the cursor oddly"
+    );
+    assert!(
+        !app.view.is_scroll_pinned(),
+        "l left the drag owning the column"
+    );
+    assert!(
+        app.view.scroll_col() < scrolled,
+        "the view stayed away from the cursor"
+    );
 }
 
 #[test]
@@ -258,6 +308,14 @@ fn a_click_on_text_releases_the_pinned_column() {
     // A row above the bar's is text; a click there lands the cursor, and
     // the landing owns the view.
     let row = area.y - 1;
-    assert!(mouse_at(&mut app, MouseEventKind::Down(MouseButton::Left), area.x + 5, row));
-    assert!(!app.view.is_scroll_pinned(), "a text click left the drag owning the column");
+    assert!(mouse_at(
+        &mut app,
+        MouseEventKind::Down(MouseButton::Left),
+        area.x + 5,
+        row
+    ));
+    assert!(
+        !app.view.is_scroll_pinned(),
+        "a text click left the drag owning the column"
+    );
 }
