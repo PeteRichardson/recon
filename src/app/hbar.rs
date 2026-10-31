@@ -101,9 +101,6 @@ impl App<'_> {
     /// gutter is the view's to add, as it is everywhere else a column
     /// crosses that boundary. `None` when nothing has been measured: no
     /// raw-text view, or an empty file.
-    // Read by the file view's layout from #580 on; until that lands only
-    // tests reach it, hence the interim allowance, which #580 removes.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(super) fn hbar_widest(&self) -> Option<usize> {
         self.hbar.built.as_ref().map(|(_, width)| *width)
     }

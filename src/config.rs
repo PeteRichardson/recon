@@ -280,6 +280,12 @@ pub struct Config {
     #[arg(skip)]
     pub minimap: Option<bool>,
 
+    /// Whether the file view draws the horizontal scroll bar under a file
+    /// whose visible lines run past the right edge (#580). `None` is unset:
+    /// `scrollbar` resolves it. File-only, like `minimap`.
+    #[arg(skip)]
+    pub scrollbar: Option<bool>,
+
     /// Whether directory listings lead each row with a filetype icon, which
     /// needs a Nerd Font. `auto` — the default — draws them when the
     /// terminal is known to be able to; `on` always does; `off` never does.
@@ -624,6 +630,8 @@ pub struct ViewConfig {
     pub center_jumps: Option<bool>,
     /// See [`Config::minimap`].
     pub minimap: Option<bool>,
+    /// See [`Config::scrollbar`].
+    pub scrollbar: Option<bool>,
     /// See [`Config::icons`].
     pub icons: Option<crate::filetype::Setting>,
 }
@@ -1597,6 +1605,7 @@ impl Config {
         if let Some(ViewConfig {
             center_jumps,
             minimap,
+            scrollbar,
             icons,
         }) = view
         {
@@ -1605,6 +1614,9 @@ impl Config {
             }
             if let Some(minimap) = minimap {
                 self.minimap.get_or_insert(*minimap);
+            }
+            if let Some(scrollbar) = scrollbar {
+                self.scrollbar.get_or_insert(*scrollbar);
             }
             if let Some(icons) = icons {
                 self.icons.get_or_insert(*icons);
@@ -1709,6 +1721,13 @@ impl Config {
     #[must_use]
     pub fn minimap(&self) -> bool {
         self.minimap.unwrap_or(true)
+    }
+
+    /// Whether the file view draws the horizontal scroll bar — on unless the
+    /// file says otherwise. Beside `minimap` for the same reason.
+    #[must_use]
+    pub fn scrollbar(&self) -> bool {
+        self.scrollbar.unwrap_or(true)
     }
 
     /// Whether a keymap warning is shown — on unless a flag, the environment
@@ -3565,6 +3584,17 @@ mod tests {
         let mut config = Config::default();
         config.apply(&file);
         assert!(!config.minimap(), "the file did not turn it off");
+    }
+
+    #[test]
+    fn the_scroll_bar_is_on_unless_the_file_turns_it_off() {
+        assert!(Config::default().scrollbar(), "the default is on");
+
+        let path = fixture("view-scrollbar-off.toml", "[view]\nscrollbar = false\n");
+        let file = load_from(&path).expect("a valid file");
+        let mut config = Config::default();
+        config.apply(&file);
+        assert!(!config.scrollbar(), "the file did not turn it off");
     }
 
     #[test]

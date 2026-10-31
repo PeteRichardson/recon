@@ -7,6 +7,7 @@ use crate::views::Facts;
 use crate::views::read::{self, Contents};
 #[cfg(test)]
 use crate::views::read::{MAX_PREVIEW_BYTES, PREVIEW_LINES};
+use crate::widgets::hbar::{self, Hbar};
 use crate::widgets::minimap::{self, Minimap};
 use ratatui::prelude::{Buffer, Color, Modifier, Rect, Style, Widget};
 use std::path::{Path, PathBuf};
@@ -349,6 +350,17 @@ pub(crate) struct FileView<'a> {
     /// Where the map was drawn in the last frame, for a click to hit-test
     /// against. Empty when no map was drawn.
     minimap_area: Rect,
+    /// The widest column the visible lines reach, in text columns (#579),
+    /// as `App` handed it over for this frame, or `None` when the bar has
+    /// nothing to say about this content — a picture, a hex dump, a config
+    /// that switched it off.
+    content_width: Option<usize>,
+    /// The bar for this frame, as `render` built it from `content_width`.
+    /// `None` when no row was reserved for it.
+    hbar: Option<Hbar>,
+    /// Where the bar was drawn in the last frame, for a click to hit-test
+    /// against. Empty when no bar was drawn.
+    hbar_area: Rect,
 }
 
 impl FileView<'_> {
@@ -903,6 +915,22 @@ impl FileView<'_> {
     pub(crate) fn drawn_minimap(&self) -> Option<(&Minimap, Rect)> {
         let map = self.minimap.as_deref()?;
         (!self.minimap_area.is_empty()).then_some((map, self.minimap_area))
+    }
+
+    /// The widest column the visible lines reach, for the bar the next
+    /// render may draw — see `content_width`. `None` says the bar has
+    /// nothing to say, and the row stays the text's.
+    pub(crate) fn set_content_width(&mut self, widest: Option<usize>) {
+        self.content_width = widest;
+    }
+
+    /// The bar the last render drew, and where — for the pointer to hit
+    /// against (#581).
+    // The mouse code lands in #581; until then only tests keep it honest.
+    #[allow(dead_code)] // remove with #581
+    pub(crate) fn drawn_hbar(&self) -> Option<(Hbar, Rect)> {
+        let bar = self.hbar?;
+        (!self.hbar_area.is_empty()).then_some((bar, self.hbar_area))
     }
 
     /// The selection to paint on the next render — see the field.
@@ -1601,6 +1629,10 @@ impl Widget for &mut FileView<'_> {
         // Recorded for the *next* `apply_view`, which runs outside render and
         // has no area of its own to size a window against. See `last_height`.
         self.last_height = Some(area.height);
+        // The bar is a text-view fixture: rebuilt below for text, and left
+        // nothing for a picture, so a click is never aimed at last view's bar.
+        self.hbar = None;
+        self.hbar_area = Rect::ZERO;
         if self.picture.is_some() {
             let block = self.block(area.width);
             let inner = block.inner(area);
@@ -1652,6 +1684,28 @@ impl Widget for &mut FileView<'_> {
         if self.minimap.is_some() {
             block = block.padding(ratatui::widgets::Padding::right(minimap::WIDTH));
         }
+        // The bar takes one row inside the border, under the text — and only
+        // when something is actually cut off (#580): `shows` says no for a
+        // file whose lines all fit, so short files never lose the row and the
+        // border closes over the text as snugly as before. The gutter counts
+        // toward the content here, as it does everywhere a column crosses
+        // this boundary (#579): the bar speaks in screen columns.
+        let inner_pre = block.inner(area);
+        let bar = self.content_width.map(|widest| {
+            Hbar::new(
+                widest + usize::from(self.textarea.gutter_width()),
+                usize::from(inner_pre.width),
+            )
+        });
+        if bar.is_some_and(|bar| bar.shows()) {
+            self.hbar = bar;
+            self.hbar_area = Rect {
+                y: inner_pre.bottom() - 1,
+                height: hbar::HEIGHT,
+                ..inner_pre
+            };
+            block = block.padding(ratatui::widgets::Padding::bottom(hbar::HEIGHT));
+        }
         self.textarea.set_block(block);
         // Apply any scroll requested since the last render — see
         // `scroll_cursor_to_row` and `apply_pending_scroll` — only now, once
@@ -1672,7 +1726,21 @@ impl Widget for &mut FileView<'_> {
         (&self.textarea).render(area, buf);
         self.viewport_primed = true;
         self.viewport_height = u16::try_from(inner_height).unwrap_or(u16::MAX);
+        self.render_hbar(area, buf);
         self.render_minimap(area, buf);
+    }
+}
+
+impl FileView<'_> {
+    /// Draw the bar into the row `render` reserved for it, at the column
+    /// the text is showing. The textarea has just rendered, so its scroll
+    /// is this frame's, and the thumb sits where the text is (#580).
+    fn render_hbar(&mut self, _area: Rect, buf: &mut Buffer) {
+        let Some(bar) = self.hbar else {
+            return;
+        };
+        let col = usize::from(self.textarea.scroll_top().1);
+        bar.render(col, self.hbar_area, buf);
     }
 }
 
@@ -1978,6 +2046,44 @@ mod tests {
             })
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    #[test]
+    fn long_lines_reserve_a_bar_row_and_short_files_keep_theirs() {
+        // 40x6: rows 0 and 5 are border, 1..=4 inner, row 4 the bar's.
+        let mut view = view_of("hbar_reserve.txt", &format!("{}\nshort\n", "x".repeat(120)));
+        view.set_content_width(Some(120));
+        let rows: Vec<String> = rendered(&mut view).lines().map(str::to_string).collect();
+        assert!(
+            rows[4].contains('█') && rows[4].contains('▁'),
+            "no bar on the reserved row:\n{}",
+            rows.join("\n")
+        );
+        // The text lost exactly that row: only three inner rows carry line
+        // numbers, and the bar row covers the gutter with the rest.
+        assert!(rows[..4].concat().contains('2'));
+        assert!(!rows[4].contains('4'), "the bar row still shows text");
+    }
+
+    #[test]
+    fn a_file_that_fits_never_loses_the_row() {
+        let mut view = view_of("hbar_fits.txt", "ab\n");
+        view.set_content_width(Some(2));
+        let out = rendered(&mut view);
+        assert!(
+            !out.contains('▁') && !out.contains('█'),
+            "a bar was drawn for content that fits:\n{out}"
+        );
+    }
+
+    #[test]
+    fn no_measurement_draws_no_bar() {
+        let mut view = view_of("hbar_none.txt", "ab\n");
+        let out = rendered(&mut view);
+        assert!(
+            !out.contains('▁') && !out.contains('█'),
+            "a bar was drawn with nothing measured:\n{out}"
+        );
     }
 
     #[test]

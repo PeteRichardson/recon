@@ -77,3 +77,30 @@ fn a_short_file_reports_its_longest_line() {
     draw_tall(&mut app);
     assert_eq!(app.hbar_widest(), Some(6));
 }
+
+#[test]
+fn a_wide_file_draws_the_bar_and_a_fitting_one_does_not() {
+    let wide = "y".repeat(400);
+    let mut app = app_over_file("hbar_drawn_wide", &format!("{wide}\nshort\n"));
+    focus_file_view(&mut app);
+    let buf = draw_tall(&mut app);
+    let track_rows = (0..TALL.height).filter(|&y| {
+        (0..TALL.width).any(|x| {
+            let s = buf[(x, y)].symbol();
+            s == "▁" || s == "█"
+        })
+    });
+    assert_eq!(
+        track_rows.count(),
+        1,
+        "exactly one bar row expected across the screen"
+    );
+
+    let mut app = app_over_file("hbar_drawn_fit", &varied_body());
+    focus_file_view(&mut app);
+    let buf = draw_tall(&mut app);
+    assert!(
+        !(0..TALL.width).any(|x| (0..TALL.height).any(|y| buf[(x, y)].symbol() == "▁")),
+        "60-column text fits a 120-wide screen; no bar should be drawn"
+    );
+}

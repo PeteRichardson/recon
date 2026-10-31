@@ -126,6 +126,13 @@ impl Widget for &mut App<'_> {
         self.view.set_selection(self.painted_selection());
         self.sync_minimap(view_area);
         self.sync_hbar_width();
+        // Hand the measurement to the pane: `None` (or config off) keeps the
+        // row the text's (#580).
+        self.view.set_content_width(if self.scrollbar {
+            self.hbar_widest()
+        } else {
+            None
+        });
         for (pane, pane_area) in [
             (Focus::Explorer, explorer_area),
             (Focus::View, view_area),

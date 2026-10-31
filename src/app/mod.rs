@@ -204,6 +204,10 @@ pub struct App<'a> {
     /// The widest visible line for the horizontal scroll bar (#579): the
     /// last one measured and what it was measured from.
     hbar: hbar::Width,
+    /// Whether the file view draws the horizontal scroll bar (`[view]
+    /// scrollbar`, #580) — the switch for the whole feature, off stops
+    /// the measurement being handed to the pane at all.
+    scrollbar: bool,
     /// What `--emit` asked for, or `None`. Read once, when the session ends.
     emit: Option<emit::Emit>,
     /// `-n`: prefix each emitted line with its source line number and a tab.
@@ -489,6 +493,7 @@ impl App<'_> {
             center_jumps: config.center_jumps(),
             minimap: minimap::State::new(config.minimap()),
             hbar: hbar::Width::default(),
+            scrollbar: config.scrollbar(),
             emit: config.emit,
             line_numbers: config.line_numbers,
             launcher: Box::new(launcher),
