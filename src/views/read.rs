@@ -277,7 +277,27 @@ pub(crate) fn read_preview_with_caps(
 
 /// A command's output as lines (#457), decoded as raw text is: lossy
 /// UTF-8, one line for each `\n`. `mime` is the command's `output`.
-pub(crate) fn command_output(output: &[u8], mime: Option<&str>) -> Contents {
+///
+/// `align` (#575) is the command's `align` key: the output is read as CSV
+/// and shown with its columns lined up, one line for each record. The
+/// delimiter comes from `mime`: `text/tab-separated-values` aligns on
+/// tabs, anything else on commas.
+pub(crate) fn command_output(output: &[u8], mime: Option<&str>, align: bool) -> Contents {
+    if align {
+        let delimiter = crate::csv_fmt::delimiter_for_mime(mime);
+        let text = String::from_utf8_lossy(output);
+        return Contents {
+            lines: Arc::new(crate::csv_fmt::align(
+                &text,
+                delimiter,
+                crate::csv_fmt::SAMPLE_RECORDS,
+            )),
+            text: true,
+            mime: mime.map(str::to_string),
+            bytes: output.len() as u64,
+            ..Contents::default()
+        };
+    }
     let mut reader = Cursor::new(output);
     let mut lines = Vec::new();
     let mut buf = Vec::new();
@@ -291,6 +311,27 @@ pub(crate) fn command_output(output: &[u8], mime: Option<&str>) -> Contents {
         mime: mime.map(str::to_string),
         bytes: output.len() as u64,
         ..Contents::default()
+    }
+}
+
+/// The lines of a raw read re-flowed as an aligned CSV table (#575): one
+/// line for each record, columns padded into line.
+///
+/// Anything that is not the file's own text is returned as it came: a hex
+/// dump, a directory, a message standing in for a file. A preview cut
+/// mid-record shows that record's fields so far, as it does raw.
+pub(crate) fn csv_aligned(contents: Contents, delimiter: u8) -> Contents {
+    if !contents.text || contents.hex || contents.directory || contents.fallback.is_some() {
+        return contents;
+    }
+    let text = contents.lines.join("\n");
+    Contents {
+        lines: Arc::new(crate::csv_fmt::align(
+            &text,
+            delimiter,
+            crate::csv_fmt::SAMPLE_RECORDS,
+        )),
+        ..contents
     }
 }
 

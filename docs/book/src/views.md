@@ -11,6 +11,7 @@ A *view* is one way to show a file. The built-in views are:
 | View | Shows |
 | --- | --- |
 | `raw` | the text of the file |
+| `table` | a CSV file as aligned columns |
 | `hex` | a hex dump |
 | `image` | the file as a picture |
 | `quicklook` | on macOS, a Quick Look preview |
@@ -44,7 +45,21 @@ views = ["jq", "raw", "hex"]
 
 The program is yours, not part of recon. Thus a command view makes recon
 extensible without a plugin system: each program that writes text, or a
-picture, can become a view.
+picture, can become a view. A command that writes CSV can line its columns
+up too, with `align = true` beside `output = "text/csv"`.
+
+## Aligned columns
+
+`table` reads a CSV file with the real CSV grammar — quotes, commas inside
+fields, new lines inside quoted fields — and shows one aligned line per
+record, `xsv table` style. No borders and no wrapped cells, so filters and
+search work on the rows like on any other view. It is opt-in:
+
+```toml
+[[filetype]]
+glob  = "*.{csv,tsv}"
+views = ["table", "raw"]
+```
 
 ## Filters operate on the view
 

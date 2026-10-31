@@ -37,6 +37,10 @@ pub struct Command {
     /// Whether the command runs for the files near the selection before the
     /// user reaches them. Off for a command that is slow or has side effects.
     pub prefetch: bool,
+    /// Whether the output is read as CSV and shown with its columns
+    /// aligned (#575). For a command whose `output` is `text/csv` or
+    /// `text/tab-separated-values`; a picture ignores it.
+    pub align: bool,
 }
 
 #[cfg(test)]
@@ -48,6 +52,7 @@ impl Command {
             output: None,
             timeout: Duration::from_secs(5),
             prefetch: true,
+            align: false,
         }
     }
 
@@ -63,6 +68,11 @@ impl Command {
 
     pub(crate) fn with_timeout(mut self, timeout: Duration) -> Self {
         self.timeout = timeout;
+        self
+    }
+
+    pub(crate) fn with_align(mut self, align: bool) -> Self {
+        self.align = align;
         self
     }
 }
@@ -113,6 +123,7 @@ impl Command {
             output: Some("image/png".to_string()),
             timeout: QUICK_LOOK_TIMEOUT,
             prefetch: true,
+            align: false,
         })
     }
 }
@@ -125,13 +136,14 @@ struct Table {
     output: Option<String>,
     timeout: Option<f64>,
     prefetch: Option<bool>,
+    align: Option<bool>,
 }
 
 impl<'de> Deserialize<'de> for Command {
-    /// An argv array, or a table with `argv`, `output`, `timeout` and
-    /// `prefetch`. A hand-written visitor rather than `untagged`, so that a
-    /// typo in a table key is named in the error, not lost in "did not match
-    /// any variant".
+    /// An argv array, or a table with `argv`, `output`, `timeout`,
+    /// `prefetch` and `align`. A hand-written visitor rather than
+    /// `untagged`, so that a typo in a table key is named in the error,
+    /// not lost in "did not match any variant".
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,
@@ -154,6 +166,7 @@ impl<'de> Deserialize<'de> for Command {
                     output: None,
                     timeout: None,
                     prefetch: None,
+                    align: None,
                 })
             }
 
@@ -182,6 +195,7 @@ impl<'de> Deserialize<'de> for Command {
             output: table.output,
             timeout,
             prefetch: table.prefetch.unwrap_or(true),
+            align: table.align.unwrap_or(false),
         })
     }
 }
@@ -549,7 +563,8 @@ mod tests {
     fn a_command_is_an_argv_or_a_table() {
         let parsed = commands(
             "[commands]\njq = [\"jq\", \".\"]\n\
-             summary = { argv = [\"s\", \"{file}\"], output = \"text/markdown\", timeout = 30, prefetch = false }\n",
+             summary = { argv = [\"s\", \"{file}\"], output = \"text/markdown\", timeout = 30, prefetch = false }\n\
+             csv = { argv = [\"transmcap\", \"{file}\"], output = \"text/csv\", align = true }\n",
         )
         .unwrap();
         assert_eq!(
@@ -560,18 +575,54 @@ mod tests {
         assert_eq!(summary.output.as_deref(), Some("text/markdown"));
         assert_eq!(summary.timeout, Duration::from_secs(30));
         assert!(!summary.prefetch);
+        assert!(!summary.align);
+        let csv = &parsed.0["csv"];
+        assert!(csv.align, "`align = true` was not read");
+        assert!(!parsed.0["jq"].align, "an argv command does not align");
     }
 
     #[test]
     fn a_bad_command_is_refused_with_its_reason() {
         let reserved = commands("[commands]\nhex = [\"xxd\"]\n").unwrap_err();
         assert!(reserved.to_string().contains("built-in view"), "{reserved}");
+        let table = commands("[commands]\ntable = [\"xsv\", \"table\"]\n").unwrap_err();
+        assert!(table.to_string().contains("built-in view"), "{table}");
         let empty = commands("[commands]\njq = []\n").unwrap_err();
         assert!(empty.to_string().contains("names no program"), "{empty}");
         let typo = commands("[commands]\njq = { argv = [\"jq\"], timout = 3 }\n").unwrap_err();
         assert!(typo.to_string().contains("timout"), "{typo}");
         let zero = commands("[commands]\njq = { argv = [\"jq\"], timeout = 0 }\n").unwrap_err();
         assert!(zero.to_string().contains("above 0"), "{zero}");
+    }
+
+    /// `align = true` reads the output as CSV and lines the columns up
+    /// (#575), one line for each record even when a quoted field holds a
+    /// comma or a new line.
+    #[test]
+    fn an_aligned_command_output_lands_in_columns() {
+        let csv = "name,qty\nwidget,3\n\"abacus,x\",120\n";
+        let aligned = crate::views::read::command_output(csv.as_bytes(), Some("text/csv"), true);
+        assert_eq!(
+            *aligned.lines,
+            ["name    qty", "widget  3", "abacus,x  120"]
+        );
+        assert!(aligned.text);
+        assert_eq!(aligned.mime.as_deref(), Some("text/csv"));
+
+        let raw = crate::views::read::command_output(csv.as_bytes(), Some("text/csv"), false);
+        assert_eq!(*raw.lines, ["name,qty", "widget,3", "\"abacus,x\",120"]);
+    }
+
+    /// `text/tab-separated-values` aligns on tabs.
+    #[test]
+    fn an_aligned_tsv_output_lands_in_columns() {
+        let tsv = "a\tb\nlong\tx\n";
+        let aligned = crate::views::read::command_output(
+            tsv.as_bytes(),
+            Some("text/tab-separated-values"),
+            true,
+        );
+        assert_eq!(*aligned.lines, ["a   b", "long  x"]);
     }
 
     /// Every run is in the log (#490): the argv, how long it ran and how it

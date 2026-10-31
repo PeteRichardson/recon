@@ -521,11 +521,11 @@ fn tab_after_view_gives_the_cycle_first_then_the_other_views() {
     key(&mut app, KeyCode::Char(':'));
     typed(&mut app, "view ");
     let mut lines = Vec::new();
-    for _ in 0..3 {
+    for _ in 0..4 {
         key(&mut app, KeyCode::Tab);
         lines.push(prompt(&app).pattern.clone());
     }
-    assert_eq!(lines, ["view raw", "view hex", "view image"]);
+    assert_eq!(lines, ["view raw", "view hex", "view table", "view image"]);
     key(&mut app, KeyCode::Esc);
 
     key(&mut app, KeyCode::Char(':'));

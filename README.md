@@ -1893,6 +1893,7 @@ and naming one directly is refused with `not a regular file`.
 ### Views
 
 A **view** is one way the file view shows a file: `raw` (the file's text),
+`table` (a CSV file as aligned columns — see [The table view](#the-table-view)),
 `hex` (a hex dump), `image` (the file as a picture — see
 [The image view](#the-image-view)), or a **command view** (the output of a
 program that you name in the config — see [Command views](#command-views)). Each file has a **view cycle**: an ordered list of views.
@@ -1932,7 +1933,7 @@ views = ["hex"]
 
 The first row that matches a file and has `views` gives its whole cycle;
 two cycles do not merge. Your rows go before the built-in rows in the table
-above. `views` names one or more of `raw`, `hex`, `image`, `quicklook` and
+above. `views` names one or more of `raw`, `table`, `hex`, `image`, `quicklook` and
 the names in `[commands]`, in the order that `-` steps through them, and a view that is
 not in the list is never shown.
 
@@ -2025,6 +2026,7 @@ A command is an argv array, or a table with these keys:
 | `output` | `text/plain` | The MIME type of the output. recon colours the output with the grammar for that type (`application/json` gets JSON colours). With no `output`, the grammar comes from the file's name, as for `raw`. |
 | `timeout` | `2` | Seconds. After this time, recon stops the command and the view fails. |
 | `prefetch` | `true` | `false` runs the command only for the file that you are on, never for the files near it. Use it for a command that is slow or that has side effects. |
+| `align` | `false` | Reads the output as CSV and shows it with its columns lined up, one line for each record. The delimiter comes from `output`: `text/tab-separated-values` aligns on tabs, anything else on commas. See [The table view](#the-table-view). |
 
 These placeholders are filled in, in any argument:
 
@@ -2054,7 +2056,7 @@ glob  = "*.mmd"
 views = ["mmd", "raw"]
 ```
 
-`raw`, `hex`, `image` and `quicklook` are the names of built-in views, and a
+`raw`, `table`, `hex`, `image` and `quicklook` are the names of built-in views, and a
 command cannot use one. A command whose program is not on `PATH` gives one
 warning at startup, and the cycles skip it. So does `quicklook` on a system
 with no Quick Look.
@@ -2155,6 +2157,58 @@ A dump costs about six times the file's own size in memory, so a hex view
 reads at most the first 16 MiB of a file and ends with a line that says how
 many bytes it left out. The explorer's preview reads 50,000 lines of dump —
 800 KB — and the rest when you use the view, as it does for text.
+
+#### The table view
+
+`table` shows a CSV file as aligned columns, so you can read a table row by
+row:
+
+```
+name      qty  when
+widget    3    2023-10-22
+abacus,x  120  2023-10-23
+```
+
+recon reads the file as CSV — not by splitting on commas — so a quoted
+field with a comma in it stays one cell, as does a quoted field with a new
+line in it. Each record becomes one line: a new line inside a quoted field
+becomes a space. Blank lines are not records and do not show. The output is
+plain text — no borders, no wrapped cells — so filters, `/`, yank and `:w`
+work on it as on any other view, and the CSV grammar still colours the
+fields.
+
+Column widths come from the cells. They are computed from the first 1,000
+records, so a preview and a full read of the same file agree on them. A
+cell wider than its column goes past it rather than being cut — a cut cell
+hides data from the filters — but the padding stops at 64 columns, so one
+enormous cell cannot push every column after it off screen.
+
+This is opt-in: with no config, recon shows CSV as plain text. A
+`[[filetype]]` row puts the table view in the cycle. `.tsv` and `.tab`
+files align on tabs; every other name on commas. `:view table` works on
+any file without a row:
+
+```toml
+[[filetype]]
+glob  = "*.{csv,tsv}"
+views = ["table", "raw"]
+```
+
+A record that spans several lines of the file is one line here, so the
+gutter shows the position in the aligned view, not the line in the file.
+`raw` stays the view for the file's own line numbers.
+
+A command view whose output is CSV aligns the same way, with the command's
+`align` key:
+
+```toml
+[commands]
+mcap = { argv = ["transmcap", "{file}"], output = "text/csv", align = true }
+
+[[filetype]]
+glob  = "*.mcap"
+views = ["mcap", "hex"]
+```
 
 ### The directory listing in the view
 

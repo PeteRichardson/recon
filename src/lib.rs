@@ -16,6 +16,7 @@ pub mod batch;
 pub mod clipboard;
 mod commands;
 pub mod config;
+mod csv_fmt;
 pub mod document;
 pub mod editor;
 pub mod emit;

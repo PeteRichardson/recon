@@ -24,6 +24,8 @@ use std::time::{Duration, Instant, SystemTime};
 pub enum View {
     /// The file's own text.
     Raw,
+    /// The file's own text as an aligned CSV table (#575).
+    Table,
     /// The file as a hex dump (#242).
     Hex,
     /// The file as a picture (#458).
@@ -34,13 +36,14 @@ pub enum View {
 
 /// The names of the built-in views, which a command cannot take.
 /// `quicklook` is a built-in command, on macOS only (#458).
-pub(crate) const BUILT_IN: [&str; 4] = ["raw", "hex", "image", "quicklook"];
+pub(crate) const BUILT_IN: [&str; 5] = ["raw", "table", "hex", "image", "quicklook"];
 
 impl View {
     /// The built-in view called `name`, if this version can show it.
     pub(crate) fn built_in(name: &str) -> Option<Self> {
         match name {
             "raw" => Some(Self::Raw),
+            "table" => Some(Self::Table),
             "hex" => Some(Self::Hex),
             "image" => Some(Self::Image),
             _ => None,
@@ -273,7 +276,11 @@ fn read_view(job: &Job, view: View) -> (Contents, Extent) {
             if command.is_image() {
                 read::image_bytes(&output)
             } else {
-                Ok(read::command_output(&output, command.output.as_deref()))
+                Ok(read::command_output(
+                    &output,
+                    command.output.as_deref(),
+                    command.align,
+                ))
             }
         });
         return match contents {
@@ -286,6 +293,16 @@ fn read_view(job: &Job, view: View) -> (Contents, Extent) {
             Ok(contents) => (contents, Extent::Full),
             Err(reason) => fall_back(job, reason),
         };
+    }
+    if view == View::Table {
+        // The records are the file's own text, so the read is raw's and
+        // only the lines are reformatted: a binary file asked for as a
+        // table still falls back to hex, as raw does.
+        let (contents, extent) = read_view(job, View::Raw);
+        return (
+            read::csv_aligned(contents, crate::csv_fmt::delimiter_for_path(path)),
+            extent,
+        );
     }
     let contents = match job.extent {
         Extent::Preview => {
@@ -420,6 +437,73 @@ pub(crate) mod tests {
         let records = capture::here_at(log::Level::Trace, "views_log_prefetch.txt");
         assert_eq!(records.len(), 1, "{:?}", capture::here());
         assert!(records[0].contains(", prefetch, no cache,"), "{records:?}");
+    }
+
+    /// The table view aligns a CSV file into columns (#575): one line per
+    /// record, widths from the file's own cells.
+    #[test]
+    fn the_table_view_aligns_a_csv_file() {
+        let csv = "name,qty\nwidget,3\n\"abacus,x\",120\n";
+        let file = fixture_file("views_run_table.csv", csv.as_bytes());
+        let table = Table::new(&[FileType::with_views("*.csv", &[View::Table, View::Raw])]);
+
+        let done = run(&job(&file, table), None);
+
+        assert_eq!(done.shown.map(|s| s.view), Some(View::Table));
+        assert_eq!(
+            *done.contents.lines,
+            ["name    qty", "widget  3", "abacus,x  120"]
+        );
+        assert!(done.contents.text);
+        assert!(done.contents.fallback.is_none());
+    }
+
+    /// A binary file asked for as a table has no text to align: raw's
+    /// fallback applies, as it does for a raw row on the same file.
+    #[test]
+    fn a_binary_file_asked_for_as_a_table_falls_back_to_hex() {
+        let binary = fixture_file("views_run_table_binary.bin", b"a\0b");
+        let table = Table::new(&[FileType::with_views("*.bin", &[View::Table])]);
+
+        let done = run(&job(&binary, table), None);
+
+        assert!(done.contents.hex);
+        assert_eq!(done.contents.fallback.as_deref(), Some("binary file"));
+    }
+
+    /// The table view reads a `.tsv` on tabs.
+    #[test]
+    fn the_table_view_aligns_a_tsv_file_on_tabs() {
+        let tsv = "a\tb\nlong\tx\n";
+        let file = fixture_file("views_run_table.tsv", tsv.as_bytes());
+        let table = Table::new(&[FileType::with_views("*.tsv", &[View::Table])]);
+
+        let done = run(&job(&file, table), None);
+
+        assert_eq!(*done.contents.lines, ["a   b", "long  x"]);
+    }
+
+    /// A command whose CSV output is aligned lines up its columns too
+    /// (#575), and the view still carries the command's `output` grammar.
+    #[test]
+    fn a_command_view_with_align_shows_an_aligned_table() {
+        let dir = fixture_dir("views_run_table_command");
+        let file = dir.join("a.cmd");
+        std::fs::write(&file, "x\n").unwrap();
+        let script = "printf 'name,qty\\nwidget,3\\nabacus,120\\n'";
+        let command = command::Command::of(&["sh", "-c", script])
+            .with_output("text/csv")
+            .with_align(true);
+        let commands = command::Commands::of([("cmd", command)]);
+        let row = FileType::with_view_names("*.cmd", &["cmd"]);
+        let done = run(&job(&file, Table::build(&[row], &commands).0), None);
+
+        assert_eq!(done.shown.map(|s| s.view), Some(View::Command(0)));
+        assert_eq!(
+            *done.contents.lines,
+            ["name  qty", "widget  3", "abacus  120"]
+        );
+        assert_eq!(done.contents.mime.as_deref(), Some("text/csv"));
     }
 
     #[test]

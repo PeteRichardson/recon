@@ -406,7 +406,7 @@ impl Table {
     pub(crate) fn command(&self, view: View) -> Option<&Command> {
         match view {
             View::Command(index) => Some(&self.commands[index].1),
-            View::Raw | View::Hex | View::Image => None,
+            View::Raw | View::Table | View::Hex | View::Image => None,
         }
     }
 
@@ -414,6 +414,7 @@ impl Table {
     pub(crate) fn view_name(&self, view: View) -> &str {
         match view {
             View::Raw => "raw",
+            View::Table => "table",
             View::Hex => "hex",
             View::Image => "image",
             View::Command(index) => &self.commands[index].0,
@@ -742,6 +743,17 @@ mod tests {
     fn a_user_row_does_not_read_the_file() {
         let table = Table::new(&[row("*.json", &[View::Hex])]);
         table.row_for(Path::new("a.json"), || panic!("read the head"));
+    }
+
+    /// A row can name `table`, the built-in aligned view (#575).
+    #[test]
+    fn a_row_can_name_the_table_view() {
+        let (table, warnings) = Table::build(
+            &[row("*.csv", &[View::Table, View::Raw])],
+            &Commands::default(),
+        );
+        assert_eq!(view_names(&table, "a.csv", false), ["table", "raw"]);
+        assert!(warnings.is_empty(), "{warnings:?}");
     }
 
     #[test]

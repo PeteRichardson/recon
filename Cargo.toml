@@ -220,6 +220,14 @@ mime_guess = "2.0.5"
 # `image`'s own JPEG decoder, `zune-jpeg`, has no scaled decode. Pure Rust;
 # `default-features = false` leaves out `rayon`.
 jpeg-decoder = { version = "0.3", default-features = false }
+# The CSV grammar for the aligned table view (#575): quotes, commas inside
+# fields and new lines inside quoted fields. Splitting on `,` gets all three
+# wrong. BurntSushi's, as `tabwriter`'s author's method (pad each cell to
+# the column width) is implemented in `src/csv_fmt.rs` instead of the
+# `tabwriter` crate: `tabwriter` sizes its columns per flush, and the view
+# wants widths from a fixed sample so a preview and a full read of the same
+# file agree on them.
+csv = "1.4.0"
 
 # Pattern generation in the filter editor (#319). Off by default, so a plain
 # `cargo build` has no new dependency on any platform. `fm-rs` compiles a
