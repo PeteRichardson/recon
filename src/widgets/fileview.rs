@@ -926,11 +926,32 @@ impl FileView<'_> {
 
     /// The bar the last render drew, and where — for the pointer to hit
     /// against (#581).
-    // The mouse code lands in #581; until then only tests keep it honest.
-    #[allow(dead_code)] // remove with #581
     pub(crate) fn drawn_hbar(&self) -> Option<(Hbar, Rect)> {
         let bar = self.hbar?;
         (!self.hbar_area.is_empty()).then_some((bar, self.hbar_area))
+    }
+
+    /// Scroll the view sideways to `col` — a screen column including the
+    /// gutter, as the bar reports it — without moving the cursor (#581):
+    /// the offset is the fork's pinned scroll (#577), owned by this pane,
+    /// so what the user yanks or searches from is untouched.
+    pub(crate) fn scroll_to_col(&mut self, col: usize) {
+        let col = u16::try_from(col).unwrap_or(u16::MAX);
+        self.textarea.set_scroll_col(col);
+    }
+
+    /// The column the view is showing, in screen columns — what the thumb
+    /// rides on (#580), and what a scroll came from.
+    pub(crate) fn scroll_col(&self) -> usize {
+        usize::from(self.textarea.scroll_top().1)
+    }
+
+    /// Whether a sideways scroll still owns the view's column, as opposed
+    /// to the cursor leading it. Asked only by tests for now: the app
+    /// itself just lets the pin fall where the two release paths put it.
+    #[cfg(test)]
+    pub(crate) fn is_scroll_pinned(&self) -> bool {
+        self.textarea.is_scroll_col_pinned()
     }
 
     /// Whether this pane will reserve the bar's row on `area` this frame —
@@ -1218,6 +1239,21 @@ impl FileView<'_> {
     /// — `set_highlight` — is called from `App::apply_view`, not from here.
     pub(crate) fn perform(&mut self, action: crate::keymap::ActionId) {
         use crate::keymap::ActionId as A;
+        // A column motion is the cursor answering "where am I?" — the view
+        // goes back to following it, dropping a drag's pinned offset (#581).
+        // Vertical motions keep the offset: `j` and `k` hold the column, as
+        // the wheel does, and clicking text releases it through
+        // `set_cursor_position`, which the fork already honours.
+        if matches!(
+            action,
+            A::ViewLeft
+                | A::ViewRight
+                | A::ViewWordForward
+                | A::ViewLineStart
+                | A::ViewLineEnd
+        ) {
+            self.textarea.clear_scroll_col_pin();
+        }
         match action {
             A::ViewLeft => self.textarea.move_cursor(CursorMove::Back),
             A::ViewDown => self.textarea.move_cursor(CursorMove::Down),
@@ -1768,7 +1804,7 @@ impl FileView<'_> {
         let Some(bar) = self.hbar else {
             return;
         };
-        let col = usize::from(self.textarea.scroll_top().1);
+        let col = self.scroll_col();
         bar.render(col, self.hbar_area, buf);
     }
 }

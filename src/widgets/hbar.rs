@@ -106,8 +106,6 @@ impl Hbar {
     /// text moves with the pointer during a drag instead of jumping by a
     /// thumb's width. Clamped to the scrollable range like the setter it
     /// feeds.
-    // The pointer reaches it in #581; until then only tests call it.
-    #[allow(dead_code)] // remove with #581
     pub(crate) fn col_at(&self, cell: usize, cells: u16) -> usize {
         let cells = usize::from(cells).max(1);
         let max = self.max_scroll();

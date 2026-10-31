@@ -32,6 +32,9 @@ struct Key {
 #[derive(Debug, Default)]
 pub(super) struct Width {
     built: Option<(Key, usize)>,
+    /// Whether the pointer is holding the bar down (#581), kept beside the
+    /// bar's own state because it is the same piece of furniture.
+    pub(super) dragging: bool,
     #[cfg(test)]
     pub(super) builds: usize,
 }
@@ -103,5 +106,26 @@ impl App<'_> {
     /// raw-text view, or an empty file.
     pub(super) fn hbar_widest(&self) -> Option<usize> {
         self.hbar.built.as_ref().map(|(_, width)| *width)
+    }
+
+    /// A press on the bar: the drag begins, and the view jumps to the
+    /// column under the pointer (#581). `cell` counts from the bar's left
+    /// edge, `cells` is the bar's width.
+    pub(super) fn press_hbar(&mut self, cell: usize, cells: usize) {
+        self.hbar.dragging = true;
+        self.jump_on_hbar(cell, cells);
+    }
+
+    /// Scroll sideways to the column a pointer on bar cell `cell` names:
+    /// the thumb's centre sits under the pointer, so a drag tracks it
+    /// within about a column. Only the view moves — the cursor stays put
+    /// (#576), the offset is the fork's pinned scroll (#577).
+    pub(super) fn jump_on_hbar(&mut self, cell: usize, cells: usize) {
+        let Some((bar, _)) = self.view.drawn_hbar() else {
+            return;
+        };
+        let cells = u16::try_from(cells).unwrap_or(u16::MAX);
+        let col = bar.col_at(cell, cells);
+        self.view.scroll_to_col(col);
     }
 }

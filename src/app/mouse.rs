@@ -30,13 +30,21 @@ impl App<'_> {
                 self.jump_on_minimap(mouse.row);
                 return true;
             }
+            MouseEventKind::Drag(MouseButton::Left) if self.hbar.dragging => {
+                if let Some((_, area)) = self.view.drawn_hbar() {
+                    let cell = usize::from(mouse.column.saturating_sub(area.x));
+                    self.jump_on_hbar(cell, usize::from(area.width));
+                }
+                return true;
+            }
             MouseEventKind::Drag(MouseButton::Left) if self.press.is_some() => {
                 self.drag_view(mouse);
                 return true;
             }
             MouseEventKind::Up(MouseButton::Left) => {
                 let map = std::mem::take(&mut self.minimap.dragging);
-                return self.press.take().is_some() || map;
+                let bar = std::mem::take(&mut self.hbar.dragging);
+                return self.press.take().is_some() || map || bar;
             }
             _ => return false,
         }
@@ -71,6 +79,18 @@ impl App<'_> {
                 .is_some_and(|(_, map)| map.contains(at))
         {
             self.press_minimap(mouse.row);
+            return true;
+        }
+        // And the bar is inside the border, under the text (#581): a press
+        // there scrolls the view sideways and never touches the cursor, so
+        // it must be taken before the row maths — the bar's row would
+        // otherwise read as a line of text one past the last.
+        if pane == Focus::View
+            && let Some((_, area)) = self.view.drawn_hbar()
+            && area.contains(at)
+        {
+            let cell = usize::from(mouse.column - area.x);
+            self.press_hbar(cell, usize::from(area.width));
             return true;
         }
         let line = mouse.row - inner.y;
