@@ -1,6 +1,12 @@
 pub(crate) mod explorer;
 pub(crate) mod fileview;
 pub(crate) mod filterlist;
+/// The horizontal scroll bar (#578): its geometry is pinned and tested here,
+/// but nothing builds it until the file view reserves its row (#580) and the
+/// mouse reaches it (#581) — until then it is reachable only from its own
+/// tests, hence the interim allowance, which #580 removes.
+#[cfg_attr(not(test), allow(dead_code))]
+pub(crate) mod hbar;
 pub(crate) mod listmotion;
 pub(crate) mod minimap;
 pub(crate) mod picker;
