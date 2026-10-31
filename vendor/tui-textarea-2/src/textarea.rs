@@ -23,6 +23,10 @@ use std::cmp::{self, Ordering};
 use std::fmt;
 use unicode_width::UnicodeWidthChar as _;
 
+/// Sentinel for `TextArea::scroll_col_pin` meaning "no horizontal pin"; a
+/// scroll offset is a `u16` widened to `i32`, so no valid value is negative.
+const NO_SCROLL_COL_PIN: i32 = -1;
+
 #[derive(Debug, Clone)]
 enum YankText {
     Piece(String),
@@ -213,6 +217,11 @@ pub struct TextArea<'a> {
     line_numbers: Vec<usize>,
     min_line_number_width: u8,
     pub(crate) viewport: Viewport,
+    /// Horizontal scroll offset owned by the caller rather than by the cursor
+    /// (`-1` for none; see `set_scroll_col`). While it is set, rendering
+    /// holds this column instead of pinning the cursor into the window: that
+    /// is what lets a caller scroll sideways without moving the cursor.
+    scroll_col_pin: i32,
     pub(crate) cursor_style: Style,
     cursor_render_mode: CursorRenderMode,
     yank: YankText,
@@ -337,6 +346,7 @@ impl<'a> TextArea<'a> {
             line_numbers: Vec::new(),
             min_line_number_width: 0,
             viewport: Viewport::default(),
+            scroll_col_pin: NO_SCROLL_COL_PIN,
             cursor_style: Style::default().add_modifier(Modifier::REVERSED),
             cursor_render_mode: CursorRenderMode::Cell,
             yank: YankText::default(),
@@ -2811,6 +2821,7 @@ impl<'a> TextArea<'a> {
         self.custom_highlights.clear();
         self.atomic_ranges.clear();
         self.viewport = Viewport::default();
+        self.scroll_col_pin = NO_SCROLL_COL_PIN;
         self.refresh_screen_map();
         self.reset_measure_cache();
     }
@@ -2828,6 +2839,12 @@ impl<'a> TextArea<'a> {
     /// The viewport is not scrolled here. Rendering brings the cursor into
     /// view, exactly as it does after [`TextArea::move_cursor`].
     ///
+    /// An explicit jump releases a horizontal pin from [`TextArea::
+    /// set_scroll_col`] and resets the offset to `0`: the new cursor position
+    /// owns the view from here, and rendering re-pins to it. Pin
+    /// [`TextArea::set_scroll_col`] afterwards if the jump should land at a
+    /// chosen column instead.
+    ///
     /// Unlike [`TextArea::move_cursor`], this does not run
     /// `normalize_data_cursor_around_atomic_ranges`, so it can land inside an
     /// atomic range. Deliberate: nothing in this fork calls
@@ -2835,6 +2852,8 @@ impl<'a> TextArea<'a> {
     pub fn set_cursor_position(&mut self, cursor: (usize, usize)) {
         self.cancel_selection();
         self.cursor = self.clamp_cursor_to_buffer(cursor);
+        self.scroll_col_pin = NO_SCROLL_COL_PIN;
+        self.viewport.set_col(0);
     }
 
     /// Convert [`TextArea`] instance into line texts.
@@ -2896,6 +2915,86 @@ impl<'a> TextArea<'a> {
     /// ```
     pub fn scroll_top(&self) -> (u16, u16) {
         self.viewport.scroll_top()
+    }
+
+    /// Set the horizontal scroll offset without moving the cursor.
+    ///
+    /// Normally the view follows the cursor: rendering pins the cursor inside
+    /// the window and the horizontal offset is derived from where that leaves
+    /// the view. This pins the offset to `col` instead, owned by the caller —
+    /// for a horizontal scroll bar that drags the view sideways while the
+    /// cursor stays put, so what it points at (word-under-cursor, yank, the
+    /// next search) is unchanged by the drag.
+    ///
+    /// While the pin holds, rendering keeps `col`, clamped so the widest line
+    /// still reaches the right edge, and follows the cursor only when it
+    /// leaves the window to the right. An explicit `set_cursor_position`
+    /// releases the pin; `clear_scroll_col_pin` ends it directly.
+    ///
+    /// `max_scroll_col` is meaningful once a render has established the
+    /// viewport width; before that, clamping happens at render time.
+    /// ```
+    /// use tui_textarea::TextArea;
+    ///
+    /// let mut textarea = TextArea::from(["x".repeat(80).as_str()]);
+    /// assert_eq!(textarea.scroll_top(), (0, 0));
+    ///
+    /// textarea.set_scroll_col(30);
+    /// assert_eq!(textarea.scroll_top(), (0, 30));
+    /// assert_eq!(textarea.cursor(), (0, 0)); // the cursor did not move
+    ///
+    /// textarea.clear_scroll_col_pin();
+    /// assert_eq!(textarea.scroll_top(), (0, 0));
+    /// ```
+    pub fn set_scroll_col(&mut self, col: u16) {
+        let col = col.min(self.max_scroll_col());
+        self.scroll_col_pin = i32::from(col);
+        self.viewport.set_col(col);
+    }
+
+    /// Release a horizontal pin set by [`TextArea::set_scroll_col`]; the
+    /// offset returns to `0` and rendering goes back to following the cursor.
+    pub fn clear_scroll_col_pin(&mut self) {
+        self.scroll_col_pin = NO_SCROLL_COL_PIN;
+        self.viewport.set_col(0);
+    }
+
+    /// Whether a horizontal pin is held.
+    pub fn is_scroll_col_pinned(&self) -> bool {
+        self.scroll_col_pin >= 0
+    }
+
+    /// The column [`TextArea::set_scroll_col`] will not scroll past: how far
+    /// the widest wrapped screen line (plus the gutter) overhangs the viewport
+    /// width recorded by the last render. `0` when everything fits.
+    pub fn max_scroll_col(&self) -> u16 {
+        let (_, _, width, _) = self.viewport.rect();
+        u16::try_from(
+            self.widest_screen_col()
+                .saturating_add(usize::from(self.gutter_width()))
+                .saturating_sub(usize::from(width)),
+        )
+        .unwrap_or(u16::MAX)
+    }
+
+    /// The widest wrapped screen line's display width, excluding the gutter —
+    /// what a horizontal scroll can show at most. Read from the same
+    /// `screen_lines` the render does; the gutter is added by the callers
+    /// that need screen columns (`max_scroll_col`, the render plan), which
+    /// is why this lives beside them rather than in `screen_map.rs`.
+    pub(crate) fn widest_screen_col(&self) -> usize {
+        self.screen_lines
+            .borrow()
+            .iter()
+            .map(|line| line.screen_width)
+            .max()
+            .unwrap_or(0)
+    }
+
+    /// The pinned column, if any — read by the render plan and the cursor
+    /// clamps, which must both let the caller's offset stand.
+    pub(crate) fn scroll_col_pin(&self) -> Option<u16> {
+        (self.scroll_col_pin >= 0).then_some(self.scroll_col_pin as u16)
     }
 
     /// Columns the line-number gutter occupies at the left of each rendered
@@ -3417,6 +3516,18 @@ impl<'a> TextArea<'a> {
             self.selection_start = Some(self.cursor);
         }
         scrolling.scroll(&mut self.viewport);
+        if self.scroll_col_pin >= 0 {
+            // The caller owns the horizontal axis while the pin holds.
+            // Sync it to any column the scroll itself moved, and keep
+            // `InViewport`'s sideways clamp from dragging the cursor into
+            // the window: the row clamp is what a vertical scroll needs,
+            // the column is restored to the line's own bound afterwards.
+            self.scroll_col_pin = i32::from(self.viewport.scroll_top().1);
+            let col = self.cursor.1;
+            self.move_cursor_with_shift(CursorMove::InViewport, shift);
+            self.cursor = self.clamp_cursor_to_buffer((self.cursor.0, col));
+            return;
+        }
         self.move_cursor_with_shift(CursorMove::InViewport, shift);
     }
 }

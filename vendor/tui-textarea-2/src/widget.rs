@@ -60,6 +60,13 @@ impl Viewport {
         self.0.store(u, Ordering::Relaxed);
     }
 
+    /// Set the horizontal offset directly, keeping the row, width and height
+    /// the pack holds. This is what `TextArea::set_scroll_col` writes through.
+    pub fn set_col(&mut self, col: u16) {
+        let u = self.0.get_mut();
+        *u = (*u & 0xffff_ffff_ffff_0000) | u64::from(col);
+    }
+
     pub fn scroll(&mut self, rows: i16, cols: i16) {
         fn apply_scroll(pos: u16, delta: i16) -> u16 {
             if delta >= 0 {
@@ -134,7 +141,28 @@ impl<'a> TextArea<'a> {
                 cursor += lnum; // The cursor position is shifted by the line number part
             };
         }
-        next_scroll_top(prev_top, cursor, width)
+        if let Some(pin) = self.scroll_col_pin() {
+            // Pinned mode (set by `set_scroll_col`): the offset belongs to the
+            // caller, not the cursor. Hold the pin, clamped so the widest line
+            // still reaches the right edge, and follow the cursor only when it
+            // leaves the window to the right — never past that same clamp. An
+            // off-screen cursor to the left is legal here: that is the point of
+            // scrolling without moving the cursor.
+            let max = u16::try_from(
+                self.widest_screen_col()
+                    .saturating_add(usize::from(self.gutter_width()))
+                    .saturating_sub(usize::from(width)),
+            )
+            .unwrap_or(u16::MAX);
+            let top = pin.min(max);
+            if cursor >= top.saturating_add(width) {
+                cursor.saturating_add(1).saturating_sub(width).min(max)
+            } else {
+                top
+            }
+        } else {
+            next_scroll_top(prev_top, cursor, width)
+        }
     }
 
     fn render_plan(&self, area: Rect) -> RenderPlan {

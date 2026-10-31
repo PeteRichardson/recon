@@ -164,6 +164,69 @@ the character the pointer was over rather than on one a gutter's width to its
 right. Computed from the existing crate-internal `line_number_width`, so the
 minimum from change 4 and the overrides from change 2 are already in it.
 
+### 8. Horizontal scroll without moving the cursor
+
+- `src/textarea.rs`, `struct TextArea`: added field `scroll_col_pin: i32`
+  (`-1` for none; a sentinel const `NO_SCROLL_COL_PIN` at the top of the
+  file). Derived `Clone` covers it.
+- `src/textarea.rs`, `TextArea::new`: initialise it to `NO_SCROLL_COL_PIN`.
+- `src/textarea.rs`, `set_lines`: reset it with the viewport it already
+  resets — a new buffer has no reason to inherit a pin.
+- `src/textarea.rs`, after `scroll_top`: added `set_scroll_col`,
+  `clear_scroll_col_pin`, `is_scroll_col_pinned`, `max_scroll_col`, and the
+  crate-internal `scroll_col_pin` and `widest_screen_col`.
+- `src/textarea.rs`, `set_cursor_position`: releases the pin and zeroes the
+  offset (documented on the method).
+- `src/textarea.rs`, `scroll_with_shift`: while pinned, syncs the pin to
+  whatever column the scroll moved and restores the cursor's column after
+  the `InViewport` clamp (the row clamp still applies).
+- `src/widget.rs`, `Viewport`: added `set_col`, writing the column field of
+  the packed viewport while keeping row, width and height.
+- `src/widget.rs`, `scroll_top_col`: pinned branch — hold the pin clamped to
+  the widest line plus gutter minus viewport width, follow the cursor only
+  when it leaves the window to the right, and clamp that follow to the same
+  maximum.
+- `tests/scroll_col.rs`: new, twelve tests; `Cargo.toml`: matching `[[test]]`
+  entry (autotests are off, so an unlisted file would be skipped silently).
+
+`recon`'s file view gets a horizontal scroll bar (umbrella: recon#576). A
+bar must move the view without moving the cursor — the cursor is what yank,
+word-under-cursor and the next search read, and a drag that drags those
+along is a different feature. The viewport's offset is derived from cursor
+pinning at render (`scroll_top_col` → `next_scroll_top`), so writing the
+viewport column alone is not enough: the next render snaps it back to the
+cursor. `set_scroll_col` therefore stores a pin that the render plan honours
+in place of the cursor rule, and clears whenever the cursor is placed
+explicitly — `set_cursor_position` is how `recon` lands search hits and
+whole-document motions, and those should take the view over.
+
+Deliberate divergences from the cursor-driven rule, all inside the pinned
+branch only (an unpinned textarea behaves exactly as before, which the
+existing suites pin):
+
+- A cursor off-screen to the **left** is legal — that is the point.
+- A cursor pushed past the **right** edge still pulls the view, clamped to
+  the widest-line maximum. The cursor rule's `cursor + 1 - width` can land
+  one column past the bar's maximum so the one-past-end cursor cell is
+  visible; the bar never scrolls that far, so the follow clamps.
+- `scroll((rows, cols))` moves the offset by design; the pin follows the
+  result rather than fighting it, so a vertical scroll plus an explicit
+  horizontal delta and a bar drag all agree.
+
+**Why the `InViewport` workaround instead of touching `cursor.rs`.** The
+tripwire below forbids reaching into `cursor.rs`'s movement logic, and
+`InViewport`'s column clamp would otherwise drag the cursor into the window
+on every vertical scroll while pinned (recon's `j`/`k` end up as
+`scroll(...)` → `InViewport`). The guarantee is instead kept where the
+scroll entry point already lives: `scroll_with_shift` saves the cursor's
+column before the clamp and restores it after, then re-runs the buffer
+clamp. Functionally identical for every caller of `scroll` — which is the
+only path recon uses — and it keeps this change inside `textarea.rs` and
+`widget.rs`, the two files every earlier change already lives in. If a
+future need appears for pin-aware clamps in *direct* `move_cursor` calls,
+that is the moment the tripwire is arguing for a purpose-built viewer;
+revisit this then, not before.
+
 ### Local-only: removed `[profile.bench]`
 
 - `Cargo.toml`: dropped `[profile.bench] lto = "thin"`.

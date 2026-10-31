@@ -183,6 +183,10 @@ name = "search"
 path = "tests/search.rs"
 
 [[test]]
+name = "scroll_col"
+path = "tests/scroll_col.rs"
+
+[[test]]
 name = "serde"
 path = "tests/serde.rs"
 
