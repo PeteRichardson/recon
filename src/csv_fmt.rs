@@ -77,12 +77,19 @@ pub(crate) fn align(text: &str, delimiter: u8, sample: usize) -> Vec<String> {
                 let field = field.replace(['\n', '\r'], " ");
                 line.push_str(&field);
                 if column != last {
+                    // Pad the cell to its column width, then the gap. The
+                    // gap must come *after* the fill, not inside the max:
+                    // a cell that fills its column still leaves it, or the
+                    // next column starts at a different place on that row
+                    // than on rows with shorter cells — and a header is
+                    // often the widest cell, so it would drift right one
+                    // column per width it defines.
                     let pad = widths
                         .get(column)
                         .copied()
                         .unwrap_or(0)
                         .saturating_sub(UnicodeWidthStr::width(field.as_str()))
-                        .max(MIN_GAP);
+                        + MIN_GAP;
                     line.push_str(&" ".repeat(pad));
                 }
             }
@@ -129,7 +136,7 @@ mod tests {
         let lines = aligned("name,qty\nwidget,3\nabacus,120\n", b',');
         assert_eq!(
             lines,
-            ["name  qty", "widget  3", "abacus  120"],
+            ["name    qty", "widget  3", "abacus  120"],
             "{lines:?}"
         );
     }
@@ -139,20 +146,48 @@ mod tests {
         // Column widths follow the cells, and the header is a cell like
         // any other: it is what `transmcap` writes first in practice.
         let lines = aligned("t,topic\n1698000000,some/long/topic\n1,x\n", b',');
-        assert_eq!(lines[0], "t         topic");
+        assert_eq!(lines[0], "t           topic");
         assert_eq!(lines[1], "1698000000  some/long/topic");
+    }
+
+    /// The #575 smoke regression: the next column must start in the same
+    /// place on every row. Padding to the column width and leaving the
+    /// gap are two jobs — a `max(fill, gap)` let a row whose cell was one
+    /// short of the width start the next column one place early, so rows
+    /// drifted by their own cell lengths.
+    #[test]
+    fn rows_of_every_cell_length_start_the_next_column_in_the_same_place() {
+        let lines = aligned("a,r,z\nx,First,1\ny,Second,2\nz,Fi,3\n", b',');
+        assert_eq!(
+            lines,
+            [
+                "a  r       z",
+                "x  First   1",
+                "y  Second  2",
+                "z  Fi      3"
+            ]
+        );
+    }
+
+    /// A header that is the widest cell in its columns lines up with
+    /// them like any other row: the `ships.csv` shape that smoke-found
+    /// the drift.
+    #[test]
+    fn a_header_that_defines_the_widths_still_lines_up() {
+        let lines = aligned("year,guns\n1663,92\n1701,100\n", b',');
+        assert_eq!(lines, ["year  guns", "1663  92", "1701  100"]);
     }
 
     #[test]
     fn a_comma_in_a_quoted_field_stays_in_its_cell() {
         let lines = aligned("a,b\n\"x,y\",2\n", b',');
-        assert_eq!(lines, ["a  b", "x,y  2"]);
+        assert_eq!(lines, ["a    b", "x,y  2"]);
     }
 
     #[test]
     fn a_record_spanning_lines_becomes_one_line() {
         let lines = aligned("a,b\n\"multi\nline\",2\n", b',');
-        assert_eq!(lines, ["a         b", "multi line  2"]);
+        assert_eq!(lines, ["a           b", "multi line  2"]);
     }
 
     #[test]
@@ -181,11 +216,11 @@ mod tests {
         let lines = aligned(&format!("a,b\n{long},2\nshort,x\ntiny,y\n"), b',');
         assert_eq!(
             lines[2],
-            format!("short{}x", " ".repeat(MAX_COLUMN_WIDTH - 5))
+            format!("short{}x", " ".repeat(MAX_COLUMN_WIDTH - 5 + MIN_GAP))
         );
         assert_eq!(
             lines[3],
-            format!("tiny{}y", " ".repeat(MAX_COLUMN_WIDTH - 4))
+            format!("tiny{}y", " ".repeat(MAX_COLUMN_WIDTH - 4 + MIN_GAP))
         );
     }
 
@@ -195,7 +230,7 @@ mod tests {
         let lines = align(&text, b',', 2);
         // The sample is the header and the `x` row: width 10 for
         // column 0. The row past the sample goes past the column.
-        assert_eq!(lines[0], "a         b");
+        assert_eq!(lines[0], "a           b");
         assert_eq!(lines[1], "xxxxxxxxxx  2");
         assert_eq!(lines[2], "later_is_much_longer  z");
     }
@@ -212,13 +247,13 @@ mod tests {
         // would push the next column right per glyph (#97).
         let lines = aligned("na,b\n\u{540d}\u{524d},2\nx,y\n", b',');
         assert_eq!(lines[1], "\u{540d}\u{524d}  2");
-        assert_eq!(lines[2], "x   y");
+        assert_eq!(lines[2], "x     y");
     }
 
     #[test]
     fn a_tab_separated_file_aligns_on_tabs() {
         let lines = aligned("a\tb\nlong\tx\n", b'\t');
-        assert_eq!(lines, ["a   b", "long  x"]);
+        assert_eq!(lines, ["a     b", "long  x"]);
     }
 
     #[test]

@@ -452,7 +452,7 @@ pub(crate) mod tests {
         assert_eq!(done.shown.map(|s| s.view), Some(View::Table));
         assert_eq!(
             *done.contents.lines,
-            ["name    qty", "widget  3", "abacus,x  120"]
+            ["name      qty", "widget    3", "abacus,x  120"]
         );
         assert!(done.contents.text);
         assert!(done.contents.fallback.is_none());
@@ -480,7 +480,7 @@ pub(crate) mod tests {
 
         let done = run(&job(&file, table), None);
 
-        assert_eq!(*done.contents.lines, ["a   b", "long  x"]);
+        assert_eq!(*done.contents.lines, ["a     b", "long  x"]);
     }
 
     /// A command whose CSV output is aligned lines up its columns too
@@ -501,7 +501,7 @@ pub(crate) mod tests {
         assert_eq!(done.shown.map(|s| s.view), Some(View::Command(0)));
         assert_eq!(
             *done.contents.lines,
-            ["name  qty", "widget  3", "abacus  120"]
+            ["name    qty", "widget  3", "abacus  120"]
         );
         assert_eq!(done.contents.mime.as_deref(), Some("text/csv"));
     }

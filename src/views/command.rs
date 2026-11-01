@@ -604,7 +604,7 @@ mod tests {
         let aligned = crate::views::read::command_output(csv.as_bytes(), Some("text/csv"), true);
         assert_eq!(
             *aligned.lines,
-            ["name    qty", "widget  3", "abacus,x  120"]
+            ["name      qty", "widget    3", "abacus,x  120"]
         );
         assert!(aligned.text);
         assert_eq!(aligned.mime.as_deref(), Some("text/csv"));
@@ -622,7 +622,7 @@ mod tests {
             Some("text/tab-separated-values"),
             true,
         );
-        assert_eq!(*aligned.lines, ["a   b", "long  x"]);
+        assert_eq!(*aligned.lines, ["a     b", "long  x"]);
     }
 
     /// Every run is in the log (#490): the argv, how long it ran and how it
