@@ -19,7 +19,8 @@ What a match means for a line: *include* colors the line, *exclude* removes
 it, *context* colors it too, but it is not an interesting line. *require*
 colors the line as context does, and it is also a condition on the file: the
 explorer marks a file only when each enabled require filter matches one of
-its lines (ADR 0013).
+its lines (ADR 0013). A sense splits only when the engine can tell its lines
+apart: two names for one behavior are not two senses.
 
 **Require row**:
 A require filter in the scratch set, made from another filter with `&`: a
@@ -161,7 +162,28 @@ _Avoid_: check (only a line mark is a check), highlight, selection
 **Interesting line**:
 A line an enabled include filter matches. `n` and `N` step between
 interesting lines when no search is set. A line a context or require filter
-matches is not interesting, but hide mode keeps it.
+matches is not interesting, but hide mode keeps it, and so does a *neighbour
+line* — see *Neighbour lines*.
+
+**Neighbour lines**:
+The lines an include filter with a *neighbour count* shows around each line
+it matches, in file order, whether or not they match a filter themselves. An
+exclude filter still removes one. A neighbour line is not interesting: `n`
+and `N` step over it. It shows in the default foreground, never in a filter
+colour — that is how it reads as "near a match" rather than a match. A single
+global setting renders neighbour lines bright (the default) or dim; it is
+session-only, like the *Dim mode / Hide mode* toggle, and the action that
+flips it is a named command.
+_Avoid_: context lines (that is a *Sense*), halo, surroundings
+
+**Neighbour count**:
+A property of an include filter, a `(before, after)` pair defaulting to
+`0 0`, that says how many *neighbour lines* the filter shows around each line
+it matches —
+the count before and after, matching grep's `-B` and `-A`, and a single value
+that sets both matching grep's `-C`. The filter editor sets it, and a saved
+filter keeps it; a filter at the default omits it from the saved form.
+_Avoid_: context (that is a *Sense*), `-A`/`-B`/`-C` (those are grep's names)
 
 ### Search
 
@@ -251,7 +273,8 @@ _Avoid_: root, cwd, current directory (that is the working directory)
 **Visible lines**:
 The lines the file view can show, in file order: every line an exclude filter
 does not remove, and in hide mode only the lines an include, context or
-require filter matches. Dimmed lines are visible.
+require filter matches, and the *neighbour lines* of each include match.
+Dimmed lines are visible.
 _Avoid_: on screen, shown lines
 
 **Window**:
@@ -268,7 +291,8 @@ _Avoid_: scroll bar, overview ruler
 **Dim mode / Hide mode**:
 The two ways to treat a line that no filter matches, when an include or
 context filter is enabled: keep it and grey it, or remove it from the visible
-lines. `u` toggles between them.
+lines. `u` toggles between them. A *neighbour line* is kept in both modes,
+and only whether it renders bright or dim changes (see *Neighbour lines*).
 
 **Follow mode**:
 A property of one file, for the session: while the file is in the raw view,
