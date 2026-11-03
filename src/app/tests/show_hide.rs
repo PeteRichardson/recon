@@ -472,6 +472,37 @@ fn a_narrow_terminal_shrinks_the_filter_pane_then_the_explorer() {
     );
 }
 
+/// `n` and `N` step between the matches, past the neighbour lines between
+/// them (#585).
+#[test]
+fn n_steps_over_neighbour_lines() {
+    let mut app = app_over_file("neighbour_n", "hit one\nnear\nfar\nnear\nhit two\n");
+    key(&mut app, KeyCode::Char('t'));
+    app.add_filter("hit").expect("valid");
+    let (index, _) = app.filters.filters_in(0).next().expect("the filter");
+    app.filters.set_details(
+        index,
+        crate::filter::Details {
+            neighbour: crate::filter::Neighbour {
+                before: 1,
+                after: 1,
+            },
+            ..crate::filter::Details::default()
+        },
+    );
+    app.refresh_view();
+    app.document.set_mode(crate::document::Mode::FilteredOnly);
+    app.document.recompute_visible();
+    settle(&mut app);
+    assert_eq!(app.document.visible(), &[0, 1, 3, 4]);
+
+    assert_eq!(cursor_source(&app), 0);
+    key(&mut app, KeyCode::Char('n'));
+    assert_eq!(cursor_source(&app), 4, "past both neighbour lines");
+    key(&mut app, KeyCode::Char('N'));
+    assert_eq!(cursor_source(&app), 0);
+}
+
 fn app_with_two_filters(name: &str) -> App<'static> {
     let mut app = app_over_file(name, "alpha\nbeta\ngamma\n");
     for pattern in ["alpha", "beta"] {

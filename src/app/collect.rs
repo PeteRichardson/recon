@@ -34,10 +34,10 @@ impl App<'_> {
             };
         }
         let text = self.document.lines();
-        let visible = self.document.visible();
-        let lines = visible
-            .iter()
-            .map(|&source| {
+        let lines: Vec<_> = self
+            .document
+            .emitted()
+            .map(|source| {
                 let mut line = Vec::new();
                 if self.line_numbers {
                     line.extend_from_slice(format!("{}\t", source + 1).as_bytes());
@@ -47,8 +47,8 @@ impl App<'_> {
             })
             .collect();
         emit::Exit::Emit {
+            summary: self.lines_summary(lines.len(), self.interesting_count()),
             lines,
-            summary: self.lines_summary(visible.len(), self.interesting_count()),
             failed: 0,
         }
     }

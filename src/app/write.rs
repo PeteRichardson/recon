@@ -69,7 +69,7 @@ impl App<'_> {
             });
             return Ok(());
         }
-        let count = self.document.visible().len();
+        let count = self.document.emitted().count();
         let file = create(&path, replace).map_err(|err| match err.kind() {
             io::ErrorKind::AlreadyExists => exists(),
             _ => format!("{argument}: {err}"),
