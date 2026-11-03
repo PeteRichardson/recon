@@ -36,7 +36,7 @@ use std::time::Duration;
 use super::filters::NO_FILE_MATCHES;
 use super::focus::LAST_PANE;
 use super::prompt::{EMPTY_PATTERN, HISTORY_CAP, INVALID_PATTERN, PromptKind};
-use super::render::status::{HIDE_BADGE_STYLE, HIDE_BADGE_TEXT, NEIGHBOURS_DIM_BADGE_TEXT};
+use super::render::status::{HIDE_BADGE_STYLE, HIDE_BADGE_TEXT, NEIGHBORS_DIM_BADGE_TEXT};
 use super::search::{WRAPPED_TO_BOTTOM, WRAPPED_TO_TOP};
 use super::viewport::Step;
 use crate::widgets::Action;
@@ -288,13 +288,13 @@ fn prompt<'a>(app: &'a App) -> &'a SearchPrompt {
     app.prompt.as_ref().expect("the prompt should be open")
 }
 
-/// Give the scratch set's first filter a neighbour count (ADR 0016).
+/// Give the scratch set's first filter a neighbor count (ADR 0016).
 fn set_count(app: &mut App, before: u32, after: u32) {
     let (index, _) = app.filters.filters_in(0).next().expect("a scratch filter");
     app.filters.set_details(
         index,
         crate::filter::Details {
-            neighbour: crate::filter::Neighbour { before, after },
+            neighbor: crate::filter::Neighbor { before, after },
             ..crate::filter::Details::default()
         },
     );

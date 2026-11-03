@@ -18,7 +18,7 @@ The default keys that this guide names. `?` in recon shows the full keymap.
 | `n` / `N` | Next / previous hit; with no search, next / previous interesting line |
 | `p` | Change the current search into an include filter |
 | `-` | Show the next view of the file |
-| `Ctrl-n` | Show neighbour lines bright, or dim them |
+| `Ctrl-n` | Show neighbor lines bright, or dim them |
 | `Ctrl-t` | Follow the file as it grows, or stop |
 | `:` | Open the command palette — see [About the command palette](palette.md) |
 | `o` | Hand off the file to the app for its type |

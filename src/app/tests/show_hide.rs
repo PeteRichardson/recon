@@ -473,11 +473,11 @@ fn a_narrow_terminal_shrinks_the_filter_pane_then_the_explorer() {
     );
 }
 
-/// `n` and `N` step between the matches, past the neighbour lines between
+/// `n` and `N` step between the matches, past the neighbor lines between
 /// them (#585).
 #[test]
-fn n_steps_over_neighbour_lines() {
-    let mut app = app_over_file("neighbour_n", "hit one\nnear\nfar\nnear\nhit two\n");
+fn n_steps_over_neighbor_lines() {
+    let mut app = app_over_file("neighbor_n", "hit one\nnear\nfar\nnear\nhit two\n");
     key(&mut app, KeyCode::Char('t'));
     app.add_filter("hit").expect("valid");
     set_count(&mut app, 1, 1);
@@ -489,13 +489,13 @@ fn n_steps_over_neighbour_lines() {
 
     assert_eq!(cursor_source(&app), 0);
     key(&mut app, KeyCode::Char('n'));
-    assert_eq!(cursor_source(&app), 4, "past both neighbour lines");
+    assert_eq!(cursor_source(&app), 4, "past both neighbor lines");
     key(&mut app, KeyCode::Char('N'));
     assert_eq!(cursor_source(&app), 0);
 }
 
-/// An app on `hit` with `after` neighbour lines, in the view.
-fn app_with_a_neighbour(name: &str, after: u32) -> App<'static> {
+/// An app on `hit` with `after` neighbor lines, in the view.
+fn app_with_a_neighbor(name: &str, after: u32) -> App<'static> {
     let mut app = app_over_file(name, "hit\nnear\nfar\n");
     key(&mut app, KeyCode::Char('t'));
     app.filters.add("hit").expect("valid");
@@ -512,9 +512,9 @@ fn fg_of(app: &App, row: usize) -> Option<Color> {
 
 /// In either mode, and the view takes it at once.
 #[test]
-fn the_command_dims_a_neighbour_line_in_both_modes() {
+fn the_command_dims_a_neighbor_line_in_both_modes() {
     for hide in [false, true] {
-        let mut app = app_with_a_neighbour(&format!("neighbour_dim_{hide}"), 1);
+        let mut app = app_with_a_neighbor(&format!("neighbor_dim_{hide}"), 1);
         if hide {
             key(&mut app, KeyCode::Char('u'));
         }
@@ -523,39 +523,39 @@ fn the_command_dims_a_neighbour_line_in_both_modes() {
         assert_eq!(fg_of(&app, 1), None, "bright by default");
         let hit = fg_of(&app, 0);
 
-        run(&mut app, "global.toggle.neighbours");
+        run(&mut app, "global.toggle.neighbors");
         assert_eq!(fg_of(&app, 1), dim);
         assert_eq!(fg_of(&app, 0), hit, "the match keeps its colour");
         assert_eq!(app.document.visible(), shown, "no line came or went");
 
-        run(&mut app, "global.toggle.neighbours");
+        run(&mut app, "global.toggle.neighbors");
         assert_eq!(fg_of(&app, 1), None);
     }
 }
 
 #[test]
 fn the_badge_shows_while_a_count_is_dimmed() {
-    let badge = NEIGHBOURS_DIM_BADGE_TEXT.trim();
-    let mut app = app_with_a_neighbour("neighbour_badge", 1);
+    let badge = NEIGHBORS_DIM_BADGE_TEXT.trim();
+    let mut app = app_with_a_neighbor("neighbor_badge", 1);
     assert!(
         !status_line(&mut app).contains(badge),
         "bright is the default"
     );
-    run(&mut app, "global.toggle.neighbours");
+    run(&mut app, "global.toggle.neighbors");
     assert!(status_line(&mut app).contains(badge));
 }
 
 /// The flag changes nothing with no count, so the badge has nothing to say.
 #[test]
 fn no_badge_shows_with_no_count_in_effect() {
-    let mut app = app_with_a_neighbour("neighbour_no_count", 0);
-    run(&mut app, "global.toggle.neighbours");
-    assert!(!status_line(&mut app).contains(NEIGHBOURS_DIM_BADGE_TEXT.trim()));
+    let mut app = app_with_a_neighbor("neighbor_no_count", 0);
+    run(&mut app, "global.toggle.neighbors");
+    assert!(!status_line(&mut app).contains(NEIGHBORS_DIM_BADGE_TEXT.trim()));
 }
 
 #[test]
-fn ctrl_n_toggles_the_neighbour_lines() {
-    let mut app = app_with_a_neighbour("neighbour_key", 1);
+fn ctrl_n_toggles_the_neighbor_lines() {
+    let mut app = app_with_a_neighbor("neighbor_key", 1);
     ctrl(&mut app, KeyCode::Char('n'));
     assert_eq!(fg_of(&app, 1), app.filters.dim_style().fg);
 }

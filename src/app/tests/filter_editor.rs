@@ -1265,14 +1265,14 @@ fn tab_and_shift_tab_go_round_the_fields_and_the_lines() {
         EditorFocus::Description,
         EditorFocus::Prompt,
         EditorFocus::Sense,
-        EditorFocus::Neighbours,
+        EditorFocus::Neighbors,
         EditorFocus::Pattern,
     ] {
         key(&mut app, KeyCode::Tab);
         assert_eq!(focus(&app), expected);
     }
     for expected in [
-        EditorFocus::Neighbours,
+        EditorFocus::Neighbors,
         EditorFocus::Sense,
         EditorFocus::Prompt,
         EditorFocus::Description,
@@ -1656,9 +1656,9 @@ fn big_s_writes_the_sense_from_the_editor() {
     assert_eq!(ctx.filters[0].sense, Sense::Context);
 }
 
-// ---- the neighbour count (#584) ---------------------------------------------
+// ---- the neighbor count (#584) ---------------------------------------------
 
-use crate::filter::Neighbour;
+use crate::filter::Neighbor;
 
 /// The one filter in the scratch set.
 fn scratch<'a>(app: &'a App) -> &'a crate::filter::Filter {
@@ -1669,28 +1669,28 @@ fn scratch<'a>(app: &'a App) -> &'a crate::filter::Filter {
         .expect("a scratch filter")
 }
 
-/// The count the saved filter has, after typing `keys` on the neighbours row
+/// The count the saved filter has, after typing `keys` on the neighbors row
 /// of a new filter on `ERROR` and pressing Enter.
-fn saved_count(name: &str, keys: &str) -> Neighbour {
+fn saved_count(name: &str, keys: &str) -> Neighbor {
     let mut app = app_over_file(name, BODY);
     open_editor(&mut app);
     typed(&mut app, "ERROR");
-    focus_field(&mut app, EditorFocus::Neighbours);
+    focus_field(&mut app, EditorFocus::Neighbors);
     typed(&mut app, keys);
     key(&mut app, KeyCode::Enter);
-    scratch(&app).neighbour
+    scratch(&app).neighbor
 }
 
 #[test]
-fn a_new_filter_has_no_neighbours() {
-    assert_eq!(saved_count("neighbour_none", ""), Neighbour::default());
+fn a_new_filter_has_no_neighbors() {
+    assert_eq!(saved_count("neighbor_none", ""), Neighbor::default());
 }
 
 #[test]
 fn digits_set_the_before_count_and_a_moves_to_after() {
     assert_eq!(
-        saved_count("neighbour_ba", "12a5"),
-        Neighbour {
+        saved_count("neighbor_ba", "12a5"),
+        Neighbor {
             before: 12,
             after: 5
         }
@@ -1701,8 +1701,8 @@ fn digits_set_the_before_count_and_a_moves_to_after() {
 #[test]
 fn c_sets_both_counts() {
     assert_eq!(
-        saved_count("neighbour_both", "c3"),
-        Neighbour {
+        saved_count("neighbor_both", "c3"),
+        Neighbor {
             before: 3,
             after: 3
         }
@@ -1711,16 +1711,16 @@ fn c_sets_both_counts() {
 
 #[test]
 fn b_goes_back_to_before_and_backspace_erases_a_digit() {
-    let mut app = app_over_file("neighbour_back", BODY);
+    let mut app = app_over_file("neighbor_back", BODY);
     open_editor(&mut app);
     typed(&mut app, "ERROR");
-    focus_field(&mut app, EditorFocus::Neighbours);
+    focus_field(&mut app, EditorFocus::Neighbors);
     typed(&mut app, "a7b42");
     key(&mut app, KeyCode::Backspace);
     key(&mut app, KeyCode::Enter);
     assert_eq!(
-        scratch(&app).neighbour,
-        Neighbour {
+        scratch(&app).neighbor,
+        Neighbor {
             before: 4,
             after: 7
         }
@@ -1730,7 +1730,7 @@ fn b_goes_back_to_before_and_backspace_erases_a_digit() {
 #[test]
 fn a_count_stops_at_its_limit() {
     assert_eq!(
-        saved_count("neighbour_limit", "99999").before,
+        saved_count("neighbor_limit", "99999").before,
         9999,
         "more digits than the limit"
     );
@@ -1738,11 +1738,11 @@ fn a_count_stops_at_its_limit() {
 
 #[test]
 fn f_big_c_shows_the_count_and_esc_discards_a_change() {
-    let mut app = app_with_two_filters("neighbour_edit");
+    let mut app = app_with_two_filters("neighbor_edit");
     app.filters.set_details(
         0,
         crate::filter::Details {
-            neighbour: Neighbour {
+            neighbor: Neighbor {
                 before: 1,
                 after: 2,
             },
@@ -1752,25 +1752,25 @@ fn f_big_c_shows_the_count_and_esc_discards_a_change() {
     select_row(&mut app, widgets::filterlist::Row::Filter(0));
     open_selected(&mut app);
     assert_eq!(
-        editor(&app).neighbour,
-        Neighbour {
+        editor(&app).neighbor,
+        Neighbor {
             before: 1,
             after: 2
         }
     );
-    focus_field(&mut app, EditorFocus::Neighbours);
+    focus_field(&mut app, EditorFocus::Neighbors);
     typed(&mut app, "9");
     key(&mut app, KeyCode::Esc);
-    assert_eq!(app.filters.filters()[0].neighbour.before, 1);
+    assert_eq!(app.filters.filters()[0].neighbor.before, 1);
 }
 
 /// As on the sense row, Left and Right move the choice.
 #[test]
 fn left_and_right_move_between_before_and_after() {
-    let mut app = app_over_file("neighbour_arrows", BODY);
+    let mut app = app_over_file("neighbor_arrows", BODY);
     open_editor(&mut app);
     typed(&mut app, "ERROR");
-    focus_field(&mut app, EditorFocus::Neighbours);
+    focus_field(&mut app, EditorFocus::Neighbors);
     typed(&mut app, "2");
     key(&mut app, KeyCode::Right);
     typed(&mut app, "5");
@@ -1778,8 +1778,8 @@ fn left_and_right_move_between_before_and_after() {
     typed(&mut app, "1");
     key(&mut app, KeyCode::Enter);
     assert_eq!(
-        scratch(&app).neighbour,
-        Neighbour {
+        scratch(&app).neighbor,
+        Neighbor {
             before: 21,
             after: 5
         }
@@ -1788,12 +1788,12 @@ fn left_and_right_move_between_before_and_after() {
 
 /// Only an include filter has a count, so Tab has nothing to stop at.
 #[test]
-fn tab_passes_over_the_neighbours_row_on_another_sense() {
-    let mut app = app_over_file("neighbour_ring", BODY);
+fn tab_passes_over_the_neighbors_row_on_another_sense() {
+    let mut app = app_over_file("neighbor_ring", BODY);
     open_editor(&mut app);
     focus_field(&mut app, EditorFocus::Sense);
     key(&mut app, KeyCode::Tab);
-    assert_eq!(editor(&app).focus, EditorFocus::Neighbours);
+    assert_eq!(editor(&app).focus, EditorFocus::Neighbors);
     key(&mut app, KeyCode::BackTab);
     key(&mut app, KeyCode::Char('x'));
     key(&mut app, KeyCode::Tab);
@@ -1806,29 +1806,29 @@ fn tab_passes_over_the_neighbours_row_on_another_sense() {
 /// only an include filter saves one.
 #[test]
 fn a_count_is_saved_only_on_an_include_filter() {
-    let mut app = app_over_file("neighbour_sense", BODY);
+    let mut app = app_over_file("neighbor_sense", BODY);
     open_editor(&mut app);
     typed(&mut app, "ERROR");
-    focus_field(&mut app, EditorFocus::Neighbours);
+    focus_field(&mut app, EditorFocus::Neighbors);
     typed(&mut app, "c3");
     focus_field(&mut app, EditorFocus::Sense);
     key(&mut app, KeyCode::Char('x'));
-    assert_eq!(editor(&app).neighbour.after, 3, "kept while it is open");
+    assert_eq!(editor(&app).neighbor.after, 3, "kept while it is open");
     key(&mut app, KeyCode::Enter);
     let saved = scratch(&app);
     assert_eq!(saved.sense, Sense::Exclude);
-    assert_eq!(saved.neighbour, Neighbour::default());
+    assert_eq!(saved.neighbor, Neighbor::default());
 }
 
 #[test]
-fn the_neighbours_row_shows_the_count_and_says_when_it_does_not_apply() {
-    let mut app = app_over_file("neighbour_row", BODY);
+fn the_neighbors_row_shows_the_count_and_says_when_it_does_not_apply() {
+    let mut app = app_over_file("neighbor_row", BODY);
     open_editor(&mut app);
-    focus_field(&mut app, EditorFocus::Neighbours);
+    focus_field(&mut app, EditorFocus::Neighbors);
     typed(&mut app, "2a5");
     let screen = rendered(&mut app);
     assert!(
-        screen.contains("neighbours:  before 2  after 5"),
+        screen.contains("neighbors:   before 2  after 5"),
         "{screen}"
     );
     assert!(screen.contains("Left/Right before/after"), "{screen}");
@@ -1836,15 +1836,15 @@ fn the_neighbours_row_shows_the_count_and_says_when_it_does_not_apply() {
     key(&mut app, KeyCode::Char('x'));
     let screen = rendered(&mut app);
     assert!(
-        screen.contains("neighbours:  include filters only"),
+        screen.contains("neighbors:   include filters only"),
         "{screen}"
     );
 }
 
 /// The row is between the sense and the pattern, and the pattern still draws.
 #[test]
-fn the_pattern_row_is_under_the_neighbours_row() {
-    let mut app = app_over_file("neighbour_rows", BODY);
+fn the_pattern_row_is_under_the_neighbors_row() {
+    let mut app = app_over_file("neighbor_rows", BODY);
     open_editor(&mut app);
     typed(&mut app, "ERROR");
     let screen = rendered(&mut app);
@@ -1854,25 +1854,25 @@ fn the_pattern_row_is_under_the_neighbours_row() {
             .position(|line| line.contains(label))
             .unwrap_or_else(|| panic!("no {label} row:\n{screen}"))
     };
-    assert_eq!(row("neighbours:"), row("sense:") + 1);
-    assert_eq!(row("pattern:"), row("neighbours:") + 1);
+    assert_eq!(row("neighbors:"), row("sense:") + 1);
+    assert_eq!(row("pattern:"), row("neighbors:") + 1);
 }
 
 /// `S` writes the count, recon reads it again, and a filter that lost its
 /// count to another sense writes a file recon can still load.
 #[test]
 fn big_s_writes_a_count_that_loads_again() {
-    let path = save_fixture("neighbour_save");
-    let mut app = app_over_file("neighbour_save_file", BODY);
+    let path = save_fixture("neighbor_save");
+    let mut app = app_over_file("neighbor_save_file", BODY);
     app.save_path = Some(path.clone());
     open_editor_from_the_filter_pane(&mut app);
     typed(&mut app, "ERROR");
-    focus_field(&mut app, EditorFocus::Neighbours);
+    focus_field(&mut app, EditorFocus::Neighbors);
     typed(&mut app, "2a5");
     key(&mut app, KeyCode::Enter);
     open_editor_from_the_filter_pane(&mut app);
     typed(&mut app, "INFO");
-    focus_field(&mut app, EditorFocus::Neighbours);
+    focus_field(&mut app, EditorFocus::Neighbors);
     typed(&mut app, "c3");
     focus_field(&mut app, EditorFocus::Sense);
     key(&mut app, KeyCode::Char('x'));
@@ -1885,13 +1885,13 @@ fn big_s_writes_a_count_that_loads_again() {
     let sets = crate::filtersets::parse(&text, &path).expect("loads again");
     let near = sets.iter().find(|set| set.name == "near").expect("near");
     assert_eq!(
-        near.filters[0].neighbour,
-        Neighbour {
+        near.filters[0].neighbor,
+        Neighbor {
             before: 2,
             after: 5
         }
     );
-    assert_eq!(near.filters[1].neighbour, Neighbour::default());
+    assert_eq!(near.filters[1].neighbor, Neighbor::default());
     assert_eq!(text.matches("before").count(), 1, "{text}");
 }
 

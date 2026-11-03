@@ -1617,7 +1617,7 @@ list rebuild, not one per row (#119)."
     }
 
     #[test]
-    fn a_selection_whose_row_vanishes_clamps_to_a_neighbour_never_to_none() {
+    fn a_selection_whose_row_vanishes_clamps_to_a_neighbor_never_to_none() {
         let mut nav = nav_over("hide_clamp", &["a.log", "no.log"]);
         let no = nav.files()[1].0;
         nav.set_answer(no, Match::No);
@@ -1709,7 +1709,7 @@ Add, after `restyle` (and change `restyle` to call `rebuild_visible`):
     }
 
     /// Recompute which rows are listed, redraw them, and keep the selection on
-    /// the entry it was on — or on a neighbour if that entry vanished.
+    /// the entry it was on — or on a neighbor if that entry vanished.
     ///
     /// Directories and `..` are always listed: they have no answer. `Unknown`
     /// is always listed: you do not hide what you have not read. Only `No` is
@@ -1830,7 +1830,7 @@ The model Document already uses for lines: a visible index over
 entries, rebuilt from mode and each row's answer. Only No is removed,
 and only in FilteredOnly — directories, .. and Unknown are always
 listed. The selection follows its entry across a rebuild and clamps to
-a neighbour when that entry vanishes, never to None (#119)."
+a neighbor when that entry vanishes, never to None (#119)."
 ```
 
 ---

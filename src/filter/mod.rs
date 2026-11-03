@@ -41,7 +41,7 @@ use std::collections::HashMap;
 /// named variants are ANSI slots 0–15, whose actual appearance the terminal's
 /// theme decides; recon cannot promise contrast between two colours it does not
 /// choose. That is what #62 hit — the palette's yellow and green were slots 3
-/// and 2, which a great many themes render as near-neighbours, and reordering
+/// and 2, which a great many themes render as near-neighbors, and reordering
 /// them would only have delayed the collision to the fourth filter.
 ///
 /// The six below are spaced around the hue wheel with no pair closer than 180
@@ -211,14 +211,14 @@ impl Sense {
     }
 }
 
-/// How many *neighbour lines* an include filter shows around each line it
+/// How many *neighbor lines* an include filter shows around each line it
 /// matches (ADR 0016): the count *before* the match and *after* it, matching
-/// grep's `-B` and `-A`. `Default` is `0 0`, which shows no neighbours.
+/// grep's `-B` and `-A`. `Default` is `0 0`, which shows no neighbors.
 ///
 /// A count belongs only on an include filter: `Filter` drops one that lands
 /// on another sense, and the set parser refuses it.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub struct Neighbour {
+pub struct Neighbor {
     pub before: u32,
     pub after: u32,
 }
@@ -237,7 +237,7 @@ pub enum Verdict {
     /// filters out of the mask that marks a file as matching — this variant
     /// is what lets the view agree with it.
     Context(usize),
-    /// Matched no filter, and kept only as a neighbour line of an include
+    /// Matched no filter, and kept only as a neighbor line of an include
     /// match (ADR 0016): shown, but not interesting, and in no filter's
     /// colour.
     ContextKeep,
@@ -450,10 +450,10 @@ pub struct Filter {
     pub sense: Sense,
     pub enabled: bool,
     pub style: Style,
-    /// How many neighbour lines to show around each line this filter matches
+    /// How many neighbor lines to show around each line this filter matches
     /// (ADR 0016). Meaningful only on an include filter; always `0 0` on the
     /// other senses.
-    pub neighbour: Neighbour,
+    pub neighbor: Neighbor,
     /// The file's `name` for this filter, if it gave one (#128), or the one
     /// typed in the filter editor (#317). `None` for a typed filter until
     /// then; see `display_name`.
@@ -485,7 +485,7 @@ impl Filter {
             sense,
             enabled: true,
             style,
-            neighbour: Neighbour::default(),
+            neighbor: Neighbor::default(),
             name: None,
             description: None,
             prompt: None,
@@ -502,20 +502,20 @@ impl Filter {
         self.prompt = details.prompt;
         self.examples = details.examples;
         self.generated_from = details.generated_from;
-        self.neighbour = details.neighbour;
-        self.drop_neighbours_off_include();
+        self.neighbor = details.neighbor;
+        self.drop_neighbors_off_include();
     }
 
-    /// Only an include filter has a neighbour count (ADR 0016), and a set
+    /// Only an include filter has a neighbor count (ADR 0016), and a set
     /// file that gives another sense one does not load.
-    fn drop_neighbours_off_include(&mut self) {
+    fn drop_neighbors_off_include(&mut self) {
         if self.sense != Sense::Include {
-            self.neighbour = Neighbour::default();
+            self.neighbor = Neighbor::default();
         }
     }
 
     /// Whether the two say the same thing in a set file: the pattern, its
-    /// engine, the sense, the neighbour count and the editor's fields. The switch and the colour are not
+    /// engine, the sense, the neighbor count and the editor's fields. The switch and the colour are not
     /// part of it: a switch is session state, and a colour the file did not
     /// give is the palette's (#348).
     fn same_text(&self, other: &Self) -> bool {
@@ -523,7 +523,7 @@ impl Filter {
             && self.predicate.engine() == other.predicate.engine()
             && self.predicate.also() == other.predicate.also()
             && self.sense == other.sense
-            && self.neighbour == other.neighbour
+            && self.neighbor == other.neighbor
             && self.name == other.name
             && self.description == other.description
             && self.prompt == other.prompt
@@ -610,9 +610,9 @@ pub struct Details {
     /// The hash of the prompt and the pattern when the model wrote the
     /// pattern from the prompt (#321), else `None`.
     pub generated_from: Option<String>,
-    /// How many neighbour lines to show (ADR 0016), carried with the other
+    /// How many neighbor lines to show (ADR 0016), carried with the other
     /// editor fields.
-    pub neighbour: Neighbour,
+    pub neighbor: Neighbor,
 }
 
 /// Every enabled flag in an [`ActiveFilters`], captured so it can be restored.
@@ -728,8 +728,8 @@ pub struct ActiveFilters {
     /// the step limit, as the last `Document::evaluate` counted them. By
     /// id, so a filter added or removed since moves no count to another.
     over_limit: HashMap<FilterId, usize>,
-    /// Whether neighbour lines render dim, not bright (ADR 0016).
-    dim_neighbours: bool,
+    /// Whether neighbor lines render dim, not bright (ADR 0016).
+    dim_neighbors: bool,
 }
 
 /// The source of every `ActiveFilters::generation`. Process-wide rather than
@@ -779,7 +779,7 @@ impl ActiveFilters {
             as_loaded: vec![Vec::new()],
             step_limit: DEFAULT_STEP_LIMIT,
             over_limit: HashMap::new(),
-            dim_neighbours: false,
+            dim_neighbors: false,
         }
     }
 
@@ -1202,7 +1202,7 @@ impl ActiveFilters {
             return false;
         }
         filter.sense = sense;
-        filter.drop_neighbours_off_include();
+        filter.drop_neighbors_off_include();
         if sense != Sense::Exclude && filter.style == Style::default() {
             filter.style = colour;
         }
@@ -1226,7 +1226,7 @@ impl ActiveFilters {
             Sense::Context => Sense::Include,
             Sense::Exclude | Sense::Require => return false,
         };
-        filter.drop_neighbours_off_include();
+        filter.drop_neighbors_off_include();
         true
     }
 
@@ -1546,7 +1546,7 @@ impl ActiveFilters {
             as_loaded: self.as_loaded.clone(),
             step_limit: self.step_limit,
             over_limit: self.over_limit.clone(),
-            dim_neighbours: self.dim_neighbours,
+            dim_neighbors: self.dim_neighbors,
         }
     }
 
@@ -1574,63 +1574,63 @@ impl ActiveFilters {
                 self.filters.get(index).map(|f| f.style)
             }
             Verdict::Unmatched if self.any_including() => Some(self.dim_style()),
-            Verdict::ContextKeep if self.dim_neighbours => Some(self.dim_style()),
+            Verdict::ContextKeep if self.dim_neighbors => Some(self.dim_style()),
             Verdict::Unmatched | Verdict::ContextKeep | Verdict::Excluded => None,
         }
     }
 
-    /// Whether neighbour lines render dim, not bright (ADR 0016). One flag
+    /// Whether neighbor lines render dim, not bright (ADR 0016). One flag
     /// for the session; no file keeps it.
     #[must_use]
-    pub fn dims_neighbours(&self) -> bool {
-        self.dim_neighbours
+    pub fn dims_neighbors(&self) -> bool {
+        self.dim_neighbors
     }
 
-    pub fn toggle_dim_neighbours(&mut self) {
-        self.dim_neighbours = !self.dim_neighbours;
+    pub fn toggle_dim_neighbors(&mut self) {
+        self.dim_neighbors = !self.dim_neighbors;
     }
 
-    /// Whether the flag dims a neighbour line now: it is on, and a filter
+    /// Whether the flag dims a neighbor line now: it is on, and a filter
     /// that is on has a count.
     #[must_use]
-    pub fn neighbours_dimmed(&self) -> bool {
-        self.dim_neighbours && self.neighbour_reach() != Neighbour::default()
+    pub fn neighbors_dimmed(&self) -> bool {
+        self.dim_neighbors && self.neighbor_reach() != Neighbor::default()
     }
 
-    /// The largest neighbour counts of the filters that are on (ADR 0016):
+    /// The largest neighbor counts of the filters that are on (ADR 0016):
     /// how far a match can reach. `0 0` when none has a count.
     #[must_use]
-    pub fn neighbour_reach(&self) -> Neighbour {
+    pub fn neighbor_reach(&self) -> Neighbor {
         self.filters
             .iter()
             .enumerate()
             .filter(|(index, _)| self.effective(*index))
-            .fold(Neighbour::default(), |reach, (_, filter)| Neighbour {
-                before: reach.before.max(filter.neighbour.before),
-                after: reach.after.max(filter.neighbour.after),
+            .fold(Neighbor::default(), |reach, (_, filter)| Neighbor {
+                before: reach.before.max(filter.neighbor.before),
+                after: reach.after.max(filter.neighbor.after),
             })
     }
 
-    /// The neighbour count a line with `verdict` reaches with: its include
+    /// The neighbor count a line with `verdict` reaches with: its include
     /// filter's, or `0 0` for a line no include filter matched.
     #[must_use]
-    pub fn neighbour_of(&self, verdict: Verdict) -> Neighbour {
+    pub fn neighbor_of(&self, verdict: Verdict) -> Neighbor {
         match verdict {
             Verdict::Included(index) => self
                 .filters
                 .get(index)
-                .map(|filter| filter.neighbour)
+                .map(|filter| filter.neighbor)
                 .unwrap_or_default(),
-            _ => Neighbour::default(),
+            _ => Neighbor::default(),
         }
     }
 
-    /// Give every filter a count of `0 0`, for output that has no neighbour
+    /// Give every filter a count of `0 0`, for output that has no neighbor
     /// lines. Only a copy of the filters is meant to take this: the set file
     /// keeps the counts.
-    pub(crate) fn clear_neighbours(&mut self) {
+    pub(crate) fn clear_neighbors(&mut self) {
         for filter in &mut self.filters {
-            filter.neighbour = Neighbour::default();
+            filter.neighbor = Neighbor::default();
         }
     }
 
@@ -1652,18 +1652,18 @@ impl ActiveFilters {
 /// Builders shared by this module's tests and the pane's.
 #[cfg(test)]
 pub(crate) mod test_support {
-    use super::{ActiveFilters, Details, LoadedFilter, LoadedSet, Neighbour, Predicate, Sense};
+    use super::{ActiveFilters, Details, LoadedFilter, LoadedSet, Neighbor, Predicate, Sense};
     use std::collections::BTreeMap;
     use std::path::PathBuf;
 
-    /// One include filter on `pattern`, with a neighbour count (ADR 0016).
+    /// One include filter on `pattern`, with a neighbor count (ADR 0016).
     pub(crate) fn with_count(pattern: &str, before: u32, after: u32) -> ActiveFilters {
         let mut filters = ActiveFilters::new();
         filters.add(pattern).expect("valid pattern");
         filters.set_details(
             0,
             Details {
-                neighbour: Neighbour { before, after },
+                neighbor: Neighbor { before, after },
                 ..Details::default()
             },
         );
@@ -1698,7 +1698,7 @@ pub(crate) mod test_support {
                     prompt: None,
                     examples: Vec::new(),
                     generated_from: None,
-                    neighbour: crate::filter::Neighbour::default(),
+                    neighbor: crate::filter::Neighbor::default(),
                 })
                 .collect(),
             builtin: false,

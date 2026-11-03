@@ -699,7 +699,7 @@ impl Explorer<'_> {
     }
 
     /// The visible row drawn `line` rows below the top border, if there is
-    /// one — so `App` can tell two clicks on one row from two on neighbours.
+    /// one — so `App` can tell two clicks on one row from two on neighbors.
     pub(crate) fn row_at(&self, line: u16) -> Option<usize> {
         let row = self.list.row_at(line);
         (row < self.visible.len()).then_some(row)
@@ -956,7 +956,7 @@ impl Explorer<'_> {
     }
 
     /// Recompute which rows are listed, redraw them, and keep the selection on
-    /// the entry it was on — or on a neighbour if that entry vanished: the
+    /// the entry it was on — or on a neighbor if that entry vanished: the
     /// nearest file that matches, else the row in its place (#481). A file
     /// that matches is one the view can follow to; the row in its place can
     /// be `..`, a directory or a file not scanned yet.
@@ -3357,7 +3357,7 @@ mod tests {
     }
 
     #[test]
-    fn a_selection_whose_row_vanishes_clamps_to_a_neighbour_never_to_none() {
+    fn a_selection_whose_row_vanishes_clamps_to_a_neighbor_never_to_none() {
         let mut explorer = explorer_over("hide_clamp", &["a.log", "no.log"]);
         let no = explorer.files()[1].0;
         explorer.set_answer(no, Match::No);

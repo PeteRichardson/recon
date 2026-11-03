@@ -1,5 +1,5 @@
 //! Drawing the filter editor (#312): the file with every match highlighted,
-//! and the panel that holds the name, description, prompt, sense, neighbour
+//! and the panel that holds the name, description, prompt, sense, neighbor
 //! count and pattern, and with a model the request line and the model's explanation
 //! (#319).
 
@@ -8,7 +8,7 @@ use super::super::filter_editor::{
     PROMPT_CHANGED_NO_MODEL, prompt_changed,
 };
 use super::super::prompt::TAB;
-use crate::filter::{Engine, Neighbour, Sense};
+use crate::filter::{Engine, Neighbor, Sense};
 use crate::keymap::{ActionId, Keymap};
 use crate::widgets::pane_block;
 use ratatui::prelude::{
@@ -119,7 +119,7 @@ impl FilterEditor {
         block.render(panel_area, buf);
         let x = inner.x + 1;
         let width = inner.width.saturating_sub(2);
-        // Rows 3 and 4 are the sense and the neighbour count, which are not
+        // Rows 3 and 4 are the sense and the neighbor count, which are not
         // text. The request line is row 6, with a model only.
         let mut fields = vec![
             ("name:", EditorFocus::Name, 0),
@@ -187,7 +187,7 @@ impl FilterEditor {
                 );
             }
         }
-        for (row, spans) in [(3, self.sense_spans()), (4, self.neighbour_spans())] {
+        for (row, spans) in [(3, self.sense_spans()), (4, self.neighbor_spans())] {
             if inner.height > row {
                 Line::from(spans).render(
                     Rect {
@@ -322,7 +322,7 @@ impl FilterEditor {
             EditorFocus::Name | EditorFocus::Description | EditorFocus::Prompt => {
                 vec![enter, cancel, scroll(), fields]
             }
-            EditorFocus::Neighbours => vec![
+            EditorFocus::Neighbors => vec![
                 Some("0-9 type a count · Left/Right before/after · c both".to_string()),
                 enter,
                 cancel,
@@ -403,18 +403,18 @@ impl FilterEditor {
         spans
     }
 
-    /// The neighbours row (#584): the two counts, the one the digits go to
+    /// The neighbors row (#584): the two counts, the one the digits go to
     /// reversed while the row has the keys, and a dim note on a sense with
     /// no count.
-    fn neighbour_spans(&self) -> Vec<Span<'static>> {
+    fn neighbor_spans(&self) -> Vec<Span<'static>> {
         let dim = Style::default().fg(Color::DarkGray);
-        let label = Span::raw(format!("{:LABEL_WIDTH$}", "neighbours:"));
+        let label = Span::raw(format!("{:LABEL_WIDTH$}", "neighbors:"));
         if self.sense != Sense::Include {
             return vec![label, Span::styled("include filters only", dim)];
         }
-        let focused = self.focus == EditorFocus::Neighbours;
-        let part = self.neighbour_part;
-        let Neighbour { before, after } = self.neighbour;
+        let focused = self.focus == EditorFocus::Neighbors;
+        let part = self.neighbor_part;
+        let Neighbor { before, after } = self.neighbor;
         vec![
             label,
             Span::raw("before "),

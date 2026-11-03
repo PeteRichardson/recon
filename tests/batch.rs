@@ -128,7 +128,7 @@ fn files_lists_the_matching_inputs_from_stdin_with_or_without_hide() {
 }
 
 /// `--emit lines --set Near` over `hit near far` in a fixture `name`, with
-/// `flags` after: the `Near` set is `hit` with one neighbour line after it.
+/// `flags` after: the `Near` set is `hit` with one neighbor line after it.
 fn near_lines(name: &str, flags: &[&str]) -> Output {
     let dir = fixture(name);
     let home = dir.join("config");
@@ -152,25 +152,22 @@ fn near_lines(name: &str, flags: &[&str]) -> Output {
     recon(&home, &args, b"")
 }
 
-/// #587: `--emit lines` writes the neighbour lines the view shows, and
-/// `--neighbours`, the default spelt out, changes nothing.
+/// #587: `--emit lines` writes the neighbor lines the view shows, and
+/// `--neighbors`, the default spelt out, changes nothing.
 #[test]
-fn lines_include_the_neighbour_lines_by_default() {
-    for flags in [&[][..], &["--neighbours"]] {
-        let out = near_lines("lines_neighbours", flags);
+fn lines_include_the_neighbor_lines_by_default() {
+    for flags in [&[][..], &["--neighbors"]] {
+        let out = near_lines("lines_neighbors", flags);
         assert_eq!(text(&out.stdout), "hit\nnear\n", "{}", text(&out.stderr));
     }
 }
 
-/// #587: `--no-neighbours` gives the matches alone, as before neighbour
-/// lines were emitted, and wins over `--neighbours`.
+/// #587: `--no-neighbors` gives the matches alone, as before neighbor
+/// lines were emitted, and wins over `--neighbors`.
 #[test]
-fn no_neighbours_leaves_out_the_neighbour_lines() {
-    for flags in [
-        &["--no-neighbours"][..],
-        &["--neighbours", "--no-neighbours"],
-    ] {
-        let out = near_lines("lines_no_neighbours", flags);
+fn no_neighbors_leaves_out_the_neighbor_lines() {
+    for flags in [&["--no-neighbors"][..], &["--neighbors", "--no-neighbors"]] {
+        let out = near_lines("lines_no_neighbors", flags);
         assert_eq!(text(&out.stdout), "hit\n", "{}", text(&out.stderr));
     }
 }

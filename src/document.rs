@@ -1,6 +1,6 @@
 //! The loaded file and what the filters made of it.
 
-use crate::filter::{ActiveFilters, Neighbour, Verdict};
+use crate::filter::{ActiveFilters, Neighbor, Verdict};
 use crate::syntax::{self, KindSet};
 use ratatui::style::Style;
 use std::collections::VecDeque;
@@ -161,14 +161,14 @@ impl Document {
                 let kinds = kinds.get(row).copied().unwrap_or(KindSet::EMPTY);
                 filters.verdict_noting(line, kinds, |index| over_limit[index] += 1)
             }));
-        self.mark_neighbours(filters, 0);
+        self.mark_neighbors(filters, 0);
         self.anything_including = filters.any_including();
         self.revision = self.revision.wrapping_add(1);
         self.recompute_visible();
     }
 
     /// Make each unmatched line within reach of an include match a
-    /// neighbour line (ADR 0016), for the verdicts from row `start` on. An
+    /// neighbor line (ADR 0016), for the verdicts from row `start` on. An
     /// exclude filter's line and a line with a filter of its own keep their
     /// verdict.
     ///
@@ -178,18 +178,18 @@ impl Document {
     ///
     /// Here and not in `recompute_visible`: a verdict does not depend on the
     /// mode, so `u` still runs on the verdicts alone.
-    fn mark_neighbours(&mut self, filters: &ActiveFilters, start: usize) {
-        let reach = filters.neighbour_reach();
-        if reach == Neighbour::default() {
+    fn mark_neighbors(&mut self, filters: &ActiveFilters, start: usize) {
+        let reach = filters.neighbor_reach();
+        if reach == Neighbor::default() {
             return;
         }
         let first = start.saturating_sub(reach.after as usize);
         sweep(self.verdicts[first..].iter_mut(), |verdict| {
-            filters.neighbour_of(verdict).after
+            filters.neighbor_of(verdict).after
         });
         let first = start.saturating_sub(reach.before as usize);
         sweep(self.verdicts[first..].iter_mut().rev(), |verdict| {
-            filters.neighbour_of(verdict).before
+            filters.neighbor_of(verdict).before
         });
     }
 
@@ -198,7 +198,7 @@ impl Document {
     /// grown.
     ///
     /// Only the new lines are evaluated, so a tick of a large followed log
-    /// costs the lines it added, and the neighbour counts' reach. A replaced
+    /// costs the lines it added, and the neighbor counts' reach. A replaced
     /// line, or a definition filter,
     /// which parses the whole file, takes a full `evaluate`. The lines are
     /// copied when the view still shares them: `App` lets go of its
@@ -221,11 +221,11 @@ impl Document {
         self.verdicts.extend(self.lines[start..].iter().map(|line| {
             filters.verdict_noting(line, KindSet::EMPTY, |index| over_limit[index] += 1)
         }));
-        self.mark_neighbours(filters, start);
+        self.mark_neighbors(filters, start);
         let (mode, anything_including) = (self.mode, self.anything_including);
         // A new match reaches back, so the rows from there are read again.
         // They only gain lines, so the length says whether the set moved.
-        let first = start.saturating_sub(filters.neighbour_reach().before as usize);
+        let first = start.saturating_sub(filters.neighbor_reach().before as usize);
         let shown = self.verdicts[first..]
             .iter()
             .enumerate()
@@ -335,14 +335,14 @@ impl Document {
     }
 
     /// The visible lines that `--emit lines` and `:w` write: in hide mode
-    /// without the neighbour lines unless `neighbours`. A file too large to
+    /// without the neighbor lines unless `neighbors`. A file too large to
     /// hold whole gives the same lines from [`Shown`].
-    pub(crate) fn emitted(&self, neighbours: bool) -> impl Iterator<Item = usize> + '_ {
-        let drop_neighbours = self.mode == Mode::FilteredOnly && !neighbours;
+    pub(crate) fn emitted(&self, neighbors: bool) -> impl Iterator<Item = usize> + '_ {
+        let drop_neighbors = self.mode == Mode::FilteredOnly && !neighbors;
         self.visible
             .iter()
             .copied()
-            .filter(move |&row| !(drop_neighbours && self.verdicts[row] == Verdict::ContextKeep))
+            .filter(move |&row| !(drop_neighbors && self.verdicts[row] == Verdict::ContextKeep))
     }
 
     /// The text of the visible lines, for rebuilding the view's buffer.
@@ -625,7 +625,7 @@ pub(crate) fn read_lossy_line<R: BufRead>(
     ))
 }
 
-/// Make the unmatched lines after each match a neighbour line, for as many
+/// Make the unmatched lines after each match a neighbor line, for as many
 /// lines as `reach` gives it, in the order of `verdicts`.
 fn sweep<'a>(verdicts: impl Iterator<Item = &'a mut Verdict>, reach: impl Fn(Verdict) -> u32) {
     let mut left = 0_u32;
@@ -636,13 +636,13 @@ fn sweep<'a>(verdicts: impl Iterator<Item = &'a mut Verdict>, reach: impl Fn(Ver
     }
 }
 
-/// One line of a sweep: whether a line with `verdict` is a neighbour line,
+/// One line of a sweep: whether a line with `verdict` is a neighbor line,
 /// with `left` lines of reach still to go. `left` then becomes the reach
 /// for the next line, which `count` — this line's own — can extend.
 fn step(left: &mut u32, verdict: Verdict, count: u32) -> bool {
-    let neighbour = *left > 0 && verdict == Verdict::Unmatched;
+    let neighbor = *left > 0 && verdict == Verdict::Unmatched;
     *left = left.saturating_sub(1).max(count);
-    neighbour
+    neighbor
 }
 
 /// Whether a line with `verdict` is visible in `mode`, given whether any
@@ -657,7 +657,7 @@ pub(crate) fn shows(mode: Mode, verdict: Verdict, anything_including: bool) -> b
         (Mode::Dimmed, _) => true,
         // A context line stays in hide mode: that is what the sense
         // is for. Only `n` treats it differently from an include.
-        // So does a neighbour line, which is what it is.
+        // So does a neighbor line, which is what it is.
         (Mode::FilteredOnly, Verdict::Included(_) | Verdict::Context(_) | Verdict::ContextKeep) => {
             true
         }
@@ -671,7 +671,7 @@ pub(crate) fn shows(mode: Mode, verdict: Verdict, anything_including: bool) -> b
     }
 }
 
-/// The lines a file read one at a time shows in a mode, with the neighbour
+/// The lines a file read one at a time shows in a mode, with the neighbor
 /// lines `Document::evaluate` would mark (ADR 0016), for a reader that
 /// cannot look ahead. A line a match to come can still reach back to is
 /// held until then, so each line comes out once and in order.
@@ -693,7 +693,7 @@ impl<'a> Shown<'a> {
             filters,
             mode,
             anything_including: filters.any_including(),
-            reach: filters.neighbour_reach().before as usize,
+            reach: filters.neighbor_reach().before as usize,
             behind: VecDeque::new(),
             ahead: 0,
         }
@@ -712,8 +712,8 @@ impl<'a> Shown<'a> {
         verdict: Verdict,
         mut show: impl FnMut(usize, &str) -> io::Result<()>,
     ) -> io::Result<()> {
-        let count = self.filters.neighbour_of(verdict);
-        let neighbour = step(&mut self.ahead, verdict, count.after);
+        let count = self.filters.neighbor_of(verdict);
+        let neighbor = step(&mut self.ahead, verdict, count.after);
         while self
             .behind
             .front()
@@ -721,7 +721,7 @@ impl<'a> Shown<'a> {
         {
             self.behind.pop_front();
         }
-        if neighbour || shows(self.mode, verdict, self.anything_including) {
+        if neighbor || shows(self.mode, verdict, self.anything_including) {
             let first = row.saturating_sub(count.before as usize);
             for (held, text) in self.behind.drain(..).filter(|&(held, _)| held >= first) {
                 show(held, &text)?;
@@ -829,7 +829,7 @@ mod tests {
     use super::*;
     use crate::fixtures::{fixture_dir, fixture_file};
 
-    // ---- neighbour lines (#585, ADR 0016) ------------------------------------
+    // ---- neighbor lines (#585, ADR 0016) ------------------------------------
 
     use crate::filter::test_support::with_count;
 
@@ -871,7 +871,7 @@ mod tests {
     }
 
     #[test]
-    fn an_exclude_filter_removes_a_neighbour_line() {
+    fn an_exclude_filter_removes_a_neighbor_line() {
         let mut filters = with_count("hit", 1, 1);
         filters.add_excluding("noise").expect("valid");
         let document = hidden(&["noise", "hit", "a"], &filters);
@@ -904,7 +904,7 @@ mod tests {
     }
 
     #[test]
-    fn a_count_of_zero_keeps_no_neighbours() {
+    fn a_count_of_zero_keeps_no_neighbors() {
         let filters = with_count("hit", 0, 0);
         let document = hidden(&["a", "hit", "b"], &filters);
         assert_eq!(document.visible(), &[1]);
@@ -919,7 +919,7 @@ mod tests {
     }
 
     #[test]
-    fn a_neighbour_line_has_no_filter_colour_and_is_not_dimmed() {
+    fn a_neighbor_line_has_no_filter_colour_and_is_not_dimmed() {
         let filters = with_count("hit", 0, 1);
         let document = hidden(&["hit", "a", "b"], &filters);
         assert_eq!(
@@ -930,19 +930,19 @@ mod tests {
         assert_eq!(document.interesting_count(), 1);
     }
 
-    /// Dim: a neighbour line recedes, and its match keeps its colour.
+    /// Dim: a neighbor line recedes, and its match keeps its colour.
     #[test]
-    fn the_flag_dims_a_neighbour_line_and_not_its_match() {
+    fn the_flag_dims_a_neighbor_line_and_not_its_match() {
         let mut filters = with_count("hit", 0, 1);
         let document = hidden(&["hit", "a"], &filters);
         let (hit, near) = (document.verdicts()[0], document.verdicts()[1]);
         let colour = filters.style_for(hit);
 
-        filters.toggle_dim_neighbours();
+        filters.toggle_dim_neighbors();
         assert_eq!(filters.style_for(near), Some(filters.dim_style()));
         assert_eq!(filters.style_for(hit), colour);
 
-        filters.toggle_dim_neighbours();
+        filters.toggle_dim_neighbors();
         assert_eq!(filters.style_for(near), None);
     }
 

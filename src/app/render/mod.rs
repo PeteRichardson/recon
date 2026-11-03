@@ -11,7 +11,7 @@ use crate::help;
 use crate::widgets::Focus;
 use ratatui::prelude::{Buffer, Color, Constraint, Layout, Rect, Style, Widget};
 use status::{
-    HIDE_BADGE_STYLE, HIDE_BADGE_TEXT, NEIGHBOURS_DIM_BADGE_TEXT, search_badge_text,
+    HIDE_BADGE_STYLE, HIDE_BADGE_TEXT, NEIGHBORS_DIM_BADGE_TEXT, search_badge_text,
     stale_badge_text,
 };
 use std::borrow::Cow;
@@ -70,8 +70,8 @@ impl Widget for &mut App<'_> {
             self.follow_badge().map(Cow::Owned),
             (self.document.mode() == Mode::FilteredOnly).then_some(Cow::Borrowed(HIDE_BADGE_TEXT)),
             self.filters
-                .neighbours_dimmed()
-                .then_some(Cow::Borrowed(NEIGHBOURS_DIM_BADGE_TEXT)),
+                .neighbors_dimmed()
+                .then_some(Cow::Borrowed(NEIGHBORS_DIM_BADGE_TEXT)),
             self.search
                 .as_ref()
                 .map(|search| Cow::Owned(search_badge_text(&search.text))),

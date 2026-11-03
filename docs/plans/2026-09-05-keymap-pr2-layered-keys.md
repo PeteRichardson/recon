@@ -1118,7 +1118,7 @@ git commit -m "feat(keys): / from the filter pane sets the live search (#120)"
     }
 ```
 
-`filter::test_support::loaded(name, order, enabled, patterns)` and `ActiveFilters::with_sets` are what `app_with_two_sets` (~line 5402) uses; copy its import style. The set index passed to `solo` is the set's position in the pane (`1` = `a`, `2` = `b`); confirm against `app_with_two_sets`'s neighbours if `solo(2)` does not select `b`.
+`filter::test_support::loaded(name, order, enabled, patterns)` and `ActiveFilters::with_sets` are what `app_with_two_sets` (~line 5402) uses; copy its import style. The set index passed to `solo` is the set's position in the pane (`1` = `a`, `2` = `b`); confirm against `app_with_two_sets`'s neighbors if `solo(2)` does not select `b`.
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
