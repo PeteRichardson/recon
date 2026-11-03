@@ -323,7 +323,7 @@ impl FilterEditor {
                 vec![enter, cancel, scroll(), fields]
             }
             EditorFocus::Neighbours => vec![
-                Some("0-9 type a count · b before · a after · c both".to_string()),
+                Some("0-9 type a count · Left/Right before/after · c both".to_string()),
                 enter,
                 cancel,
                 fields,

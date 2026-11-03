@@ -30,9 +30,10 @@
 //! filter does not have.
 //!
 //! An include filter has one more row (#584), its neighbour count (ADR
-//! 0016), between the sense and the pattern. `b`, `a` and `c` choose before,
-//! after or both, as grep's `-B`, `-A` and `-C`; digits type the count. Tab
-//! passes over the row on any other sense, and Enter saves `0 0` there.
+//! 0016), between the sense and the pattern. `b` or Left, `a` or Right, and
+//! `c` choose before, after or both, as grep's `-B`, `-A` and `-C`; digits
+//! type the count. Tab passes over the row on any other sense, and Enter
+//! saves `0 0` there.
 //!
 //! Enter also keeps the marks on the filter as its examples (#318), and `f C`
 //! shows a filter's examples as marks again. An example that is not a line
@@ -1903,27 +1904,28 @@ impl App<'_> {
     }
 
     /// A key on the neighbours row. Backspace, as the prompt binds it, erases
-    /// a digit.
+    /// a digit, and Left and Right, as on the sense row, go to before and
+    /// after.
     fn handle_neighbour_key(&mut self, key: event::KeyEvent) {
         use crate::keymap::ActionId as A;
         let pressed = crate::keymap::normalise(key);
-        let choice = if self.resolve_key(crate::keymap::Scope::Prompt, pressed)
-            == Some(A::PromptDeleteBack)
-        {
-            Some(NeighbourKey::Erase)
-        } else if key
-            .modifiers
-            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
-        {
-            None
-        } else {
-            match key.code {
+        let choice = match self.resolve_key(crate::keymap::Scope::Prompt, pressed) {
+            Some(A::PromptDeleteBack) => Some(NeighbourKey::Erase),
+            Some(A::PromptLeft) => Some(NeighbourKey::Choose(NeighbourPart::Before)),
+            Some(A::PromptRight) => Some(NeighbourKey::Choose(NeighbourPart::After)),
+            _ if key
+                .modifiers
+                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
+            {
+                None
+            }
+            _ => match key.code {
                 KeyCode::Char('b') => Some(NeighbourKey::Choose(NeighbourPart::Before)),
                 KeyCode::Char('a') => Some(NeighbourKey::Choose(NeighbourPart::After)),
                 KeyCode::Char('c') => Some(NeighbourKey::Choose(NeighbourPart::Both)),
                 KeyCode::Char(c) => c.to_digit(10).map(NeighbourKey::Digit),
                 _ => None,
-            }
+            },
         };
         if let Some(choice) = choice {
             self.edit_filter_editor(|editor| editor.neighbour_key(choice));

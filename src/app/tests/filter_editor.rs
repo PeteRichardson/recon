@@ -1764,6 +1764,28 @@ fn f_big_c_shows_the_count_and_esc_discards_a_change() {
     assert_eq!(app.filters.filters()[0].neighbour.before, 1);
 }
 
+/// As on the sense row, Left and Right move the choice.
+#[test]
+fn left_and_right_move_between_before_and_after() {
+    let mut app = app_over_file("neighbour_arrows", BODY);
+    open_editor(&mut app);
+    typed(&mut app, "ERROR");
+    focus_field(&mut app, EditorFocus::Neighbours);
+    typed(&mut app, "2");
+    key(&mut app, KeyCode::Right);
+    typed(&mut app, "5");
+    key(&mut app, KeyCode::Left);
+    typed(&mut app, "1");
+    key(&mut app, KeyCode::Enter);
+    assert_eq!(
+        scratch(&app).neighbour,
+        Neighbour {
+            before: 21,
+            after: 5
+        }
+    );
+}
+
 /// Only an include filter has a count, so Tab has nothing to stop at.
 #[test]
 fn tab_passes_over_the_neighbours_row_on_another_sense() {
@@ -1809,7 +1831,7 @@ fn the_neighbours_row_shows_the_count_and_says_when_it_does_not_apply() {
         screen.contains("neighbours:  before 2  after 5"),
         "{screen}"
     );
-    assert!(screen.contains("b before"), "{screen}");
+    assert!(screen.contains("Left/Right before/after"), "{screen}");
     focus_field(&mut app, EditorFocus::Sense);
     key(&mut app, KeyCode::Char('x'));
     let screen = rendered(&mut app);
