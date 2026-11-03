@@ -11,6 +11,41 @@ fn app_emitting(name: &str, emit: Option<emit::Emit>) -> App<'static> {
     }))
 }
 
+/// The view shows neighbour lines, and `--emit lines` does not yet: #587
+/// adds them behind a flag, the same for a file of any size.
+#[test]
+fn emitted_lines_leave_out_the_neighbour_lines() {
+    let file = fixture_path("emit_no_neighbours", "hit\nnear\nfar\n");
+    let mut app = App::new(&Startup::from(Config {
+        path: Some(file.display().to_string()),
+        emit: Some(emit::Emit::Lines),
+        ..Config::default()
+    }));
+    app.filters.add("hit").expect("valid");
+    let (index, _) = app.filters.filters_in(0).next().expect("the filter");
+    app.filters.set_details(
+        index,
+        crate::filter::Details {
+            neighbour: crate::filter::Neighbour {
+                before: 0,
+                after: 1,
+            },
+            ..crate::filter::Details::default()
+        },
+    );
+    app.refresh_view();
+    app.document.set_mode(crate::document::Mode::FilteredOnly);
+    app.document.recompute_visible();
+    assert_eq!(app.document.visible(), &[0, 1], "the view shows it");
+
+    key(&mut app, KeyCode::Char('q'));
+    let emit::Exit::Emit { lines, summary, .. } = app.exit() else {
+        panic!("q emits");
+    };
+    assert_eq!(lines, [b"hit".to_vec()]);
+    assert!(summary.contains("emitted 1 "), "{summary}");
+}
+
 #[test]
 fn q_quits_emitting_and_big_q_quits_silently() {
     let mut app = app_emitting("quit_q_emits", Some(emit::Emit::Cwd));

@@ -31,11 +31,14 @@ does not show lines around a match.
   `Included` only, so navigation is untouched. The new verdict is what lets
   a neighbour line render *dim* in hide mode; `style_for(Unmatched)` returns
   no style there, which would show it bright.
-- **The expansion runs in `recompute_visible` and only in hide mode.**
-  In dim mode every line already shows, so only the rendering toggle
-  applies. The pass gathers each `Included` match whose filter has a non-zero
-  count, works out each `[match - before, match + after]` range, unions ranges
-  that overlap, skips `Excluded` lines and keeps ascending order.
+- **The expansion runs where the verdicts are written:** in `evaluate`, and
+  again after `append` when a followed file grows. A verdict does not depend
+  on the mode, so the `u` toggle still needs only `recompute_visible`, which
+  writes no verdict. Hide mode keeps a `ContextKeep` line; in dim mode every
+  line already shows, so only the rendering toggle applies. The pass gathers
+  each `Included` match whose filter has a non-zero count and marks each
+  unmatched line in `[match - before, match + after]`, so ranges that overlap
+  are one band. A line with a filter of its own keeps its verdict.
 - **One global, session-only bright/dim flag, default bright**, parallel to
   the `u` dim/hide toggle: a named palette command flips it, and there is no
   `config.toml` key. When dim, a neighbour line recedes among the dimmed

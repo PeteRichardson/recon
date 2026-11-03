@@ -127,6 +127,32 @@ fn files_lists_the_matching_inputs_from_stdin_with_or_without_hide() {
     }
 }
 
+/// #585: the view shows neighbour lines, and `--emit lines` does not yet;
+/// #587 adds them to it behind a flag.
+#[test]
+fn lines_leave_out_the_neighbour_lines() {
+    let dir = fixture("lines_no_neighbours");
+    let home = dir.join("config");
+    fs::create_dir_all(home.join("recon")).expect("create config dir");
+    fs::write(
+        home.join("recon/filters.toml"),
+        "[sets.Near]\n\
+         [[sets.Near.filters]]\n\
+         pattern = 'hit'\n\
+         after = 1\n\
+         [sets.Near.profiles]\n\
+         default = ['hit']\n",
+    )
+    .expect("write filters.toml");
+    let log = dir.join("server.log");
+    fs::write(&log, "hit\nnear\nfar\n").expect("write");
+    let path = log.to_str().expect("utf-8 path");
+
+    let out = recon(&home, &["--emit", "lines", "--set", "Near", path], b"");
+
+    assert_eq!(text(&out.stdout), "hit\n", "{}", text(&out.stderr));
+}
+
 /// #511: batch mode always hides, so `--emit lines` without `--hide` prints
 /// only the matches — and `--hide`, still accepted, changes nothing.
 #[test]

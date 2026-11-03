@@ -116,9 +116,12 @@ impl App<'_> {
         &self,
         then: impl FnOnce(Streamed) -> io::Result<Streamed> + Send + 'static,
     ) -> LinesJob {
+        // As `Document::emitted`: no neighbour lines until #587.
+        let mut filters = self.filters.snapshot();
+        filters.clear_neighbours();
         LinesJob::start(
             self.view.filename(),
-            self.filters.snapshot(),
+            filters,
             self.document.mode(),
             self.line_numbers,
             then,

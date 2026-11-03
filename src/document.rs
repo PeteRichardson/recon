@@ -1,6 +1,6 @@
 //! The loaded file and what the filters made of it.
 
-use crate::filter::{ActiveFilters, Verdict};
+use crate::filter::{ActiveFilters, Neighbour, Verdict};
 use crate::syntax::{self, KindSet};
 use ratatui::style::Style;
 use std::fs::File;
@@ -160,9 +160,40 @@ impl Document {
                 let kinds = kinds.get(row).copied().unwrap_or(KindSet::EMPTY);
                 filters.verdict_noting(line, kinds, |index| over_limit[index] += 1)
             }));
+        self.mark_neighbours(filters, 0);
         self.anything_including = filters.any_including();
         self.revision = self.revision.wrapping_add(1);
         self.recompute_visible();
+    }
+
+    /// Make each unmatched line within reach of an include match a
+    /// neighbour line (ADR 0016), for the verdicts from row `start` on. An
+    /// exclude filter's line and a line with a filter of its own keep their
+    /// verdict.
+    ///
+    /// Each sweep covers only the rows a match can reach them from, and
+    /// marks as it goes, so a band of overlapping ranges costs the same as
+    /// one range: O(lines), however large the counts.
+    ///
+    /// Here and not in `recompute_visible`: a verdict does not depend on the
+    /// mode, so `u` still runs on the verdicts alone.
+    fn mark_neighbours(&mut self, filters: &ActiveFilters, start: usize) {
+        let reach = filters.neighbour_reach();
+        if reach == Neighbour::default() {
+            return;
+        }
+        let count = |verdict: Verdict| match verdict {
+            Verdict::Included(index) => filters.filters().get(index).map(|f| f.neighbour),
+            _ => None,
+        };
+        let first = start.saturating_sub(reach.after as usize);
+        sweep(self.verdicts[first..].iter_mut(), |verdict| {
+            count(verdict).map(|n| n.after)
+        });
+        let first = start.saturating_sub(reach.before as usize);
+        sweep(self.verdicts[first..].iter_mut().rev(), |verdict| {
+            count(verdict).map(|n| n.before)
+        });
     }
 
     /// Add the lines a followed file grew by (#493). `replace_last`: the
@@ -170,7 +201,8 @@ impl Document {
     /// grown.
     ///
     /// Only the new lines are evaluated, so a tick of a large followed log
-    /// costs the lines it added. A replaced line, or a definition filter,
+    /// costs the lines it added, and the neighbour counts' reach. A replaced
+    /// line, or a definition filter,
     /// which parses the whole file, takes a full `evaluate`. The lines are
     /// copied when the view still shares them: `App` lets go of its
     /// reference first, so a tick does not copy the file.
@@ -192,14 +224,20 @@ impl Document {
         self.verdicts.extend(self.lines[start..].iter().map(|line| {
             filters.verdict_noting(line, KindSet::EMPTY, |index| over_limit[index] += 1)
         }));
+        self.mark_neighbours(filters, start);
         let (mode, anything_including) = (self.mode, self.anything_including);
-        let shown = self.verdicts[start..]
+        // A new match reaches back, so the rows from there are read again.
+        // They only gain lines, so the length says whether the set moved.
+        let first = start.saturating_sub(filters.neighbour_reach().before as usize);
+        let shown = self.verdicts[first..]
             .iter()
             .enumerate()
             .filter(|(_, verdict)| shows(mode, **verdict, anything_including))
-            .map(|(offset, _)| start + offset);
+            .map(|(offset, _)| first + offset);
         self.revision = self.revision.wrapping_add(1);
         let before = self.visible.len();
+        self.visible
+            .truncate(self.visible.partition_point(|&row| row < first));
         self.visible.extend(shown);
         if self.visible.len() != before {
             self.generation = self.generation.wrapping_add(1);
@@ -297,6 +335,17 @@ impl Document {
     #[must_use]
     pub fn visible(&self) -> &[usize] {
         &self.visible
+    }
+
+    /// The visible lines that `--emit lines` and `:w` write: in hide mode,
+    /// all but the neighbour lines, which they do not have until #587. A file
+    /// too large to hold whole gives the same lines from `document::shows`.
+    pub(crate) fn emitted(&self) -> impl Iterator<Item = usize> + '_ {
+        let hiding = self.mode == Mode::FilteredOnly;
+        self.visible
+            .iter()
+            .copied()
+            .filter(move |&row| !(hiding && self.verdicts[row] == Verdict::ContextKeep))
     }
 
     /// The text of the visible lines, for rebuilding the view's buffer.
@@ -579,6 +628,21 @@ pub(crate) fn read_lossy_line<R: BufRead>(
     ))
 }
 
+/// Make the unmatched lines after each match a neighbour line, for as many
+/// lines as `reach` gives it, in the order of `verdicts`.
+fn sweep<'a>(
+    verdicts: impl Iterator<Item = &'a mut Verdict>,
+    reach: impl Fn(Verdict) -> Option<u32>,
+) {
+    let mut left = 0_u32;
+    for verdict in verdicts {
+        if left > 0 && *verdict == Verdict::Unmatched {
+            *verdict = Verdict::ContextKeep;
+        }
+        left = left.saturating_sub(1).max(reach(*verdict).unwrap_or(0));
+    }
+}
+
 /// Whether a line with `verdict` is visible in `mode`, given whether any
 /// including filter is enabled. `Document::recompute_visible`'s rule, and
 /// the one `q` under `--emit lines` applies to a file it streams (#351).
@@ -591,7 +655,10 @@ pub(crate) fn shows(mode: Mode, verdict: Verdict, anything_including: bool) -> b
         (Mode::Dimmed, _) => true,
         // A context line stays in hide mode: that is what the sense
         // is for. Only `n` treats it differently from an include.
-        (Mode::FilteredOnly, Verdict::Included(_) | Verdict::Context(_)) => true,
+        // So does a neighbour line, which is what it is.
+        (Mode::FilteredOnly, Verdict::Included(_) | Verdict::Context(_) | Verdict::ContextKeep) => {
+            true
+        }
         // Issue #36: with nothing including, there is nothing to hide
         // *against*, so hiding shows the file rather than blanking the
         // pane. Dimming has always had this guard in `style_for`;
@@ -684,6 +751,137 @@ impl<R: Read> Read for Counted<'_, R> {
 mod tests {
     use super::*;
     use crate::fixtures::{fixture_dir, fixture_file};
+
+    // ---- neighbour lines (#585, ADR 0016) ------------------------------------
+
+    fn with_count(pattern: &str, before: u32, after: u32) -> ActiveFilters {
+        let mut filters = ActiveFilters::new();
+        filters.add(pattern).expect("valid");
+        filters.set_details(
+            0,
+            crate::filter::Details {
+                neighbour: crate::filter::Neighbour { before, after },
+                ..crate::filter::Details::default()
+            },
+        );
+        filters
+    }
+
+    fn hidden(lines: &[&str], filters: &ActiveFilters) -> Document {
+        let mut document = doc(lines);
+        document.set_mode(Mode::FilteredOnly);
+        document.evaluate(filters);
+        document
+    }
+
+    #[test]
+    fn hide_mode_keeps_the_lines_around_a_match() {
+        let filters = with_count("hit", 1, 2);
+        let document = hidden(&["a", "b", "hit", "c", "d", "e"], &filters);
+        assert_eq!(document.visible(), &[1, 2, 3, 4]);
+        assert_eq!(
+            document.verdicts()[1..=4],
+            [
+                Verdict::ContextKeep,
+                Verdict::Included(0),
+                Verdict::ContextKeep,
+                Verdict::ContextKeep
+            ]
+        );
+    }
+
+    #[test]
+    fn a_range_stops_at_the_ends_of_the_file() {
+        let filters = with_count("hit", 5, 5);
+        let document = hidden(&["hit", "a", "hit"], &filters);
+        assert_eq!(document.visible(), &[0, 1, 2]);
+    }
+
+    #[test]
+    fn two_overlapping_ranges_are_one_band() {
+        let filters = with_count("hit", 2, 2);
+        let document = hidden(&["a", "hit", "b", "c", "hit", "d", "e", "f"], &filters);
+        assert_eq!(document.visible(), &[0, 1, 2, 3, 4, 5, 6]);
+    }
+
+    #[test]
+    fn an_exclude_filter_removes_a_neighbour_line() {
+        let mut filters = with_count("hit", 1, 1);
+        filters.add_excluding("noise").expect("valid");
+        let document = hidden(&["noise", "hit", "a"], &filters);
+        assert_eq!(document.visible(), &[1, 2]);
+        assert_eq!(document.verdicts()[0], Verdict::Excluded);
+    }
+
+    /// A line that matches a filter keeps what its own filter says.
+    #[test]
+    fn a_context_line_in_a_range_keeps_its_verdict() {
+        let mut filters = with_count("hit", 0, 1);
+        filters
+            .add_as(
+                "note",
+                crate::filter::Sense::Context,
+                crate::filter::Engine::Standard,
+            )
+            .expect("valid");
+        let document = hidden(&["hit", "note"], &filters);
+        assert_eq!(document.verdicts()[1], Verdict::Context(1));
+    }
+
+    /// A match inside a range is a line of that range.
+    #[test]
+    fn a_match_with_no_count_uses_up_a_line_of_the_range() {
+        let mut filters = with_count("hit", 0, 2);
+        filters.add("other").expect("valid");
+        let document = hidden(&["hit", "other", "a", "b"], &filters);
+        assert_eq!(document.visible(), &[0, 1, 2]);
+    }
+
+    #[test]
+    fn a_count_of_zero_keeps_no_neighbours() {
+        let filters = with_count("hit", 0, 0);
+        let document = hidden(&["a", "hit", "b"], &filters);
+        assert_eq!(document.visible(), &[1]);
+    }
+
+    #[test]
+    fn dim_mode_shows_no_new_lines() {
+        let filters = with_count("hit", 1, 1);
+        let mut document = doc(&["a", "hit", "b", "c"]);
+        document.evaluate(&filters);
+        assert_eq!(document.visible(), &[0, 1, 2, 3]);
+    }
+
+    #[test]
+    fn a_neighbour_line_has_no_filter_colour_and_is_not_dimmed() {
+        let filters = with_count("hit", 0, 1);
+        let document = hidden(&["hit", "a", "b"], &filters);
+        assert_eq!(
+            filters.style_for(document.verdicts()[1]),
+            None,
+            "the default foreground"
+        );
+        assert_eq!(document.interesting_count(), 1);
+    }
+
+    #[test]
+    fn a_new_match_in_a_followed_file_reaches_back() {
+        let filters = with_count("hit", 1, 0);
+        let mut document = hidden(&["a", "b"], &filters);
+        assert!(document.visible().is_empty());
+        document.append(vec!["hit".into()], false, &filters);
+        assert_eq!(document.visible(), &[1, 2]);
+    }
+
+    #[test]
+    fn an_old_match_reaches_forward_into_a_followed_files_new_lines() {
+        let filters = with_count("hit", 0, 2);
+        let mut document = hidden(&["hit"], &filters);
+        let generation = document.generation();
+        document.append(vec!["a".into(), "b".into(), "c".into()], false, &filters);
+        assert_eq!(document.visible(), &[0, 1, 2]);
+        assert_ne!(document.generation(), generation);
+    }
 
     // ---- definition filters (#123) -----------------------------------------
 

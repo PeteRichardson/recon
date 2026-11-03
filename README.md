@@ -837,6 +837,11 @@ pattern = 'retry|backoff'
 sense   = "exclude"
 ```
 
+A neighbour count shows the lines around each line an include filter matches,
+as grep's `-B` and `-A` do: hide mode keeps them, and they show in the default
+foreground, in no filter's colour, in both modes. `n` and `N` step over them,
+and an exclude filter still removes one. `--emit lines` and `:w` do not write them yet.
+
 Single-quoted TOML strings do no escape processing, so a regex goes in
 verbatim — no doubled backslashes.
 

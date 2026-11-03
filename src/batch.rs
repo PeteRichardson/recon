@@ -120,6 +120,8 @@ fn filters_for(startup: &Startup) -> Result<ActiveFilters> {
     if !broken.is_empty() {
         return Err(eyre!("{}", broken.join("\n")));
     }
+    // Batch output has no neighbour lines until #587.
+    filters.clear_neighbours();
     Ok(filters)
 }
 

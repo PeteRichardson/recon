@@ -237,6 +237,10 @@ pub enum Verdict {
     /// filters out of the mask that marks a file as matching — this variant
     /// is what lets the view agree with it.
     Context(usize),
+    /// Matched no filter, and kept only as a neighbour line of an include
+    /// match (ADR 0016): shown, but not interesting, and in no filter's
+    /// colour.
+    ContextKeep,
     /// Matched no including filter.
     Unmatched,
     /// Removed by an excluding filter.
@@ -1566,7 +1570,30 @@ impl ActiveFilters {
                 self.filters.get(index).map(|f| f.style)
             }
             Verdict::Unmatched if self.any_including() => Some(self.dim_style()),
-            Verdict::Unmatched | Verdict::Excluded => None,
+            Verdict::Unmatched | Verdict::ContextKeep | Verdict::Excluded => None,
+        }
+    }
+
+    /// The largest neighbour counts of the filters that are on (ADR 0016):
+    /// how far a match can reach. `0 0` when none has a count.
+    #[must_use]
+    pub fn neighbour_reach(&self) -> Neighbour {
+        self.filters
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| self.effective(*index))
+            .fold(Neighbour::default(), |reach, (_, filter)| Neighbour {
+                before: reach.before.max(filter.neighbour.before),
+                after: reach.after.max(filter.neighbour.after),
+            })
+    }
+
+    /// Give every filter a count of `0 0`, for output that has no neighbour
+    /// lines. Only a copy of the filters is meant to take this: the set file
+    /// keeps the counts.
+    pub(crate) fn clear_neighbours(&mut self) {
+        for filter in &mut self.filters {
+            filter.neighbour = Neighbour::default();
         }
     }
 
