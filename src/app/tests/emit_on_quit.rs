@@ -11,14 +11,14 @@ fn app_emitting(name: &str, emit: Option<emit::Emit>) -> App<'static> {
     }))
 }
 
-/// The view shows neighbour lines, and `--emit lines` does not yet: #587
-/// adds them behind a flag, the same for a file of any size.
-#[test]
-fn emitted_lines_leave_out_the_neighbour_lines() {
-    let file = fixture_path("emit_no_neighbours", "hit\nnear\nfar\n");
+/// `q` under `--emit lines` in hide mode, over `hit near far` with one
+/// neighbour line after `hit`: what it emits, and its summary.
+fn quit_emit_near(name: &str, no_neighbours: bool) -> (Vec<Vec<u8>>, String) {
+    let file = fixture_path(name, "hit\nnear\nfar\n");
     let mut app = App::new(&Startup::from(Config {
         path: Some(file.display().to_string()),
         emit: Some(emit::Emit::Lines),
+        no_neighbours,
         ..Config::default()
     }));
     app.filters.add("hit").expect("valid");
@@ -32,6 +32,22 @@ fn emitted_lines_leave_out_the_neighbour_lines() {
     let emit::Exit::Emit { lines, summary, .. } = app.exit() else {
         panic!("q emits");
     };
+    (lines, summary)
+}
+
+/// #587: `--emit lines` writes the neighbour lines the view shows, as
+/// batch mode does.
+#[test]
+fn emitted_lines_include_the_neighbour_lines() {
+    let (lines, summary) = quit_emit_near("emit_neighbours", false);
+    assert_eq!(lines, [b"hit".to_vec(), b"near".to_vec()]);
+    assert!(summary.contains("emitted 2 "), "{summary}");
+}
+
+/// #587: `--no-neighbours` leaves them out.
+#[test]
+fn no_neighbours_leaves_the_neighbour_lines_out_of_the_emit() {
+    let (lines, summary) = quit_emit_near("emit_no_neighbours", true);
     assert_eq!(lines, [b"hit".to_vec()]);
     assert!(summary.contains("emitted 1 "), "{summary}");
 }

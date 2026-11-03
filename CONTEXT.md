@@ -173,7 +173,9 @@ and `N` step over it. It shows in the default foreground, never in a filter
 colour — that is how it reads as "near a match" rather than a match. A single
 global setting renders neighbour lines bright (the default) or dim; it is
 session-only, like the *Dim mode / Hide mode* toggle, and the action that
-flips it is a named command.
+flips it is a named command. `--emit lines` writes neighbour lines with the
+matches unless `--no-neighbours` is given; the bright/dim setting does not
+change that.
 _Avoid_: context lines (that is a *Sense*), halo, surroundings
 
 **Neighbour count**:

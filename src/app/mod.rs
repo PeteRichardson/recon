@@ -212,6 +212,9 @@ pub struct App<'a> {
     emit: Option<emit::Emit>,
     /// `-n`: prefix each emitted line with its source line number and a tab.
     line_numbers: bool,
+    /// Whether the emitted lines keep the neighbour lines: off under
+    /// `--no-neighbours` (#587).
+    emit_neighbours: bool,
     /// How `o` actually starts an editor.
     ///
     /// Boxed behind the trait so tests can swap in a double that records the
@@ -496,6 +499,7 @@ impl App<'_> {
             scrollbar: config.scrollbar(),
             emit: config.emit,
             line_numbers: config.line_numbers,
+            emit_neighbours: !config.no_neighbours,
             launcher: Box::new(launcher),
             status_message: None,
             editor_outcomes: Some(outcomes_rx),

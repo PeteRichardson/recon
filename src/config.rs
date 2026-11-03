@@ -381,6 +381,18 @@ pub struct Config {
     #[arg(short = 'f', long)]
     pub follow: bool,
 
+    /// With `--emit lines`: keep the neighbour lines around each match, as
+    /// hide mode shows them. On unless `--no-neighbours`.
+    //
+    // A no-op that says the default (#587), as `--warnings` does.
+    #[arg(long)]
+    pub neighbours: bool,
+
+    /// With `--emit lines`: leave out the neighbour lines around each match.
+    /// The opposite of `--neighbours`, and wins over it.
+    #[arg(long = "no-neighbours")]
+    pub no_neighbours: bool,
+
     /// Enable a saved filter set at startup, as `NAME` for its `default`
     /// profile or `NAME:LIST` for the filters a comma-separated list of
     /// profiles and filter names turns on. Repeatable.

@@ -1611,6 +1611,20 @@ impl ActiveFilters {
             })
     }
 
+    /// The neighbour count a line with `verdict` reaches with: its include
+    /// filter's, or `0 0` for a line no include filter matched.
+    #[must_use]
+    pub fn neighbour_of(&self, verdict: Verdict) -> Neighbour {
+        match verdict {
+            Verdict::Included(index) => self
+                .filters
+                .get(index)
+                .map(|filter| filter.neighbour)
+                .unwrap_or_default(),
+            _ => Neighbour::default(),
+        }
+    }
+
     /// Give every filter a count of `0 0`, for output that has no neighbour
     /// lines. Only a copy of the filters is meant to take this: the set file
     /// keeps the counts.
@@ -1638,9 +1652,23 @@ impl ActiveFilters {
 /// Builders shared by this module's tests and the pane's.
 #[cfg(test)]
 pub(crate) mod test_support {
-    use super::{LoadedFilter, LoadedSet, Predicate, Sense};
+    use super::{ActiveFilters, Details, LoadedFilter, LoadedSet, Neighbour, Predicate, Sense};
     use std::collections::BTreeMap;
     use std::path::PathBuf;
+
+    /// One include filter on `pattern`, with a neighbour count (ADR 0016).
+    pub(crate) fn with_count(pattern: &str, before: u32, after: u32) -> ActiveFilters {
+        let mut filters = ActiveFilters::new();
+        filters.add(pattern).expect("valid pattern");
+        filters.set_details(
+            0,
+            Details {
+                neighbour: Neighbour { before, after },
+                ..Details::default()
+            },
+        );
+        filters
+    }
 
     /// A file set named `name`, one include filter per pattern, each named
     /// by its pattern.
