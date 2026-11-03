@@ -3,6 +3,7 @@
 use crate::filter::{ActiveFilters, Neighbour, Verdict};
 use crate::syntax::{self, KindSet};
 use ratatui::style::Style;
+use std::collections::VecDeque;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Cursor, Read};
 use std::path::Path;
@@ -182,17 +183,13 @@ impl Document {
         if reach == Neighbour::default() {
             return;
         }
-        let count = |verdict: Verdict| match verdict {
-            Verdict::Included(index) => filters.filters().get(index).map(|f| f.neighbour),
-            _ => None,
-        };
         let first = start.saturating_sub(reach.after as usize);
         sweep(self.verdicts[first..].iter_mut(), |verdict| {
-            count(verdict).map(|n| n.after)
+            filters.neighbour_of(verdict).after
         });
         let first = start.saturating_sub(reach.before as usize);
         sweep(self.verdicts[first..].iter_mut().rev(), |verdict| {
-            count(verdict).map(|n| n.before)
+            filters.neighbour_of(verdict).before
         });
     }
 
@@ -337,15 +334,15 @@ impl Document {
         &self.visible
     }
 
-    /// The visible lines that `--emit lines` and `:w` write: in hide mode,
-    /// all but the neighbour lines, which they do not have until #587. A file
-    /// too large to hold whole gives the same lines from `document::shows`.
-    pub(crate) fn emitted(&self) -> impl Iterator<Item = usize> + '_ {
-        let hiding = self.mode == Mode::FilteredOnly;
+    /// The visible lines that `--emit lines` and `:w` write: in hide mode
+    /// without the neighbour lines unless `neighbours`. A file too large to
+    /// hold whole gives the same lines from [`Shown`].
+    pub(crate) fn emitted(&self, neighbours: bool) -> impl Iterator<Item = usize> + '_ {
+        let drop_neighbours = self.mode == Mode::FilteredOnly && !neighbours;
         self.visible
             .iter()
             .copied()
-            .filter(move |&row| !(hiding && self.verdicts[row] == Verdict::ContextKeep))
+            .filter(move |&row| !(drop_neighbours && self.verdicts[row] == Verdict::ContextKeep))
     }
 
     /// The text of the visible lines, for rebuilding the view's buffer.
@@ -630,17 +627,22 @@ pub(crate) fn read_lossy_line<R: BufRead>(
 
 /// Make the unmatched lines after each match a neighbour line, for as many
 /// lines as `reach` gives it, in the order of `verdicts`.
-fn sweep<'a>(
-    verdicts: impl Iterator<Item = &'a mut Verdict>,
-    reach: impl Fn(Verdict) -> Option<u32>,
-) {
+fn sweep<'a>(verdicts: impl Iterator<Item = &'a mut Verdict>, reach: impl Fn(Verdict) -> u32) {
     let mut left = 0_u32;
     for verdict in verdicts {
-        if left > 0 && *verdict == Verdict::Unmatched {
+        if step(&mut left, *verdict, reach(*verdict)) {
             *verdict = Verdict::ContextKeep;
         }
-        left = left.saturating_sub(1).max(reach(*verdict).unwrap_or(0));
     }
+}
+
+/// One line of a sweep: whether a line with `verdict` is a neighbour line,
+/// with `left` lines of reach still to go. `left` then becomes the reach
+/// for the next line, which `count` — this line's own — can extend.
+fn step(left: &mut u32, verdict: Verdict, count: u32) -> bool {
+    let neighbour = *left > 0 && verdict == Verdict::Unmatched;
+    *left = left.saturating_sub(1).max(count);
+    neighbour
 }
 
 /// Whether a line with `verdict` is visible in `mode`, given whether any
@@ -666,6 +668,81 @@ pub(crate) fn shows(mode: Mode, verdict: Verdict, anything_including: bool) -> b
         // with only excluding filters — produce an empty view that read
         // as "this file is empty".
         (Mode::FilteredOnly, Verdict::Unmatched) => !anything_including,
+    }
+}
+
+/// The lines a file read one at a time shows in a mode, with the neighbour
+/// lines `Document::evaluate` would mark (ADR 0016), for a reader that
+/// cannot look ahead. A line a match to come can still reach back to is
+/// held until then, so each line comes out once and in order.
+pub(crate) struct Shown<'a> {
+    filters: &'a ActiveFilters,
+    mode: Mode,
+    anything_including: bool,
+    /// How far back a match can reach.
+    reach: usize,
+    /// Unmatched lines since the last one shown, within `reach` of the next.
+    behind: VecDeque<(usize, String)>,
+    /// How many lines on the last match still reaches forward.
+    ahead: u32,
+}
+
+impl<'a> Shown<'a> {
+    pub(crate) fn new(filters: &'a ActiveFilters, mode: Mode) -> Self {
+        Self {
+            filters,
+            mode,
+            anything_including: filters.any_including(),
+            reach: filters.neighbour_reach().before as usize,
+            behind: VecDeque::new(),
+            ahead: 0,
+        }
+    }
+
+    /// Take line `row`, with `verdict`. `show` gets each line that shows,
+    /// as its row and text: the held lines this one reaches back to, then
+    /// this one.
+    ///
+    /// # Errors
+    /// Any `show` returns.
+    pub(crate) fn line(
+        &mut self,
+        row: usize,
+        text: &str,
+        verdict: Verdict,
+        mut show: impl FnMut(usize, &str) -> io::Result<()>,
+    ) -> io::Result<()> {
+        let count = self.filters.neighbour_of(verdict);
+        let neighbour = step(&mut self.ahead, verdict, count.after);
+        while self
+            .behind
+            .front()
+            .is_some_and(|&(held, _)| held + self.reach < row)
+        {
+            self.behind.pop_front();
+        }
+        if neighbour || shows(self.mode, verdict, self.anything_including) {
+            let first = row.saturating_sub(count.before as usize);
+            for (held, text) in self.behind.drain(..).filter(|&(held, _)| held >= first) {
+                show(held, &text)?;
+            }
+            show(row, text)?;
+        } else if verdict == Verdict::Unmatched && self.reach > 0 {
+            // The oldest line is out of reach of the next one: its buffer
+            // takes this line, so a run of unmatched lines does not allocate.
+            let mut held = if self.behind.len() == self.reach {
+                self.behind
+                    .pop_front()
+                    .map(|(_, held)| held)
+                    .unwrap_or_default()
+            } else {
+                String::new()
+            };
+            held.clear();
+            held.push_str(text);
+            self.behind.push_back((row, held));
+        }
+        Ok(())
     }
 }
 
@@ -754,18 +831,7 @@ mod tests {
 
     // ---- neighbour lines (#585, ADR 0016) ------------------------------------
 
-    fn with_count(pattern: &str, before: u32, after: u32) -> ActiveFilters {
-        let mut filters = ActiveFilters::new();
-        filters.add(pattern).expect("valid");
-        filters.set_details(
-            0,
-            crate::filter::Details {
-                neighbour: crate::filter::Neighbour { before, after },
-                ..crate::filter::Details::default()
-            },
-        );
-        filters
-    }
+    use crate::filter::test_support::with_count;
 
     fn hidden(lines: &[&str], filters: &ActiveFilters) -> Document {
         let mut document = doc(lines);

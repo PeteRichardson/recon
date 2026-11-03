@@ -43,10 +43,14 @@ does not show lines around a match.
   the `u` dim/hide toggle: a named palette command flips it, and there is no
   `config.toml` key. When dim, a neighbour line recedes among the dimmed
   lines in either mode.
-- **Batch `--emit lines` honours the same flag.** The flag surfaces on the
-  command line as `--[no-]neighbours`: present, neighbour lines are emitted
-  with the matches; absent (the bright default), they are not. So the
-  opt-out expresses the setting whose default is "on".
+- **`--emit lines` writes neighbour lines by default.** The command line
+  carries the same default-on idea as the bright/dim flag, as
+  `--[no-]neighbours`: neighbour lines are emitted with the matches unless
+  `--no-neighbours` is given, so the opt-out expresses the setting whose
+  default is "on". The two are separate surfaces with no runtime coupling
+  (#587): `Ctrl-n` changes how the view draws them, not what is emitted. The
+  same rule applies in batch mode and to `q` and `:w` in the TUI, so a file
+  emits the same lines whichever way it is read.
 - **The *context* sense is unchanged and keeps its name.** No rename; the
   feature carries its grep comprehension in a help line ("like grep
   `-A`/`-B`/`-C`") instead of in a word.

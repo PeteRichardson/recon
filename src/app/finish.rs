@@ -116,9 +116,11 @@ impl App<'_> {
         &self,
         then: impl FnOnce(Streamed) -> io::Result<Streamed> + Send + 'static,
     ) -> LinesJob {
-        // As `Document::emitted`: no neighbour lines until #587.
+        // As `Document::emitted`.
         let mut filters = self.filters.snapshot();
-        filters.clear_neighbours();
+        if !self.emit_neighbours {
+            filters.clear_neighbours();
+        }
         LinesJob::start(
             self.view.filename(),
             filters,
@@ -317,20 +319,14 @@ pub(super) fn stream(
     read: &AtomicU64,
 ) -> io::Result<Option<Streamed>> {
     let mut out = BufWriter::new(emit::spool()?);
-    let anything_including = filters.any_including();
     let (mut emitted, mut interesting) = (0, 0);
-    let mut write = |number: usize, text: &str, verdict| -> io::Result<()> {
-        if is_interesting(&verdict) {
-            interesting += 1;
+    let mut put = |row: usize, text: &str| -> io::Result<()> {
+        if line_numbers {
+            write!(out, "{}\t", row + 1)?;
         }
-        if document::shows(mode, verdict, anything_including) {
-            if line_numbers {
-                write!(out, "{number}\t")?;
-            }
-            out.write_all(text.as_bytes())?;
-            out.write_all(b"\n")?;
-            emitted += 1;
-        }
+        out.write_all(text.as_bytes())?;
+        out.write_all(b"\n")?;
+        emitted += 1;
         Ok(())
     };
     let complete = if filters.needs_kinds() {
@@ -339,24 +335,32 @@ pub(super) fn stream(
             std::fs::metadata(path).map_or(0, |meta| meta.len()),
             Ordering::Relaxed,
         );
+        whole.set_mode(mode);
         whole.evaluate(filters);
+        interesting = whole.interesting_count();
+        let text = whole.lines();
         let mut complete = true;
-        for (row, (text, verdict)) in whole.lines().iter().zip(whole.verdicts()).enumerate() {
+        for &row in whole.visible() {
             if cancel.load(Ordering::Relaxed) {
                 complete = false;
                 break;
             }
-            write(row + 1, text, *verdict)?;
+            put(row, &text[row])?;
         }
         complete
     } else {
-        let mut number = 0;
+        let mut shown = document::Shown::new(filters, mode);
+        let mut row = 0;
         document::each_line(path, read, |text| {
             if cancel.load(Ordering::Relaxed) {
                 return Ok(false);
             }
-            number += 1;
-            write(number, &text, filters.verdict(&text, KindSet::EMPTY))?;
+            let verdict = filters.verdict(&text, KindSet::EMPTY);
+            if is_interesting(&verdict) {
+                interesting += 1;
+            }
+            shown.line(row, &text, verdict, &mut put)?;
+            row += 1;
             Ok(true)
         })?
     };
@@ -389,7 +393,26 @@ pub(super) fn size(bytes: u64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::size;
+    use super::*;
+    use crate::fixtures::fixture_file;
+    use std::io::{Read, Seek, SeekFrom};
+
+    /// #587: a file read a line at a time gives the neighbour lines a file
+    /// held whole does: the one before a match too, after it was read.
+    #[test]
+    fn a_streamed_file_emits_the_neighbour_lines() {
+        let file = fixture_file("finish_stream_neighbours.log", b"a\nb\nhit\nc\nd\n");
+        let filters = crate::filter::test_support::with_count("hit", 1, 1);
+        let (cancel, read) = (AtomicBool::new(false), AtomicU64::new(0));
+        let mut streamed = stream(&file, &filters, Mode::FilteredOnly, true, &cancel, &read)
+            .expect("readable")
+            .expect("not cancelled");
+        let mut text = String::new();
+        streamed.spool.seek(SeekFrom::Start(0)).expect("seek");
+        streamed.spool.read_to_string(&mut text).expect("utf-8");
+        assert_eq!(text, "2\tb\n3\thit\n4\tc\n");
+        assert_eq!((streamed.emitted, streamed.interesting), (3, 1));
+    }
 
     #[test]
     fn sizes_read_as_a_person_would_say_them() {

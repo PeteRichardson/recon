@@ -357,6 +357,12 @@ Options:
           stdin when FILE is `-`. Relative paths are from the current directory
   -f, --follow
           Follow a file that grows, as `tail -f` does
+      --neighbours
+          With `--emit lines`: keep the neighbour lines around each match, as
+          hide mode shows them. On unless `--no-neighbours`
+      --no-neighbours
+          With `--emit lines`: leave out the neighbour lines around each match.
+          The opposite of `--neighbours`, and wins over it
   -s, --set <[+]NAME[:LIST]>
           Enable a saved filter set at startup, as `NAME` for its `default`
           profile or `NAME:LIST` for the filters a comma-separated list of
@@ -841,7 +847,8 @@ sense   = "exclude"
 A neighbour count shows the lines around each line an include filter matches,
 as grep's `-B` and `-A` do: hide mode keeps them, and they show in the default
 foreground, in no filter's colour, in both modes; `Ctrl-n` dims them. `n` and `N` step over them,
-and an exclude filter still removes one. `--emit lines` and `:w` do not write them yet.
+and an exclude filter still removes one. `--emit lines` and `:w` write them with the matches;
+`--no-neighbours` leaves them out.
 
 Single-quoted TOML strings do no escape processing, so a regex goes in
 verbatim — no doubled backslashes.
@@ -2586,6 +2593,14 @@ recon --emit lines -n app.log | cut -f2-         # the text again
 A tab rather than `grep -n`'s colon: a line can contain colons, a tab never
 appears in a line number, and the text after it is byte-for-byte the file's.
 `-n` with anything but `--emit lines` is refused at startup.
+
+**Neighbour lines come too.** In hide mode, `--emit lines` writes the
+[neighbour lines](#filter-sets) around each match, as the view shows them, in
+batch mode and on `q` alike, and on stdin and under `--follow` too. A
+neighbour line that comes before a match is written when the match comes.
+`--no-neighbours` writes the matches without them, as `grep` without `-A`
+and `-B` does. `Ctrl-n` changes only how the view draws them, not what
+`--emit` writes.
 
 The shell function the `cwd` output exists for:
 

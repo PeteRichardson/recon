@@ -127,11 +127,10 @@ fn files_lists_the_matching_inputs_from_stdin_with_or_without_hide() {
     }
 }
 
-/// #585: the view shows neighbour lines, and `--emit lines` does not yet;
-/// #587 adds them to it behind a flag.
-#[test]
-fn lines_leave_out_the_neighbour_lines() {
-    let dir = fixture("lines_no_neighbours");
+/// `--emit lines --set Near` over `hit near far` in a fixture `name`, with
+/// `flags` after: the `Near` set is `hit` with one neighbour line after it.
+fn near_lines(name: &str, flags: &[&str]) -> Output {
+    let dir = fixture(name);
     let home = dir.join("config");
     fs::create_dir_all(home.join("recon")).expect("create config dir");
     fs::write(
@@ -147,10 +146,33 @@ fn lines_leave_out_the_neighbour_lines() {
     let log = dir.join("server.log");
     fs::write(&log, "hit\nnear\nfar\n").expect("write");
     let path = log.to_str().expect("utf-8 path");
+    let mut args = vec!["--emit", "lines", "--set", "Near"];
+    args.extend_from_slice(flags);
+    args.push(path);
+    recon(&home, &args, b"")
+}
 
-    let out = recon(&home, &["--emit", "lines", "--set", "Near", path], b"");
+/// #587: `--emit lines` writes the neighbour lines the view shows, and
+/// `--neighbours`, the default spelt out, changes nothing.
+#[test]
+fn lines_include_the_neighbour_lines_by_default() {
+    for flags in [&[][..], &["--neighbours"]] {
+        let out = near_lines("lines_neighbours", flags);
+        assert_eq!(text(&out.stdout), "hit\nnear\n", "{}", text(&out.stderr));
+    }
+}
 
-    assert_eq!(text(&out.stdout), "hit\n", "{}", text(&out.stderr));
+/// #587: `--no-neighbours` gives the matches alone, as before neighbour
+/// lines were emitted, and wins over `--neighbours`.
+#[test]
+fn no_neighbours_leaves_out_the_neighbour_lines() {
+    for flags in [
+        &["--no-neighbours"][..],
+        &["--neighbours", "--no-neighbours"],
+    ] {
+        let out = near_lines("lines_no_neighbours", flags);
+        assert_eq!(text(&out.stdout), "hit\n", "{}", text(&out.stderr));
+    }
 }
 
 /// #511: batch mode always hides, so `--emit lines` without `--hide` prints

@@ -36,7 +36,7 @@ impl App<'_> {
         let text = self.document.lines();
         let lines: Vec<_> = self
             .document
-            .emitted()
+            .emitted(self.emit_neighbours)
             .map(|source| {
                 let mut line = Vec::new();
                 if self.line_numbers {

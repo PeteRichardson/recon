@@ -10,7 +10,7 @@
 //! so `main` finishes both the same way.
 
 use crate::app::viewport::is_interesting;
-use crate::document::{self, Document, Mode, read_lossy_line, shows};
+use crate::document::{self, Document, Mode, Shown, read_lossy_line};
 use crate::emit::{Emit, Exit, path_bytes};
 use crate::filter::{ActiveFilters, Matcher};
 use crate::follow::{Change, Tail};
@@ -120,8 +120,9 @@ fn filters_for(startup: &Startup) -> Result<ActiveFilters> {
     if !broken.is_empty() {
         return Err(eyre!("{}", broken.join("\n")));
     }
-    // Batch output has no neighbour lines until #587.
-    filters.clear_neighbours();
+    if config.no_neighbours {
+        filters.clear_neighbours();
+    }
     Ok(filters)
 }
 
@@ -290,10 +291,10 @@ pub(crate) fn collect_stdin<R: io::Read>(
             Ok(document) => {
                 let shown = requires_met(&document, require.as_ref());
                 let document = hidden(document, filters);
-                let all = 0..if shown { document.lines().len() } else { 0 };
+                let end = if shown { document.lines().len() } else { 0 };
                 (
                     Ok(()),
-                    write_new(&document, all, line_numbers, out, &mut emitted),
+                    write_new(&document, &mut 0, end, line_numbers, out, &mut emitted),
                 )
             }
             Err(err) => (Err(err), Ok(())),
@@ -322,6 +323,8 @@ pub(crate) fn collect_stdin<R: io::Read>(
 /// file's worth of matches already read is still written in large blocks.
 ///
 /// How the read and the writing went, apart: a write error stops the read.
+///
+/// A line before a match is held until the match comes: see [`Shown`].
 fn stream_stdin<R: io::Read>(
     mut stdin: io::BufReader<R>,
     filters: &ActiveFilters,
@@ -329,7 +332,7 @@ fn stream_stdin<R: io::Read>(
     out: &mut impl Write,
     emitted: &mut usize,
 ) -> (io::Result<()>, io::Result<()>) {
-    let anything_including = filters.any_including();
+    let mut shown = Shown::new(filters, Mode::FilteredOnly);
     let mut buf = Vec::new();
     for source in 0.. {
         buf.clear();
@@ -343,10 +346,11 @@ fn stream_stdin<R: io::Read>(
         let text = text.trim_end_matches(['\n', '\r']);
         let verdict = filters.verdict(text, KindSet::EMPTY);
         let mut write = || {
-            if shows(Mode::FilteredOnly, verdict, anything_including) {
-                write_line(out, None, line_numbers, source, text)?;
+            shown.line(source, text, verdict, |row, text| {
+                write_line(out, None, line_numbers, row, text)?;
                 *emitted += 1;
-            }
+                Ok(())
+            })?;
             if stdin.buffer().is_empty() {
                 out.flush()?;
             }
@@ -432,13 +436,13 @@ pub(crate) fn follow_lines(
     };
     let mut tail = Tail::after_lines(&path, document.lines().len());
     let mut emitted = 0;
-    // Source lines before this one are written, or hidden.
+    // The source line after the last one written. A hidden line after it
+    // can still become a neighbour line of a match to come.
     let mut done = 0;
     let mut written;
     loop {
         let whole = document.lines().len() - usize::from(tail.partial());
-        written = write_new(&document, done..whole, line_numbers, out, &mut emitted);
-        done = whole;
+        written = write_new(&document, &mut done, whole, line_numbers, out, &mut emitted);
         if written.is_err() || !wait() {
             break;
         }
@@ -470,7 +474,7 @@ pub(crate) fn follow_lines(
     }
     if written.is_ok() {
         let end = document.lines().len();
-        written = write_new(&document, done..end, line_numbers, out, &mut emitted);
+        written = write_new(&document, &mut done, end, line_numbers, out, &mut emitted);
     }
     Ok(Exit::Streamed {
         summary: lines_summary(emitted, &subject),
@@ -479,23 +483,23 @@ pub(crate) fn follow_lines(
     })
 }
 
-/// Write the visible lines among source lines `range`, and flush them.
+/// Write the visible lines from source line `*next` up to `end`, and flush
+/// them. `*next` moves past each line written.
 fn write_new(
     document: &Document,
-    range: std::ops::Range<usize>,
+    next: &mut usize,
+    end: usize,
     line_numbers: bool,
     out: &mut impl Write,
     emitted: &mut usize,
 ) -> io::Result<()> {
     let visible = document.visible();
-    let first = visible.partition_point(|&source| source < range.start);
+    let first = visible.partition_point(|&source| source < *next);
     let text = document.lines();
-    for &source in visible[first..]
-        .iter()
-        .take_while(|&&source| source < range.end)
-    {
+    for &source in visible[first..].iter().take_while(|&&source| source < end) {
         write_line(out, None, line_numbers, source, &text[source])?;
         *emitted += 1;
+        *next = source + 1;
     }
     out.flush()
 }
@@ -1753,6 +1757,88 @@ mod tests {
         assert!(
             summary.starts_with("recon: emitted 0 files of 4 inputs"),
             "{summary}"
+        );
+    }
+
+    // ---- neighbour lines (#587, ADR 0016) -----------------------------------
+
+    use crate::filter::test_support::with_count as near;
+
+    /// What `--emit lines -n` writes for `-` with `body` on stdin.
+    fn stdin_lines(body: &str, filters: &ActiveFilters) -> Vec<String> {
+        let mut out = Vec::new();
+        let exit = collect_stdin(
+            io::BufReader::new(body.as_bytes()),
+            filters,
+            true,
+            &mut out,
+            &mut Vec::new(),
+        );
+        emitted(exit, &out).0
+    }
+
+    /// Stdin read a line at a time still writes a line before a match,
+    /// once and in order — the `w` after the written `x` too, though `y`
+    /// between them is out of reach.
+    #[test]
+    fn streamed_stdin_writes_the_neighbour_lines_on_both_sides() {
+        let filters = near("hit", 2, 1);
+        assert_eq!(
+            stdin_lines("hit\nx\ny\nz\nw\nhit\nv\nu\n", &filters),
+            ["1\thit", "2\tx", "4\tz", "5\tw", "6\thit", "7\tv"]
+        );
+        assert_eq!(
+            stdin_lines("a\nhit\nb\nhit\nc\n", &filters),
+            ["1\ta", "2\thit", "3\tb", "4\thit", "5\tc"]
+        );
+    }
+
+    /// Streamed stdin and a file read whole write the same lines: the view's.
+    #[test]
+    fn streamed_stdin_agrees_with_a_file() {
+        let filters = near("hit", 2, 1);
+        let body = "a\nb\nc\nhit\nd\ne\nf\ng\nhit\nhit\nh\n";
+        let inputs = one_file("batch_neighbours_agree.log", body.as_bytes());
+        let mut out = Vec::new();
+        let exit = collect(
+            Emit::Lines,
+            &inputs,
+            &filters,
+            true,
+            &mut out,
+            &mut Vec::new(),
+        );
+        assert_eq!(stdin_lines(body, &filters), emitted(exit, &out).0);
+    }
+
+    /// A match that comes in a later look at the file still gets the line
+    /// before it, from the look before, and the line after it.
+    #[test]
+    fn follow_writes_the_neighbour_lines_across_looks() {
+        let inputs = one_file("batch_follow_neighbours.log", b"hit\na\nb\n");
+        let path = inputs.files[0].clone();
+        let mut out = Vec::new();
+        let mut step = 0;
+        let exit = follow_lines(
+            &inputs,
+            &near("hit", 1, 1),
+            true,
+            &mut out,
+            &mut Vec::new(),
+            || {
+                step += 1;
+                match step {
+                    1 => append(&path, b"hit\n"),
+                    2 => append(&path, b"c\nd\n"),
+                    _ => return false,
+                }
+                true
+            },
+        )
+        .expect("one file");
+        assert_eq!(
+            emitted(exit, &out).0,
+            ["1\thit", "2\ta", "3\tb", "4\thit", "5\tc"]
         );
     }
 
