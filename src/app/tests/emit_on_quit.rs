@@ -22,17 +22,7 @@ fn emitted_lines_leave_out_the_neighbour_lines() {
         ..Config::default()
     }));
     app.filters.add("hit").expect("valid");
-    let (index, _) = app.filters.filters_in(0).next().expect("the filter");
-    app.filters.set_details(
-        index,
-        crate::filter::Details {
-            neighbour: crate::filter::Neighbour {
-                before: 0,
-                after: 1,
-            },
-            ..crate::filter::Details::default()
-        },
-    );
+    set_count(&mut app, 0, 1);
     app.refresh_view();
     app.document.set_mode(crate::document::Mode::FilteredOnly);
     app.document.recompute_visible();

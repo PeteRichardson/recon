@@ -268,6 +268,17 @@ impl App<'_> {
         }
     }
 
+    /// Render neighbour lines bright or dim (ADR 0016). No verdict and no
+    /// line changes: `apply_view` gives the view the new styles, as it does
+    /// on every pass.
+    pub(super) fn toggle_dim_neighbours(&mut self) {
+        let cursor_source = self.cursor_source();
+        self.filters.toggle_dim_neighbours();
+        let on = on_off(self.filters.dims_neighbours());
+        self.log_filters(format_args!("dim neighbour lines {on}"));
+        self.apply_view(cursor_source);
+    }
+
     /// Hide mode removed the selected file from the explorer, which moved the
     /// selection to a neighbour (#481): `u`, a peek, or a scan answer while
     /// hide mode is on. The view follows it, as it follows `j`

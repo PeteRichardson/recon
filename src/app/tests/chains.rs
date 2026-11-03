@@ -476,20 +476,20 @@ fn chain_from_the_view_steps_with(name: &str, lines: &[(&str, &[&str])]) {
 fn the_view_return_steps_when_n_belongs_to_another_action() {
     chain_from_the_view_steps_with(
         "chain_rebound_n",
-        &[("global.file.next", &["n"]), ("hit.next", &["Ctrl-n"])],
+        &[("global.file.next", &["n"]), ("hit.next", &["Ctrl-g"])],
     );
 }
 
 #[test]
 fn the_view_return_steps_when_hit_next_is_rebound() {
-    chain_from_the_view_steps_with("chain_rebound_hit_next", &[("hit.next", &["Ctrl-n"])]);
+    chain_from_the_view_steps_with("chain_rebound_hit_next", &[("hit.next", &["Ctrl-g"])]);
 }
 
 /// The explorer's own step is rebound too: the return still repeats it.
 #[test]
 fn the_explorer_return_steps_when_its_hit_next_is_rebound() {
     let mut app = app_over("chain_rebound_explorer", &["a.log", "b.log", "c.log"]);
-    rebind(&mut app, &[("explorer.hit.next", &["Ctrl-n"])]);
+    rebind(&mut app, &[("explorer.hit.next", &["Ctrl-g"])]);
     key(&mut app, KeyCode::Char('e'));
     key(&mut app, KeyCode::Char('/'));
     typed(&mut app, "log");

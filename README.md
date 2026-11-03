@@ -555,6 +555,7 @@ Global (`src/app/events.rs`), handled before the focused pane sees the key:
 | `O` | Open the selected file's enclosing **project** in your editor, at the line the cursor is on | `global.editor.project` |
 | `r` | **Refresh from disk** — re-list, re-stat and rescan the explorer's listing (so a file created since the listing was built appears), and reload the file in the view with the cursor kept on its line. The status row shows `changed on disk · r` when the open file's size or mtime has moved | `global.reload` |
 | `-` | Show the file in its **next view** — text, then a hex dump, then text again — see [Views](#views). A binary file opens as hex | `global.view.next` |
+| `Ctrl-n` | Show [neighbour lines](#filter-sets) bright, or dim them. The state lasts for the session, and `NEIGHBOURS DIM` on the status row says when a count is dim | `global.toggle.neighbours` |
 | `Ctrl-t` | **Follow** the file in the view as it grows, or stop — see [Following a growing file](#following-a-growing-file) | `global.follow` |
 | `:` | Open the **command palette**: type a command by name, such as `e ~/projects/app` or `goto 120` — see [The command palette](#the-command-palette) | `global.palette` |
 
@@ -839,7 +840,7 @@ sense   = "exclude"
 
 A neighbour count shows the lines around each line an include filter matches,
 as grep's `-B` and `-A` do: hide mode keeps them, and they show in the default
-foreground, in no filter's colour, in both modes. `n` and `N` step over them,
+foreground, in no filter's colour, in both modes; `Ctrl-n` dims them. `n` and `N` step over them,
 and an exclude filter still removes one. `--emit lines` and `:w` do not write them yet.
 
 Single-quoted TOML strings do no escape processing, so a regex goes in
