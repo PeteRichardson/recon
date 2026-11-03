@@ -868,7 +868,7 @@ mod tests {
     fn a_new_match_in_a_followed_file_reaches_back() {
         let filters = with_count("hit", 1, 0);
         let mut document = hidden(&["a", "b"], &filters);
-        assert!(document.visible().is_empty());
+        assert_eq!(document.visible(), &[] as &[usize]);
         document.append(vec!["hit".into()], false, &filters);
         assert_eq!(document.visible(), &[1, 2]);
     }
