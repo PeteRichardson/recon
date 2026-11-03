@@ -1914,7 +1914,7 @@ dependencies = [
 
 [[package]]
 name = "recon"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "clap",
  "color-eyre",

@@ -1,5 +1,26 @@
 # Changelog
 
+## v0.9.0 — 2026-11-03
+
+### Features
+
+- **fork:** A horizontal scroll offset the caller owns ([#577](https://github.com/PeteRichardson/recon/issues/577))
+- **widgets:** Hbar, the horizontal scroll bar thumb maths ([#578](https://github.com/PeteRichardson/recon/issues/578))
+- **app:** Measure the widest visible line for the scroll bar ([#579](https://github.com/PeteRichardson/recon/issues/579))
+- **fileview:** Reserve and draw the horizontal scroll bar row ([#580](https://github.com/PeteRichardson/recon/issues/580))
+- **mouse:** Click and drag the scroll bar ([#581](https://github.com/PeteRichardson/recon/issues/581))
+- **views:** Align CSV into columns ([#575](https://github.com/PeteRichardson/recon/issues/575))
+- **filter:** Author and persist a per-filter neighbour count
+- **filter:** Left and Right move along the neighbours row
+- **view:** Show neighbour lines around include matches in hide mode
+- **view:** Ctrl-n renders neighbour lines bright or dim
+- **emit:** Write neighbour lines with --emit lines, --no-neighbours drops them
+
+### Fixes
+
+- **fileview:** One padding call, and the map sees the bar's row ([#580](https://github.com/PeteRichardson/recon/issues/580))
+- **csv:** The gap comes after the fill, not inside the max
+
 ## v0.8.0 — 2026-10-29
 
 ### Breaking changes
