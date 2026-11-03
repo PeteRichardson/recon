@@ -156,10 +156,13 @@ impl Document {
         self.over_limit.clear();
         self.over_limit.resize(filters.filters().len(), 0);
         let over_limit = &mut self.over_limit;
+        let mut pass = filters.pass();
         self.verdicts
             .extend(self.lines.iter().enumerate().map(|(row, line)| {
                 let kinds = kinds.get(row).copied().unwrap_or(KindSet::EMPTY);
-                filters.verdict_noting(line, kinds, |index| over_limit[index] += 1)
+                pass.verdict_noting(line, kinds, |index| {
+                    over_limit[index] += 1;
+                })
             }));
         self.mark_neighbors(filters, 0);
         self.anything_including = filters.any_including();
@@ -218,8 +221,11 @@ impl Document {
         }
         let over_limit = &mut self.over_limit;
         over_limit.resize(filters.filters().len(), 0);
+        let mut pass = filters.pass();
         self.verdicts.extend(self.lines[start..].iter().map(|line| {
-            filters.verdict_noting(line, KindSet::EMPTY, |index| over_limit[index] += 1)
+            pass.verdict_noting(line, KindSet::EMPTY, |index| {
+                over_limit[index] += 1;
+            })
         }));
         self.mark_neighbors(filters, start);
         let (mode, anything_including) = (self.mode, self.anything_including);
@@ -1297,6 +1303,33 @@ mod tests {
 
         assert_eq!(document.mode(), Mode::Dimmed);
         assert_eq!(document.visible(), &[0, 2]);
+    }
+
+    /// A pass asks the compiled set in one of two ways, and a run of hits
+    /// changes the way (#592). The verdicts must be the same through both:
+    /// a run of hits long enough to change it, then a run of misses long
+    /// enough to change it back, then lines on each side of that.
+    #[test]
+    fn verdicts_hold_across_runs_of_hits_and_misses() {
+        let mut lines = vec!["alpha"; 600];
+        lines.extend(["plain"; 600]);
+        lines.extend(["noise alpha", "alpha", "plain"]);
+        let mut document = doc(&lines);
+        let mut filters = set_with(&["alpha"]);
+        filters.add_excluding("noise").expect("valid");
+        document.evaluate(&filters);
+
+        let mut expected = vec![Verdict::Included(0); 600];
+        expected.extend([Verdict::Unmatched; 600]);
+        expected.extend([Verdict::Excluded, Verdict::Included(0), Verdict::Unmatched]);
+        assert_eq!(document.verdicts(), expected);
+
+        // Follow mode: the lines a file grew by, after a run of misses.
+        document.append(vec!["plain".into(); 300], false, &filters);
+        document.append(vec!["noise".into(), "alpha".into()], false, &filters);
+        expected.extend([Verdict::Unmatched; 300]);
+        expected.extend([Verdict::Excluded, Verdict::Included(0)]);
+        assert_eq!(document.verdicts(), expected);
     }
 
     // ---- follow mode (#493) -------------------------------------------------

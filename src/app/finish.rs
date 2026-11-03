@@ -350,12 +350,13 @@ pub(super) fn stream(
         complete
     } else {
         let mut shown = document::Shown::new(filters, mode);
+        let mut pass = filters.pass();
         let mut row = 0;
         document::each_line(path, read, |text| {
             if cancel.load(Ordering::Relaxed) {
                 return Ok(false);
             }
-            let verdict = filters.verdict(&text, KindSet::EMPTY);
+            let verdict = pass.verdict(&text, KindSet::EMPTY);
             if is_interesting(&verdict) {
                 interesting += 1;
             }

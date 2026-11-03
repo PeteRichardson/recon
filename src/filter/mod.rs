@@ -14,12 +14,13 @@
 
 mod advanced;
 mod matcher;
+mod prefilter;
 mod reference;
 mod require;
 mod sets;
 
 pub use advanced::{DEFAULT_STEP_LIMIT, Engine, LineRegex, Lookaround, OverLimit, PatternError};
-pub use matcher::{Bits, MAX_PATTERNS, Matcher, Owner, ScanOff, ScanStamp};
+pub use matcher::{Bits, BitsPass, MAX_PATTERNS, Matcher, Owner, ScanOff, ScanStamp};
 pub use reference::{Broken, Expander};
 pub use require::{RequireError, label};
 pub use sets::{
@@ -28,6 +29,7 @@ pub use sets::{
 };
 
 use crate::syntax::{Kind, KindSet};
+use prefilter::Prefilter;
 use ratatui::style::{Color, Modifier, Style};
 use regex::{Regex, RegexSet};
 use sets::Solo;
@@ -732,6 +734,30 @@ pub struct ActiveFilters {
     dim_neighbors: bool,
 }
 
+/// One pass of verdicts over many lines, from [`ActiveFilters::pass`].
+pub struct VerdictPass<'a> {
+    filters: &'a ActiveFilters,
+    prefilter: Prefilter,
+}
+
+impl VerdictPass<'_> {
+    /// As [`ActiveFilters::verdict`], for the next line of the pass.
+    pub fn verdict(&mut self, line: &str, kinds: KindSet) -> Verdict {
+        self.verdict_noting(line, kinds, |_| {})
+    }
+
+    /// As [`ActiveFilters::verdict_noting`], for the next line of the pass.
+    pub fn verdict_noting(
+        &mut self,
+        line: &str,
+        kinds: KindSet,
+        over_limit: impl FnMut(usize),
+    ) -> Verdict {
+        self.filters
+            .verdict_in(line, kinds, &mut self.prefilter, over_limit)
+    }
+}
+
 /// The source of every `ActiveFilters::generation`. Process-wide rather than
 /// per set so that a set built to replace another never repeats its number.
 static GENERATIONS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
@@ -1348,6 +1374,8 @@ impl ActiveFilters {
     /// rather than a wholly dimmed one. The first matching filter wins, which
     /// is what makes the set's order meaningful.
     /// One pass over the line, not one per filter. See `compiled`.
+    ///
+    /// For one line. A loop over the lines of a file takes a [`pass`](Self::pass).
     #[must_use]
     pub fn verdict(&self, line: &str, kinds: KindSet) -> Verdict {
         self.verdict_noting(line, kinds, |_| {})
@@ -1361,6 +1389,28 @@ impl ActiveFilters {
         &self,
         line: &str,
         kinds: KindSet,
+        over_limit: impl FnMut(usize),
+    ) -> Verdict {
+        self.verdict_in(line, kinds, &mut Prefilter::default(), over_limit)
+    }
+
+    /// Verdicts for many lines, in order: what a loop over a file asks
+    /// (#592). The answers are `verdict`'s; the pass also learns how often
+    /// the lines hit, and asks the compiled set the cheaper way for that.
+    #[must_use]
+    pub fn pass(&self) -> VerdictPass<'_> {
+        VerdictPass {
+            filters: self,
+            prefilter: Prefilter::default(),
+        }
+    }
+
+    /// `verdict_noting`, asking the compiled set through `prefilter`.
+    fn verdict_in(
+        &self,
+        line: &str,
+        kinds: KindSet,
+        prefilter: &mut Prefilter,
         mut over_limit: impl FnMut(usize),
     ) -> Verdict {
         let advanced = self.advanced_hits(line, &mut over_limit);
@@ -1380,8 +1430,8 @@ impl ActiveFilters {
         if !self.needs_regex() {
             return self.verdict_scanning(line, kinds, advanced_hit);
         }
-        let matched = set.matches(line);
-        let matched = |index: usize| matched.matched(index);
+        let matched = prefilter.matches(set, line);
+        let matched = |index: usize| matched.as_ref().is_some_and(|m| m.matched(index));
         // A definition's slot in the set never matches (see `NEVER`), so it
         // is answered from `kinds` instead; a regex's is the set's answer.
         let hit = |index: usize| match &self.filters[index].predicate {
