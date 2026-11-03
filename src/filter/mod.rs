@@ -211,6 +211,18 @@ impl Sense {
     }
 }
 
+/// How many *neighbour lines* an include filter shows around each line it
+/// matches (ADR 0016): the count *before* the match and *after* it, matching
+/// grep's `-B` and `-A`. `Default` is `0 0`, which shows no neighbours.
+///
+/// A count belongs only on an include filter: `Filter` drops one that lands
+/// on another sense, and the set parser refuses it.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Neighbour {
+    pub before: u32,
+    pub after: u32,
+}
+
 /// What the filter set decided about one line.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Verdict {
@@ -434,6 +446,10 @@ pub struct Filter {
     pub sense: Sense,
     pub enabled: bool,
     pub style: Style,
+    /// How many neighbour lines to show around each line this filter matches
+    /// (ADR 0016). Meaningful only on an include filter; always `0 0` on the
+    /// other senses.
+    pub neighbour: Neighbour,
     /// The file's `name` for this filter, if it gave one (#128), or the one
     /// typed in the filter editor (#317). `None` for a typed filter until
     /// then; see `display_name`.
@@ -465,6 +481,7 @@ impl Filter {
             sense,
             enabled: true,
             style,
+            neighbour: Neighbour::default(),
             name: None,
             description: None,
             prompt: None,
@@ -481,10 +498,20 @@ impl Filter {
         self.prompt = details.prompt;
         self.examples = details.examples;
         self.generated_from = details.generated_from;
+        self.neighbour = details.neighbour;
+        self.drop_neighbours_off_include();
+    }
+
+    /// Only an include filter has a neighbour count (ADR 0016), and a set
+    /// file that gives another sense one does not load.
+    fn drop_neighbours_off_include(&mut self) {
+        if self.sense != Sense::Include {
+            self.neighbour = Neighbour::default();
+        }
     }
 
     /// Whether the two say the same thing in a set file: the pattern, its
-    /// engine, the sense and the editor's fields. The switch and the colour are not
+    /// engine, the sense, the neighbour count and the editor's fields. The switch and the colour are not
     /// part of it: a switch is session state, and a colour the file did not
     /// give is the palette's (#348).
     fn same_text(&self, other: &Self) -> bool {
@@ -492,6 +519,7 @@ impl Filter {
             && self.predicate.engine() == other.predicate.engine()
             && self.predicate.also() == other.predicate.also()
             && self.sense == other.sense
+            && self.neighbour == other.neighbour
             && self.name == other.name
             && self.description == other.description
             && self.prompt == other.prompt
@@ -578,6 +606,9 @@ pub struct Details {
     /// The hash of the prompt and the pattern when the model wrote the
     /// pattern from the prompt (#321), else `None`.
     pub generated_from: Option<String>,
+    /// How many neighbour lines to show (ADR 0016), carried with the other
+    /// editor fields.
+    pub neighbour: Neighbour,
 }
 
 /// Every enabled flag in an [`ActiveFilters`], captured so it can be restored.
@@ -1164,6 +1195,7 @@ impl ActiveFilters {
             return false;
         }
         filter.sense = sense;
+        filter.drop_neighbours_off_include();
         if sense != Sense::Exclude && filter.style == Style::default() {
             filter.style = colour;
         }
@@ -1187,6 +1219,7 @@ impl ActiveFilters {
             Sense::Context => Sense::Include,
             Sense::Exclude | Sense::Require => return false,
         };
+        filter.drop_neighbours_off_include();
         true
     }
 
@@ -1587,6 +1620,7 @@ pub(crate) mod test_support {
                     prompt: None,
                     examples: Vec::new(),
                     generated_from: None,
+                    neighbour: crate::filter::Neighbour::default(),
                 })
                 .collect(),
             builtin: false,

@@ -822,6 +822,11 @@ pattern = 'beacon loss'
 sense   = "context"                      # include (default) | context | require | exclude
 
 [[sets.WiFi_debug.filters]]
+pattern = 'firmware crash'
+before  = 1                              # an include filter's neighbour count:
+after   = 5                              # grep's -B and -A; each defaults to 0
+
+[[sets.WiFi_debug.filters]]
 pattern = '${beacon-loss}'               # a require row (#548): the base…
 also    = 'wlan1'                        # …and the text, both on one line
 sense   = "require"
@@ -1011,7 +1016,7 @@ confirmation. `R` is uppercase because `r` is the global refresh-from-disk.
 **Saving**: `S` in the filter pane saves the scratch filters as a named set.
 A prompt asks for the name; `Enter` appends a `[sets.<name>]` table to
 `filters.toml` with one entry per scratch filter — its pattern, single-quoted,
-its sense when not include, and its name, description, prompt and examples
+its sense when not include, its neighbour count when not `0 0`, and its name, description, prompt and examples
 when [the filter editor](#the-filter-editor) gave it them — and a `default` profile of the
 filters that are on right now, so the set opens the way it was saved. Comments and every
 existing table survive untouched; the file is created if it does not exist.
@@ -1174,9 +1179,11 @@ that compiled left them, so a half-typed `(` does not clear the screen.
 | `PageUp` / `PageDown` | Scroll the file a page | `filtereditor.page.up` / `filtereditor.page.down` |
 | `Enter` | Add the pattern as an including filter, or change the selected filter, and close | `filtereditor.commit` |
 | `Esc` | Close and change nothing; with a range open, close the range first; with a request running, cancel it first | `filtereditor.cancel` |
-| `Tab` / `Shift-Tab` | Move the keys to the next / previous of the name, description, prompt, sense, pattern, request and lines | `filtereditor.focus` / `filtereditor.focus.prev` |
+| `Tab` / `Shift-Tab` | Move the keys to the next / previous of the name, description, prompt, sense, neighbour count, pattern, request and lines | `filtereditor.focus` / `filtereditor.focus.prev` |
 | `Space` / `Left` / `Right` | On the sense: the next / previous sense | — |
 | `i` / `c` / `r` / `x` | On the sense: include / context / require / exclude | — |
+| `0`-`9` / `Backspace` | On the neighbour count, on an include filter: type or erase a digit | — |
+| `b` / `a` / `c` | On the neighbour count: the digits set before, after, or both, as grep's `-B`, `-A` and `-C` | — |
 | `+` | On the lines: the pattern must match the cursor line | `filtereditor.mark.match` |
 | `-` | On the lines: the pattern must not match the cursor line | `filtereditor.mark.nomatch` |
 | `=` | On the lines: remove the cursor line's mark | `filtereditor.mark.clear` |

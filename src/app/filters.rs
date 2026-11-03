@@ -461,6 +461,7 @@ impl App<'_> {
                         .flatten(),
                     engine: filter.predicate.engine(),
                     also: filter.predicate.also().map(str::to_string),
+                    neighbour: filter.neighbour,
                     ..filtersets::FilterToSave::new(filter.predicate.display(), filter.sense)
                 })
                 .collect(),
