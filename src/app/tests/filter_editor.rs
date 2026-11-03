@@ -6,11 +6,11 @@ use crate::filter::{Engine, Sense};
 
 const BODY: &str = "ERROR timeout\nINFO ok\nERROR disk\nINFO timeout\n";
 
-/// The shared screen, four rows taller: the editor's panel is eight rows
+/// The shared screen, five rows taller: the editor's panel is nine rows
 /// (#317), and on the shared ten the file would get none. These shadow the
 /// shared `AREA`, `draw`, `rendered` and `status_line` in this file.
 const AREA: Rect = Rect {
-    height: super::AREA.height + 4,
+    height: super::AREA.height + 5,
     ..super::AREA
 };
 
@@ -879,11 +879,11 @@ fn the_focused_part_has_the_focused_frame() {
     let mut app = app_over_file("editor_frame", BODY);
     open_editor_from_the_filter_pane(&mut app);
     // The top-left corners: of the file's lines at row 0, and of the panel
-    // eight rows above the status row.
+    // nine rows above the status row.
     let corners = |app: &mut App| {
         let mut buf = Buffer::empty(AREA);
         app.render(AREA, &mut buf);
-        let panel = AREA.height - 1 - 8;
+        let panel = AREA.height - 1 - 9;
         (buf[(0, 0)].clone(), buf[(0, panel)].clone())
     };
     let thick = |cell: &ratatui::buffer::Cell| cell.symbol() == "┏" && cell.fg == Color::Green;
@@ -1265,12 +1265,14 @@ fn tab_and_shift_tab_go_round_the_fields_and_the_lines() {
         EditorFocus::Description,
         EditorFocus::Prompt,
         EditorFocus::Sense,
+        EditorFocus::Neighbours,
         EditorFocus::Pattern,
     ] {
         key(&mut app, KeyCode::Tab);
         assert_eq!(focus(&app), expected);
     }
     for expected in [
+        EditorFocus::Neighbours,
         EditorFocus::Sense,
         EditorFocus::Prompt,
         EditorFocus::Description,
@@ -1366,8 +1368,7 @@ fn f_big_c_shows_the_filters_fields_and_enter_changes_them() {
             name: Some("errors".into()),
             description: Some("old".into()),
             prompt: Some("error lines".into()),
-            examples: Vec::new(),
-            generated_from: None,
+            ..crate::filter::Details::default()
         },
     );
     select_row(&mut app, widgets::filterlist::Row::Filter(0));
@@ -1653,6 +1654,223 @@ fn big_s_writes_the_sense_from_the_editor() {
     let sets = crate::filtersets::parse(&text, &path).expect("loads again");
     let ctx = sets.iter().find(|set| set.name == "ctx").expect("ctx");
     assert_eq!(ctx.filters[0].sense, Sense::Context);
+}
+
+// ---- the neighbour count (#584) ---------------------------------------------
+
+use crate::filter::Neighbour;
+
+/// The one filter in the scratch set.
+fn scratch<'a>(app: &'a App) -> &'a crate::filter::Filter {
+    app.filters
+        .filters()
+        .iter()
+        .find(|f| f.set == 0)
+        .expect("a scratch filter")
+}
+
+/// The count the saved filter has, after typing `keys` on the neighbours row
+/// of a new filter on `ERROR` and pressing Enter.
+fn saved_count(name: &str, keys: &str) -> Neighbour {
+    let mut app = app_over_file(name, BODY);
+    open_editor(&mut app);
+    typed(&mut app, "ERROR");
+    focus_field(&mut app, EditorFocus::Neighbours);
+    typed(&mut app, keys);
+    key(&mut app, KeyCode::Enter);
+    scratch(&app).neighbour
+}
+
+#[test]
+fn a_new_filter_has_no_neighbours() {
+    assert_eq!(saved_count("neighbour_none", ""), Neighbour::default());
+}
+
+#[test]
+fn digits_set_the_before_count_and_a_moves_to_after() {
+    assert_eq!(
+        saved_count("neighbour_ba", "12a5"),
+        Neighbour {
+            before: 12,
+            after: 5
+        }
+    );
+}
+
+/// Like grep's `-C`: one value for both.
+#[test]
+fn c_sets_both_counts() {
+    assert_eq!(
+        saved_count("neighbour_both", "c3"),
+        Neighbour {
+            before: 3,
+            after: 3
+        }
+    );
+}
+
+#[test]
+fn b_goes_back_to_before_and_backspace_erases_a_digit() {
+    let mut app = app_over_file("neighbour_back", BODY);
+    open_editor(&mut app);
+    typed(&mut app, "ERROR");
+    focus_field(&mut app, EditorFocus::Neighbours);
+    typed(&mut app, "a7b42");
+    key(&mut app, KeyCode::Backspace);
+    key(&mut app, KeyCode::Enter);
+    assert_eq!(
+        scratch(&app).neighbour,
+        Neighbour {
+            before: 4,
+            after: 7
+        }
+    );
+}
+
+#[test]
+fn a_count_stops_at_its_limit() {
+    assert_eq!(
+        saved_count("neighbour_limit", "99999").before,
+        9999,
+        "more digits than the limit"
+    );
+}
+
+#[test]
+fn f_big_c_shows_the_count_and_esc_discards_a_change() {
+    let mut app = app_with_two_filters("neighbour_edit");
+    app.filters.set_details(
+        0,
+        crate::filter::Details {
+            neighbour: Neighbour {
+                before: 1,
+                after: 2,
+            },
+            ..crate::filter::Details::default()
+        },
+    );
+    select_row(&mut app, widgets::filterlist::Row::Filter(0));
+    open_selected(&mut app);
+    assert_eq!(
+        editor(&app).neighbour,
+        Neighbour {
+            before: 1,
+            after: 2
+        }
+    );
+    focus_field(&mut app, EditorFocus::Neighbours);
+    typed(&mut app, "9");
+    key(&mut app, KeyCode::Esc);
+    assert_eq!(app.filters.filters()[0].neighbour.before, 1);
+}
+
+/// Only an include filter has a count, so Tab has nothing to stop at.
+#[test]
+fn tab_passes_over_the_neighbours_row_on_another_sense() {
+    let mut app = app_over_file("neighbour_ring", BODY);
+    open_editor(&mut app);
+    focus_field(&mut app, EditorFocus::Sense);
+    key(&mut app, KeyCode::Tab);
+    assert_eq!(editor(&app).focus, EditorFocus::Neighbours);
+    key(&mut app, KeyCode::BackTab);
+    key(&mut app, KeyCode::Char('x'));
+    key(&mut app, KeyCode::Tab);
+    assert_eq!(editor(&app).focus, EditorFocus::Pattern);
+    key(&mut app, KeyCode::BackTab);
+    assert_eq!(editor(&app).focus, EditorFocus::Sense);
+}
+
+/// The count stays while the sense flips, so a flip back loses nothing, but
+/// only an include filter saves one.
+#[test]
+fn a_count_is_saved_only_on_an_include_filter() {
+    let mut app = app_over_file("neighbour_sense", BODY);
+    open_editor(&mut app);
+    typed(&mut app, "ERROR");
+    focus_field(&mut app, EditorFocus::Neighbours);
+    typed(&mut app, "c3");
+    focus_field(&mut app, EditorFocus::Sense);
+    key(&mut app, KeyCode::Char('x'));
+    assert_eq!(editor(&app).neighbour.after, 3, "kept while it is open");
+    key(&mut app, KeyCode::Enter);
+    let saved = scratch(&app);
+    assert_eq!(saved.sense, Sense::Exclude);
+    assert_eq!(saved.neighbour, Neighbour::default());
+}
+
+#[test]
+fn the_neighbours_row_shows_the_count_and_says_when_it_does_not_apply() {
+    let mut app = app_over_file("neighbour_row", BODY);
+    open_editor(&mut app);
+    focus_field(&mut app, EditorFocus::Neighbours);
+    typed(&mut app, "2a5");
+    let screen = rendered(&mut app);
+    assert!(
+        screen.contains("neighbours:  before 2  after 5"),
+        "{screen}"
+    );
+    assert!(screen.contains("b before"), "{screen}");
+    focus_field(&mut app, EditorFocus::Sense);
+    key(&mut app, KeyCode::Char('x'));
+    let screen = rendered(&mut app);
+    assert!(
+        screen.contains("neighbours:  include filters only"),
+        "{screen}"
+    );
+}
+
+/// The row is between the sense and the pattern, and the pattern still draws.
+#[test]
+fn the_pattern_row_is_under_the_neighbours_row() {
+    let mut app = app_over_file("neighbour_rows", BODY);
+    open_editor(&mut app);
+    typed(&mut app, "ERROR");
+    let screen = rendered(&mut app);
+    let row = |label: &str| {
+        screen
+            .lines()
+            .position(|line| line.contains(label))
+            .unwrap_or_else(|| panic!("no {label} row:\n{screen}"))
+    };
+    assert_eq!(row("neighbours:"), row("sense:") + 1);
+    assert_eq!(row("pattern:"), row("neighbours:") + 1);
+}
+
+/// `S` writes the count, recon reads it again, and a filter that lost its
+/// count to another sense writes a file recon can still load.
+#[test]
+fn big_s_writes_a_count_that_loads_again() {
+    let path = save_fixture("neighbour_save");
+    let mut app = app_over_file("neighbour_save_file", BODY);
+    app.save_path = Some(path.clone());
+    open_editor_from_the_filter_pane(&mut app);
+    typed(&mut app, "ERROR");
+    focus_field(&mut app, EditorFocus::Neighbours);
+    typed(&mut app, "2a5");
+    key(&mut app, KeyCode::Enter);
+    open_editor_from_the_filter_pane(&mut app);
+    typed(&mut app, "INFO");
+    focus_field(&mut app, EditorFocus::Neighbours);
+    typed(&mut app, "c3");
+    focus_field(&mut app, EditorFocus::Sense);
+    key(&mut app, KeyCode::Char('x'));
+    key(&mut app, KeyCode::Enter);
+    key(&mut app, KeyCode::Char('S'));
+    typed(&mut app, "near");
+    key(&mut app, KeyCode::Enter);
+
+    let text = std::fs::read_to_string(&path).expect("written");
+    let sets = crate::filtersets::parse(&text, &path).expect("loads again");
+    let near = sets.iter().find(|set| set.name == "near").expect("near");
+    assert_eq!(
+        near.filters[0].neighbour,
+        Neighbour {
+            before: 2,
+            after: 5
+        }
+    );
+    assert_eq!(near.filters[1].neighbour, Neighbour::default());
+    assert_eq!(text.matches("before").count(), 1, "{text}");
 }
 
 // ---- examples (#318) -------------------------------------------------------
@@ -2217,19 +2435,12 @@ fn esc_cancels_a_request_and_its_late_reply_changes_nothing() {
 fn the_description_is_never_sent_to_the_model() {
     let (mut app, harness) = app_with_model("fe_description", true, Ok(candidate("ERROR")));
     open_editor(&mut app);
-    for _ in 0..3 {
-        key(&mut app, KeyCode::BackTab);
-    }
-    assert_eq!(editor(&app).focus, EditorFocus::Description);
+    focus_field(&mut app, EditorFocus::Description);
     typed(&mut app, "SECRET REASON");
     key(&mut app, KeyCode::Tab);
     typed(&mut app, "timeouts");
-    // Mark `INFO timeout` must-not-match: past the sense, the pattern and
-    // the request line to the lines.
-    for _ in 0..4 {
-        key(&mut app, KeyCode::Tab);
-    }
-    assert_eq!(editor(&app).focus, EditorFocus::Lines);
+    // Mark `INFO timeout` must-not-match.
+    focus_field(&mut app, EditorFocus::Lines);
     for _ in 0..3 {
         key(&mut app, KeyCode::Down);
     }
@@ -2595,9 +2806,7 @@ fn app_with_generated(name: &str) -> App<'static> {
 
 /// Shift-Tab from the pattern to the prompt.
 fn to_prompt(app: &mut App) {
-    key(app, KeyCode::BackTab);
-    key(app, KeyCode::BackTab);
-    assert_eq!(editor(app).focus, EditorFocus::Prompt);
+    focus_field(app, EditorFocus::Prompt);
 }
 
 /// A request with a prompt and a mark of each kind; the model's pattern
@@ -2856,8 +3065,7 @@ fn an_ordinary_filter_with_a_prompt_needs_no_examples() {
     open_editor_from_the_filter_pane(&mut app);
     to_prompt(&mut app);
     typed(&mut app, "error lines");
-    key(&mut app, KeyCode::Tab);
-    key(&mut app, KeyCode::Tab);
+    focus_field(&mut app, EditorFocus::Pattern);
     typed(&mut app, "ERROR");
     key(&mut app, KeyCode::Enter);
     assert!(app.filter_editor.is_none(), "{:?}", editor(&app).error);

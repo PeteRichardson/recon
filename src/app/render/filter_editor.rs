@@ -1,6 +1,6 @@
 //! Drawing the filter editor (#312): the file with every match highlighted,
-//! and the panel that holds the name, description, prompt, sense and
-//! pattern, and with a model the request line and the model's explanation
+//! and the panel that holds the name, description, prompt, sense, neighbour
+//! count and pattern, and with a model the request line and the model's explanation
 //! (#319).
 
 use super::super::filter_editor::{
@@ -8,7 +8,7 @@ use super::super::filter_editor::{
     PROMPT_CHANGED_NO_MODEL, prompt_changed,
 };
 use super::super::prompt::TAB;
-use crate::filter::{Engine, Sense};
+use crate::filter::{Engine, Neighbour, Sense};
 use crate::keymap::{ActionId, Keymap};
 use crate::widgets::pane_block;
 use ratatui::prelude::{
@@ -27,8 +27,8 @@ const FAIL: Style = Style::new()
     .bg(Color::Red)
     .add_modifier(Modifier::BOLD);
 
-/// The panel's rows: the five fields and the error line.
-const PANEL_ROWS: u16 = 6;
+/// The panel's rows: the six fields and the error line.
+const PANEL_ROWS: u16 = 7;
 
 /// The rows a model adds (#319): the request line and the explanation.
 const MODEL_ROWS: u16 = 2;
@@ -119,16 +119,16 @@ impl FilterEditor {
         block.render(panel_area, buf);
         let x = inner.x + 1;
         let width = inner.width.saturating_sub(2);
-        // Row 3 is the sense, which is a choice, not text. The request line
-        // is row 5, with a model only.
+        // Rows 3 and 4 are the sense and the neighbour count, which are not
+        // text. The request line is row 6, with a model only.
         let mut fields = vec![
             ("name:", EditorFocus::Name, 0),
             ("description:", EditorFocus::Description, 1),
             ("prompt:", EditorFocus::Prompt, 2),
-            ("pattern:", EditorFocus::Pattern, 4),
+            ("pattern:", EditorFocus::Pattern, 5),
         ];
         if self.model {
-            fields.push(("request:", EditorFocus::Request, 5));
+            fields.push(("request:", EditorFocus::Request, 6));
         }
         // How many columns of the prompt are drawn, for the note after it.
         let mut prompt_shown = 0;
@@ -187,25 +187,27 @@ impl FilterEditor {
                 );
             }
         }
-        if inner.height > 3 {
-            Line::from(self.sense_spans()).render(
-                Rect {
-                    x,
-                    y: inner.y + 3,
-                    width,
-                    height: 1,
-                },
-                buf,
-            );
+        for (row, spans) in [(3, self.sense_spans()), (4, self.neighbour_spans())] {
+            if inner.height > row {
+                Line::from(spans).render(
+                    Rect {
+                        x,
+                        y: inner.y + row,
+                        width,
+                        height: 1,
+                    },
+                    buf,
+                );
+            }
         }
         // What the model said of the pattern it gave, under the request.
         if let Some(explanation) = &self.explanation
             && self.model
-            && inner.height > 6
+            && inner.height > 7
         {
             buf.set_stringn(
                 x,
-                inner.y + 6,
+                inner.y + 7,
                 format!("{:LABEL_WIDTH$}{explanation}", "model:"),
                 usize::from(width),
                 Style::default().fg(Color::DarkGray),
@@ -320,6 +322,12 @@ impl FilterEditor {
             EditorFocus::Name | EditorFocus::Description | EditorFocus::Prompt => {
                 vec![enter, cancel, scroll(), fields]
             }
+            EditorFocus::Neighbours => vec![
+                Some("0-9 type a count · b before · a after · c both".to_string()),
+                enter,
+                cancel,
+                fields,
+            ],
             EditorFocus::Sense => vec![
                 Some("Space/Left/Right change · i include · c context · x exclude".to_string()),
                 enter,
@@ -373,12 +381,10 @@ impl FilterEditor {
     fn sense_spans(&self) -> Vec<Span<'static>> {
         let mut spans = vec![Span::raw(format!("{:LABEL_WIDTH$}", "sense:"))];
         for sense in Sense::ALL {
-            let style = if sense != self.sense {
-                Style::default().fg(Color::DarkGray)
-            } else if self.focus == EditorFocus::Sense {
-                Style::default().add_modifier(Modifier::BOLD | Modifier::REVERSED)
+            let style = if sense == self.sense {
+                chosen(self.focus == EditorFocus::Sense)
             } else {
-                Style::default().add_modifier(Modifier::BOLD)
+                Style::default().fg(Color::DarkGray)
             };
             spans.push(Span::styled(sense.name(), style));
             spans.push(Span::raw("  "));
@@ -395,6 +401,28 @@ impl FilterEditor {
         }
         spans.pop();
         spans
+    }
+
+    /// The neighbours row (#584): the two counts, the one the digits go to
+    /// reversed while the row has the keys, and a dim note on a sense with
+    /// no count.
+    fn neighbour_spans(&self) -> Vec<Span<'static>> {
+        let dim = Style::default().fg(Color::DarkGray);
+        let label = Span::raw(format!("{:LABEL_WIDTH$}", "neighbours:"));
+        if self.sense != Sense::Include {
+            return vec![label, Span::styled("include filters only", dim)];
+        }
+        let focused = self.focus == EditorFocus::Neighbours;
+        let part = self.neighbour_part;
+        let Neighbour { before, after } = self.neighbour;
+        vec![
+            label,
+            Span::raw("before "),
+            Span::styled(before.to_string(), chosen(focused && part.sets_before())),
+            Span::raw("  after "),
+            Span::styled(after.to_string(), chosen(focused && part.sets_after())),
+            Span::styled("  like grep -B -A", dim),
+        ]
     }
 
     /// The columns before line `index`: `>` on the cursor line and `|` on
@@ -509,5 +537,15 @@ impl FilterEditor {
             before += UnicodeWidthStr::width(NOT_IN_FILE);
         }
         usize::from(column).checked_sub(before)
+    }
+}
+
+/// A value the row has chosen: bold, and reversed while the keys are on it.
+fn chosen(focused: bool) -> Style {
+    let style = Style::default().add_modifier(Modifier::BOLD);
+    if focused {
+        style.add_modifier(Modifier::REVERSED)
+    } else {
+        style
     }
 }

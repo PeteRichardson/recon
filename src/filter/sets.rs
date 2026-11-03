@@ -1,7 +1,7 @@
 //! Filter sets: the set, solo, reset and adopt state machine over
 //! [`ActiveFilters`], and the types the loader hands it.
 
-use super::{ActiveFilters, Example, Filter, FilterId, Predicate, Sense};
+use super::{ActiveFilters, Example, Filter, FilterId, Neighbour, Predicate, Sense};
 use crate::syntax::Kind;
 use ratatui::style::{Color, Style};
 use std::collections::BTreeMap;
@@ -129,6 +129,9 @@ pub struct LoadedFilter {
     /// The file's `generated_from` (#321), carried to the `Filter`
     /// unchanged. Only read: loading never asks a model anything.
     pub generated_from: Option<String>,
+    /// The file's `before` and `after` (ADR 0016), carried to the `Filter`
+    /// unchanged. An include filter only.
+    pub neighbour: Neighbour,
 }
 
 /// One set as read from `filters.toml`.
@@ -407,6 +410,7 @@ impl ActiveFilters {
                         sense: Sense::Include,
                         enabled: false,
                         style: Style::default(),
+                        neighbour: Neighbour::default(),
                         name: Some(kind.plural().to_string()),
                         description: None,
                         prompt: None,
@@ -445,6 +449,7 @@ impl ActiveFilters {
                     sense: filter.sense,
                     enabled: false,
                     style,
+                    neighbour: filter.neighbour,
                     name: Some(filter.name.clone()),
                     description: filter.description.clone(),
                     prompt: filter.prompt.clone(),
@@ -2170,6 +2175,39 @@ mod tests {
     }
 
     #[test]
+    fn leaving_include_clears_a_neighbour_count() {
+        let count = Neighbour {
+            before: 1,
+            after: 2,
+        };
+        for leave in [
+            (|set, i| set.set_sense(i, Sense::Exclude)) as fn(&mut ActiveFilters, usize) -> bool,
+            |set, i| set.toggle_context(i),
+        ] {
+            let mut set = with_default_profile();
+            let (x, _) = set.filters_in(1).next().expect("x");
+            set.set_details(
+                x,
+                Details {
+                    neighbour: count,
+                    ..Details::default()
+                },
+            );
+            assert!(leave(&mut set, x));
+            assert_eq!(set.filters()[x].neighbour, Neighbour::default());
+        }
+    }
+
+    #[test]
+    fn a_changed_neighbour_count_is_an_unsaved_change() {
+        let set = with_default_profile();
+        let (_, one) = set.filters_in(1).next().expect("x");
+        let mut two = one.clone();
+        two.neighbour.after = 1;
+        assert!(!one.same_text(&two));
+    }
+
+    #[test]
     fn set_details_renames_the_filter_in_its_sets_profiles() {
         let mut set = with_default_profile();
         let (x, _) = set.filters_in(1).next().expect("x");
@@ -2181,7 +2219,7 @@ mod tests {
                 line: "a line".into(),
                 must_match: true,
             }],
-            generated_from: None,
+            ..Details::default()
         };
         assert!(set.set_details(x, details));
         let filter = &set.filters()[x];
