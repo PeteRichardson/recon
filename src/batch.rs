@@ -120,8 +120,8 @@ fn filters_for(startup: &Startup) -> Result<ActiveFilters> {
     if !broken.is_empty() {
         return Err(eyre!("{}", broken.join("\n")));
     }
-    if config.no_neighbours {
-        filters.clear_neighbours();
+    if config.no_neighbors {
+        filters.clear_neighbors();
     }
     Ok(filters)
 }
@@ -437,7 +437,7 @@ pub(crate) fn follow_lines(
     let mut tail = Tail::after_lines(&path, document.lines().len());
     let mut emitted = 0;
     // The source line after the last one written. A hidden line after it
-    // can still become a neighbour line of a match to come.
+    // can still become a neighbor line of a match to come.
     let mut done = 0;
     let mut written;
     loop {
@@ -1760,7 +1760,7 @@ mod tests {
         );
     }
 
-    // ---- neighbour lines (#587, ADR 0016) -----------------------------------
+    // ---- neighbor lines (#587, ADR 0016) -----------------------------------
 
     use crate::filter::test_support::with_count as near;
 
@@ -1781,7 +1781,7 @@ mod tests {
     /// once and in order — the `w` after the written `x` too, though `y`
     /// between them is out of reach.
     #[test]
-    fn streamed_stdin_writes_the_neighbour_lines_on_both_sides() {
+    fn streamed_stdin_writes_the_neighbor_lines_on_both_sides() {
         let filters = near("hit", 2, 1);
         assert_eq!(
             stdin_lines("hit\nx\ny\nz\nw\nhit\nv\nu\n", &filters),
@@ -1798,7 +1798,7 @@ mod tests {
     fn streamed_stdin_agrees_with_a_file() {
         let filters = near("hit", 2, 1);
         let body = "a\nb\nc\nhit\nd\ne\nf\ng\nhit\nhit\nh\n";
-        let inputs = one_file("batch_neighbours_agree.log", body.as_bytes());
+        let inputs = one_file("batch_neighbors_agree.log", body.as_bytes());
         let mut out = Vec::new();
         let exit = collect(
             Emit::Lines,
@@ -1814,8 +1814,8 @@ mod tests {
     /// A match that comes in a later look at the file still gets the line
     /// before it, from the look before, and the line after it.
     #[test]
-    fn follow_writes_the_neighbour_lines_across_looks() {
-        let inputs = one_file("batch_follow_neighbours.log", b"hit\na\nb\n");
+    fn follow_writes_the_neighbor_lines_across_looks() {
+        let inputs = one_file("batch_follow_neighbors.log", b"hit\na\nb\n");
         let path = inputs.files[0].clone();
         let mut out = Vec::new();
         let mut step = 0;

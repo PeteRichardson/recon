@@ -29,7 +29,7 @@
 //! gives the filter what the fields hold; an empty text field is a key the
 //! filter does not have.
 //!
-//! An include filter has one more row (#584), its neighbour count (ADR
+//! An include filter has one more row (#584), its neighbor count (ADR
 //! 0016), between the sense and the pattern. `b` or Left, `a` or Right, and
 //! `c` choose before, after or both, as grep's `-B`, `-A` and `-C`; digits
 //! type the count. Tab passes over the row on any other sense, and Enter
@@ -81,7 +81,7 @@
 use super::App;
 use super::prompt::SearchPrompt;
 use crate::filter::{
-    Broken, Details, Engine, Example, Expander, LineRegex, Neighbour, Predicate, Sense,
+    Broken, Details, Engine, Example, Expander, LineRegex, Neighbor, Predicate, Sense,
     generated_hash,
 };
 use crate::generate::{self, ATTEMPTS, Candidate, Rejection, Running};
@@ -125,8 +125,8 @@ pub(super) enum EditorFocus {
     Prompt,
     /// Include, context or exclude: a choice, not text.
     Sense,
-    /// The neighbour count (#584). In the ring only on an include filter.
-    Neighbours,
+    /// The neighbor count (#584). In the ring only on an include filter.
+    Neighbors,
     /// The pattern. Where the editor opens.
     #[default]
     Pattern,
@@ -142,14 +142,14 @@ impl EditorFocus {
         Self::Description,
         Self::Prompt,
         Self::Sense,
-        Self::Neighbours,
+        Self::Neighbors,
         Self::Pattern,
         Self::Request,
         Self::Lines,
     ];
 
     /// Tab: the next in the ring, the lines back to the name. The request
-    /// line is passed over without a model, and the neighbour count on a
+    /// line is passed over without a model, and the neighbor count on a
     /// sense that is not include.
     fn next(self, model: bool, include: bool) -> Self {
         self.step(1, model, include)
@@ -166,7 +166,7 @@ impl EditorFocus {
             .position(|&focus| focus == self)
             .unwrap_or(0);
         let next = Self::RING[(at + by) % Self::RING.len()];
-        if (next == Self::Request && !model) || (next == Self::Neighbours && !include) {
+        if (next == Self::Request && !model) || (next == Self::Neighbors && !include) {
             next.step(by, model, include)
         } else {
             next
@@ -174,9 +174,9 @@ impl EditorFocus {
     }
 }
 
-/// Which of the neighbour count's two numbers the digits go to (#584).
+/// Which of the neighbor count's two numbers the digits go to (#584).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub(super) enum NeighbourPart {
+pub(super) enum NeighborPart {
     #[default]
     Before,
     After,
@@ -184,7 +184,7 @@ pub(super) enum NeighbourPart {
     Both,
 }
 
-impl NeighbourPart {
+impl NeighborPart {
     pub(super) fn sets_before(self) -> bool {
         self != Self::After
     }
@@ -194,17 +194,17 @@ impl NeighbourPart {
     }
 }
 
-/// A key on the neighbours row (#584).
+/// A key on the neighbors row (#584).
 #[derive(Debug, Clone, Copy)]
-enum NeighbourKey {
+enum NeighborKey {
     Digit(u32),
     Erase,
-    Choose(NeighbourPart),
+    Choose(NeighborPart),
 }
 
 /// The largest count the editor takes (#584): a reading window, so a slip
 /// of the finger is not a line count that hides nothing.
-const MAX_NEIGHBOURS: u32 = 9999;
+const MAX_NEIGHBORS: u32 = 9999;
 
 /// What the status row says while the model writes the prompt (#322).
 pub(super) const CONSOLIDATING: &str = "the model writes one prompt from your requests";
@@ -303,11 +303,11 @@ pub(super) struct FilterEditor {
     pub(super) prompt: SearchPrompt,
     /// What a match does (#317): `Include` for a new filter, as `f i` gives.
     pub(super) sense: Sense,
-    /// The neighbour count (#584). Kept while the sense flips: the filter
+    /// The neighbor count (#584). Kept while the sense flips: the filter
     /// drops it on any sense but include.
-    pub(super) neighbour: Neighbour,
+    pub(super) neighbor: Neighbor,
     /// Which of the two numbers the digits go to.
-    pub(super) neighbour_part: NeighbourPart,
+    pub(super) neighbor_part: NeighborPart,
     /// The file's lines, shared with the file view that read them.
     pub(super) lines: Arc<Vec<String>>,
     /// The filter's examples that are not lines of the file (#318), drawn
@@ -481,8 +481,8 @@ impl FilterEditor {
             description: SearchPrompt::default(),
             prompt: SearchPrompt::default(),
             sense: Sense::Include,
-            neighbour: Neighbour::default(),
-            neighbour_part: NeighbourPart::default(),
+            neighbor: Neighbor::default(),
+            neighbor_part: NeighborPart::default(),
             lines,
             extra: Vec::new(),
             regex: None,
@@ -558,7 +558,7 @@ impl FilterEditor {
             description: field(details.description),
             prompt: field(details.prompt),
             sense,
-            neighbour: details.neighbour,
+            neighbor: details.neighbor,
             engine,
             target: Some(index),
             generated,
@@ -654,7 +654,7 @@ impl FilterEditor {
             prompt,
             examples,
             generated_from,
-            neighbour: self.neighbour,
+            neighbor: self.neighbor,
         }
     }
 
@@ -722,7 +722,7 @@ impl FilterEditor {
             EditorFocus::Prompt => Some(&mut self.prompt),
             EditorFocus::Pattern => Some(&mut self.field),
             EditorFocus::Request => Some(&mut self.request),
-            EditorFocus::Sense | EditorFocus::Neighbours | EditorFocus::Lines => None,
+            EditorFocus::Sense | EditorFocus::Neighbors | EditorFocus::Lines => None,
         }
     }
 
@@ -1247,7 +1247,7 @@ impl FilterEditor {
             | EditorFocus::Description
             | EditorFocus::Prompt
             | EditorFocus::Sense
-            | EditorFocus::Neighbours
+            | EditorFocus::Neighbors
             | EditorFocus::Pattern
             | EditorFocus::Request => self.scroll(delta),
             EditorFocus::Lines => {
@@ -1309,33 +1309,33 @@ impl FilterEditor {
         };
     }
 
-    /// A key on the neighbours row: `b`, `a` and `c` choose what the digits
-    /// set, and a digit past [`MAX_NEIGHBOURS`] does nothing. Choosing both
+    /// A key on the neighbors row: `b`, `a` and `c` choose what the digits
+    /// set, and a digit past [`MAX_NEIGHBORS`] does nothing. Choosing both
     /// makes the two equal, so the row shows the one value it starts at.
-    fn neighbour_key(&mut self, key: NeighbourKey) {
+    fn neighbor_key(&mut self, key: NeighborKey) {
         let edit = |count: u32| match key {
-            NeighbourKey::Digit(digit) => Some(count * 10 + digit)
-                .filter(|&n| n <= MAX_NEIGHBOURS)
+            NeighborKey::Digit(digit) => Some(count * 10 + digit)
+                .filter(|&n| n <= MAX_NEIGHBORS)
                 .unwrap_or(count),
-            NeighbourKey::Erase => count / 10,
-            NeighbourKey::Choose(_) => count,
+            NeighborKey::Erase => count / 10,
+            NeighborKey::Choose(_) => count,
         };
-        if let NeighbourKey::Choose(part) = key {
-            self.neighbour_part = part;
-            if part == NeighbourPart::Both {
-                let both = self.neighbour.before.max(self.neighbour.after);
-                self.neighbour = Neighbour {
+        if let NeighborKey::Choose(part) = key {
+            self.neighbor_part = part;
+            if part == NeighborPart::Both {
+                let both = self.neighbor.before.max(self.neighbor.after);
+                self.neighbor = Neighbor {
                     before: both,
                     after: both,
                 };
             }
         }
-        let part = self.neighbour_part;
+        let part = self.neighbor_part;
         if part.sets_before() {
-            self.neighbour.before = edit(self.neighbour.before);
+            self.neighbor.before = edit(self.neighbor.before);
         }
         if part.sets_after() {
-            self.neighbour.after = edit(self.neighbour.after);
+            self.neighbor.after = edit(self.neighbor.after);
         }
     }
 
@@ -1631,7 +1631,7 @@ impl App<'_> {
             prompt: filter.prompt.clone(),
             examples: filter.examples.clone(),
             generated_from: filter.generated_from.clone(),
-            neighbour: filter.neighbour,
+            neighbor: filter.neighbor,
         };
         self.promote_truncated_preview();
         let lines = self.view.source().clone();
@@ -1811,8 +1811,8 @@ impl App<'_> {
             self.handle_sense_key(key);
             return;
         }
-        if focus == EditorFocus::Neighbours {
-            self.handle_neighbour_key(key);
+        if focus == EditorFocus::Neighbors {
+            self.handle_neighbor_key(key);
             return;
         }
         self.type_in_filter_editor(key);
@@ -1903,16 +1903,16 @@ impl App<'_> {
         }
     }
 
-    /// A key on the neighbours row. Backspace, as the prompt binds it, erases
+    /// A key on the neighbors row. Backspace, as the prompt binds it, erases
     /// a digit, and Left and Right, as on the sense row, go to before and
     /// after.
-    fn handle_neighbour_key(&mut self, key: event::KeyEvent) {
+    fn handle_neighbor_key(&mut self, key: event::KeyEvent) {
         use crate::keymap::ActionId as A;
         let pressed = crate::keymap::normalise(key);
         let choice = match self.resolve_key(crate::keymap::Scope::Prompt, pressed) {
-            Some(A::PromptDeleteBack) => Some(NeighbourKey::Erase),
-            Some(A::PromptLeft) => Some(NeighbourKey::Choose(NeighbourPart::Before)),
-            Some(A::PromptRight) => Some(NeighbourKey::Choose(NeighbourPart::After)),
+            Some(A::PromptDeleteBack) => Some(NeighborKey::Erase),
+            Some(A::PromptLeft) => Some(NeighborKey::Choose(NeighborPart::Before)),
+            Some(A::PromptRight) => Some(NeighborKey::Choose(NeighborPart::After)),
             _ if key
                 .modifiers
                 .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
@@ -1920,15 +1920,15 @@ impl App<'_> {
                 None
             }
             _ => match key.code {
-                KeyCode::Char('b') => Some(NeighbourKey::Choose(NeighbourPart::Before)),
-                KeyCode::Char('a') => Some(NeighbourKey::Choose(NeighbourPart::After)),
-                KeyCode::Char('c') => Some(NeighbourKey::Choose(NeighbourPart::Both)),
-                KeyCode::Char(c) => c.to_digit(10).map(NeighbourKey::Digit),
+                KeyCode::Char('b') => Some(NeighborKey::Choose(NeighborPart::Before)),
+                KeyCode::Char('a') => Some(NeighborKey::Choose(NeighborPart::After)),
+                KeyCode::Char('c') => Some(NeighborKey::Choose(NeighborPart::Both)),
+                KeyCode::Char(c) => c.to_digit(10).map(NeighborKey::Digit),
                 _ => None,
             },
         };
         if let Some(choice) = choice {
-            self.edit_filter_editor(|editor| editor.neighbour_key(choice));
+            self.edit_filter_editor(|editor| editor.neighbor_key(choice));
         }
     }
 

@@ -1,4 +1,4 @@
-# ADR 0016: neighbour lines show the lines around an include match
+# ADR 0016: neighbor lines show the lines around an include match
 
 **Status:** accepted
 **Date:** 2026-11-02
@@ -15,21 +15,21 @@ does not show lines around a match.
 
 ## Decision
 
-- **A per include filter *neighbour count*:** a `(before, after)` pair,
+- **A per include filter *neighbor count*:** a `(before, after)` pair,
   defaulting to `0 0`, in the filter editor and kept by a saved filter. A
   filter at the default omits it from the saved form. The terms match grep
   so the analogy holds: *before* is `-B`, *after* is `-A`, and one value set
   for both is `-C`.
-- **A *neighbour line*:** a line within `[match - before, match + after]` of
+- **A *neighbor line*:** a line within `[match - before, match + after]` of
   a line an include filter matches, in file order, whether or not it matches
-  a filter itself. An exclude filter still removes one. A neighbour line is
+  a filter itself. An exclude filter still removes one. A neighbor line is
   not interesting: `n` and `N` step over it, and it shows in the default
   foreground, never in a filter colour — that is how it reads as "near a
   match" rather than a match.
-- **A new verdict, `ContextKeep`,** marks a line kept only as a neighbour.
+- **A new verdict, `ContextKeep`,** marks a line kept only as a neighbor.
   `shows` and `style_for` gain its arm, and `is_interesting` stays
   `Included` only, so navigation is untouched. The new verdict is what lets
-  a neighbour line render *dim* in hide mode; `style_for(Unmatched)` returns
+  a neighbor line render *dim* in hide mode; `style_for(Unmatched)` returns
   no style there, which would show it bright.
 - **The expansion runs where the verdicts are written:** in `evaluate`, and
   again after `append` when a followed file grows. A verdict does not depend
@@ -41,12 +41,12 @@ does not show lines around a match.
   are one band. A line with a filter of its own keeps its verdict.
 - **One global, session-only bright/dim flag, default bright**, parallel to
   the `u` dim/hide toggle: a named palette command flips it, and there is no
-  `config.toml` key. When dim, a neighbour line recedes among the dimmed
+  `config.toml` key. When dim, a neighbor line recedes among the dimmed
   lines in either mode.
-- **`--emit lines` writes neighbour lines by default.** The command line
+- **`--emit lines` writes neighbor lines by default.** The command line
   carries the same default-on idea as the bright/dim flag, as
-  `--[no-]neighbours`: neighbour lines are emitted with the matches unless
-  `--no-neighbours` is given, so the opt-out expresses the setting whose
+  `--[no-]neighbors`: neighbor lines are emitted with the matches unless
+  `--no-neighbors` is given, so the opt-out expresses the setting whose
   default is "on". The two are separate surfaces with no runtime coupling
   (#587): `Ctrl-n` changes how the view draws them, not what is emitted. The
   same rule applies in batch mode and to `q` and `:w` in the TUI, so a file
@@ -64,7 +64,7 @@ does not show lines around a match.
   *context* is already a palette command (`context <pattern>`), the `m`
   toggle key and the `ctx` row label, so both a format and a vocabulary break
   would be paid.
-- **One global neighbour count shared by every include filter.**
+- **One global neighbor count shared by every include filter.**
   Rejected. grep's `-C` is per invocation, and the common use is after-biased
   (`before 0, after N`), which a single value cannot express.
 - **Encode the count in the pattern text.** Rejected. The pattern is the
@@ -74,21 +74,21 @@ does not show lines around a match.
   Rejected. The engine cannot tell the two apart — their behavior is
   identical — so they are not two senses. This is the principle now stated
   in the *Sense* glossary entry.
-- **A per-filter bright/dim state.** Shelved as YAGNI: neighbour lines carry
-  no colour, so two filters' neighbour lines look alike anyway; one global
+- **A per-filter bright/dim state.** Shelved as YAGNI: neighbor lines carry
+  no colour, so two filters' neighbor lines look alike anyway; one global
   flag is enough.
-- **A visual `-` marker on neighbour lines (grep-style).** Shelved. Default
+- **A visual `-` marker on neighbor lines (grep-style).** Shelved. Default
   foreground against the coloured matches is already a clear signal; a
   marker is the first thing to add later if it ever feels weak.
 
 ## Consequences
 
 - **Sits on ADR 0009 (batch always hides):** `--emit lines` is already in the
-  hide posture where the neighbour expansion applies, so the batch path
+  hide posture where the neighbor expansion applies, so the batch path
   reuses the same `shows()` rule and the two agree.
 - **Sits on ADR 0005 (batch has a flag):** the CLI surface grows one boolean,
-  `--[no-]neighbours`.
-- **A neighbour line and a matching line are different verdicts:** the new
+  `--[no-]neighbors`.
+- **A neighbor line and a matching line are different verdicts:** the new
   `ContextKeep` keeps "lines to show" and "lines to land on" apart, so the
   view, batch and navigation answer one rule.
 - **Room to grow:** a per-filter bright/dim state or a `config.toml` default

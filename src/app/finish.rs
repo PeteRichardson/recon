@@ -118,8 +118,8 @@ impl App<'_> {
     ) -> LinesJob {
         // As `Document::emitted`.
         let mut filters = self.filters.snapshot();
-        if !self.emit_neighbours {
-            filters.clear_neighbours();
+        if !self.emit_neighbors {
+            filters.clear_neighbors();
         }
         LinesJob::start(
             self.view.filename(),
@@ -397,11 +397,11 @@ mod tests {
     use crate::fixtures::fixture_file;
     use std::io::{Read, Seek, SeekFrom};
 
-    /// #587: a file read a line at a time gives the neighbour lines a file
+    /// #587: a file read a line at a time gives the neighbor lines a file
     /// held whole does: the one before a match too, after it was read.
     #[test]
-    fn a_streamed_file_emits_the_neighbour_lines() {
-        let file = fixture_file("finish_stream_neighbours.log", b"a\nb\nhit\nc\nd\n");
+    fn a_streamed_file_emits_the_neighbor_lines() {
+        let file = fixture_file("finish_stream_neighbors.log", b"a\nb\nhit\nc\nd\n");
         let filters = crate::filter::test_support::with_count("hit", 1, 1);
         let (cancel, read) = (AtomicBool::new(false), AtomicU64::new(0));
         let mut streamed = stream(&file, &filters, Mode::FilteredOnly, true, &cancel, &read)

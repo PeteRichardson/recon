@@ -482,8 +482,8 @@ pub const KEYMAP: &[Section] = &[
             },
             Binding {
                 keys: &["Ctrl-n"],
-                action: "Show neighbour lines bright, or dim them",
-                names: &["global.toggle.neighbours"],
+                action: "Show neighbor lines bright, or dim them",
+                names: &["global.toggle.neighbors"],
             },
             Binding {
                 keys: &["!"],

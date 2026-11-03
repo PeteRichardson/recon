@@ -44,8 +44,8 @@ by experiment in the window, and then use it without change in a script or
 a CI job. `-n` puts the original line number before each line, separated by
 a tab.
 
-A filter with a neighbour count also prints the lines around each match, as
-grep's `-A` and `-B` do. `--no-neighbours` prints only the matches.
+A filter with a neighbor count also prints the lines around each match, as
+grep's `-A` and `-B` do. `--no-neighbors` prints only the matches.
 
 ![Batch mode in the shell](images/batch.gif)
 

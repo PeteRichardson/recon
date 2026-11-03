@@ -666,7 +666,7 @@ already exist there from Phase 1 — reuse them, do not redefine them.
         );
     }
 
-    /// With focus, the cursor line is still distinguishable from its neighbours.
+    /// With focus, the cursor line is still distinguishable from its neighbors.
     #[test]
     fn an_active_view_still_marks_the_cursor_line() {
         let mut view = view_of("cursor_active.txt", "alpha\nbeta\n");
@@ -1448,7 +1448,7 @@ The row is still surrendered to a prompt while one is open."
   textarea is rebuilt only by `load`/`preview` as it already was.
 - Manual check in a real terminal: `cargo run -- Cargo.toml`, press `f`, type
   `version`, Enter. Matching lines are coloured, the rest dimmed, and the line
-  under the cursor is dimmed like its neighbours rather than standing out.
+  under the cursor is dimmed like its neighbors rather than standing out.
 
 Phase 2b (excluding filters, Ctrl+H, the visible↔source mapping and the cursor
 round trip) begins only once all of the above hold.

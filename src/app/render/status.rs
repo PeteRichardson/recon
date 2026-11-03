@@ -30,9 +30,9 @@ pub(in crate::app) const HIDE_BADGE_STYLE: Style = Style::new()
     .bg(Color::LightYellow)
     .add_modifier(ratatui::style::Modifier::BOLD);
 
-/// The badge saying neighbour lines are dim (ADR 0016). Bright is the
+/// The badge saying neighbor lines are dim (ADR 0016). Bright is the
 /// default and has none, as dim mode has no `HIDE`.
-pub(in crate::app) const NEIGHBOURS_DIM_BADGE_TEXT: &str = " NEIGHBOURS DIM ";
+pub(in crate::app) const NEIGHBORS_DIM_BADGE_TEXT: &str = " NEIGHBORS DIM ";
 
 /// The badge saying the file on screen is not the file on disk (#119).
 ///

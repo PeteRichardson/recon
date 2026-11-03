@@ -441,7 +441,7 @@ fn digits_follow_the_pane_numbering_under_a_solo() {
 /// starts past both hits. A swapped order runs `step_to_interesting`
 /// against verdicts that don't know about the new search yet, so it finds
 /// nothing and no-ops; `refresh_view` then merely re-anchors the
-/// unmoved cursor to its nearest surviving neighbour (`beta2`, source 3)
+/// unmoved cursor to its nearest surviving neighbor (`beta2`, source 3)
 /// once it finally runs — landing one hit short of forward-from-cursor's
 /// real answer (`beta1`, source 1).
 #[test]

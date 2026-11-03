@@ -190,7 +190,7 @@ impl App<'_> {
             A::GlobalFileNext => self.skip_file(false),
             A::GlobalFilePrev => self.skip_file(true),
             A::GlobalToggleHide => self.toggle_hiding(),
-            A::GlobalToggleNeighbours => self.toggle_dim_neighbours(),
+            A::GlobalToggleNeighbors => self.toggle_dim_neighbors(),
             A::GlobalNextView => self.next_view(),
             A::GlobalFollow => self.toggle_follow(),
             A::GlobalZoomView => self.zoom_file_view(),

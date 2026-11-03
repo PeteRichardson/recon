@@ -357,12 +357,12 @@ Options:
           stdin when FILE is `-`. Relative paths are from the current directory
   -f, --follow
           Follow a file that grows, as `tail -f` does
-      --neighbours
-          With `--emit lines`: keep the neighbour lines around each match, as
-          hide mode shows them. On unless `--no-neighbours`
-      --no-neighbours
-          With `--emit lines`: leave out the neighbour lines around each match.
-          The opposite of `--neighbours`, and wins over it
+      --neighbors
+          With `--emit lines`: keep the neighbor lines around each match, as
+          hide mode shows them. On unless `--no-neighbors`
+      --no-neighbors
+          With `--emit lines`: leave out the neighbor lines around each match.
+          The opposite of `--neighbors`, and wins over it
   -s, --set <[+]NAME[:LIST]>
           Enable a saved filter set at startup, as `NAME` for its `default`
           profile or `NAME:LIST` for the filters a comma-separated list of
@@ -561,7 +561,7 @@ Global (`src/app/events.rs`), handled before the focused pane sees the key:
 | `O` | Open the selected file's enclosing **project** in your editor, at the line the cursor is on | `global.editor.project` |
 | `r` | **Refresh from disk** — re-list, re-stat and rescan the explorer's listing (so a file created since the listing was built appears), and reload the file in the view with the cursor kept on its line. The status row shows `changed on disk · r` when the open file's size or mtime has moved | `global.reload` |
 | `-` | Show the file in its **next view** — text, then a hex dump, then text again — see [Views](#views). A binary file opens as hex | `global.view.next` |
-| `Ctrl-n` | Show [neighbour lines](#filter-sets) bright, or dim them. The state lasts for the session, and `NEIGHBOURS DIM` on the status row says when a count is dim | `global.toggle.neighbours` |
+| `Ctrl-n` | Show [neighbor lines](#filter-sets) bright, or dim them. The state lasts for the session, and `NEIGHBORS DIM` on the status row says when a count is dim | `global.toggle.neighbors` |
 | `Ctrl-t` | **Follow** the file in the view as it grows, or stop — see [Following a growing file](#following-a-growing-file) | `global.follow` |
 | `:` | Open the **command palette**: type a command by name, such as `e ~/projects/app` or `goto 120` — see [The command palette](#the-command-palette) | `global.palette` |
 
@@ -830,7 +830,7 @@ sense   = "context"                      # include (default) | context | require
 
 [[sets.WiFi_debug.filters]]
 pattern = 'firmware crash'
-before  = 1                              # an include filter's neighbour count:
+before  = 1                              # an include filter's neighbor count:
 after   = 5                              # grep's -B and -A; each defaults to 0
 
 [[sets.WiFi_debug.filters]]
@@ -844,11 +844,11 @@ pattern = 'retry|backoff'
 sense   = "exclude"
 ```
 
-A neighbour count shows the lines around each line an include filter matches,
+A neighbor count shows the lines around each line an include filter matches,
 as grep's `-B` and `-A` do: hide mode keeps them, and they show in the default
 foreground, in no filter's colour, in both modes; `Ctrl-n` dims them. `n` and `N` step over them,
 and an exclude filter still removes one. `--emit lines` and `:w` write them with the matches;
-`--no-neighbours` leaves them out.
+`--no-neighbors` leaves them out.
 
 Single-quoted TOML strings do no escape processing, so a regex goes in
 verbatim — no doubled backslashes.
@@ -1029,7 +1029,7 @@ confirmation. `R` is uppercase because `r` is the global refresh-from-disk.
 **Saving**: `S` in the filter pane saves the scratch filters as a named set.
 A prompt asks for the name; `Enter` appends a `[sets.<name>]` table to
 `filters.toml` with one entry per scratch filter — its pattern, single-quoted,
-its sense when not include, its neighbour count when not `0 0`, and its name, description, prompt and examples
+its sense when not include, its neighbor count when not `0 0`, and its name, description, prompt and examples
 when [the filter editor](#the-filter-editor) gave it them — and a `default` profile of the
 filters that are on right now, so the set opens the way it was saved. Comments and every
 existing table survive untouched; the file is created if it does not exist.
@@ -1192,11 +1192,11 @@ that compiled left them, so a half-typed `(` does not clear the screen.
 | `PageUp` / `PageDown` | Scroll the file a page | `filtereditor.page.up` / `filtereditor.page.down` |
 | `Enter` | Add the pattern as an including filter, or change the selected filter, and close | `filtereditor.commit` |
 | `Esc` | Close and change nothing; with a range open, close the range first; with a request running, cancel it first | `filtereditor.cancel` |
-| `Tab` / `Shift-Tab` | Move the keys to the next / previous of the name, description, prompt, sense, neighbour count, pattern, request and lines | `filtereditor.focus` / `filtereditor.focus.prev` |
+| `Tab` / `Shift-Tab` | Move the keys to the next / previous of the name, description, prompt, sense, neighbor count, pattern, request and lines | `filtereditor.focus` / `filtereditor.focus.prev` |
 | `Space` / `Left` / `Right` | On the sense: the next / previous sense | — |
 | `i` / `c` / `r` / `x` | On the sense: include / context / require / exclude | — |
-| `0`-`9` / `Backspace` | On the neighbour count, on an include filter: type or erase a digit | — |
-| `b` or `Left` / `a` or `Right` / `c` | On the neighbour count: the digits set before, after, or both, as grep's `-B`, `-A` and `-C` | — |
+| `0`-`9` / `Backspace` | On the neighbor count, on an include filter: type or erase a digit | — |
+| `b` or `Left` / `a` or `Right` / `c` | On the neighbor count: the digits set before, after, or both, as grep's `-B`, `-A` and `-C` | — |
 | `+` | On the lines: the pattern must match the cursor line | `filtereditor.mark.match` |
 | `-` | On the lines: the pattern must not match the cursor line | `filtereditor.mark.nomatch` |
 | `=` | On the lines: remove the cursor line's mark | `filtereditor.mark.clear` |
@@ -2508,7 +2508,7 @@ leave hide mode, clear the filters, read, restore the filters, restore hide
 mode. It works from any pane, and it always means the same thing — which is why
 the filter pane's toggle moved to `Enter`.
 
-Two neighbours it is easy to confuse:
+Two neighbors it is easy to confuse:
 
 | Key | Does |
 | --- | --- |
@@ -2594,11 +2594,11 @@ A tab rather than `grep -n`'s colon: a line can contain colons, a tab never
 appears in a line number, and the text after it is byte-for-byte the file's.
 `-n` with anything but `--emit lines` is refused at startup.
 
-**Neighbour lines come too.** In hide mode, `--emit lines` writes the
-[neighbour lines](#filter-sets) around each match, as the view shows them, in
+**Neighbor lines come too.** In hide mode, `--emit lines` writes the
+[neighbor lines](#filter-sets) around each match, as the view shows them, in
 batch mode and on `q` alike, and on stdin and under `--follow` too. A
-neighbour line that comes before a match is written when the match comes.
-`--no-neighbours` writes the matches without them, as `grep` without `-A`
+neighbor line that comes before a match is written when the match comes.
+`--no-neighbors` writes the matches without them, as `grep` without `-A`
 and `-B` does. `Ctrl-n` changes only how the view draws them, not what
 `--emit` writes.
 

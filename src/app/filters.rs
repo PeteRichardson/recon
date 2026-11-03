@@ -268,19 +268,19 @@ impl App<'_> {
         }
     }
 
-    /// Render neighbour lines bright or dim (ADR 0016). No verdict and no
+    /// Render neighbor lines bright or dim (ADR 0016). No verdict and no
     /// line changes: `apply_view` gives the view the new styles, as it does
     /// on every pass.
-    pub(super) fn toggle_dim_neighbours(&mut self) {
+    pub(super) fn toggle_dim_neighbors(&mut self) {
         let cursor_source = self.cursor_source();
-        self.filters.toggle_dim_neighbours();
-        let on = on_off(self.filters.dims_neighbours());
-        self.log_filters(format_args!("dim neighbour lines {on}"));
+        self.filters.toggle_dim_neighbors();
+        let on = on_off(self.filters.dims_neighbors());
+        self.log_filters(format_args!("dim neighbor lines {on}"));
         self.apply_view(cursor_source);
     }
 
     /// Hide mode removed the selected file from the explorer, which moved the
-    /// selection to a neighbour (#481): `u`, a peek, or a scan answer while
+    /// selection to a neighbor (#481): `u`, a peek, or a scan answer while
     /// hide mode is on. The view follows it, as it follows `j`
     /// and `k`, or it would go on showing a file the explorer no longer
     /// lists.
@@ -472,7 +472,7 @@ impl App<'_> {
                         .flatten(),
                     engine: filter.predicate.engine(),
                     also: filter.predicate.also().map(str::to_string),
-                    neighbour: filter.neighbour,
+                    neighbor: filter.neighbor,
                     ..filtersets::FilterToSave::new(filter.predicate.display(), filter.sense)
                 })
                 .collect(),

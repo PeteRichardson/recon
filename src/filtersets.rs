@@ -14,7 +14,7 @@
 
 use crate::config::parse_colour;
 use crate::filter::{
-    ALL_ITEM, Engine, Example, LoadedFilter, LoadedSet, Neighbour, Predicate, Sense,
+    ALL_ITEM, Engine, Example, LoadedFilter, LoadedSet, Neighbor, Predicate, Sense,
 };
 use crate::syntax::Kind;
 use serde::Deserialize;
@@ -89,7 +89,7 @@ struct FilterSchema {
     /// A require row's extra text (#548): a line must match `pattern` and
     /// this, in either order. Read by the advanced engine.
     also: Option<String>,
-    /// The neighbour lines an include filter shows around each match (ADR
+    /// The neighbor lines an include filter shows around each match (ADR
     /// 0016). Each key is omitted at `0`; an include filter only.
     before: Option<u32>,
     after: Option<u32>,
@@ -405,17 +405,17 @@ fn parse_sets(text: &str, path: &Path) -> Result<Vec<LoadedSet>, Error> {
                 ));
             }
             let sense = entry.sense.map_or(Sense::Include, Into::into);
-            let neighbour = Neighbour {
+            let neighbor = Neighbor {
                 before: entry.before.unwrap_or(0),
                 after: entry.after.unwrap_or(0),
             };
-            // A neighbour count is an include-only idea (ADR 0016); a file
+            // A neighbor count is an include-only idea (ADR 0016); a file
             // that puts one on another sense is wrong, not silently different.
-            if neighbour != Neighbour::default() && sense != Sense::Include {
+            if neighbor != Neighbor::default() && sense != Sense::Include {
                 return Err(invalid(
                     &name,
                     Some(&display),
-                    "a neighbour count belongs on an include filter".into(),
+                    "a neighbor count belongs on an include filter".into(),
                 ));
             }
             filters.push(LoadedFilter {
@@ -423,7 +423,7 @@ fn parse_sets(text: &str, path: &Path) -> Result<Vec<LoadedSet>, Error> {
                 named,
                 predicate,
                 sense,
-                neighbour,
+                neighbor,
                 colour,
                 description: entry.description,
                 prompt: entry.prompt,
@@ -607,9 +607,9 @@ pub struct FilterToSave {
     pub engine: Engine,
     /// A require row's extra text (#548), written as `also`.
     pub also: Option<String>,
-    /// The neighbour lines to show (ADR 0016), written as `before` and
+    /// The neighbor lines to show (ADR 0016), written as `before` and
     /// `after`, each omitted at `0`. An include filter only.
-    pub neighbour: Neighbour,
+    pub neighbor: Neighbor,
 }
 
 impl FilterToSave {
@@ -626,7 +626,7 @@ impl FilterToSave {
             generated_from: None,
             engine: Engine::Standard,
             also: None,
-            neighbour: Neighbour::default(),
+            neighbor: Neighbor::default(),
         }
     }
 }
@@ -713,11 +713,11 @@ pub fn append_set(text: &str, set: &SetToSave<'_>) -> Result<String, String> {
         if entry.sense != Sense::Include {
             filter.insert("sense", value(entry.sense.name()));
         }
-        // Neighbours are off by default, and each key is left out at 0 (ADR
+        // Neighbors are off by default, and each key is left out at 0 (ADR
         // 0016): beside the sense, as they say how the matches read.
         for (key, count) in [
-            ("before", entry.neighbour.before),
-            ("after", entry.neighbour.after),
+            ("before", entry.neighbor.before),
+            ("after", entry.neighbor.after),
         ] {
             if count != 0 {
                 filter.insert(key, value(i64::from(count)));
@@ -1212,7 +1212,7 @@ sense = "context"
     }
 
     #[test]
-    fn a_filters_neighbour_count_is_read_and_defaults_to_zero() {
+    fn a_filters_neighbor_count_is_read_and_defaults_to_zero() {
         let sets = parsed(
             r"
 [sets.n]
@@ -1226,17 +1226,17 @@ pattern = 'plain'
         );
         let n = sets.iter().find(|set| set.name == "n").expect("set n");
         assert_eq!(
-            n.filters[0].neighbour,
-            Neighbour {
+            n.filters[0].neighbor,
+            Neighbor {
                 before: 2,
                 after: 3
             }
         );
-        assert_eq!(n.filters[1].neighbour, Neighbour::default());
+        assert_eq!(n.filters[1].neighbor, Neighbor::default());
     }
 
     #[test]
-    fn a_neighbour_count_on_a_non_include_filter_is_refused() {
+    fn a_neighbor_count_on_a_non_include_filter_is_refused() {
         let err = parse(
             "[sets.n]\n[[sets.n.filters]]\npattern = 'x'\nsense = 'exclude'\nafter = 3\n",
             Path::new("t/filters.toml"),
@@ -1246,14 +1246,14 @@ pattern = 'plain'
     }
 
     #[test]
-    fn append_set_writes_a_filters_neighbour_count_and_omits_it_at_default() {
+    fn append_set_writes_a_filters_neighbor_count_and_omits_it_at_default() {
         let after = append_set(
             "",
             &SetToSave {
                 name: "s",
                 filters: vec![
                     FilterToSave {
-                        neighbour: Neighbour {
+                        neighbor: Neighbor {
                             before: 0,
                             after: 3,
                         },
@@ -1270,7 +1270,7 @@ pattern = 'plain'
             !after.contains("before"),
             "no before key at the default:\n{after}"
         );
-        assert!(!after.contains("neighbour"), "no grouping key:\n{after}");
+        assert!(!after.contains("neighbor"), "no grouping key:\n{after}");
     }
 
     #[test]
@@ -2124,7 +2124,7 @@ pattern = 'plain'
         assert_eq!(again, files, "filters.toml is listed once, first");
     }
 
-    /// The file `S` writes shadows its neighbours, so a saved set is the
+    /// The file `S` writes shadows its neighbors, so a saved set is the
     /// one found again by the next start (#309).
     #[test]
     fn filters_toml_shadows_a_set_file_beside_it() {
