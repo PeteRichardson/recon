@@ -10,11 +10,11 @@
 - **fileview:** Reserve and draw the horizontal scroll bar row ([#580](https://github.com/PeteRichardson/recon/issues/580))
 - **mouse:** Click and drag the scroll bar ([#581](https://github.com/PeteRichardson/recon/issues/581))
 - **views:** Align CSV into columns ([#575](https://github.com/PeteRichardson/recon/issues/575))
-- **filter:** Author and persist a per-filter neighbour count
-- **filter:** Left and Right move along the neighbours row
-- **view:** Show neighbour lines around include matches in hide mode
-- **view:** Ctrl-n renders neighbour lines bright or dim
-- **emit:** Write neighbour lines with --emit lines, --no-neighbours drops them
+- **filter:** Author and persist a per-filter neighbor count
+- **filter:** Left and Right move along the neighbors row
+- **view:** Show neighbor lines around include matches in hide mode
+- **view:** Ctrl-n renders neighbor lines bright or dim
+- **emit:** Write neighbor lines with --emit lines, --no-neighbors drops them
 
 ### Fixes
 
