@@ -728,6 +728,8 @@ pub struct ActiveFilters {
     /// the step limit, as the last `Document::evaluate` counted them. By
     /// id, so a filter added or removed since moves no count to another.
     over_limit: HashMap<FilterId, usize>,
+    /// Whether neighbour lines render dim, not bright (ADR 0016).
+    dim_neighbours: bool,
 }
 
 /// The source of every `ActiveFilters::generation`. Process-wide rather than
@@ -777,6 +779,7 @@ impl ActiveFilters {
             as_loaded: vec![Vec::new()],
             step_limit: DEFAULT_STEP_LIMIT,
             over_limit: HashMap::new(),
+            dim_neighbours: false,
         }
     }
 
@@ -1543,6 +1546,7 @@ impl ActiveFilters {
             as_loaded: self.as_loaded.clone(),
             step_limit: self.step_limit,
             over_limit: self.over_limit.clone(),
+            dim_neighbours: self.dim_neighbours,
         }
     }
 
@@ -1570,8 +1574,27 @@ impl ActiveFilters {
                 self.filters.get(index).map(|f| f.style)
             }
             Verdict::Unmatched if self.any_including() => Some(self.dim_style()),
+            Verdict::ContextKeep if self.dim_neighbours => Some(self.dim_style()),
             Verdict::Unmatched | Verdict::ContextKeep | Verdict::Excluded => None,
         }
+    }
+
+    /// Whether neighbour lines render dim, not bright (ADR 0016). One flag
+    /// for the session; no file keeps it.
+    #[must_use]
+    pub fn dims_neighbours(&self) -> bool {
+        self.dim_neighbours
+    }
+
+    pub fn toggle_dim_neighbours(&mut self) {
+        self.dim_neighbours = !self.dim_neighbours;
+    }
+
+    /// Whether the flag dims a neighbour line now: it is on, and a filter
+    /// that is on has a count.
+    #[must_use]
+    pub fn neighbours_dimmed(&self) -> bool {
+        self.dim_neighbours && self.neighbour_reach() != Neighbour::default()
     }
 
     /// The largest neighbour counts of the filters that are on (ADR 0016):

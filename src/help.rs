@@ -481,6 +481,11 @@ pub const KEYMAP: &[Section] = &[
                 names: &["global.toggle.hide"],
             },
             Binding {
+                keys: &["Ctrl-n"],
+                action: "Show neighbour lines bright, or dim them",
+                names: &["global.toggle.neighbours"],
+            },
+            Binding {
                 keys: &["!"],
                 action: "Disable every filter, or put them back",
                 names: &["global.filters.disable"],
@@ -1678,7 +1683,7 @@ mod tests {
     /// any further has nowhere left to go without this area's width growing
     /// past 151 — which would stop the second test here from failing on the
     /// regression it exists to catch — and a row that adds to *either* total
-    /// has to be re-measured against both. The height, 66, is likewise the
+    /// has to be re-measured against both. The height, 67, is likewise the
     /// exact number of rows two columns hold at the current row count (121,
     /// after the two reserved-key rows of #242 raised it from 86 to 88,
     /// the two search-history rows of #274 to 90, the `L` row and the
@@ -1691,14 +1696,15 @@ mod tests {
     /// the consolidation and phrase rows of #322 to 124, which raised the
     /// height from 61 to 62, and the finishing section of #351 and #352,
     /// its title and its one row, which raised it to 64, and the `Ctrl-t`
-    /// row of #493 to 65, and the `M` row of #523 to 66); adding a row without
+    /// row of #493 to 65, the `M` row of #523 to 66, and the `Ctrl-n` row of
+    /// #586 to 67); adding a row without
     /// raising the height would drop it off the bottom, which is a
     /// `shown(&columns) == rows.len()` failure below, not a width one.
     #[test]
     fn a_normal_terminal_shows_the_whole_keymap() {
         let rows = rows(&crate::keymap::Keymap::default());
 
-        let columns = layout(&rows, inner(150, 66));
+        let columns = layout(&rows, inner(150, 67));
 
         assert_eq!(shown(&columns), rows.len(), "the keymap did not fit");
         assert!(

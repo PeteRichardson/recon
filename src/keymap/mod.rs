@@ -165,6 +165,8 @@ pub(crate) enum ActionId {
     GlobalFileNext,
     GlobalFilePrev,
     GlobalToggleHide,
+    /// Render neighbour lines bright or dim (ADR 0016).
+    GlobalToggleNeighbours,
     GlobalZoomView,
     GlobalZoomFocused,
     /// Hide one pane (#300).
@@ -361,6 +363,7 @@ impl ActionId {
             Self::GlobalFileNext => "global.file.next",
             Self::GlobalFilePrev => "global.file.prev",
             Self::GlobalToggleHide => "global.toggle.hide",
+            Self::GlobalToggleNeighbours => "global.toggle.neighbours",
             Self::GlobalZoomView => "global.zoom.view",
             Self::GlobalZoomFocused => "global.zoom.focused",
             Self::GlobalHideExplorer => "global.hide.explorer",
@@ -519,6 +522,7 @@ pub(crate) const DEFAULT: &[(Scope, &str, ActionId)] = &[
     (Scope::Global, "u", ActionId::GlobalToggleHide),
     (Scope::Global, "H", ActionId::GlobalToggleHide),
     (Scope::Global, "Ctrl-h", ActionId::GlobalToggleHide),
+    (Scope::Global, "Ctrl-n", ActionId::GlobalToggleNeighbours),
     (Scope::Global, "b", ActionId::GlobalZoomView),
     (Scope::Global, "z", ActionId::GlobalZoomFocused),
     (Scope::Global, "E", ActionId::GlobalHideExplorer),

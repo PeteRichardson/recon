@@ -1,3 +1,4 @@
+use super::palette::run;
 use super::*;
 
 // ---- #300: show and hide each pane ------------------------------------
@@ -479,17 +480,7 @@ fn n_steps_over_neighbour_lines() {
     let mut app = app_over_file("neighbour_n", "hit one\nnear\nfar\nnear\nhit two\n");
     key(&mut app, KeyCode::Char('t'));
     app.add_filter("hit").expect("valid");
-    let (index, _) = app.filters.filters_in(0).next().expect("the filter");
-    app.filters.set_details(
-        index,
-        crate::filter::Details {
-            neighbour: crate::filter::Neighbour {
-                before: 1,
-                after: 1,
-            },
-            ..crate::filter::Details::default()
-        },
-    );
+    set_count(&mut app, 1, 1);
     app.refresh_view();
     app.document.set_mode(crate::document::Mode::FilteredOnly);
     app.document.recompute_visible();
@@ -501,6 +492,72 @@ fn n_steps_over_neighbour_lines() {
     assert_eq!(cursor_source(&app), 4, "past both neighbour lines");
     key(&mut app, KeyCode::Char('N'));
     assert_eq!(cursor_source(&app), 0);
+}
+
+/// An app on `hit` with `after` neighbour lines, in the view.
+fn app_with_a_neighbour(name: &str, after: u32) -> App<'static> {
+    let mut app = app_over_file(name, "hit\nnear\nfar\n");
+    key(&mut app, KeyCode::Char('t'));
+    app.filters.add("hit").expect("valid");
+    set_count(&mut app, 0, after);
+    app.refresh_view();
+    settle(&mut app);
+    app
+}
+
+/// The colour the view draws visible row `row` in, `None` for the default.
+fn fg_of(app: &App, row: usize) -> Option<Color> {
+    view_line_styles(app)[row].and_then(|style| style.fg)
+}
+
+/// In either mode, and the view takes it at once.
+#[test]
+fn the_command_dims_a_neighbour_line_in_both_modes() {
+    for hide in [false, true] {
+        let mut app = app_with_a_neighbour(&format!("neighbour_dim_{hide}"), 1);
+        if hide {
+            key(&mut app, KeyCode::Char('u'));
+        }
+        let shown = app.document.visible().to_vec();
+        let dim = app.filters.dim_style().fg;
+        assert_eq!(fg_of(&app, 1), None, "bright by default");
+        let hit = fg_of(&app, 0);
+
+        run(&mut app, "global.toggle.neighbours");
+        assert_eq!(fg_of(&app, 1), dim);
+        assert_eq!(fg_of(&app, 0), hit, "the match keeps its colour");
+        assert_eq!(app.document.visible(), shown, "no line came or went");
+
+        run(&mut app, "global.toggle.neighbours");
+        assert_eq!(fg_of(&app, 1), None);
+    }
+}
+
+#[test]
+fn the_badge_shows_while_a_count_is_dimmed() {
+    let badge = NEIGHBOURS_DIM_BADGE_TEXT.trim();
+    let mut app = app_with_a_neighbour("neighbour_badge", 1);
+    assert!(
+        !status_line(&mut app).contains(badge),
+        "bright is the default"
+    );
+    run(&mut app, "global.toggle.neighbours");
+    assert!(status_line(&mut app).contains(badge));
+}
+
+/// The flag changes nothing with no count, so the badge has nothing to say.
+#[test]
+fn no_badge_shows_with_no_count_in_effect() {
+    let mut app = app_with_a_neighbour("neighbour_no_count", 0);
+    run(&mut app, "global.toggle.neighbours");
+    assert!(!status_line(&mut app).contains(NEIGHBOURS_DIM_BADGE_TEXT.trim()));
+}
+
+#[test]
+fn ctrl_n_toggles_the_neighbour_lines() {
+    let mut app = app_with_a_neighbour("neighbour_key", 1);
+    ctrl(&mut app, KeyCode::Char('n'));
+    assert_eq!(fg_of(&app, 1), app.filters.dim_style().fg);
 }
 
 fn app_with_two_filters(name: &str) -> App<'static> {

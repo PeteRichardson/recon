@@ -864,6 +864,22 @@ mod tests {
         assert_eq!(document.interesting_count(), 1);
     }
 
+    /// Dim: a neighbour line recedes, and its match keeps its colour.
+    #[test]
+    fn the_flag_dims_a_neighbour_line_and_not_its_match() {
+        let mut filters = with_count("hit", 0, 1);
+        let document = hidden(&["hit", "a"], &filters);
+        let (hit, near) = (document.verdicts()[0], document.verdicts()[1]);
+        let colour = filters.style_for(hit);
+
+        filters.toggle_dim_neighbours();
+        assert_eq!(filters.style_for(near), Some(filters.dim_style()));
+        assert_eq!(filters.style_for(hit), colour);
+
+        filters.toggle_dim_neighbours();
+        assert_eq!(filters.style_for(near), None);
+    }
+
     #[test]
     fn a_new_match_in_a_followed_file_reaches_back() {
         let filters = with_count("hit", 1, 0);
