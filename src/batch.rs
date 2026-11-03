@@ -333,6 +333,7 @@ fn stream_stdin<R: io::Read>(
     emitted: &mut usize,
 ) -> (io::Result<()>, io::Result<()>) {
     let mut shown = Shown::new(filters, Mode::FilteredOnly);
+    let mut pass = filters.pass();
     let mut buf = Vec::new();
     for source in 0.. {
         buf.clear();
@@ -344,7 +345,7 @@ fn stream_stdin<R: io::Read>(
         // As `read_lossy_line` ends a line, with no copy of a valid one.
         let text = String::from_utf8_lossy(&buf);
         let text = text.trim_end_matches(['\n', '\r']);
-        let verdict = filters.verdict(text, KindSet::EMPTY);
+        let verdict = pass.verdict(text, KindSet::EMPTY);
         let mut write = || {
             shown.line(source, text, verdict, |row, text| {
                 write_line(out, None, line_numbers, row, text)?;

@@ -1,7 +1,7 @@
 //! The scan-side snapshot of the filter set: what a thread matching whole
 //! files in the explorer needs from [`ActiveFilters`], and nothing more.
 
-use super::{ActiveFilters, Lookaround, Sense};
+use super::{ActiveFilters, Lookaround, Prefilter, Sense};
 use regex::RegexSet;
 
 /// Which patterns hit a line, one bit per filter: bit `i` is `filters[i]`.
@@ -62,6 +62,19 @@ impl std::fmt::Display for ScanOff {
 /// the index is left.
 pub type Owner = usize;
 
+/// One pass of bits over many lines, from [`Matcher::pass`].
+pub struct BitsPass<'a> {
+    matcher: &'a Matcher,
+    prefilter: Prefilter,
+}
+
+impl BitsPass<'_> {
+    /// As [`Matcher::bits`], for the next line of the pass.
+    pub fn bits(&mut self, line: &str) -> Bits {
+        self.matcher.bits_in(line, &mut self.prefilter)
+    }
+}
+
 /// A `Send` snapshot of the filter set, for a scan thread to match with (#119).
 ///
 /// `ActiveFilters` is neither `Send` nor `Clone`. This is the three things a
@@ -93,12 +106,30 @@ pub struct Matcher {
 
 impl Matcher {
     /// Which patterns hit `line`, enabled or not.
+    ///
+    /// For one line. A scan over the lines of a file takes a [`pass`](Self::pass).
     #[must_use]
     pub fn bits(&self, line: &str) -> Bits {
-        let bits = self
-            .set
-            .matches(line)
-            .iter()
+        self.pass().bits(line)
+    }
+
+    /// Bits for many lines, in order: what a scan asks (#592). The answers
+    /// are `bits`'; the pass also learns how often the lines hit, and asks
+    /// the compiled set the cheaper way for that.
+    #[must_use]
+    pub fn pass(&self) -> BitsPass<'_> {
+        BitsPass {
+            matcher: self,
+            prefilter: Prefilter::default(),
+        }
+    }
+
+    /// `bits`, asking the compiled set through `prefilter`.
+    fn bits_in(&self, line: &str, prefilter: &mut Prefilter) -> Bits {
+        let bits = prefilter
+            .matches(&self.set, line)
+            .into_iter()
+            .flatten()
             .fold(0, |bits, index| bits | (1 << index));
         self.advanced
             .iter()
@@ -157,11 +188,12 @@ impl Matcher {
     #[must_use]
     pub fn lines_meet_requires<'a>(&self, lines: impl IntoIterator<Item = &'a str>) -> bool {
         let mut required = 0;
+        let mut pass = self.pass();
         for line in lines {
             if required == self.require {
                 break;
             }
-            required |= self.required_by(self.bits(line));
+            required |= self.required_by(pass.bits(line));
         }
         required == self.require
     }

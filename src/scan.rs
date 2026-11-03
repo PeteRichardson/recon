@@ -700,6 +700,7 @@ fn scan_lines(
     mut progress: Progress,
     cancel: &AtomicBool,
 ) -> Progress {
+    let mut pass = matcher.pass();
     loop {
         if cancel.load(Ordering::Relaxed) {
             return progress;
@@ -717,7 +718,7 @@ fn scan_lines(
             }
         };
         progress.scanned_to += read;
-        let bits = matcher.bits(&line);
+        let bits = pass.bits(&line);
         // Only a new bitset can change the answer: `seen` is a set.
         if !progress.seen.contains(&bits) {
             progress.seen.push(bits);
@@ -766,6 +767,27 @@ mod tests {
             progress.seen.contains(&0b1),
             "the matching line's bitset was not recorded"
         );
+    }
+
+    /// A run of hits changes how the set is asked (#592); the bitsets must
+    /// not change with it. Each new bitset comes just after a change, as
+    /// `seen` keeps only the first of each. No line selects, so the scan
+    /// reads to the end.
+    #[test]
+    fn bitsets_hold_across_runs_of_hits_and_misses() {
+        let mut text = "INFO up\n".repeat(300);
+        text.push_str("DEBUG down\nINFO DEBUG both\n");
+        text.push_str(&"plain\n".repeat(600));
+        text.push_str("WARN late\n");
+        let progress = scan(
+            Cursor::new(text),
+            &matcher(&["needle"], &["INFO", "DEBUG", "WARN"]),
+            Progress::default(),
+            &never(),
+        );
+
+        assert!(progress.eof);
+        assert_eq!(progress.seen, [0b0010, 0b0100, 0b0110, 0b0000, 0b1000]);
     }
 
     #[test]
