@@ -1183,7 +1183,7 @@ that compiled left them, so a half-typed `(` does not clear the screen.
 | `Space` / `Left` / `Right` | On the sense: the next / previous sense | — |
 | `i` / `c` / `r` / `x` | On the sense: include / context / require / exclude | — |
 | `0`-`9` / `Backspace` | On the neighbour count, on an include filter: type or erase a digit | — |
-| `b` / `a` / `c` | On the neighbour count: the digits set before, after, or both, as grep's `-B`, `-A` and `-C` | — |
+| `b` or `Left` / `a` or `Right` / `c` | On the neighbour count: the digits set before, after, or both, as grep's `-B`, `-A` and `-C` | — |
 | `+` | On the lines: the pattern must match the cursor line | `filtereditor.mark.match` |
 | `-` | On the lines: the pattern must not match the cursor line | `filtereditor.mark.nomatch` |
 | `=` | On the lines: remove the cursor line's mark | `filtereditor.mark.clear` |
