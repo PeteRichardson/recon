@@ -248,7 +248,7 @@ impl App<'_> {
         self.loading.shown = None;
         self.view.show(path, contents);
         self.sync_document();
-        self.refresh_view();
+        self.refresh_view_here();
         self.rewatch();
     }
 
@@ -306,7 +306,7 @@ impl App<'_> {
             });
         self.sync_document();
         match landing {
-            Landing::Top => self.refresh_view(),
+            Landing::Top => self.refresh_view_here(),
             Landing::Keep(source) => {
                 self.document.evaluate(&self.filters);
                 self.filters.note_over_limit(self.document.over_limit());
@@ -318,13 +318,13 @@ impl App<'_> {
                 self.place_cursor_on_visible_row(row);
             }
             Landing::FirstInteresting { backwards } => {
-                self.refresh_view();
+                self.refresh_view_here();
                 if let Some(target) = self.first_interesting(backwards) {
                     self.land_on(target);
                 }
             }
             Landing::End => {
-                self.refresh_view();
+                self.refresh_view_here();
                 self.place_cursor_at_end();
             }
         }

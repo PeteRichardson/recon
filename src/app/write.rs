@@ -54,6 +54,7 @@ impl App<'_> {
         if !replace && path.exists() {
             return Err(exists());
         }
+        self.finish_pass_here();
         if self.lines_need_finishing() {
             let target = path.clone();
             let job = self.start_lines_job(move |mut streamed: Streamed| {

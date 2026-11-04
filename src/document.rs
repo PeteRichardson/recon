@@ -72,8 +72,9 @@ pub struct Document {
     /// The definition kinds each line starts, computed by the first
     /// `evaluate` that has a definition filter to answer and kept for the
     /// document's life. `None` until then, and `Some(empty)` for a file no
-    /// grammar claims — that answer is worth caching too.
-    kinds: Option<Vec<KindSet>>,
+    /// grammar claims — that answer is worth caching too. Shared, so that
+    /// a pass on another thread (#597) reads it with no copy.
+    kinds: Option<Arc<[KindSet]>>,
 }
 
 impl Document {
@@ -142,30 +143,67 @@ impl Document {
         // The whole-file grammar pass, once, and only when a filter will
         // read its answer. A set of regex filters never pays for it.
         if filters.needs_kinds() && self.kinds.is_none() {
-            self.kinds = Some(
-                self.path
-                    .as_deref()
-                    .and_then(|path| syntax::definitions(path, &self.lines))
-                    .unwrap_or_default(),
-            );
+            self.kinds = Some(definitions(self.path.as_deref(), &self.lines));
         }
         let kinds = self.kinds.as_deref().unwrap_or(&[]);
         self.verdicts.clear();
         self.over_limit.clear();
         self.over_limit.resize(filters.filters().len(), 0);
-        let over_limit = &mut self.over_limit;
-        let mut pass = filters.pass();
-        self.verdicts
-            .extend(self.lines.iter().enumerate().map(|(row, line)| {
-                let kinds = kinds.get(row).copied().unwrap_or(KindSet::EMPTY);
-                pass.verdict_noting(line, kinds, |index| {
-                    over_limit[index] += 1;
-                })
-            }));
+        judge(
+            &self.lines,
+            0..self.lines.len(),
+            kinds,
+            filters,
+            &mut self.verdicts,
+            &mut self.over_limit,
+        );
         self.mark_neighbors(filters, 0);
+        self.verdicts_written(filters);
+    }
+
+    /// After the verdicts are written from row 0: what they depend on, and
+    /// what depends on them.
+    fn verdicts_written(&mut self, filters: &ActiveFilters) {
         self.anything_including = filters.any_including();
         self.revision = self.revision.wrapping_add(1);
         self.recompute_visible();
+    }
+
+    /// Start a pass that judges the lines in blocks on another thread
+    /// (#597). Until it ends, the verdicts cover only the rows that the
+    /// blocks given to `take_block` judged, and only those rows show.
+    pub(crate) fn begin_pass(&mut self, filters: &ActiveFilters) -> Pass {
+        self.verdicts.clear();
+        self.over_limit.clear();
+        self.over_limit.resize(filters.filters().len(), 0);
+        self.verdicts_written(filters);
+        Pass {
+            lines: Arc::clone(&self.lines),
+            path: self.path.clone(),
+            kinds: self.kinds.clone(),
+        }
+    }
+
+    /// Add the verdicts of the next block of a pass that `begin_pass`
+    /// started, and the rows they show.
+    pub(crate) fn take_block(&mut self, filters: &ActiveFilters, block: Block) {
+        debug_assert_eq!(block.start, self.verdicts.len(), "blocks come in order");
+        if block.kinds.is_some() {
+            self.kinds = block.kinds;
+        }
+        self.verdicts.extend(block.verdicts);
+        for (total, count) in self.over_limit.iter_mut().zip(block.over_limit) {
+            *total += count;
+        }
+        self.mark_neighbors(filters, block.start);
+        self.revision = self.revision.wrapping_add(1);
+        self.extend_visible(block.start, filters);
+    }
+
+    /// Whether every line has a verdict: no pass is part way.
+    #[must_use]
+    pub(crate) fn judged(&self) -> bool {
+        self.verdicts.len() == self.lines.len()
     }
 
     /// Make each unmatched line within reach of an include match a
@@ -217,26 +255,32 @@ impl Document {
             self.evaluate(filters);
             return;
         }
-        let over_limit = &mut self.over_limit;
-        over_limit.resize(filters.filters().len(), 0);
-        let mut pass = filters.pass();
-        self.verdicts
-            .extend(self.lines.range(start..self.lines.len()).map(|line| {
-                pass.verdict_noting(line, KindSet::EMPTY, |index| {
-                    over_limit[index] += 1;
-                })
-            }));
+        self.over_limit.resize(filters.filters().len(), 0);
+        judge(
+            &self.lines,
+            start..self.lines.len(),
+            &[],
+            filters,
+            &mut self.verdicts,
+            &mut self.over_limit,
+        );
         self.mark_neighbors(filters, start);
+        self.revision = self.revision.wrapping_add(1);
+        self.extend_visible(start, filters);
+    }
+
+    /// Add to `visible` the rows that verdicts from row `start` on show.
+    ///
+    /// A new match reaches back, so the rows from there are read again.
+    /// They only gain lines, so the length says whether the set moved.
+    fn extend_visible(&mut self, start: usize, filters: &ActiveFilters) {
         let (mode, anything_including) = (self.mode, self.anything_including);
-        // A new match reaches back, so the rows from there are read again.
-        // They only gain lines, so the length says whether the set moved.
         let first = start.saturating_sub(filters.neighbor_reach().before as usize);
         let shown = self.verdicts[first..]
             .iter()
             .enumerate()
             .filter(|(_, verdict)| shows(mode, **verdict, anything_including))
             .map(|(offset, _)| first + offset);
-        self.revision = self.revision.wrapping_add(1);
         let before = self.visible.len();
         self.visible.truncate(self.visible.rows_before(first));
         self.visible.extend(shown);
@@ -614,6 +658,94 @@ fn sweep<'a>(verdicts: impl Iterator<Item = &'a mut Verdict>, reach: impl Fn(Ver
             *verdict = Verdict::ContextKeep;
         }
     }
+}
+
+/// What a pass on another thread reads (#597): the lines, and what a
+/// definition filter needs to judge them. `begin_pass` makes one.
+#[derive(Debug)]
+pub(crate) struct Pass {
+    lines: Arc<Lines>,
+    path: Option<std::path::PathBuf>,
+    kinds: Option<Arc<[KindSet]>>,
+}
+
+/// The verdicts of `size` lines, from row `start`, for `take_block`.
+#[derive(Debug)]
+pub(crate) struct Block {
+    start: usize,
+    verdicts: Vec<Verdict>,
+    /// Each filter's lines over the step limit in this block.
+    over_limit: Vec<usize>,
+    /// The grammar's answers, when this pass found them: the first block
+    /// carries them back for the document to keep.
+    kinds: Option<Arc<[KindSet]>>,
+}
+
+impl Pass {
+    /// The pass, as blocks of `size` lines in file order. The whole-file
+    /// grammar pass, when a filter needs it and the document did not keep
+    /// one, runs before the first block.
+    pub(crate) fn blocks(self, filters: ActiveFilters, size: usize) -> impl Iterator<Item = Block> {
+        let mut found = None;
+        let kinds = match self.kinds {
+            Some(kinds) => kinds,
+            None if filters.needs_kinds() => {
+                let kinds = definitions(self.path.as_deref(), &self.lines);
+                found = Some(Arc::clone(&kinds));
+                kinds
+            }
+            None => Arc::from([]),
+        };
+        let lines = self.lines;
+        let size = size.max(1);
+        (0..lines.len()).step_by(size).map(move |start| {
+            let mut verdicts = Vec::with_capacity(size);
+            let mut over_limit = vec![0; filters.filters().len()];
+            let end = (start + size).min(lines.len());
+            judge(
+                &lines,
+                start..end,
+                &kinds,
+                &filters,
+                &mut verdicts,
+                &mut over_limit,
+            );
+            Block {
+                start,
+                verdicts,
+                over_limit,
+                kinds: found.take(),
+            }
+        })
+    }
+}
+
+/// The grammar's answer for `lines`: empty for a document with no file, or
+/// a file no grammar claims.
+fn definitions(path: Option<&Path>, lines: &Lines) -> Arc<[KindSet]> {
+    path.and_then(|path| syntax::definitions(path, lines))
+        .unwrap_or_default()
+        .into()
+}
+
+/// Add the verdicts of the lines in `rows` to `verdicts`, and count each
+/// filter's lines over the step limit in `over_limit`.
+fn judge(
+    lines: &Lines,
+    rows: std::ops::Range<usize>,
+    kinds: &[KindSet],
+    filters: &ActiveFilters,
+    verdicts: &mut Vec<Verdict>,
+    over_limit: &mut [usize],
+) {
+    let mut pass = filters.pass();
+    let first = rows.start;
+    verdicts.extend(lines.range(rows).enumerate().map(|(offset, line)| {
+        let kinds = kinds.get(first + offset).copied().unwrap_or(KindSet::EMPTY);
+        pass.verdict_noting(line, kinds, |index| {
+            over_limit[index] += 1;
+        })
+    }));
 }
 
 /// One line of a sweep: whether a line with `verdict` is a neighbor line,
@@ -1312,6 +1444,56 @@ mod tests {
         expected.extend([Verdict::Unmatched; 300]);
         expected.extend([Verdict::Excluded, Verdict::Included(0)]);
         assert_eq!(document.verdicts(), expected);
+    }
+
+    // ---- a pass in blocks (#597) -------------------------------------------
+
+    /// A neighbor range that goes across a block boundary, in each
+    /// direction, gives the same verdicts and rows as one `evaluate`. While
+    /// the pass runs, only rows that have a verdict show.
+    #[test]
+    fn a_pass_in_blocks_gives_what_evaluate_gives() {
+        let lines = ["a", "b", "hit", "c", "d", "e", "f", "hit", "g", "h"];
+        let filters = with_count("hit", 2, 2);
+        let whole = hidden(&lines, &filters);
+
+        let mut partial = doc(&lines);
+        partial.set_mode(Mode::FilteredOnly);
+        let mut blocks = partial.begin_pass(&filters).blocks(filters.snapshot(), 3);
+        assert!(partial.visible().is_empty());
+        partial.take_block(&filters, blocks.next().expect("a first block"));
+        partial.take_block(&filters, blocks.next().expect("a second block"));
+        // Rows 0-5 have a verdict. Row 5 is a neighbor of the match on
+        // row 7, which is not judged yet.
+        assert_eq!(partial.visible(), &[0, 1, 2, 3, 4]);
+        for block in blocks {
+            partial.take_block(&filters, block);
+        }
+
+        assert_eq!(partial.verdicts(), whole.verdicts());
+        assert_eq!(partial.visible(), whole.visible());
+    }
+
+    /// A definition filter reads the grammar before the first block, and
+    /// the document keeps the answer as `evaluate` does.
+    #[test]
+    fn a_pass_in_blocks_reads_the_grammar_once() {
+        let mut filters = ActiveFilters::new();
+        filters.add_definition(crate::syntax::Kind::Function);
+        let lines = vec![
+            "// fn not_a_definition".to_string(),
+            "fn real() {}".to_string(),
+            "struct S;".to_string(),
+        ];
+        let mut document = Document::for_file(Path::new("t.rs"), Lines::from(lines));
+        for block in document.begin_pass(&filters).blocks(filters.snapshot(), 2) {
+            document.take_block(&filters, block);
+        }
+        assert_eq!(
+            document.verdicts(),
+            [Verdict::Unmatched, Verdict::Included(0), Verdict::Unmatched]
+        );
+        assert!(document.kinds.is_some(), "the pass ran and was kept");
     }
 
     // ---- follow mode (#493) -------------------------------------------------

@@ -40,6 +40,14 @@ The scan that marks the explorer stops at the first matching line of each
 file. When you turn a filter on or off, recon can usually mark the full
 directory again without reading the files again.
 
+On a file of 4 million lines or more, a filter change does not stop the
+keys. recon finds the new results on a background thread, in blocks. The
+view shows only the lines that have a new result, and the status line shows
+the progress (`filtering 37%`). If the cursor's line does not have a result
+yet, the cursor stays on the last line shown, and goes to its line when the
+line has a result. Push `n` and the cursor goes to the next result when it
+is found.
+
 For the design, see
 [ADR 0007](https://github.com/PeteRichardson/recon/blob/main/docs/adr/0007-one-background-view-pipeline.md).
 

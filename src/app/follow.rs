@@ -46,6 +46,15 @@ impl Default for Runner {
     }
 }
 
+/// What a followed file grew by: one report's new lines.
+pub(super) struct Grew {
+    lines: Vec<String>,
+    /// The first of `lines` is the last line again, which has grown.
+    replace_last: bool,
+    path: PathBuf,
+    stamp: Option<scan::Stamp>,
+}
+
 /// Follow mode's state.
 #[derive(Default)]
 pub(super) struct Following {
@@ -185,7 +194,12 @@ impl App<'_> {
                 Change::Grew {
                     replace_last,
                     lines,
-                } => self.take_new_lines(lines, replace_last, &path, report.stamp),
+                } => self.take_new_lines(Grew {
+                    lines,
+                    replace_last,
+                    path,
+                    stamp: report.stamp,
+                }),
                 Change::Reset => {
                     log::debug!("follow: {} read again from the start", path.display());
                     let landing = if self.cursor_at_end() {
@@ -215,13 +229,20 @@ impl App<'_> {
     /// Add the lines the followed file grew by, filtered as the others
     /// are. With the cursor on the last line the view scrolls to them;
     /// otherwise the cursor stays, and the status row counts them.
-    fn take_new_lines(
-        &mut self,
-        lines: Vec<String>,
-        replace_last: bool,
-        path: &Path,
-        stamp: Option<scan::Stamp>,
-    ) {
+    ///
+    /// A pass in blocks (#597) judges the lines it was given: the new ones
+    /// wait for it to end.
+    pub(super) fn take_new_lines(&mut self, grew: Grew) {
+        let Err(Grew {
+            lines,
+            replace_last,
+            path,
+            stamp,
+        }) = self.filtering.hold(grew)
+        else {
+            return;
+        };
+        let path = path.as_path();
         let at_end = self.cursor_at_end();
         let cursor = self.cursor_source();
         let visible = self.document.visible().len();
