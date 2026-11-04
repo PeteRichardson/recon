@@ -6,7 +6,6 @@ use super::prompt::{PromptKind, SearchPrompt};
 use crate::document::Mode;
 use crate::widgets::{self, Action, FilterCommand};
 use crate::{filter, filtersets};
-use color_eyre::Result;
 use crossterm::event::{self, KeyCode};
 
 /// What a peek has to put back when it ends (#48).
