@@ -601,7 +601,8 @@ mod tests {
     #[test]
     fn an_aligned_command_output_lands_in_columns() {
         let csv = "name,qty\nwidget,3\n\"abacus,x\",120\n";
-        let aligned = crate::views::read::command_output(csv.as_bytes(), Some("text/csv"), true);
+        let aligned =
+            crate::views::read::command_output(csv.as_bytes().to_vec(), Some("text/csv"), true);
         assert_eq!(
             *aligned.lines,
             ["name      qty", "widget    3", "abacus,x  120"]
@@ -609,7 +610,8 @@ mod tests {
         assert!(aligned.text);
         assert_eq!(aligned.mime.as_deref(), Some("text/csv"));
 
-        let raw = crate::views::read::command_output(csv.as_bytes(), Some("text/csv"), false);
+        let raw =
+            crate::views::read::command_output(csv.as_bytes().to_vec(), Some("text/csv"), false);
         assert_eq!(*raw.lines, ["name,qty", "widget,3", "\"abacus,x\",120"]);
     }
 
@@ -618,7 +620,7 @@ mod tests {
     fn an_aligned_tsv_output_lands_in_columns() {
         let tsv = "a\tb\nlong\tx\n";
         let aligned = crate::views::read::command_output(
-            tsv.as_bytes(),
+            tsv.as_bytes().to_vec(),
             Some("text/tab-separated-values"),
             true,
         );

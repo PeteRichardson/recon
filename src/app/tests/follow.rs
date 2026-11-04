@@ -33,7 +33,7 @@ fn ctrl_t_shows_new_lines_and_keeps_the_last_one_in_view() {
     grow(&path, "three\nfour\n");
     assert!(app.poll_follow());
 
-    assert_eq!(app.document.lines(), ["one", "two", "three", "four"]);
+    assert_eq!(*app.document.lines(), ["one", "two", "three", "four"]);
     assert_eq!(cursor_source(&app), 3);
     assert!(view_lines(&app).contains(&"four".to_string()));
 }
@@ -132,13 +132,13 @@ fn a_truncated_file_is_read_again_and_stays_followed() {
 
     fs::write(&path, "fresh\n").expect("truncate");
     app.poll_follow();
-    assert_eq!(app.document.lines(), ["fresh"]);
+    assert_eq!(*app.document.lines(), ["fresh"]);
     assert!(message(&app).is_some_and(|text| text.contains("read again from the start")));
     assert!(status_line(&mut app).contains(" FOLLOW "));
 
     grow(&path, "after\n");
     app.poll_follow();
-    assert_eq!(app.document.lines(), ["fresh", "after"]);
+    assert_eq!(*app.document.lines(), ["fresh", "after"]);
     assert_eq!(cursor_source(&app), 1);
 }
 
@@ -195,7 +195,7 @@ fn ctrl_t_in_the_explorer_follows_the_previewed_file_read_whole() {
     grow(&path, "new\n");
     app.poll_follow();
     assert_eq!(app.document.lines().len(), total + 1);
-    assert_eq!(app.document.lines()[total], "new");
+    assert_eq!(&app.document.lines()[total], "new");
 
     // Away and back: a followed file is read whole, not previewed.
     arrow_to(&mut app, "b.log");
@@ -215,5 +215,5 @@ fn the_follow_flag_starts_follow_mode_on_the_file() {
     assert!(status_line(&mut app).contains(" FOLLOW "));
     grow(&path, "two\n");
     app.poll_follow();
-    assert_eq!(app.document.lines(), ["one", "two"]);
+    assert_eq!(*app.document.lines(), ["one", "two"]);
 }

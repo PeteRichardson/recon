@@ -38,7 +38,7 @@ fn lines_come_into_the_view_and_the_title_says_whether_stdin_is_open() {
     let (mut app, mut writer, _) = app_over_stdin("stdin_title_app");
 
     writer.write_all(b"first\nsecond\n").expect("write");
-    until(&mut app, |app| app.document.lines() == ["first", "second"]);
+    until(&mut app, |app| *app.document.lines() == ["first", "second"]);
     assert!(
         rendered(&mut app).contains("<stdin> (open)"),
         "{}",

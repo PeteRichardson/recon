@@ -118,19 +118,14 @@ impl Default for Cache {
     }
 }
 
-/// What `contents` cost to keep: each line's text and its `String`, and a
+/// What `contents` cost to keep: the lines' text and starts, and a
 /// picture's pixels.
 fn size_of(contents: &Contents) -> usize {
     let pixels = contents
         .image
         .as_ref()
         .map_or(0, |image| image.as_bytes().len());
-    contents
-        .lines
-        .iter()
-        .map(|line| line.len() + std::mem::size_of::<String>())
-        .sum::<usize>()
-        + pixels
+    contents.lines.memory() + pixels
 }
 
 impl Cache {

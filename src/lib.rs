@@ -30,6 +30,7 @@ pub mod generate;
 pub mod help;
 mod hex;
 pub mod keymap;
+pub mod lines;
 pub mod logfile;
 pub mod logging;
 mod mime;

@@ -29,6 +29,7 @@
 //!   result follows the terminal's theme instead of fighting it, and it needs
 //!   no truecolor support.
 
+use crate::lines::Lines;
 use ratatui::style::{Color, Modifier, Style};
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -407,18 +408,18 @@ impl Highlighter {
     /// file. Costs nothing beyond the grammar lookup: no line is parsed
     /// until [`ensure`](Self::ensure) asks for it.
     #[must_use]
-    pub fn for_file(theme: Theme, path: &Path, lines: &[String]) -> Option<Self> {
+    pub fn for_file(theme: Theme, path: &Path, lines: &Lines) -> Option<Self> {
         let Theme::On(theme) = theme else {
             return None;
         };
-        let syntax = detect(path, lines.first().map(String::as_str))?;
+        let syntax = detect(path, lines.first())?;
         Some(Self::new(theme, syntax, lines.len()))
     }
 
     /// A highlighter for `lines` of MIME type `mime`: a command's output
     /// (#457). `None` as `for_file` gives it, and for plain text.
     #[must_use]
-    pub fn for_mime(theme: Theme, mime: &str, lines: &[String]) -> Option<Self> {
+    pub fn for_mime(theme: Theme, mime: &str, lines: &Lines) -> Option<Self> {
         let Theme::On(theme) = theme else {
             return None;
         };
@@ -465,7 +466,7 @@ impl Highlighter {
     /// the module docs. The budget is what keeps a frame's worth of scattered
     /// rows from stalling the app: a row that would overspend is left plain
     /// this time and asked for again on the next frame.
-    pub fn ensure(&mut self, lines: &[String], row: usize, budget: &mut usize) -> bool {
+    pub fn ensure(&mut self, lines: &Lines, row: usize, budget: &mut usize) -> bool {
         debug_assert_eq!(
             lines.len(),
             self.spans.len(),
@@ -497,7 +498,10 @@ impl Highlighter {
         // `RESYNC_LOOKBACK` lines up and are a good guess. Overwriting the
         // first with the second degrades colour the user has already seen
         // (#183).
-        for (slot, line) in self.spans[start..=row].iter_mut().zip(&lines[start..=row]) {
+        for (slot, line) in self.spans[start..=row]
+            .iter_mut()
+            .zip(lines.range(start..row + 1))
+        {
             let spans = Self::colour_line(&mut self.state, line);
             if slot.is_none() {
                 *slot = Some(spans);
@@ -816,8 +820,8 @@ impl KindScopes {
 /// definitions, the fallback stays off for structs there. In a Swift file
 /// nothing is ever named, so the fallback carries all four kinds.
 #[must_use]
-pub fn definitions(path: &Path, lines: &[String]) -> Option<Vec<KindSet>> {
-    let syntax = detect(path, lines.first().map(String::as_str))?;
+pub fn definitions(path: &Path, lines: &Lines) -> Option<Vec<KindSet>> {
+    let syntax = detect(path, lines.first())?;
     let scopes = KindScopes::new();
     let mut state = ParseState::new(syntax);
     let mut stack = ScopeStack::new();
@@ -878,8 +882,8 @@ pub fn definitions(path: &Path, lines: &[String]) -> Option<Vec<KindSet>> {
 mod tests {
     use super::*;
 
-    fn lines(text: &str) -> Vec<String> {
-        text.lines().map(str::to_string).collect()
+    fn lines(text: &str) -> Lines {
+        Lines::from_text(text.to_string())
     }
 
     // ---- definitions (#123) ------------------------------------------------
@@ -1101,7 +1105,7 @@ int main(void) { return 0; }
         assert_eq!(Kind::Class.to_string(), "classes");
     }
 
-    fn rust(theme: Theme, text: &str) -> (Highlighter, Vec<String>) {
+    fn rust(theme: Theme, text: &str) -> (Highlighter, Lines) {
         let lines = lines(text);
         let highlighter = Highlighter::for_file(theme, Path::new("main.rs"), &lines)
             .expect("Rust is a bundled grammar");
@@ -1241,7 +1245,7 @@ int main(void) { return 0; }
     #[test]
     fn a_grammar_is_found_by_mime_type_and_plain_text_has_none() {
         let theme = Theme::builtin();
-        let lines = vec!["{}".to_string()];
+        let lines = lines("{}");
         let name = |mime: &str| {
             Highlighter::for_mime(theme, mime, &lines).map(|h| h.syntax_name().to_string())
         };
