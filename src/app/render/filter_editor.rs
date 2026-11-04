@@ -95,7 +95,7 @@ impl FilterEditor {
                     Style::default().fg(Color::DarkGray),
                 ));
             }
-            spans.extend(self.spans(index, line, dim, check));
+            spans.extend(self.spans(index, &line, dim, check));
             // A failed check fills its whole row, not only its text.
             let row = if check.is_some_and(|check| !check.passes) {
                 FAIL

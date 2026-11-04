@@ -113,7 +113,16 @@ impl Document {
     /// line-end stripping — and the error instead of a placeholder message,
     /// which is what batch mode needs and the widget wraps.
     pub fn read(path: &Path) -> io::Result<Self> {
-        Ok(Self::for_file(path, read_lines(path)?))
+        Self::read_with_threshold(path, INDEX_BYTES)
+    }
+
+    /// `read`, with an index from `threshold` bytes (#51), as
+    /// `read_lines_with_threshold` reads.
+    pub(crate) fn read_with_threshold(path: &Path, threshold: u64) -> io::Result<Self> {
+        Ok(Self::for_file(
+            path,
+            read_lines_with_threshold(path, threshold)?,
+        ))
     }
 
     #[must_use]
@@ -411,7 +420,7 @@ impl Document {
     pub fn visible_lines_range(&self, start: usize, end: usize) -> Vec<String> {
         self.visible
             .rows(start, end)
-            .map(|source| self.lines[source].to_string())
+            .map(|source| self.lines.line(source).into_owned())
             .collect()
     }
 
@@ -642,11 +651,7 @@ pub(crate) fn read_lossy_line<R: BufRead>(
     if reader.read_until(b'\n', buf)? == 0 {
         return Ok(None);
     }
-    Ok(Some(
-        String::from_utf8_lossy(buf)
-            .trim_end_matches(['\n', '\r'])
-            .to_string(),
-    ))
+    Ok(Some(crate::lines::decode(buf).into_owned()))
 }
 
 /// Make the unmatched lines after each match a neighbor line, for as many
@@ -739,13 +744,15 @@ fn judge(
     over_limit: &mut [usize],
 ) {
     let mut pass = filters.pass();
-    let first = rows.start;
-    verdicts.extend(lines.range(rows).enumerate().map(|(offset, line)| {
-        let kinds = kinds.get(first + offset).copied().unwrap_or(KindSet::EMPTY);
-        pass.verdict_noting(line, kinds, |index| {
+    let mut row = rows.start;
+    verdicts.reserve(rows.len());
+    lines.each(rows, |line| {
+        let kinds = kinds.get(row).copied().unwrap_or(KindSet::EMPTY);
+        verdicts.push(pass.verdict_noting(line, kinds, |index| {
             over_limit[index] += 1;
-        })
-    }));
+        }));
+        row += 1;
+    });
 }
 
 /// One line of a sweep: whether a line with `verdict` is a neighbor line,
@@ -868,22 +875,50 @@ impl<'a> Shown<'a> {
 /// Anything else the OS refuses comes back verbatim.
 ///
 /// One read into one buffer (#593), not a `String` for each line: on a
-/// large log that is several times faster, and so is the free.
+/// large log that is several times faster, and so is the free. From
+/// [`INDEX_BYTES`] the text is not kept at all: see `Lines::index`.
 pub fn read_lines(path: &Path) -> io::Result<Lines> {
+    read_lines_with_threshold(path, INDEX_BYTES)
+}
+
+/// The size from which `read_lines` keeps only where each line starts
+/// (#51). Smaller files are read far more often, and keep the text.
+pub const INDEX_BYTES: u64 = 256 << 20;
+
+/// `read_lines`, with an index from `threshold` bytes: what a view job
+/// reads with, and the tests take that path with a file of a few bytes.
+///
+/// The file's size from its metadata only chooses the path. The index is
+/// of the bytes the read gets.
+pub(crate) fn read_lines_with_threshold(path: &Path, threshold: u64) -> io::Result<Lines> {
     refuse_unreadable(path)?;
-    read_text(&mut File::open(path)?)
+    let mut file = File::open(path)?;
+    if file.metadata()?.len() < threshold {
+        return read_text(&mut file);
+    }
+    read_sniffed(file, |file, _| Lines::index(file))
 }
 
 /// All of `reader`, as lines: `read_lines` without the path, for a reader
 /// a preview has capped. A head with a NUL and no byte-order mark is
 /// refused as [`BINARY_FILE`].
 pub(crate) fn read_text<R: Read>(reader: &mut R) -> io::Result<Lines> {
-    match sniff(reader)? {
-        (Sniff::Text, mut bytes) => {
-            reader.read_to_end(&mut bytes)?;
-            Ok(Lines::from_bytes(bytes))
-        }
-        (Sniff::Utf16(endian), head) => read_utf16_lines(head, reader, endian),
+    read_sniffed(reader, |reader, mut bytes| {
+        reader.read_to_end(&mut bytes)?;
+        Ok(Lines::from_bytes(bytes))
+    })
+}
+
+/// The lines of `reader` after a sniff of its head: `text` reads a text
+/// file from the reader and the head it read, UTF-16 is decoded whole, and
+/// a binary file is refused as [`BINARY_FILE`].
+fn read_sniffed<R: Read>(
+    mut reader: R,
+    text: impl FnOnce(R, Vec<u8>) -> io::Result<Lines>,
+) -> io::Result<Lines> {
+    match sniff(&mut reader)? {
+        (Sniff::Text, head) => text(reader, head),
+        (Sniff::Utf16(endian), head) => read_utf16_lines(head, &mut reader, endian),
         (Sniff::Binary, _) => Err(io::Error::new(io::ErrorKind::InvalidData, BINARY_FILE)),
     }
 }
@@ -1779,6 +1814,39 @@ mod tests {
         let lines = read_lines(&file).expect("readable");
 
         assert_eq!(lines, ["one", "two\u{FFFD}", "three"]);
+    }
+
+    /// A large file (#51) keeps only where its lines start; a smaller one
+    /// keeps its text, as before. The threshold is a few bytes here, so
+    /// that a test file reaches it.
+    #[test]
+    fn read_lines_keeps_an_index_of_a_file_at_the_threshold() {
+        let file = fixture_file("document_read_index.log", b"one\r\ntwo\xff\nthree");
+
+        let at = read_lines_with_threshold(&file, 15).expect("readable");
+        let under = read_lines_with_threshold(&file, 16).expect("readable");
+
+        assert!(at.is_index());
+        assert_eq!(at, ["one", "two\u{FFFD}", "three"]);
+        assert!(!under.is_index());
+        assert_eq!(under, ["one", "two\u{FFFD}", "three"]);
+    }
+
+    /// The sniff still runs first: UTF-16 is decoded whole, as before, and
+    /// a binary file is refused.
+    #[test]
+    fn read_lines_keeps_no_index_of_utf16_or_binary() {
+        let utf16 = fixture_file(
+            "document_read_index_utf16.txt",
+            &utf16(Endian::Little, "hi\nthere\r\n"),
+        );
+        let binary = fixture_file("document_read_index_binary.bin", b"abc\0def\n");
+
+        let lines = read_lines_with_threshold(&utf16, 1).expect("UTF-16 is text");
+        assert!(!lines.is_index());
+        assert_eq!(lines, ["hi", "there"]);
+        let err = read_lines_with_threshold(&binary, 1).expect_err("binary");
+        assert!(is_binary(&err), "not the binary error: {err}");
     }
 
     #[test]

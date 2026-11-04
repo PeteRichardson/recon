@@ -127,7 +127,7 @@ impl Contents {
 ///
 /// `view` is `Raw` for the file's text, or `Hex` for its dump (#242). A
 /// binary file asked for as raw falls back to its dump.
-pub(crate) fn read_lines(path: &Path, view: View) -> Contents {
+pub(crate) fn read_lines(path: &Path, view: View, index_bytes: u64) -> Contents {
     // See `read_preview_with_caps`: a directory opens fine and then fails to read, so
     // it is recognised up front rather than surfacing an OS error string.
     if path.is_dir() {
@@ -136,7 +136,7 @@ pub(crate) fn read_lines(path: &Path, view: View) -> Contents {
     if view == View::Hex {
         return read_hex(path, None);
     }
-    match document::read_lines(path) {
+    match document::read_lines_with_threshold(path, index_bytes) {
         Ok(lines) => Contents {
             lines: Arc::new(lines),
             text: true,

@@ -23,6 +23,7 @@ use crate::widgets::explorer::sorted_entries;
 use color_eyre::{Result, eyre::eyre};
 use std::fs::File;
 use std::io::{self, BufRead, Write};
+use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 
@@ -32,6 +33,9 @@ pub(crate) struct Inputs {
     /// Absolute, in the order they were given.
     pub files: Vec<PathBuf>,
     pub from: Source,
+    /// The size from which a file is read as an index (#51): a test sets
+    /// it to a few bytes.
+    pub index_bytes: u64,
 }
 
 /// Where the input list came from — the summary and `cwd` differ by it.
@@ -166,6 +170,7 @@ fn inputs(path: &Path, files_from: Option<&str>, stdin: impl BufRead) -> Result<
     Ok(Inputs {
         files,
         from: Source::List,
+        index_bytes: document::INDEX_BYTES,
     })
 }
 
@@ -182,11 +187,13 @@ fn path_inputs(path: &Path) -> io::Result<Inputs> {
         return Ok(Inputs {
             files,
             from: Source::Directory(path),
+            index_bytes: document::INDEX_BYTES,
         });
     }
     Ok(Inputs {
         files: vec![path],
         from: Source::File,
+        index_bytes: document::INDEX_BYTES,
     })
 }
 
@@ -235,7 +242,7 @@ fn collect_lines(
     let mut written = Ok(());
     let require = require_matcher(filters);
     'files: for path in &inputs.files {
-        let document = match Document::read(path) {
+        let document = match Document::read_with_threshold(path, inputs.index_bytes) {
             Ok(document) => document,
             Err(err) => {
                 warn(warnings, path, &err);
@@ -249,14 +256,26 @@ fn collect_lines(
             continue;
         }
         let document = hidden(document, filters);
-        let text = document.lines();
         let prefix = several.then(|| path_bytes(path));
-        for source in document.visible().iter() {
-            written = write_line(out, prefix.as_deref(), line_numbers, source, &text[source]);
-            if written.is_err() {
-                break 'files;
-            }
-            emitted += 1;
+        document
+            .lines()
+            .try_each_of(document.visible().iter(), |source, text| {
+                written = write_line(out, prefix.as_deref(), line_numbers, source, text);
+                if written.is_err() {
+                    return ControlFlow::Break(());
+                }
+                emitted += 1;
+                ControlFlow::Continue(())
+            });
+        if written.is_err() {
+            break 'files;
+        }
+        // A large file read from its index (#51) that became shorter in
+        // the run: some lines it wrote were empty.
+        if document.lines().changed() {
+            let changed = io::Error::other("it became shorter while it was read");
+            warn(warnings, path, &changed);
+            failed += 1;
         }
     }
     let written = written.and_then(|()| out.flush());
@@ -499,7 +518,7 @@ fn write_new(
     let first = visible.rows_before(*next);
     let text = document.lines();
     for source in visible.iter_from(first).take_while(|&source| source < end) {
-        write_line(out, None, line_numbers, source, &text[source])?;
+        write_line(out, None, line_numbers, source, &text.line(source))?;
         *emitted += 1;
         *next = source + 1;
     }
@@ -830,6 +849,7 @@ mod tests {
             &Inputs {
                 files: vec![fifo.clone()],
                 from: Source::File,
+                index_bytes: document::INDEX_BYTES,
             },
             &ActiveFilters::new(),
             false,
@@ -986,6 +1006,7 @@ mod tests {
         Inputs {
             files: vec![lexical_absolute(&file)],
             from: Source::File,
+            index_bytes: document::INDEX_BYTES,
         }
     }
 
@@ -1004,6 +1025,7 @@ mod tests {
         Inputs {
             files,
             from: Source::List,
+            index_bytes: document::INDEX_BYTES,
         }
     }
 
@@ -1110,6 +1132,61 @@ mod tests {
     }
 
     // ---- lines -------------------------------------------------------------
+
+    /// A writer that truncates `path` at the first line it is given: a
+    /// copytruncate in the middle of a run.
+    struct Truncates<'a> {
+        path: &'a Path,
+        out: Vec<u8>,
+    }
+
+    impl Write for Truncates<'_> {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            if self.out.is_empty() {
+                fs::write(self.path, b"").expect("truncate");
+            }
+            self.out.write(buf)
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// A large file read from its index (#51) that becomes shorter while
+    /// its lines are written: the lines read after it are empty, so the
+    /// run warns and counts the file as failed, not as written. More than
+    /// one chunk of lines, so that a read comes after the truncate.
+    #[test]
+    fn lines_of_an_index_that_became_shorter_are_a_failure() {
+        let body = "a line of the log\n".repeat(200_000);
+        let inputs = Inputs {
+            index_bytes: 1,
+            ..one_file("batch_lines_index_shorter.log", body.as_bytes())
+        };
+        let mut out = Truncates {
+            path: &inputs.files[0],
+            out: Vec::new(),
+        };
+        let mut warnings = Vec::new();
+
+        let exit = collect_lines(
+            &inputs,
+            &ActiveFilters::new(),
+            false,
+            &mut out,
+            &mut warnings,
+        );
+
+        let (_, _, failed) = emitted(exit, &out.out);
+        assert_eq!(failed, 1);
+        let warnings = String::from_utf8(warnings).expect("utf-8");
+        assert!(
+            warnings.contains("batch_lines_index_shorter.log")
+                && warnings.contains("it became shorter while it was read"),
+            "{warnings}"
+        );
+    }
 
     #[test]
     fn lines_over_one_file_is_the_matches() {
@@ -1241,6 +1318,7 @@ mod tests {
         let inputs = Inputs {
             files: vec![lexical_absolute(&binary), lexical_absolute(&dir)],
             from: Source::List,
+            index_bytes: document::INDEX_BYTES,
         };
         let mut warnings = Vec::new();
 
@@ -1277,6 +1355,7 @@ mod tests {
         let from_dir = Inputs {
             files: Vec::new(),
             from: Source::Directory(dir.clone()),
+            index_bytes: document::INDEX_BYTES,
         };
         let mut out = Vec::new();
         let (lines, summary, failed) = emitted(collect_cwd(&from_dir, &mut out), &out);
@@ -1287,6 +1366,7 @@ mod tests {
         let from_stdin = Inputs {
             files: vec![dir.join("a.log"), dir.join("b.log")],
             from: Source::List,
+            index_bytes: document::INDEX_BYTES,
         };
         let mut out = Vec::new();
         let (lines, _, _) = emitted(collect_cwd(&from_stdin, &mut out), &out);
@@ -1299,6 +1379,7 @@ mod tests {
         let from_file = Inputs {
             files: vec![dir.join("a.log")],
             from: Source::File,
+            index_bytes: document::INDEX_BYTES,
         };
         let mut out = Vec::new();
         let (lines, _, _) = emitted(collect_cwd(&from_file, &mut out), &out);
@@ -1531,6 +1612,7 @@ mod tests {
         let inputs = Inputs {
             files: vec![log.clone()],
             from: Source::List,
+            index_bytes: document::INDEX_BYTES,
         };
 
         let mut warnings = Vec::new();
@@ -1556,6 +1638,7 @@ mod tests {
         let inputs = Inputs {
             files: vec![binary.clone()],
             from: Source::List,
+            index_bytes: document::INDEX_BYTES,
         };
         let filters = filters_matching("hit");
 
@@ -1668,6 +1751,7 @@ mod tests {
         let inputs = Inputs {
             files: vec![binary.clone()],
             from: Source::List,
+            index_bytes: document::INDEX_BYTES,
         };
 
         let mut out = Vec::new();

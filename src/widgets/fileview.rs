@@ -11,6 +11,7 @@ use crate::views::read::{MAX_PREVIEW_BYTES, PREVIEW_LINES};
 use crate::widgets::hbar::{self, Hbar};
 use crate::widgets::minimap::{self, Minimap};
 use ratatui::prelude::{Buffer, Color, Modifier, Rect, Style, Widget};
+use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tui_textarea::{CursorMove, Scrolling, TextArea};
@@ -531,7 +532,7 @@ impl FileView<'_> {
         self.text = text;
         self.hex = hex;
         let (start, end) = window_for(self.source.len(), self.window_height(), 0, 0);
-        self.textarea = TextArea::new(self.source.range(start..end).map(str::to_string).collect());
+        self.textarea = TextArea::new(self.source.range(start..end).map(Cow::into_owned).collect());
         // The buffer numbers its own rows when nothing supplies numbers, and a
         // window's rows run short of the file's. Reserve the width the whole
         // file needs so the gutter does not widen when `apply_view` numbers
@@ -625,7 +626,8 @@ impl FileView<'_> {
     /// Test-only: the app sends a job instead.
     #[cfg(test)]
     pub(crate) fn load(&mut self, path: &Path) {
-        let contents = crate::views::read::read_lines(path, test_view(path));
+        let contents =
+            crate::views::read::read_lines(path, test_view(path), crate::document::INDEX_BYTES);
         self.show(path, &contents);
     }
 
@@ -2600,10 +2602,16 @@ mod tests {
         let path = fixture("show_hex.rs", "fn main() {}\n");
         let mut view = placeholder_view();
         view.set_theme(Theme::builtin());
-        view.show(&path, &crate::views::read::read_lines(&path, View::Raw));
+        view.show(
+            &path,
+            &crate::views::read::read_lines(&path, View::Raw, crate::document::INDEX_BYTES),
+        );
         assert!(view.syntax_name().is_some(), "the text is coloured");
 
-        view.show(&path, &crate::views::read::read_lines(&path, View::Hex));
+        view.show(
+            &path,
+            &crate::views::read::read_lines(&path, View::Hex, crate::document::INDEX_BYTES),
+        );
         assert!(view.is_hex());
         assert_eq!(contents(&view), hex::line(0, b"fn main() {}\n"));
         assert_eq!(view.syntax_name(), None, "a dump is not Rust");
@@ -4137,16 +4145,16 @@ mod tests {
         );
         let listing = read::directory_listing(&dir, usize::MAX, Icons::On(Background::Dark));
 
-        let widths: Vec<usize> = listing.lines.iter().map(UnicodeWidthStr::width).collect();
+        let widths: Vec<usize> = listing.lines.iter().map(|line| line.width()).collect();
         assert!(
             widths.windows(2).all(|pair| pair[0] == pair[1]),
             "{:#?}",
             listing.lines
         );
         assert!(
-            listing.lines[0].starts_with("\u{f07b} sub/"),
+            listing.lines.line(0).starts_with("\u{f07b} sub/"),
             "{:?}",
-            &listing.lines[0]
+            listing.lines.line(0)
         );
     }
 

@@ -93,6 +93,9 @@ pub(super) struct Loading {
     /// Whether a directory listing leads each row with a filetype icon
     /// (#512).
     icons: crate::filetype::Icons,
+    /// The size from which a file is read as an index (#51): a test sets
+    /// it to a few bytes.
+    pub(super) index_bytes: u64,
 }
 
 /// No rows of the user's, and an executor that runs nothing: what a
@@ -123,6 +126,7 @@ impl Loading {
             last_entry: None,
             cell_px: None,
             icons,
+            index_bytes: crate::document::INDEX_BYTES,
         }
     }
 
@@ -135,6 +139,7 @@ impl Loading {
             px,
             prefetch,
             icons: self.icons,
+            index_bytes: self.index_bytes,
         }
     }
 
@@ -188,7 +193,7 @@ impl Loading {
     }
 
     /// Whether `path` is already on its way at `extent`.
-    fn is_pending(&self, path: &Path, extent: Extent) -> bool {
+    pub(super) fn is_pending(&self, path: &Path, extent: Extent) -> bool {
         self.pending
             .as_ref()
             .is_some_and(|pending| pending.path == path && pending.extent == extent)

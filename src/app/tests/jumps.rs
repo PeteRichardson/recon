@@ -212,7 +212,7 @@ fn step_visible_reports_the_wrap_and_walks_only_visible_rows() {
     key(&mut app, KeyCode::Char('t'));
     app.filters.add("hit").expect("valid pattern");
     app.refresh_view();
-    let hit = |document: &Document, source: usize| document.lines()[source].starts_with("hit");
+    let hit = |document: &Document, source: usize| document.lines().line(source).starts_with("hit");
 
     assert_eq!(app.step_visible(false, hit), Step::Landed);
     assert_eq!(cursor_source(&app), 2, "forward from 0");

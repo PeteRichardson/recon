@@ -86,13 +86,10 @@ impl App<'_> {
             return;
         }
         let tab = self.view.tab_length();
-        let lines = self.document.lines();
-        let widest = visible
-            .iter()
-            .filter_map(|line| lines.get(line))
-            .map(|text| text_width(text, tab))
-            .max()
-            .unwrap_or(0);
+        let mut widest = 0;
+        self.document.lines().each_of(visible.iter(), |_, text| {
+            widest = widest.max(text_width(text, tab));
+        });
         self.hbar.built = Some((key, widest));
         #[cfg(test)]
         {

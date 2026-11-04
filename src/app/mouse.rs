@@ -227,7 +227,7 @@ impl App<'_> {
         self.press = Some((source, col));
         if double
             && let Some(line) = self.document.lines().get(source)
-            && let Some((start, end)) = super::viewport::word_span(line, col)
+            && let Some((start, end)) = super::viewport::word_span(&line, col)
         {
             self.start_visual_at(source, start);
             self.view.set_cursor(row, end - 1);

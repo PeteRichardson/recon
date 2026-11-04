@@ -580,6 +580,7 @@ mod follow;
 mod hbar;
 mod hex;
 mod hiding;
+mod index;
 mod jumps;
 mod layout;
 mod logging;

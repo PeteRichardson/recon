@@ -176,7 +176,7 @@ impl App<'_> {
             document
                 .lines()
                 .get(source)
-                .is_some_and(|line| search.is_hit(line))
+                .is_some_and(|line| search.is_hit(&line))
         };
         match self.step_visible(backwards, is_hit) {
             Step::Nothing => {
@@ -208,7 +208,7 @@ impl App<'_> {
             .document
             .source_at(row)
             .and_then(|source| self.document.lines().get(source))
-            .and_then(|line| search.first_column(line));
+            .and_then(|line| search.first_column(&line));
         if let Some(column) = column {
             self.view.set_cursor_col(column);
         }
@@ -243,7 +243,7 @@ impl App<'_> {
         let sources = visible.iter_from(from).chain(visible.iter());
         sources.take(len).enumerate().find_map(|(step, source)| {
             let line = self.document.lines().get(source)?;
-            let column = search.first_column(line)?;
+            let column = search.first_column(&line)?;
             Some(((from + step) % len, column, from + step >= len))
         })
     }
