@@ -226,10 +226,13 @@ pub struct Neighbor {
 }
 
 /// What the filter set decided about one line.
+///
+/// Four bytes (#572): a document keeps one for each line, so the filter
+/// index is a `u16`. A filter past `u16::MAX` matches no line.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Verdict {
     /// Matched an including filter; carries its index, for colouring.
-    Included(usize),
+    Included(u16),
     /// Matched a context filter and no including one; carries its index,
     /// for colouring.
     ///
@@ -238,7 +241,7 @@ pub enum Verdict {
     /// steps over it, and the explorer's scan already leaves context
     /// filters out of the mask that marks a file as matching — this variant
     /// is what lets the view agree with it.
-    Context(usize),
+    Context(u16),
     /// Matched no filter, and kept only as a neighbor line of an include
     /// match (ADR 0016): shown, but not interesting, and in no filter's
     /// colour.
@@ -247,6 +250,19 @@ pub enum Verdict {
     Unmatched,
     /// Removed by an excluding filter.
     Excluded,
+}
+
+#[cfg(test)]
+impl Verdict {
+    /// `Included` for a filter index as the set gives it.
+    pub(crate) fn included(index: usize) -> Self {
+        Self::Included(u16::try_from(index).expect("a small index"))
+    }
+
+    /// `Context` for a filter index as the set gives it.
+    pub(crate) fn context(index: usize) -> Self {
+        Self::Context(u16::try_from(index).expect("a small index"))
+    }
 }
 
 /// What a filter tests a line against (#123).
@@ -986,6 +1002,8 @@ impl ActiveFilters {
                 .filter(move |&(index, filter)| {
                     self.effective(index) && senses.contains(&filter.sense)
                 })
+                // A verdict has no room for a larger index.
+                .filter_map(|(index, _)| Some((index, u16::try_from(index).ok()?)))
         };
         // Include outranks context, whatever their order in the set: a
         // line an include filter selected is a hit, and must say so — `n`
@@ -997,11 +1015,11 @@ impl ActiveFilters {
         // condition on the file, which the explorer's scan applies (#547).
         live(&[Sense::Include])
             .find(|&(index, _)| hit(index))
-            .map(|(index, _)| Verdict::Included(index))
+            .map(|(_, index)| Verdict::Included(index))
             .or_else(|| {
                 live(&[Sense::Context, Sense::Require])
                     .find(|&(index, _)| hit(index))
-                    .map(|(index, _)| Verdict::Context(index))
+                    .map(|(_, index)| Verdict::Context(index))
             })
             .unwrap_or(Verdict::Unmatched)
     }
@@ -1614,6 +1632,12 @@ impl ActiveFilters {
             .any(|(index, filter)| self.effective(index) && filter.sense != Sense::Exclude)
     }
 
+    /// The colour of filter `index`.
+    #[must_use]
+    pub fn filter_style(&self, index: usize) -> Option<Style> {
+        self.filters.get(index).map(|f| f.style)
+    }
+
     /// The style to render a line with, or `None` to leave it alone.
     ///
     /// `Unmatched` dims only when an including filter is active.
@@ -1621,7 +1645,7 @@ impl ActiveFilters {
     pub fn style_for(&self, verdict: Verdict) -> Option<Style> {
         match verdict {
             Verdict::Included(index) | Verdict::Context(index) => {
-                self.filters.get(index).map(|f| f.style)
+                self.filter_style(usize::from(index))
             }
             Verdict::Unmatched if self.any_including() => Some(self.dim_style()),
             Verdict::ContextKeep if self.dim_neighbors => Some(self.dim_style()),
@@ -1668,7 +1692,7 @@ impl ActiveFilters {
         match verdict {
             Verdict::Included(index) => self
                 .filters
-                .get(index)
+                .get(usize::from(index))
                 .map(|filter| filter.neighbor)
                 .unwrap_or_default(),
             _ => Neighbor::default(),
@@ -1784,6 +1808,12 @@ pub(crate) mod test_support {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A document keeps one verdict for each line of the file (#572).
+    #[test]
+    fn a_verdict_is_four_bytes() {
+        assert_eq!(std::mem::size_of::<Verdict>(), 4);
+    }
 
     // ---- generated filters (#321) ------------------------------------------
 

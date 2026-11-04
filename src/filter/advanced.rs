@@ -317,7 +317,7 @@ mod tests {
         for line in ["Updates in SUMMARY", "SUMMARY of Updates"] {
             assert_eq!(
                 set.verdict(line, KindSet::EMPTY),
-                Verdict::Included(team),
+                Verdict::included(team),
                 "{line:?}"
             );
         }

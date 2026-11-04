@@ -1635,7 +1635,7 @@ mod tests {
         );
         assert_eq!(
             set.verdict("a", KindSet::EMPTY),
-            Verdict::Included(1 + Kind::ALL.len())
+            Verdict::included(1 + Kind::ALL.len())
         );
         assert!(
             !set.adopt_scratch_as("new", PathBuf::from("t")),

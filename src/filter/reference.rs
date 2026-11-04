@@ -543,7 +543,7 @@ mod tests {
         let team = index_of(&filters, "Update summaries");
         assert_eq!(
             filters.verdict("SUMMARY: Updates", KindSet::EMPTY),
-            Verdict::Included(team)
+            Verdict::included(team)
         );
         assert_eq!(
             filters.verdict("SUMMARY only", KindSet::EMPTY),
@@ -566,7 +566,7 @@ mod tests {
         filters.set_all_enabled(true);
         assert_eq!(
             filters.verdict("SUMMARY: Updates", KindSet::EMPTY),
-            Verdict::Included(index_of(&filters, "u"))
+            Verdict::included(index_of(&filters, "u"))
         );
     }
 
@@ -628,7 +628,7 @@ mod tests {
             .expect("known");
         assert_eq!(
             filters.verdict("SUMMARY: Updates", KindSet::EMPTY),
-            Verdict::Included(index_of(&filters, "Updates"))
+            Verdict::included(index_of(&filters, "Updates"))
         );
     }
 
@@ -678,7 +678,7 @@ mod tests {
         let team = index_of(&filters, "Update summaries");
         assert_eq!(
             filters.verdict("RECAP: Updates", KindSet::EMPTY),
-            Verdict::Included(team)
+            Verdict::included(team)
         );
         assert_eq!(
             filters.verdict("SUMMARY: Updates", KindSet::EMPTY),

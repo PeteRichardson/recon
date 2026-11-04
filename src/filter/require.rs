@@ -165,7 +165,7 @@ mod tests {
         filters.set_enabled(base(&filters), false);
         assert_eq!(
             filters.verdict("Robot name: Zeus", KindSet::EMPTY),
-            Verdict::Context(row)
+            Verdict::context(row)
         );
         assert_eq!(
             filters.verdict("Robot name: Hera", KindSet::EMPTY),
@@ -196,7 +196,7 @@ mod tests {
         filters.set_enabled(base(&filters), false);
         assert_eq!(
             filters.verdict("Robot name: Hera", KindSet::EMPTY),
-            Verdict::Context(row)
+            Verdict::context(row)
         );
     }
 
@@ -212,7 +212,7 @@ mod tests {
         );
         assert_eq!(
             filters.verdict("Robot name: Hera", KindSet::EMPTY),
-            Verdict::Context(row)
+            Verdict::context(row)
         );
         assert_eq!(
             filters.verdict("Robot name: Zeus", KindSet::EMPTY),
@@ -240,7 +240,7 @@ mod tests {
         filters.set_enabled(sha + 1, false);
         assert_eq!(
             filters.verdict("commit deadbee", KindSet::EMPTY),
-            Verdict::Context(row)
+            Verdict::context(row)
         );
     }
 
@@ -282,7 +282,7 @@ mod tests {
         let line = format!("Robot name: vhb5_006 {}", "x".repeat(60_000));
         assert_eq!(
             filters.verdict(&line, KindSet::EMPTY),
-            Verdict::Context(row)
+            Verdict::context(row)
         );
     }
 }

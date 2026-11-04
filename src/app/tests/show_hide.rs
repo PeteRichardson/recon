@@ -518,7 +518,7 @@ fn the_command_dims_a_neighbor_line_in_both_modes() {
         if hide {
             key(&mut app, KeyCode::Char('u'));
         }
-        let shown = app.document.visible().to_vec();
+        let shown = app.document.visible().clone();
         let dim = app.filters.dim_style().fg;
         assert_eq!(fg_of(&app, 1), None, "bright by default");
         let hit = fg_of(&app, 0);
@@ -526,7 +526,7 @@ fn the_command_dims_a_neighbor_line_in_both_modes() {
         run(&mut app, "global.toggle.neighbors");
         assert_eq!(fg_of(&app, 1), dim);
         assert_eq!(fg_of(&app, 0), hit, "the match keeps its colour");
-        assert_eq!(app.document.visible(), shown, "no line came or went");
+        assert_eq!(*app.document.visible(), shown, "no line came or went");
 
         run(&mut app, "global.toggle.neighbors");
         assert_eq!(fg_of(&app, 1), None);

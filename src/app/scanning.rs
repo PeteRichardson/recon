@@ -362,7 +362,7 @@ impl App<'_> {
     /// glance and the colour says *which* filter picked the file.
     pub(super) fn match_style(&self, owner: Option<filter::Owner>) -> Style {
         owner
-            .and_then(|index| self.filters.style_for(filter::Verdict::Included(index)))
+            .and_then(|index| self.filters.filter_style(index))
             .unwrap_or_default()
     }
 }

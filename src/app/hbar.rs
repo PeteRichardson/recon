@@ -89,7 +89,7 @@ impl App<'_> {
         let lines = self.document.lines();
         let widest = visible
             .iter()
-            .filter_map(|&line| lines.get(line))
+            .filter_map(|line| lines.get(line))
             .map(|text| text_width(text, tab))
             .max()
             .unwrap_or(0);

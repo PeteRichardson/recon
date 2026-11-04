@@ -204,19 +204,15 @@ fn n_wraps_at_the_end_of_the_file() {
 
 /// `step_visible` is the one walk `n`/`N` and the search share (#269).
 /// It says whether it landed, wrapped, or found nothing, so the caller
-/// can say so; and its predicate sees rows of the *visible* set, so in
-/// hide mode a hidden line is never offered to it.
+/// can say so; and its predicate sees the lines of the *visible* set, so
+/// in hide mode a hidden line is never offered to it.
 #[test]
 fn step_visible_reports_the_wrap_and_walks_only_visible_rows() {
     let mut app = app_over_file("step_visible", "hit a\nplain\nhit b\nplain\n");
     key(&mut app, KeyCode::Char('t'));
     app.filters.add("hit").expect("valid pattern");
     app.refresh_view();
-    let hit = |document: &Document, row: usize| {
-        document
-            .source_at(row)
-            .is_some_and(|source| document.lines()[source].starts_with("hit"))
-    };
+    let hit = |document: &Document, source: usize| document.lines()[source].starts_with("hit");
 
     assert_eq!(app.step_visible(false, hit), Step::Landed);
     assert_eq!(cursor_source(&app), 2, "forward from 0");
@@ -235,7 +231,7 @@ fn step_visible_reports_the_wrap_and_walks_only_visible_rows() {
     assert_eq!(cursor_source(&app), 0, "moved with nothing accepted");
 
     // The only accepted row is the cursor's own: a wrap onto itself.
-    let only_a = |document: &Document, row: usize| document.source_at(row) == Some(0);
+    let only_a = |_: &Document, source: usize| source == 0;
     assert_eq!(app.step_visible(false, only_a), Step::Wrapped);
     assert_eq!(cursor_source(&app), 0, "stays put on the only hit");
 
@@ -243,13 +239,13 @@ fn step_visible_reports_the_wrap_and_walks_only_visible_rows() {
     // predicate that accepts every row it is shown never sees `plain`.
     key(&mut app, KeyCode::Char('u'));
     let offered = std::cell::RefCell::new(Vec::new());
-    let _ = app.next_visible_row(false, |document, row| {
-        offered.borrow_mut().push(document.source_at(row));
+    let _ = app.next_visible_row(false, |_, source| {
+        offered.borrow_mut().push(source);
         false
     });
     assert_eq!(
         offered.into_inner(),
-        vec![Some(2), Some(0)],
+        vec![2, 0],
         "hidden lines were offered"
     );
     assert_eq!(app.step_visible(false, |_, _| true), Step::Landed);

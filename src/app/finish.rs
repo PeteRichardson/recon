@@ -340,7 +340,7 @@ pub(super) fn stream(
         interesting = whole.interesting_count();
         let text = whole.lines();
         let mut complete = true;
-        for &row in whole.visible() {
+        for row in whole.visible().iter() {
             if cancel.load(Ordering::Relaxed) {
                 complete = false;
                 break;
@@ -357,7 +357,7 @@ pub(super) fn stream(
                 return Ok(false);
             }
             let verdict = pass.verdict(&text, KindSet::EMPTY);
-            if is_interesting(&verdict) {
+            if is_interesting(verdict) {
                 interesting += 1;
             }
             shown.line(row, &text, verdict, &mut put)?;
