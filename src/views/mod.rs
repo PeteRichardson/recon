@@ -277,7 +277,7 @@ fn read_view(job: &Job, view: View) -> (Contents, Extent) {
                 read::image_bytes(&output)
             } else {
                 Ok(read::command_output(
-                    &output,
+                    output,
                     command.output.as_deref(),
                     command.align,
                 ))

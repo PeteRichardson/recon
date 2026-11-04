@@ -1928,6 +1928,7 @@ dependencies = [
  "jiff",
  "jpeg-decoder",
  "log",
+ "memchr",
  "mime_guess",
  "onig",
  "onig_sys",

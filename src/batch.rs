@@ -10,10 +10,11 @@
 //! so `main` finishes both the same way.
 
 use crate::app::viewport::is_interesting;
-use crate::document::{self, Document, Mode, Shown, read_lossy_line};
+use crate::document::{self, Document, Mode, Shown};
 use crate::emit::{Emit, Exit, path_bytes};
 use crate::filter::{ActiveFilters, Matcher};
 use crate::follow::{Change, Tail};
+use crate::lines::Lines;
 use crate::path::{file_label, lexical_absolute};
 use crate::scan::{self, Progress};
 use crate::startup::Startup;
@@ -366,12 +367,12 @@ fn stream_stdin<R: io::Read>(
 
 /// Every line of `stdin`, as a document a definition filter can parse.
 fn stdin_whole(mut stdin: impl BufRead) -> io::Result<Document> {
-    let mut lines = Vec::new();
-    let mut buf = Vec::new();
-    while let Some(line) = read_lossy_line(&mut stdin, &mut buf)? {
-        lines.push(line);
-    }
-    Ok(Document::for_file(Path::new(crate::stdin::LABEL), lines))
+    let mut bytes = Vec::new();
+    stdin.read_to_end(&mut bytes)?;
+    Ok(Document::for_file(
+        Path::new(crate::stdin::LABEL),
+        Lines::from_bytes(bytes),
+    ))
 }
 
 /// `path` read and evaluated against `filters` in hide mode, which is batch
@@ -668,7 +669,7 @@ fn require_matcher(filters: &ActiveFilters) -> Option<Matcher> {
 /// no exclude filter hits. Batch mode leaves out a file that fails, and
 /// does not change the lines of a file that passes.
 fn requires_met(document: &Document, require: Option<&Matcher>) -> bool {
-    require.is_none_or(|m| m.lines_meet_requires(document.lines().iter().map(String::as_str)))
+    require.is_none_or(|m| m.lines_meet_requires(document.lines().iter()))
 }
 
 /// `--emit cwd`: the directory `PATH` named, or the first input's. Nothing

@@ -85,6 +85,7 @@ use crate::filter::{
     generated_hash,
 };
 use crate::generate::{self, ATTEMPTS, Candidate, Rejection, Running};
+use crate::lines::Lines;
 use crossterm::event::{self, KeyCode, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::prelude::{Rect, Style};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -309,7 +310,7 @@ pub(super) struct FilterEditor {
     /// Which of the two numbers the digits go to.
     pub(super) neighbor_part: NeighborPart,
     /// The file's lines, shared with the file view that read them.
-    pub(super) lines: Arc<Vec<String>>,
+    pub(super) lines: Arc<Lines>,
     /// The filter's examples that are not lines of the file (#318), drawn
     /// after its last line. Line `lines.len() + k` is `extra[k]`: every index
     /// into the lines, in `cursor`, `marks` and the rows, counts them.
@@ -469,7 +470,7 @@ impl FilterEditor {
     /// An editor over `lines`, with an empty pattern, testing an advanced
     /// pattern with `step_limit` steps a line.
     pub(super) fn new(
-        lines: Arc<Vec<String>>,
+        lines: Arc<Lines>,
         style: Style,
         expander: Expander,
         own: String,
@@ -585,7 +586,7 @@ impl FilterEditor {
         }
         let mut found = vec![false; examples.len()];
         for (index, line) in self.lines.iter().enumerate() {
-            if let Some(ats) = by_text.get(line.as_str()) {
+            if let Some(ats) = by_text.get(line) {
                 for &at in ats {
                     found[at] = true;
                 }
@@ -607,7 +608,7 @@ impl FilterEditor {
     /// its end.
     pub(super) fn text(&self, index: usize) -> Option<&str> {
         match index.checked_sub(self.lines.len()) {
-            None => self.lines.get(index).map(String::as_str),
+            None => self.lines.get(index),
             Some(at) => self.extra.get(at).map(String::as_str),
         }
     }
@@ -757,7 +758,7 @@ impl FilterEditor {
                 self.matched = self
                     .lines
                     .iter()
-                    .chain(&self.extra)
+                    .chain(self.extra.iter().map(String::as_str))
                     .map(|line| regex.is_match(line, self.step_limit))
                     .collect();
                 self.matches = self.matched[..self.lines.len()]
@@ -1163,7 +1164,7 @@ impl FilterEditor {
         (0..self.lines.len())
             .step_by(step)
             .filter(|index| !self.marks.contains_key(index))
-            .map(|index| self.lines[index].as_str())
+            .map(|index| &self.lines[index])
             .filter(|line| !line.trim().is_empty())
             .take(generate::SAMPLE_LINES)
             .collect()
@@ -2375,7 +2376,7 @@ mod tests {
     /// used to be compared with every example before it.
     #[test]
     fn details_of_many_marks_is_fast() {
-        let lines: Vec<String> = (0..200_000).map(|i| format!("line {i}")).collect();
+        let lines: Lines = (0..200_000).map(|i| format!("line {i}")).collect();
         let mut editor = FilterEditor::new(
             Arc::new(lines),
             Style::default(),

@@ -1,6 +1,7 @@
 //! The loaded file and what the filters made of it.
 
 use crate::filter::{ActiveFilters, Neighbor, Verdict};
+use crate::lines::Lines;
 use crate::syntax::{self, KindSet};
 use ratatui::style::Style;
 use std::collections::VecDeque;
@@ -36,7 +37,7 @@ pub struct Document {
     /// Shared with the `FileView` that read them (#122): the view keeps the
     /// file's lines to colour them lazily, and sharing is what stops that
     /// being a third copy of every large file.
-    lines: Arc<Vec<String>>,
+    lines: Arc<Lines>,
     verdicts: Vec<Verdict>,
     /// How many lines each advanced filter gave up on at the step limit in
     /// the last `evaluate` (#474), by filter index: what its row shows.
@@ -81,7 +82,7 @@ impl Document {
     /// A document over `lines` with no file behind it. Private (#167):
     /// `for_file` and the tests are its only callers, and as `pub` in a
     /// `pub mod` it was outside `unreachable_pub`'s sight.
-    fn new(lines: impl Into<Arc<Vec<String>>>) -> Self {
+    fn new(lines: impl Into<Arc<Lines>>) -> Self {
         let lines = lines.into();
         let verdicts = vec![Verdict::Unmatched; lines.len()];
         Self {
@@ -102,7 +103,7 @@ impl Document {
     /// A document over `lines` read from `path`, so that a definition filter
     /// can ask which grammar to parse them with.
     #[must_use]
-    pub fn for_file(path: &Path, lines: impl Into<Arc<Vec<String>>>) -> Self {
+    pub fn for_file(path: &Path, lines: impl Into<Arc<Lines>>) -> Self {
         Self {
             path: Some(path.to_path_buf()),
             ..Self::new(lines)
@@ -118,7 +119,7 @@ impl Document {
     }
 
     #[must_use]
-    pub fn lines(&self) -> &[String] {
+    pub fn lines(&self) -> &Lines {
         &self.lines
     }
 
@@ -222,11 +223,12 @@ impl Document {
         let over_limit = &mut self.over_limit;
         over_limit.resize(filters.filters().len(), 0);
         let mut pass = filters.pass();
-        self.verdicts.extend(self.lines[start..].iter().map(|line| {
-            pass.verdict_noting(line, KindSet::EMPTY, |index| {
-                over_limit[index] += 1;
-            })
-        }));
+        self.verdicts
+            .extend(self.lines.range(start..self.lines.len()).map(|line| {
+                pass.verdict_noting(line, KindSet::EMPTY, |index| {
+                    over_limit[index] += 1;
+                })
+            }));
         self.mark_neighbors(filters, start);
         let (mode, anything_including) = (self.mode, self.anything_including);
         // A new match reaches back, so the rows from there are read again.
@@ -259,7 +261,7 @@ impl Document {
 
     /// The lines, shared, for the file view to hold the same copy (#122).
     #[must_use]
-    pub(crate) fn shared_lines(&self) -> &Arc<Vec<String>> {
+    pub(crate) fn shared_lines(&self) -> &Arc<Lines> {
         &self.lines
     }
 
@@ -370,7 +372,7 @@ impl Document {
     pub fn visible_lines_range(&self, start: usize, end: usize) -> Vec<String> {
         self.window(start, end)
             .iter()
-            .map(|&source| self.lines[source].clone())
+            .map(|&source| self.lines[source].to_string())
             .collect()
     }
 
@@ -583,7 +585,7 @@ pub(crate) fn read_utf16_lines<R: Read>(
     head: Vec<u8>,
     reader: &mut R,
     endian: Endian,
-) -> io::Result<Vec<String>> {
+) -> io::Result<Lines> {
     let mut bytes = head;
     reader.read_to_end(&mut bytes)?;
     let (pairs, odd_byte) = bytes.as_chunks::<2>();
@@ -597,17 +599,8 @@ pub(crate) fn read_utf16_lines<R: Read>(
     if !odd_byte.is_empty() {
         units.push(0xfffd);
     }
-    let text = String::from_utf16_lossy(&units);
-    let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
-    Ok(lines_of(text))
-}
-
-/// `text` split as `read_lossy_line` would have read it: one line per `\n`,
-/// line ends stripped, and no phantom empty line after a final newline.
-fn lines_of(text: &str) -> Vec<String> {
-    text.split_inclusive('\n')
-        .map(|line| line.trim_end_matches(['\n', '\r']).to_string())
-        .collect()
+    let units = units.strip_prefix(&[0xfeff]).unwrap_or(&units);
+    Ok(Lines::from_text(String::from_utf16_lossy(units)))
 }
 
 /// Read one newline-terminated line, decoded lossily. `None` at end of file.
@@ -760,13 +753,26 @@ impl<'a> Shown<'a> {
 /// NULs are UTF-16, in which case it is decoded as such; one that merely
 /// holds undecodable bytes is read anyway, a U+FFFD per bad sequence.
 /// Anything else the OS refuses comes back verbatim.
-pub fn read_lines(path: &Path) -> io::Result<Vec<String>> {
-    let mut lines = Vec::new();
-    each_line(path, &std::sync::atomic::AtomicU64::new(0), |line| {
-        lines.push(line);
-        Ok(true)
-    })?;
-    Ok(lines)
+///
+/// One read into one buffer (#593), not a `String` for each line: on a
+/// large log that is several times faster, and so is the free.
+pub fn read_lines(path: &Path) -> io::Result<Lines> {
+    refuse_unreadable(path)?;
+    read_text(&mut File::open(path)?)
+}
+
+/// All of `reader`, as lines: `read_lines` without the path, for a reader
+/// a preview has capped. A head with a NUL and no byte-order mark is
+/// refused as [`BINARY_FILE`].
+pub(crate) fn read_text<R: Read>(reader: &mut R) -> io::Result<Lines> {
+    match sniff(reader)? {
+        (Sniff::Text, mut bytes) => {
+            reader.read_to_end(&mut bytes)?;
+            Ok(Lines::from_bytes(bytes))
+        }
+        (Sniff::Utf16(endian), head) => read_utf16_lines(head, reader, endian),
+        (Sniff::Binary, _) => Err(io::Error::new(io::ErrorKind::InvalidData, BINARY_FILE)),
+    }
 }
 
 /// `read_lines`, one line at a time: `line` gets each line as it is read
@@ -793,8 +799,8 @@ pub(crate) fn each_line(
     let head = match sniff(&mut reader)? {
         (Sniff::Text, head) => head,
         (Sniff::Utf16(endian), head) => {
-            for text in read_utf16_lines(head, &mut reader, endian)? {
-                if !line(text)? {
+            for text in read_utf16_lines(head, &mut reader, endian)?.iter() {
+                if !line(text.to_string())? {
                     return Ok(false);
                 }
             }
@@ -985,7 +991,7 @@ mod tests {
             "fn real() {}".to_string(),
             "struct S;".to_string(),
         ];
-        let mut document = Document::for_file(Path::new("t.rs"), lines);
+        let mut document = Document::for_file(Path::new("t.rs"), Lines::from(lines));
         document.evaluate(&filters);
         assert_eq!(
             document.verdicts(),
@@ -1003,8 +1009,8 @@ mod tests {
         filters.add("real").expect("valid");
         let lines = vec!["fn real() {}".to_string()];
         for mut document in [
-            Document::new(lines.clone()),
-            Document::for_file(Path::new("app.log"), lines.clone()),
+            Document::new(Lines::from(lines.clone())),
+            Document::for_file(Path::new("app.log"), Lines::from(lines.clone())),
         ] {
             document.evaluate(&filters);
             assert_eq!(document.verdicts(), [Verdict::Included(1)]);
@@ -1019,19 +1025,14 @@ mod tests {
             set.add("fn").expect("valid");
             set
         };
-        let mut document = Document::for_file(Path::new("t.rs"), vec!["fn x() {}".to_string()]);
+        let mut document = Document::for_file(Path::new("t.rs"), Lines::from(vec!["fn x() {}"]));
         document.evaluate(&filters);
         assert!(document.kinds.is_none());
     }
     use ratatui::style::Modifier;
 
     fn doc(lines: &[&str]) -> Document {
-        Document::new(
-            lines
-                .iter()
-                .map(std::string::ToString::to_string)
-                .collect::<Vec<_>>(),
-        )
+        Document::new(Lines::from(lines.to_vec()))
     }
 
     fn set_with(patterns: &[&str]) -> ActiveFilters {
@@ -1367,7 +1368,7 @@ mod tests {
 
         document.append(vec!["ERROR".into()], true, &filters);
 
-        assert_eq!(document.lines(), ["fine", "ERROR"]);
+        assert_eq!(*document.lines(), ["fine", "ERROR"]);
         assert_eq!(document.visible(), &[1]);
     }
 
@@ -1623,7 +1624,7 @@ mod tests {
 
         let document = Document::read(&file).expect("readable");
 
-        assert_eq!(document.lines(), ["a", "b"]);
+        assert_eq!(*document.lines(), ["a", "b"]);
         assert_eq!(document.verdicts().len(), 2, "one verdict slot per line");
     }
 

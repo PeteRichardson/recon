@@ -3,12 +3,13 @@
 
 use super::View;
 use super::cycle::Head;
-use crate::document::{self, Sniff, read_lossy_line, read_utf16_lines, sniff};
+use crate::document::{self, Sniff, sniff};
 use crate::hex;
+use crate::lines::Lines;
 use crate::widgets::explorer::Entry;
 use ratatui::style::Color;
 use std::fs::File;
-use std::io::{BufReader, Cursor, Read};
+use std::io::{Cursor, Read};
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
@@ -53,7 +54,7 @@ pub(crate) const EMPTY_DIRECTORY_MESSAGE: &str = "<empty directory>";
 /// remain, and how many lines the whole file probably has.
 #[derive(Debug, Clone, Default)]
 pub(crate) struct Contents {
-    pub(crate) lines: Arc<Vec<String>>,
+    pub(crate) lines: Arc<Lines>,
     pub(crate) truncated: bool,
     /// `None` when the file was read whole (the count is not a guess then, it
     /// is `lines.len()`) or when there was nothing to estimate from.
@@ -112,7 +113,7 @@ impl Contents {
     /// there is nothing better to re-read later — and nothing to estimate.
     pub(crate) fn message(text: String) -> Self {
         Self {
-            lines: Arc::new(vec![text]),
+            lines: Arc::new(Lines::from(vec![text])),
             ..Contents::default()
         }
     }
@@ -195,84 +196,45 @@ pub(crate) fn read_preview_with_caps(
     if view == View::Hex {
         return read_hex(path, Some(hex_bytes));
     }
+    // Logged as well as shown, as `read_lines` does (#83, #189). The
+    // preview is the arrow-key case: the pane's title is elided when the
+    // pane is narrow, so the log is where the path survives.
+    let fail = |err: std::io::Error| {
+        log::warn!("cannot preview {}: {err}", path.display());
+        Contents::message(format!("<{err}>"))
+    };
     // The same stat guards a FIFO (#221): its open would block until a
     // writer appeared, and this runs on every selection move.
     let file = match document::refuse_unreadable(path).and_then(|()| File::open(path)) {
         Ok(file) => file,
-        // Logged as well as shown, as `read_lines` does (#83, #189). The
-        // preview is the arrow-key case: the pane's title is elided when
-        // the pane is narrow, so the log is where the path survives.
-        Err(err) => {
-            log::warn!("cannot preview {}: {err}", path.display());
-            return Contents::message(format!("<{err}>"));
-        }
+        Err(err) => return fail(err),
     };
     // Read before the bytes are consumed; a file that cannot be stat'd simply
     // gets no estimate rather than failing the preview.
     let file_bytes = file.metadata().ok().map(|meta| meta.len());
 
-    let mut reader = BufReader::new(file.take(max_bytes));
-    let head = match sniff(&mut reader) {
-        Ok((Sniff::Text, head)) => head,
-        Ok((Sniff::Binary, _)) => return binary(path, Some(hex_bytes)),
-        // UTF-16 is decoded whole, so the byte cap is the only cap the read
-        // itself knows; the line cap is applied to the result below.
-        Ok((Sniff::Utf16(endian), head)) => {
-            let mut lines = match read_utf16_lines(head, &mut reader, endian) {
-                Ok(lines) => lines,
-                // Logged as well as shown, as `read_lines` does (#83, #189).
-                // The preview is the arrow-key case: the pane's title is
-                // elided when the pane is narrow, so the log is where the
-                // path survives.
-                Err(err) => {
-                    log::warn!("cannot preview {}: {err}", path.display());
-                    return Contents::message(format!("<{err}>"));
-                }
-            };
-            let over_the_line_cap = lines.len() > max_lines;
-            lines.truncate(max_lines);
-            let remaining = reader.into_inner().limit();
-            return capped(
-                lines,
-                over_the_line_cap || remaining == 0,
-                file_bytes,
-                max_bytes - remaining,
-            );
-        }
-        // Logged as well as shown, as `read_lines` does (#83, #189). The
-        // preview is the arrow-key case: the pane's title is elided when
-        // the pane is narrow, so the log is where the path survives.
-        Err(err) => {
-            log::warn!("cannot preview {}: {err}", path.display());
-            return Contents::message(format!("<{err}>"));
-        }
+    // Up to the byte cap in one buffer (#593); the line cap cuts it after.
+    let mut reader = file.take(max_bytes);
+    let mut lines = match document::read_text(&mut reader) {
+        Ok(lines) => lines,
+        Err(err) if document::is_binary(&err) => return binary(path, Some(hex_bytes)),
+        Err(err) => return fail(err),
     };
-
-    // The sniffed bytes are content, so they go back in front of the rest.
-    let mut reader = Cursor::new(head).chain(reader);
-    let mut lines = Vec::new();
-    let mut buf = Vec::new();
-
-    while lines.len() < max_lines {
-        match read_lossy_line(&mut reader, &mut buf) {
-            Ok(Some(line)) => lines.push(line),
-            Ok(None) => break,
-            // Logged as well as shown, as `read_lines` does (#83, #189). The
-            // preview is the arrow-key case: the pane's title is elided when
-            // the pane is narrow, so the log is where the path survives.
-            Err(err) => {
-                log::warn!("cannot preview {}: {err}", path.display());
-                return Contents::message(format!("<{err}>"));
-            }
-        }
-    }
+    let remaining = reader.limit();
+    // What the kept lines took, for the estimate: the lines past the cap
+    // are not counted in it.
+    let bytes_read = if lines.len() > max_lines {
+        lines.truncate(max_lines);
+        lines.text_len() as u64
+    } else {
+        max_bytes - remaining
+    };
 
     // Either the line budget ran out, or the byte allowance did. A file that
     // ends exactly on a cap is reported as truncated, which only costs a
     // redundant re-read the first time the view is used.
-    let remaining = reader.into_inner().1.into_inner().limit();
     let truncated = lines.len() == max_lines || remaining == 0;
-    capped(lines, truncated, file_bytes, max_bytes - remaining)
+    capped(lines, truncated, file_bytes, bytes_read)
 }
 
 /// A command's output as lines (#457), decoded as raw text is: lossy
@@ -282,34 +244,27 @@ pub(crate) fn read_preview_with_caps(
 /// and shown with its columns lined up, one line for each record. The
 /// delimiter comes from `mime`: `text/tab-separated-values` aligns on
 /// tabs, anything else on commas.
-pub(crate) fn command_output(output: &[u8], mime: Option<&str>, align: bool) -> Contents {
+pub(crate) fn command_output(output: Vec<u8>, mime: Option<&str>, align: bool) -> Contents {
     if align {
         let delimiter = crate::csv_fmt::delimiter_for_mime(mime);
-        let text = String::from_utf8_lossy(output);
+        let text = String::from_utf8_lossy(&output);
         return Contents {
-            lines: Arc::new(crate::csv_fmt::align(
+            lines: Arc::new(Lines::from(crate::csv_fmt::align(
                 &text,
                 delimiter,
                 crate::csv_fmt::SAMPLE_RECORDS,
-            )),
+            ))),
             text: true,
             mime: mime.map(str::to_string),
             bytes: output.len() as u64,
             ..Contents::default()
         };
     }
-    let mut reader = Cursor::new(output);
-    let mut lines = Vec::new();
-    let mut buf = Vec::new();
-    // A read from memory cannot fail.
-    while let Ok(Some(line)) = read_lossy_line(&mut reader, &mut buf) {
-        lines.push(line);
-    }
     Contents {
-        lines: Arc::new(lines),
+        bytes: output.len() as u64,
+        lines: Arc::new(Lines::from_bytes(output)),
         text: true,
         mime: mime.map(str::to_string),
-        bytes: output.len() as u64,
         ..Contents::default()
     }
 }
@@ -324,13 +279,13 @@ pub(crate) fn csv_aligned(contents: Contents, delimiter: u8) -> Contents {
     if !contents.text || contents.hex || contents.directory || contents.fallback.is_some() {
         return contents;
     }
-    let text = contents.lines.join("\n");
+    let text = contents.lines.iter().collect::<Vec<_>>().join("\n");
     Contents {
-        lines: Arc::new(crate::csv_fmt::align(
+        lines: Arc::new(Lines::from(crate::csv_fmt::align(
             &text,
             delimiter,
             crate::csv_fmt::SAMPLE_RECORDS,
-        )),
+        ))),
         ..contents
     }
 }
@@ -509,7 +464,7 @@ fn read_hex(path: &Path, preview: Option<u64>) -> Contents {
         }
     };
     Contents {
-        lines: Arc::new(lines),
+        lines: Arc::new(Lines::from(lines)),
         truncated,
         estimated_lines,
         text: true,
@@ -521,12 +476,7 @@ fn read_hex(path: &Path, preview: Option<u64>) -> Contents {
 
 /// A preview's `Contents`, with a line estimate only when it was cut short —
 /// there is nothing to estimate about a file that was read whole.
-fn capped(
-    lines: Vec<String>,
-    truncated: bool,
-    file_bytes: Option<u64>,
-    bytes_read: u64,
-) -> Contents {
+fn capped(lines: Lines, truncated: bool, file_bytes: Option<u64>, bytes_read: u64) -> Contents {
     let estimated_lines = if truncated {
         estimate_lines(file_bytes, bytes_read, lines.len())
     } else {
@@ -683,7 +633,7 @@ pub(crate) fn directory_listing(
     };
     let truncated = total > lines.len();
     Contents {
-        lines: Arc::new(lines),
+        lines: Arc::new(Lines::from(lines)),
         icon_colours: Arc::new(icon_colours),
         directory: true,
         truncated,

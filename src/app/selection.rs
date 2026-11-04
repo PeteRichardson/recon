@@ -17,6 +17,7 @@
 //! wants a selection.
 
 use super::App;
+use crate::lines::Lines;
 use crate::widgets::Focus;
 
 /// The fixed end of a selection in progress. The moving end is the cursor.
@@ -53,7 +54,7 @@ pub(crate) struct Yank {
 /// the painting are built on, so the two cannot disagree about which lines
 /// a selection covers.
 fn visible_segments<'a>(
-    lines: &'a [String],
+    lines: &'a Lines,
     visible: &'a [usize],
     visual: &Visual,
     cursor: End,
@@ -92,7 +93,7 @@ fn visible_segments<'a>(
 /// file lands whole lines; character-wise text has none, so a selected word
 /// pastes into a prompt as a word.
 pub(crate) fn yank_text(
-    lines: &[String],
+    lines: &Lines,
     visible: &[usize],
     visual: &Visual,
     cursor: End,
@@ -122,7 +123,7 @@ pub(crate) fn yank_text(
 /// visible row and the column (exclusive) it ends at. Rows between are whole.
 /// `None` when no line of the range is visible.
 pub(crate) fn visible_span(
-    lines: &[String],
+    lines: &Lines,
     visible: &[usize],
     visual: &Visual,
     cursor: End,
@@ -302,8 +303,8 @@ impl App<'_> {
 mod tests {
     use super::*;
 
-    fn lines(text: &[&str]) -> Vec<String> {
-        text.iter().map(|line| (*line).to_string()).collect()
+    fn lines(text: &[&str]) -> Lines {
+        text.iter().collect()
     }
 
     fn all(n: usize) -> Vec<usize> {

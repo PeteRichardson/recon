@@ -128,6 +128,9 @@ log = "0.4.33"
 color-eyre = "0.6.5"
 tui-textarea-2 = { version = "0.12.1", features = ["search"] }
 regex = "1"
+# Finds the line ends of a file read whole (#593). Already in the build
+# through `regex`, so this adds no crate.
+memchr = "2"
 # Layout has to measure terminal columns, not chars: a CJK ideograph or an emoji
 # occupies two columns, so a pane sized by `char` count comes out about half the
 # width it needs and clips every row (#97). Costs no new crate — ratatui already

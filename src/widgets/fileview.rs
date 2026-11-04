@@ -2,6 +2,7 @@
 
 #[cfg(test)]
 use crate::document::BINARY_SNIFF_BYTES;
+use crate::lines::Lines;
 use crate::syntax::{Highlighter, Span, Theme};
 use crate::views::Facts;
 use crate::views::read::{self, Contents};
@@ -199,7 +200,7 @@ pub(crate) struct FileView<'a> {
     /// syntax colouring parses from the top of the file down, so it needs
     /// the lines the window was cut from, not the window. An `Arc` so that
     /// `App::sync_document` shares this rather than cloning it.
-    source: Arc<Vec<String>>,
+    source: Arc<Lines>,
     /// Whether `source` is file text rather than a listing or a message —
     /// see `Contents::text`.
     text: bool,
@@ -456,7 +457,7 @@ impl FileView<'_> {
     /// `cursor_visible_row` is the only correct way to read a vertical
     /// position, and a caller mutating the textarea directly breaks it
     /// silently, off by `window_start`, which looks entirely plausible (#81).
-    pub(crate) fn source(&self) -> &Arc<Vec<String>> {
+    pub(crate) fn source(&self) -> &Arc<Lines> {
         &self.source
     }
 
@@ -470,7 +471,7 @@ impl FileView<'_> {
     /// ones from `from` on new or changed, as a followed file grows (#493).
     /// The colour of the lines before `from` stays. `App::apply_view`
     /// builds the buffer from them.
-    pub(crate) fn extend_source(&mut self, lines: Arc<Vec<String>>, from: usize) {
+    pub(crate) fn extend_source(&mut self, lines: Arc<Lines>, from: usize) {
         self.source = lines;
         self.syntax_rows.clear();
         if let Some(highlighter) = &mut self.highlighter {
@@ -525,12 +526,12 @@ impl FileView<'_> {
     /// it is not. Bounded, rather than the single blank row it could be: the
     /// pane still shows a file on its own, which is what keeps this widget
     /// testable without an `App` around it.
-    fn adopt(&mut self, lines: Arc<Vec<String>>, text: bool, hex: bool) {
+    fn adopt(&mut self, lines: Arc<Lines>, text: bool, hex: bool) {
         self.source = lines;
         self.text = text;
         self.hex = hex;
         let (start, end) = window_for(self.source.len(), self.window_height(), 0, 0);
-        self.textarea = TextArea::new(self.source[start..end].to_vec());
+        self.textarea = TextArea::new(self.source.range(start..end).map(str::to_string).collect());
         // The buffer numbers its own rows when nothing supplies numbers, and a
         // window's rows run short of the file's. Reserve the width the whole
         // file needs so the gutter does not widen when `apply_view` numbers
@@ -4136,11 +4137,7 @@ mod tests {
         );
         let listing = read::directory_listing(&dir, usize::MAX, Icons::On(Background::Dark));
 
-        let widths: Vec<usize> = listing
-            .lines
-            .iter()
-            .map(|line| UnicodeWidthStr::width(line.as_str()))
-            .collect();
+        let widths: Vec<usize> = listing.lines.iter().map(UnicodeWidthStr::width).collect();
         assert!(
             widths.windows(2).all(|pair| pair[0] == pair[1]),
             "{:#?}",
@@ -4149,7 +4146,7 @@ mod tests {
         assert!(
             listing.lines[0].starts_with("\u{f07b} sub/"),
             "{:?}",
-            listing.lines[0]
+            &listing.lines[0]
         );
     }
 
@@ -4158,6 +4155,6 @@ mod tests {
         let dir = dir_fixture("icons_listing_empty", &[], &[]);
         let listing = read::directory_listing(&dir, usize::MAX, Icons::On(Background::Dark));
 
-        assert_eq!(*listing.lines, vec![EMPTY_DIRECTORY_MESSAGE.to_string()]);
+        assert_eq!(*listing.lines, [EMPTY_DIRECTORY_MESSAGE]);
     }
 }
