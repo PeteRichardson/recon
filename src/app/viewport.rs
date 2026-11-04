@@ -29,7 +29,7 @@ use crate::widgets;
 
 /// The one definition of an interesting line, shared by every query that
 /// steps or lands on one.
-pub(crate) fn is_interesting(verdict: &Verdict) -> bool {
+pub(crate) fn is_interesting(verdict: Verdict) -> bool {
     matches!(verdict, Verdict::Included(_))
 }
 
@@ -75,21 +75,27 @@ impl App<'_> {
             .document
             .visible_position(self.cursor_source())
             .unwrap_or(0);
-        let blank = |row: usize| {
+        let blank = |source: usize| {
             self.document
                 .lines()
-                .get(visible[row])
+                .get(source)
                 .is_some_and(|line| line.trim().is_empty())
         };
         match action {
             ActionId::ViewGotoStart => Some(0),
             ActionId::ViewGotoEnd => Some(last),
-            ActionId::ViewParagraphNext => {
-                Some(((from + 1)..=last).find(|&row| blank(row)).unwrap_or(last))
-            }
-            ActionId::ViewParagraphPrev => {
-                Some((0..from).rev().find(|&row| blank(row)).unwrap_or(0))
-            }
+            ActionId::ViewParagraphNext => Some(
+                visible
+                    .iter_from(from + 1)
+                    .position(blank)
+                    .map_or(last, |step| from + 1 + step),
+            ),
+            ActionId::ViewParagraphPrev => Some(
+                visible
+                    .rev_rows(from)
+                    .position(blank)
+                    .map_or(0, |step| from - 1 - step),
+            ),
             _ => None,
         }
     }
@@ -197,7 +203,11 @@ impl App<'_> {
         // 1,000 would be numbered 1, 2, 3. The reason for the old gate ("a
         // vector the length of the file, rebuilt on every explorer arrow key")
         // is gone: the vector is now the length of the window.
-        let numbers: Vec<usize> = self.document.visible()[window_start..window_end].to_vec();
+        let numbers: Vec<usize> = self
+            .document
+            .visible()
+            .rows(window_start, window_end)
+            .collect();
         // Still gated on `hiding`: with the whole file on screen every line's
         // successor is the next one, so every mark would be false anyway.
         let group_ends = if hiding {
@@ -322,31 +332,38 @@ impl App<'_> {
     /// any other row is accepted, and stays put (having wrapped) if it is the
     /// only one. `None` when no visible row is accepted at all.
     ///
-    /// `keep` sees the document and a row of its **visible set**, never a
-    /// source line: the walk is over what the user can see, so a caller
-    /// whose test is on the source line maps through `source_at` itself,
-    /// the way `step_to_interesting` does.
+    /// `keep` sees the document and the source line of each row of its
+    /// **visible set**: the walk is over what the user can see, so a hidden
+    /// line is never offered.
+    ///
+    /// One walk over the runs (#572), not a lookup of each row: a step that
+    /// finds nothing visits the whole file.
     pub(crate) fn next_visible_row(
         &self,
         backwards: bool,
         keep: impl Fn(&Document, usize) -> bool,
     ) -> Option<(usize, bool)> {
-        let len = self.document.visible().len();
+        let visible = self.document.visible();
+        let len = visible.len();
         if len == 0 {
             return None;
         }
         let from = self.view.cursor_visible_row().min(len - 1);
-        (1..=len)
-            .map(|step| {
-                if backwards {
-                    let wrapped = step > from;
-                    ((from + len - step) % len, wrapped)
-                } else {
-                    let wrapped = from + step >= len;
-                    ((from + step) % len, wrapped)
-                }
-            })
-            .find(|&(row, _)| keep(&self.document, row))
+        // The rows after the cursor's, then from the other edge round to it.
+        let sources: Box<dyn Iterator<Item = usize>> = if backwards {
+            Box::new(visible.rev_rows(from).chain(visible.rev_rows(len)))
+        } else {
+            Box::new(visible.iter_from(from + 1).chain(visible.iter()))
+        };
+        let step = sources
+            .take(len)
+            .position(|source| keep(&self.document, source))?
+            + 1;
+        Some(if backwards {
+            ((from + len - step) % len, step > from)
+        } else {
+            ((from + step) % len, from + step >= len)
+        })
     }
 
     /// Move the file view's cursor to the next visible row that `keep`
@@ -383,10 +400,11 @@ impl App<'_> {
     /// the file has, in file order, the same as walking the source lines
     /// would.
     pub(crate) fn step_to_interesting(&mut self, backwards: bool) -> Step {
-        self.step_visible(backwards, |document, row| {
+        self.step_visible(backwards, |document, source| {
             document
-                .source_at(row)
-                .and_then(|source| document.verdicts().get(source))
+                .verdicts()
+                .get(source)
+                .copied()
                 .is_some_and(is_interesting)
         })
     }
@@ -401,9 +419,9 @@ impl App<'_> {
         if backwards {
             (0..from)
                 .rev()
-                .find(|&index| is_interesting(&verdicts[index]))
+                .find(|&index| is_interesting(verdicts[index]))
         } else {
-            (from + 1..verdicts.len()).find(|&index| is_interesting(&verdicts[index]))
+            (from + 1..verdicts.len()).find(|&index| is_interesting(verdicts[index]))
         }
     }
 
@@ -414,9 +432,9 @@ impl App<'_> {
         if from_end {
             (0..verdicts.len())
                 .rev()
-                .find(|&index| is_interesting(&verdicts[index]))
+                .find(|&index| is_interesting(verdicts[index]))
         } else {
-            (0..verdicts.len()).find(|&index| is_interesting(&verdicts[index]))
+            (0..verdicts.len()).find(|&index| is_interesting(verdicts[index]))
         }
     }
 

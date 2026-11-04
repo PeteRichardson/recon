@@ -3970,7 +3970,7 @@ fn the_filter_row_counts_the_lines_over_the_step_limit() {
 
     let (index, _) = app.filters.filters_in(0).last().expect("added");
     assert_eq!(app.filters.over_limit(index), 2);
-    assert_eq!(app.document.verdicts()[1], filter::Verdict::Included(index));
+    assert_eq!(app.document.verdicts()[1], filter::Verdict::included(index));
     let screen = rendered(&mut app);
     assert!(screen.contains("[adv] ⚠ 2 lines"), "{screen}");
 }

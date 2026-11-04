@@ -45,6 +45,7 @@ pub mod stdin;
 pub mod syntax;
 mod toml_fmt;
 pub mod views;
+pub mod visible;
 mod widgets;
 
 mod app;

@@ -133,11 +133,11 @@ impl App<'_> {
             .iter()
             .enumerate()
             .filter_map(|(line, verdict)| match verdict {
-                Verdict::Included(filter) => Some((line, *filter)),
+                Verdict::Included(filter) => Some((line, usize::from(*filter))),
                 _ => None,
             });
         let hits = self.search.iter().flat_map(|search| {
-            document.visible().iter().copied().filter(|&line| {
+            document.visible().iter().filter(|&line| {
                 document
                     .lines()
                     .get(line)

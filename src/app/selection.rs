@@ -18,6 +18,7 @@
 
 use super::App;
 use crate::lines::Lines;
+use crate::visible::Visible;
 use crate::widgets::Focus;
 
 /// The fixed end of a selection in progress. The moving end is the cursor.
@@ -55,7 +56,7 @@ pub(crate) struct Yank {
 /// a selection covers.
 fn visible_segments<'a>(
     lines: &'a Lines,
-    visible: &'a [usize],
+    visible: &'a Visible,
     visual: &Visual,
     cursor: End,
 ) -> impl Iterator<Item = (usize, usize, usize, usize)> + 'a {
@@ -66,24 +67,25 @@ fn visible_segments<'a>(
         (cursor, anchor)
     };
     let linewise = visual.linewise;
-    let first = visible.partition_point(|&source| source < lo.0);
-    let last = visible.partition_point(|&source| source <= hi.0);
-    (first..last).map(move |row| {
-        let source = visible[row];
-        let len = lines.get(source).map_or(0, |line| line.chars().count());
-        let start = if !linewise && source == lo.0 {
-            lo.1.min(len)
-        } else {
-            0
-        };
-        // Inclusive of the character under the cursor, as vim's `v` is.
-        let end = if !linewise && source == hi.0 {
-            (hi.1 + 1).min(len)
-        } else {
-            len
-        };
-        (row, source, start, end.max(start))
-    })
+    let first = visible.rows_before(lo.0);
+    let last = visible.rows_before(hi.0 + 1);
+    (first..)
+        .zip(visible.rows(first, last))
+        .map(move |(row, source)| {
+            let len = lines.get(source).map_or(0, |line| line.chars().count());
+            let start = if !linewise && source == lo.0 {
+                lo.1.min(len)
+            } else {
+                0
+            };
+            // Inclusive of the character under the cursor, as vim's `v` is.
+            let end = if !linewise && source == hi.0 {
+                (hi.1 + 1).min(len)
+            } else {
+                len
+            };
+            (row, source, start, end.max(start))
+        })
 }
 
 /// The text a yank of this selection copies, or `None` when no line of the
@@ -94,7 +96,7 @@ fn visible_segments<'a>(
 /// pastes into a prompt as a word.
 pub(crate) fn yank_text(
     lines: &Lines,
-    visible: &[usize],
+    visible: &Visible,
     visual: &Visual,
     cursor: End,
 ) -> Option<Yank> {
@@ -124,7 +126,7 @@ pub(crate) fn yank_text(
 /// `None` when no line of the range is visible.
 pub(crate) fn visible_span(
     lines: &Lines,
-    visible: &[usize],
+    visible: &Visible,
     visual: &Visual,
     cursor: End,
 ) -> Option<((usize, usize), (usize, usize))> {
@@ -307,7 +309,7 @@ mod tests {
         text.iter().collect()
     }
 
-    fn all(n: usize) -> Vec<usize> {
+    fn all(n: usize) -> Visible {
         (0..n).collect()
     }
 
@@ -358,7 +360,7 @@ mod tests {
     fn hidden_lines_between_the_ends_are_skipped() {
         let text = lines(&["a0", "b1", "a2", "b3", "a4"]);
         // Hide mode showing only the `a` lines.
-        let visible = vec![0, 2, 4];
+        let visible: Visible = [0, 2, 4].into_iter().collect();
         let yank = yank_text(&text, &visible, &linewise(0), (4, 0)).unwrap();
         assert_eq!(yank.text, "a0\na2\na4\n");
         assert_eq!(yank.lines, 3);
@@ -372,7 +374,7 @@ mod tests {
     #[test]
     fn a_hidden_anchor_contributes_no_column() {
         let text = lines(&["skip me", "keep this", "and this"]);
-        let visible = vec![1, 2];
+        let visible: Visible = [1, 2].into_iter().collect();
         // The anchor is on the hidden line 0 at column 5; the first visible
         // line is taken from its start rather than from column 5.
         let yank = yank_text(&text, &visible, &charwise(0, 5), (2, 2)).unwrap();
@@ -382,8 +384,14 @@ mod tests {
     #[test]
     fn a_range_with_nothing_visible_yanks_nothing() {
         let text = lines(&["a", "b", "c"]);
-        assert_eq!(yank_text(&text, &[2], &linewise(0), (1, 0)), None);
-        assert_eq!(yank_text(&text, &[], &linewise(0), (1, 0)), None);
+        assert_eq!(
+            yank_text(&text, &[2].into_iter().collect(), &linewise(0), (1, 0)),
+            None
+        );
+        assert_eq!(
+            yank_text(&text, &Visible::default(), &linewise(0), (1, 0)),
+            None
+        );
     }
 
     #[test]
@@ -406,7 +414,7 @@ mod tests {
     #[test]
     fn the_painted_span_is_in_visible_rows_with_the_ends_columns() {
         let text = lines(&["a0", "b1", "a2", "b3", "a4"]);
-        let visible = vec![0, 2, 4];
+        let visible: Visible = [0, 2, 4].into_iter().collect();
         assert_eq!(
             visible_span(&text, &visible, &charwise(0, 1), (4, 0)),
             Some(((0, 1), (2, 1)))
@@ -426,6 +434,9 @@ mod tests {
             visible_span(&text, &all(5), &charwise(1, 0), (1, 1)),
             Some(((1, 0), (1, 2)))
         );
-        assert_eq!(visible_span(&text, &[4], &linewise(0), (2, 0)), None);
+        assert_eq!(
+            visible_span(&text, &[4].into_iter().collect(), &linewise(0), (2, 0)),
+            None
+        );
     }
 }

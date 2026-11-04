@@ -3,6 +3,7 @@
 use crate::filter::{ActiveFilters, Neighbor, Verdict};
 use crate::lines::Lines;
 use crate::syntax::{self, KindSet};
+use crate::visible::Visible;
 use ratatui::style::Style;
 use std::collections::VecDeque;
 use std::fs::File;
@@ -52,11 +53,8 @@ pub struct Document {
     /// alone, with no borrow and no regex.
     anything_including: bool,
     mode: Mode,
-    visible: Vec<usize>,
-    /// The buffer `recompute_visible` builds the next visible set into, kept
-    /// so the rebuild is allocation-free after the first: it is compared
-    /// against `visible` and swapped in only if it differs.
-    scratch: Vec<usize>,
+    /// As runs of lines, not one index for each line (#572).
+    visible: Visible,
     /// Moves exactly when `visible` changes. The viewport's rebuild-skip key
     /// (#159): comparing two `u64`s per `apply_view` — every arrow key —
     /// instead of two index vectors the length of the file, and no copy of
@@ -91,8 +89,7 @@ impl Document {
             over_limit: Vec::new(),
             anything_including: false,
             mode: Mode::default(),
-            visible: Vec::new(),
-            scratch: Vec::new(),
+            visible: Visible::default(),
             generation: 0,
             revision: 0,
             path: None,
@@ -241,8 +238,7 @@ impl Document {
             .map(|(offset, _)| first + offset);
         self.revision = self.revision.wrapping_add(1);
         let before = self.visible.len();
-        self.visible
-            .truncate(self.visible.partition_point(|&row| row < first));
+        self.visible.truncate(self.visible.rows_before(first));
         self.visible.extend(shown);
         if self.visible.len() != before {
             self.generation = self.generation.wrapping_add(1);
@@ -255,7 +251,7 @@ impl Document {
     pub fn interesting_count(&self) -> usize {
         self.verdicts
             .iter()
-            .filter(|verdict| crate::app::viewport::is_interesting(verdict))
+            .filter(|&&verdict| crate::app::viewport::is_interesting(verdict))
             .count()
     }
 
@@ -286,28 +282,28 @@ impl Document {
     /// only needs this, not a full `evaluate` — which matters, since
     /// `evaluate` is O(lines × filters) and this is O(lines).
     ///
-    /// Built into `scratch` and swapped in only when it differs from the
-    /// current set, so `generation` moves exactly when the rows on screen
-    /// do. A filter change that leaves the same rows visible — an including
+    /// Built anew and kept only when it differs from the current set, so
+    /// `generation` moves exactly when the rows on screen do. A filter change that leaves the same rows visible — an including
     /// filter swapped for another in dimmed mode —
     /// therefore keeps the viewport's buffer, cursor column and scroll
     /// exactly where they were, which is what the old whole-vector compare
     /// in `apply_view` bought and what the `u64` key keeps (#159). The
-    /// compare is O(visible), paid once per filter change here rather than
-    /// once per arrow key there, and nothing is allocated or copied.
+    /// compare is O(runs), paid once per filter change here rather than
+    /// once per arrow key there. No buffer is kept for the next set (#572):
+    /// a set of few runs is a small allocation, and a set of many runs
+    /// would double the memory it takes.
     pub fn recompute_visible(&mut self) {
         let mode = self.mode;
         let anything_including = self.anything_including;
-        self.scratch.clear();
-        self.scratch.extend(
-            self.verdicts
-                .iter()
-                .enumerate()
-                .filter(|(_, verdict)| shows(mode, **verdict, anything_including))
-                .map(|(index, _)| index),
-        );
-        if self.scratch != self.visible {
-            std::mem::swap(&mut self.scratch, &mut self.visible);
+        let next: Visible = self
+            .verdicts
+            .iter()
+            .enumerate()
+            .filter(|(_, verdict)| shows(mode, **verdict, anything_including))
+            .map(|(index, _)| index)
+            .collect();
+        if next != self.visible {
+            self.visible = next;
             self.generation = self.generation.wrapping_add(1);
         }
     }
@@ -338,7 +334,7 @@ impl Document {
 
     /// Source line indices currently on screen, in order.
     #[must_use]
-    pub fn visible(&self) -> &[usize] {
+    pub fn visible(&self) -> &Visible {
         &self.visible
     }
 
@@ -349,7 +345,6 @@ impl Document {
         let drop_neighbors = self.mode == Mode::FilteredOnly && !neighbors;
         self.visible
             .iter()
-            .copied()
             .filter(move |&row| !(drop_neighbors && self.verdicts[row] == Verdict::ContextKeep))
     }
 
@@ -370,9 +365,9 @@ impl Document {
     /// the whole TUI down.
     #[must_use]
     pub fn visible_lines_range(&self, start: usize, end: usize) -> Vec<String> {
-        self.window(start, end)
-            .iter()
-            .map(|&source| self.lines[source].to_string())
+        self.visible
+            .rows(start, end)
+            .map(|source| self.lines[source].to_string())
             .collect()
     }
 
@@ -396,17 +391,10 @@ impl Document {
         start: usize,
         end: usize,
     ) -> Vec<Option<Style>> {
-        self.window(start, end)
-            .iter()
-            .map(|&source| filters.style_for(self.verdicts[source]))
+        self.visible
+            .rows(start, end)
+            .map(|source| filters.style_for(self.verdicts[source]))
             .collect()
-    }
-
-    /// `visible[start..end]`, with both bounds clamped to the visible set.
-    fn window(&self, start: usize, end: usize) -> &[usize] {
-        let end = end.min(self.visible.len());
-        let start = start.min(end);
-        &self.visible[start..end]
     }
 
     /// One flag per *visible* line, aligned with `visible_lines`: whether the
@@ -441,16 +429,14 @@ impl Document {
     /// independent of the window.
     #[must_use]
     pub fn visible_group_ends_range(&self, start: usize, end: usize) -> Vec<bool> {
-        let end = end.min(self.visible.len());
-        let start = start.min(end);
-        (start..end)
-            .map(|row| {
-                let source = self.visible[row];
-                match self.visible.get(row + 1) {
-                    Some(&next) => next != source + 1,
-                    // Nothing visible after it: a gap only if the file continues.
-                    None => source + 1 < self.lines.len(),
-                }
+        let next = self.visible.iter_from(start + 1).map(Some);
+        self.visible
+            .rows(start, end)
+            .zip(next.chain(std::iter::repeat(None)))
+            .map(|(source, next)| match next {
+                Some(next) => next != source + 1,
+                // Nothing visible after it: a gap only if the file continues.
+                None => source + 1 < self.lines.len(),
             })
             .collect()
     }
@@ -458,13 +444,13 @@ impl Document {
     /// Where a source line sits in the visible list, if it is shown at all.
     #[must_use]
     pub fn visible_position(&self, source: usize) -> Option<usize> {
-        self.visible.binary_search(&source).ok()
+        self.visible.position(source)
     }
 
     /// The source index of the visible row at `visible_row`.
     #[must_use]
     pub fn source_at(&self, visible_row: usize) -> Option<usize> {
-        self.visible.get(visible_row).copied()
+        self.visible.get(visible_row)
     }
 
     /// The nearest visible source line at or after `source`, falling back to
@@ -475,14 +461,9 @@ impl Document {
     /// backward fallback stops the cursor being lost when nothing follows.
     #[must_use]
     pub fn nearest_visible(&self, source: usize) -> Option<usize> {
-        match self.visible.binary_search(&source) {
-            Ok(_) => Some(source),
-            Err(index) => self
-                .visible
-                .get(index)
-                .copied()
-                .or_else(|| self.visible.last().copied()),
-        }
+        self.visible
+            .get(self.visible.rows_before(source))
+            .or_else(|| self.visible.last())
     }
 }
 

@@ -172,10 +172,10 @@ impl App<'_> {
         let Some(search) = self.search.clone() else {
             return;
         };
-        let is_hit = |document: &Document, row: usize| {
+        let is_hit = |document: &Document, source: usize| {
             document
-                .source_at(row)
-                .and_then(|source| document.lines().get(source))
+                .lines()
+                .get(source)
                 .is_some_and(|line| search.is_hit(line))
         };
         match self.step_visible(backwards, is_hit) {
@@ -238,11 +238,13 @@ impl App<'_> {
             return None;
         }
         let from = from.min(len - 1);
-        (0..len).find_map(|step| {
-            let row = (from + step) % len;
-            let line = self.document.lines().get(visible[row])?;
+        // From `from` to the end, then from the top: one walk, no lookup
+        // of each row.
+        let sources = visible.iter_from(from).chain(visible.iter());
+        sources.take(len).enumerate().find_map(|(step, source)| {
+            let line = self.document.lines().get(source)?;
             let column = search.first_column(line)?;
-            Some((row, column, from + step >= len))
+            Some(((from + step) % len, column, from + step >= len))
         })
     }
 }

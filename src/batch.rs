@@ -251,7 +251,7 @@ fn collect_lines(
         let document = hidden(document, filters);
         let text = document.lines();
         let prefix = several.then(|| path_bytes(path));
-        for &source in document.visible() {
+        for source in document.visible().iter() {
             written = write_line(out, prefix.as_deref(), line_numbers, source, &text[source]);
             if written.is_err() {
                 break 'files;
@@ -496,9 +496,9 @@ fn write_new(
     emitted: &mut usize,
 ) -> io::Result<()> {
     let visible = document.visible();
-    let first = visible.partition_point(|&source| source < *next);
+    let first = visible.rows_before(*next);
     let text = document.lines();
-    for &source in visible[first..].iter().take_while(|&&source| source < end) {
+    for source in visible.iter_from(first).take_while(|&source| source < end) {
         write_line(out, None, line_numbers, source, &text[source])?;
         *emitted += 1;
         *next = source + 1;
@@ -653,7 +653,7 @@ fn file_defines(
         return Ok(false);
     }
     document.evaluate(filters);
-    Ok(document.verdicts().iter().any(is_interesting))
+    Ok(document.verdicts().iter().copied().any(is_interesting))
 }
 
 /// The matcher batch mode checks a document's require filters with (#547),
