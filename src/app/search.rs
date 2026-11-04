@@ -5,7 +5,6 @@ use super::prompt::Origin;
 use super::viewport::Step;
 use crate::document::Document;
 use crate::widgets::Focus;
-use color_eyre::Result;
 
 /// What the status row says when `/` or `n` passed the end of the file to
 /// find its hit, and when `N` passed the start. One message for the search
