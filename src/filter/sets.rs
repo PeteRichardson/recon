@@ -354,10 +354,10 @@ impl ActiveFilters {
     /// name — every file filter disabled, then each `autoload` set that is
     /// also listed enabled, which applies its `default` profile if it has one.
     ///
-    /// A file filter's colour is its position in the known list, the same
-    /// rule `add` uses, unless the file named one. Assigned here, once, and
-    /// stored on the filter: toggling a set later changes what is shown and
-    /// what matches, never a colour.
+    /// A file filter's colour is the first one no known filter has, the
+    /// same rule `add` uses (#355), unless the file named one. Assigned
+    /// here, once, and stored on the filter: toggling a set later changes
+    /// what is shown and what matches, never a colour.
     #[must_use]
     pub fn with_sets(palette: Option<Vec<Color>>, sets: &[LoadedSet]) -> Self {
         let mut this = Self::bare(palette);
@@ -439,9 +439,7 @@ impl ActiveFilters {
             for filter in &loaded.filters {
                 let style = match filter.colour {
                     Some(colour) => Style::default().fg(colour),
-                    None => Style::default().fg(this
-                        .palette
-                        .colour(this.known_user_authored_count() + filters.len())),
+                    None => Style::default().fg(this.next_colour(&filters)),
                 };
                 filters.push(Filter {
                     id: FilterId::fresh(),
@@ -1860,6 +1858,22 @@ mod tests {
         set.reset();
         assert!(!set.sets()[index].enabled, "autoload is off");
         assert!(set.sets()[0].enabled);
+    }
+
+    /// #355: a file filter that names its own colour holds that colour. The
+    /// next filter with no colour takes a free one, not the one the count
+    /// names.
+    #[test]
+    fn a_file_filter_with_no_colour_skips_a_colour_the_file_named() {
+        let red = Color::Indexed(1);
+        let blue = Color::Indexed(4);
+        let mut web = loaded("web", 10, true, &["a", "b"]);
+        web.filters[0].colour = Some(blue);
+
+        let set = ActiveFilters::with_sets(Some(vec![red, blue]), &[web]);
+
+        let colours: Vec<_> = set.filters_in(1).map(|(_, f)| f.style.fg).collect();
+        assert_eq!(colours, [Some(blue), Some(red)]);
     }
 
     // ---- listed and unlisted sets (#282) -----------------------------------

@@ -684,6 +684,17 @@ impl Palette {
     fn colour(&self, position: usize) -> Color {
         self.0[position % self.0.len()]
     }
+
+    /// The colour for a new filter (#355): the first one not in `used`, so a
+    /// delete leaves a gap the next filter fills. When every colour is in
+    /// use, the one `count` names, as `colour` wraps.
+    fn next_colour(&self, used: &[Color], count: usize) -> Color {
+        self.0
+            .iter()
+            .copied()
+            .find(|colour| !used.contains(colour))
+            .unwrap_or_else(|| self.colour(count))
+    }
 }
 
 #[derive(Debug)]
@@ -851,22 +862,36 @@ impl ActiveFilters {
     /// editor (#312), which draws its matches in the colour `add` will give.
     #[must_use]
     pub fn next_style(&self) -> Style {
-        Style::default().fg(self.palette.colour(self.known_user_authored_count()))
+        Style::default().fg(self.next_colour(&[]))
     }
 
-    /// `user_authored_count`, plus the filters of every unlisted set (#305).
-    /// What colours run over, so a colour never depends on which sets are
-    /// listed: a set's filters keep the colours they had at startup when it
-    /// is listed again, and a typed filter does not take one of theirs.
-    fn known_user_authored_count(&self) -> usize {
-        let unlisted: usize = self
+    /// The colour for a new filter, clear of every known user filter and of
+    /// `pending`, filters not in the known list yet (a file set `with_sets`
+    /// is building). An excluding filter's kept colour counts as in use: it
+    /// is that filter's for the way back (#355).
+    pub(super) fn next_colour(&self, pending: &[Filter]) -> Color {
+        let known = || self.known_user_authored().chain(pending);
+        let used: Vec<Color> = known().filter_map(|filter| filter.style.fg).collect();
+        self.palette.next_colour(&used, known().count())
+    }
+
+    /// Every filter the user wrote that recon knows of: the listed ones,
+    /// and those of every unlisted set (#305). What colours are chosen
+    /// against (#355), so a colour never depends on which sets are listed:
+    /// a set's filters keep the colours they had at startup when it is
+    /// listed again, and a typed filter does not take one of theirs.
+    fn known_user_authored(&self) -> impl Iterator<Item = &Filter> {
+        let listed = self
+            .filters
+            .iter()
+            .filter(|filter| self.sets[filter.set].origin != Origin::BuiltIn);
+        let unlisted = self
             .sets
             .iter()
             .zip(&self.as_loaded)
             .filter(|(set, _)| !set.listed && set.origin != Origin::BuiltIn)
-            .map(|(_, filters)| filters.len())
-            .sum();
-        self.user_authored_count() + unlisted
+            .flat_map(|(_, filters)| filters);
+        listed.chain(unlisted)
     }
 
     /// How many filters the user wrote — scratch and file — which is what
@@ -2487,6 +2512,83 @@ mod tests {
             set.filters()[1].style,
             "two filters would be indistinguishable"
         );
+    }
+
+    /// #355: a delete leaves a gap in the palette. The next filter takes the
+    /// gap, not the colour after the count, which `c` still has.
+    #[test]
+    fn a_filter_added_after_a_delete_takes_the_freed_colour() {
+        let mut set = set_with(&["a", "b", "c"]);
+        let freed = style_of(&set, "a");
+        assert!(set.remove(position(&set, "a")));
+
+        set.add("d").expect("valid");
+
+        assert_eq!(style_of(&set, "d"), freed, "d takes a's colour, not c's");
+    }
+
+    /// #355: an excluding filter has no colour. When it becomes including,
+    /// it takes a colour that no filter has — here the count (2) names `c`'s.
+    #[test]
+    fn a_filter_that_becomes_including_takes_a_free_colour() {
+        let mut set = set_with(&["a", "b", "c"]);
+        set.add_excluding("x").expect("valid");
+        let freed = style_of(&set, "a");
+        assert!(set.remove(position(&set, "a")));
+        assert!(set.remove(position(&set, "b")));
+
+        assert!(set.set_sense(position(&set, "x"), Sense::Include));
+
+        assert_eq!(style_of(&set, "x"), freed, "x takes a's colour, not c's");
+    }
+
+    /// #355: the colour an excluding filter keeps for the way back stays
+    /// its own. A new filter does not take it.
+    #[test]
+    fn a_new_filter_does_not_take_the_colour_an_excluding_filter_keeps() {
+        let mut set = set_with(&["a"]);
+        assert!(set.set_sense(position(&set, "a"), Sense::Exclude));
+
+        set.add("b").expect("valid");
+
+        assert_ne!(style_of(&set, "b"), style_of(&set, "a"));
+    }
+
+    const RED: Color = Color::Indexed(1);
+    const BLUE: Color = Color::Indexed(4);
+
+    /// #355: when every palette colour is in use, colours repeat in the
+    /// order they always did: by the count of the user's filters.
+    #[test]
+    fn a_full_palette_wraps_by_the_count() {
+        let mut set = ActiveFilters::with_palette(vec![RED, BLUE]);
+        for pattern in ["a", "b", "c", "d", "e"] {
+            set.add(pattern).expect("valid");
+        }
+
+        let colours = ["a", "b", "c", "d", "e"].map(|pattern| style_of(&set, pattern).fg);
+        assert_eq!(
+            colours,
+            [Some(RED), Some(BLUE), Some(RED), Some(BLUE), Some(RED)]
+        );
+    }
+
+    /// #355: an excluding filter with no colour still moves the wrap, as
+    /// it did before: the count is of every filter the user wrote.
+    #[test]
+    fn an_uncoloured_filter_still_counts_toward_the_wrap() {
+        let mut set = ActiveFilters::with_palette(vec![RED, BLUE]);
+        set.add("a").expect("valid");
+        set.add("b").expect("valid");
+        set.add_excluding("x").expect("valid");
+
+        set.add("c").expect("valid");
+
+        assert_eq!(style_of(&set, "c").fg, Some(BLUE), "count 3, not 2");
+    }
+
+    fn style_of(set: &ActiveFilters, name: &str) -> Style {
+        set.filters()[position(set, name)].style
     }
 
     fn set_excluding(patterns: &[&str]) -> ActiveFilters {
