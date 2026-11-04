@@ -21,6 +21,7 @@ use crate::filter::ActiveFilters;
 use crate::keymap::ActionId;
 use crate::syntax::KindSet;
 use std::io::{self, BufWriter, Write};
+use std::ops::ControlFlow;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -339,15 +340,23 @@ pub(super) fn stream(
         whole.set_mode(mode);
         whole.evaluate(filters);
         interesting = whole.interesting_count();
-        let text = whole.lines();
         let mut complete = true;
-        for row in whole.visible().iter() {
-            if cancel.load(Ordering::Relaxed) {
-                complete = false;
-                break;
-            }
-            put(row, &text[row])?;
-        }
+        let mut written = Ok(());
+        whole
+            .lines()
+            .try_each_of(whole.visible().iter(), |row, text| {
+                if cancel.load(Ordering::Relaxed) {
+                    complete = false;
+                    return ControlFlow::Break(());
+                }
+                written = put(row, text);
+                if written.is_ok() {
+                    ControlFlow::Continue(())
+                } else {
+                    ControlFlow::Break(())
+                }
+            });
+        written?;
         complete
     } else {
         let mut shown = document::Shown::new(filters, mode);

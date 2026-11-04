@@ -240,6 +240,7 @@ mod tests {
             px: 0,
             prefetch: false,
             icons: crate::filetype::Icons::Off,
+            index_bytes: crate::document::INDEX_BYTES,
         }
     }
 

@@ -186,14 +186,14 @@ impl Matcher {
     /// whether or not an include line is there, so the include half does
     /// not apply.
     #[must_use]
-    pub fn lines_meet_requires<'a>(&self, lines: impl IntoIterator<Item = &'a str>) -> bool {
+    pub fn lines_meet_requires(&self, lines: impl IntoIterator<Item = impl AsRef<str>>) -> bool {
         let mut required = 0;
         let mut pass = self.pass();
         for line in lines {
             if required == self.require {
                 break;
             }
-            required |= self.required_by(pass.bits(line));
+            required |= self.required_by(pass.bits(line.as_ref()));
         }
         required == self.require
     }

@@ -195,7 +195,7 @@ fn ctrl_t_in_the_explorer_follows_the_previewed_file_read_whole() {
     grow(&path, "new\n");
     app.poll_follow();
     assert_eq!(app.document.lines().len(), total + 1);
-    assert_eq!(&app.document.lines()[total], "new");
+    assert_eq!(app.document.lines().line(total), "new");
 
     // Away and back: a followed file is read whole, not previewed.
     arrow_to(&mut app, "b.log");

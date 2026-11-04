@@ -88,6 +88,7 @@ use crate::generate::{self, ATTEMPTS, Candidate, Rejection, Running};
 use crate::lines::Lines;
 use crossterm::event::{self, KeyCode, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::prelude::{Rect, Style};
+use std::borrow::Cow;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fmt::Write as _;
 use std::sync::Arc;
@@ -586,7 +587,7 @@ impl FilterEditor {
         }
         let mut found = vec![false; examples.len()];
         for (index, line) in self.lines.iter().enumerate() {
-            if let Some(ats) = by_text.get(line) {
+            if let Some(ats) = by_text.get(&*line) {
                 for &at in ats {
                     found[at] = true;
                 }
@@ -606,10 +607,10 @@ impl FilterEditor {
 
     /// The text of line `index`: a line of the file, or of `extra` past
     /// its end.
-    pub(super) fn text(&self, index: usize) -> Option<&str> {
+    pub(super) fn text(&self, index: usize) -> Option<Cow<'_, str>> {
         match index.checked_sub(self.lines.len()) {
             None => self.lines.get(index),
-            Some(at) => self.extra.get(at).map(String::as_str),
+            Some(at) => self.extra.get(at).map(|line| Cow::Borrowed(line.as_str())),
         }
     }
 
@@ -629,14 +630,16 @@ impl FilterEditor {
             (!text.is_empty()).then(|| text.to_string())
         };
         let mut examples: Vec<Example> = Vec::new();
-        let mut seen: HashSet<&str> = HashSet::new();
+        let mut seen: HashSet<String> = HashSet::new();
         for (&index, &mark) in &self.marks {
             let Some(line) = self.text(index) else {
                 continue;
             };
-            if seen.insert(line) {
+            let line = line.into_owned();
+            if !seen.contains(&line) {
+                seen.insert(line.clone());
                 examples.push(Example {
-                    line: line.to_string(),
+                    line,
                     must_match: mark == Mark::MustMatch,
                 });
             }
@@ -703,7 +706,7 @@ impl FilterEditor {
             .keys()
             .find(|&&index| self.check(index).is_some_and(|check| !check.passes))?;
         let line = self.text(*first).unwrap_or_default();
-        Some(failure_message(self.failures, line))
+        Some(failure_message(self.failures, &line))
     }
 
     /// The field the keys go to when it is not the pattern, which is the
@@ -758,8 +761,8 @@ impl FilterEditor {
                 self.matched = self
                     .lines
                     .iter()
-                    .chain(self.extra.iter().map(String::as_str))
-                    .map(|line| regex.is_match(line, self.step_limit))
+                    .chain(self.extra.iter().map(|line| Cow::Borrowed(line.as_str())))
+                    .map(|line| regex.is_match(&line, self.step_limit))
                     .collect();
                 self.matches = self.matched[..self.lines.len()]
                     .iter()
@@ -1017,8 +1020,8 @@ impl FilterEditor {
                 .then_some(pattern.as_str()),
             must_match: &lines(true),
             must_not_match: &lines(false),
-            sample: &self.sample(),
-            phrases: &self.phrase_texts(),
+            sample: &strs(&self.sample()),
+            phrases: &pairs(&self.phrase_texts()),
             earlier: &self.requests,
             request,
         })
@@ -1036,8 +1039,8 @@ impl FilterEditor {
             prompt: (!prompt.is_empty()).then_some(prompt),
             must_match: &lines(true),
             must_not_match: &lines(false),
-            sample: &self.sample(),
-            phrases: &self.phrase_texts(),
+            sample: &strs(&self.sample()),
+            phrases: &pairs(&self.phrase_texts()),
             request: generate::REGENERATE,
             ..generate::Parts::default()
         })
@@ -1055,17 +1058,20 @@ impl FilterEditor {
             } else {
                 ""
             },
-            &self.phrase_texts(),
+            &pairs(&self.phrase_texts()),
         )
     }
 
     /// Each phrase mark's text, and the line it is part of (#322).
-    fn phrase_texts(&self) -> Vec<(&str, &str)> {
+    fn phrase_texts(&self) -> Vec<(String, String)> {
         self.phrases
             .iter()
             .filter_map(|phrase| {
                 let line = self.text(phrase.line)?;
-                Some((line.get(phrase.start..phrase.end)?, line))
+                Some((
+                    line.get(phrase.start..phrase.end)?.to_string(),
+                    line.into_owned(),
+                ))
             })
             .collect()
     }
@@ -1159,14 +1165,15 @@ impl FilterEditor {
 
     /// Up to `SAMPLE_LINES` lines of the file with no mark and some text,
     /// spread from its start to its end.
-    fn sample(&self) -> Vec<&str> {
+    fn sample(&self) -> Vec<String> {
         let step = (self.lines.len() / generate::SAMPLE_LINES).max(1);
         (0..self.lines.len())
             .step_by(step)
             .filter(|index| !self.marks.contains_key(index))
-            .map(|index| &self.lines[index])
+            .map(|index| self.lines.line(index))
             .filter(|line| !line.trim().is_empty())
             .take(generate::SAMPLE_LINES)
+            .map(Cow::into_owned)
             .collect()
     }
 
@@ -1436,6 +1443,19 @@ fn marked(examples: &[Example], must_match: bool) -> Vec<&str> {
         .iter()
         .filter(|example| example.must_match == must_match)
         .map(|example| example.line.as_str())
+        .collect()
+}
+
+/// `lines`, borrowed, for `generate::Parts`.
+fn strs(lines: &[String]) -> Vec<&str> {
+    lines.iter().map(String::as_str).collect()
+}
+
+/// `phrases`, borrowed, for `generate::Parts`.
+fn pairs(phrases: &[(String, String)]) -> Vec<(&str, &str)> {
+    phrases
+        .iter()
+        .map(|(text, line)| (text.as_str(), line.as_str()))
         .collect()
 }
 

@@ -37,3 +37,27 @@ reads a file.
   synchronous executor for tests.
 - **Block until the view is ready.** Rejected: a slow command would stop
   browsing.
+
+## Amendment (2026-11-03, #51): a large file's lines are read again on the main thread
+
+From 256 MiB (`document::INDEX_BYTES`), a file's lines are not kept in
+memory: `Lines` keeps only where each line starts, and reads the text from
+the open file when a caller asks for it. The read that makes the index
+still runs in the view job, on a worker. But the main thread now reads the
+file too: the rows the view shows, a line under the cursor, and the lines
+that `n`, a filter pass under the pass threshold, and `:w` go through.
+
+- **A read is bounded.** A range of lines is read about 1 MiB at a time,
+  and one line reads the lines around it, about 1 MiB. On a local disk
+  from the page cache, that is well under a millisecond.
+- **A full read is a short wait.** A command that reads every line reads
+  the whole file again, as a filter pass does (#597).
+- **A file that changed is read again.** A read that finds the file
+  shorter than its index sets `Lines::changed`, and the app reads the file
+  again from the start, as follow mode does (#493).
+
+The other option was a worker that fills a window of lines around the view,
+with placeholder rows until it answers. It was rejected: more code and
+states, and rows that flicker on a fast scroll, for a read that is almost
+always from the page cache. A network mount or a cold disk can still make a
+read slow on the main thread.

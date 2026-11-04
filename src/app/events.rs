@@ -27,6 +27,7 @@ impl App<'_> {
             | self.drain_views()
             | self.poll_stamps()
             | self.poll_follow()
+            | self.poll_changed()
             | self.poll_filtering()
             | self.poll_stdin()
             | self.drain_request()

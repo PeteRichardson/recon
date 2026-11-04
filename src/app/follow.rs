@@ -202,20 +202,7 @@ impl App<'_> {
                 }),
                 Change::Reset => {
                     log::debug!("follow: {} read again from the start", path.display());
-                    let landing = if self.cursor_at_end() {
-                        Landing::End
-                    } else {
-                        Landing::Keep(self.cursor_source())
-                    };
-                    self.following.watch = None;
-                    self.open_view(&path, Extent::Full, landing);
-                    let name = file_label(&path);
-                    self.report(
-                        &format!(
-                            "{name} became shorter or was replaced: read again from the start"
-                        ),
-                        false,
-                    );
+                    self.read_again(&path);
                 }
                 Change::Gone => {
                     let name = file_label(&path);
@@ -224,6 +211,40 @@ impl App<'_> {
             }
         }
         changed
+    }
+
+    /// Read the file on screen again when a read of its index (#51) found
+    /// it shorter, as follow mode does for a file it watches, and say
+    /// whether it did. Not while a read is pending: the document is the
+    /// old one until the read ends, and one change gets one read.
+    pub(super) fn poll_changed(&mut self) -> bool {
+        if !self.document.lines().changed() {
+            return false;
+        }
+        let path = self.view.filename().to_path_buf();
+        if self.loading.is_pending(&path, Extent::Full) {
+            return false;
+        }
+        log::debug!("{} changed under its index: read again", path.display());
+        self.read_again(&path);
+        true
+    }
+
+    /// Read `path`, which became shorter or was replaced, again from the
+    /// start. The cursor keeps its line, or the end when it was there.
+    fn read_again(&mut self, path: &Path) {
+        let landing = if self.cursor_at_end() {
+            Landing::End
+        } else {
+            Landing::Keep(self.cursor_source())
+        };
+        self.following.watch = None;
+        self.open_view(path, Extent::Full, landing);
+        let name = file_label(path);
+        self.report(
+            &format!("{name} became shorter or was replaced: read again from the start"),
+            false,
+        );
     }
 
     /// Add the lines the followed file grew by, filtered as the others

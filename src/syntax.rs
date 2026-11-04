@@ -412,7 +412,7 @@ impl Highlighter {
         let Theme::On(theme) = theme else {
             return None;
         };
-        let syntax = detect(path, lines.first())?;
+        let syntax = detect(path, lines.get(0).as_deref())?;
         Some(Self::new(theme, syntax, lines.len()))
     }
 
@@ -502,7 +502,7 @@ impl Highlighter {
             .iter_mut()
             .zip(lines.range(start..row + 1))
         {
-            let spans = Self::colour_line(&mut self.state, line);
+            let spans = Self::colour_line(&mut self.state, &line);
             if slot.is_none() {
                 *slot = Some(spans);
             }
@@ -821,7 +821,7 @@ impl KindScopes {
 /// nothing is ever named, so the fallback carries all four kinds.
 #[must_use]
 pub fn definitions(path: &Path, lines: &Lines) -> Option<Vec<KindSet>> {
-    let syntax = detect(path, lines.first())?;
+    let syntax = detect(path, lines.get(0).as_deref())?;
     let scopes = KindScopes::new();
     let mut state = ParseState::new(syntax);
     let mut stack = ScopeStack::new();
@@ -1321,7 +1321,7 @@ int main(void) { return 0; }
             .expect("`// hi` is coloured");
         assert_eq!(
             comment.end,
-            lines[0].len(),
+            lines.line(0).len(),
             "the synthetic newline is dropped"
         );
         assert_eq!(
@@ -1500,12 +1500,12 @@ int main(void) { return 0; }
     fn spans_use_byte_offsets_so_wide_glyphs_do_not_shift_them() {
         let (mut highlighter, lines) = rust(Theme::builtin(), "let s = \"日本\"; // c");
         assert!(highlighter.ensure(&lines, 0, &mut 10));
-        let comment_at = lines[0].find("//").unwrap();
+        let comment_at = lines.line(0).find("//").unwrap();
         let comment = highlighter
             .spans(0)
             .iter()
             .find(|span| span.start == comment_at)
             .expect("the comment starts at its byte offset");
-        assert_eq!(comment.end, lines[0].len());
+        assert_eq!(comment.end, lines.line(0).len());
     }
 }

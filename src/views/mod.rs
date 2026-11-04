@@ -77,6 +77,8 @@ pub(crate) struct Job {
     /// Whether a directory listing leads each row with a filetype icon
     /// (#512).
     pub(crate) icons: crate::filetype::Icons,
+    /// The size from which a whole file is read as an index (#51).
+    pub(crate) index_bytes: u64,
 }
 
 /// The file's row in the table and the view of its cycle that the job ran.
@@ -308,7 +310,7 @@ fn read_view(job: &Job, view: View) -> (Contents, Extent) {
         Extent::Preview => {
             read::read_preview_with_caps(path, PREVIEW_LINES, MAX_PREVIEW_BYTES, view)
         }
-        Extent::Full => read::read_lines(path, view),
+        Extent::Full => read::read_lines(path, view, job.index_bytes),
     };
     (contents, job.extent)
 }
@@ -341,6 +343,7 @@ pub(crate) mod tests {
             px: 0,
             prefetch: false,
             icons: crate::filetype::Icons::Off,
+            index_bytes: crate::document::INDEX_BYTES,
         }
     }
 

@@ -3202,17 +3202,20 @@ needs every line's answer at once — see *Definition filters*.
   same words to stderr. `file matching off: patterns too large` means the
   patterns did not compile together, which the regex engine's size limit can
   cause before the count does.
-- **Files are read entirely into memory — once, not twice.** `read_lines` in
-  `src/widgets/fileview.rs` collects the whole file into a `Vec<String>`, and
-  `Document` holds it. A multi-gigabyte log is fully resident, and there is
-  still no streaming or memory-mapped path.
+- **A file under 256 MiB is read entirely into memory.** It is kept as one
+  buffer and the offset of each line, about 1.1× its size on disk. From
+  256 MiB, recon keeps only the offset of each line (8 bytes a line) and reads
+  the text again from the file when it is needed (github issue #51). A 463 MB,
+  5M-line log then needs about 140 MB, not 600 MB. The cost: a filter change,
+  `n` and `:w` read the file again, and a file on a slow disk or a network
+  mount can make a scroll wait for the disk. UTF-16 files are decoded whole,
+  at any size.
 
-  It used to be resident *twice*: the view was handed its own `Vec<String>` of
-  every visible line, so an unfiltered file cost about 3× its size on disk. The
-  view now holds only a window of three screens
-  (`docs/specs/2026-08-22-windowed-textarea-viewport.md`, github issue #7),
-  which takes that to ~1.5×. Replacing `Document`'s own copy with a line-offset
-  index is the remaining half, github issue #51.
+  If such a file becomes shorter while you read it (logrotate's
+  `copytruncate`), recon reads it again from the start, as follow mode does.
+  A file that is truncated and then grows past its old size between two reads
+  is not seen: recon then shows the new bytes at the old line offsets until
+  you read the file again with `r`.
 - **Previews are bounded, full loads are not.** While the explorer has focus,
   only `PREVIEW_LINES` (50,000) lines or `MAX_PREVIEW_BYTES` (10 MiB) are read,
   whichever comes first. The full read happens once you focus the view.

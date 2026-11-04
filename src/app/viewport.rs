@@ -311,7 +311,7 @@ impl App<'_> {
         let source = self.document.source_at(row)?;
         let line = self.document.lines().get(source)?;
         let col = self.view.cursor_col();
-        if let Some(word) = word_around(line, col) {
+        if let Some(word) = word_around(&line, col) {
             return Some(word.to_owned());
         }
         // The textarea's End puts the cursor one past the last character;
@@ -319,7 +319,7 @@ impl App<'_> {
         // than reporting none.
         let len = line.chars().count();
         if col == len && col > 0 {
-            return word_around(line, col - 1).map(str::to_owned);
+            return word_around(&line, col - 1).map(str::to_owned);
         }
         None
     }

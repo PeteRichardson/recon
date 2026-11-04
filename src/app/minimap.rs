@@ -136,14 +136,16 @@ impl App<'_> {
                 Verdict::Included(filter) => Some((line, usize::from(*filter))),
                 _ => None,
             });
-        let hits = self.search.iter().flat_map(|search| {
-            document.visible().iter().filter(|&line| {
-                document
-                    .lines()
-                    .get(line)
-                    .is_some_and(|text| search.is_hit(text))
-            })
-        });
+        let mut hits = Vec::new();
+        if let Some(search) = &self.search {
+            document
+                .lines()
+                .each_of(document.visible().iter(), |line, text| {
+                    if search.is_hit(text) {
+                        hits.push(line);
+                    }
+                });
+        }
         let colour = |filter| {
             self.match_style(Some(filter))
                 .fg

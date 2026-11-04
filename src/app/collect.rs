@@ -33,19 +33,16 @@ impl App<'_> {
                 failed: 0,
             };
         }
-        let text = self.document.lines();
-        let lines: Vec<_> = self
-            .document
-            .emitted(self.emit_neighbors)
-            .map(|source| {
-                let mut line = Vec::new();
-                if self.line_numbers {
-                    line.extend_from_slice(format!("{}\t", source + 1).as_bytes());
-                }
-                line.extend_from_slice(text[source].as_bytes());
-                line
-            })
-            .collect();
+        let mut lines = Vec::new();
+        let emitted = self.document.emitted(self.emit_neighbors);
+        self.document.lines().each_of(emitted, |source, text| {
+            let mut line = Vec::new();
+            if self.line_numbers {
+                line.extend_from_slice(format!("{}\t", source + 1).as_bytes());
+            }
+            line.extend_from_slice(text.as_bytes());
+            lines.push(line);
+        });
         emit::Exit::Emit {
             summary: self.lines_summary(lines.len(), self.interesting_count()),
             lines,
