@@ -1563,9 +1563,11 @@ changed to avoid.
 
 The list replaces the built-in palette **wholesale**, not slot by slot: its
 length is part of the setting, since that's what decides when colours start
-repeating. Four colours means the fifth filter reuses the first. Omit the key
-to keep recon's own; `palette = []` is refused at startup, and so is a value
-that isn't a colour — both errors name the file and the line.
+repeating. Four colours means the fifth filter reuses the first. A new filter
+takes the first colour that no filter has, so the colour of a filter you
+delete goes to the next filter you add. Omit the key to keep recon's own;
+`palette = []` is refused at startup, and so is a value that isn't a colour —
+both errors name the file and the line.
 
 The search set by `/` takes no colour from the palette, because it colours
 no line: a search is a motion, not a filter. Only the hit text is painted,
