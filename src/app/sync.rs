@@ -28,6 +28,8 @@ impl App<'_> {
         // the explorer's selection, and every move fired a `Preview` through
         // here and undid the `Ctrl-H` that made the skim possible.
         let mode = self.document.mode();
+        // A pass judges the lines of the document this replaces.
+        self.filtering.stop();
         self.document = Document::for_file(self.view.filename(), lines);
         self.set_mode(mode);
         // The anchor was a line of the document this just replaced (#67).
@@ -51,18 +53,38 @@ impl App<'_> {
         self.hbar.forget();
     }
 
-    /// Re-evaluate the filters and rebuild what the view shows.
+    /// Re-evaluate the filters and rebuild what the view shows, after a
+    /// filter change. On a very large file the lines are judged on a
+    /// worker, in blocks (#597).
     pub(super) fn refresh_view(&mut self) {
+        self.clamp_filter_selection();
+        if !self.start_pass() {
+            self.judge_here();
+        }
+    }
+
+    /// `refresh_view`, with every line judged before it returns: for a
+    /// file just loaded, whose landing reads the verdicts of the whole file.
+    pub(super) fn refresh_view_here(&mut self) {
+        self.clamp_filter_selection();
+        self.judge_here();
+    }
+
+    fn clamp_filter_selection(&mut self) {
         // Whatever changed the set may have changed how many filters there
         // are, so the pane's selection has to be pulled back into range (or
         // established at 0 on a set that just became non-empty) before
         // anything else runs. Every mutation path — `add_filter`,
         // `add_excluding_filter`, and the pane's own toggle/delete — funnels
-        // through this method, so putting the call here rather than at each
-        // call site means a future fourth path cannot forget it.
+        // through `refresh_view`, so putting the call there rather than at
+        // each call site means a future fourth path cannot forget it.
         let rows = widgets::filterlist::rows(&self.filters).len();
         self.filters_pane.clamp_selection(rows);
+    }
 
+    /// Judge every line on this thread, and rebuild what the view shows.
+    pub(super) fn judge_here(&mut self) {
+        self.filtering.stop();
         // The cursor is a source line index for the duration of the rebuild:
         // its row in the view is only meaningful against the old visible list.
         let cursor_source = self.cursor_source();

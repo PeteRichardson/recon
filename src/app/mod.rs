@@ -9,6 +9,7 @@ mod actions;
 mod collect;
 mod events;
 mod filter_editor;
+mod filtering;
 mod filters;
 mod finish;
 mod focus;
@@ -358,6 +359,8 @@ pub struct App<'a> {
     loading: loading::Loading,
     /// The followed files, and the tail of the one on screen (#493).
     following: follow::Following,
+    /// The filter pass in blocks on a very large file, when one runs (#597).
+    filtering: filtering::Filtering,
     /// The file `-` is copied into, when stdin is the input (#517).
     stdin: Option<stdin::Stdin>,
     /// Files the view was asked to show, for the shutdown summary (#490).
@@ -538,6 +541,7 @@ impl App<'_> {
                 startup.icons,
             ),
             following: follow::Following::default(),
+            filtering: filtering::Filtering::default(),
             stdin: None,
             opened: 0,
             scanned: 0,

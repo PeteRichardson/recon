@@ -175,8 +175,14 @@ impl App<'_> {
             // finds nothing, and without this nothing on the screen says why.
             .map(|off| format!("   {off}"))
             .unwrap_or_default();
+        // Beside the count it changes: while a pass runs (#597), the count
+        // is of the rows judged so far.
+        let filtering = self
+            .filtering_text()
+            .map(|text| format!("   {text}"))
+            .unwrap_or_default();
         format!(
-            "{funnel}{filters}   {}/{total} lines shown{note}{off}",
+            "{funnel}{filters}   {}/{total} lines shown{filtering}{note}{off}",
             self.document.visible().len(),
         )
     }

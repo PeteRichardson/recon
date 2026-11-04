@@ -71,6 +71,7 @@ impl App<'_> {
             self.quit_warned = true;
             return;
         }
+        self.finish_pass_here();
         let finish = match self.emit {
             Some(emit::Emit::Lines) if self.lines_need_finishing() => {
                 Some(Finish::Lines(self.start_lines_job(Ok)))

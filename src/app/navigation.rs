@@ -111,6 +111,11 @@ impl<'a> App<'a> {
             self.land_on(target);
             return;
         }
+        // While a pass in blocks runs (#597), the rows not judged yet can
+        // hold the line: the step waits for them.
+        if self.step_when_judged(backwards) {
+            return;
+        }
         if !self.cross_file(backwards, Explorer::step_to_match) {
             // `step_to_interesting` is quiet about what it did, and a key
             // whose whole job is finding a hit should not be: say when the
