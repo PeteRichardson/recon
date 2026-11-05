@@ -27,6 +27,7 @@ mod render;
 mod scanning;
 mod search;
 mod selection;
+mod spool;
 mod stdin;
 mod sync;
 pub(crate) mod viewport;
@@ -363,6 +364,9 @@ pub struct App<'a> {
     filtering: filtering::Filtering,
     /// The file `-` is copied into, when stdin is the input (#517).
     stdin: Option<stdin::Stdin>,
+    /// The spool of the command view on screen, when its output is too
+    /// large to keep in memory (#573).
+    spool: Option<spool::Spooled>,
     /// Files the view was asked to show, for the shutdown summary (#490).
     opened: u64,
     /// Scan answers the explorer took, for the shutdown summary.
@@ -543,6 +547,7 @@ impl App<'_> {
             following: follow::Following::default(),
             filtering: filtering::Filtering::default(),
             stdin: None,
+            spool: None,
             opened: 0,
             scanned: 0,
         };
@@ -551,6 +556,7 @@ impl App<'_> {
         if config.hide {
             app.set_mode(Mode::FilteredOnly);
         }
+        app.loading.spooling.dir = config.spool_dir(app.home.as_deref());
         // `--follow FILE` (#493): before the load, whose end starts the tail.
         // `main` refused a directory before the terminal came up.
         if config.follow && argument.is_file() {

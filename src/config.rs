@@ -310,6 +310,12 @@ pub struct Config {
     #[arg(skip)]
     pub delete_stdin_temp_file: Option<bool>,
 
+    /// `[spool] dir` (#573): where a command view's output goes when it is
+    /// too large to keep in memory. `None` is unset: the system's temporary
+    /// directory. File-only.
+    #[arg(skip)]
+    pub spool_dir: Option<PathBuf>,
+
     /// The `[commands]` table of `config.toml`: the command views a row
     /// can name (#457).
     #[arg(skip)]
@@ -594,6 +600,8 @@ pub struct FileConfig {
     pub layout: Option<LayoutConfig>,
     /// `[stdin]`. Same again.
     pub stdin: Option<StdinConfig>,
+    /// `[spool]`. Same again.
+    pub spool: Option<SpoolConfig>,
     /// `[keymap]`. Same again. Handed to `Keymap::new` rather than
     /// merged key by key here: a rebind either names a real action and a
     /// parseable key, or the whole file is refused — there is no per-key
@@ -663,6 +671,14 @@ pub struct LayoutConfig {
 pub struct StdinConfig {
     /// See [`Config::delete_stdin_temp_file`].
     pub delete_temp_file: Option<bool>,
+}
+
+/// The `[spool]` table: where a command view's large output goes (#573).
+#[derive(Deserialize, Debug, Default, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct SpoolConfig {
+    /// See [`Config::spool_dir`].
+    pub dir: Option<PathBuf>,
 }
 
 /// The `[syntax]` table.
@@ -1271,6 +1287,15 @@ impl Config {
         self.delete_stdin_temp_file.unwrap_or(false)
     }
 
+    /// Where a command view's spool is made (#573): `[spool] dir`, with a
+    /// leading `~` as `home`, else the system's temporary directory.
+    #[must_use]
+    pub fn spool_dir(&self, home: Option<&str>) -> PathBuf {
+        self.spool_dir
+            .as_deref()
+            .map_or_else(std::env::temp_dir, |dir| expand_tilde(dir, home))
+    }
+
     /// Open `file`, which stdin is copied into, in place of `-` (#517):
     /// followed, since more may come, and with the explorer hidden, since
     /// the lines are what the user came for — unless `--hide-pane` or
@@ -1568,6 +1593,7 @@ impl Config {
             view,
             layout,
             stdin,
+            spool,
             keymap,
             warnings,
             filetype,
@@ -1648,6 +1674,10 @@ impl Config {
             && let Some(delete) = delete_temp_file
         {
             self.delete_stdin_temp_file.get_or_insert(*delete);
+        }
+
+        if let Some(SpoolConfig { dir: Some(dir) }) = spool {
+            self.spool_dir.get_or_insert_with(|| dir.clone());
         }
 
         // Not folded: `[keymap]` is an overlay for `keymap::config::build`,
@@ -3483,6 +3513,27 @@ mod tests {
         let mut config = Config::default();
         config.apply(&file);
         assert!(config.delete_stdin_temp_file());
+    }
+
+    /// #573: `[spool] dir` is where a command view's spool is made, with a
+    /// leading `~` as the home directory. With no `[spool]`, it is the
+    /// system's temporary directory.
+    #[test]
+    fn spool_dir_reaches_the_resolved_config() {
+        assert_eq!(Config::default().spool_dir(None), std::env::temp_dir());
+
+        let path = fixture("spool-dir.toml", "[spool]\ndir = \"~/spools\"\n");
+        let file = load_from(&path).expect("a valid [spool]");
+        let mut config = Config::default();
+        config.apply(&file);
+        assert_eq!(
+            config.spool_dir(Some("/home/u")),
+            Path::new("/home/u/spools")
+        );
+
+        let typo = fixture("spool-typo.toml", "[spool]\ndri = \"/x\"\n");
+        let err = load_from(&typo).expect_err("a typo is refused");
+        assert!(err.to_string().contains("dri"), "{err}");
     }
 
     /// #517: `-` in the TUI opens the file stdin is copied into, followed,

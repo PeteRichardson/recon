@@ -10,6 +10,7 @@ use super::App;
 use crate::views::cycle::{HandOff, Steps, Table};
 use crate::views::pool::{Executor, Request};
 use crate::views::read::{self, Contents};
+use crate::views::spool::Spooling;
 use crate::views::{Done, Extent, Job, Shown, View};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -96,6 +97,9 @@ pub(super) struct Loading {
     /// The size from which a file is read as an index (#51): a test sets
     /// it to a few bytes.
     pub(super) index_bytes: u64,
+    /// Where a command view's large output goes, and from what size
+    /// (#573): a test sets a few bytes.
+    pub(super) spooling: Spooling,
 }
 
 /// No rows of the user's, and an executor that runs nothing: what a
@@ -127,6 +131,7 @@ impl Loading {
             cell_px: None,
             icons,
             index_bytes: crate::document::INDEX_BYTES,
+            spooling: Spooling::default(),
         }
     }
 
@@ -140,6 +145,7 @@ impl Loading {
             prefetch,
             icons: self.icons,
             index_bytes: self.index_bytes,
+            spooling: self.spooling.clone(),
         }
     }
 
@@ -214,6 +220,9 @@ impl App<'_> {
             extent
         };
         self.opened += 1;
+        // The view is about to show something else: a command that runs
+        // for the one on screen stops, and its spool goes (#573).
+        self.spool = None;
         let px = self.view_px();
         let loading = &mut self.loading;
         loading.steps.open(path);
@@ -290,8 +299,9 @@ impl App<'_> {
     }
 
     /// Put an answer on screen.
-    fn adopt_view(&mut self, done: Done, landing: Landing) {
+    fn adopt_view(&mut self, mut done: Done, landing: Landing) {
         self.loading.pending = None;
+        self.keep_spool(done.spool.take());
         let contents = &done.contents;
         self.view.show(&done.path, contents);
         self.view.set_facts(done.facts.as_ref());
@@ -310,6 +320,23 @@ impl App<'_> {
                 ..shown
             });
         self.sync_document();
+        self.land(landing);
+        self.rewatch();
+        if let Some(shown) = done.shown
+            && let Some(reason) = &contents.fallback
+        {
+            let table = &self.loading.table;
+            let report = format!(
+                "{} failed → {}: {reason}",
+                table.view_name(shown.view),
+                table.view_name(fell_back_to)
+            );
+            self.report(&report, true);
+        }
+    }
+
+    /// Put the cursor where `landing` says, on the document just made.
+    pub(super) fn land(&mut self, landing: Landing) {
         match landing {
             Landing::Top => self.refresh_view_here(),
             Landing::Keep(source) => {
@@ -332,18 +359,6 @@ impl App<'_> {
                 self.refresh_view_here();
                 self.place_cursor_at_end();
             }
-        }
-        self.rewatch();
-        if let Some(shown) = done.shown
-            && let Some(reason) = &contents.fallback
-        {
-            let table = &self.loading.table;
-            let report = format!(
-                "{} failed → {}: {reason}",
-                table.view_name(shown.view),
-                table.view_name(fell_back_to)
-            );
-            self.report(&report, true);
         }
     }
 

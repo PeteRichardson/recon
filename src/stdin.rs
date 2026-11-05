@@ -142,12 +142,19 @@ fn lock(shared: &Mutex<Shared>) -> MutexGuard<'_, Shared> {
 fn create(dir: &Path) -> io::Result<(PathBuf, File)> {
     let stamp = jiff::Zoned::now().strftime("%Y%m%d-%H%M%S");
     let path = dir.join(format!("recon-stdin-{stamp}-{}.txt", std::process::id()));
+    let file = create_private(&path)?;
+    Ok((path, file))
+}
+
+/// Make the new file `path`, for writing, readable by its owner only: what
+/// a pipe or a command gives can be private. A command view's spool (#573)
+/// is made the same way.
+pub(crate) fn create_private(path: &Path) -> io::Result<File> {
     let mut options = OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]
     std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
-    let file = options.open(&path)?;
-    Ok((path, file))
+    options.open(path)
 }
 
 /// Copy `stdin` into `file` until it ends or a write fails, telling `shared`
@@ -181,7 +188,7 @@ fn copy(mut stdin: impl Read, mut file: impl Write, shared: &Mutex<Shared>, clos
 }
 
 /// Why a write failed, as the title says it.
-fn reason(err: &io::Error) -> String {
+pub(crate) fn reason(err: &io::Error) -> String {
     match err.kind() {
         io::ErrorKind::StorageFull => "disk full".to_string(),
         _ => err.to_string(),

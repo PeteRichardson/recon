@@ -241,6 +241,7 @@ mod tests {
             prefetch: false,
             icons: crate::filetype::Icons::Off,
             index_bytes: crate::document::INDEX_BYTES,
+            spooling: crate::views::spool::Spooling::default(),
         }
     }
 
@@ -255,6 +256,7 @@ mod tests {
                 contents: Contents::default(),
                 shown: None,
                 facts: None,
+                spool: None,
             }
         }));
         (pool, ran)

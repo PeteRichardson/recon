@@ -246,7 +246,7 @@ foundation-models = ["dep:fm-rs"]
 # that `dup2`, which std has no way to say. Already in the build through
 # crossterm, so this adds no crate.
 [target.'cfg(unix)'.dependencies]
-rustix = { version = "1.1.4", default-features = false, features = ["std", "stdio"] }
+rustix = { version = "1.1.4", default-features = false, features = ["std", "stdio", "process"] }
 
 [target.'cfg(all(target_os = "macos", target_arch = "aarch64"))'.dependencies]
 fm-rs = { version = "0.3", optional = true }

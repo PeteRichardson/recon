@@ -140,10 +140,15 @@ impl App<'_> {
 
     /// Start the tail of the file on screen when it is followed and read
     /// whole, and stop any other. Called after every load.
+    ///
+    /// A command view's spool (#573) is followed while its command runs,
+    /// whether or not its file is.
     pub(super) fn rewatch(&mut self) {
         let path = self.view.filename().to_path_buf();
-        let wanted =
-            self.following.is_followed(&path) && self.can_follow() && !self.view.is_truncated();
+        let spool = self.running_spool().map(Path::to_path_buf);
+        let wanted = spool.is_some()
+            || self.following.is_followed(&path) && self.can_follow() && !self.view.is_truncated();
+        let path = spool.unwrap_or(path);
         if !wanted {
             if self.following.watch.take().is_some() {
                 self.following.send(Command::Stop);
@@ -190,6 +195,9 @@ impl App<'_> {
                 continue;
             }
             changed = true;
+            // A spool only grows: its command is the one writer, and the
+            // file is recon's own (#573).
+            let spooled = self.running_spool() == Some(path.as_path());
             match report.change {
                 Change::Grew {
                     replace_last,
@@ -200,6 +208,9 @@ impl App<'_> {
                     path,
                     stamp: report.stamp,
                 }),
+                Change::Reset | Change::Gone if spooled => {
+                    log::debug!("spool: {}: {:?}", path.display(), report.change);
+                }
                 Change::Reset => {
                     log::debug!("follow: {} read again from the start", path.display());
                     self.read_again(&path);
@@ -282,7 +293,8 @@ impl App<'_> {
             self.following.unseen += self.document.visible().len().saturating_sub(visible);
         }
         // The explorer's mark for the file: its scan reads only the new part.
-        if self.filters.is_scanning() {
+        // A spool is not in the explorer (#573).
+        if self.filters.is_scanning() && self.running_spool() != Some(path) {
             self.apply_moved(vec![scan::Moved {
                 path: path.to_path_buf(),
                 stamp,

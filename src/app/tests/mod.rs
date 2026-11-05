@@ -596,6 +596,7 @@ mod search;
 mod set_picker;
 mod sets;
 mod show_hide;
+mod spool;
 mod star;
 mod startup;
 mod status_line;

@@ -319,6 +319,14 @@ the file and writes text or an image. The program is the user's, not part of
 recon.
 _Avoid_: plugin, preprocessor, filter (that is a pattern in the filter pane)
 
+**Spool**:
+The file that a *command view*'s output goes to when the output is too large
+to keep in memory, or when the command asks for one. While the command runs,
+the view shows the spool as a file that grows, as in *follow mode*. A spool
+belongs to the file on screen: recon deletes it when the user leaves that
+file or view, and when recon stops.
+_Avoid_: buffer, temp file, cache (the cache keeps views, never a spool)
+
 **View cycle**:
 The ordered views a file type offers. The first one is the default, `-`
 steps to the next, and `-` never offers a view that is not in the cycle. A

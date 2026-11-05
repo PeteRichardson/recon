@@ -6,11 +6,14 @@
 //! a new temporary path that recon reads after the command stops, then
 //! deletes. `{px}` is the view pane's width in pixels.
 
+use super::spool::Spool;
+pub(crate) use super::spool::Spooling;
 use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::io::{self, Read, Write};
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Stdio};
+use std::process::{Child, ChildStdout, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::thread;
@@ -41,6 +44,9 @@ pub struct Command {
     /// aligned (#575). For a command whose `output` is `text/csv` or
     /// `text/tab-separated-values`; a picture ignores it.
     pub align: bool,
+    /// Whether all the output goes to a spool file (#573), not only what
+    /// comes past `MAX_OUTPUT`. A spooled command never runs as a prefetch.
+    pub spool: bool,
 }
 
 #[cfg(test)]
@@ -53,6 +59,7 @@ impl Command {
             timeout: Duration::from_secs(5),
             prefetch: true,
             align: false,
+            spool: false,
         }
     }
 
@@ -73,6 +80,11 @@ impl Command {
 
     pub(crate) fn with_align(mut self, align: bool) -> Self {
         self.align = align;
+        self
+    }
+
+    pub(crate) fn with_spool(mut self, spool: bool) -> Self {
+        self.spool = spool;
         self
     }
 }
@@ -124,6 +136,7 @@ impl Command {
             timeout: QUICK_LOOK_TIMEOUT,
             prefetch: true,
             align: false,
+            spool: false,
         })
     }
 }
@@ -137,11 +150,12 @@ struct Table {
     timeout: Option<f64>,
     prefetch: Option<bool>,
     align: Option<bool>,
+    spool: Option<bool>,
 }
 
 impl<'de> Deserialize<'de> for Command {
     /// An argv array, or a table with `argv`, `output`, `timeout`,
-    /// `prefetch` and `align`. A hand-written visitor rather than
+    /// `prefetch`, `align` and `spool`. A hand-written visitor rather than
     /// `untagged`, so that a typo in a table key is named in the error,
     /// not lost in "did not match any variant".
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
@@ -167,6 +181,7 @@ impl<'de> Deserialize<'de> for Command {
                     timeout: None,
                     prefetch: None,
                     align: None,
+                    spool: None,
                 })
             }
 
@@ -196,6 +211,7 @@ impl<'de> Deserialize<'de> for Command {
             timeout,
             prefetch: table.prefetch.unwrap_or(true),
             align: table.align.unwrap_or(false),
+            spool: table.spool.unwrap_or(false),
         })
     }
 }
@@ -226,9 +242,10 @@ impl<'de> Deserialize<'de> for Commands {
     }
 }
 
-/// The most output a view keeps. Past it the rest is read and dropped, so
-/// that the command is not stopped on a full pipe.
-const MAX_OUTPUT: u64 = crate::views::read::MAX_PREVIEW_BYTES;
+/// The most output a view keeps in memory. Past it the output goes to a
+/// spool (#573); for a picture or `{out}`, which are read whole, the rest
+/// is read and dropped, so that the command is not stopped on a full pipe.
+pub(crate) const MAX_OUTPUT: u64 = crate::views::read::MAX_PREVIEW_BYTES;
 
 /// The most stderr kept: only its first line is shown.
 const MAX_STDERR: u64 = 64 << 10;
@@ -259,8 +276,29 @@ impl Drop for Scratch {
     }
 }
 
-/// Run `command` on `file`, for a pane `px` pixels wide, and give back the
-/// bytes of its output.
+/// What a command gave.
+#[derive(Debug)]
+pub(crate) enum Output {
+    /// All its output, below the spool threshold.
+    Bytes(Vec<u8>),
+    /// Its output in a file (#573). The command can still be running.
+    Spooled(Spool),
+}
+
+/// The start of stdout, and the pipe when more can come after it.
+#[derive(Default)]
+struct Head {
+    bytes: Vec<u8>,
+    rest: Option<ChildStdout>,
+}
+
+/// Run `command` on `file`, for a pane `px` pixels wide, and give back
+/// its output: its bytes, or a spool when its stdout goes past
+/// `spooling.bytes` or the command has `spool = true` (#573). A spool is
+/// read again as an index from `index_bytes` (#51).
+///
+/// From the spool on, `timeout` is the most time with no output, not the
+/// most time the command runs.
 ///
 /// Each run is in the log (#490): the argv, how long it ran and its exit
 /// status at `Debug`, and at `Warn` when it could not start, was killed at
@@ -270,8 +308,14 @@ impl Drop for Scratch {
 ///
 /// Why the view failed, for the status line: the program could not start,
 /// it ran past its timeout, it exited with an error (the first line of its
-/// stderr), or it wrote nothing to `{out}`.
-pub(crate) fn run(command: &Command, file: &Path, px: u32) -> Result<Vec<u8>, String> {
+/// stderr), it wrote nothing to `{out}`, or the spool could not be made.
+pub(crate) fn run(
+    command: &Command,
+    file: &Path,
+    px: u32,
+    spooling: &Spooling,
+    index_bytes: u64,
+) -> Result<Output, String> {
     let uses = |placeholder: &str| command.argv.iter().any(|arg| arg.contains(placeholder));
     let (to_stdin, to_out) = (!uses("{file}"), uses("{out}"));
     let scratch = to_out
@@ -295,6 +339,10 @@ pub(crate) fn run(command: &Command, file: &Path, px: u32) -> Result<Vec<u8>, St
     let started = Instant::now();
     let mut child = std::process::Command::new(&argv[0])
         .args(&argv[1..])
+        // The leader of a group of its own, so that a kill reaches what it
+        // started too: `sh -c 'decode | grep'` must not leave `decode`
+        // writing (#573).
+        .process_group(0)
         .stdin(if to_stdin {
             Stdio::piped()
         } else {
@@ -322,29 +370,85 @@ pub(crate) fn run(command: &Command, file: &Path, px: u32) -> Result<Vec<u8>, St
             }
         });
     }
-    let stdout = drain(child.stdout.take(), MAX_OUTPUT);
+    // A picture and `{out}` are read whole after the command: only text on
+    // stdout spools.
+    let spools = !to_out && !command.is_image();
+    let threshold = match (spools, command.spool) {
+        (false, _) => MAX_OUTPUT,
+        (true, true) => 0,
+        (true, false) => spooling.bytes,
+    };
+    let stdout = head(child.stdout.take(), threshold, spools);
     let stderr = drain(child.stderr.take(), MAX_STDERR);
+    let spool = |child, bytes: Vec<u8>, rest, stderr| {
+        log::debug!(
+            "command view {argv:?}: spooled after {:?}",
+            started.elapsed()
+        );
+        let timeout = command.timeout;
+        Spool::start(
+            &spooling.dir,
+            index_bytes,
+            child,
+            rest,
+            &bytes,
+            timeout,
+            stderr,
+        )
+        .map(Output::Spooled)
+        .map_err(|err| {
+            log::warn!("command view {argv:?}: cannot spool: {err}");
+            format!("cannot spool: {err}")
+        })
+    };
 
     let deadline = Instant::now() + command.timeout;
-    let status = wait(&mut child, deadline).ok_or_else(|| {
-        log::warn!(
-            "command view {argv:?}: killed after {:?}, its timeout",
-            command.timeout
-        );
-        format!("timed out after {}s", command.timeout.as_secs_f64())
-    })?;
+    let mut stdout_bytes = None;
+    let status = loop {
+        match stdout.try_recv() {
+            Ok(Head {
+                bytes,
+                rest: Some(rest),
+            }) => return spool(child, bytes, rest, stderr),
+            Ok(Head { bytes, rest: None }) => stdout_bytes = Some(bytes),
+            Err(_) => {}
+        }
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if Instant::now() < deadline => thread::sleep(POLL),
+            // Past the deadline, or the wait itself failed.
+            _ => {
+                kill(&mut child);
+                log::warn!(
+                    "command view {argv:?}: killed after {:?}, its timeout",
+                    command.timeout
+                );
+                return Err(format!(
+                    "timed out after {}s",
+                    command.timeout.as_secs_f64()
+                ));
+            }
+        }
+    };
     let ran = started.elapsed();
     // A grandchild can hold a pipe open after the command exits, so the
     // readers get what is left of the timeout and no more.
     let left = || deadline.saturating_duration_since(Instant::now());
-    let stdout = stdout.recv_timeout(left()).unwrap_or_default();
+    let stdout = match stdout_bytes {
+        Some(bytes) => bytes,
+        None => match stdout.recv_timeout(left()).unwrap_or_default() {
+            // A command can write past the threshold and exit before it is
+            // seen.
+            Head {
+                bytes,
+                rest: Some(rest),
+            } => return spool(child, bytes, rest, stderr),
+            Head { bytes, rest: None } => bytes,
+        },
+    };
     let stderr = stderr.recv_timeout(left()).unwrap_or_default();
     if !status.success() {
-        let first = String::from_utf8_lossy(&stderr)
-            .lines()
-            .map(str::trim)
-            .find(|line| !line.is_empty())
-            .map(str::to_string);
+        let first = first_line(&stderr);
         log::warn!(
             "command view {argv:?}: {status} after {ran:?}, stderr: {}",
             first.as_deref().unwrap_or("")
@@ -353,39 +457,68 @@ pub(crate) fn run(command: &Command, file: &Path, px: u32) -> Result<Vec<u8>, St
     }
     log::debug!("command view {argv:?}: {status} after {ran:?}");
     match out {
-        Some(out) => read_out(&out),
-        None => Ok(stdout),
+        Some(out) => read_out(&out).map(Output::Bytes),
+        None => Ok(Output::Bytes(stdout)),
     }
 }
 
-/// Read `pipe` on its own thread, keeping at most `cap` bytes.
-fn drain(pipe: Option<impl Read + Send + 'static>, cap: u64) -> mpsc::Receiver<Vec<u8>> {
+/// Kill `child` and all it started: it leads a process group of its own.
+pub(crate) fn kill(child: &mut Child) {
+    if let Some(pid) = i32::try_from(child.id())
+        .ok()
+        .and_then(rustix::process::Pid::from_raw)
+    {
+        let _ = rustix::process::kill_process_group(pid, rustix::process::Signal::KILL);
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+/// The first line of `stderr` with text on it: the reason a command
+/// failed.
+pub(crate) fn first_line(stderr: &[u8]) -> Option<String> {
+    String::from_utf8_lossy(stderr)
+        .lines()
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .map(str::to_string)
+}
+
+/// Read `pipe` on its own thread until it ends or `cap` bytes came. At the
+/// cap, the pipe comes back with the bytes when `keep_rest`, for a spool.
+fn head(pipe: Option<ChildStdout>, cap: u64, keep_rest: bool) -> mpsc::Receiver<Head> {
     let (sender, receiver) = mpsc::channel();
-    if let Some(mut pipe) = pipe {
+    if let Some(pipe) = pipe {
         thread::spawn(move || {
-            let mut kept = Vec::new();
-            let _ = (&mut pipe).take(cap).read_to_end(&mut kept);
-            let _ = io::copy(&mut pipe, &mut io::sink());
-            let _ = sender.send(kept);
+            let (bytes, rest) = read_up_to(pipe, cap, keep_rest);
+            let _ = sender.send(Head { bytes, rest });
         });
     }
     receiver
 }
 
-/// The child's exit, or `None` after it was killed at `deadline`.
-fn wait(child: &mut Child, deadline: Instant) -> Option<std::process::ExitStatus> {
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => return Some(status),
-            Ok(None) if Instant::now() < deadline => thread::sleep(POLL),
-            // Past the deadline, or the wait itself failed.
-            _ => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return None;
-            }
-        }
+/// Read `pipe` on its own thread, keeping at most `cap` bytes.
+fn drain(pipe: Option<impl Read + Send + 'static>, cap: u64) -> mpsc::Receiver<Vec<u8>> {
+    let (sender, receiver) = mpsc::channel();
+    if let Some(pipe) = pipe {
+        thread::spawn(move || {
+            let _ = sender.send(read_up_to(pipe, cap, false).0);
+        });
     }
+    receiver
+}
+
+/// The first `cap` bytes of `pipe`, and, with `keep_rest`, the pipe when
+/// more can come. Otherwise the rest is read and dropped, so that the
+/// command is not stopped on a full pipe.
+fn read_up_to<R: Read>(mut pipe: R, cap: u64, keep_rest: bool) -> (Vec<u8>, Option<R>) {
+    let mut bytes = Vec::new();
+    let read = (&mut pipe).take(cap).read_to_end(&mut bytes);
+    if keep_rest && read.is_ok() && bytes.len() as u64 == cap {
+        return (bytes, Some(pipe));
+    }
+    let _ = io::copy(&mut pipe, &mut io::sink());
+    (bytes, None)
 }
 
 /// What the command wrote to `{out}`: a file, or a directory with one file
@@ -435,13 +568,28 @@ fn is_executable(path: &Path) -> bool {
 mod tests {
     use super::*;
     use crate::fixtures::fixture_file;
+    use crate::views::spool::{Spool, State};
 
     fn command(argv: &[&str]) -> Command {
         Command::of(argv)
     }
 
-    fn text(output: Result<Vec<u8>, String>) -> String {
-        String::from_utf8(output.expect("the command ran")).unwrap()
+    /// `run` with the app's spool threshold, which no test output reaches.
+    fn run(command: &Command, file: &Path, px: u32) -> Result<Output, String> {
+        super::run(
+            command,
+            file,
+            px,
+            &Spooling::default(),
+            crate::document::INDEX_BYTES,
+        )
+    }
+
+    fn text(output: Result<Output, String>) -> String {
+        match output.expect("the command ran") {
+            Output::Bytes(bytes) => String::from_utf8(bytes).unwrap(),
+            Output::Spooled(spool) => panic!("spooled to {}", spool.path().display()),
+        }
     }
 
     #[test]
@@ -523,6 +671,180 @@ mod tests {
         );
     }
 
+    /// A spool threshold of `bytes`, in a directory of the test's own.
+    fn spooling(name: &str, bytes: u64) -> Spooling {
+        Spooling {
+            bytes,
+            dir: crate::fixtures::fixture_dir(name),
+        }
+    }
+
+    /// The spool `output` is, and its lines once the command is over.
+    fn spooled(output: Result<Output, String>) -> (Spool, crate::lines::Lines) {
+        let Output::Spooled(spool) = output.expect("the command ran") else {
+            panic!("the output was not spooled");
+        };
+        let started = Instant::now();
+        loop {
+            if let Some(lines) = spool.take_lines() {
+                return (spool, lines);
+            }
+            assert!(
+                started.elapsed() < Duration::from_secs(10),
+                "it never ended"
+            );
+            thread::sleep(POLL);
+        }
+    }
+
+    /// Past the threshold, the output goes to a file: all of it, not only
+    /// what came before the threshold (#573).
+    #[test]
+    fn output_past_the_threshold_goes_to_a_spool() {
+        let file = fixture_file("command_spool.txt", b"x\n");
+        let output = super::run(
+            &command(&["printf", "one\\ntwo\\nthree\\n"]),
+            &file,
+            0,
+            &spooling("command_spool", 5),
+            crate::document::INDEX_BYTES,
+        );
+        let (spool, lines) = spooled(output);
+        assert_eq!(lines, ["one", "two", "three"]);
+        assert_eq!(spool.state(), State::Ended);
+    }
+
+    /// For a spool, `timeout` is the most time with no output: a command
+    /// that writes all the time runs past it, and one that stops writing
+    /// is killed. Its lines stay.
+    #[test]
+    fn a_spooled_command_is_killed_only_when_it_is_quiet() {
+        let file = fixture_file("command_spool_quiet.txt", b"x\n");
+        let script = "for i in 1 2 3 4 5 6; do echo $i; sleep 0.1; done; sleep 10";
+        let started = Instant::now();
+        let output = super::run(
+            &command(&["sh", "-c", script]).with_timeout(Duration::from_millis(400)),
+            &file,
+            0,
+            &spooling("command_spool_quiet", 1),
+            crate::document::INDEX_BYTES,
+        );
+        let (spool, lines) = spooled(output);
+        assert_eq!(lines, ["1", "2", "3", "4", "5", "6"]);
+        assert_eq!(spool.state(), State::Stopped("no output for 0.4s".into()));
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "it was not killed"
+        );
+    }
+
+    /// `stop` kills the command, and the lines it wrote stay.
+    #[test]
+    fn a_stopped_spool_keeps_its_lines() {
+        let file = fixture_file("command_spool_stop.txt", b"x\n");
+        let output = super::run(
+            &command(&["sh", "-c", "echo one; echo two; sleep 10"]),
+            &file,
+            0,
+            &spooling("command_spool_stop", 1),
+            crate::document::INDEX_BYTES,
+        );
+        let Ok(Output::Spooled(spool)) = &output else {
+            panic!("not spooled: {output:?}");
+        };
+        let started = Instant::now();
+        while std::fs::read(spool.path()).unwrap() != b"one\ntwo\n" {
+            assert!(started.elapsed() < Duration::from_secs(10), "no lines came");
+            thread::sleep(POLL);
+        }
+        spool.stop();
+        let (spool, lines) = spooled(output);
+        assert_eq!(lines, ["one", "two"]);
+        assert_eq!(spool.state(), State::Stopped("by the user".into()));
+    }
+
+    /// A command that fails after its output went to the spool says why, as
+    /// one that fails before does: the first line of its stderr.
+    #[test]
+    fn a_spooled_command_that_fails_gives_its_stderr() {
+        let file = fixture_file("command_spool_fail.txt", b"x\n");
+        let output = super::run(
+            &command(&["sh", "-c", "echo out; echo 'bad input' >&2; exit 3"]),
+            &file,
+            0,
+            &spooling("command_spool_fail", 1),
+            crate::document::INDEX_BYTES,
+        );
+        let (spool, lines) = spooled(output);
+        assert_eq!(lines, ["out"]);
+        assert_eq!(spool.state(), State::Stopped("bad input".into()));
+    }
+
+    /// Dropping the spool kills the command, and what it started, and
+    /// deletes the file: the user left the file, or recon exits.
+    #[test]
+    fn dropping_a_spool_kills_its_command_and_deletes_its_file() {
+        let dir = crate::fixtures::fixture_dir("command_spool_drop");
+        let file = fixture_file("command_spool_drop.txt", b"x\n");
+        let mark = dir.join("still-running");
+        // The mark is the work of a child of the command: the kill must
+        // reach it too.
+        let script = format!("echo one; (sleep 1; touch '{}') & wait", mark.display());
+        let output = super::run(
+            &command(&["sh", "-c", &script]),
+            &file,
+            0,
+            &Spooling {
+                dir: dir.clone(),
+                ..spooling("command_spool_drop_unused", 1)
+            },
+            crate::document::INDEX_BYTES,
+        );
+        let Ok(Output::Spooled(spool)) = output else {
+            panic!("not spooled: {output:?}");
+        };
+        let path = spool.path().to_path_buf();
+        assert!(
+            path.starts_with(&dir),
+            "{} is not in [spool] dir",
+            path.display()
+        );
+        drop(spool);
+        assert!(!path.exists(), "{} was left", path.display());
+        thread::sleep(Duration::from_millis(1500));
+        assert!(!mark.exists(), "the command was not killed");
+    }
+
+    /// `spool = true` sends all the output to the spool, however small.
+    #[test]
+    fn spool_true_spools_from_the_first_byte() {
+        let file = fixture_file("command_spool_true.txt", b"x\n");
+        let output = super::run(
+            &command(&["echo", "small"]).with_spool(true),
+            &file,
+            0,
+            &spooling("command_spool_true", MAX_OUTPUT),
+            crate::document::INDEX_BYTES,
+        );
+        let (_, lines) = spooled(output);
+        assert_eq!(lines, ["small"]);
+    }
+
+    /// A picture is decoded whole, so it never spools: past the threshold
+    /// it comes back as bytes, cut only at `MAX_OUTPUT`, as before.
+    #[test]
+    fn a_picture_never_spools() {
+        let file = fixture_file("command_spool_image.txt", b"x\n");
+        let output = super::run(
+            &command(&["printf", "0123456789"]).with_output("image/png"),
+            &file,
+            0,
+            &spooling("command_spool_image", 4),
+            crate::document::INDEX_BYTES,
+        );
+        assert_eq!(text(output), "0123456789");
+    }
+
     #[test]
     fn a_missing_program_says_so() {
         let file = fixture_file("command_missing.txt", b"x\n");
@@ -564,7 +886,8 @@ mod tests {
         let parsed = commands(
             "[commands]\njq = [\"jq\", \".\"]\n\
              summary = { argv = [\"s\", \"{file}\"], output = \"text/markdown\", timeout = 30, prefetch = false }\n\
-             csv = { argv = [\"transmcap\", \"{file}\"], output = \"text/csv\", align = true }\n",
+             csv = { argv = [\"transmcap\", \"{file}\"], output = \"text/csv\", align = true }\n\
+             big = { argv = [\"decode\", \"{file}\"], spool = true }\n",
         )
         .unwrap();
         assert_eq!(
@@ -579,6 +902,8 @@ mod tests {
         let csv = &parsed.0["csv"];
         assert!(csv.align, "`align = true` was not read");
         assert!(!parsed.0["jq"].align, "an argv command does not align");
+        assert!(parsed.0["big"].spool, "`spool = true` was not read");
+        assert!(!parsed.0["jq"].spool, "an argv command does not spool");
     }
 
     #[test]

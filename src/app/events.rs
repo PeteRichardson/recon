@@ -30,6 +30,7 @@ impl App<'_> {
             | self.poll_changed()
             | self.poll_filtering()
             | self.poll_stdin()
+            | self.poll_spool()
             | self.drain_request()
             | self.poll_finish()
             | self.poll_write();
@@ -131,7 +132,7 @@ impl App<'_> {
                 == Some(crate::keymap::ActionId::GlobalInterrupt)
         {
             self.dispatched = Some(crate::keymap::ActionId::GlobalInterrupt);
-            self.state = super::AppState::Cancelled;
+            self.interrupt();
             return;
         }
 

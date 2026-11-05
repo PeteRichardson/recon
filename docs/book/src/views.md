@@ -48,6 +48,11 @@ extensible without a plugin system: each program that writes text, or a
 picture, can become a view. A command that writes CSV can line its columns
 up too, with `align = true` beside `output = "text/csv"`.
 
+A command can write more output than fits in memory, or run for a long
+time. Past 10 MiB, or with `spool = true`, recon writes the output to a
+spool file and shows the lines while the command runs, as for a file that
+grows. `Ctrl-c` stops the command and keeps its lines.
+
 ## Aligned columns
 
 `table` reads a CSV file with the real CSV grammar — quotes, commas inside
