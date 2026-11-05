@@ -21,6 +21,8 @@ by hand or a skill:
 ```markdown
 > **SUMMARY:** One or two sentences on the effect on the user. No file names, no function
 > names, no detail of the solution.
+>
+> **IMPACT:** <tier>. <one sentence: why this tier>
 
 ---
 
@@ -31,6 +33,10 @@ by hand or a skill:
   enhancement gets the advantage to the user. If nothing is user-visible, say so, then give the
   effect on the maintainer who reads or changes the code.
 - `## Summary` as a section heading is **not** the marker. `**SUMMARY:**` in a blockquote is.
+- `**IMPACT:**` starts with one tier: `Breakage`, `Headline`, `Improvement`, `Irritant`,
+  `Shortcut` or `Maintainer-only` (meanings in `~/.claude/skills/issue-triage/SKILL.md`,
+  "Impact tiers"). Use `Irritant` only when the user said the problem annoys them, and say so
+  in the reason. `/fix-order` ranks goals by this tier.
 - Labels in the `severity:`, `category:` and `effort:` namespaces, and the
   `<!-- project-review-finding ... -->` fingerprint, come afterwards — `/issue-triage` applies
   them. `~/.claude/skills/issue-triage/SKILL.md` owns those formats and this shape; this
