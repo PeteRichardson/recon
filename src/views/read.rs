@@ -269,6 +269,17 @@ pub(crate) fn command_output(output: Vec<u8>, mime: Option<&str>, align: bool) -
     }
 }
 
+/// A spooled command's output (#573), before its first line: the app
+/// follows the spool for them. An aligned command shows its lines as they
+/// come, not aligned: the columns of a spool are not known up front.
+pub(crate) fn spooled(mime: Option<&str>) -> Contents {
+    Contents {
+        text: true,
+        mime: mime.map(str::to_string),
+        ..Contents::default()
+    }
+}
+
 /// The lines of a raw read re-flowed as an aligned CSV table (#575): one
 /// line for each record, columns padded into line.
 ///

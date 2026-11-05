@@ -45,7 +45,7 @@ impl App<'_> {
             A::GlobalQuitSilent => self.state = AppState::Quit { emit: false },
             // Normally taken before any modal (`dispatch_event`); here too,
             // so the action means the same wherever it is resolved.
-            A::GlobalInterrupt => self.state = AppState::Cancelled,
+            A::GlobalInterrupt => self.interrupt(),
             A::GlobalFocusNext => self.focus_next(),
             A::GlobalFocusPrev => self.focus_prev(),
             A::ExplorerFocus => self.reveal_and_focus(Focus::Explorer),

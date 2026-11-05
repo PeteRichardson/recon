@@ -537,7 +537,7 @@ Global (`src/app/events.rs`), handled before the focused pane sees the key:
 | `?` | Show the keymap overlay — every binding on one screen. Any key closes it, and that key does nothing else | `global.help` |
 | `q` | Quit. When a named set has changes that are not saved, the first `q` warns and the second quits | `global.quit` |
 | `Q` | Quit without emitting — the same as `q` unless `--emit` was given | `global.quit.silent` |
-| `Ctrl-c` | Quit from anywhere — an open prompt, a picker or the help included — emitting nothing: `recon: cancelled` on stderr, exit 130. A SIGTERM also restores the terminal, then exits 143 with `recon: terminated` | `global.interrupt` |
+| `Ctrl-c` | Quit from anywhere — an open prompt, a picker or the help included — emitting nothing: `recon: cancelled` on stderr, exit 130. A SIGTERM also restores the terminal, then exits 143 with `recon: terminated`. While a spooled command view runs, `Ctrl-c` stops the command and keeps its lines (see [Large output](#large-output)); the next one quits | `global.interrupt` |
 | `Tab` / `Shift-Tab` | Move focus to the next / previous shown pane, left to right — explorer, file view, filter pane. A hidden pane is skipped | `global.focus.next` / `global.focus.prev` |
 | `/` | Search as you type. In the file view or the filter pane, set the search: the cursor moves to the first hit at or after the line you started on, wrapping once to the top and saying so, and the hits in the window are highlighted. In the explorer, search filenames: the selection moves to the first name that matches at or after the row you started on, the matching names light up, and the view pane previews the file under the selection as it would for `j`. Each keystroke re-runs from where `/` opened, so a narrowed pattern never walks away from where you started. Esc puts the cursor and the scroll, or the selected row and its preview, back there; Enter keeps the position. Only the visible lines are searched, and none of them changes | `global.search` |
 | `p` | Promote the search into a numbered include filter and clear it; the filter's colour replaces the highlight | `global.search.promote` |
@@ -2046,9 +2046,10 @@ A command is an argv array, or a table with these keys:
 | --- | --- | --- |
 | `argv` | — | The program and its arguments. It is not given to a shell. |
 | `output` | `text/plain` | The MIME type of the output. recon colours the output with the grammar for that type (`application/json` gets JSON colours). With no `output`, the grammar comes from the file's name, as for `raw`. |
-| `timeout` | `2` | Seconds. After this time, recon stops the command and the view fails. |
+| `timeout` | `2` | Seconds. After this time, recon stops the command and the view fails. For a spooled command (see [Large output](#large-output)), the most time with no output: a command that continues to write output continues to run. |
 | `prefetch` | `true` | `false` runs the command only for the file that you are on, never for the files near it. Use it for a command that is slow or that has side effects. |
 | `align` | `false` | Reads the output as CSV and shows it with its columns lined up, one line for each record. The delimiter comes from `output`: `text/tab-separated-values` aligns on tabs, anything else on commas. See [The table view](#the-table-view). |
+| `spool` | `false` | `true` writes all the output to a spool file, and shows the lines while the command runs. See [Large output](#large-output). |
 
 These placeholders are filled in, in any argument:
 
@@ -2065,6 +2066,38 @@ runs the command again only when the file changes on disk.
 Filters and `/` run on the lines of the command's output: a filter on a key
 of pretty-printed JSON matches that one line, not the whole file. The
 explorer's marks still come from the file on disk.
+
+#### Large output
+
+recon keeps up to 10 MiB of a command's output in memory. When the output
+goes past 10 MiB, or the command has `spool = true`, recon writes the output
+to a *spool* file, and shows it as a file that grows:
+
+- **The lines come while the command runs.** Filters and `/` work on them.
+  The status line shows `RUNNING` and the number of lines so far.
+- **`timeout` is the most time with no output.** A command that writes
+  output all the time continues to run, for minutes if necessary.
+- **`Ctrl-c` stops the command** and keeps the lines that it wrote. The next
+  `Ctrl-c` quits recon.
+- **When the command stops**, recon reads the spool again. A spool of 256 MiB
+  or more is read as an index, as a large file is, so its lines are not kept
+  in memory. If the command failed, or a write to the spool failed (for
+  example, the disk is full), the status line shows the reason.
+- **There is no size limit** other than the free space on the disk.
+- **recon deletes the spool** when you go to another file or view, and when
+  recon quits. A spooled command never runs as a prefetch.
+
+The spool is in the system's temporary directory, or in the directory that
+you set:
+
+```toml
+[spool]
+dir = "~/scratch/recon"
+```
+
+A command with `align = true` shows a spool as the lines that the command
+writes, not aligned. A command with an `image/*` output, or one that writes
+to `{out}`, never spools: recon reads its first 10 MiB.
 
 A command with an `image/*` output shows in the image view. recon decodes
 what the command writes:
@@ -3244,7 +3277,7 @@ needs every line's answer at once — see *Definition filters*.
   `CLI > env > file > defaults` precedence chain. The settings so far are
   `background` and `warnings` at the top level, the two editor templates
   below, `[clipboard] command`, `[filters] palette`, `[layout] hide_panes`,
-  `[stdin] delete_temp_file`, `[syntax] theme`, `[view] center_jumps`, `[view] minimap`, `[view] scrollbar`, and the action names in
+  `[spool] dir`, `[stdin] delete_temp_file`, `[syntax] theme`, `[view] center_jumps`, `[view] minimap`, `[view] scrollbar`, and the action names in
   `[keymap]`; every other key in the file is reported as an unknown key. Settings land one issue at a time
   against github issue #18; see
   `docs/specs/2026-08-22-configuration-mechanism.md` for the rules and the list

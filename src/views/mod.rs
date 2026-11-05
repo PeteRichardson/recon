@@ -9,6 +9,7 @@ pub mod command;
 pub mod cycle;
 pub(crate) mod pool;
 pub(crate) mod read;
+pub(crate) mod spool;
 
 pub use cycle::{FileType, Glob};
 
@@ -79,6 +80,9 @@ pub(crate) struct Job {
     pub(crate) icons: crate::filetype::Icons,
     /// The size from which a whole file is read as an index (#51).
     pub(crate) index_bytes: u64,
+    /// Where a command view's large output goes, and from what size
+    /// (#573).
+    pub(crate) spooling: spool::Spooling,
 }
 
 /// The file's row in the table and the view of its cycle that the job ran.
@@ -101,7 +105,7 @@ pub(crate) struct Facts {
 }
 
 /// A job's result.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub(crate) struct Done {
     pub(crate) path: PathBuf,
     pub(crate) contents: Contents,
@@ -111,6 +115,10 @@ pub(crate) struct Done {
     /// the title names. `None` when the file could not be read: a FIFO, or
     /// a dangling link, has only its path in the title.
     pub(crate) facts: Option<Facts>,
+    /// The spool a command view's output goes to (#573): the lines come
+    /// from it as the command writes them. Beside the contents, not in
+    /// them, so that the cache never keeps one.
+    pub(crate) spool: Option<spool::Spool>,
 }
 
 /// Run `job` in the caller: the work a worker does. With a cache, a file
@@ -125,6 +133,7 @@ pub(crate) fn run(job: &Job, cache: Option<&Cache>) -> Done {
         contents,
         shown,
         facts,
+        spool: None,
     };
     // One stat for all of it. `fs::metadata` follows a link, so a link's
     // facts are its target's, as its contents are.
@@ -168,11 +177,12 @@ pub(crate) fn run(job: &Job, cache: Option<&Cache>) -> Done {
     let row = job.table.row_for(path, || head);
     let view = job.steps.view(&job.table, row, path);
     let shown = Some(Shown { row, view, head });
+    // A spooled command runs only for the file the user is on (#573).
     if job.prefetch
         && job
             .table
             .command(view)
-            .is_some_and(|command| !command.prefetch)
+            .is_some_and(|command| !command.prefetch || command.spool)
     {
         return done(Contents::default(), shown);
     }
@@ -190,7 +200,24 @@ pub(crate) fn run(job: &Job, cache: Option<&Cache>) -> Done {
         crate::logging::count(&crate::logging::CACHE_MISSES);
     }
     let started = Instant::now();
-    let (contents, extent) = read_view(job, view);
+    let (contents, extent, spool) = read_view(job, view);
+    // A spool is for the file on screen, and is never kept: a prefetch
+    // that went past the threshold kills its command, and the file runs
+    // it again when the user comes to it.
+    if let Some(spool) = spool {
+        log::log!(
+            job_level(job),
+            "view job: {}, spooled",
+            job_names(job, name)
+        );
+        if job.prefetch {
+            return done(Contents::default(), shown);
+        }
+        return Done {
+            spool: Some(spool),
+            ..done(contents, shown)
+        };
+    }
     let cache_state = if cached.is_some() {
         ", cache miss"
     } else {
@@ -271,28 +298,31 @@ fn log_job(
 /// for both. A command that fails shows raw, which is hex for a binary file
 /// (#457), read to the job's extent. The failure is kept as the contents
 /// are, so that prefetch does not run a failing command again on each move.
-fn read_view(job: &Job, view: View) -> (Contents, Extent) {
+///
+/// A command whose output went to a spool (#573) gives the spool too.
+fn read_view(job: &Job, view: View) -> (Contents, Extent, Option<spool::Spool>) {
     let path = &job.path;
     if let Some(command) = job.table.command(view) {
-        let contents = command::run(command, path, job.px).and_then(|output| {
-            if command.is_image() {
-                read::image_bytes(&output)
-            } else {
-                Ok(read::command_output(
-                    output,
-                    command.output.as_deref(),
-                    command.align,
-                ))
+        let mime = command.output.as_deref();
+        let output = command::run(command, path, job.px, &job.spooling, job.index_bytes);
+        let (contents, spool) = match output {
+            Ok(command::Output::Bytes(output)) if command.is_image() => {
+                (read::image_bytes(&output), None)
             }
-        });
+            Ok(command::Output::Bytes(output)) => {
+                (Ok(read::command_output(output, mime, command.align)), None)
+            }
+            Ok(command::Output::Spooled(spool)) => (Ok(read::spooled(mime)), Some(spool)),
+            Err(reason) => (Err(reason), None),
+        };
         return match contents {
-            Ok(contents) => (contents, Extent::Full),
+            Ok(contents) => (contents, Extent::Full, spool),
             Err(reason) => fall_back(job, reason),
         };
     }
     if view == View::Image {
         return match read::image_file(path) {
-            Ok(contents) => (contents, Extent::Full),
+            Ok(contents) => (contents, Extent::Full, None),
             Err(reason) => fall_back(job, reason),
         };
     }
@@ -300,10 +330,11 @@ fn read_view(job: &Job, view: View) -> (Contents, Extent) {
         // The records are the file's own text, so the read is raw's and
         // only the lines are reformatted: a binary file asked for as a
         // table still falls back to hex, as raw does.
-        let (contents, extent) = read_view(job, View::Raw);
+        let (contents, extent, _) = read_view(job, View::Raw);
         return (
             read::csv_aligned(contents, crate::csv_fmt::delimiter_for_path(path)),
             extent,
+            None,
         );
     }
     let contents = match job.extent {
@@ -312,18 +343,18 @@ fn read_view(job: &Job, view: View) -> (Contents, Extent) {
         }
         Extent::Full => read::read_lines(path, view, job.index_bytes),
     };
-    (contents, job.extent)
+    (contents, job.extent, None)
 }
 
 /// Raw, which is hex for a binary file, in place of a view that failed
 /// for `reason` (#457).
-fn fall_back(job: &Job, reason: String) -> (Contents, Extent) {
-    let (contents, extent) = read_view(job, View::Raw);
+fn fall_back(job: &Job, reason: String) -> (Contents, Extent, Option<spool::Spool>) {
+    let (contents, extent, _) = read_view(job, View::Raw);
     let contents = Contents {
         fallback: Some(reason),
         ..contents
     };
-    (contents, extent)
+    (contents, extent, None)
 }
 
 #[cfg(test)]
@@ -344,6 +375,7 @@ pub(crate) mod tests {
             prefetch: false,
             icons: crate::filetype::Icons::Off,
             index_bytes: crate::document::INDEX_BYTES,
+            spooling: spool::Spooling::default(),
         }
     }
 
@@ -809,6 +841,56 @@ pub(crate) mod tests {
             mark.exists(),
             "the command did not run for the file on screen"
         );
+    }
+
+    /// A command with `spool = true` runs only for the file on screen: it
+    /// can run for minutes and write gigabytes (#573).
+    #[test]
+    fn a_spooled_command_does_not_run_for_a_prefetch() {
+        let dir = fixture_dir("views_run_spool_no_prefetch");
+        let file = dir.join("a.cmd");
+        std::fs::write(&file, "x\n").unwrap();
+        let mark = dir.join("ran");
+        let script = format!("touch {}", mark.display());
+        let command = command::Command::of(&["sh", "-c", &script]).with_spool(true);
+        let row = FileType::with_view_names("*.cmd", &["cmd"]);
+        let table = Table::build(&[row], &command::Commands::of([("cmd", command)])).0;
+        let mut job = job(&file, table);
+        job.spooling.dir = dir.clone();
+
+        job.prefetch = true;
+        let done = run(&job, Some(&Cache::default()));
+        assert!(done.spool.is_none());
+        assert!(!mark.exists(), "the command ran for a prefetch");
+    }
+
+    /// A spool is never kept: it belongs to the file on screen, and goes
+    /// when the user leaves. A prefetch that went past the threshold gives
+    /// nothing, and the command runs again when the user comes (#573).
+    #[test]
+    fn a_spool_is_not_cached() {
+        let dir = fixture_dir("views_run_spool_cache");
+        let file = dir.join("a.cmd");
+        std::fs::write(&file, "x\n").unwrap();
+        let mut job = command_job(&file, &["printf", "one\\ntwo\\n"], true);
+        job.spooling = spool::Spooling {
+            bytes: 1,
+            dir: dir.clone(),
+        };
+        let cache = Cache::default();
+
+        let shown = run(&job, Some(&cache));
+        let again = run(&job, Some(&cache));
+        let (first, second) = (
+            shown.spool.expect("not spooled"),
+            again.spool.expect("the spool was cached"),
+        );
+        assert_ne!(first.path(), second.path(), "the spool was cached");
+
+        job.prefetch = true;
+        let prefetched = run(&job, Some(&cache));
+        assert!(prefetched.spool.is_none());
+        assert!(prefetched.contents.lines.is_empty());
     }
 
     /// A command's output is kept, so `,` and `.` back to the file do not

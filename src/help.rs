@@ -417,7 +417,7 @@ pub const KEYMAP: &[Section] = &[
             },
             Binding {
                 keys: &["Ctrl-c"],
-                action: "Quit from anywhere, emitting nothing, exit 130",
+                action: "Stop a running spool, or quit (exit 130)",
                 names: &["global.interrupt"],
             },
             Binding {
