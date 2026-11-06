@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.10.0 — 2026-11-06
+
+### Features
+
+- **filter:** Judge a very large file's lines on a worker, in blocks
+- **views:** Spool a command view's large output to a file
+
+### Fixes
+
+- **filter:** Give a new filter the first palette colour no filter has
+
+### Performance
+
+- **filter:** Skip the RegexSet on lines that no filter can match
+- **document:** Keep a file as one buffer and line starts
+- **document:** Keep 12 bytes a line for verdicts and the visible set
+- **document:** Keep only line starts for a file of 256 MiB or more
+
 ## v0.9.0 — 2026-11-03
 
 ### Features
