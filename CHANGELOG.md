@@ -2,21 +2,23 @@
 
 ## v0.10.0 — 2026-11-06
 
+recon can now open very large logs and stay responsive with them.
+
 ### Features
 
-- **filter:** Judge a very large file's lines on a worker, in blocks
-- **views:** Spool a command view's large output to a file
+- **Large command output goes to a file, with no cap.** Before, a command view kept only the first 10 MiB of output and stopped the command after 2 seconds. Now, when a command's output is larger than 10 MiB, recon writes it to a temporary file and shows it from there. You see the lines while the command runs, and the status line shows RUNNING with the line count. A command that writes output continuously can run for as long as it needs. The timeout now applies only when the command stops writing output. Press Ctrl-C to stop the command and keep the lines that it has written. To always use a file for a command view, set `spool = true`. ([#573](https://github.com/PeteRichardson/recon/issues/573))
+- **The screen stays live when you change a filter on a very large file.** recon shows its progress while it checks the lines again. Before, the screen froze until recon had checked every line. ([#597](https://github.com/PeteRichardson/recon/issues/597))
 
 ### Fixes
 
-- **filter:** Give a new filter the first palette colour no filter has
+- **Each filter keeps its own colour.** Before, after you deleted a filter, a new filter could get the same colour as a different filter, so you could not tell them apart. Now a new filter always gets a colour that no other filter uses. ([#355](https://github.com/PeteRichardson/recon/issues/355))
 
 ### Performance
 
-- **filter:** Skip the RegexSet on lines that no filter can match
-- **document:** Keep a file as one buffer and line starts
-- **document:** Keep 12 bytes a line for verdicts and the visible set
-- **document:** Keep only line starts for a file of 256 MiB or more
+- **Much less memory for large files.** A 1 GB log now needs about 0.12 GB of memory instead of about 3 GB, so you can open logs that were too large before. ([#51](https://github.com/PeteRichardson/recon/issues/51))
+- **Files with hundreds of millions of lines.** recon now uses less memory for each line, so a typical computer can open such a file. ([#572](https://github.com/PeteRichardson/recon/issues/572))
+- **Large files open about five times faster.** They also use less memory, so recon can keep more files in its view cache. Files of normal size open at the same speed as before. ([#593](https://github.com/PeteRichardson/recon/issues/593))
+- **Faster filter matching.** recon finds filter matches in large files faster in the file view, in batch mode and in the explorer scan. The results do not change. ([#592](https://github.com/PeteRichardson/recon/issues/592))
 
 ## v0.9.0 — 2026-11-03
 
