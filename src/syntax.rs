@@ -729,9 +729,34 @@ impl KindSet {
         self.0 == 0
     }
 
+    /// Whether the two sets share a kind.
+    #[must_use]
+    pub fn intersects(self, other: Self) -> bool {
+        self.0 & other.0 != 0
+    }
+
     fn insert(&mut self, kind: Kind) {
         self.0 |= Self::bit(kind);
     }
+}
+
+/// What [`definitions`] finds in a file: the kinds each line starts, and
+/// the extent of each definition with a body.
+#[derive(Debug, Clone, Default)]
+pub struct Definitions {
+    /// One set per line, by row.
+    pub kinds: Vec<KindSet>,
+    /// In order of their end lines; an inner extent ends before the one
+    /// that holds it.
+    pub extents: Vec<Extent>,
+}
+
+/// The rows of one definition, from the line that starts it to its end
+/// line, both included.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Extent {
+    pub start: usize,
+    pub end: usize,
 }
 
 /// The scopes `definitions` tests against, parsed once per call rather than
@@ -819,19 +844,34 @@ impl KindScopes {
 /// `storage.type` too, and since the C grammar does name real struct
 /// definitions, the fallback stays off for structs there. In a Swift file
 /// nothing is ever named, so the fallback carries all four kinds.
+///
+/// The same pass finds each definition's *extent* (#610). syntect gives no
+/// syntax tree, but its scope stack carries over from line to line: a
+/// definition with a body opens a scope on its first line that stays open
+/// until its closing brace. So a definition line whose stack ends deeper
+/// than it started has a body, and the body ends on the first later line
+/// whose stack ends no deeper than that. A definition with no body opens
+/// nothing and has no extent. Python opens no such scope, and gets none.
 #[must_use]
-pub fn definitions(path: &Path, lines: &Lines) -> Option<Vec<KindSet>> {
+pub fn definitions(path: &Path, lines: &Lines) -> Option<Definitions> {
     let syntax = detect(path, lines.get(0).as_deref())?;
     let scopes = KindScopes::new();
     let mut state = ParseState::new(syntax);
     let mut stack = ScopeStack::new();
     let mut named = vec![KindSet::EMPTY; lines.len()];
     let mut keyworded = vec![KindSet::EMPTY; lines.len()];
+    // Each line that may start a definition with a body, and the depth of
+    // the stack before it: innermost last.
+    let mut open: Vec<(usize, usize)> = Vec::new();
+    let mut extents = Vec::new();
 
     for (row, line) in lines.iter().enumerate() {
         if line.len() > MAX_LINE_BYTES {
             continue;
         }
+        // The first line also pushes the file's own scope (`source.rust`),
+        // which stays open to the end: count it as open from the start.
+        let depth = stack.len().max(1);
         let with_newline = format!("{line}\n");
         let Ok(ops) = state.parse_line(&with_newline, syntaxes()) else {
             continue;
@@ -856,26 +896,40 @@ pub fn definitions(path: &Path, lines: &Lines) -> Option<Vec<KindSet>> {
             last = *pos;
         }
         note(&stack, last, line.len());
+        while let Some(&(start, before)) = open.last() {
+            if stack.len() > before {
+                break;
+            }
+            open.pop();
+            extents.push(Extent { start, end: row });
+        }
+        // Only a line that may start a definition, so that every `if` and
+        // loop body does not pass through `open`. Which of them start one
+        // is known only after the fallback, below.
+        if stack.len() > depth && !(named[row].is_empty() && keyworded[row].is_empty()) {
+            open.push((row, depth));
+        }
     }
 
     let seen_named: Vec<Kind> = Kind::ALL
         .into_iter()
         .filter(|&kind| named.iter().any(|set| set.contains(kind)))
         .collect();
-    Some(
-        named
-            .into_iter()
-            .zip(keyworded)
-            .map(|(mut kinds, fallback)| {
-                for kind in Kind::ALL {
-                    if fallback.contains(kind) && !seen_named.contains(&kind) {
-                        kinds.insert(kind);
-                    }
+    let kinds: Vec<KindSet> = named
+        .into_iter()
+        .zip(keyworded)
+        .map(|(mut kinds, fallback)| {
+            for kind in Kind::ALL {
+                if fallback.contains(kind) && !seen_named.contains(&kind) {
+                    kinds.insert(kind);
                 }
-                kinds
-            })
-            .collect(),
-    )
+            }
+            kinds
+        })
+        .collect();
+    // A line the fallback did not keep starts nothing, so it has no extent.
+    extents.retain(|extent| !kinds[extent.start].is_empty());
+    Some(Definitions { kinds, extents })
 }
 
 #[cfg(test)]
@@ -891,8 +945,9 @@ mod tests {
     /// The rows of `text` that start `kind`, by index.
     fn rows_of(kind: Kind, name: &str, text: &str) -> Vec<usize> {
         let lines = lines(text);
-        let kinds = definitions(Path::new(name), &lines).expect("a bundled grammar");
-        kinds
+        let found = definitions(Path::new(name), &lines).expect("a bundled grammar");
+        found
+            .kinds
             .iter()
             .enumerate()
             .filter(|(_, set)| set.contains(kind))
@@ -1039,6 +1094,101 @@ struct Point {}
         assert_eq!(rows_of(Kind::Impl, "b.swift", SWIFT_MORE), vec![1]);
         assert_eq!(rows_of(Kind::Type, "b.swift", SWIFT_MORE), vec![2]);
         assert_eq!(rows_of(Kind::Struct, "b.swift", SWIFT_MORE), vec![3]);
+    }
+
+    // ---- extents (#610) ---------------------------------------------------
+
+    /// Each extent of `text`, as `(start, end)` rows.
+    fn extents_of(name: &str, text: &str) -> Vec<(usize, usize)> {
+        let lines = lines(text);
+        definitions(Path::new(name), &lines)
+            .expect("a bundled grammar")
+            .extents
+            .iter()
+            .map(|extent| (extent.start, extent.end))
+            .collect()
+    }
+
+    /// The issue's own example: an impl and its two methods each end on
+    /// their closing brace, and the outer extent holds the inner ones.
+    #[test]
+    fn rust_extents_end_on_the_closing_brace() {
+        let text = "\
+impl ProcessClipboard {
+    pub fn new(template: &str) -> Self {
+        Self { template }
+    }
+    fn argv(&self) -> Vec<String> {
+        vec![]
+    }
+}
+";
+        assert_eq!(extents_of("a.rs", text), vec![(1, 3), (4, 6), (0, 7)]);
+    }
+
+    #[test]
+    fn c_extents_for_a_struct_and_a_function() {
+        let text = "\
+struct point {
+    int x;
+};
+int main(void) {
+    return 0;
+}
+";
+        assert_eq!(extents_of("a.c", text), vec![(0, 2), (3, 5)]);
+    }
+
+    #[test]
+    fn go_extents_for_a_type_and_a_function() {
+        let text = "\
+package main
+type Point struct {
+    X int
+}
+func main() {
+    println()
+}
+";
+        assert_eq!(extents_of("a.go", text), vec![(1, 3), (4, 6)]);
+    }
+
+    #[test]
+    fn typescript_extents_for_a_class_and_its_method() {
+        let text = "\
+class Canvas {
+    draw(): void {
+        return;
+    }
+}
+";
+        assert_eq!(extents_of("a.ts", text), vec![(1, 3), (0, 4)]);
+    }
+
+    /// A signature in a trait opens nothing, so it has no extent; the trait
+    /// around it has one.
+    #[test]
+    fn a_definition_with_no_body_has_no_extent() {
+        let text = "\
+trait Area {
+    fn area(&self) -> f64;
+}
+";
+        assert_eq!(extents_of("a.rs", text), vec![(0, 2)]);
+    }
+
+    /// bat's Swift grammar opens a scope for a `func` but none for a
+    /// `class`: the class gets no extent, and that is not an error.
+    #[test]
+    fn a_swift_class_has_no_extent_but_its_func_does() {
+        let text = "\
+class Canvas {
+    func draw() {
+        print()
+    }
+}
+";
+        assert_eq!(extents_of("a.swift", text), vec![(1, 3)]);
     }
 
     const MARKDOWN: &str = "\

@@ -986,6 +986,24 @@ impl ActiveFilters {
             .any(|(index, filter)| filter.predicate.is_definition() && self.effective(index))
     }
 
+    /// The kinds whose definitions keep their end line in hide mode
+    /// (#610): those an effective include filter matches by kind. A regex
+    /// filter keeps no end line.
+    #[must_use]
+    pub fn end_line_kinds(&self) -> KindSet {
+        let kinds: Vec<Kind> = self
+            .filters
+            .iter()
+            .enumerate()
+            .filter(|&(index, filter)| filter.sense == Sense::Include && self.effective(index))
+            .filter_map(|(_, filter)| match filter.predicate {
+                Predicate::Definition(kind) => Some(kind),
+                _ => None,
+            })
+            .collect();
+        KindSet::of(&kinds)
+    }
+
     /// Whether a line's verdict reads the compiled set: an effective regex
     /// filter of any sense. What gates the `RegexSet`
     /// pass in `verdict`, the counterpart of `needs_kinds` for the grammar

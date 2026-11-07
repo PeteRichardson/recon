@@ -2,7 +2,7 @@
 
 use crate::filter::{ActiveFilters, Neighbor, Verdict};
 use crate::lines::Lines;
-use crate::syntax::{self, KindSet};
+use crate::syntax::{self, Definitions, KindSet};
 use crate::visible::Visible;
 use ratatui::style::Style;
 use std::collections::VecDeque;
@@ -70,12 +70,13 @@ pub struct Document {
     /// Where `lines` came from, for the grammar lookup a definition filter
     /// needs (#123). `None` for a document with no file behind it.
     path: Option<std::path::PathBuf>,
-    /// The definition kinds each line starts, computed by the first
+    /// The definition kinds each line starts, and the extent of each
+    /// definition, computed by the first
     /// `evaluate` that has a definition filter to answer and kept for the
     /// document's life. `None` until then, and `Some(empty)` for a file no
     /// grammar claims — that answer is worth caching too. Shared, so that
     /// a pass on another thread (#597) reads it with no copy.
-    kinds: Option<Arc<[KindSet]>>,
+    definitions: Option<Arc<Definitions>>,
     /// The ranges of file rows the user made visible in hide mode with `>`
     /// (#609, ADR 0017), in the order they were made. View state, not
     /// verdicts: `recompute_visible` shows a row its verdict hides when a
@@ -100,7 +101,7 @@ impl Document {
             generation: 0,
             revision: 0,
             path: None,
-            kinds: None,
+            definitions: None,
             reveals: Vec::new(),
         }
     }
@@ -158,10 +159,13 @@ impl Document {
     pub fn evaluate(&mut self, filters: &ActiveFilters) {
         // The whole-file grammar pass, once, and only when a filter will
         // read its answer. A set of regex filters never pays for it.
-        if filters.needs_kinds() && self.kinds.is_none() {
-            self.kinds = Some(definitions(self.path.as_deref(), &self.lines));
+        if filters.needs_kinds() && self.definitions.is_none() {
+            self.definitions = Some(definitions(self.path.as_deref(), &self.lines));
         }
-        let kinds = self.kinds.as_deref().unwrap_or(&[]);
+        let kinds = self
+            .definitions
+            .as_deref()
+            .map_or(&[][..], |found| &found.kinds);
         self.verdicts.clear();
         self.over_limit.clear();
         self.over_limit.resize(filters.filters().len(), 0);
@@ -173,7 +177,7 @@ impl Document {
             &mut self.verdicts,
             &mut self.over_limit,
         );
-        self.mark_neighbors(filters, 0);
+        self.mark_kept(filters, 0);
         self.verdicts_written(filters);
     }
 
@@ -196,7 +200,7 @@ impl Document {
         Pass {
             lines: Arc::clone(&self.lines),
             path: self.path.clone(),
-            kinds: self.kinds.clone(),
+            definitions: self.definitions.clone(),
         }
     }
 
@@ -204,14 +208,14 @@ impl Document {
     /// started, and the rows they show.
     pub(crate) fn take_block(&mut self, filters: &ActiveFilters, block: Block) {
         debug_assert_eq!(block.start, self.verdicts.len(), "blocks come in order");
-        if block.kinds.is_some() {
-            self.kinds = block.kinds;
+        if block.definitions.is_some() {
+            self.definitions = block.definitions;
         }
         self.verdicts.extend(block.verdicts);
         for (total, count) in self.over_limit.iter_mut().zip(block.over_limit) {
             *total += count;
         }
-        self.mark_neighbors(filters, block.start);
+        self.mark_kept(filters, block.start);
         self.revision = self.revision.wrapping_add(1);
         self.extend_visible(block.start, filters);
     }
@@ -220,6 +224,41 @@ impl Document {
     #[must_use]
     pub(crate) fn judged(&self) -> bool {
         self.verdicts.len() == self.lines.len()
+    }
+
+    /// Make the end line of each definition that a definition filter
+    /// includes a neighbor line (#610), for the end lines from row `start`
+    /// on, so that hide mode reads as an outline. An end line with a
+    /// verdict of its own keeps it. An extent whose end line has no verdict
+    /// yet waits for the block that judges it.
+    fn mark_end_lines(&mut self, filters: &ActiveFilters, start: usize) {
+        let Some(found) = self.definitions.as_deref() else {
+            return;
+        };
+        let keep = filters.end_line_kinds();
+        if keep.is_empty() {
+            return;
+        }
+        let first = found.extents.partition_point(|extent| extent.end < start);
+        for extent in &found.extents[first..] {
+            // In order of their end lines: the rest are not judged yet.
+            if extent.end >= self.verdicts.len() {
+                break;
+            }
+            if matches!(self.verdicts[extent.start], Verdict::Included(_))
+                && self.verdicts[extent.end] == Verdict::Unmatched
+                && found.kinds[extent.start].intersects(keep)
+            {
+                self.verdicts[extent.end] = Verdict::ContextKeep;
+            }
+        }
+    }
+
+    /// The lines kept in hide mode for a match's sake, from row `start` on:
+    /// end lines first, then neighbor lines, which do not reach from them.
+    fn mark_kept(&mut self, filters: &ActiveFilters, start: usize) {
+        self.mark_end_lines(filters, start);
+        self.mark_neighbors(filters, start);
     }
 
     /// Make each unmatched line within reach of an include match a
@@ -266,7 +305,7 @@ impl Document {
         let start = shared.len();
         shared.extend(lines);
         // A grammar's answers were for the lines before.
-        self.kinds = None;
+        self.definitions = None;
         if replace_last || filters.needs_kinds() {
             self.evaluate(filters);
             return;
@@ -280,7 +319,7 @@ impl Document {
             &mut self.verdicts,
             &mut self.over_limit,
         );
-        self.mark_neighbors(filters, start);
+        self.mark_kept(filters, start);
         self.revision = self.revision.wrapping_add(1);
         self.extend_visible(start, filters);
     }
@@ -791,7 +830,7 @@ fn sweep<'a>(verdicts: impl Iterator<Item = &'a mut Verdict>, reach: impl Fn(Ver
 pub(crate) struct Pass {
     lines: Arc<Lines>,
     path: Option<std::path::PathBuf>,
-    kinds: Option<Arc<[KindSet]>>,
+    definitions: Option<Arc<Definitions>>,
 }
 
 /// The verdicts of `size` lines, from row `start`, for `take_block`.
@@ -803,7 +842,7 @@ pub(crate) struct Block {
     over_limit: Vec<usize>,
     /// The grammar's answers, when this pass found them: the first block
     /// carries them back for the document to keep.
-    kinds: Option<Arc<[KindSet]>>,
+    definitions: Option<Arc<Definitions>>,
 }
 
 impl Pass {
@@ -812,14 +851,14 @@ impl Pass {
     /// one, runs before the first block.
     pub(crate) fn blocks(self, filters: ActiveFilters, size: usize) -> impl Iterator<Item = Block> {
         let mut found = None;
-        let kinds = match self.kinds {
-            Some(kinds) => kinds,
+        let definitions = match self.definitions {
+            Some(definitions) => definitions,
             None if filters.needs_kinds() => {
-                let kinds = definitions(self.path.as_deref(), &self.lines);
-                found = Some(Arc::clone(&kinds));
-                kinds
+                let definitions = definitions(self.path.as_deref(), &self.lines);
+                found = Some(Arc::clone(&definitions));
+                definitions
             }
-            None => Arc::from([]),
+            None => Arc::default(),
         };
         let lines = self.lines;
         let size = size.max(1);
@@ -830,7 +869,7 @@ impl Pass {
             judge(
                 &lines,
                 start..end,
-                &kinds,
+                &definitions.kinds,
                 &filters,
                 &mut verdicts,
                 &mut over_limit,
@@ -839,7 +878,7 @@ impl Pass {
                 start,
                 verdicts,
                 over_limit,
-                kinds: found.take(),
+                definitions: found.take(),
             }
         })
     }
@@ -847,10 +886,11 @@ impl Pass {
 
 /// The grammar's answer for `lines`: empty for a document with no file, or
 /// a file no grammar claims.
-fn definitions(path: Option<&Path>, lines: &Lines) -> Arc<[KindSet]> {
-    path.and_then(|path| syntax::definitions(path, lines))
-        .unwrap_or_default()
-        .into()
+fn definitions(path: Option<&Path>, lines: &Lines) -> Arc<Definitions> {
+    Arc::new(
+        path.and_then(|path| syntax::definitions(path, lines))
+            .unwrap_or_default(),
+    )
 }
 
 /// Add the verdicts of the lines in `rows` to `verdicts`, and count each
@@ -1265,7 +1305,7 @@ mod tests {
             document.verdicts(),
             [Verdict::Unmatched, Verdict::Included(0), Verdict::Unmatched]
         );
-        assert!(document.kinds.is_some(), "the pass ran and was kept");
+        assert!(document.definitions.is_some(), "the pass ran and was kept");
     }
 
     /// No file behind the lines, or a file no grammar claims: a definition
@@ -1285,6 +1325,69 @@ mod tests {
         }
     }
 
+    // ---- end lines (#610) --------------------------------------------------
+
+    const OUTLINE: &[&str] = &[
+        "impl Clip {",
+        "    fn new() -> Self {",
+        "        Self {}",
+        "    }",
+        "}",
+    ];
+
+    /// The `functions` definition filter alone.
+    fn functions() -> ActiveFilters {
+        let mut filters = ActiveFilters::new();
+        filters.add_definition(crate::syntax::Kind::Function);
+        filters
+    }
+
+    /// `OUTLINE` as the Rust file it is, evaluated in hide mode.
+    fn outline(filters: &ActiveFilters) -> Document {
+        let mut document = Document::for_file(Path::new("t.rs"), Lines::from(OUTLINE.to_vec()));
+        document.set_mode(Mode::FilteredOnly);
+        document.evaluate(filters);
+        document
+    }
+
+    /// The end line of each definition a definition filter matches is a
+    /// neighbor line: hide mode keeps it, and it is not interesting.
+    #[test]
+    fn a_definition_filter_keeps_the_end_line_of_each_match() {
+        let document = outline(&functions());
+        assert_eq!(
+            document.verdicts(),
+            [
+                Verdict::Unmatched,
+                Verdict::Included(0),
+                Verdict::Unmatched,
+                Verdict::ContextKeep,
+                Verdict::Unmatched,
+            ]
+        );
+        assert_eq!(document.visible(), &[1, 3]);
+    }
+
+    /// An exclude filter still removes an end line, as it removes a
+    /// neighbor line.
+    #[test]
+    fn an_exclude_filter_removes_an_end_line() {
+        let mut filters = functions();
+        filters.add_excluding("^    }$").expect("valid");
+        let document = outline(&filters);
+        assert_eq!(document.verdicts()[3], Verdict::Excluded);
+        assert_eq!(document.visible(), &[1]);
+    }
+
+    /// A regex filter that matches a definition line keeps no end line:
+    /// only a definition filter knows the extent.
+    #[test]
+    fn a_regex_filter_keeps_no_end_line() {
+        let mut filters = ActiveFilters::new();
+        filters.add("fn new").expect("valid");
+        assert_eq!(outline(&filters).visible(), &[1]);
+    }
+
     /// Regex-only sets never pay for the grammar pass.
     #[test]
     fn a_regex_only_set_does_not_run_the_grammar_pass() {
@@ -1295,7 +1398,7 @@ mod tests {
         };
         let mut document = Document::for_file(Path::new("t.rs"), Lines::from(vec!["fn x() {}"]));
         document.evaluate(&filters);
-        assert!(document.kinds.is_none());
+        assert!(document.definitions.is_none());
     }
     use ratatui::style::Modifier;
 
@@ -1648,7 +1751,23 @@ mod tests {
             document.verdicts(),
             [Verdict::Unmatched, Verdict::Included(0), Verdict::Unmatched]
         );
-        assert!(document.kinds.is_some(), "the pass ran and was kept");
+        assert!(document.definitions.is_some(), "the pass ran and was kept");
+    }
+
+    /// An end line two blocks after its definition still becomes a
+    /// neighbor line, as `evaluate` makes it.
+    #[test]
+    fn a_pass_in_blocks_keeps_an_end_line_in_a_later_block() {
+        let filters = functions();
+        let lines = Lines::from(OUTLINE.to_vec());
+        let mut whole = Document::for_file(Path::new("t.rs"), lines.clone());
+        whole.evaluate(&filters);
+        let mut document = Document::for_file(Path::new("t.rs"), lines);
+        for block in document.begin_pass(&filters).blocks(filters.snapshot(), 2) {
+            document.take_block(&filters, block);
+        }
+        assert_eq!(document.verdicts()[3], Verdict::ContextKeep);
+        assert_eq!(document.verdicts(), whole.verdicts());
     }
 
     // ---- reveals (#609) ----------------------------------------------------
