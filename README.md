@@ -1905,12 +1905,16 @@ executable bit is Unix-only, so nothing is green on Windows, and a FAT or
 network mount that reports every file as executable will turn the pane green.
 
 A symlink is drawn as what it points at: a link to a directory wears the
-`/` and descends, a link to a script is green, and a link to nothing is a
-plain row that reports *not found* when opened. A FIFO, socket or device is
-listed but dimmed, like `..`, and never opened: it has no end to read to,
-and opening a FIFO would block until something wrote to it. The scanner,
-the preview, `--emit files` and a batch run over a directory all skip it,
-and naming one directly is refused with `not a regular file`.
+`/` and descends, and a link to a script is green. A link to nothing is
+listed but dimmed, like `..`, with no size beside it, and `l` does nothing:
+the bytes it would report are not there, so the scanner and `--emit files`
+skip it too.
+
+A FIFO, socket or device is listed but dimmed, like `..`, and never opened:
+it has no end to read to, and opening a FIFO would block until something
+wrote to it. The scanner, the preview, `--emit files` and a batch run over
+a directory all skip it, and naming one directly is refused with
+`not a regular file`.
 
 ### Views
 
