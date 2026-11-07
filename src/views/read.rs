@@ -9,7 +9,7 @@ use crate::lines::Lines;
 use crate::widgets::explorer::Entry;
 use ratatui::style::Color;
 use std::fs::File;
-use std::io::{Cursor, Read};
+use std::io::{Cursor, ErrorKind, Read};
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
@@ -117,11 +117,55 @@ impl Contents {
             ..Contents::default()
         }
     }
+
+    /// Contents carrying several lines, for the one case where one line cannot
+    /// say the thing: a link whose target is gone names the target *and* quotes
+    /// the OS (#404).
+    fn messages(texts: Vec<String>) -> Self {
+        Self {
+            lines: Arc::new(Lines::from(texts)),
+            ..Contents::default()
+        }
+    }
 }
 
-/// Read `path` whole, or a single-line message describing why it could not
-/// be read. The reading itself is `document::read_lines` (#143); this wraps
-/// its error the way the pane shows it.
+/// The pane's answer for a link whose target is gone: where it pointed, then
+/// the OS's own words, on two lines (#404). The first line is the whole point —
+/// `ENOENT` on its own cannot say the row was a link, nor what it named.
+///
+/// `None` for anything else: a plain missing file, and any failure that is not
+/// about the target (`EACCES` through a directory above it, `ESTALE`, `ELOOP`),
+/// all of which keep the single `<{err}>` line they have always had.
+///
+/// Asked only where an open has already failed, so the `readlink` is free on
+/// the path that works.
+fn broken_link(path: &Path, err: &std::io::Error) -> Option<Contents> {
+    if err.kind() != ErrorKind::NotFound {
+        return None;
+    }
+    let target = std::fs::read_link(path).ok()?;
+    Some(Contents::messages(vec![
+        format!("broken symlink to {}", target.display()),
+        err.to_string(),
+    ]))
+}
+
+/// Log a failed read the way every reader does (#83), and say what the pane
+/// shows in place of the file: the two lines for a link whose target is gone
+/// (#404), the OS's words in angle brackets for anything else.
+///
+/// `what` is the verb the three readers differ on — `read`, `preview`,
+/// `read as hex` — so the log still tells them apart while the pane's answer
+/// lives in one place.
+fn cannot(path: &Path, what: &str, err: &std::io::Error) -> Contents {
+    log::warn!("cannot {what} {}: {err}", path.display());
+    broken_link(path, err).unwrap_or_else(|| Contents::message(format!("<{err}>")))
+}
+
+/// Read `path` whole, or a message describing why it could not be read: one
+/// line of the OS's words, or the two of a broken link (#404). The reading
+/// itself is `document::read_lines` (#143); this wraps its error the way the
+/// pane shows it.
 ///
 /// Never `truncated`, and never estimating: the whole file is here.
 ///
@@ -143,14 +187,11 @@ pub(crate) fn read_lines(path: &Path, view: View, index_bytes: u64) -> Contents 
             ..Contents::default()
         },
         Err(err) if document::is_binary(&err) => binary(path, None),
-        // Logged as well as shown (#83). The pane gets `<{err}>` in place of
-        // the file, which tells the user *that* it failed; the log is where
-        // the full path lives, and the pane's title is elided when the pane
-        // is narrow.
-        Err(err) => {
-            log::warn!("cannot read {}: {err}", path.display());
-            Contents::message(format!("<{err}>"))
-        }
+        // Logged as well as shown (#83). The pane gets the OS's words in place
+        // of the file — two lines when the path was a link (#404) — which tells
+        // the user *that* it failed; the log is where the full path lives, and
+        // the pane's title is elided when the pane is narrow.
+        Err(err) => cannot(path, "read", &err),
     }
 }
 
@@ -199,10 +240,7 @@ pub(crate) fn read_preview_with_caps(
     // Logged as well as shown, as `read_lines` does (#83, #189). The
     // preview is the arrow-key case: the pane's title is elided when the
     // pane is narrow, so the log is where the path survives.
-    let fail = |err: std::io::Error| {
-        log::warn!("cannot preview {}: {err}", path.display());
-        Contents::message(format!("<{err}>"))
-    };
+    let fail = |err: std::io::Error| cannot(path, "preview", &err);
     // The same stat guards a FIFO (#221): its open would block until a
     // writer appeared, and this runs on every selection move.
     let file = match document::refuse_unreadable(path).and_then(|()| File::open(path)) {
@@ -455,10 +493,7 @@ fn read_hex(path: &Path, preview: Option<u64>) -> Contents {
     let dump = match hex::read(path, cap) {
         Ok(dump) => dump,
         // Logged as well as shown, as `read_lines` does (#83).
-        Err(err) => {
-            log::warn!("cannot read {} as hex: {err}", path.display());
-            return Contents::message(format!("<{err}>"));
-        }
+        Err(err) => return cannot(path, "read as hex", &err),
     };
     let mut lines = dump.lines;
     let (truncated, estimated_lines) = match dump.unread {
@@ -697,7 +732,7 @@ pub(crate) fn head(path: &Path) -> Head {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fixtures::fixture_file;
+    use crate::fixtures::{fixture_dir, fixture_file};
 
     const MACH_O: Option<&str> = Some("application/x-mach-binary");
 
@@ -755,5 +790,53 @@ mod tests {
     #[test]
     fn a_file_that_cannot_be_read_has_an_empty_head() {
         assert_eq!(head(Path::new("/no/such/file")), Head::default());
+    }
+
+    /// A link to nothing says what it pointed at, and then the OS's own words
+    /// (#404). The pane used to show only `<No such file or directory (os error
+    /// 2)>`, which told you the read failed but not that the row was a link at
+    /// all, nor where it pointed.
+    #[cfg(unix)]
+    #[test]
+    fn a_broken_symlink_names_the_target_it_cannot_find() {
+        let dir = fixture_dir("read_broken_link");
+        std::os::unix::fs::symlink("nowhere.log", dir.join("gone.log")).expect("ln");
+        let link = dir.join("gone.log");
+
+        let preview = read_preview_with_caps(&link, 24, MAX_PREVIEW_BYTES, View::Raw);
+        assert_eq!(preview.lines.line(0), "broken symlink to nowhere.log");
+        assert_eq!(
+            preview.lines.line(1),
+            "No such file or directory (os error 2)",
+            "the OS's words follow, verbatim"
+        );
+        assert_eq!(preview.lines.len(), 2, "nothing else is invented");
+        assert!(
+            !preview.shows_the_file(),
+            "it is still a message in place of the file"
+        );
+
+        let whole = read_lines(&link, View::Raw, 0);
+        assert_eq!(whole.lines.line(0), "broken symlink to nowhere.log");
+        assert_eq!(whole.lines.line(1), preview.lines.line(1));
+    }
+
+    /// The two lines are for a link, whose extra fact — where it pointed — is
+    /// exactly what the OS cannot say. Any other failure keeps the single
+    /// `<{err}>` line the pane has always shown (#404).
+    #[test]
+    fn a_missing_file_keeps_the_plain_error_line() {
+        let contents = read_preview_with_caps(
+            Path::new("/no/such/file-at-all"),
+            24,
+            MAX_PREVIEW_BYTES,
+            View::Raw,
+        );
+        assert_eq!(contents.lines.len(), 1);
+        assert!(
+            contents.lines.line(0).starts_with('<'),
+            "not the link form: {}",
+            contents.lines.line(0)
+        );
     }
 }
