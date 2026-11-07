@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.11.0 — 2026-11-07
+
+Hide mode can now show a source file as an outline of its definitions, and you can open hidden lines in place to read one function or the lines around a match.
+
+### Features
+
+- **Open the hidden lines below the cursor with `>`.** Before, in hide mode, you had to change the filters or the mode to read the lines around a match. Now `>` shows every hidden line from the cursor line to the next visible line, and `<` hides the smallest open group that holds the cursor. These keys do not run the filters again. Open lines stay open when you change a filter, but an exclude filter still removes them. Each file keeps its open lines for the session, until a reload of a changed file. `view.reveal.close.all` in the command palette hides them all again. ([#609](https://github.com/PeteRichardson/recon/issues/609))
+- **Definition filters show where each definition ends.** Before, with a definition filter on, hide mode showed only the first line of each function, impl or type, so you could not see where it stopped. Now hide mode also shows the end line of each matched definition, so the view reads as an outline. `--emit lines` writes the same lines. ([#610](https://github.com/PeteRichardson/recon/issues/610))
+- **Open one whole definition with `>`.** Before, `>` in the outline opened only the lines up to the next visible line, so you could not read one whole function. Now `>` on the first or last line of a definition opens all of its lines. On all other lines, `>` works as before. A function that you open inside an impl stays open when you close the impl. ([#611](https://github.com/PeteRichardson/recon/issues/611))
+- **The outline and `>` work for Python.** Before, recon could not find where a Python definition ends: `>` on a class opened only the lines up to its first method, and `>` on the last method also opened the module code below it. Now a Python `def` or `class` holds each later line that is blank or indented more deeply. A docstring line at column 0 or a `):` that closes a signature stays inside the definition. In a Python file, the definition filters show no end line, because that line is only the last line of the body. ([#612](https://github.com/PeteRichardson/recon/issues/612))
+
+### Fixes
+
+- **A broken symlink shows as a broken link.** Before, a link whose target was missing looked like a small plain file, with the length of its link text as its size. The scan and `--emit files` then tried to open it and failed. Now the row is dimmed and shows no size, and the scan and `--emit files` skip it. `l`, `Enter` and a click do nothing on it. Its preview says `broken symlink to <target>` above the error from the OS. ([#404](https://github.com/PeteRichardson/recon/issues/404))
+- **A line with a carriage return can no longer block the save of a filter set.** Before, you could mark a line that held a carriage return in the middle (for example, progress output such as `50%\r100%`). After that, `S` could not save the scratch set, and the error did not tell you which line caused the problem. Now recon refuses that mark and names the line. When `f` from the file view marks the line automatically, it skips such a line without a message. ([#359](https://github.com/PeteRichardson/recon/issues/359))
+
+### Performance
+
+- **recon uses less CPU when it is idle.** Before, recon copied the filter matcher 60 times each second, also when no scan result was waiting. Now it builds the matcher only when a scan result needs it. ([#344](https://github.com/PeteRichardson/recon/issues/344))
+
 ## v0.10.0 — 2026-11-06
 
 recon can now open very large logs and stay responsive with them.
