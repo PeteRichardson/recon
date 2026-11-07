@@ -1486,6 +1486,26 @@ counts even though bat's Swift grammar names nothing the way the others do.
 Rust, Python, C, Go, JavaScript and Swift are covered; a kind a language has no
 notion of simply matches nothing there.
 
+A definition filter also keeps the *end line* of each definition it matches
+(usually its closing brace), so that hide mode reads as an outline:
+
+```
+impl ProcessClipboard {
+    pub fn new(template: &str) -> Self {
+    }
+    fn argv(&self) -> Result<Vec<String>, TemplateError> {
+    }
+}
+```
+
+An end line is kept the way a [neighbor line](#filter-sets) is: in the
+default foreground, `n` and `N` step over it, `Ctrl-n` dims it, and an
+exclude filter still removes it. `--emit lines` writes it, and
+`--no-neighbors` leaves it out with the neighbor lines. A definition with
+no body, such as a function signature in a trait, has no end line. The grammar
+gives the end line in Rust, C, Go, JavaScript and TypeScript, and for a Swift
+`func`; it gives none for a Swift `class` or for Python.
+
 The set starts collapsed as a single `[ ] definitions` row. `Enter` expands it;
 `Enter` on `functions` narrows a source file to its function lines, coloured,
 with their real line numbers, and every sense works — `m` for "functions with
