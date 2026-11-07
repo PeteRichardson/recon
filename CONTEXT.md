@@ -201,11 +201,12 @@ _Avoid_: span, scope (that is the grammar's word), body
 
 **End line**:
 The last line of a definition's *extent*, usually the line with its closing
-brace; in Python, the last line indented under the definition. A
-definition filter keeps the end line of each definition it matches,
-so that hide mode shows the structure of the code. An end line is not
-interesting: `n` and `N` step over it, and it shows in the default
-foreground, as a *neighbor line* does.
+brace. A definition filter keeps the end line of each definition it
+matches, so that hide mode shows the structure of the code. An end line
+is not interesting: `n` and `N` step over it, and it shows in the
+default foreground, as a *neighbor line* does. In Python the end line is
+only the last line indented under the definition, which does not read as
+an end, so a definition filter does not keep it.
 _Avoid_: closing line, footer
 
 ### Search
