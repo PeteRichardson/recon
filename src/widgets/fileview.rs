@@ -2512,6 +2512,26 @@ mod tests {
         assert!(!view.truncated);
     }
 
+    /// A link to nothing is the one failure that gets two lines: where it
+    /// pointed, then the OS's own words (#404). Rendered through the pane, so
+    /// the assertion is that both lines *appear* — a message used to be one.
+    #[cfg(unix)]
+    #[test]
+    fn previewing_a_broken_symlink_names_the_target_it_cannot_find() {
+        let dir = fixture_dir("fileview_broken_link");
+        std::os::unix::fs::symlink("nowhere.log", dir.join("gone.log")).expect("ln");
+        let mut view = placeholder_view();
+
+        view.preview(&dir.join("gone.log"));
+
+        assert_eq!(
+            contents(&view),
+            "broken symlink to nowhere.log\nNo such file or directory (os error 2)",
+            "the target first, then the OS's words, both on screen"
+        );
+        assert!(!view.truncated);
+    }
+
     #[test]
     fn loads_file_contents() {
         let path = fixture("new_loads.txt", "the launched file's text\n");

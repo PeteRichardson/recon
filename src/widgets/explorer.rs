@@ -110,11 +110,10 @@ pub(crate) enum Kind {
     /// failed on open.
     ///
     /// Listed, since the link is there, but dimmed like `Special` and with no
-    /// size, and `l`, `Enter` and a click all do nothing. Silence rather than
-    /// the honest refusal `Special` gets (`not a regular file`): here the only
-    /// possible message is *no such file*, which the dimming already says, while
-    /// a FIFO's message carries something no cue shows — that a live object is
-    /// there and reading it would block.
+    /// size, and `l`, `Enter` and a click all do nothing. Nothing is hidden
+    /// by that: the moment the cursor reaches the row the preview names the
+    /// target it cannot find (`views::read::broken_link`), so the key would
+    /// only repeat what is already on screen.
     ///
     /// A link that fails to resolve for any other reason — `EACCES` through a
     /// directory above it, a stale NFS handle, a cycle — is not broken. Those
@@ -1097,9 +1096,9 @@ impl Explorer<'_> {
         }
 
         // A broken link has no contents to descend into and no bytes to load,
-        // so `l`, `Enter` and a click all do nothing (#404). The alternative
-        // was an error that could not be anything but *not found*, for a row
-        // the pane already draws as not-content.
+        // so `l`, `Enter` and a click all do nothing (#404). The row is drawn
+        // as not-content and the preview already names the target it cannot
+        // find, so the key would only repeat what the pane is saying.
         if kind == Kind::Broken {
             return None;
         }

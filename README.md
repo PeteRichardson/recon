@@ -1908,7 +1908,9 @@ A symlink is drawn as what it points at: a link to a directory wears the
 `/` and descends, and a link to a script is green. A link to nothing is
 listed but dimmed, like `..`, with no size beside it, and `l` does nothing:
 the bytes it would report are not there, so the scanner and `--emit files`
-skip it too.
+skip it too. Previewing it — moving the cursor onto the row — says where it
+pointed and then the OS's own words, on two lines: `broken symlink to
+nowhere.log`, then `No such file or directory (os error 2)`.
 
 A FIFO, socket or device is listed but dimmed, like `..`, and never opened:
 it has no end to read to, and opening a FIFO would block until something
