@@ -850,6 +850,20 @@ foreground, in no filter's colour, in both modes; `Ctrl-n` dims them. `n` and `N
 and an exclude filter still removes one. `--emit lines` and `:w` write them with the matches;
 `--no-neighbors` leaves them out.
 
+To read the lines around a match without a change to the filters or the
+mode, push `>` in hide mode: it **reveals** every hidden line from the
+cursor's line to the next visible line, with no limit. A revealed line shows
+as it would with no filter on, in full syntax colour, unless a filter
+matches it, and an exclude filter still removes it. `<` hides the lines again
+and puts the cursor on the first line of the reveal. A reveal can be inside
+another: `>` on a revealed line makes a smaller one, which stays when you
+close the outer one with `<`. `view.reveal.close.all` in the
+[command palette](#the-command-palette) closes them all. A change to the
+filters keeps the reveals, as does a visit to another file; a reload of a
+file that changed removes them. `:w` and `q` write the revealed lines; batch
+mode has no reveals. In dim mode every line shows already, so `>` and `<` do
+nothing.
+
 Single-quoted TOML strings do no escape processing, so a regex goes in
 verbatim — no doubled backslashes.
 
@@ -1738,6 +1752,7 @@ File view pane (`src/widgets/fileview.rs`) — its own verbs; the shared motions
 | `{` / `}` | Move by paragraph, back / forward | `view.paragraph.prev` / `view.paragraph.next` |
 | `#` | Toggle the line-number gutter | `view.toggle.linenumbers` |
 | `M` | Hide / show the minimap | `view.toggle.minimap` |
+| `>` / `<` | In hide mode, **reveal** the hidden lines from the cursor's line to the next visible line / hide them again: `<` closes the smallest reveal that holds the cursor and puts the cursor on its first line — see [reveals](#filter-sets) | `view.reveal` / `view.reveal.close` |
 | `*` | Set the search to the word under the cursor — a run of letters, digits and `_`, so a mangled symbol stays whole — and move to its next hit, as `n` would. `* p` makes it a numbered filter | `global.search.word` |
 | `v` / `V` | Start a selection by character / by whole lines; press the same key again to end it, or the other to switch between them. The motions grow it | `global.visual.char` / `global.visual.line` |
 | `y` | Copy the selection to the clipboard and end the selection. `Ctrl-y` still scrolls | `global.yank` |
@@ -2711,6 +2726,7 @@ you may be typing a regular expression: push Esc first.
 | `view <view>` | Show the open file in the view of that name. A view of the file type's cycle steps the cycle there, as `-` does. Any other view, such as a command view that no `[[filetype]]` row names, shows only the open file, until you open another file or push `-` |
 | `include <pattern>`, `exclude <pattern>`, `context <pattern>` | Add a filter of that sense to the scratch set, as `i` or `x` and Enter do in the filter pane, but from any pane. The focus stays where it is |
 | `w <path>`, `w! <path>` | Write the file view's visible lines to the file, as `--emit lines` prints them on quit, and go on working. A relative path resolves against the explorer's folder. `w` refuses a file that exists; `w!` replaces it. Over a preview of a large file, recon reads the whole file in the background first: the status row shows the progress, and Esc stops it with nothing written |
+| `view.reveal.close.all` | Close every [reveal](#filter-sets) of the open file, so hide mode shows only what the filters keep |
 | `q` | Quit, as `global.quit` |
 | any action name | Run a keymap action by the name a `[keymap]` line uses, such as `global.follow` or `explorer.down`. A pane's action works on its own pane, which shows and takes the focus. `global.filters.toggle <n>` takes the filter number |
 

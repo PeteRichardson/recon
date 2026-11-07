@@ -591,6 +591,7 @@ mod palette;
 mod peek;
 mod prompt;
 mod require_section;
+mod reveals;
 mod scanning;
 mod search;
 mod set_picker;

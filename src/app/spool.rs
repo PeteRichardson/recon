@@ -92,7 +92,7 @@ impl App<'_> {
             Landing::Keep(self.cursor_source())
         };
         self.view.extend_source(Arc::new(lines), 0);
-        self.sync_document();
+        self.sync_document(None);
         self.land(landing);
     }
 }

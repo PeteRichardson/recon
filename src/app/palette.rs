@@ -249,6 +249,7 @@ impl App<'_> {
             Run::AddFilter(sense) => self.add_filter_from_palette(sense, argument),
             Run::Action(action) => self.run_action(action, command.argument, argument),
             Run::Write(replace) => self.write_lines(argument, replace),
+            Run::CloseReveals => self.close_reveals(),
             Run::Alias => {
                 let (alias, chain) = (command.names[0].to_string(), command.help.to_string());
                 self.run_alias(&alias, &chain, argument)

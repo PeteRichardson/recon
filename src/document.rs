@@ -8,6 +8,7 @@ use ratatui::style::Style;
 use std::collections::VecDeque;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Cursor, Read};
+use std::ops::Range;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -75,6 +76,11 @@ pub struct Document {
     /// grammar claims — that answer is worth caching too. Shared, so that
     /// a pass on another thread (#597) reads it with no copy.
     kinds: Option<Arc<[KindSet]>>,
+    /// The ranges of file rows the user made visible in hide mode with `>`
+    /// (#609, ADR 0017), in the order they were made. View state, not
+    /// verdicts: `recompute_visible` shows a row its verdict hides when a
+    /// reveal holds it, and a filter change keeps them.
+    reveals: Vec<Range<usize>>,
 }
 
 impl Document {
@@ -95,6 +101,7 @@ impl Document {
             revision: 0,
             path: None,
             kinds: None,
+            reveals: Vec::new(),
         }
     }
 
@@ -283,19 +290,83 @@ impl Document {
     /// A new match reaches back, so the rows from there are read again.
     /// They only gain lines, so the length says whether the set moved.
     fn extend_visible(&mut self, start: usize, filters: &ActiveFilters) {
-        let (mode, anything_including) = (self.mode, self.anything_including);
         let first = start.saturating_sub(filters.neighbor_reach().before as usize);
-        let shown = self.verdicts[first..]
-            .iter()
-            .enumerate()
-            .filter(|(_, verdict)| shows(mode, **verdict, anything_including))
-            .map(|(offset, _)| first + offset);
         let before = self.visible.len();
         self.visible.truncate(self.visible.rows_before(first));
-        self.visible.extend(shown);
+        self.visible.extend(shown_rows(
+            &self.verdicts,
+            &self.reveals,
+            self.mode,
+            self.anything_including,
+            first,
+        ));
         if self.visible.len() != before {
             self.generation = self.generation.wrapping_add(1);
         }
+    }
+
+    /// Reveal the rows from `row` to the next row its verdict shows (#609):
+    /// the hidden lines after a visible `row`, or from a hidden `row` that a
+    /// reveal already holds, which makes a reveal inside it. The range
+    /// starts at `row`, so that `<` on the line `>` was pressed on closes
+    /// it. `None` when no hidden line is there to show.
+    pub fn reveal(&mut self, row: usize) -> Option<Range<usize>> {
+        let verdicts = &self.verdicts;
+        if row >= verdicts.len() {
+            return None;
+        }
+        let shown = |row: usize| shows(self.mode, verdicts[row], self.anything_including);
+        let first = if shown(row) { row + 1 } else { row };
+        let end = (first..verdicts.len())
+            .find(|&row| shown(row))
+            .unwrap_or(verdicts.len());
+        if !verdicts[first..end].iter().any(|&v| v != Verdict::Excluded) {
+            return None;
+        }
+        let range = row..end;
+        if !self.reveals.contains(&range) {
+            self.reveals.push(range.clone());
+        }
+        self.recompute_visible();
+        Some(range)
+    }
+
+    /// Close the smallest reveal that holds `row` (#609), and give its first
+    /// row, where the cursor goes. A reveal inside it stays. `None` when no
+    /// reveal holds `row`.
+    pub fn close_reveal(&mut self, row: usize) -> Option<usize> {
+        let (index, range) = self
+            .reveals
+            .iter()
+            .enumerate()
+            .filter(|(_, range)| range.contains(&row))
+            .min_by_key(|(_, range)| range.len())?;
+        let first = range.start;
+        self.reveals.remove(index);
+        self.recompute_visible();
+        Some(first)
+    }
+
+    /// The reveals, in the order they were made.
+    #[must_use]
+    pub fn reveals(&self) -> &[Range<usize>] {
+        &self.reveals
+    }
+
+    /// Put back the reveals a load of the same file kept (#609). The
+    /// next `evaluate` shows them.
+    pub fn set_reveals(&mut self, reveals: Vec<Range<usize>>) {
+        self.reveals = reveals;
+    }
+
+    /// Close every reveal (#609). `false` when none was open.
+    pub fn close_reveals(&mut self) -> bool {
+        if self.reveals.is_empty() {
+            return false;
+        }
+        self.reveals.clear();
+        self.recompute_visible();
+        true
     }
 
     /// How many lines are interesting: what the summaries count as matches,
@@ -346,15 +417,14 @@ impl Document {
     /// a set of few runs is a small allocation, and a set of many runs
     /// would double the memory it takes.
     pub fn recompute_visible(&mut self) {
-        let mode = self.mode;
-        let anything_including = self.anything_including;
-        let next: Visible = self
-            .verdicts
-            .iter()
-            .enumerate()
-            .filter(|(_, verdict)| shows(mode, **verdict, anything_including))
-            .map(|(index, _)| index)
-            .collect();
+        let next: Visible = shown_rows(
+            &self.verdicts,
+            &self.reveals,
+            self.mode,
+            self.anything_including,
+            0,
+        )
+        .collect();
         if next != self.visible {
             self.visible = next;
             self.generation = self.generation.wrapping_add(1);
@@ -444,9 +514,15 @@ impl Document {
         start: usize,
         end: usize,
     ) -> Vec<Option<Style>> {
+        // A visible line its verdict hides shows because a reveal holds it
+        // (#609), and it shows as with no filter on: not dimmed.
+        let revealed = !shows(self.mode, Verdict::Unmatched, self.anything_including);
         self.visible
             .rows(start, end)
-            .map(|source| filters.style_for(self.verdicts[source]))
+            .map(|source| match self.verdicts[source] {
+                Verdict::Unmatched if revealed => None,
+                verdict => filters.style_for(verdict),
+            })
             .collect()
     }
 
@@ -652,6 +728,50 @@ pub(crate) fn read_lossy_line<R: BufRead>(
         return Ok(None);
     }
     Ok(Some(crate::lines::decode(buf).into_owned()))
+}
+
+/// The rows from `first` on that show in `mode`: those their verdict
+/// shows, and those a reveal holds that no exclude filter removed. With no
+/// reveal, or in dim mode, where a reveal changes nothing, a row costs what
+/// it cost before reveals.
+fn shown_rows<'a>(
+    verdicts: &'a [Verdict],
+    reveals: &[Range<usize>],
+    mode: Mode,
+    anything_including: bool,
+    first: usize,
+) -> impl Iterator<Item = usize> + 'a {
+    let any = mode == Mode::FilteredOnly && !reveals.is_empty();
+    let mut revealed = if any { merged(reveals) } else { Vec::new() }
+        .into_iter()
+        .peekable();
+    verdicts
+        .iter()
+        .enumerate()
+        .skip(first)
+        .filter(move |&(row, &verdict)| {
+            shows(mode, verdict, anything_including)
+                || (any && verdict != Verdict::Excluded && {
+                    // Rows only grow, so a range that ended is done with.
+                    while revealed.next_if(|range| range.end <= row).is_some() {}
+                    revealed.peek().is_some_and(|range| range.contains(&row))
+                })
+        })
+        .map(|(row, _)| row)
+}
+
+/// `ranges` as sorted ranges that do not overlap or touch.
+fn merged(ranges: &[Range<usize>]) -> Vec<Range<usize>> {
+    let mut sorted = ranges.to_vec();
+    sorted.sort_by_key(|range| range.start);
+    let mut out: Vec<Range<usize>> = Vec::with_capacity(sorted.len());
+    for range in sorted {
+        match out.last_mut() {
+            Some(last) if range.start <= last.end => last.end = last.end.max(range.end),
+            _ => out.push(range),
+        }
+    }
+    out
 }
 
 /// Make the unmatched lines after each match a neighbor line, for as many
@@ -1529,6 +1649,81 @@ mod tests {
             [Verdict::Unmatched, Verdict::Included(0), Verdict::Unmatched]
         );
         assert!(document.kinds.is_some(), "the pass ran and was kept");
+    }
+
+    // ---- reveals (#609) ----------------------------------------------------
+
+    const GAPS: &[&str] = &["hit a", "x", "y", "hit b", "z"];
+
+    /// `>` on a visible line shows every hidden line up to the next visible
+    /// one, and the reveal starts on the cursor's line.
+    #[test]
+    fn a_reveal_shows_the_hidden_lines_up_to_the_next_visible_line() {
+        let mut document = hidden(GAPS, &set_with(&["hit"]));
+        assert_eq!(document.visible(), &[0, 3]);
+        assert_eq!(document.reveal(0), Some(0..3));
+        assert_eq!(document.visible(), &[0, 1, 2, 3]);
+    }
+
+    /// `<` closes the smallest reveal that holds the row and gives the row
+    /// the cursor goes to: the reveal's first.
+    #[test]
+    fn closing_a_reveal_hides_its_lines_again() {
+        let mut document = hidden(GAPS, &set_with(&["hit"]));
+        document.reveal(0);
+        assert_eq!(document.close_reveal(2), Some(0));
+        assert_eq!(document.visible(), &[0, 3]);
+        assert_eq!(document.close_reveal(2), None, "nothing holds it now");
+    }
+
+    /// A reveal inside another changes nothing on screen until the outer
+    /// one closes; then the inner one stays.
+    #[test]
+    fn an_inner_reveal_stays_when_its_outer_reveal_closes() {
+        let mut document = hidden(&["hit", "a", "b", "c", "hit"], &set_with(&["hit"]));
+        assert_eq!(document.reveal(0), Some(0..4));
+        assert_eq!(document.reveal(2), Some(2..4));
+        assert_eq!(document.visible(), &[0, 1, 2, 3, 4]);
+        assert_eq!(document.close_reveal(3), Some(2), "the smaller one first");
+        assert_eq!(document.reveal(2), Some(2..4));
+        assert_eq!(document.close_reveal(1), Some(0));
+        assert_eq!(document.visible(), &[0, 2, 3, 4]);
+    }
+
+    /// An exclude filter still removes a revealed line, and a filter
+    /// change keeps the reveal: it uses file rows, not verdicts.
+    #[test]
+    fn a_reveal_keeps_through_a_filter_change_and_an_exclude_still_removes() {
+        let mut document = hidden(GAPS, &set_with(&["hit"]));
+        document.reveal(0);
+        let mut filters = set_with(&["hit"]);
+        filters.add_excluding("^x$").expect("valid");
+        document.evaluate(&filters);
+        assert_eq!(document.visible(), &[0, 2, 3]);
+    }
+
+    /// A revealed line is not dimmed: it shows as with no filter on, in
+    /// full syntax colour. A matched line keeps its filter's colour.
+    #[test]
+    fn a_revealed_line_renders_as_with_no_filter() {
+        let filters = set_with(&["hit"]);
+        let mut document = hidden(GAPS, &filters);
+        document.reveal(0);
+        let hit = filters.style_for(Verdict::included(0));
+        assert_eq!(
+            document.visible_styles_range(&filters, 0, 4),
+            [hit, None, None, hit]
+        );
+    }
+
+    #[test]
+    fn closing_every_reveal_hides_all_their_lines() {
+        let mut document = hidden(&["hit", "a", "hit", "b", "hit"], &set_with(&["hit"]));
+        document.reveal(0);
+        document.reveal(2);
+        assert!(document.close_reveals());
+        assert_eq!(document.visible(), &[0, 2, 4]);
+        assert!(!document.close_reveals(), "none was open");
     }
 
     // ---- follow mode (#493) -------------------------------------------------

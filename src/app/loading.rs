@@ -261,7 +261,7 @@ impl App<'_> {
     fn show_contents(&mut self, path: &Path, contents: &Contents) {
         self.loading.shown = None;
         self.view.show(path, contents);
-        self.sync_document();
+        self.sync_document(None);
         self.refresh_view_here();
         self.rewatch();
     }
@@ -319,7 +319,11 @@ impl App<'_> {
                 },
                 ..shown
             });
-        self.sync_document();
+        let stamp = done
+            .facts
+            .as_ref()
+            .and_then(|facts| facts.modified.zip(facts.size));
+        self.sync_document(stamp);
         self.land(landing);
         self.rewatch();
         if let Some(shown) = done.shown

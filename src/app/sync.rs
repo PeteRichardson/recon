@@ -2,6 +2,7 @@
 
 use super::App;
 use crate::document::Document;
+use crate::scan::Stamp;
 use crate::widgets;
 
 impl App<'_> {
@@ -13,7 +14,11 @@ impl App<'_> {
     /// truncates large files), the document holds just that preview, so
     /// filters see only the truncated slice until the view is focused and
     /// loads the file in full.
-    pub(super) fn sync_document(&mut self) {
+    ///
+    /// `stamp` is the file's, as the load read it before the file: what
+    /// says whether the reveals kept for it are rows of these lines (#609).
+    /// `None` for lines that are not a file's.
+    pub(super) fn sync_document(&mut self, stamp: Option<Stamp>) {
         let lines = self.view.source().clone();
         // The hide toggle describes how the user is reading, not which file
         // they are reading, so it outlives the document exactly as the filter
@@ -32,6 +37,8 @@ impl App<'_> {
         self.filtering.stop();
         self.document = Document::for_file(self.view.filename(), lines);
         self.set_mode(mode);
+        let reveals = self.kept_reveals.loaded(self.view.filename(), stamp);
+        self.document.set_reveals(reveals);
         // The anchor was a line of the document this just replaced (#67).
         self.visual = None;
         // The buffer the view is showing belongs to the *previous* document,

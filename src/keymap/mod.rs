@@ -221,6 +221,10 @@ pub(crate) enum ActionId {
     ViewParagraphPrev,
     ViewToggleLineNumbers,
     ViewToggleMinimap,
+    /// `>`: reveal the hidden lines after the cursor (#609).
+    ViewReveal,
+    /// `<`: close the reveal that holds the cursor (#609).
+    ViewRevealClose,
     ViewScrollDown,
     ViewScrollUp,
     ViewHalfPageDown,
@@ -408,6 +412,8 @@ impl ActionId {
             Self::ViewParagraphPrev => "view.paragraph.prev",
             Self::ViewToggleLineNumbers => "view.toggle.linenumbers",
             Self::ViewToggleMinimap => "view.toggle.minimap",
+            Self::ViewReveal => "view.reveal",
+            Self::ViewRevealClose => "view.reveal.close",
             Self::ViewScrollDown => "view.scroll.down",
             Self::ViewScrollUp => "view.scroll.up",
             Self::ViewHalfPageDown => "view.halfpage.down",
@@ -588,6 +594,8 @@ pub(crate) const DEFAULT: &[(Scope, &str, ActionId)] = &[
     (Scope::View, "{", ActionId::ViewParagraphPrev),
     (Scope::View, "#", ActionId::ViewToggleLineNumbers),
     (Scope::View, "M", ActionId::ViewToggleMinimap),
+    (Scope::View, ">", ActionId::ViewReveal),
+    (Scope::View, "<", ActionId::ViewRevealClose),
     (Scope::View, "Ctrl-e", ActionId::ViewScrollDown),
     (Scope::View, "Ctrl-y", ActionId::ViewScrollUp),
     (Scope::View, "Ctrl-d", ActionId::ViewHalfPageDown),
