@@ -187,6 +187,26 @@ that sets both matching grep's `-C`. The filter editor sets it, and a saved
 filter keeps it; a filter at the default omits it from the saved form.
 _Avoid_: context (that is a *Sense*), `-A`/`-B`/`-C` (those are grep's names)
 
+**Definition filter**:
+A filter in the built-in `definitions` set that matches the lines that start
+one kind of definition in a source file, such as functions or impls. The
+syntax grammar of the file finds the lines, not a pattern.
+_Avoid_: outline filter, symbol filter
+
+**Extent** (of a definition):
+The lines of one definition, from the line that starts it to its *end line*.
+A definition with no body, such as a function signature in a trait, has no
+extent.
+_Avoid_: span, scope (that is the grammar's word), body
+
+**End line**:
+The last line of a definition's *extent*, usually the line with its closing
+brace. A definition filter keeps the end line of each definition it matches,
+so that hide mode shows the structure of the code. An end line is not
+interesting: `n` and `N` step over it, and it shows in the default
+foreground, as a *neighbor line* does.
+_Avoid_: closing line, footer
+
 ### Search
 
 **Search**:
@@ -275,7 +295,8 @@ _Avoid_: root, cwd, current directory (that is the working directory)
 **Visible lines**:
 The lines the file view can show, in file order: every line an exclude filter
 does not remove, and in hide mode only the lines an include, context or
-require filter matches, and the *neighbor lines* of each include match.
+require filter matches, the *neighbor lines* of each include match, the
+*end lines* of each definition filter match, and the lines of each *reveal*.
 Dimmed lines are visible.
 _Avoid_: on screen, shown lines
 
@@ -295,6 +316,16 @@ The two ways to treat a line that no filter matches, when an include or
 context filter is enabled: keep it and grey it, or remove it from the visible
 lines. `u` toggles between them. A *neighbor line* is kept in both modes,
 and only whether it renders bright or dim changes (see *Neighbor lines*).
+
+**Reveal**:
+A range of lines that the user makes visible in hide mode with `>`, for the
+session. On a line that starts or ends a definition with an *extent*, the
+range is that extent; on another line, it is the hidden lines up to the next
+visible line. A reveal can be inside another reveal. `<` closes the smallest
+reveal that holds the cursor. A revealed line shows as it would with no
+filter enabled, unless a filter matches it; an exclude filter still removes
+it. `:w` and `q` write the revealed lines; batch mode has no reveals.
+_Avoid_: expand, collapse, fold, unfold, open (of a set)
 
 **Follow mode**:
 A property of one file, for the session: while the file is in the raw view,
