@@ -851,7 +851,8 @@ impl KindScopes {
 /// until its closing brace. So a definition line whose stack ends deeper
 /// than it started has a body, and the body ends on the first later line
 /// whose stack ends no deeper than that. A definition with no body opens
-/// nothing and has no extent. Python opens no such scope, and gets none.
+/// nothing and has no extent. Python opens no such scope: its extents come
+/// from indentation instead, in [`indented_extents`].
 #[must_use]
 pub fn definitions(path: &Path, lines: &Lines) -> Option<Definitions> {
     let syntax = detect(path, lines.get(0).as_deref())?;
@@ -864,8 +865,15 @@ pub fn definitions(path: &Path, lines: &Lines) -> Option<Definitions> {
     // the stack before it: innermost last.
     let mut open: Vec<(usize, usize)> = Vec::new();
     let mut extents = Vec::new();
+    // Python's blocks are its indentation (#612): what each line says
+    // about them, and no scope-depth extents.
+    let indented = syntax.scope.build_string() == "source.python";
+    let mut layout = Vec::with_capacity(if indented { lines.len() } else { 0 });
 
     for (row, line) in lines.iter().enumerate() {
+        if indented {
+            layout.push(Layout::of(&line, stack.len() > 1));
+        }
         if line.len() > MAX_LINE_BYTES {
             continue;
         }
@@ -896,6 +904,9 @@ pub fn definitions(path: &Path, lines: &Lines) -> Option<Definitions> {
             last = *pos;
         }
         note(&stack, last, line.len());
+        if indented {
+            continue;
+        }
         while let Some(&(start, before)) = open.last() {
             if stack.len() > before {
                 break;
@@ -927,9 +938,90 @@ pub fn definitions(path: &Path, lines: &Lines) -> Option<Definitions> {
             kinds
         })
         .collect();
-    // A line the fallback did not keep starts nothing, so it has no extent.
-    extents.retain(|extent| !kinds[extent.start].is_empty());
+    if indented {
+        extents = indented_extents(&kinds, &layout);
+    } else {
+        // A line the fallback did not keep starts nothing, so it has no extent.
+        extents.retain(|extent| !kinds[extent.start].is_empty());
+    }
     Some(Definitions { kinds, extents })
+}
+
+/// What one line of an indented language says about the blocks around it.
+#[derive(Debug, Clone, Copy)]
+enum Layout {
+    /// Holds nothing but white space: it neither ends a block nor is its
+    /// last line.
+    Blank,
+    /// Starts inside a construct an earlier line opened (a docstring, a
+    /// parameter list, a bracket), so its indent, which can be column 0,
+    /// ends no block.
+    Continued,
+    /// Starts a statement at this many bytes of indent.
+    Indent(usize),
+}
+
+impl Layout {
+    fn of(line: &str, continued: bool) -> Self {
+        let text = line.trim_start();
+        if text.is_empty() {
+            Self::Blank
+        } else if continued {
+            Self::Continued
+        } else {
+            Self::Indent(line.len() - text.len())
+        }
+    }
+}
+
+/// The extents of a language whose blocks are their indentation (#612).
+/// The Python grammar closes its scopes at the `:` of a `def` line, so the
+/// scope depth finds no body there. A definition's extent is its start line
+/// and each later line that is blank, continued, or indented more than the
+/// start; it ends on the last of them that is not blank. A definition on one
+/// line has no extent.
+///
+/// One pass with a stack of the open definitions, innermost last: a
+/// statement closes each one indented as far as it or further. Each closes
+/// before the ones that hold it, so the extents come out in order of their
+/// end lines.
+fn indented_extents(kinds: &[KindSet], layout: &[Layout]) -> Vec<Extent> {
+    // Each open definition's start, its indent, and its last line so far.
+    // Only the innermost one's last line is kept up to date; it passes to
+    // the one that holds it when it closes.
+    let mut open: Vec<(usize, usize, usize)> = Vec::new();
+    let mut extents = Vec::new();
+    let mut close = |open: &mut Vec<(usize, usize, usize)>| {
+        let (start, _, end) = open.pop().expect("an open definition");
+        if end > start {
+            extents.push(Extent { start, end });
+        }
+        if let Some(outer) = open.last_mut() {
+            outer.2 = outer.2.max(end);
+        }
+    };
+    for (row, line) in layout.iter().enumerate() {
+        let depth = match *line {
+            Layout::Blank => continue,
+            Layout::Continued => None,
+            Layout::Indent(depth) => Some(depth),
+        };
+        if let Some(depth) = depth {
+            while open.last().is_some_and(|&(_, outer, _)| outer >= depth) {
+                close(&mut open);
+            }
+        }
+        if let Some(inner) = open.last_mut() {
+            inner.2 = row;
+        }
+        if let Some(depth) = depth.filter(|_| !kinds[row].is_empty()) {
+            open.push((row, depth, row));
+        }
+    }
+    while !open.is_empty() {
+        close(&mut open);
+    }
+    extents
 }
 
 #[cfg(test)]
@@ -1189,6 +1281,100 @@ class Canvas {
 }
 ";
         assert_eq!(extents_of("a.swift", text), vec![(1, 3)]);
+    }
+
+    // ---- Python extents by indentation (#612) ------------------------------
+
+    /// A function ends on its last indented line; the blank line and the
+    /// module code after it are outside.
+    #[test]
+    fn a_python_function_ends_on_its_last_indented_line() {
+        let text = "\
+def area(r):
+    x = r * r
+
+    return x
+
+print(area(2))
+";
+        assert_eq!(extents_of("a.py", text), vec![(0, 3)]);
+    }
+
+    /// The class holds its methods, and its last method ends where the
+    /// class does, before the module code that follows. The inner extent
+    /// comes first when the two end on one line.
+    #[test]
+    fn a_python_class_holds_its_methods() {
+        let text = "\
+class Canvas:
+    def draw(self):
+        pass
+
+    def clear(self):
+        pass
+canvas = Canvas()
+";
+        assert_eq!(extents_of("a.py", text), vec![(1, 2), (4, 5), (0, 5)]);
+    }
+
+    #[test]
+    fn a_nested_python_function_ends_inside_its_outer_one() {
+        let text = "\
+def outer():
+    def inner():
+        return 1
+    return inner
+";
+        assert_eq!(extents_of("a.py", text), vec![(1, 2), (0, 3)]);
+    }
+
+    /// The extent starts on the `def`, not on its decorator, and the next
+    /// method's decorator is outside it.
+    #[test]
+    fn a_decorated_python_method_ends_before_the_next_decorator() {
+        let text = "\
+class Circle:
+    @property
+    def area(self):
+        return 3
+
+    @property
+    def size(self):
+        return 1
+";
+        assert_eq!(extents_of("a.py", text), vec![(2, 3), (6, 7), (0, 7)]);
+    }
+
+    /// A docstring line at column 0 does not end the function.
+    #[test]
+    fn a_python_docstring_at_column_0_stays_in_the_function() {
+        let text = "\
+def area(r):
+    \"\"\"The area.
+at column 0
+    \"\"\"
+    return r * r
+x = 1
+";
+        assert_eq!(extents_of("a.py", text), vec![(0, 4)]);
+    }
+
+    /// The `):` that closes a signature can sit at the `def`'s own column.
+    #[test]
+    fn a_python_signature_on_several_lines_stays_in_the_function() {
+        let text = "\
+def area(
+    r,
+) -> int:
+    return r * r
+x = 1
+";
+        assert_eq!(extents_of("a.py", text), vec![(0, 3)]);
+    }
+
+    #[test]
+    fn a_python_function_on_one_line_has_no_extent() {
+        assert_eq!(extents_of("a.py", "def f(): pass\nx = 1\n"), Vec::new());
     }
 
     const MARKDOWN: &str = "\
