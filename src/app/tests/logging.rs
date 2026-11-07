@@ -190,6 +190,26 @@ fn a_scan_pass_logs_its_start_with_the_cache_hits() {
     );
 }
 
+/// `Scanner` holds its `Sender` for the life of the app, so the scan
+/// channel cannot disconnect: the drain that finds a closed channel has
+/// nothing to report, and a dead worker's real trace is `scan_caught`'s
+/// caught-panic warning (#345 deletes the unreachable warning; this pins
+/// the silence in its place).
+#[test]
+fn a_closed_scan_channel_is_silence() {
+    capture::install();
+    let mut app = app_over_files("log_scan_dead_channel", &[("a.log", "a\n")]);
+    let (_scanner, tx) = record_scans(&mut app);
+    drop(tx);
+
+    assert!(!app.drain_scan_results());
+    assert!(
+        logged(log::Level::Warn, "the scan worker is gone").is_empty(),
+        "{:?}",
+        capture::here()
+    );
+}
+
 // ---- navigation ---------------------------------------------------------
 
 /// Each move to another directory is one `Debug` record (#491).
