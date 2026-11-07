@@ -102,6 +102,26 @@ pub(crate) enum Kind {
     /// refuse one named directly. Drawn dimmed, like `..`: present, not
     /// content.
     Special,
+    /// A symlink whose target is gone (#404) — the follow `fs::metadata` fails
+    /// `ENOENT`, the one follow failure that actually speaks about the target.
+    /// The `lstat` still succeeds, so what was being reported for such a row was
+    /// the link's own `0777` mode and the byte length of its *text*, and the
+    /// path still went to the scanner and `--emit files`, each of which then
+    /// failed on open.
+    ///
+    /// Listed, since the link is there, but dimmed like `Special` and with no
+    /// size, and `l`, `Enter` and a click all do nothing. Silence rather than
+    /// the honest refusal `Special` gets (`not a regular file`): here the only
+    /// possible message is *no such file*, which the dimming already says, while
+    /// a FIFO's message carries something no cue shows — that a live object is
+    /// there and reading it would block.
+    ///
+    /// A link that fails to resolve for any other reason — `EACCES` through a
+    /// directory above it, a stale NFS handle, a cycle — is not broken. Those
+    /// errors are about the path, not the target, so such a row stays `Plain`
+    /// and the reader still names the error; only its size goes blank, since the
+    /// link text's length was never an answer either.
+    Broken,
     /// The `..` row. A directory, but never one you are looking *for* — see
     /// `PARENT_STYLE`.
     ///
@@ -116,7 +136,7 @@ impl Kind {
     /// Whether an entry of this kind is a file something may read to its
     /// end — what the scanner, `--emit files` and a batch `PATH`
     /// directory hand on. Directories are listings, not files; `Special`
-    /// has no end to read to.
+    /// has no end to read to; `Broken` has nothing behind it at all.
     pub(crate) fn is_readable(self) -> bool {
         matches!(self, Self::Plain | Self::Executable)
     }
@@ -169,7 +189,9 @@ pub(crate) struct Entry {
     /// Bytes, for a file. `None` for a directory — a `stat` there reports the
     /// size of the directory *file*, not of what is in it, so showing it
     /// beside real file sizes would be a wrong answer rather than a blank.
-    /// Also `None` when the entry could not be stat'd at all.
+    /// Also `None` when the entry could not be stat'd at all, and for a link
+    /// that does not resolve: `lstat` there reports the length of the *link
+    /// text*, which is the size of nothing the reader can reach.
     pub(crate) size: Option<u64>,
     /// Last modification time, or `None` when the entry could not be stat'd.
     ///
@@ -198,7 +220,7 @@ impl Entry {
         match self.kind {
             Kind::Dir => DIR_STYLE,
             Kind::Executable => EXEC_STYLE,
-            Kind::Parent | Kind::Special => dim,
+            Kind::Parent | Kind::Special | Kind::Broken => dim,
             // The common case pays for no colour. With directories and
             // executables marked, a plain row is unambiguous by absence, and
             // the terminal's own theme governs the rows there are most of.
@@ -633,7 +655,9 @@ impl Explorer<'_> {
             // file manager. `l` is `Enter` in every case, including on a
             // file: a key that works on some rows and silently does nothing
             // on others is worse than one that always does the obvious
-            // thing.
+            // thing. The parity this note guards is `l` with `Enter`, and both
+            // go through `activate_selection`, so the one row that opens
+            // nothing — a broken link (#404) — is refused by the two alike.
             A::ExplorerParent => self.go_to_parent(),
             A::ExplorerOpen => self.open_selection(),
             A::ExplorerHitNext => self.repeat_search(false),
@@ -682,7 +706,8 @@ impl Explorer<'_> {
     /// ahead into on one click and entered on two, so a click on a directory
     /// row reads as "select this" rather than moving the whole listing out
     /// from under the next click. Two clicks on a file are one click and
-    /// nothing: it is already loaded.
+    /// nothing: it is already loaded. A broken link loads on neither, since
+    /// there is nothing behind it to show (#404).
     ///
     /// A click below the last row is not a selection of anything, and the
     /// cursor stays where it was.
@@ -1055,8 +1080,11 @@ impl Explorer<'_> {
     }
 
     /// Open the highlighted entry: descend into a directory in place, or ask
-    /// for a file to be loaded into the file view in full.
+    /// for a file to be loaded into the file view in full. A broken link opens
+    /// nothing.
     fn activate_selection(&mut self) -> Option<Action> {
+        let kind = self.entries.get(self.selected_entry()?)?.kind;
+
         // `..` opens like a directory, but descending into it means climbing
         // *out* — and the cursor should land on the directory being left, not
         // on that directory's own first entry.
@@ -1064,8 +1092,16 @@ impl Explorer<'_> {
         // Asks the kind rather than comparing the name: a real entry called
         // `..` cannot exist, so the two agree, but the kind is the field that
         // actually carries the distinction.
-        if self.entries.get(self.selected_entry()?)?.kind == Kind::Parent {
+        if kind == Kind::Parent {
             return self.go_to_parent();
+        }
+
+        // A broken link has no contents to descend into and no bytes to load,
+        // so `l`, `Enter` and a click all do nothing (#404). The alternative
+        // was an error that could not be anything but *not found*, for a row
+        // the pane already draws as not-content.
+        if kind == Kind::Broken {
+            return None;
         }
 
         let path = self.selected_path()?;
@@ -1236,26 +1272,33 @@ fn sort_listing(entries: &mut [Entry]) {
 /// systems, which would paint every link green — so a link is followed with
 /// `fs::metadata` and described as its target: a link to a directory is a
 /// directory, drawn with the `/` and never handed to the scanner, which is
-/// what `activate_selection` already did with it. A dangling link keeps the
-/// `lstat` and reads as a plain entry; opening it reports not found, the
-/// same as any other missing file.
+/// what `activate_selection` already did with it.
+///
+/// A link whose target is *missing* — the second stat fails `ENOENT` — is
+/// `Kind::Broken` (#404): see that variant for how such a row is treated. Any
+/// other follow failure (`EACCES`, `ESTALE`, `ELOOP`) says nothing about the
+/// target and keeps the old shape, so the reader still names the real error.
 ///
 /// Anything that is neither a directory nor a regular file — a FIFO, a
 /// socket, a device — is `Kind::Special` (#221).
 fn describe(entry: &fs::DirEntry) -> Entry {
-    let linked = entry
+    let follow = entry
         .file_type()
         .is_ok_and(|file_type| file_type.is_symlink())
-        .then(|| fs::metadata(entry.path()).ok())
-        .flatten();
-    let meta = linked.or_else(|| entry.metadata().ok());
+        .then(|| fs::metadata(entry.path()));
+    let missing = matches!(&follow, Some(Err(err)) if err.kind() == std::io::ErrorKind::NotFound);
+    // Unresolved however it failed: there are no target bytes to measure.
+    let unresolved = follow.as_ref().is_some_and(Result::is_err);
+    let meta = follow
+        .and_then(Result::ok)
+        .or_else(|| entry.metadata().ok());
     let file_type = meta.as_ref().map(fs::Metadata::file_type);
-    let is_dir = file_type.is_some_and(|file_type| file_type.is_dir());
     let kind = match file_type {
         Some(file_type) if file_type.is_dir() => Kind::Dir,
-        // Still a symlink after following means the link did not resolve:
-        // a plain row, and never executable — the `lstat` mode is the
-        // link's own `0777`, not anything the user set.
+        // Still a symlink after following means the link did not resolve, and
+        // never executable either — the `lstat` mode is the link's own `0777`,
+        // not anything the user set.
+        Some(file_type) if file_type.is_symlink() && missing => Kind::Broken,
         Some(file_type) if file_type.is_symlink() => Kind::Plain,
         Some(file_type) if !file_type.is_file() => Kind::Special,
         _ if meta.as_ref().is_some_and(is_executable) => Kind::Executable,
@@ -1266,7 +1309,10 @@ fn describe(entry: &fs::DirEntry) -> Entry {
         // non-UTF-8 name unopenable — see `Entry::name`.
         name: entry.file_name(),
         kind,
-        size: if is_dir {
+        // A directory's `stat` reports the size of the directory *file*; an
+        // unresolved link's reports the length of its text. Neither is an answer
+        // to "how big is this", so both show a blank rather than a wrong number.
+        size: if matches!(kind, Kind::Dir) || unresolved {
             None
         } else {
             meta.as_ref().map(fs::Metadata::len)
@@ -2073,8 +2119,65 @@ mod tests {
         assert_eq!(kind_of("to_run").kind, Kind::Executable);
         assert_eq!(
             kind_of("dangling").kind,
-            Kind::Plain,
-            "a dangling link is an ordinary entry; opening it reports not found"
+            Kind::Broken,
+            "a link to nothing is not an ordinary file (#404)"
+        );
+        assert_eq!(
+            kind_of("dangling").size,
+            None,
+            "nor does it have a size: `lstat` reports the length of the link text \
+             there, which is the size of nothing"
+        );
+    }
+
+    /// The kind a listed row was described as, looked up by name so tests don't
+    /// hand-roll the same `entries` scan.
+    fn kind_named(explorer: &Explorer<'_>, name: &str) -> Kind {
+        explorer
+            .entries
+            .iter()
+            .find(|entry| entry.name == name)
+            .unwrap_or_else(|| panic!("{name} listed"))
+            .kind
+    }
+
+    /// Everything a row that is *listed but not content* must satisfy: dimmed
+    /// like `..`, no suffix, drawn in that grey, and named by nothing that
+    /// reads — neither the scanner nor `--emit files`. Shared by `Kind::Special`
+    /// (#221) and `Kind::Broken` (#404), which differ in why they are not
+    /// content, not in how the pane treats them.
+    ///
+    /// Each caller's fixture is the same shape — one readable `a.log` beside the
+    /// row — so the two reader assertions keep an exact expectation.
+    fn assert_listed_but_never_read(explorer: &mut Explorer<'_>, name: &str) {
+        let entry = explorer
+            .entries
+            .iter()
+            .find(|entry| entry.name == name)
+            .unwrap_or_else(|| panic!("{name} listed"));
+        assert_eq!(
+            entry.style(DIM_STYLE),
+            DIM_STYLE,
+            "`{name}` is dimmed, like `..`: not content"
+        );
+        assert_eq!(entry.display(), name, "no suffix; the dimming is the cue");
+        assert_eq!(
+            name_style(explorer, name).fg,
+            DIM_STYLE.fg,
+            "`{name}` is drawn in that grey, not the theme's file colour"
+        );
+        let scanned: Vec<_> = explorer.files().into_iter().map(|(_, path)| path).collect();
+        assert_eq!(
+            scanned,
+            [explorer.dir.join("a.log")],
+            "the scanner never opens `{name}`"
+        );
+        assert!(
+            explorer
+                .listed_files()
+                .iter()
+                .all(|file| !file.path.ends_with(name)),
+            "`--emit files` never names `{name}` either"
         );
     }
 
@@ -2088,32 +2191,78 @@ mod tests {
         let dir = fixture_dir("special_socket");
         fs::write(dir.join("a.log"), "x").expect("write");
         let _listener = std::os::unix::net::UnixListener::bind(dir.join("sock")).expect("bind");
+        let mut explorer = Explorer::new(dir.join("placeholder").display().to_string());
+
+        assert_eq!(kind_named(&explorer, "sock"), Kind::Special);
+        assert_listed_but_never_read(&mut explorer, "sock");
+    }
+
+    /// The consequence #404 is about: such a row used to be `Plain`, so
+    /// `is_readable` said yes and the scanner and `--emit files` each opened the
+    /// path and failed on it. `Kind::Broken` is absent from `is_readable`, so
+    /// both now skip it exactly as they skip a socket, and it wears the same
+    /// grey as `..` — present, not content.
+    #[cfg(unix)]
+    #[test]
+    fn a_broken_link_is_dimmed_and_never_handed_to_the_scanner() {
+        let dir = fixture_dir("broken_link_scan");
+        fs::write(dir.join("a.log"), "x").expect("write");
+        std::os::unix::fs::symlink("nowhere", dir.join("gone.log")).expect("ln");
+        let mut explorer = Explorer::new(dir.join("placeholder").display().to_string());
+
+        assert_eq!(kind_named(&explorer, "gone.log"), Kind::Broken);
+        assert_eq!(listing(&explorer), ["../", "a.log", "gone.log"]);
+        assert_listed_but_never_read(&mut explorer, "gone.log");
+    }
+
+    /// `l` on a broken link does nothing (#404). A load there cannot succeed —
+    /// the target is not there — and an error for a row the pane already draws
+    /// as not-content is noise: `..` and a socket open nothing either. So the
+    /// key is swallowed rather than reported.
+    #[cfg(unix)]
+    #[test]
+    fn l_on_a_broken_link_opens_nothing() {
+        let dir = fixture_dir("broken_link_open");
+        fs::write(dir.join("a.log"), "x").expect("write");
+        std::os::unix::fs::symlink("nowhere", dir.join("gone.log")).expect("ln");
+        let mut explorer = Explorer::new(dir.join("placeholder").display().to_string());
+        select(&mut explorer, "gone.log");
+
+        assert!(
+            press(&mut explorer, KeyCode::Char('l')).is_none(),
+            "`l` should be swallowed, not load a path that cannot open"
+        );
+    }
+
+    /// A symlink cycle is not a broken link. `fs::metadata` fails `ELOOP`
+    /// rather than `ENOENT`, and the same is true of `EACCES` through a
+    /// directory above the link and of a stale NFS handle: none of them say the
+    /// target is *gone*, so none of them belong behind the dimming, where the
+    /// reader that would name the real error never reaches the row. Such a link
+    /// keeps the shape it had before #404 — with one exception, the size, which
+    /// is still the length of the link text and still a lie.
+    #[cfg(unix)]
+    #[test]
+    fn a_symlink_cycle_is_not_broken_and_still_reaches_the_reader() {
+        let dir = fixture_dir("symlink_cycle");
+        fs::write(dir.join("a.log"), "x").expect("write");
+        std::os::unix::fs::symlink("cycle", dir.join("cycle")).expect("ln");
         let explorer = Explorer::new(dir.join("placeholder").display().to_string());
 
-        let sock = explorer
+        let cycle = explorer
             .entries
             .iter()
-            .find(|entry| entry.name == "sock")
-            .expect("a socket is still listed");
-        assert_eq!(sock.kind, Kind::Special);
-        assert_eq!(
-            sock.style(DIM_STYLE),
-            DIM_STYLE,
-            "dimmed, like `..`: not content"
-        );
-        assert_eq!(sock.display(), "sock", "no suffix; the dimming is the cue");
-        let scanned: Vec<_> = explorer.files().into_iter().map(|(_, path)| path).collect();
-        assert_eq!(
-            scanned,
-            [explorer.dir.join("a.log")],
-            "the scanner never opens it"
-        );
+            .find(|entry| entry.name == "cycle")
+            .expect("a cycle is still listed");
+
+        assert_eq!(cycle.kind, Kind::Plain, "ELOOP is not ENOENT");
+        assert_eq!(cycle.size, None, "no size is honest here, either");
         assert!(
             explorer
-                .listed_files()
+                .files()
                 .iter()
-                .all(|file| !file.path.ends_with("sock")),
-            "`--emit files` never names it either"
+                .any(|(_, path)| path.ends_with("cycle")),
+            "still offered to the reader, which reports the cycle in its own words"
         );
     }
 

@@ -84,7 +84,10 @@ impl Icons {
             Kind::Parent => own(PARENT),
             Kind::Special => own(SPECIAL),
             Kind::Executable => by_name(&entry.name, background).unwrap_or(own(EXECUTABLE)),
-            Kind::Plain => by_name(&entry.name, background).unwrap_or(own(PLAIN)),
+            // A broken link takes its name's icon: the glyph answers what the
+            // entry is *called*, and the dim colour — which `style()` gives it —
+            // answers that there are no bytes behind it.
+            Kind::Plain | Kind::Broken => by_name(&entry.name, background).unwrap_or(own(PLAIN)),
         })
     }
 }
