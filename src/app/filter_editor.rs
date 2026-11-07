@@ -84,6 +84,7 @@ use crate::filter::{
     Broken, Details, Engine, Example, Expander, LineRegex, Neighbor, Predicate, Sense,
     generated_hash,
 };
+use crate::filtersets;
 use crate::generate::{self, ATTEMPTS, Candidate, Rejection, Running};
 use crate::lines::Lines;
 use crossterm::event::{self, KeyCode, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
@@ -872,15 +873,30 @@ impl FilterEditor {
 
     /// Put `mark` on the cursor line, or on every line drawn in the visual
     /// range and close the range. `None` removes the mark.
+    ///
+    /// Adding a mark is refused whole when the range holds a line that is
+    /// not one line of text (#359): such a line would escape into the saved
+    /// file only for the re-parse before the write to refuse the whole
+    /// scratch set. The refusal names the first such line. Removing a mark
+    /// is never refused — the guard must not trap a mark in place.
     fn set_mark(&mut self, mark: Option<Mark>) {
         let (first, last) = self.range();
         let drawn: Vec<usize> = (first..=last)
             .filter(|&index| self.is_shown(index))
             .collect();
-        for index in drawn {
-            if let Some(mark) = mark {
+        if let Some(mark) = mark {
+            if let Some(line) = self.first_line_break(&drawn) {
+                // The refusal is the error: recomputing it at the end would
+                // clobber it. The range stays open so the refused lines are
+                // still what the user sees.
+                self.error = Some(format!("a marked line must be one line of text: {line:?}"));
+                return;
+            }
+            for index in drawn {
                 self.marks.insert(index, mark);
-            } else {
+            }
+        } else {
+            for index in drawn {
                 self.marks.remove(&index);
                 self.phrases.retain(|phrase| phrase.line != index);
             }
@@ -889,6 +905,16 @@ impl FilterEditor {
         self.refresh();
         // A refusal of Enter may name the mark just changed (#318).
         self.error = pattern_error(&self.field.pattern, self.engine);
+    }
+
+    /// Why adding a mark over `drawn` is refused (#359): the text of the
+    /// first line that is not one line of text, `None` when the whole
+    /// range is markable.
+    fn first_line_break(&self, drawn: &[usize]) -> Option<String> {
+        drawn.iter().find_map(|&index| {
+            let line = self.text(index)?;
+            filtersets::holds_line_break(&line).then(|| line.into_owned())
+        })
     }
 
     /// `u`: show only the matched and the marked lines, or every line again.
@@ -1618,7 +1644,14 @@ impl App<'_> {
         }
         editor.cursor = line;
         editor.reveal = true;
-        editor.marks.entry(line).or_insert(Mark::MustMatch);
+        // #359: the auto-mark is a courtesy, and it is skipped silently
+        // when the line cannot be an example (a carriage return, from
+        // progress output): an auto-mark the user never made must not be
+        // what blocks the save. Manual `+` on the same line refuses it by
+        // name, so the line is never left without an explanation.
+        if !filtersets::holds_line_break(&editor.text(line).unwrap_or_default()) {
+            editor.marks.entry(line).or_insert(Mark::MustMatch);
+        }
         editor.refresh();
     }
 
@@ -2410,5 +2443,59 @@ mod tests {
         let started = Instant::now();
         assert_eq!(editor.details().examples.len(), 200_000);
         assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    /// #359: a line with an embedded carriage return (progress output) is
+    /// refused as a mark, and the refusal names it: `S` would write such a
+    /// line escaped, and the re-parse before the write would then refuse
+    /// the whole scratch set.
+    #[test]
+    fn a_line_with_a_carriage_return_is_refused_as_a_mark() {
+        let mut editor = editor_over(&["ok", "50%\r100%", "done"]);
+        editor.cursor = 1;
+        editor.set_mark(Some(Mark::MustMatch));
+        assert!(editor.marks.is_empty(), "the bad line stays unmarked");
+        let error = editor.error.expect("the refusal is shown");
+        assert!(error.contains(r#""50%\r100%""#), "{error}");
+        assert!(error.contains("one line"), "{error}");
+    }
+
+    /// #359: a range over a bad line is refused whole — the good
+    /// lines do not get half a mark while the set is unsaveable.
+    #[test]
+    fn a_range_spanning_a_carriage_return_line_marks_nothing() {
+        let mut editor = editor_over(&["a", "b\rc", "d"]);
+        editor.cursor = 0;
+        editor.anchor = Some(2);
+        editor.set_mark(Some(Mark::MustNotMatch));
+        assert!(editor.marks.is_empty());
+        let error = editor.error.expect("the refusal is shown");
+        assert!(error.contains(r#""b\rc""#), "{error}");
+    }
+
+    /// #359: with several bad lines in the range the refusal names the
+    /// first — the `set_mark` promise in file order.
+    #[test]
+    fn the_refusal_names_the_first_bad_line() {
+        let mut editor = editor_over(&["a", "one\rone", "two\rtwo"]);
+        editor.cursor = 0;
+        editor.anchor = Some(2);
+        editor.set_mark(Some(Mark::MustMatch));
+        assert!(editor.marks.is_empty());
+        let error = editor.error.expect("the refusal is shown");
+        assert!(error.contains(r#""one\rone""#), "{error}");
+        assert!(!error.contains(r#""two\rtwo""#), "{error}");
+    }
+
+    /// #359: the refusal is only for marking — clearing a mark on such a
+    /// line stays allowed, so the guard cannot trap a mark in place.
+    #[test]
+    fn clearing_a_mark_on_a_carriage_return_line_still_works() {
+        let mut editor = editor_over(&["a", "b\rc"]);
+        editor.marks.insert(1, Mark::MustMatch);
+        editor.cursor = 1;
+        editor.set_mark(None);
+        assert!(editor.marks.is_empty());
+        assert!(editor.error.is_none(), "clearing earns no refusal");
     }
 }
