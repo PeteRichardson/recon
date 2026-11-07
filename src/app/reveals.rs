@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 /// What `>` and `<` say in dim mode, where every line already shows.
 pub(super) const REVEAL_IN_DIM_MODE: &str = "every line shows in dim mode: u for hide mode";
 /// What `>` says when no hidden line follows the cursor's line.
-pub(super) const NOTHING_TO_REVEAL: &str = "no hidden line after this one";
+pub(super) const NOTHING_TO_REVEAL: &str = "no hidden line to reveal here";
 /// What `<` says when no reveal holds the cursor's line.
 pub(super) const NO_REVEAL_HERE: &str = "no reveal holds this line";
 /// What the palette says when it closes every reveal and none is open.
@@ -63,9 +63,10 @@ impl Kept {
 }
 
 impl App<'_> {
-    /// `>`: reveal the hidden lines from the cursor's line to the next
+    /// `>`: reveal the extent of the definition the cursor's line starts
+    /// or ends, or else the hidden lines from the cursor's line to the next
     /// visible line. The cursor stays on its line.
-    pub(super) fn reveal_gap(&mut self) {
+    pub(super) fn reveal(&mut self) {
         if self.refuse_reveal_in_dim_mode() {
             return;
         }

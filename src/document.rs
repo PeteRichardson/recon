@@ -344,30 +344,55 @@ impl Document {
         }
     }
 
-    /// Reveal the rows from `row` to the next row its verdict shows (#609):
+    /// Reveal the extent of the definition `row` starts or ends (#611), or
+    /// else the rows from `row` to the next row its verdict shows (#609):
     /// the hidden lines after a visible `row`, or from a hidden `row` that a
     /// reveal already holds, which makes a reveal inside it. The range
-    /// starts at `row`, so that `<` on the line `>` was pressed on closes
-    /// it. `None` when no hidden line is there to show.
+    /// holds `row`, so that `<` on the line `>` was pressed on closes it.
+    /// `None` when no hidden line is there to show.
     pub fn reveal(&mut self, row: usize) -> Option<Range<usize>> {
-        let verdicts = &self.verdicts;
-        if row >= verdicts.len() {
+        if row >= self.verdicts.len() {
             return None;
         }
-        let shown = |row: usize| shows(self.mode, verdicts[row], self.anything_including);
-        let first = if shown(row) { row + 1 } else { row };
-        let end = (first..verdicts.len())
-            .find(|&row| shown(row))
-            .unwrap_or(verdicts.len());
-        if !verdicts[first..end].iter().any(|&v| v != Verdict::Excluded) {
+        let range = self.extent_at(row).unwrap_or_else(|| self.gap_at(row));
+        let hidden = |row: usize| self.verdicts[row] != Verdict::Excluded && !self.shown(row);
+        if !range.clone().any(hidden) {
             return None;
         }
-        let range = row..end;
         if !self.reveals.contains(&range) {
             self.reveals.push(range.clone());
         }
         self.recompute_visible();
         Some(range)
+    }
+
+    /// The rows of the smallest definition that starts or ends on `row`,
+    /// when a grammar pass found its extent. An extent whose end line has
+    /// no verdict yet waits for the block that judges it, as an end line
+    /// does.
+    fn extent_at(&self, row: usize) -> Option<Range<usize>> {
+        self.definitions
+            .as_deref()?
+            .extents
+            .iter()
+            .filter(|extent| extent.start == row || extent.end == row)
+            .filter(|extent| extent.end < self.verdicts.len())
+            .min_by_key(|extent| extent.end - extent.start)
+            .map(|extent| extent.start..extent.end + 1)
+    }
+
+    /// The rows from `row` to the next row its verdict shows.
+    fn gap_at(&self, row: usize) -> Range<usize> {
+        let first = if self.shown(row) { row + 1 } else { row };
+        let end = (first..self.verdicts.len())
+            .find(|&row| self.shown(row))
+            .unwrap_or(self.verdicts.len());
+        row..end
+    }
+
+    /// Whether `row`'s verdict shows it in the current mode.
+    fn shown(&self, row: usize) -> bool {
+        shows(self.mode, self.verdicts[row], self.anything_including)
     }
 
     /// Close the smallest reveal that holds `row` (#609), and give its first
@@ -1337,14 +1362,24 @@ mod tests {
 
     /// The `functions` definition filter alone.
     fn functions() -> ActiveFilters {
+        definitions_of(crate::syntax::Kind::Function)
+    }
+
+    /// The definition filter for `kind` alone.
+    fn definitions_of(kind: crate::syntax::Kind) -> ActiveFilters {
         let mut filters = ActiveFilters::new();
-        filters.add_definition(crate::syntax::Kind::Function);
+        filters.add_definition(kind);
         filters
     }
 
     /// `OUTLINE` as the Rust file it is, evaluated in hide mode.
     fn outline(filters: &ActiveFilters) -> Document {
-        let mut document = Document::for_file(Path::new("t.rs"), Lines::from(OUTLINE.to_vec()));
+        hidden_file("t.rs", OUTLINE, filters)
+    }
+
+    /// `lines` as the file `path`, evaluated in hide mode.
+    fn hidden_file(path: &str, lines: &[&str], filters: &ActiveFilters) -> Document {
+        let mut document = Document::for_file(Path::new(path), Lines::from(lines.to_vec()));
         document.set_mode(Mode::FilteredOnly);
         document.evaluate(filters);
         document
@@ -1843,6 +1878,61 @@ mod tests {
         assert!(document.close_reveals());
         assert_eq!(document.visible(), &[0, 2, 4]);
         assert!(!document.close_reveals(), "none was open");
+    }
+
+    // ---- definition reveals (#611) -----------------------------------------
+
+    /// `>` on the line that starts a definition reveals its extent, to the
+    /// end line, not the gap to the next visible line.
+    #[test]
+    fn a_reveal_on_a_start_line_shows_the_extent() {
+        let mut document = outline(&functions());
+        assert_eq!(document.reveal(1), Some(1..4));
+        assert_eq!(document.visible(), &[1, 2, 3]);
+    }
+
+    /// `>` on an end line reveals the same extent, and `<` there closes it
+    /// with the cursor on the start line.
+    #[test]
+    fn a_reveal_on_an_end_line_shows_the_extent() {
+        let mut document = outline(&functions());
+        assert_eq!(document.reveal(3), Some(1..4));
+        assert_eq!(document.visible(), &[1, 2, 3]);
+        assert_eq!(document.close_reveal(3), Some(1));
+    }
+
+    /// A definition with no extent — bat's Swift grammar opens no scope for
+    /// a `class` — reveals the gap to the next visible line.
+    #[test]
+    fn a_reveal_on_a_definition_with_no_extent_shows_the_gap() {
+        let lines = &["class Canvas {", "    func draw() {}", "}", "let x = 1"];
+        let filters = definitions_of(crate::syntax::Kind::Class);
+        let mut document = hidden_file("t.swift", lines, &filters);
+        assert_eq!(document.visible(), &[0]);
+        assert_eq!(document.reveal(0), Some(0..4));
+    }
+
+    /// Reveal an impl, reveal one of its functions, close the impl: only
+    /// that function stays.
+    #[test]
+    fn a_function_revealed_inside_an_impl_stays_when_the_impl_closes() {
+        let lines = &[
+            "impl Clip {",
+            "    fn new() -> Self {",
+            "        Self {}",
+            "    }",
+            "    fn len(&self) -> usize {",
+            "        0",
+            "    }",
+            "}",
+        ];
+        let filters = definitions_of(crate::syntax::Kind::Impl);
+        let mut document = hidden_file("t.rs", lines, &filters);
+        assert_eq!(document.visible(), &[0, 7]);
+        assert_eq!(document.reveal(0), Some(0..8));
+        assert_eq!(document.reveal(1), Some(1..4));
+        assert_eq!(document.close_reveal(0), Some(0));
+        assert_eq!(document.visible(), &[0, 1, 2, 3, 7]);
     }
 
     // ---- follow mode (#493) -------------------------------------------------
