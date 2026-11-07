@@ -232,7 +232,11 @@ impl Document {
     /// verdict of its own keeps it. An extent whose end line has no verdict
     /// yet waits for the block that judges it.
     fn mark_end_lines(&mut self, filters: &ActiveFilters, start: usize) {
-        let Some(found) = self.definitions.as_deref() else {
+        let Some(found) = self
+            .definitions
+            .as_deref()
+            .filter(|found| found.keeps_end_lines)
+        else {
             return;
         };
         let keep = filters.end_line_kinds();
@@ -1401,6 +1405,32 @@ mod tests {
             ]
         );
         assert_eq!(document.visible(), &[1, 3]);
+    }
+
+    /// A Python end line is the last line of the body, which does not read
+    /// as an end: hide mode shows only the definition line.
+    #[test]
+    fn a_python_definition_keeps_no_end_line() {
+        let lines = ["def area(r):", "    return r * r", "x = 1"];
+        let document = hidden_file("t.py", &lines, &functions());
+        assert_eq!(document.verdicts()[1], Verdict::Unmatched);
+        assert_eq!(document.visible(), &[0]);
+    }
+
+    /// With no end line kept, `>` on a Python definition still reveals its
+    /// extent, not the gap up to the next visible line.
+    #[test]
+    fn a_python_definition_reveals_its_extent() {
+        let lines = [
+            "def area(r):",
+            "    return r * r",
+            "x = 1",
+            "def f():",
+            "    pass",
+        ];
+        let mut document = hidden_file("t.py", &lines, &functions());
+        assert_eq!(document.reveal(0), Some(0..2));
+        assert_eq!(document.visible(), &[0, 1, 3]);
     }
 
     /// An exclude filter still removes an end line, as it removes a

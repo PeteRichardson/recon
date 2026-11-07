@@ -749,6 +749,11 @@ pub struct Definitions {
     /// In order of their end lines; an inner extent ends before the one
     /// that holds it.
     pub extents: Vec<Extent>,
+    /// Whether an end line reads as the end of its definition, as a
+    /// closing brace does. A Python end line is only the last line of the
+    /// body, so a definition filter does not keep it (#612); `>` still
+    /// reveals the extent.
+    pub keeps_end_lines: bool,
 }
 
 /// The rows of one definition, from the line that starts it to its end
@@ -944,7 +949,11 @@ pub fn definitions(path: &Path, lines: &Lines) -> Option<Definitions> {
         // A line the fallback did not keep starts nothing, so it has no extent.
         extents.retain(|extent| !kinds[extent.start].is_empty());
     }
-    Some(Definitions { kinds, extents })
+    Some(Definitions {
+        kinds,
+        extents,
+        keeps_end_lines: !indented,
+    })
 }
 
 /// What one line of an indented language says about the blocks around it.
