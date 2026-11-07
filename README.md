@@ -1263,7 +1263,8 @@ failed checks to the count: `312 of 50,000 lines match · 1 check fails`.
 
 If you open the editor from the file view (`f` pressed there), the file
 view's cursor line is already marked must-match, unless an example already
-marks it. From any other pane, no line is marked. `Enter` keeps the marks
+marks it, or the line holds a carriage return and could never be an
+example. From any other pane, no line is marked. `Enter` keeps the marks
 on the filter as its examples, and `Esc` discards them.
 
 ##### Examples
@@ -1274,6 +1275,10 @@ pattern that fails it does not replace the pattern that passes it.
 
 - `Enter` gives the filter one example for each marked line, with the text
   of the line. A line that the file has more than once is one example.
+- `+` and `-` refuse a line that holds a carriage return in the middle
+  (progress output such as `50%\r100%`): an example must be one line of
+  text, and such a mark would block the save of the whole scratch set. The
+  panel names the refused line.
 - `Enter` refuses a pattern while a check fails. The panel says how many
   checks fail and shows the first one's line: `a check fails; fix the
   pattern or clear the mark: "ERROR disk"`. `f` goes to each failed check.

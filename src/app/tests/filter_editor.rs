@@ -523,6 +523,22 @@ fn opened_from_the_file_view_the_cursor_line_is_must_match() {
     );
 }
 
+/// #359: an origin line holding a carriage return is never auto-marked:
+/// such a line cannot be an example, and the courtesy mark the user never
+/// made must not be what blocks the save. The cursor still lands there,
+/// where a manual `+` refuses it by name.
+#[test]
+fn an_origin_line_with_a_carriage_return_is_left_unmarked() {
+    let mut app = app_over_file("marks_origin_cr", "ok\r\n50%\r100%\n");
+    key(&mut app, KeyCode::Char('t'));
+    key(&mut app, KeyCode::Char('j'));
+    open_editor(&mut app);
+
+    let marked = marks(&app);
+    assert!(marked.is_empty(), "{marked:?}");
+    assert_eq!(editor(&app).cursor, 1, "the cursor still lands on origin");
+}
+
 #[test]
 fn f_big_c_from_the_file_view_marks_the_cursor_line_too() {
     let mut app = app_with_two_filters("marks_c_from_view");

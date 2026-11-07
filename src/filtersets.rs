@@ -265,11 +265,7 @@ fn parse_sets(text: &str, path: &Path) -> Result<Vec<LoadedSet>, Error> {
         }
         // One line (#284): the picker gives each set one row, and a line
         // break would draw over the next set's row.
-        if schema
-            .description
-            .as_deref()
-            .is_some_and(|text| text.contains(['\n', '\r']))
-        {
+        if schema.description.as_deref().is_some_and(holds_line_break) {
             return Err(invalid(
                 &name,
                 None,
@@ -376,10 +372,7 @@ fn parse_sets(text: &str, path: &Path) -> Result<Vec<LoadedSet>, Error> {
                 ("description", &entry.description),
                 ("prompt", &entry.prompt),
             ] {
-                if text
-                    .as_deref()
-                    .is_some_and(|text| text.contains(['\n', '\r']))
-                {
+                if text.as_deref().is_some_and(holds_line_break) {
                     return Err(invalid(
                         &name,
                         Some(&display),
@@ -477,6 +470,15 @@ fn refused_item_char(name: &str) -> Option<&'static str> {
         .map(|(_, what)| *what)
 }
 
+/// Whether `text` holds a line break: a set description, a filter field,
+/// and an example each draw on one row, so each must be one line of text
+/// (#284, #359). The save-side authority for the rule — the mark guard
+/// in the filter editor asks this same predicate before a mark exists.
+#[must_use]
+pub(crate) fn holds_line_break(text: &str) -> bool {
+    text.contains(['\n', '\r'])
+}
+
 /// Refuse a set whose names `--set NAME:A,B` or an alias could not read
 /// (#441, #555): a profile name with a comma or a `;`, or a name that is
 /// both a profile and a named filter of this set — every such name, so one
@@ -551,8 +553,10 @@ fn examples(
         ("must_not_match", must_not_match, false),
     ] {
         for line in lines.unwrap_or_default() {
-            if line.contains(['\n', '\r']) {
-                return Err(format!("a line in `{key}` must be one line of text"));
+            if holds_line_break(&line) {
+                return Err(format!(
+                    "a line in `{key}` must be one line of text: {line:?}"
+                ));
             }
             match examples.iter().find(|example| example.line == line) {
                 Some(example) if example.must_match != must => {
@@ -1949,6 +1953,22 @@ pattern = 'plain'
         assert!(message.contains("invalid filter sets file"), "{message}");
         let message = rejected("[sets.a]\n[[sets.a.filters]]\npattern = 'x'\nmust_match = 'x'\n");
         assert!(message.contains("must_match"), "{message}");
+    }
+
+    /// #359: the refusal names the offending line, so a file to fix by
+    /// hand does not require hunting for the entry first.
+    #[test]
+    fn a_refused_example_line_is_named() {
+        let message = rejected(
+            "[sets.a]\n[[sets.a.filters]]\nname = 'n'\npattern = 'x'\n\
+             must_not_match = [\"one\\rtwo\"]\n",
+        );
+        assert!(
+            message.contains(
+                "filter 'n': a line in `must_not_match` must be one line of text: \"one\\rtwo\""
+            ),
+            "{message}"
+        );
     }
 
     /// `S` writes each example on a line of its own, single-quoted where a
