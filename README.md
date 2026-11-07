@@ -852,7 +852,12 @@ and an exclude filter still removes one. `--emit lines` and `:w` write them with
 
 To read the lines around a match without a change to the filters or the
 mode, push `>` in hide mode: it **reveals** every hidden line from the
-cursor's line to the next visible line, with no limit. A revealed line shows
+cursor's line to the next visible line, with no limit. On a line that starts
+or ends a definition with an end line (see
+[definition filters](#definition-filters)), `>` reveals that definition
+instead: the whole function, impl or type. The extents come from the grammar
+pass that a definition filter runs, so a file no definition filter has read
+uses the gap rule. A revealed line shows
 as it would with no filter on, in full syntax colour, unless a filter
 matches it, and an exclude filter still removes it. `<` hides the lines again
 and puts the cursor on the first line of the reveal. A reveal can be inside
@@ -1504,7 +1509,9 @@ exclude filter still removes it. `--emit lines` writes it, and
 `--no-neighbors` leaves it out with the neighbor lines. A definition with
 no body, such as a function signature in a trait, has no end line. The grammar
 gives the end line in Rust, C, Go, JavaScript and TypeScript, and for a Swift
-`func`; it gives none for a Swift `class` or for Python.
+`func`; it gives none for a Swift `class` or for Python. `>` on a start
+or end line reveals the whole definition, and `<` hides it again (see
+[reveals](#filter-sets)).
 
 The set starts collapsed as a single `[ ] definitions` row. `Enter` expands it;
 `Enter` on `functions` narrows a source file to its function lines, coloured,
@@ -1772,7 +1779,7 @@ File view pane (`src/widgets/fileview.rs`) — its own verbs; the shared motions
 | `{` / `}` | Move by paragraph, back / forward | `view.paragraph.prev` / `view.paragraph.next` |
 | `#` | Toggle the line-number gutter | `view.toggle.linenumbers` |
 | `M` | Hide / show the minimap | `view.toggle.minimap` |
-| `>` / `<` | In hide mode, **reveal** the hidden lines from the cursor's line to the next visible line / hide them again: `<` closes the smallest reveal that holds the cursor and puts the cursor on its first line — see [reveals](#filter-sets) | `view.reveal` / `view.reveal.close` |
+| `>` / `<` | In hide mode, **reveal** the extent of the definition that the cursor's line starts or ends, or else the hidden lines from the cursor's line to the next visible line / hide them again: `<` closes the smallest reveal that holds the cursor and puts the cursor on its first line — see [reveals](#filter-sets) | `view.reveal` / `view.reveal.close` |
 | `*` | Set the search to the word under the cursor — a run of letters, digits and `_`, so a mangled symbol stays whole — and move to its next hit, as `n` would. `* p` makes it a numbered filter | `global.search.word` |
 | `v` / `V` | Start a selection by character / by whole lines; press the same key again to end it, or the other to switch between them. The motions grow it | `global.visual.char` / `global.visual.line` |
 | `y` | Copy the selection to the clipboard and end the selection. `Ctrl-y` still scrolls | `global.yank` |
