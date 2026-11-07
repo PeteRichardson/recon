@@ -217,9 +217,9 @@ impl Scan for Scanner {
 /// `scan`, with a panic turned into a finished file.
 ///
 /// `Scanner` keeps its own `Sender`, so a worker that panics never
-/// disconnects the channel: `drain_scan_results`'s `Disconnected` warning
-/// cannot fire, and the file stays `Unknown` for ever with nothing said. A
-/// caught panic is reported as `eof: true` instead — the file is answered,
+/// disconnects the channel: nothing on the receiving end can see it die,
+/// and the file would stay `Unknown` for ever with nothing said. A caught
+/// panic is reported as `eof: true` instead — the file is answered,
 /// wrongly but finitely, and the explorer stops waiting (#188).
 fn scan_caught(
     lines: impl Lines,

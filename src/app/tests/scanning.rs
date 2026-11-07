@@ -887,3 +887,49 @@ fn r_re_lists_the_directory_so_a_new_file_appears() {
         "selection should stay on the file it was on"
     );
 }
+
+// ---- the idle tick pays nothing (#344) --------------------------------
+
+/// An idle frame must not build the filter matcher. `drain_scan_results`
+/// runs on every 60 Hz tick, and building the matcher up front cloned
+/// the whole `RegexSet` before the drain knew whether any result had
+/// landed (#344).
+#[test]
+fn an_idle_drain_builds_no_matcher() {
+    let mut app = app_over_logs("scan_idle_matcher");
+    let (_scanner, _tx) = record_scans(&mut app);
+    app.add_filter("alpha").expect("valid pattern");
+    app.refresh_scan(false);
+
+    let before = app.filters.matcher_builds.get();
+    assert!(!app.drain_scan_results(), "nothing is waiting");
+    assert!(!app.drain_scan_results());
+
+    assert_eq!(
+        app.filters.matcher_builds.get(),
+        before,
+        "an idle drain built the matcher"
+    );
+}
+
+/// Once a result lands the matcher is built — once for the whole batch,
+/// not once per result.
+#[test]
+fn a_drain_builds_the_matcher_once_per_batch() {
+    let mut app = app_over_logs("scan_batch_matcher");
+    let (_scanner, tx) = record_scans(&mut app);
+    app.add_filter("alpha").expect("valid pattern");
+    app.refresh_scan(false);
+    tx.send(scanned(&app, 0, vec![0b1], true)).expect("send");
+    tx.send(scanned(&app, 1, vec![0], true)).expect("send");
+
+    let before = app.filters.matcher_builds.get();
+    assert!(app.drain_scan_results());
+
+    assert_eq!(
+        app.filters.matcher_builds.get(),
+        before + 1,
+        "one matcher per drain"
+    );
+    assert_eq!(app.scan_cache.records.len(), 2, "both records cached");
+}

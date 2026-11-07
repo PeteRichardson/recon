@@ -261,6 +261,8 @@ impl ActiveFilters {
     /// the pattern count exceeds the bitset width.
     #[must_use]
     pub fn matcher(&self) -> Option<Matcher> {
+        #[cfg(test)]
+        self.matcher_builds.set(self.matcher_builds.get() + 1);
         let (set, selects, exclude, require) = self.scan_masks()?;
         Some(Matcher {
             set: set.clone(),

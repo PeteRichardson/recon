@@ -160,19 +160,20 @@ impl App<'_> {
         let Some(results) = self.scan_results.as_ref() else {
             return false;
         };
-        let matcher = self.filters.matcher();
+        // Nothing that lands is answered without the matcher, and nothing
+        // lands on an idle tick — but `matcher()` clones the whole set, so
+        // building it up front charged every 60 Hz frame for a copy (#344).
+        // The cell holds it once for the whole drain, built when the first
+        // kept result needs an answer.
+        let built: std::cell::OnceCell<Option<filter::Matcher>> = std::cell::OnceCell::new();
         let mut changed = false;
-        loop {
-            let scanned = match results.try_recv() {
-                Ok(scanned) => scanned,
-                Err(std::sync::mpsc::TryRecvError::Empty) => break,
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                    log::warn!(
-                        "the scan worker is gone; answers stay unknown until the next change"
-                    );
-                    break;
-                }
-            };
+        // The channel ends the drain on any error: `Scanner` holds a
+        // `Sender` for the life of the app, so `Disconnected` is
+        // unreachable in production there (#345 — and an error can only
+        // mean no further result has landed this tick; `scan_results`
+        // being test-swappable is what reaches it in tests). A worker
+        // that dies mid-file is `scan_caught`'s trace, not this loop's.
+        while let Ok(scanned) = results.try_recv() {
             if scanned.cache_id != self.scan_cache.id {
                 continue;
             }
@@ -195,13 +196,16 @@ impl App<'_> {
                 stamp: scanned.stamp,
                 progress: scanned.progress,
             };
-            let matched = matcher
+            let matched = built
+                .get_or_init(|| self.filters.matcher())
                 .as_ref()
                 .map_or(Match::Unknown, |m| self.answer_to_match(&record, m));
-            self.scan_cache.records.insert(scanned.path.clone(), record);
+            // The row check reads the path, so it goes first and the cache
+            // takes it by move — no clone per result.
             if self.explorer.path_at(scanned.index).as_ref() == Some(&scanned.path) {
                 changed |= self.explorer.set_answer(scanned.index, matched);
             }
+            self.scan_cache.records.insert(scanned.path, record);
         }
         if changed {
             self.restyle_explorer();

@@ -753,6 +753,14 @@ pub struct ActiveFilters {
     /// How many steps an advanced filter may take on one line (#474):
     /// `[filters] advanced_step_limit`. A line over it is no match.
     step_limit: u32,
+    /// Test-only: how many `Matcher`s `matcher()` has built (#344).
+    /// Whether the poll loop builds one per idle tick is a cost, not a
+    /// behaviour — nothing visible differs — so the tests assert the
+    /// build itself. Per-instance like `minimap::State::builds`, whose
+    /// snapshot shape the drain tests copy; a `Cell` because `matcher`
+    /// takes `&self`.
+    #[cfg(test)]
+    pub(crate) matcher_builds: std::cell::Cell<usize>,
     /// How many lines of the open file each advanced filter gave up on at
     /// the step limit, as the last `Document::evaluate` counted them. By
     /// id, so a filter added or removed since moves no count to another.
@@ -829,6 +837,8 @@ impl ActiveFilters {
             remembered: None,
             compiled: None,
             generation: 0,
+            #[cfg(test)]
+            matcher_builds: std::cell::Cell::new(0),
             as_loaded: vec![Vec::new()],
             step_limit: DEFAULT_STEP_LIMIT,
             over_limit: HashMap::new(),
@@ -1636,6 +1646,8 @@ impl ActiveFilters {
             remembered: self.remembered.clone(),
             compiled: self.compiled.clone(),
             generation: next_generation(),
+            #[cfg(test)]
+            matcher_builds: std::cell::Cell::new(0),
             as_loaded: self.as_loaded.clone(),
             step_limit: self.step_limit,
             over_limit: self.over_limit.clone(),
