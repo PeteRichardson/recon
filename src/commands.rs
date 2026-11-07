@@ -80,6 +80,9 @@ pub(crate) enum Run {
     /// `w` and `w!`: write the visible lines to a file (#528). `true` for
     /// `w!`, which may replace a file.
     Write(bool),
+    /// `view.reveal.close.all`: close every reveal of the open file
+    /// (#609). No key runs it, so it is not an action.
+    CloseReveals,
 }
 
 impl Command {
@@ -96,7 +99,8 @@ impl Command {
             | Run::View
             | Run::AddFilter(_)
             | Run::Alias
-            | Run::Write(_) => None,
+            | Run::Write(_)
+            | Run::CloseReveals => None,
         }
     }
 
@@ -296,6 +300,12 @@ fn build() -> Vec<Command> {
             Argument::Path,
             "Write the visible lines to a file, and replace it if it exists",
             Run::Write(true),
+        ),
+        row(
+            &["view.reveal.close.all"],
+            Argument::None,
+            "Close every reveal of the open file",
+            Run::CloseReveals,
         ),
     ];
     for action in crate::keymap::every_action().filter(|a| is_command(*a)) {

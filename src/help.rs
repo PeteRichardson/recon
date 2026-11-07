@@ -722,6 +722,11 @@ pub const KEYMAP: &[Section] = &[
                 names: &["view.toggle.minimap"],
             },
             Binding {
+                keys: &[">", "<"],
+                action: "Reveal the hidden lines below / hide again",
+                names: &["view.reveal", "view.reveal.close"],
+            },
+            Binding {
                 keys: &["*"],
                 action: "Search for the word under the cursor",
                 names: &["global.search.word"],
@@ -1683,7 +1688,7 @@ mod tests {
     /// any further has nowhere left to go without this area's width growing
     /// past 151 — which would stop the second test here from failing on the
     /// regression it exists to catch — and a row that adds to *either* total
-    /// has to be re-measured against both. The height, 67, is likewise the
+    /// has to be re-measured against both. The height, 68, is likewise the
     /// exact number of rows two columns hold at the current row count (121,
     /// after the two reserved-key rows of #242 raised it from 86 to 88,
     /// the two search-history rows of #274 to 90, the `L` row and the
@@ -1697,14 +1702,14 @@ mod tests {
     /// height from 61 to 62, and the finishing section of #351 and #352,
     /// its title and its one row, which raised it to 64, and the `Ctrl-t`
     /// row of #493 to 65, the `M` row of #523 to 66, and the `Ctrl-n` row of
-    /// #586 to 67); adding a row without
+    /// #586 to 67, and the `>`/`<` row of #609 to 68); adding a row without
     /// raising the height would drop it off the bottom, which is a
     /// `shown(&columns) == rows.len()` failure below, not a width one.
     #[test]
     fn a_normal_terminal_shows_the_whole_keymap() {
         let rows = rows(&crate::keymap::Keymap::default());
 
-        let columns = layout(&rows, inner(150, 67));
+        let columns = layout(&rows, inner(150, 68));
 
         assert_eq!(shown(&columns), rows.len(), "the keymap did not fit");
         assert!(

@@ -24,6 +24,7 @@ mod navigation;
 mod palette;
 mod prompt;
 mod render;
+mod reveals;
 mod scanning;
 mod search;
 mod selection;
@@ -356,6 +357,8 @@ pub struct App<'a> {
     /// The active file's stamp moved since it was loaded. Shown as a badge,
     /// cleared by `r`.
     view_stale: bool,
+    /// The reveals of each file, for its next load (#609).
+    kept_reveals: reveals::Kept,
     /// The view pipeline: where the file view's contents come from (#455).
     loading: loading::Loading,
     /// The followed files, and the tail of the one on screen (#493).
@@ -539,6 +542,7 @@ impl App<'_> {
             last_poll: None,
             stamp_check: None,
             view_stale: false,
+            kept_reveals: reveals::Kept::default(),
             loading: loading::Loading::new(
                 executor(),
                 std::sync::Arc::clone(&startup.table),
