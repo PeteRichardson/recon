@@ -849,6 +849,45 @@ fn unlist_at_all_unlists_every_known_set() {
     assert_eq!(included(&app), 1, "only the scratch filter decides");
 }
 
+/// `:unlist @all` leaves the pane and the view as `--clear` leaves them at
+/// startup (#563): the two paths agree set for set, row for row, and line for
+/// line.
+#[test]
+fn unlist_at_all_leaves_what_clear_leaves_at_startup() {
+    let mut app = app_with_three_sets("palette_unlist_at_all_vs_clear");
+    let file = open_path(&app);
+    run(&mut app, "unlist @all");
+
+    let mut fresh = App::new(&Startup {
+        filter_sets: three_sets(),
+        ..Startup::from(Config {
+            path: Some(file.display().to_string()),
+            clear: true,
+            ..Config::default()
+        })
+    });
+    fresh.add_filter("scratch").expect("valid");
+
+    let state = |app: &App| -> Vec<(bool, bool)> {
+        app.filters
+            .sets()
+            .iter()
+            .map(|meta| (meta.listed, meta.enabled))
+            .collect()
+    };
+    assert_eq!(state(&fresh), state(&app), "the sets disagree");
+    assert_eq!(
+        widgets::filterlist::rows(&fresh.filters),
+        widgets::filterlist::rows(&app.filters),
+        "the pane disagrees"
+    );
+    assert_eq!(
+        fresh.document.visible_lines(),
+        app.document.visible_lines(),
+        "the view disagrees"
+    );
+}
+
 /// With no set listed, `unlist @all` changes nothing and gives no error
 /// (#563): the palette closes, and a peek is left alone because nothing
 /// was listed or unlisted.
