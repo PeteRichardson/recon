@@ -550,17 +550,7 @@ impl ActiveFilters {
                 .iter()
                 .position(|filter| filter.set > set)
                 .unwrap_or(self.filters.len());
-            // New ids: a copy from the file is a new filter, so a capture
-            // taken before the unlist does not reach it.
-            let fresh: Vec<Filter> = self.as_loaded[set]
-                .iter()
-                .cloned()
-                .map(|filter| Filter {
-                    id: FilterId::fresh(),
-                    set,
-                    ..filter
-                })
-                .collect();
+            let fresh: Vec<Filter> = self.fresh_from_file(set).collect();
             self.filters.splice(at..at, fresh);
         } else {
             self.sets[set].enabled = false;
@@ -572,6 +562,20 @@ impl ActiveFilters {
         self.recompile();
         self.forget_capture();
         true
+    }
+
+    /// A copy of the filters of `set` as its file loaded them, all off, as
+    /// listing and `R` give them. New ids: a copy from the file is a new
+    /// filter, so a capture taken before it does not reach it.
+    fn fresh_from_file(&self, set: usize) -> impl Iterator<Item = Filter> + '_ {
+        self.as_loaded[set]
+            .iter()
+            .cloned()
+            .map(move |filter| Filter {
+                id: FilterId::fresh(),
+                set,
+                ..filter
+            })
     }
 
     /// Put every set's flag back from a solo's snapshot, except that an
@@ -823,17 +827,32 @@ impl ActiveFilters {
 
     /// Every set back to its startup state (#132): enabled iff `autoload`
     /// and listed now — the listed state itself is left alone (#282) —
-    /// each file filter from its set's `default` profile if there is one and
-    /// off otherwise, no solo, no pending `!` capture.
+    /// each listed set's filters a fresh copy of the ones its file loaded,
+    /// as listing gives them (#401), so a filter removed with `d` or changed
+    /// with `c` comes back as the file has it, from its set's `default`
+    /// profile if there is one and off otherwise, no solo, no pending `!`
+    /// capture.
     ///
     /// Scratch filters are not deleted and their flags are left alone: a
-    /// reset must never destroy something the user typed. Flags only, and
-    /// one key to redo from any state, so it asks no confirmation.
+    /// reset must never destroy something the user typed. One key to redo
+    /// from any state, so it asks no confirmation.
     pub fn reset(&mut self) {
         self.solo = None;
         self.forget_capture();
         self.sets[0].enabled = true;
+        // Rebuilt only when a set differs from its file, so a plain `R`
+        // keeps the compiled patterns and the scan they gave.
+        let rebuild = (1..self.sets.len()).any(|set| self.is_unsaved(set));
+        if rebuild {
+            // The scratch filters lead the list, and listed sets follow in
+            // index order, so rebuilding in that order keeps it contiguous.
+            self.filters.retain(|filter| filter.set == 0);
+        }
         for set in 1..self.sets.len() {
+            if rebuild && self.sets[set].listed {
+                let fresh: Vec<Filter> = self.fresh_from_file(set).collect();
+                self.filters.extend(fresh);
+            }
             for filter in self.filters.iter_mut().filter(|f| f.set == set) {
                 filter.enabled = false;
             }
@@ -841,6 +860,9 @@ impl ActiveFilters {
             if self.sets[set].autoload && self.sets[set].listed {
                 self.set_enabled_set(set, true);
             }
+        }
+        if rebuild {
+            self.recompile();
         }
     }
 
@@ -1577,6 +1599,28 @@ mod tests {
         assert_eq!(set.filters_in(0).count(), 1, "scratch filter not deleted");
         assert_eq!(set.soloed(), None);
         assert!(!set.has_remembered());
+    }
+
+    #[test]
+    fn reset_brings_back_a_file_filter_removed_with_d() {
+        let mut a = loaded("a", 10, true, &["x", "y"]);
+        a.profiles.insert("default".into(), vec!["x".into()]);
+        let mut set = ActiveFilters::with_sets(None, &[a]);
+        set.add("scratch").expect("valid");
+        assert!(set.remove(1), "x is a file filter, so d removes it");
+        assert_eq!(set.display_names(1), ["y"]);
+        set.reset();
+        assert_eq!(
+            set.display_names(1),
+            ["x", "y"],
+            "as the file loads it (#401)"
+        );
+        assert_eq!(
+            flags(&set, 1),
+            vec![true, false],
+            "from the default profile"
+        );
+        assert_eq!(set.filters_in(0).count(), 1, "scratch filter not deleted");
     }
 
     // ---- adopting the scratch set (#131) -----------------------------------

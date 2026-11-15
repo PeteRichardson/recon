@@ -1039,11 +1039,12 @@ working in one set's world. Solo and `!` are independent: `!` acts on filter
 flags, solo on set flags, and each restores its own.
 
 **Reset**: `R` returns every set to its startup state — enabled if and only if
-it has `autoload` and is listed now (`R` does not change which sets are listed), each file filter from its set's `default` profile, or off
-when the set has no `default` (the same state an `autoload` set without one
-starts in), no solo, no `!` memory. Filters you typed are kept, flags and
-all. It touches only flags and is one key to redo, so it asks no
-confirmation. `R` is uppercase because `r` is the global refresh-from-disk.
+it has `autoload` and is listed now (`R` does not change which sets are listed), each listed set's filters as its file has them — a
+filter removed with `d` or changed with `c` comes back, as unlist and then
+list gives it — each from its set's `default` profile, or off when the set
+has no `default` (the same state an `autoload` set without one starts in),
+no solo, no `!` memory. Filters you typed are kept, flags and all. It is one
+key to redo, so it asks no confirmation. `R` is uppercase because `r` is the global refresh-from-disk.
 
 **Saving**: `S` in the filter pane saves the scratch filters as a named set.
 A prompt asks for the name; `Enter` appends a `[sets.<name>]` table to
