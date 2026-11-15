@@ -376,14 +376,20 @@ fn cursor_screen_row(app: &App) -> u16 {
 fn save_fixture(name: &str) -> std::path::PathBuf {
     fixture_dir(name).join("recon").join("filters.toml")
 }
-fn app_with_three_sets(fixture: &str) -> App<'static> {
+/// The three sets of [`app_with_three_sets`], for a test that wants the same
+/// sets at startup as it has live in the window (#563).
+fn three_sets() -> Vec<filter::LoadedSet> {
     let mut a = filter::test_support::loaded("a", 10, true, &["alpha"]);
     a.profiles.insert("default".into(), vec!["alpha".into()]);
     let mut b = filter::test_support::loaded("b", 20, true, &["beta"]);
     b.profiles.insert("default".into(), vec!["beta".into()]);
     let c = filter::test_support::loaded("c", 30, false, &["gamma"]);
+    vec![a, b, c]
+}
+
+fn app_with_three_sets(fixture: &str) -> App<'static> {
     let mut app = app_over_file(fixture, "alpha\nbeta\ngamma\nscratch\n");
-    app.filters = ActiveFilters::with_sets(None, &[a, b, c]);
+    app.filters = ActiveFilters::with_sets(None, &three_sets());
     app.add_filter("scratch").expect("valid");
     app
 }
