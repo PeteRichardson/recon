@@ -359,6 +359,14 @@ name without `.filters.toml`, and `pack:view` always means that pack's view.
 A command or a row has no *listed* state: reading the file brings it in.
 _Avoid_: plugin, bundle, extension
 
+**Include list, ignore list**:
+The `.include` and `.ignore` files of a directory of set files, and the
+`[filter_dirs]` patterns that add to them. They select which set files
+recon reads at startup; the ignore list wins. A file that they do not select
+is never opened, so its sets and its *pack* are not there at all. The set
+picker then selects among the sets of the files that were read.
+_Avoid_: filter (that is a pattern in the filter pane), exclude
+
 **Spool**:
 The file that a *command view*'s output goes to when the output is too large
 to keep in memory, or when the command asks for one. While the command runs,

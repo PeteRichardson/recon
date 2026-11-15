@@ -29,6 +29,15 @@ from, separated by colons as in `PATH`. In each directory, recon reads
 `filters.toml` and each `*.filters.toml` file. A team can keep its sets in a
 shared repository, so that the knowledge about a log format is in one place.
 
+A `.include` or `.ignore` file in a directory selects which of its set files
+recon reads: one glob for each line, matched against the file name. With a
+`.include` file, recon reads only the files that it names. A file that a
+`.ignore` line matches is not read, even when `.include` names it too. Thus a
+large shared repository can sit on the path, and you read only the two files
+that you use. A `[filter_dirs."<dir>"]` table in `config.toml` adds your own
+`include` and `ignore` patterns to a directory's lists. The lists apply in
+`~/.config/recon` too, but recon always reads `~/.config/recon/filters.toml`.
+
 A set file can also have the `[commands]` and `[[filetype]]` rows of a
 [command view](views.md#command-views). Such a file is a *pack*: one file
 that adds a tool's filters, commands and views together.

@@ -326,6 +326,11 @@ pub struct Config {
     #[arg(skip)]
     pub aliases: BTreeMap<String, String>,
 
+    /// The `[filter_dirs]` table of `config.toml`: personal lists for each
+    /// filter directory, keyed as the file writes the directory (#603).
+    #[arg(skip)]
+    pub filter_dirs: crate::filtersets::DirLists,
+
     /// Colours for the file view's syntax colouring: a bundled theme name,
     /// a path to a `.tmTheme` file, or `none` to turn colouring off.
     ///
@@ -621,6 +626,9 @@ pub struct FileConfig {
     /// `[aliases]`: palette commands that run a chain of command lines
     /// (#557).
     pub aliases: Option<BTreeMap<String, String>>,
+    /// `[filter_dirs]`: which set files of a filter directory recon reads
+    /// (#603).
+    pub filter_dirs: Option<crate::filtersets::DirLists>,
     /// `[log]`: the log file and its size (#500, #504). Same absent-vs-empty
     /// reasoning as `editor`.
     pub log: Option<LogConfig>,
@@ -1572,6 +1580,7 @@ impl Config {
             filetype,
             commands,
             aliases,
+            filter_dirs,
             log,
         } = file;
 
@@ -1677,6 +1686,12 @@ impl Config {
             && self.aliases.is_empty()
         {
             self.aliases.clone_from(aliases);
+        }
+
+        if let Some(filter_dirs) = filter_dirs
+            && self.filter_dirs.is_empty()
+        {
+            self.filter_dirs.clone_from(filter_dirs);
         }
 
         if let Some(LogConfig {
@@ -3631,6 +3646,48 @@ mod tests {
         let mut config = Config::default();
         config.apply(&file);
         assert!(!config.scrollbar(), "the file did not turn it off");
+    }
+
+    /// `[filter_dirs]` gives personal lists for a filter directory (#603),
+    /// keyed as the file writes the directory.
+    #[test]
+    fn filter_dirs_give_lists_by_directory() {
+        let path = fixture(
+            "filter-dirs.toml",
+            "[filter_dirs.\"~/community/\"]\ninclude = [\"bingrep.*\"]\nignore = [\"broken*\"]\n\n\
+             [filter_dirs.\"/team\"]\nignore = [\"old.*\"]\n",
+        );
+        let mut config = Config::default();
+        config.apply(&load_from(&path).expect("a valid file"));
+        let lists = &config.filter_dirs;
+        let community = &lists[Path::new("~/community/")];
+        let texts = |globs: &[crate::views::Glob]| -> Vec<String> {
+            globs.iter().map(|glob| glob.text().to_string()).collect()
+        };
+        assert_eq!(
+            community.include.as_deref().map(texts),
+            Some(vec!["bingrep.*".to_string()])
+        );
+        assert_eq!(texts(&community.ignore), ["broken*"]);
+        let team = &lists[Path::new("/team")];
+        assert_eq!(team.include, None, "no include key is no include list");
+        assert_eq!(texts(&team.ignore), ["old.*"]);
+    }
+
+    #[test]
+    fn a_bad_filter_dirs_glob_or_key_is_refused() {
+        let bad_glob = fixture(
+            "filter-dirs-bad-glob.toml",
+            "[filter_dirs.\"/team\"]\ninclude = [\"{a,b\"]\n",
+        );
+        let err = load_from(&bad_glob).expect_err("refused");
+        assert!(err.to_string().contains("{a,b"), "{err}");
+        let bad_key = fixture(
+            "filter-dirs-bad-key.toml",
+            "[filter_dirs.\"/team\"]\nexclude = [\"a\"]\n",
+        );
+        let err = load_from(&bad_key).expect_err("refused");
+        assert!(err.to_string().contains("exclude"), "{err}");
     }
 
     #[test]

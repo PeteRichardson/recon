@@ -1151,6 +1151,44 @@ adds its directory to the path. A leading `~` in an entry is your home
 directory. With debug logging on (see [Logging](#logging)), recon logs each
 file that it reads and each set that is hidden.
 
+#### Select the files in a directory
+
+A shared repository of set files can sit on the path, and recon reads only
+the files that you want. Put a `.include` file, a `.ignore` file, or both, in
+the directory. Each line is one glob, in the format of a `[[filetype]]` glob
+(`*`, `?`, `{a,b}`), and it matches the file name. A line that starts with
+`#` is a comment.
+
+```
+~/src/recon-community/
+├── .include          # bingrep.filters.toml
+├── bingrep.filters.toml
+├── … 2000 more files
+```
+
+- With a `.include` file, recon reads only the set files that a line
+  matches. An empty `.include` file reads no file.
+- With a `.ignore` file, recon does not read the set files that a line
+  matches. When a file matches a line in both files, the ignore wins.
+- recon does not open a file that is not selected, so a large repository
+  costs nothing at startup, and an error in an ignored file does not stop
+  recon.
+
+The files travel with the repository. To change the lists for yourself, add
+a `[filter_dirs]` table to `config.toml`. Its patterns are added to the
+directory's own lists:
+
+```toml
+[filter_dirs."~/src/recon-community"]
+include = ["mpeg.filters.toml"]   # read this one too
+ignore = ["broken*"]              # and never these
+```
+
+The lists apply in `~/.config/recon` too, but never to
+`~/.config/recon/filters.toml`, the file that `S` writes. The lists select
+files at startup. The set picker (`L`) then selects the sets of the files
+that recon read.
+
 #### Packs: views in a set file
 
 A set file can also have `[commands]` and `[[filetype]]` rows, in the
