@@ -53,6 +53,10 @@ time. Past 10 MiB, or with `spool = true`, recon writes the output to a
 spool file and shows the lines while the command runs, as for a file that
 grows. `Ctrl-c` stops the command and keeps its lines.
 
+A [set file on the filter path](filter-sets.md#sets-for-a-team) can have
+these tables too. Its views go after the views of your own row, and before
+`raw` and `hex`. Name one as `pack:view` in your row to put it first.
+
 ## Aligned columns
 
 `table` reads a CSV file with the real CSV grammar — quotes, commas inside

@@ -1151,6 +1151,51 @@ adds its directory to the path. A leading `~` in an entry is your home
 directory. With debug logging on (see [Logging](#logging)), recon logs each
 file that it reads and each set that is hidden.
 
+#### Packs: views in a set file
+
+A set file can also have `[commands]` and `[[filetype]]` rows, in the
+format that `config.toml` uses (see [Command views](#command-views)). The
+file is then a *pack*: one file that tells recon all it must know about a
+tool. A team adds the tool with one file on the path.
+
+```toml
+# ~/work/team-filters/mpegpack.filters.toml
+[sets.mpeg]
+filters = [{ pattern = "frame" }]
+
+[commands.beautiful]
+argv = ["mpegdump", "{file}"]
+
+[[filetype]]
+glob  = "*.mpg"
+views = ["beautiful", "hex"]
+```
+
+The pack's name is the file name without `.filters.toml`, here `mpegpack`.
+
+- **Order.** A pack row goes after the rows of `config.toml`. When your
+  `config.toml` has a row with the same `glob` and `mime`, the pack's views
+  go into your row, after your own views and before the built-in views at
+  its end (`raw`, `hex`). A pack never changes the first view of your row.
+  If your row has no `handoff`, it gets the pack's.
+- **Your order wins.** Name a pack view as `pack:view` in your own row
+  (`views = ["mpegpack:beautiful", "raw"]`) to put it where you want it.
+- **Same names.** recon reads the files in the order above. The first
+  definition of a command keeps its name, and `config.toml` comes before
+  every pack. A later command of the same name is named `pack:name`, and
+  recon shows a warning. When two packs have a row for the same files, the
+  first row is used and recon shows a warning for the other.
+- **Names in a row.** In a pack's row, a bare name means that pack's own
+  command first. `pack:view` always means that pack's view.
+- **No program.** When the program is not on `PATH`, the pack still loads,
+  and recon shows the same warning as for a command in `config.toml`.
+
+A command name cannot contain `:`. When two directories each have a pack
+of one name (for example two `filters.toml`), recon uses the first and shows
+a warning for the other. Commands and rows are not
+listed or unlisted in the set picker: they are in force while their file is
+on the path.
+
 #### The set picker
 
 `L` shows every known set on one screen, so you can choose which sets the

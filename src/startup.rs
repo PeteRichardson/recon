@@ -18,8 +18,9 @@ pub struct Startup {
     pub config: Config,
     /// Every binding in force: the defaults with `[keymap]` folded in (#61).
     pub bindings: Keymap,
-    /// What the `[keymap]` table cost, then each view a `[[filetype]]` row
-    /// names that cannot run (#457): for the panel `App` draws on its first
+    /// What the `[keymap]` table cost, then each pack definition a
+    /// collision renamed or dropped (#602), then each view a `[[filetype]]`
+    /// row names that cannot run (#457): for the panel `App` draws on its first
     /// frame, or for stderr on a path with no panel.
     pub warnings: Vec<String>,
     /// The view cycle of each file type, with the commands that can run.
@@ -146,7 +147,8 @@ pub fn start() -> Result<Start> {
     }
 
     let read = std::time::Instant::now();
-    let filter_sets = crate::filtersets::load_file(config.filter_path.as_deref())?;
+    let loaded = crate::filtersets::load_file(config.filter_path.as_deref())?;
+    let filter_sets = loaded.sets;
     log::debug!(
         "{} filter sets read in {:?}",
         filter_sets.len(),
@@ -157,11 +159,15 @@ pub fn start() -> Result<Start> {
     // reach a screen that is not about to be replaced (#143).
     config.check_sets(&filter_sets)?;
 
+    // The packs' commands and rows join `config.toml`'s (#602). A view no
+    // file defines refuses here, before the terminal is taken (#143).
+    let merged = crate::views::pack::merge(&config.filetypes, &config.commands, &loaded.packs)?;
+
     // Looks each command up on `PATH` once, here, so that a missing one is
     // one warning at startup and not an error on each file.
-    let (table, view_warnings) =
-        crate::views::cycle::Table::build(&config.filetypes, &config.commands);
+    let (table, view_warnings) = crate::views::cycle::Table::build(&merged.rows, &merged.commands);
     let mut warnings = keymap_warnings;
+    warnings.extend(merged.warnings);
     warnings.extend(view_warnings);
     warnings.extend(config.set_hints());
 

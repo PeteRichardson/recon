@@ -222,7 +222,8 @@ pub struct Commands(pub BTreeMap<String, Command>);
 
 impl<'de> Deserialize<'de> for Commands {
     /// A command named for a built-in view is refused: a row that names it
-    /// could mean either one.
+    /// could mean either one. So is a name with a `:`, which a row reads as
+    /// `pack:view` (#602).
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,
@@ -236,6 +237,11 @@ impl<'de> Deserialize<'de> for Commands {
         {
             return Err(D::Error::custom(format!(
                 "`{name}` is the name of a built-in view; give the command another name"
+            )));
+        }
+        if let Some(name) = commands.keys().find(|name| name.contains(':')) {
+            return Err(D::Error::custom(format!(
+                "`{name}` holds a `:`, which names a pack's view (`pack:view`); give the command another name"
             )));
         }
         Ok(Self(commands))

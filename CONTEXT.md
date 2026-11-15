@@ -352,6 +352,13 @@ the file and writes text or an image. The program is the user's, not part of
 recon.
 _Avoid_: plugin, preprocessor, filter (that is a pattern in the filter pane)
 
+**Pack**:
+A set file on the filter path that also has `[commands]` or `[[filetype]]`
+rows: what recon must know about one tool, in one file. Its name is the file
+name without `.filters.toml`, and `pack:view` always means that pack's view.
+A command or a row has no *listed* state: reading the file brings it in.
+_Avoid_: plugin, bundle, extension
+
 **Spool**:
 The file that a *command view*'s output goes to when the output is too large
 to keep in memory, or when the command asks for one. While the command runs,

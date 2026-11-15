@@ -889,9 +889,6 @@ pub enum ConfigError {
     AllPanesHidden,
     /// `RECON_WARNINGS` set to something other than `true` or `false`.
     BadWarningsVar(String),
-    /// A `[[filetype]]` row naming a view that is neither built in nor in
-    /// `[commands]` (#457).
-    UnknownView { glob: String, name: String },
     /// An `[aliases]` entry the palette cannot run (#557). `problem` says
     /// why, for the message.
     BadAlias { name: String, problem: String },
@@ -1047,10 +1044,6 @@ impl fmt::Display for ConfigError {
             Self::AllPanesHidden => write!(
                 f,
                 "--hide-pane or [layout] hide_panes hides every pane; at least one must stay shown"
-            ),
-            Self::UnknownView { glob, name } => write!(
-                f,
-                "the [[filetype]] row for `{glob}` names view `{name}`, which is not a built-in view or a name in [commands]"
             ),
             Self::BadAlias { name, problem } => {
                 write!(f, "[aliases] `{name}`: {problem}")
@@ -1403,25 +1396,6 @@ impl Config {
         Ok(())
     }
 
-    /// Refuse a `[[filetype]]` row that names a view no one defines (#457).
-    /// After the file layer: a row and the command it names are read
-    /// separately. `image` and `quicklook` are known names (#458); the
-    /// table warns about `quicklook` where there is no Quick Look.
-    pub fn check_views(&self) -> Result<(), ConfigError> {
-        let known = |name: &str| {
-            crate::views::BUILT_IN.contains(&name) || self.commands.0.contains_key(name)
-        };
-        for row in &self.filetypes {
-            if let Some(name) = row.views.iter().flatten().find(|name| !known(name)) {
-                return Err(ConfigError::UnknownView {
-                    glob: row.label().to_string(),
-                    name: name.clone(),
-                });
-            }
-        }
-        Ok(())
-    }
-
     /// Refuse an `[aliases]` entry the palette cannot run (#557): at load,
     /// not when the alias runs.
     pub fn check_aliases(&self) -> Result<(), ConfigError> {
@@ -1555,7 +1529,6 @@ impl Config {
         };
         self.apply(&file);
         self.check_panes()?;
-        self.check_views()?;
         self.check_aliases()?;
         Ok(file.keymap.unwrap_or_default())
     }
@@ -3689,7 +3662,8 @@ mod tests {
         );
         let mut config = Config::default();
         config.apply(&load_from(&unknown).expect("a row parses before its names are checked"));
-        let err = config.check_views().expect_err("an unknown view must fail");
+        let err = crate::views::pack::merge(&config.filetypes, &config.commands, &[])
+            .expect_err("an unknown view must fail");
         assert!(err.to_string().contains("`marked`"), "{err}");
         assert!(err.to_string().contains("`*.md`"), "{err}");
 
@@ -3711,7 +3685,8 @@ mod tests {
         );
         let mut config = Config::default();
         config.apply(&load_from(&path).expect("a valid file"));
-        config.check_views().expect("every name is known");
+        crate::views::pack::merge(&config.filetypes, &config.commands, &[])
+            .expect("every name is known");
         assert_eq!(config.commands.0["jq"].argv, ["jq", "."]);
     }
 
@@ -3942,7 +3917,8 @@ mod tests {
         );
         let mut config = Config::default();
         config.apply(&load_from(&path).expect("a row parses before its names are checked"));
-        let err = config.check_views().expect_err("an unknown view must fail");
+        let err = crate::views::pack::merge(&config.filetypes, &config.commands, &[])
+            .expect_err("an unknown view must fail");
         assert!(
             err.to_string().contains("`application/x-mach-binary`"),
             "{err}"

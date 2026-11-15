@@ -7,6 +7,7 @@
 pub(crate) mod cache;
 pub mod command;
 pub mod cycle;
+pub mod pack;
 pub(crate) mod pool;
 pub(crate) mod read;
 pub(crate) mod spool;

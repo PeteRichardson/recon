@@ -17,6 +17,9 @@ use crate::filter::{
     ALL_ITEM, Engine, Example, LoadedFilter, LoadedSet, Neighbor, Predicate, Sense,
 };
 use crate::syntax::Kind;
+use crate::views::FileType;
+use crate::views::command::Commands;
+use crate::views::pack::Pack;
 use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::fmt;
@@ -43,6 +46,14 @@ const ONLY_MODE: &str = "or";
 struct FileSchema {
     #[serde(default)]
     sets: BTreeMap<String, SetSchema>,
+    /// A pack's command views (#602), with the keys of `[commands]` in
+    /// `config.toml`.
+    #[serde(default)]
+    commands: Commands,
+    /// A pack's rows (#602), with the keys of `[[filetype]]` in
+    /// `config.toml`.
+    #[serde(default)]
+    filetype: Vec<FileType>,
 }
 
 #[derive(Deserialize, Debug, Default)]
@@ -224,17 +235,44 @@ impl std::error::Error for Error {}
 /// filter named, so that a user reading the message in a hurry can go
 /// straight to the line.
 pub fn parse(text: &str, path: &Path) -> Result<Vec<LoadedSet>, Error> {
-    Ok(finish(parse_sets(text, path)?))
+    Ok(finish(parse_file(text, path)?.0))
+}
+
+/// One file's sets as the file wrote them, and its pack when it has
+/// commands or rows (#602).
+fn parse_file(text: &str, path: &Path) -> Result<(Vec<LoadedSet>, Option<Pack>), Error> {
+    let FileSchema {
+        sets,
+        commands,
+        filetype,
+    } = toml::from_str(text).map_err(|source| Error::Parse {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    let pack = (!commands.0.is_empty() || !filetype.is_empty()).then(|| Pack {
+        name: pack_name(path),
+        path: path.to_path_buf(),
+        commands,
+        filetypes: filetype,
+    });
+    Ok((parse_sets(sets, path)?, pack))
+}
+
+/// A pack's name: the file's name without [`SUFFIX`], so
+/// `mpegpack.filters.toml` gives `mpegpack` and needs no key to say so.
+/// A bare [`FILE`] gives `filters`.
+fn pack_name(path: &Path) -> String {
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    name.strip_suffix(SUFFIX)
+        .or_else(|| name.strip_suffix(".toml"))
+        .unwrap_or(&name)
+        .to_string()
 }
 
 /// One file's sets as the file wrote them: no built-in default added and
 /// not yet sorted, so that [`load_all`] can tell a file that names the
 /// built-in set from one that does not.
-fn parse_sets(text: &str, path: &Path) -> Result<Vec<LoadedSet>, Error> {
-    let file: FileSchema = toml::from_str(text).map_err(|source| Error::Parse {
-        path: path.to_path_buf(),
-        source,
-    })?;
+fn parse_sets(sets: BTreeMap<String, SetSchema>, path: &Path) -> Result<Vec<LoadedSet>, Error> {
     let invalid = |set: &str, filter: Option<&str>, message: String| Error::Invalid {
         path: path.to_path_buf(),
         set: set.to_string(),
@@ -242,8 +280,8 @@ fn parse_sets(text: &str, path: &Path) -> Result<Vec<LoadedSet>, Error> {
         message,
     };
 
-    let mut sets = Vec::with_capacity(file.sets.len());
-    for (name, schema) in file.sets {
+    let mut loaded = Vec::with_capacity(sets.len());
+    for (name, schema) in sets {
         if name.is_empty() {
             return Err(invalid(&name, None, "a set's name cannot be empty".into()));
         }
@@ -336,7 +374,7 @@ fn parse_sets(text: &str, path: &Path) -> Result<Vec<LoadedSet>, Error> {
                 builtin: true,
             };
             check_item_names(&set).map_err(|message| invalid(&set.name, None, message))?;
-            sets.push(set);
+            loaded.push(set);
             continue;
         }
         if schema.filters.is_empty() {
@@ -462,9 +500,9 @@ fn parse_sets(text: &str, path: &Path) -> Result<Vec<LoadedSet>, Error> {
             builtin: false,
         };
         check_item_names(&set).map_err(|message| invalid(&set.name, None, message))?;
-        sets.push(set);
+        loaded.push(set);
     }
-    Ok(sets)
+    Ok(loaded)
 }
 
 /// The characters a profile or named filter name cannot hold, each with
@@ -924,9 +962,9 @@ fn dir_set_files(dir: &Path) -> Result<Vec<PathBuf>, Error> {
     Ok(found)
 }
 
-/// Read and parse one file, as [`parse_sets`] leaves it. A file that is not
-/// there is no sets.
-fn read_sets(path: &Path) -> Result<Vec<LoadedSet>, Error> {
+/// Read and parse one file, as [`parse_file`] leaves it. A file that is
+/// not there is no sets and no pack.
+fn read_file(path: &Path) -> Result<(Vec<LoadedSet>, Option<Pack>), Error> {
     let text = match std::fs::read_to_string(path) {
         Ok(text) => text,
         // The overwhelmingly common case, and not a failure: recon runs with
@@ -935,7 +973,7 @@ fn read_sets(path: &Path) -> Result<Vec<LoadedSet>, Error> {
         // is real.
         Err(source) if source.kind() == std::io::ErrorKind::NotFound => {
             log::debug!("no filter sets file at {}", path.display());
-            return Ok(Vec::new());
+            return Ok((Vec::new(), None));
         }
         Err(source) => {
             return Err(Error::Read {
@@ -948,13 +986,22 @@ fn read_sets(path: &Path) -> Result<Vec<LoadedSet>, Error> {
     // not appear; absence is logged too, since "no file" and "the wrong
     // file" look identical from the pane (#83).
     log::debug!("reading filter sets from {}", path.display());
-    parse_sets(&text, path)
+    parse_file(&text, path)
 }
 
 /// Read and parse one file. A file that is not there is no sets.
 #[cfg(test)]
 fn load_from(path: &Path) -> Result<Vec<LoadedSet>, Error> {
-    load_all(&[path.to_path_buf()])
+    Ok(load_all(&[path.to_path_buf()])?.sets)
+}
+
+/// What the set files hold: the sets, and the packs (#602).
+#[derive(Debug, Default)]
+pub struct Loaded {
+    /// In pane order.
+    pub sets: Vec<LoadedSet>,
+    /// One per file with commands or rows, highest precedence first.
+    pub packs: Vec<Pack>,
 }
 
 /// Read every file in `files`, highest precedence first, into one list.
@@ -966,10 +1013,13 @@ fn load_from(path: &Path) -> Result<Vec<LoadedSet>, Error> {
 /// sets included — an error in any of them refuses to start, for the
 /// reason `Config::load` gives, and a broken team file should not wait to
 /// be found until the personal set shadowing it is deleted.
-fn load_all(files: &[PathBuf]) -> Result<Vec<LoadedSet>, Error> {
+fn load_all(files: &[PathBuf]) -> Result<Loaded, Error> {
     let mut sets: Vec<LoadedSet> = Vec::new();
+    let mut packs = Vec::new();
     for file in files {
-        for set in read_sets(file)? {
+        let (file_sets, pack) = read_file(file)?;
+        packs.extend(pack);
+        for set in file_sets {
             if let Some(winner) = sets.iter().find(|seen| seen.name == set.name) {
                 log::debug!(
                     "set {:?} in {} is shadowed by the one in {}",
@@ -982,13 +1032,16 @@ fn load_all(files: &[PathBuf]) -> Result<Vec<LoadedSet>, Error> {
             sets.push(set);
         }
     }
-    Ok(finish(sets))
+    Ok(Loaded {
+        sets: finish(sets),
+        packs,
+    })
 }
 
 /// The file layer. Call before the terminal is initialised: an error here
 /// refuses to start, for the reason `Config::load` gives. `filter_path` is
 /// `--filter-path` or `RECON_FILTER_PATH`, as clap resolved it.
-pub fn load_file(filter_path: Option<&str>) -> Result<Vec<LoadedSet>, Error> {
+pub fn load_file(filter_path: Option<&str>) -> Result<Loaded, Error> {
     let own = path();
     if own.is_none() {
         log::debug!("no config home ($XDG_CONFIG_HOME, $HOME unset); no filters.toml read");
@@ -2178,7 +2231,9 @@ pattern = 'plain'
         let own = root.join("own").join(FILE);
         write(&own, &set_file("bug", "mine"));
         write(&root.join("own/a.filters.toml"), &set_file("bug", "theirs"));
-        let sets = load_all(&set_files(Some(own.clone()), &[]).expect("lists")).expect("loads");
+        let sets = load_all(&set_files(Some(own.clone()), &[]).expect("lists"))
+            .expect("loads")
+            .sets;
         assert_eq!(sets[0].name, "bug");
         assert_eq!(sets[0].filters[0].predicate.display(), "mine");
         assert_eq!(sets[0].path, own);
@@ -2228,7 +2283,7 @@ pattern = 'plain'
         );
         write(&team.join("b.filters.toml"), &set_file("wifi", "later"));
         let files = set_files(Some(own.clone()), std::slice::from_ref(&team)).expect("lists");
-        let sets = load_all(&files).expect("loads");
+        let sets = load_all(&files).expect("loads").sets;
         let names: Vec<&str> = sets.iter().map(|set| set.name.as_str()).collect();
         assert_eq!(names, ["bug", "definitions", "wifi"]);
         assert_eq!(sets[0].filters[0].predicate.display(), "mine");
@@ -2246,10 +2301,77 @@ pattern = 'plain'
         let (own, team) = (root.join("own.toml"), root.join("team.toml"));
         write(&own, &set_file("a", "x"));
         write(&team, "[sets.definitions]\npriority = 7\n");
-        let sets = load_all(&[own, team]).expect("loads");
+        let sets = load_all(&[own, team]).expect("loads").sets;
         let builtins: Vec<&LoadedSet> = sets.iter().filter(|set| set.builtin).collect();
         assert_eq!(builtins.len(), 1);
         assert_eq!(builtins[0].priority, 7);
+    }
+
+    // ---- Packs (#602) ------------------------------------------------------
+
+    #[test]
+    fn a_set_file_is_a_pack_of_its_commands_and_rows() {
+        let root = scratch_dir("pack");
+        let file = root.join("mpegpack.filters.toml");
+        write(
+            &file,
+            &format!(
+                "{}[commands.beautiful]\nargv = ['mpegdump', '{{file}}']\n\n\
+                 [[filetype]]\nglob = '*.mpg'\nviews = ['beautiful']\n",
+                set_file("mpeg", "frame")
+            ),
+        );
+        let loaded = load_all(std::slice::from_ref(&file)).expect("loads");
+        assert!(loaded.sets.iter().any(|set| set.name == "mpeg"));
+        assert_eq!(loaded.packs.len(), 1);
+        let pack = &loaded.packs[0];
+        assert_eq!(pack.name, "mpegpack");
+        assert_eq!(pack.path, file);
+        assert_eq!(pack.commands.0["beautiful"].argv, ["mpegdump", "{file}"]);
+        assert_eq!(pack.filetypes.len(), 1);
+        assert_eq!(pack.filetypes[0].label(), "*.mpg");
+    }
+
+    /// Saving a set into a pack file keeps the pack.
+    #[test]
+    fn a_set_saved_into_a_pack_file_keeps_its_commands_and_rows() {
+        let path = Path::new("team/mpegpack.filters.toml");
+        let before = "[commands.beautiful]\nargv = ['mpegdump', '{file}']\n\n\
+                      [[filetype]]\nglob = '*.mpg'\nviews = ['beautiful']\n";
+        let after = append_set(
+            before,
+            &SetToSave {
+                name: "mine",
+                filters: vec![FilterToSave::new("x", Sense::Include)],
+                default: Vec::new(),
+            },
+        )
+        .expect("appends");
+        let (sets, pack) = parse_file(&after, path).expect("parses");
+        assert!(sets.iter().any(|set| set.name == "mine"));
+        let pack = pack.expect("still a pack");
+        assert_eq!(pack.commands.0["beautiful"].argv, ["mpegdump", "{file}"]);
+        assert_eq!(pack.filetypes.len(), 1);
+    }
+
+    /// A bare `filters.toml` is the pack `filters`.
+    #[test]
+    fn a_pack_is_named_by_its_file() {
+        assert_eq!(pack_name(Path::new("a/mpegpack.filters.toml")), "mpegpack");
+        assert_eq!(pack_name(Path::new("a/filters.toml")), "filters");
+    }
+
+    /// `pack:view` names a pack's view, so a colon in a command's own name
+    /// would make that name mean two things.
+    #[test]
+    fn a_pack_command_name_with_a_colon_is_refused_with_its_file() {
+        let root = scratch_dir("pack-colon");
+        let file = root.join("mpegpack.filters.toml");
+        write(&file, "[commands.'a:b']\nargv = ['x']\n");
+        let err = load_all(std::slice::from_ref(&file)).expect_err("refused");
+        let err = err.to_string();
+        assert!(err.contains(&file.display().to_string()), "{err}");
+        assert!(err.contains("`a:b`"), "{err}");
     }
 
     #[test]
