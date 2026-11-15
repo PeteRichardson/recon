@@ -147,7 +147,7 @@ pub fn start() -> Result<Start> {
     }
 
     let read = std::time::Instant::now();
-    let loaded = crate::filtersets::load_file(config.filter_path.as_deref())?;
+    let loaded = crate::filtersets::load_file(config.filter_path.as_deref(), &config.filter_dirs)?;
     let filter_sets = loaded.sets;
     log::debug!(
         "{} filter sets read in {:?}",

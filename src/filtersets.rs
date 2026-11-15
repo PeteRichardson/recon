@@ -17,9 +17,9 @@ use crate::filter::{
     ALL_ITEM, Engine, Example, LoadedFilter, LoadedSet, Neighbor, Predicate, Sense,
 };
 use crate::syntax::Kind;
-use crate::views::FileType;
 use crate::views::command::Commands;
 use crate::views::pack::Pack;
+use crate::views::{FileType, Glob};
 use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::fmt;
@@ -164,6 +164,13 @@ pub enum Error {
         path: PathBuf,
         source: std::io::Error,
     },
+    /// A line of a `.include` or `.ignore` file that is not a glob (#603).
+    /// `line` counts from 1.
+    Pattern {
+        path: PathBuf,
+        line: usize,
+        message: String,
+    },
     /// Not valid TOML, or a key the schema does not define.
     Parse {
         path: PathBuf,
@@ -196,6 +203,11 @@ impl fmt::Display for Error {
                     path.display()
                 )
             }
+            Self::Pattern {
+                path,
+                line,
+                message,
+            } => write!(f, "invalid pattern at {}:{line}: {message}", path.display()),
             // On its own line, as `ConfigError::Parse` does: toml's error is a
             // multi-line snippet with a caret, and reads badly after a colon.
             Self::Parse { path, source } => {
@@ -871,16 +883,20 @@ pub fn search_path_from(filter_path: Option<&str>, home: Option<&str>) -> Vec<Pa
             continue;
         }
         let dir = crate::config::expand_tilde(&dir, home);
-        let key = crate::path::lexical_absolute(&dir);
-        if dirs
-            .iter()
-            .any(|seen| crate::path::lexical_absolute(seen) == key)
-        {
+        let key = dir_key(&dir, home);
+        if dirs.iter().any(|seen| dir_key(seen, home) == key) {
             continue;
         }
         dirs.push(dir);
     }
     dirs
+}
+
+/// Which directory `dir` names: `~` expanded against `home`, then made
+/// absolute without a look at the disk, so `~/team/` and `~/team` are one
+/// directory, on the path and in `[filter_dirs]` alike.
+fn dir_key(dir: &Path, home: Option<&str>) -> PathBuf {
+    crate::path::lexical_absolute(&crate::config::expand_tilde(dir, home))
 }
 
 /// Every file recon reads sets from, highest precedence first: `own`, the
@@ -905,27 +921,116 @@ pub fn search_path_from(filter_path: Option<&str>, home: Option<&str>) -> Vec<Pa
 /// `PATH` entry is no error to a shell; one that cannot be read is an
 /// error. A file is listed once, at its first position, so the config
 /// directory named on the path as well is not read twice.
-pub fn set_files(own: Option<PathBuf>, dirs: &[PathBuf]) -> Result<Vec<PathBuf>, Error> {
+///
+/// Each directory's `.include` and `.ignore` files, with its `personal`
+/// lists added, select which set files are listed (#603); see [`Lists`].
+/// A file they do not select is never opened. `own` is always listed.
+pub fn set_files(
+    own: Option<PathBuf>,
+    dirs: &[PathBuf],
+    personal: &DirLists,
+) -> Result<Vec<PathBuf>, Error> {
     let own_dir = own.as_deref().and_then(Path::parent).map(Path::to_path_buf);
     let mut files: Vec<PathBuf> = own.into_iter().collect();
+    let mut seen: std::collections::HashSet<PathBuf> = files
+        .iter()
+        .map(|file| crate::path::lexical_absolute(file))
+        .collect();
     for dir in own_dir.iter().chain(dirs) {
-        for file in dir_set_files(dir)? {
-            let key = crate::path::lexical_absolute(&file);
-            if files
-                .iter()
-                .any(|seen| crate::path::lexical_absolute(seen) == key)
-            {
-                continue;
+        let personal = personal.get(&dir_key(dir, None));
+        for file in dir_set_files(dir, personal)? {
+            if seen.insert(crate::path::lexical_absolute(&file)) {
+                files.push(file);
             }
-            files.push(file);
         }
     }
     Ok(files)
 }
 
+/// The personal lists of `config.toml`'s `[filter_dirs]`, by directory
+/// (#603).
+pub type DirLists = BTreeMap<PathBuf, Lists>;
+
+/// `[filter_dirs]` keyed as [`set_files`] looks a directory up, by
+/// [`dir_key`]: `~` expanded against `home`.
+fn keyed(personal: &DirLists, home: Option<&str>) -> DirLists {
+    personal
+        .iter()
+        .map(|(dir, lists)| (dir_key(dir, home), lists.clone()))
+        .collect()
+}
+
+/// Which set files of one directory recon reads (#603): a directory's
+/// `.include` and `.ignore` files, or its `[filter_dirs]` table.
+#[derive(Deserialize, Debug, Default, Clone, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct Lists {
+    /// When there is a list, only a file a pattern here matches is read.
+    /// An empty list reads no file; no list reads every file.
+    pub include: Option<Vec<Glob>>,
+    /// A file a pattern here matches is not read, even when `include`
+    /// matches it too.
+    #[serde(default)]
+    pub ignore: Vec<Glob>,
+}
+
+impl Lists {
+    /// These lists and `more`'s together: a pattern in either counts.
+    fn and(mut self, more: &Self) -> Self {
+        if let Some(include) = &more.include {
+            self.include
+                .get_or_insert_with(Vec::new)
+                .extend(include.iter().cloned());
+        }
+        self.ignore.extend(more.ignore.iter().cloned());
+        self
+    }
+
+    /// Whether the set file named `name` is read. A pattern matches the
+    /// name alone, so one with a `/` matches no file.
+    fn selects(&self, name: &str) -> bool {
+        let name = Path::new(name);
+        let included = self
+            .include
+            .as_ref()
+            .is_none_or(|include| include.iter().any(|glob| glob.matches(name)));
+        included && !self.ignore.iter().any(|glob| glob.matches(name))
+    }
+}
+
+/// A directory's own lists: its `.include` and `.ignore` files.
+fn dir_lists(dir: &Path) -> Result<Lists, Error> {
+    Ok(Lists {
+        include: read_patterns(&dir.join(".include"))?,
+        ignore: read_patterns(&dir.join(".ignore"))?.unwrap_or_default(),
+    })
+}
+
+/// The globs of a `.include` or `.ignore` file, one per line, or `None`
+/// when there is no such file.
+fn read_patterns(path: &Path) -> Result<Option<Vec<Glob>>, Error> {
+    let Some(text) = read_optional(path)? else {
+        return Ok(None);
+    };
+    let mut globs = Vec::new();
+    for (index, line) in text.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        globs.push(line.parse().map_err(|message| Error::Pattern {
+            path: path.to_path_buf(),
+            line: index + 1,
+            message,
+        })?);
+    }
+    Ok(Some(globs))
+}
+
 /// One directory's set files, `filters.toml` first and the rest in name
-/// order, as [`set_files`] describes.
-fn dir_set_files(dir: &Path) -> Result<Vec<PathBuf>, Error> {
+/// order, as [`set_files`] describes: those that its lists, with
+/// `personal` added, select.
+fn dir_set_files(dir: &Path, personal: Option<&Lists>) -> Result<Vec<PathBuf>, Error> {
     let entries = match std::fs::read_dir(dir) {
         Ok(entries) => entries,
         Err(source) if source.kind() == std::io::ErrorKind::NotFound => {
@@ -939,6 +1044,12 @@ fn dir_set_files(dir: &Path) -> Result<Vec<PathBuf>, Error> {
             });
         }
     };
+    // After the listing, so a file in the directory's place is a `ReadDir`
+    // error, as before #603.
+    let mut lists = dir_lists(dir)?;
+    if let Some(personal) = personal {
+        lists = lists.and(personal);
+    }
     let mut found = Vec::new();
     for entry in entries {
         let entry = entry.map_err(|source| Error::ReadDir {
@@ -946,13 +1057,21 @@ fn dir_set_files(dir: &Path) -> Result<Vec<PathBuf>, Error> {
             source,
         })?;
         let name = entry.file_name();
-        let is_set_file = name.to_str().is_some_and(|name| {
-            name == FILE || (name.len() > SUFFIX.len() && name.ends_with(SUFFIX))
-        });
+        let Some(name) = name.to_str() else { continue };
+        if name != FILE && !(name.len() > SUFFIX.len() && name.ends_with(SUFFIX)) {
+            continue;
+        }
+        // Before the `stat` below: a file the lists do not select costs
+        // nothing, in a directory of thousands.
+        if !lists.selects(name) {
+            log::debug!("{name} in {} is not selected; not read", dir.display());
+            continue;
+        }
         // `Path::is_file` follows a symlink, so a linked file counts;
         // a directory that happens to carry the suffix does not.
-        if is_set_file && entry.path().is_file() {
-            found.push(entry.path());
+        let path = entry.path();
+        if path.is_file() {
+            found.push(path);
         }
     }
     found.sort_by_key(|path| (path.file_name() != Some(FILE.as_ref()), path.clone()));
@@ -962,25 +1081,28 @@ fn dir_set_files(dir: &Path) -> Result<Vec<PathBuf>, Error> {
     Ok(found)
 }
 
+/// A file's text, or `None` when it is not there. Only that one kind of
+/// error is forgiven — a permission error or a directory in the file's
+/// place is real.
+fn read_optional(path: &Path) -> Result<Option<String>, Error> {
+    match std::fs::read_to_string(path) {
+        Ok(text) => Ok(Some(text)),
+        Err(source) if source.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(source) => Err(Error::Read {
+            path: path.to_path_buf(),
+            source,
+        }),
+    }
+}
+
 /// Read and parse one file, as [`parse_file`] leaves it. A file that is
 /// not there is no sets and no pack.
 fn read_file(path: &Path) -> Result<(Vec<LoadedSet>, Option<Pack>), Error> {
-    let text = match std::fs::read_to_string(path) {
-        Ok(text) => text,
-        // The overwhelmingly common case, and not a failure: recon runs with
-        // the scratch set and the built-in one. Only this one kind is
-        // forgiven — a permission error or a directory in the file's place
-        // is real.
-        Err(source) if source.kind() == std::io::ErrorKind::NotFound => {
-            log::debug!("no filter sets file at {}", path.display());
-            return Ok((Vec::new(), None));
-        }
-        Err(source) => {
-            return Err(Error::Read {
-                path: path.to_path_buf(),
-                source,
-            });
-        }
+    // A missing file is the overwhelmingly common case, and not a failure:
+    // recon runs with the scratch set and the built-in one.
+    let Some(text) = read_optional(path)? else {
+        log::debug!("no filter sets file at {}", path.display());
+        return Ok((Vec::new(), None));
     };
     // Which file was read is the first thing anyone asks when a set does
     // not appear; absence is logged too, since "no file" and "the wrong
@@ -1040,14 +1162,16 @@ fn load_all(files: &[PathBuf]) -> Result<Loaded, Error> {
 
 /// The file layer. Call before the terminal is initialised: an error here
 /// refuses to start, for the reason `Config::load` gives. `filter_path` is
-/// `--filter-path` or `RECON_FILTER_PATH`, as clap resolved it.
-pub fn load_file(filter_path: Option<&str>) -> Result<Loaded, Error> {
+/// `--filter-path` or `RECON_FILTER_PATH`, as clap resolved it; `personal`
+/// is `[filter_dirs]`, keyed as the file writes each directory.
+pub fn load_file(filter_path: Option<&str>, personal: &DirLists) -> Result<Loaded, Error> {
     let own = path();
     if own.is_none() {
         log::debug!("no config home ($XDG_CONFIG_HOME, $HOME unset); no filters.toml read");
     }
-    let dirs = search_path_from(filter_path, std::env::var("HOME").ok().as_deref());
-    load_all(&set_files(own, &dirs)?)
+    let home = std::env::var("HOME").ok();
+    let dirs = search_path_from(filter_path, home.as_deref());
+    load_all(&set_files(own, &dirs, &keyed(personal, home.as_deref()))?)
 }
 
 #[cfg(test)]
@@ -2123,6 +2247,193 @@ pattern = 'plain'
         format!("[sets.{name}]\n[[sets.{name}.filters]]\npattern = '{pattern}'\n")
     }
 
+    fn no_lists() -> DirLists {
+        DirLists::new()
+    }
+
+    fn names(files: &[PathBuf]) -> Vec<&str> {
+        files
+            .iter()
+            .map(|file| {
+                file.file_name()
+                    .and_then(|name| name.to_str())
+                    .expect("a name")
+            })
+            .collect()
+    }
+
+    // ---- .include and .ignore (#603) ----------------------------------------
+
+    #[test]
+    fn an_ignore_file_drops_the_set_files_it_names() {
+        let root = scratch_dir("ignore");
+        let team = root.join("team");
+        for name in ["a.filters.toml", "b.filters.toml", "broken.filters.toml"] {
+            write(&team.join(name), "");
+        }
+        write(&team.join(".ignore"), "b.filters.toml\nbroken*\n");
+        let files = set_files(None, std::slice::from_ref(&team), &no_lists()).expect("lists");
+        assert_eq!(names(&files), ["a.filters.toml"]);
+    }
+
+    /// A community repository on the path: opt in to the packs you use.
+    #[test]
+    fn an_include_file_reads_only_the_set_files_it_names() {
+        let root = scratch_dir("include");
+        let team = root.join("team");
+        for name in ["filters.toml", "bingrep.filters.toml", "other.filters.toml"] {
+            write(&team.join(name), "");
+        }
+        write(&team.join(".include"), "# the one I use\n\n  bingrep.*  \n");
+        let files = set_files(None, std::slice::from_ref(&team), &no_lists()).expect("lists");
+        assert_eq!(names(&files), ["bingrep.filters.toml"]);
+    }
+
+    #[test]
+    fn an_empty_include_file_reads_nothing() {
+        let root = scratch_dir("include-empty");
+        let team = root.join("team");
+        write(&team.join("a.filters.toml"), "");
+        write(&team.join(".include"), "# nothing yet\n");
+        let files = set_files(None, std::slice::from_ref(&team), &no_lists()).expect("lists");
+        assert!(files.is_empty(), "{files:?}");
+    }
+
+    #[test]
+    fn ignore_wins_over_include() {
+        let root = scratch_dir("ignore-wins");
+        let team = root.join("team");
+        for name in ["a.filters.toml", "b.filters.toml"] {
+            write(&team.join(name), "");
+        }
+        write(&team.join(".include"), "*.filters.toml\n");
+        write(&team.join(".ignore"), "b.filters.toml\n");
+        let files = set_files(None, std::slice::from_ref(&team), &no_lists()).expect("lists");
+        assert_eq!(names(&files), ["a.filters.toml"]);
+    }
+
+    /// The lists apply in the config directory too, but never to the file
+    /// `S` writes: a saved set is always found again.
+    #[test]
+    fn the_config_directorys_lists_never_drop_filters_toml() {
+        let root = scratch_dir("own-lists");
+        let own = root.join("own").join(FILE);
+        write(&own, "");
+        write(&root.join("own/a.filters.toml"), "");
+        write(&root.join("own/b.filters.toml"), "");
+        write(&root.join("own/.ignore"), "filters.toml\na.*\n");
+        let files = set_files(Some(own.clone()), &[], &no_lists()).expect("lists");
+        assert_eq!(files, [own, root.join("own/b.filters.toml")]);
+    }
+
+    /// The gate runs before the read: a file no list selects costs nothing,
+    /// and an error in it does not refuse to start.
+    #[test]
+    fn a_file_that_is_not_selected_is_never_read() {
+        let root = scratch_dir("not-read");
+        let team = root.join("team");
+        write(&team.join("good.filters.toml"), &set_file("good", "x"));
+        write(&team.join("broken.filters.toml"), "this is not toml [");
+        write(&team.join(".ignore"), "broken*\n");
+        let files = set_files(None, std::slice::from_ref(&team), &no_lists()).expect("lists");
+        let sets = load_all(&files).expect("loads").sets;
+        assert!(sets.iter().any(|set| set.name == "good"));
+    }
+
+    #[test]
+    fn a_bad_pattern_names_the_list_file_and_line() {
+        let root = scratch_dir("bad-pattern");
+        let team = root.join("team");
+        write(&team.join("a.filters.toml"), "");
+        write(&team.join(".include"), "# ok\na.*\n{a,b\n");
+        let err = set_files(None, std::slice::from_ref(&team), &no_lists()).expect_err("refused");
+        let text = err.to_string();
+        assert!(text.contains(".include:3"), "{text}");
+        assert!(text.contains("{a,b"), "{text}");
+    }
+
+    fn globs(texts: &[&str]) -> Vec<Glob> {
+        texts
+            .iter()
+            .map(|text| text.parse().expect("a glob"))
+            .collect()
+    }
+
+    /// `[filter_dirs]` adds to a shared directory's own lists: one more
+    /// pack in, one broken pack out.
+    #[test]
+    fn personal_lists_add_to_the_directorys_lists() {
+        let root = scratch_dir("personal");
+        let team = root.join("team");
+        for name in ["a.filters.toml", "b.filters.toml", "c.filters.toml"] {
+            write(&team.join(name), "");
+        }
+        write(&team.join(".include"), "a.*\nb.*\n");
+        let personal = DirLists::from([(
+            dir_key(&team.join("x/.."), None),
+            Lists {
+                include: Some(globs(&["c.*"])),
+                ignore: globs(&["b.*"]),
+            },
+        )]);
+        let files = set_files(None, std::slice::from_ref(&team), &personal).expect("lists");
+        assert_eq!(names(&files), ["a.filters.toml", "c.filters.toml"]);
+    }
+
+    /// A `[filter_dirs]` key names its directory as the path does: `~` is
+    /// home, and a trailing `/` changes nothing.
+    #[test]
+    fn a_personal_key_finds_its_directory_by_tilde_and_trailing_slash() {
+        let root = scratch_dir("personal-key");
+        let home = crate::path::lexical_absolute(&root);
+        let team = home.join("team");
+        for name in ["a.filters.toml", "b.filters.toml"] {
+            write(&team.join(name), "");
+        }
+        let personal = DirLists::from([(
+            PathBuf::from("~/team/"),
+            Lists {
+                include: None,
+                ignore: globs(&["a.*"]),
+            },
+        )]);
+        let home = home.to_str().expect("a UTF-8 path");
+        let dirs = search_path_from(Some("~/team"), Some(home));
+        let files = set_files(None, &dirs, &keyed(&personal, Some(home))).expect("lists");
+        assert_eq!(names(&files), ["b.filters.toml"]);
+    }
+
+    /// Patterns match the file name alone, as ADR 0019 says: one with a `/`
+    /// matches no set file.
+    #[test]
+    fn a_pattern_matches_the_file_name_alone() {
+        let root = scratch_dir("name-only");
+        let team = root.join("team");
+        write(&team.join("a.filters.toml"), "");
+        write(&team.join(".ignore"), "**/a.filters.toml\n");
+        let files = set_files(None, std::slice::from_ref(&team), &no_lists()).expect("lists");
+        assert_eq!(names(&files), ["a.filters.toml"]);
+    }
+
+    /// A personal `include` alone gates a directory that has no `.include`.
+    #[test]
+    fn a_personal_include_gates_a_directory_with_no_include_file() {
+        let root = scratch_dir("personal-only");
+        let team = root.join("team");
+        for name in ["a.filters.toml", "b.filters.toml"] {
+            write(&team.join(name), "");
+        }
+        let personal = DirLists::from([(
+            dir_key(&team, None),
+            Lists {
+                include: Some(globs(&["b.*"])),
+                ignore: Vec::new(),
+            },
+        )]);
+        let files = set_files(None, std::slice::from_ref(&team), &personal).expect("lists");
+        assert_eq!(names(&files), ["b.filters.toml"]);
+    }
+
     #[test]
     fn the_path_is_each_entry_in_order() {
         assert_eq!(
@@ -2187,7 +2498,8 @@ pattern = 'plain'
         }
         std::fs::create_dir_all(team.join("dir.filters.toml")).expect("mkdir");
         let own = root.join("own").join(FILE);
-        let files = set_files(Some(own.clone()), std::slice::from_ref(&team)).expect("lists");
+        let files =
+            set_files(Some(own.clone()), std::slice::from_ref(&team), &no_lists()).expect("lists");
         assert_eq!(
             files,
             [
@@ -2209,7 +2521,8 @@ pattern = 'plain'
         write(&root.join("own/errors.filters.toml"), "");
         write(&root.join("own/config.toml"), "");
         write(&team.join("a.filters.toml"), "");
-        let files = set_files(Some(own.clone()), std::slice::from_ref(&team)).expect("lists");
+        let files =
+            set_files(Some(own.clone()), std::slice::from_ref(&team), &no_lists()).expect("lists");
         assert_eq!(
             files,
             [
@@ -2219,7 +2532,8 @@ pattern = 'plain'
             ]
         );
         write(&own, "");
-        let again = set_files(Some(own.clone()), std::slice::from_ref(&team)).expect("lists");
+        let again =
+            set_files(Some(own.clone()), std::slice::from_ref(&team), &no_lists()).expect("lists");
         assert_eq!(again, files, "filters.toml is listed once, first");
     }
 
@@ -2231,7 +2545,7 @@ pattern = 'plain'
         let own = root.join("own").join(FILE);
         write(&own, &set_file("bug", "mine"));
         write(&root.join("own/a.filters.toml"), &set_file("bug", "theirs"));
-        let sets = load_all(&set_files(Some(own.clone()), &[]).expect("lists"))
+        let sets = load_all(&set_files(Some(own.clone()), &[], &no_lists()).expect("lists"))
             .expect("loads")
             .sets;
         assert_eq!(sets[0].name, "bug");
@@ -2249,6 +2563,7 @@ pattern = 'plain'
         let files = set_files(
             Some(own.clone()),
             &[root.join("own"), root.join("own/"), root.join("own/../own")],
+            &no_lists(),
         )
         .expect("lists");
         assert_eq!(files, [own, root.join("own/x.filters.toml")]);
@@ -2257,7 +2572,7 @@ pattern = 'plain'
     #[test]
     fn a_missing_directory_on_the_path_is_no_files() {
         let root = scratch_dir("missing");
-        let files = set_files(None, &[root.join("nowhere")]).expect("not an error");
+        let files = set_files(None, &[root.join("nowhere")], &no_lists()).expect("not an error");
         assert!(files.is_empty(), "{files:?}");
     }
 
@@ -2266,7 +2581,7 @@ pattern = 'plain'
         let root = scratch_dir("not-a-dir");
         let file = root.join("team");
         write(&file, "");
-        let err = set_files(None, std::slice::from_ref(&file)).expect_err("refused");
+        let err = set_files(None, std::slice::from_ref(&file), &no_lists()).expect_err("refused");
         assert!(matches!(err, Error::ReadDir { .. }));
         assert!(err.to_string().contains("directory"), "{err}");
     }
@@ -2282,7 +2597,8 @@ pattern = 'plain'
             &format!("{}{}", set_file("bug", "theirs"), set_file("wifi", "wlan")),
         );
         write(&team.join("b.filters.toml"), &set_file("wifi", "later"));
-        let files = set_files(Some(own.clone()), std::slice::from_ref(&team)).expect("lists");
+        let files =
+            set_files(Some(own.clone()), std::slice::from_ref(&team), &no_lists()).expect("lists");
         let sets = load_all(&files).expect("loads").sets;
         let names: Vec<&str> = sets.iter().map(|set| set.name.as_str()).collect();
         assert_eq!(names, ["bug", "definitions", "wifi"]);
