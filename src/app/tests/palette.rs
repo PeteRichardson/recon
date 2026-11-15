@@ -825,6 +825,120 @@ fn unlist_unlists_a_set() {
     );
 }
 
+/// `unlist @all` unlists every known set, as `--clear` does at startup
+/// (#563): every header leaves the pane, and only the scratch set's own
+/// filter is left to decide the view.
+#[test]
+fn unlist_at_all_unlists_every_known_set() {
+    let mut app = app_with_three_sets("palette_unlist_at_all");
+    assert_eq!(
+        headers(&app).len(),
+        4,
+        "sanity: a, b, c and the built-in set have a row each"
+    );
+    assert_eq!(included(&app), 3, "sanity: alpha, beta, scratch");
+
+    run(&mut app, "unlist @all");
+    assert!(app.prompt.is_none(), "the palette closed");
+    assert!(
+        app.filters.sets()[1..].iter().all(|meta| !meta.listed),
+        "a known set is still listed"
+    );
+    assert!(app.filters.sets()[0].listed, "the scratch set stays");
+    assert_eq!(headers(&app), [], "only the scratch set has a row");
+    assert_eq!(included(&app), 1, "only the scratch filter decides");
+}
+
+/// With no set listed, `unlist @all` changes nothing and gives no error
+/// (#563): the palette closes, and a peek is left alone because nothing
+/// was listed or unlisted.
+#[test]
+fn unlist_at_all_with_nothing_listed_changes_nothing() {
+    let mut app = app_with_three_sets("palette_unlist_at_all_nothing");
+    run(&mut app, "unlist @all");
+    assert_eq!(included(&app), 1, "sanity: every known set is unlisted");
+
+    key(&mut app, KeyCode::Char(' '));
+    assert!(app.peek.is_some(), "sanity: peeking");
+    let peeked = included(&app);
+
+    run(&mut app, "unlist @all");
+    assert!(
+        app.prompt.is_none(),
+        "the palette stayed open with {:?}",
+        app.prompt.as_ref().and_then(|line| line.error.clone())
+    );
+    assert!(app.peek.is_some(), "nothing changed, so the peek stands");
+    assert_eq!(included(&app), peeked, "the view is as it was");
+}
+
+/// `@all` is the `unlist` argument for every set, and nothing else: `list
+/// @all` and `set @all` are an unknown set, and the palette keeps the line
+/// with the error (#563).
+#[test]
+fn at_all_is_an_argument_of_unlist_only() {
+    let mut app = app_with_three_sets("palette_at_all_other_commands");
+    for line in ["list @all", "set @all"] {
+        run(&mut app, line);
+        assert_eq!(prompt(&app).pattern, line, "the line is gone");
+        assert!(
+            prompt(&app)
+                .error
+                .as_deref()
+                .is_some_and(|e| e.contains("@all")),
+            "{line}: {:?}",
+            prompt(&app).error
+        );
+        key(&mut app, KeyCode::Esc);
+    }
+    assert!(
+        app.filters.sets()[1..].iter().all(|meta| meta.listed),
+        "a set changed"
+    );
+}
+
+/// After `unlist`, Tab completes `@all` beside the set names (#563). After
+/// `set` and `list` it does not: there `@all` is no group, so nothing fits
+/// the `@`.
+#[test]
+fn tab_completes_at_all_after_unlist() {
+    let mut app = app_with_three_sets("palette_tab_at_all");
+    key(&mut app, KeyCode::Char(':'));
+    typed(&mut app, "unlist ");
+    key(&mut app, KeyCode::Tab);
+    assert_eq!(prompt(&app).pattern, "unlist @all");
+    key(&mut app, KeyCode::Tab);
+    assert_eq!(prompt(&app).pattern, "unlist a", "then the names step");
+    key(&mut app, KeyCode::Esc);
+
+    key(&mut app, KeyCode::Char(':'));
+    typed(&mut app, "unlist @");
+    key(&mut app, KeyCode::Tab);
+    assert_eq!(
+        prompt(&app).pattern,
+        "unlist @all",
+        "one fits, so it is written whole"
+    );
+    key(&mut app, KeyCode::Esc);
+
+    for start in ["set @", "list @"] {
+        key(&mut app, KeyCode::Char(':'));
+        typed(&mut app, start);
+        key(&mut app, KeyCode::Tab);
+        assert_eq!(prompt(&app).pattern, start, "{start} offers no @all");
+        key(&mut app, KeyCode::Esc);
+    }
+}
+
+/// The header rows of the pane, in pane order. The scratch set draws none,
+/// so `[Header(0)]` never appears.
+fn headers(app: &App) -> Vec<widgets::filterlist::Row> {
+    widgets::filterlist::rows(&app.filters)
+        .into_iter()
+        .filter(|row| matches!(row, widgets::filterlist::Row::Header(_)))
+        .collect()
+}
+
 /// An unknown set, or a list item the set does not have, keeps the palette
 /// open with an error that names it, and no set changes.
 #[test]

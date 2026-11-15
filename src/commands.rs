@@ -41,6 +41,9 @@ pub(crate) enum Argument {
     SetList,
     /// A set's name, which Tab completes.
     Set,
+    /// A set's name, or [`ALL_SETS`](crate::filter::ALL_SETS) for every
+    /// known set, which Tab completes beside the names (#563).
+    SetOrAll,
     /// A view's name, which Tab completes.
     View,
     /// A filter's pattern.
@@ -135,6 +138,7 @@ impl Command {
             Argument::Number => format!("{names} <n>"),
             Argument::SetList => format!("{names} <set>[:<list>]"),
             Argument::Set => format!("{names} <set>"),
+            Argument::SetOrAll => format!("{names} <set>|@all"),
             Argument::View => format!("{names} <view>"),
             Argument::Pattern => format!("{names} <pattern>"),
             Argument::Text => format!("{names} [<text>]"),
@@ -261,8 +265,8 @@ fn build() -> Vec<Command> {
         ),
         row(
             &["unlist"],
-            Argument::Set,
-            "Unlist a filter set, as --unlist does",
+            Argument::SetOrAll,
+            "Unlist a filter set, as --unlist does; @all unlists every known set",
             Run::UnlistSet,
         ),
         row(
@@ -697,6 +701,16 @@ mod tests {
     #[test]
     fn a_word_nothing_holds_matches_nothing() {
         assert_eq!(found("zzzz"), Vec::<&str>::new());
+    }
+
+    /// `unlist` is the one command whose argument can be `@all`, so its row
+    /// shows that beside a set name (#563); `list` and `set` show one name.
+    #[test]
+    fn the_unlist_row_shows_at_all_beside_a_set_name() {
+        let label = |name| find(catalog(), name).expect("listed").label();
+        assert_eq!(label("unlist"), "unlist <set>|@all");
+        assert_eq!(label("list"), "list <set>");
+        assert_eq!(label("set"), "set <set>[:<list>]");
     }
 
     #[test]

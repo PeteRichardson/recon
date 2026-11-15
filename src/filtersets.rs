@@ -255,6 +255,16 @@ fn parse_sets(text: &str, path: &Path) -> Result<Vec<LoadedSet>, Error> {
                 "a set's name cannot start with `+`; `--set +NAME` reads it as a change".into(),
             ));
         }
+        // `unlist @all` is every known set (#563), and a name that starts
+        // with `@` is kept for variable expansion later, so a file may not
+        // take one.
+        if name.starts_with('@') {
+            return Err(invalid(
+                &name,
+                None,
+                "a set's name cannot start with `@`; `@all` after `unlist` means every set".into(),
+            ));
+        }
         // An alias chains commands with `;` (#555).
         if name.contains(';') {
             return Err(invalid(
@@ -1089,6 +1099,22 @@ mod tests {
         let message = rejected("[sets.a]\n[[sets.a.filters]]\nname = '@all'\npattern = 'x'\n");
         assert!(
             message.contains("\"@all\" is the item for every filter"),
+            "{message}"
+        );
+    }
+
+    /// A set name cannot start with `@`: `@all` after `unlist` is every set
+    /// (#563), and `@` at the start of a name is kept for variable
+    /// expansion later.
+    #[test]
+    fn an_at_sign_at_the_start_of_a_set_name_is_rejected() {
+        let message = rejected("[sets.'@all']\n[[sets.'@all'.filters]]\npattern = 'x'\n");
+        assert!(
+            message.contains("[sets.@all]"),
+            "the message does not name the set: {message}"
+        );
+        assert!(
+            message.contains("a set's name cannot start with `@`"),
             "{message}"
         );
     }

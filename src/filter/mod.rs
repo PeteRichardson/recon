@@ -24,8 +24,8 @@ pub use matcher::{Bits, BitsPass, MAX_PATTERNS, Matcher, Owner, ScanOff, ScanSta
 pub use reference::{Broken, Expander};
 pub use require::{RequireError, label};
 pub use sets::{
-    ALL_ITEM, DEFINITIONS_DESCRIPTION, DEFINITIONS_SET, EnableError, FilterSet, LoadedFilter,
-    LoadedSet, Origin, SetSpec, is_builtin_name, unknown_item,
+    ALL_ITEM, ALL_SETS, DEFINITIONS_DESCRIPTION, DEFINITIONS_SET, EnableError, FilterSet,
+    LoadedFilter, LoadedSet, Origin, SetSpec, is_builtin_name, unknown_item,
 };
 
 use crate::syntax::{Kind, KindSet};
