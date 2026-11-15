@@ -267,8 +267,15 @@ fn list_members(
 }
 
 /// The `--set` item for every filter of the set, named or not (#538). The
-/// loader refuses it as a profile or filter name.
+/// loader refuses it as a profile or filter name. Every set at once is
+/// [`ALL_SETS`].
 pub const ALL_ITEM: &str = "@all";
+
+/// The `unlist` argument for every known set (#563), as `--clear` is at
+/// startup. The loader refuses a set name that starts with `@`, so no file
+/// can name a set this. The same spelling as [`ALL_ITEM`], which is every
+/// filter of one set rather than every set.
+pub const ALL_SETS: &str = "@all";
 
 /// One `[+]NAME[:ITEMS]` of `--set` or of the palette's `set` (#538): the
 /// set's name, whether a `+` before it keeps the set's earlier state, and

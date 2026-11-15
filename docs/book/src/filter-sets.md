@@ -43,6 +43,7 @@ filter names applies from left to right, and `-` turns an item off:
 changes the state that an earlier `--set` gave the set, and does not replace
 it. `--unlist NAME` removes a set from the filter pane. `--clear` removes
 every set before `--set` runs, so `--clear --set NAME` lists only `NAME`;
-`RECON_CLEAR=true` does the same. The same
+`RECON_CLEAR=true` does the same. While recon runs, `:unlist @all` removes
+every set the same way; see [the command palette](palette.md). The same
 options select the filters in [batch mode](batch_mode.md), so a set that you
 made in the window also works in a script.

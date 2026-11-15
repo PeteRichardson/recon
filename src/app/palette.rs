@@ -149,9 +149,11 @@ impl App<'_> {
                 argument,
                 self.loading.view_names(argument),
             ),
-            (Some(Argument::Set | Argument::SetList), None) => {
-                (base.to_string(), argument, self.set_names(argument))
-            }
+            (Some(takes @ (Argument::Set | Argument::SetList | Argument::SetOrAll)), None) => (
+                base.to_string(),
+                argument,
+                self.set_names(argument, takes == Argument::SetOrAll),
+            ),
             (Some(Argument::SetList), Some((set, list))) => {
                 let done = list.rfind(',').map_or(0, |comma| comma + 1);
                 let partial = &list[done..];
@@ -204,8 +206,9 @@ impl App<'_> {
     }
 
     /// The names of the known sets that start with `partial`, as the set
-    /// picker sorts them.
-    fn set_names(&self, partial: &str) -> Vec<String> {
+    /// picker sorts them, with `@all` beside them when `every` — `unlist`,
+    /// the one command that takes it (#563).
+    fn set_names(&self, partial: &str, every: bool) -> Vec<String> {
         let mut names: Vec<String> = self
             .filters
             .named_sets()
@@ -213,6 +216,9 @@ impl App<'_> {
             .filter(|meta| meta.name.starts_with(partial))
             .map(|meta| meta.name.clone())
             .collect();
+        if every && crate::filter::ALL_SETS.starts_with(partial) {
+            names.push(crate::filter::ALL_SETS.to_string());
+        }
         names.sort_unstable();
         names
     }
@@ -244,7 +250,7 @@ impl App<'_> {
             Run::Line => self.go_to_line(argument),
             Run::EnableSet => self.enable_set(argument),
             Run::ListSet => self.set_listing("list", argument, true),
-            Run::UnlistSet => self.set_listing("unlist", argument, false),
+            Run::UnlistSet => self.unlist(argument),
             Run::View => self.choose_view(argument),
             Run::AddFilter(sense) => self.add_filter_from_palette(sense, argument),
             Run::Action(action) => self.run_action(action, command.argument, argument),
@@ -404,8 +410,8 @@ impl App<'_> {
         Ok(())
     }
 
-    /// `list NAME` and `unlist NAME`: list or unlist the set, as the set
-    /// picker does. `unlist` is `--unlist`. `list` gives an unlisted set
+    /// `list NAME` and `unlist NAME`: list or unlist the named set, as the
+    /// set picker does. `unlist` is `--unlist`. `list` gives an unlisted set
     /// back disabled, as `--list` does (#545); a listed one does not
     /// change, so a set that is on stays on.
     fn set_listing(&mut self, command: &str, set: &str, listed: bool) -> Result<(), String> {
@@ -415,6 +421,36 @@ impl App<'_> {
             .map_err(|err| err.to_string())?;
         self.apply_listing(&[(index, listed)]);
         Ok(())
+    }
+
+    /// `unlist NAME`: unlist the set, as `--unlist` does, or every known set
+    /// when the name is `@all` (#563). `list @all` is nobody's shortcut — the
+    /// picker is where you bring sets back — so only here does `@all` name a
+    /// group rather than a set recon does not know.
+    fn unlist(&mut self, set: &str) -> Result<(), String> {
+        if set == crate::filter::ALL_SETS {
+            self.unlist_every_set();
+            return Ok(());
+        }
+        self.set_listing("unlist", set, false)
+    }
+
+    /// `unlist @all`: unlist every listed known set in one step, as `--clear`
+    /// does at startup (#563). The scratch set is not a known set, so it
+    /// stays, and a set already unlisted is not passed on: the change is
+    /// empty when nothing was listed, and an empty change ends no peek and
+    /// refreshes nothing.
+    fn unlist_every_set(&mut self) {
+        let every: Vec<(usize, bool)> = self
+            .filters
+            .sets()
+            .iter()
+            .enumerate()
+            .skip(1)
+            .filter(|(_, meta)| meta.listed)
+            .map(|(set, _)| (set, false))
+            .collect();
+        self.apply_listing(&every);
     }
 
     /// `include RE`, `exclude RE` and `context RE`: add a filter of `sense`

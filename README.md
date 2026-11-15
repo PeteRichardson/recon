@@ -996,8 +996,11 @@ flags gave the set, and changes it: `--set WiFi_debug:triage --set
 +WiFi_debug:retry` adds `retry` to `triage`. A `+NAME` for a set that is not
 on yet starts from its `default` profile. A list that starts with a `-` item
 and has no `+` changes nothing, so recon shows a startup warning that names
-the two forms you probably meant. A set name cannot start with `+`, and no
-profile or filter can be named `@all`. `--hide` alongside it starts the session in hide mode. A
+the two forms you probably meant. A set name cannot start with `+` or `@`: `+`
+would read as a change after `--set`, and a `@` at the start is kept for
+`@all` — every set after `unlist`, and every filter of a set after
+`set NAME:`. No profile or filter can be named `@all` either. `--hide`
+alongside it starts the session in hide mode. A
 set without a `default` profile comes on with every filter off, exactly as
 `Enter` on its header would leave it — give it a `default` if it is meant to
 be used this way. `--unlist WiFi_debug` does the opposite for one run: the
@@ -1012,8 +1015,9 @@ refused. `--clear` unlists every set before `--list` and `--set` run, so
 `recon --clear --set WiFi_debug` lists only `WiFi_debug`, and `recon --clear
 --set Bugs --list WiFi_debug` opens with `Bugs` on and `WiFi_debug` as a
 header row: start from no sets and add the ones you want, rather than take
-away the ones you do not. `RECON_CLEAR=true` does the
-same in the environment. The same
+away the ones you do not. `RECON_CLEAR=true` does the same in the environment.
+Inside the window, `:unlist @all` takes away every set the same way, at any
+time. The same
 flags drive a run with no TUI at all; see [Batch mode](#batch-mode).
 
 A header carries `*` when its set has profiles. `a` on that row opens a small
@@ -2750,7 +2754,7 @@ you may be typing a regular expression: push Esc first.
 | `goto <n>`, `:<n>` | Go to line n of the file — the number the line numbers show. If a filter hides it, the cursor goes to the next visible line and the status row says so |
 | `set <set>[:<list>]` | List the set if it is unlisted and enable it, as `--set` does: `set DeployLogs` applies its `default` profile, and `set DeployLogs:triage,timeouts` turns on the profiles and named filters of the list and turns off the set's other filters |
 | `list <set>` | List the set if it is unlisted and leave it off, as `--list` does. A listed set does not change, so a set that is on stays on |
-| `unlist <set>` | Unlist the set, as `--unlist` does |
+| `unlist <set>\|@all` | Unlist the set, as `--unlist` does. `unlist @all` unlists every set at one time, as `--clear` does at startup; the set you build by hand stays |
 | `view <view>` | Show the open file in the view of that name. A view of the file type's cycle steps the cycle there, as `-` does. Any other view, such as a command view that no `[[filetype]]` row names, shows only the open file, until you open another file or push `-` |
 | `include <pattern>`, `exclude <pattern>`, `context <pattern>` | Add a filter of that sense to the scratch set, as `i` or `x` and Enter do in the filter pane, but from any pane. The focus stays where it is |
 | `w <path>`, `w! <path>` | Write the file view's visible lines to the file, as `--emit lines` prints them on quit, and go on working. A relative path resolves against the explorer's folder. `w` refuses a file that exists; `w!` replaces it. Over a preview of a large file, recon reads the whole file in the background first: the status row shows the progress, and Esc stops it with nothing written |
@@ -2763,7 +2767,8 @@ you may be typing a regular expression: push Esc first.
   `e`). An empty line lists every command.
 - **Tab** and **Shift-Tab** choose the next or previous row and write its name
   into the line. On a path, Tab completes the name of an entry in the folder.
-  After `set`, `list` and `unlist`, Tab completes the name of a known set; after
+  After `set`, `list` and `unlist`, Tab completes the name of a known set, and
+  after `unlist` it offers `@all` beside the names; after
   `set <set>:` and after each `,`, a profile or a named filter of that set.
   After `view`, Tab completes a view name, the file's cycle first.
 - **Up** and **Down** recall the command lines that ran, newest first. The

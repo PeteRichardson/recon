@@ -47,7 +47,12 @@ for the set, and turns `timeouts` off. Without the `+`, the list starts with
 all filters of the set off. The items apply from left to right: `-` before
 an item turns its filters off, and `@all` is every filter of the set.
 
-`:unlist DeployLogs` unlists the set, as `--unlist` does.
+`:unlist DeployLogs` unlists the set, as `--unlist` does. `:unlist @all`
+unlists every set at one time, as `--clear` does at startup. The set you build
+by hand stays: it is never unlisted.
+
+`@all` is an argument of `unlist` only. `list @all` and `set @all` are an
+unknown set.
 
 If recon does not know the set or an item of the list, the palette stays
 open and shows the error.
@@ -159,7 +164,8 @@ line is empty, the list shows all the commands.
 - The help text agrees too: `folder` finds `e, cd`.
 - Tab and Shift-Tab choose the next or the previous row and write its name in
   the line. On a path, Tab completes the name of a file or a directory.
-- After `set` or `unlist`, Tab completes the name of a known set. After
+- After `set` or `unlist`, Tab completes the name of a known set, and after
+  `unlist` it offers `@all` beside the names. After
   `set NAME:` and after each `,`, Tab completes a profile or a named filter
   of that set.
 - After `view`, Tab completes a view name: the views of the file's cycle
