@@ -6,7 +6,7 @@ use super::prompt::{PromptKind, SearchPrompt};
 use crate::document::Mode;
 use crate::widgets::{self, Action, FilterCommand};
 use crate::{filter, filtersets};
-use crossterm::event::{self, KeyCode};
+use crossterm::event;
 
 /// What a peek has to put back when it ends (#48).
 ///
@@ -516,42 +516,9 @@ impl App<'_> {
     /// `FilterList::perform`, which only reports a command — only `App` can
     /// mutate the `ActiveFilters` the command names.
     pub(super) fn handle_filter_key(&mut self, key: event::KeyEvent) {
-        use crate::keymap::ActionId as A;
-
-        // The explorer's `h`/`l` in this pane: a hint, not a redirect, for
-        // the same reason as the filter verbs elsewhere (#120 §9). The keys
-        // themselves have no `ActionId` in `Scope::Filters` — `FilterList`
-        // cannot report, since the status row is `App`'s — so this stays a
-        // pre-resolution special case, guarded on an empty modifier set as
-        // before; but the text names the explorer actions they point at, so it
-        // is generated from the table (task 8) rather than hand-written.
-        if key.modifiers.is_empty() {
-            match key.code {
-                KeyCode::Char('h') => {
-                    if let Some(hint) = self.keymap.hint_for(
-                        A::ExplorerParent,
-                        "goes up a directory",
-                        A::ExplorerFocus,
-                    ) {
-                        self.report(&hint, false);
-                    }
-                    return;
-                }
-                KeyCode::Char('l') => {
-                    if let Some(hint) =
-                        self.keymap
-                            .hint_for(A::ExplorerOpen, "opens the entry", A::ExplorerFocus)
-                    {
-                        self.report(&hint, false);
-                    }
-                    return;
-                }
-                _ => {}
-            }
-        }
-
         let pressed = crate::keymap::normalise(key);
         let Some(action) = self.resolve_key(crate::keymap::Scope::Filters, pressed) else {
+            self.hint_explorer_verb(pressed);
             return;
         };
         self.perform_on_filters(action, pressed);

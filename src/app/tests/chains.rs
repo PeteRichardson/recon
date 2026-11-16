@@ -388,6 +388,49 @@ fn h_and_l_in_the_filter_pane_hint_at_the_explorer() {
     assert_eq!(app.focus, Focus::Filters);
 }
 
+/// A `[keymap]` binding in the filter pane wins over the explorer hint
+/// (#496): `h` bound to `filters.up` moves the selection up, as `k` does.
+#[test]
+fn a_filter_pane_binding_on_h_beats_the_explorer_hint() {
+    let mut app = app_over_files("hint_filters_bound", &[("a.log", "x\ny\n")]);
+    open_file(&mut app, 0);
+    app.add_filter("x").expect("valid pattern");
+    app.add_filter("y").expect("valid pattern");
+    rebind(&mut app, &[("filters.up", &["h", "k", "Up"])]);
+    focus_filter_pane(&mut app);
+    draw(&mut app);
+    key(&mut app, KeyCode::Char('j'));
+    let start = app.filters_pane.selected().expect("a selection");
+
+    key(&mut app, KeyCode::Char('h'));
+
+    assert_eq!(
+        app.filters_pane.selected(),
+        Some(start - 1),
+        "h did not move up"
+    );
+    assert_eq!(status(&app), None, "the hint fired over the binding");
+}
+
+/// The hint follows the keymap (#496): after `explorer.parent` moves to
+/// `Backspace`, `Backspace` in the filter pane gives the hint, and `h`,
+/// which now reaches nothing in the explorer, gives none.
+#[test]
+fn a_moved_explorer_key_hints_on_its_new_key_only() {
+    let mut app = app_over("hint_explorer_moved", &["a.log"]);
+    rebind(&mut app, &[("explorer.parent", &["Backspace"])]);
+    key(&mut app, KeyCode::Char('f'));
+
+    key(&mut app, KeyCode::Backspace);
+    assert_eq!(
+        status(&app),
+        Some("Backspace goes up a directory · e Backspace")
+    );
+
+    key(&mut app, KeyCode::Char('h'));
+    assert_eq!(status(&app), None, "h still hints at the explorer");
+}
+
 /// The hint does not fire where the verb is real.
 #[test]
 fn a_filter_verb_in_the_filter_pane_is_not_a_hint() {
