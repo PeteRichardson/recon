@@ -425,7 +425,7 @@ impl App<'_> {
     /// Look `pressed` up in `scope`, and keep the answer as the action the
     /// key dispatched, for its record (#492).
     ///
-    /// For a lookup the dispatch acts on. `hint_filter_verb` and the two
+    /// For a lookup the dispatch acts on. The two `hint_*_verb` hints and the two
     /// guards at the top of `dispatch_event` look keys up too, and keep
     /// `self.keymap.resolve`: a hint is not an action, and a guard's lookup
     /// that the guard does not act on says nothing about the key.
@@ -457,6 +457,23 @@ impl App<'_> {
             && let Some(hint) = self
                 .keymap
                 .hint_for(action, verb, ActionId::GlobalFocusFilters)
+        {
+            self.report(&hint, false);
+        }
+    }
+
+    /// Say so, for one keypress, when a key the filter pane leaves unbound
+    /// is an explorer verb (#120 §9): `h` in the filter pane names `e h`
+    /// rather than doing nothing. Not a redirect, for `hint_filter_verb`'s
+    /// reason, and its mirror image: called only where the filter pane
+    /// drops a key `Scope::Filters` does not resolve, so a `[keymap]` line
+    /// binding `h` there wins over the hint by construction (#496), and the
+    /// key is a verb when `Scope::Explorer` resolves it to one.
+    pub(super) fn hint_explorer_verb(&mut self, pressed: crate::keymap::Key) {
+        use crate::keymap::{ActionId, Scope};
+        if let Some(action) = self.keymap.resolve(Scope::Explorer, pressed)
+            && let Some(verb) = explorer_verb(action)
+            && let Some(hint) = self.keymap.hint_for(action, verb, ActionId::ExplorerFocus)
         {
             self.report(&hint, false);
         }
@@ -503,6 +520,17 @@ impl App<'_> {
         // the edge of the middle third does not — see `window_holds`.
         self.ensure_window();
     }
+}
+
+/// What an explorer verb does, as the filter pane's hint says it, or
+/// `None` for an explorer action that gets no hint there.
+fn explorer_verb(action: crate::keymap::ActionId) -> Option<&'static str> {
+    use crate::keymap::ActionId as A;
+    Some(match action {
+        A::ExplorerParent => "goes up a directory",
+        A::ExplorerOpen => "opens the entry",
+        _ => return None,
+    })
 }
 
 /// What a filter-pane verb does, as the wrong-pane hint says it (#120 §9),
