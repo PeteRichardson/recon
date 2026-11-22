@@ -432,16 +432,16 @@ fn f_big_c_on_a_header_row_says_why() {
 #[test]
 fn f_big_c_on_a_built_in_filter_says_why() {
     let mut app = app_over_file("editor_builtin", BODY);
-    let definitions = app
+    let builtin = app
         .filters
         .sets()
         .iter()
-        .position(|set| set.name == filter::DEFINITIONS_SET)
+        .position(|set| set.name == filter::CODE_SET)
         .expect("the built-in set");
-    app.filters.set_enabled_set(definitions, true);
+    app.filters.set_enabled_set(builtin, true);
     let (index, _) = app
         .filters
-        .filters_in(definitions)
+        .filters_in(builtin)
         .next()
         .expect("a built-in filter");
     select_row(&mut app, widgets::filterlist::Row::BuiltIn(index));
@@ -454,12 +454,12 @@ fn f_big_c_on_a_built_in_filter_says_why() {
     );
 }
 
-/// A definition filter in a file's set has no regex to show.
+/// A code filter in a file's set has no regex to show.
 #[test]
-fn f_big_c_on_a_definition_filter_says_why() {
+fn f_big_c_on_a_code_filter_says_why() {
     let mut set = filter::test_support::loaded("defs", 10, true, &["functions"]);
-    set.filters[0].predicate = filter::Predicate::Definition(crate::syntax::Kind::Function);
-    let mut app = app_over_file("editor_definition", BODY);
+    set.filters[0].predicate = filter::Predicate::CodeItem(crate::syntax::Kind::Function);
+    let mut app = app_over_file("editor_code_item", BODY);
     app.filters = ActiveFilters::with_sets(None, &[set]);
     app.refresh_view();
     select_row(&mut app, widgets::filterlist::Row::Filter(0));
@@ -468,7 +468,7 @@ fn f_big_c_on_a_definition_filter_says_why() {
     assert!(app.filter_editor.is_none());
     assert_eq!(
         message(&app),
-        Some("a definition filter has no pattern to edit; c turns it into one")
+        Some("a code filter has no pattern to edit; c turns it into one")
     );
 }
 
@@ -2888,7 +2888,7 @@ fn a_generated_pattern_is_saved_with_generated_from_and_shown_after_a_restart() 
     );
 
     key(&mut app, KeyCode::Char('S'));
-    // Before `definitions`, so it is set 1.
+    // Before `code`, so it is set 1.
     typed(&mut app, "ai");
     key(&mut app, KeyCode::Enter);
     let text = std::fs::read_to_string(&path).expect("written");

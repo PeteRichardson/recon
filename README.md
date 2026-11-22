@@ -850,10 +850,10 @@ and an exclude filter still removes one. `--emit lines` and `:w` write them with
 To read the lines around a match without a change to the filters or the
 mode, push `>` in hide mode: it **reveals** every hidden line from the
 cursor's line to the next visible line, with no limit. On a line that starts
-or ends a definition with an end line (see
-[definition filters](#definition-filters)), `>` reveals that definition
+or ends a code item with an end line (see
+[code filters](#code-filters)), `>` reveals that code item
 instead: the whole function, impl or type. The extents come from the grammar
-pass that a definition filter runs, so a file no definition filter has read
+pass that a code filter runs, so a file no code filter has read
 uses the gap rule. A revealed line shows
 as it would with no filter on, in full syntax colour, unless a filter
 matches it, and an exclude filter still removes it. `<` hides the lines again
@@ -1099,7 +1099,7 @@ pattern now. To keep a pattern as it is, copy it. The filter pane shows the
 pattern as you wrote it. The filter editor also shows the expanded pattern,
 and its matches use it.
 
-A reference is broken when its target does not exist, is a definition
+A reference is broken when its target does not exist, is a code
 filter, or has references of its own. A broken reference does not stop recon.
 Only its filter matches nothing, and its row in the filter pane shows `⚠` and
 the reason (`org:Summary not found`). In batch mode, a broken reference in a
@@ -1134,7 +1134,7 @@ recon reads your own `~/.config/recon` first, then each directory in order. In
 each directory it reads `filters.toml` first, then the other files in name
 order. When two files define a set with the same name, the earlier file wins
 and the later set is hidden, not merged, so a personal set replaces a team set
-of the same name. A table for the built-in `definitions` set follows the same
+of the same name. A table for the built-in `code` set follows the same
 rule. `~/.config/recon/filters.toml` is the file that `S` writes, so a set you
 save is never hidden by a set in another file. A directory that does not exist
 is skipped, and a directory named two times is read one time. A file that
@@ -1445,7 +1445,7 @@ filter from a file without a `name` shows its pattern as its name.
 `Enter` then does what `f c` does: it replaces the pattern and keeps the
 filter's slot, colour and enabled state; the sense is the one in the sense
 field. On a set's header row or a built-in filter, `C`
-says why it cannot, as `c` does. A definition filter has no pattern to show,
+says why it cannot, as `c` does. A code filter has no pattern to show,
 so `C` says so; `c` is the way to turn one into a pattern. On an
 empty pattern, one that does not compile, or one that fails a check,
 `Enter` keeps the editor open.
@@ -1561,12 +1561,12 @@ from the prompt` after the prompt.
   It never writes a pattern again when it loads `filters.toml`, and never
   because a new macOS changed the model.
 
-#### Definition filters
+#### Code filters
 
-One set is built in: `definitions`, with eleven filters — `functions`,
+One set is built in: `code`, with eleven filters — `functions`,
 `classes`, `structs`, `enums`, `types`, `traits`, `modules`, `impls`,
 `constants`, `macros` and `sections` — that select the lines *starting* a
-definition of that kind. `traits` covers traits, interfaces and protocols;
+code item of that kind: one of syntect's code items (its "definitions"). `traits` covers traits, interfaces and protocols;
 `modules` covers modules, namespaces and packages; `impls` covers Rust `impl`
 blocks and Swift extensions; `sections` is the headings of a Markdown or
 AsciiDoc file, an outline from the same mechanism for free. They are not regexes over the text: the same syntect grammar pass that
@@ -1576,7 +1576,7 @@ counts even though bat's Swift grammar names nothing the way the others do.
 Rust, Python, C, Go, JavaScript and Swift are covered; a kind a language has no
 notion of simply matches nothing there.
 
-A definition filter also keeps the *end line* of each definition it matches
+A code filter also keeps the *end line* of each code item it matches
 (usually its closing brace), so that hide mode reads as an outline:
 
 ```
@@ -1591,17 +1591,17 @@ impl ProcessClipboard {
 An end line is kept the way a [neighbor line](#filter-sets) is: in the
 default foreground, `n` and `N` step over it, `Ctrl-n` dims it, and an
 exclude filter still removes it. `--emit lines` writes it, and
-`--no-neighbors` leaves it out with the neighbor lines. A definition with
+`--no-neighbors` leaves it out with the neighbor lines. A code item with
 no body, such as a function signature in a trait, has no end line. The grammar
 gives the end line in Rust, C, Go, JavaScript and TypeScript, and for a Swift
 `func`; it gives none for a Swift `class` or for Python. `>` on a start
-or end line reveals the whole definition, and `<` hides it again (see
+or end line reveals the whole code item, and `<` hides it again (see
 [reveals](#filter-sets)).
 
-The set starts collapsed as a single `[ ] definitions` row. `Enter` expands it;
+The set starts collapsed as a single `[ ] code` row. `Enter` expands it;
 `Enter` on `functions` narrows a source file to its function lines, coloured,
 with their real line numbers, and every sense works — `m` for "functions with
-context", or an excluding definition for "everything except functions". Its
+context", or an excluding code filter for "everything except functions". Its
 rows carry no number and no palette colour, so your own filters keep theirs;
 `d` and `c` refuse them, since they are recon's. Solo, reset, `!` and the peek
 treat the set as any other. Recon gives it a description for the set
@@ -1611,11 +1611,11 @@ profiles from `filters.toml`, with a table that may carry `priority`,
 are recon's:
 
 ```toml
-[sets.definitions]
+[sets.code]
 priority = 80
 autoload = true
 
-[sets.definitions.profiles]
+[sets.code.profiles]
 default = ["functions"]
 typedefs = ["types", "structs", "enums"]
 ```
@@ -1625,16 +1625,16 @@ A profile's members are the eleven filter names above — `functions`,
 `constants`, `macros`, `sections` — and naming anything else is refused at
 startup, as a file set's profile naming a missing filter is. A profile must
 not take one of these names. With `autoload`
-and a `default` the set starts with that subset on; `--set definitions:typedefs`
+and a `default` the set starts with that subset on; `--set code:typedefs`
 applies a profile from the command line, the same as for any set, and
-`--set definitions:functions,structs` turns on those kinds with no profile. The set is
-always known to `--set`, table or no table: without one, `--set definitions`
+`--set code:functions,structs` turns on those kinds with no profile. The set is
+always known to `--set`, table or no table: without one, `--set code`
 enables it with every filter off, like any set with no `default`.
 
 On a log file the rows exist and are inert. The explorer's file matching does
-not evaluate definition filters — it reads text it never parses — so they
+not evaluate code filters — it reads text it never parses — so they
 affect only the viewed file, and `q` with `--emit files` follows the explorer.
-A [batch](#batch-mode) `--emit files` does parse: with a definition filter
+A [batch](#batch-mode) `--emit files` does parse: with a code filter
 on, each file is read whole and answered by every filter, regex ones too. Turning one on costs one whole-file grammar pass,
 about ten microseconds a line, paid once per file; a file with no grammar
 never pays it.
@@ -1864,7 +1864,7 @@ File view pane (`src/widgets/fileview.rs`) — its own verbs; the shared motions
 | `{` / `}` | Move by paragraph, back / forward | `view.paragraph.prev` / `view.paragraph.next` |
 | `#` | Toggle the line-number gutter | `view.toggle.linenumbers` |
 | `M` | Hide / show the minimap | `view.toggle.minimap` |
-| `>` / `<` | In hide mode, **reveal** the extent of the definition that the cursor's line starts or ends, or else the hidden lines from the cursor's line to the next visible line / hide them again: `<` closes the smallest reveal that holds the cursor and puts the cursor on its first line — see [reveals](#filter-sets) | `view.reveal` / `view.reveal.close` |
+| `>` / `<` | In hide mode, **reveal** the extent of the code item that the cursor's line starts or ends, or else the hidden lines from the cursor's line to the next visible line / hide them again: `<` closes the smallest reveal that holds the cursor and puts the cursor on its first line — see [reveals](#filter-sets) | `view.reveal` / `view.reveal.close` |
 | `*` | Set the search to the word under the cursor — a run of letters, digits and `_`, so a mangled symbol stays whole — and move to its next hit, as `n` would. `* p` makes it a numbered filter | `global.search.word` |
 | `v` / `V` | Start a selection by character / by whole lines; press the same key again to end it, or the other to switch between them. The motions grow it | `global.visual.char` / `global.visual.line` |
 | `y` | Copy the selection to the clipboard and end the selection. `Ctrl-y` still scrolls | `global.yank` |
@@ -2989,7 +2989,7 @@ match written and flushed at once, so an output that never ends — `log
 stream` — works as well as one that does, and `--follow` changes nothing.
 `--emit lines` only: `--emit files -` is refused with a pointer to
 `--files-from -`, and a terminal on stdin is refused, since the read would
-wait for Ctrl-D. With a definition
+wait for Ctrl-D. With a code
 filter on, stdin is read to its end first, because the filter parses the
 whole input. Until #517, `-` was the file list that `--files-from -` reads
 now. With `sudo cmd | recon -b -`, run `sudo -v` first: sudo's
@@ -3012,11 +3012,11 @@ is still accepted, so scripts that pass it keep working, but it changes
 nothing here (#511, ADR 0009). There is no `--dim`: to emit what the
 excludes leave, enable no include filters. An unknown set, profile or
 filter name is refused before anything is read, and the error lists the names the set
-files define, with the built-in `definitions` set named apart. So is
+files define, with the built-in `code` set named apart. So is
 `--set` or `--list` together with `--unlist` on the same set.
 
-**Definition filters.** `--emit files` with a definition filter on —
-`--set definitions:structs` — parses each file and lists those that define the
+**Code filters.** `--emit files` with a code filter on —
+`--set code:structs` — parses each file and lists those that define the
 kinds asked for. That is one whole read and one grammar pass per file, which
 the navigator cannot afford for its marks, so `q` from a session lists every
 file. A file with no grammar, such as a log, defines nothing and drops out.
@@ -3060,7 +3060,7 @@ TUI, and in batch mode that is always hide mode:
 A file that cannot be read is reported as it is met — `recon: cannot read
 /var/log/secure: permission denied`, `… is a directory`, and for `--emit
 lines` `… binary file` (`--emit files` scans a binary like any other file, as
-the explorer does; with a definition filter on it parses instead, and a
+the explorer does; with a code filter on it parses instead, and a
 binary file defines nothing, with no warning) — and skipped: not emitted, not
 counted. The run
 continues and exits **2**, grep's convention for an input that failed. Exit 0
@@ -3357,9 +3357,9 @@ filter showing lines thousands apart, restarts the grammar 64 lines above each
 landing point. A block comment or raw string opened further back than that is
 coloured wrong until it closes — the same trade every editor makes on a jump.
 Lines over 10,000 bytes are left plain; a minified file on one line is not
-worth seconds of regex. The one whole-file parse is the definition filters':
+worth seconds of regex. The one whole-file parse is the code filters':
 enabling one runs the grammar over every line, once per file, because a filter
-needs every line's answer at once — see *Definition filters*.
+needs every line's answer at once — see *Code filters*.
 
 ---
 
@@ -3368,7 +3368,7 @@ needs every line's answer at once — see *Definition filters*.
 - **The explorer's file matching covers at most 128 patterns.** The limit
   affects only how the explorer marks files; the view filters with every
   pattern. The count includes every filter in every listed set, enabled or
-  disabled, and the built-in `definitions` set's eleven slots, so 117 are
+  disabled, and the built-in `code` set's eleven slots, so 117 are
   yours. An unlisted set does not count: `--unlist` a large set you do not
   need for this run. Above the limit the explorer's marking switches off —
   never wrong, just absent. The status line then says so, with the built-in

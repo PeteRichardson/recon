@@ -15,7 +15,7 @@ fn f_i_enter_from_the_view_returns_and_steps() {
     typed(&mut app, "fn");
     key(&mut app, KeyCode::Enter);
 
-    // `len()`, not `filters().len()`: the built-in definitions set (#127)
+    // `len()`, not `filters().len()`: the built-in code set (#127)
     // adds eleven rows of its own, and this is asking whether the user's
     // one filter landed, not counting recon's.
     assert_eq!(app.filters.len(), 1, "the filter was not added");

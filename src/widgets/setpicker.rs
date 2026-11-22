@@ -320,7 +320,7 @@ mod tests {
     fn rows_are_every_named_set_in_alphabetical_order() {
         let p = SetPicker::new(&filters());
         let names: Vec<String> = p.rows().into_iter().map(|(name, _)| name).collect();
-        assert_eq!(names, ["alpha", "definitions", "zeta"]);
+        assert_eq!(names, ["alpha", "code", "zeta"]);
     }
 
     /// The checkbox is the listed state: a listed set that is disabled is
@@ -339,7 +339,7 @@ mod tests {
             p.rows(),
             [
                 ("alpha".to_string(), true),
-                ("definitions".to_string(), true),
+                ("code".to_string(), true),
                 ("zeta".to_string(), false),
             ]
         );
@@ -398,16 +398,8 @@ mod tests {
         assert!(rows[0].contains("Filter sets"), "{}", rows[0]);
         assert!(rows[0].starts_with('┌') && rows[7].starts_with('└'));
         assert!(rows[1].contains("[x] alpha"), "{}", rows[1]);
-        assert!(
-            rows[2].contains("[x] definitions  Functions"),
-            "{}",
-            rows[2]
-        );
-        assert!(
-            rows[3].contains("[x] zeta         last by name"),
-            "{}",
-            rows[3]
-        );
+        assert!(rows[2].contains("[x] code   Functions"), "{}", rows[2]);
+        assert!(rows[3].contains("[x] zeta   last by name"), "{}", rows[3]);
     }
 
     /// #473: a set that references point into says how many, so the user
@@ -453,19 +445,16 @@ mod tests {
         let rows = drawn(&mut p, 40, 5);
         assert!(rows[3].contains("set5"), "{rows:?}");
         let selected = &rows[3];
-        assert!(
-            !rows[1].contains("definitions"),
-            "scrolled past the top: {rows:?}"
-        );
+        assert!(!rows[1].contains("code"), "scrolled past the top: {rows:?}");
         assert!(selected.contains("[x] set5"));
         for _ in 0..6 {
             p.perform(A::SetsUp);
         }
         let rows = drawn(&mut p, 40, 5);
-        assert!(rows[1].contains("definitions"), "{rows:?}");
+        assert!(rows[1].contains("code"), "{rows:?}");
     }
 
-    /// Rows `alpha`, `definitions`, `zeta`; only `zeta` has a description
+    /// Rows `alpha`, `code`, `zeta`; only `zeta` has a description
     /// of its own.
     fn searched(p: &mut SetPicker, pattern: &str) {
         p.set_search(Some(Regex::new(pattern).unwrap()));
@@ -534,7 +523,7 @@ mod tests {
         assert_eq!(fg(3), Color::Yellow, "the hit was not highlighted");
         assert_ne!(fg(2), Color::Yellow, "a row that is no hit was highlighted");
         let rows = drawn(&mut p, 60, 6);
-        assert!(rows[1].contains("alpha") && rows[2].contains("definitions"));
+        assert!(rows[1].contains("alpha") && rows[2].contains("code"));
     }
 
     #[test]

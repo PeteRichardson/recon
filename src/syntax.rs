@@ -561,9 +561,9 @@ impl Highlighter {
     }
 }
 
-// ---- definitions (#123) ----------------------------------------------------
+// ---- code items (#123) ----------------------------------------------------
 
-/// A kind of definition a source line can start.
+/// A kind of code item a source line can start.
 ///
 /// The four kinds every bundled grammar has some notion of. Traits, impls,
 /// modules and typedefs are real too and are left for a later row each; the
@@ -607,7 +607,7 @@ impl Kind {
     ];
 
     /// The `TextMate` scopes a well-behaved grammar gives the *name* of a
-    /// definition of this kind. Rust, C, Go, Python and JavaScript all
+    /// code item of this kind. Rust, C, Go, Python and JavaScript all
     /// follow the convention; see `keywords` for the ones that do not.
     /// Several scopes where languages spell one concept differently:
     /// `entity.name.trait` in Rust, `.interface` in C#, `.protocol` in
@@ -636,7 +636,7 @@ impl Kind {
         }
     }
 
-    /// The declaration keywords that start a definition of this kind, for
+    /// The declaration keywords that start a code item of this kind, for
     /// grammars that scope the keyword (`storage.type`) but leave the name
     /// unscoped. bat's Swift grammar is the one that forced this: `class
     /// Canvas` there is a `storage.type.swift` keyword followed by plain
@@ -653,7 +653,7 @@ impl Kind {
             Self::Module => &["mod", "namespace", "package"],
             Self::Impl => &["impl", "extension"],
             // `const` only: C's `static` is storage too and is not a
-            // definition keyword.
+            // declaration keyword.
             Self::Constant => &["const"],
             Self::Macro => &["macro_rules"],
             Self::Section => &[],
@@ -663,7 +663,7 @@ impl Kind {
     /// The plural noun the pane will call a filter of this kind.
     ///
     /// A compatibility contract, not just a label (#220): these are the
-    /// names a `[sets.definitions.profiles]` table in `filters.toml` refers
+    /// names a `[sets.code.profiles]` table in `filters.toml` refers
     /// to, so renaming one breaks a user's file. Add kinds freely; rename
     /// one only with an alias or a release note.
     #[must_use]
@@ -690,10 +690,10 @@ impl fmt::Display for Kind {
     }
 }
 
-/// The kinds of definition one line starts. A bitset, because a line can
+/// The kinds of code item one line starts. A bitset, because a line can
 /// start more than one — `trait Area { fn area(&self); }` on one line is
 /// both a trait and a function, and that is the right answer for "lines
-/// that start a definition".
+/// that start a code item".
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct KindSet(u16);
 
@@ -740,23 +740,23 @@ impl KindSet {
     }
 }
 
-/// What [`definitions`] finds in a file: the kinds each line starts, and
-/// the extent of each definition with a body.
+/// What [`code`] finds in a file: the kinds each line starts, and
+/// the extent of each code item with a body.
 #[derive(Debug, Clone, Default)]
-pub struct Definitions {
+pub struct CodeItems {
     /// One set per line, by row.
     pub kinds: Vec<KindSet>,
     /// In order of their end lines; an inner extent ends before the one
     /// that holds it.
     pub extents: Vec<Extent>,
-    /// Whether an end line reads as the end of its definition, as a
+    /// Whether an end line reads as the end of its code item, as a
     /// closing brace does. A Python end line is only the last line of the
-    /// body, so a definition filter does not keep it (#612); `>` still
+    /// body, so a code filter does not keep it (#612); `>` still
     /// reveals the extent.
     pub keeps_end_lines: bool,
 }
 
-/// The rows of one definition, from the line that starts it to its end
+/// The rows of one code item, from the line that starts it to its end
 /// line, both included.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Extent {
@@ -764,7 +764,7 @@ pub struct Extent {
     pub end: usize,
 }
 
-/// The scopes `definitions` tests against, parsed once per call rather than
+/// The scopes `code` tests against, parsed once per call rather than
 /// once per token. `Scope::new` consults the global scope repository, which
 /// takes a lock.
 struct KindScopes {
@@ -803,7 +803,7 @@ impl KindScopes {
             }
             // The Rust grammar names a closure's binding `entity.name.function`
             // too: `let f = |x| x` would otherwise start a "function". A real
-            // definition's name is enclosed by `meta.function.*`; a closure's
+            // code item's name is enclosed by `meta.function.*`; a closure's
             // by the `meta.block.*` of the body it sits in. The nearest
             // enclosing `meta.*` scope tells them apart.
             if kind == Kind::Function
@@ -830,7 +830,7 @@ impl KindScopes {
     }
 }
 
-/// Which definition kinds each line of `lines`, read from `path`, starts —
+/// Which code-item kinds each line of `lines`, read from `path`, starts —
 /// or `None` when no grammar claims the file, in which case no line starts
 /// anything.
 ///
@@ -838,7 +838,7 @@ impl KindScopes {
 /// under a budget: a filter needs every line's answer at once, and the
 /// answer for a source file is the kind of thing that fits in memory (one
 /// byte per line). The cost is one parse of the file, on the order of ten
-/// microseconds per line, paid once per load and only when a definition
+/// microseconds per line, paid once per load and only when a code item
 /// filter exists — see `Document::evaluate`. Log files have no grammar and
 /// never pay it.
 ///
@@ -847,26 +847,26 @@ impl KindScopes {
 /// is the fallback, and it is applied **only for kinds the grammar never
 /// named anywhere in this file**: C scopes `struct` in `struct point p;` as
 /// `storage.type` too, and since the C grammar does name real struct
-/// definitions, the fallback stays off for structs there. In a Swift file
+/// code items, the fallback stays off for structs there. In a Swift file
 /// nothing is ever named, so the fallback carries all four kinds.
 ///
-/// The same pass finds each definition's *extent* (#610). syntect gives no
+/// The same pass finds each code item's *extent* (#610). syntect gives no
 /// syntax tree, but its scope stack carries over from line to line: a
-/// definition with a body opens a scope on its first line that stays open
-/// until its closing brace. So a definition line whose stack ends deeper
+/// code item with a body opens a scope on its first line that stays open
+/// until its closing brace. So a code-item line whose stack ends deeper
 /// than it started has a body, and the body ends on the first later line
-/// whose stack ends no deeper than that. A definition with no body opens
+/// whose stack ends no deeper than that. A code item with no body opens
 /// nothing and has no extent. Python opens no such scope: its extents come
 /// from indentation instead, in [`indented_extents`].
 #[must_use]
-pub fn definitions(path: &Path, lines: &Lines) -> Option<Definitions> {
+pub fn code_items(path: &Path, lines: &Lines) -> Option<CodeItems> {
     let syntax = detect(path, lines.get(0).as_deref())?;
     let scopes = KindScopes::new();
     let mut state = ParseState::new(syntax);
     let mut stack = ScopeStack::new();
     let mut named = vec![KindSet::EMPTY; lines.len()];
     let mut keyworded = vec![KindSet::EMPTY; lines.len()];
-    // Each line that may start a definition with a body, and the depth of
+    // Each line that may start a code item with a body, and the depth of
     // the stack before it: innermost last.
     let mut open: Vec<(usize, usize)> = Vec::new();
     let mut extents = Vec::new();
@@ -919,7 +919,7 @@ pub fn definitions(path: &Path, lines: &Lines) -> Option<Definitions> {
             open.pop();
             extents.push(Extent { start, end: row });
         }
-        // Only a line that may start a definition, so that every `if` and
+        // Only a line that may start a code item, so that every `if` and
         // loop body does not pass through `open`. Which of them start one
         // is known only after the fallback, below.
         if stack.len() > depth && !(named[row].is_empty() && keyworded[row].is_empty()) {
@@ -949,7 +949,7 @@ pub fn definitions(path: &Path, lines: &Lines) -> Option<Definitions> {
         // A line the fallback did not keep starts nothing, so it has no extent.
         extents.retain(|extent| !kinds[extent.start].is_empty());
     }
-    Some(Definitions {
+    Some(CodeItems {
         kinds,
         extents,
         keeps_end_lines: !indented,
@@ -985,23 +985,23 @@ impl Layout {
 
 /// The extents of a language whose blocks are their indentation (#612).
 /// The Python grammar closes its scopes at the `:` of a `def` line, so the
-/// scope depth finds no body there. A definition's extent is its start line
+/// scope depth finds no body there. A code item's extent is its start line
 /// and each later line that is blank, continued, or indented more than the
-/// start; it ends on the last of them that is not blank. A definition on one
+/// start; it ends on the last of them that is not blank. A code item on one
 /// line has no extent.
 ///
-/// One pass with a stack of the open definitions, innermost last: a
+/// One pass with a stack of the open code items, innermost last: a
 /// statement closes each one indented as far as it or further. Each closes
 /// before the ones that hold it, so the extents come out in order of their
 /// end lines.
 fn indented_extents(kinds: &[KindSet], layout: &[Layout]) -> Vec<Extent> {
-    // Each open definition's start, its indent, and its last line so far.
+    // Each open code item's start, its indent, and its last line so far.
     // Only the innermost one's last line is kept up to date; it passes to
     // the one that holds it when it closes.
     let mut open: Vec<(usize, usize, usize)> = Vec::new();
     let mut extents = Vec::new();
     let mut close = |open: &mut Vec<(usize, usize, usize)>| {
-        let (start, _, end) = open.pop().expect("an open definition");
+        let (start, _, end) = open.pop().expect("an open code item");
         if end > start {
             extents.push(Extent { start, end });
         }
@@ -1041,12 +1041,12 @@ mod tests {
         Lines::from_text(text.to_string())
     }
 
-    // ---- definitions (#123) ------------------------------------------------
+    // ---- code items (#123) ------------------------------------------------
 
     /// The rows of `text` that start `kind`, by index.
     fn rows_of(kind: Kind, name: &str, text: &str) -> Vec<usize> {
         let lines = lines(text);
-        let found = definitions(Path::new(name), &lines).expect("a bundled grammar");
+        let found = code_items(Path::new(name), &lines).expect("a bundled grammar");
         found
             .kinds
             .iter()
@@ -1071,7 +1071,7 @@ impl Point {
     /// Functions, structs and enums by their `entity.name.*` scopes; a
     /// method inside an impl counts; a closure binding does not.
     #[test]
-    fn rust_definitions_by_scope() {
+    fn rust_code_items_by_scope() {
         assert_eq!(rows_of(Kind::Function, "a.rs", RUST), vec![0, 4]);
         assert_eq!(rows_of(Kind::Struct, "a.rs", RUST), vec![1]);
         assert_eq!(rows_of(Kind::Enum, "a.rs", RUST), vec![2]);
@@ -1088,7 +1088,7 @@ async def main():
 ";
 
     #[test]
-    fn python_definitions_by_scope() {
+    fn python_code_items_by_scope() {
         assert_eq!(rows_of(Kind::Class, "a.py", PYTHON), vec![0]);
         assert_eq!(rows_of(Kind::Function, "a.py", PYTHON), vec![1, 4]);
         assert_eq!(rows_of(Kind::Struct, "a.py", PYTHON), Vec::<usize>::new());
@@ -1102,10 +1102,10 @@ int main(void) {
 }
 ";
 
-    /// The C grammar names struct definitions, so the `storage.type`
+    /// The C grammar names struct code items, so the `storage.type`
     /// fallback stays off for structs and `struct point p;` is not one.
     #[test]
-    fn c_struct_declarations_are_not_definitions() {
+    fn c_struct_declarations_are_not_code_items() {
         assert_eq!(rows_of(Kind::Struct, "a.c", C), vec![0]);
         assert_eq!(rows_of(Kind::Function, "a.c", C), vec![1]);
     }
@@ -1123,7 +1123,7 @@ func topLevel() {}
     /// bat's Swift grammar names nothing, so every kind comes from the
     /// keyword fallback — and nothing spurious comes with it.
     #[test]
-    fn swift_definitions_by_keyword_fallback() {
+    fn swift_code_items_by_keyword_fallback() {
         assert_eq!(rows_of(Kind::Class, "a.swift", SWIFT), vec![0]);
         assert_eq!(rows_of(Kind::Function, "a.swift", SWIFT), vec![1, 2, 6]);
         assert_eq!(rows_of(Kind::Struct, "a.swift", SWIFT), vec![4]);
@@ -1167,7 +1167,7 @@ func main() {}
     /// Go names functions and types; structs and interfaces arrive under
     /// `type`, and the keyword fallback adds the struct and trait rows.
     /// `package` is not `storage.type` in the Go grammar, and a file's one
-    /// package clause is not the kind of definition the row is for.
+    /// package clause is not the kind of code item the row is for.
     #[test]
     fn go_types_cover_struct_and_interface_declarations() {
         assert_eq!(rows_of(Kind::Type, "a.go", GO), vec![1, 2]);
@@ -1202,7 +1202,7 @@ struct Point {}
     /// Each extent of `text`, as `(start, end)` rows.
     fn extents_of(name: &str, text: &str) -> Vec<(usize, usize)> {
         let lines = lines(text);
-        definitions(Path::new(name), &lines)
+        code_items(Path::new(name), &lines)
             .expect("a bundled grammar")
             .extents
             .iter()
@@ -1269,7 +1269,7 @@ class Canvas {
     /// A signature in a trait opens nothing, so it has no extent; the trait
     /// around it has one.
     #[test]
-    fn a_definition_with_no_body_has_no_extent() {
+    fn a_code_item_with_no_body_has_no_extent() {
         let text = "\
 trait Area {
     fn area(&self) -> f64;
@@ -1428,8 +1428,8 @@ int main(void) { return 0; }
 
     /// No grammar, no answer: a log file starts nothing.
     #[test]
-    fn a_log_file_has_no_definitions() {
-        assert!(definitions(Path::new("app.log"), &lines("fn main() {}\n")).is_none());
+    fn a_log_file_has_no_code_items() {
+        assert!(code_items(Path::new("app.log"), &lines("fn main() {}\n")).is_none());
     }
 
     /// One line can start two kinds, and a `KindSet` says both.

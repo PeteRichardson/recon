@@ -723,7 +723,7 @@ pub const KEYMAP: &[Section] = &[
             },
             Binding {
                 keys: &[">", "<"],
-                action: "Reveal a definition or gap / hide again",
+                action: "Reveal a code item or gap / hide again",
                 names: &["view.reveal", "view.reveal.close"],
             },
             Binding {

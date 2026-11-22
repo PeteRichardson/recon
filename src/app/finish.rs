@@ -309,7 +309,7 @@ impl LinesJob {
 /// `collect_lines` emits from a document held whole, from a file that is
 /// not. `None` when `cancel` stopped it.
 ///
-/// A definition filter needs the grammar of the whole file, which one line
+/// A code filter needs the grammar of the whole file, which one line
 /// at a time cannot give, so with one enabled the file is read whole, as
 /// the view reads it when it is promoted.
 pub(super) fn stream(

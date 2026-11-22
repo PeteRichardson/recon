@@ -24,7 +24,7 @@ pub const MAX_PATTERNS: usize = Bits::BITS as usize;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScanOff {
     /// More patterns than `MAX_PATTERNS` bits. `builtin` is how many of
-    /// them are the built-in `definitions` set's slots, which the user did
+    /// them are the built-in `code` set's slots, which the user did
     /// not write as patterns (#396).
     TooMany {
         patterns: usize,
@@ -310,7 +310,7 @@ impl ActiveFilters {
                 builtin: self
                     .filters
                     .iter()
-                    .filter(|filter| filter.predicate.is_definition())
+                    .filter(|filter| filter.predicate.is_code_item())
                     .count(),
                 limit: MAX_PATTERNS,
             }),
@@ -334,7 +334,7 @@ impl ActiveFilters {
         let mut exclude: Bits = 0;
         let mut require: Bits = 0;
         for (index, filter) in self.filters.iter().enumerate() {
-            // A definition predicate is not a test of the line's text,
+            // A code-item predicate is not a test of the line's text,
             // and a scan reads text it never parses: its bit stays out of
             // every mask, so it neither selects nor excludes a file. The
             // view still applies it per line. An advanced filter is a test
@@ -480,7 +480,7 @@ mod tests {
     fn no_matcher_past_128_patterns() {
         assert_eq!(MAX_PATTERNS, 128);
         let mut set = ActiveFilters::new();
-        // The built-in definitions set holds one of the slots per kind.
+        // The built-in code set holds one of the slots per kind.
         let room = MAX_PATTERNS - Kind::ALL.len();
         for i in 0..room {
             set.add(&format!("p{i}")).expect("valid pattern");
@@ -621,8 +621,8 @@ mod tests {
         };
         let mut set = ActiveFilters::new();
         assert!(!agree(&set), "no filters");
-        set.add_definition(Kind::Function);
-        assert!(!agree(&set), "a definition alone");
+        set.add_code_item(Kind::Function);
+        assert!(!agree(&set), "a code item alone");
         set.add("foo").expect("valid");
         assert!(agree(&set), "an include");
         set.filters[1].sense = Sense::Exclude;

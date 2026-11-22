@@ -3,7 +3,7 @@
 //! order", which the `regex` crate cannot.
 //!
 //! An advanced filter is a [`Predicate::Advanced`](super::Predicate). Its
-//! slot in the compiled `RegexSet` is `NEVER`, as a definition's is, and
+//! slot in the compiled `RegexSet` is `NEVER`, as a code item's is, and
 //! the verdict asks Oniguruma instead. Every other filter keeps the fast
 //! path. Oniguruma backtracks, so each test has a step limit: a line that
 //! passes it counts as no match, and the caller is told, so the filter row

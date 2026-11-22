@@ -292,7 +292,7 @@ fn collect_lines(
 
 /// `--emit lines` over the lines of `stdin`, `-` as `PATH` (#517).
 ///
-/// A definition filter needs the grammar of the whole input, which one
+/// A code filter needs the grammar of the whole input, which one
 /// line at a time cannot give, so with one enabled stdin is read to its
 /// end first, as `q` under `--emit lines` reads a file (#351). So does a
 /// require filter, which is a condition on the whole input (#547).
@@ -384,7 +384,7 @@ fn stream_stdin<R: io::Read>(
     (Ok(()), Ok(()))
 }
 
-/// Every line of `stdin`, as a document a definition filter can parse.
+/// Every line of `stdin`, as a document a code filter can parse.
 fn stdin_whole(mut stdin: impl BufRead) -> io::Result<Document> {
     let mut bytes = Vec::new();
     stdin.read_to_end(&mut bytes)?;
@@ -557,7 +557,7 @@ fn write_line(
 /// from; there is no `unscanned` here, since every scan runs to its answer
 /// before its file's line prints.
 ///
-/// A definition filter takes a parse, not a scan (#224): a scan reads only
+/// A code filter takes a parse, not a scan (#224): a scan reads only
 /// text, so the matcher skips it. When one is effective, every file is
 /// answered by `file_defines` instead — every filter, regex ones too, from
 /// one read and one grammar pass per file. The navigator's marks cannot
@@ -654,7 +654,7 @@ fn file_matches(path: &Path, matcher: &Matcher) -> io::Result<bool> {
 /// Whether any line of `path` is included by `filters`, read and evaluated
 /// as `--emit lines` does it — the rule its match count uses. The whole file
 /// is read: a kind the grammar never names anywhere in the file falls back
-/// to keywords (`syntax::definitions`), so no line can answer early.
+/// to keywords (`syntax::code_items`), so no line can answer early.
 ///
 /// A file `Document::read` refuses as binary has no grammar to parse, so
 /// it defines nothing: `Ok(false)`, not a failure.
@@ -678,8 +678,8 @@ fn file_defines(
 /// The matcher batch mode checks a document's require filters with (#547),
 /// made once per run: `None` when no require filter is enabled, and when
 /// there is no matcher — more patterns than a scan takes — which is the
-/// explorer's answer then too. A require filter with a definition predicate
-/// is not in it, as the explorer's scan does not read definitions.
+/// explorer's answer then too. A require filter with a code-item predicate
+/// is not in it, as the explorer's scan does not read code items.
 fn require_matcher(filters: &ActiveFilters) -> Option<Matcher> {
     filters.matcher().filter(Matcher::requires)
 }
@@ -1668,8 +1668,8 @@ mod tests {
 
     // ---- files, answered by a parse (#224) ---------------------------------
 
-    /// The built-in `definitions` set enabled with only `functions` on —
-    /// what `--set definitions:functions` gives a run.
+    /// The built-in `code` set enabled with only `functions` on —
+    /// what `--set code:functions` gives a run.
     fn functions_only(mut filters: ActiveFilters) -> ActiveFilters {
         let builtin = filters
             .sets()
@@ -1721,10 +1721,10 @@ mod tests {
         assert_eq!(failed, 0);
     }
 
-    /// A regex filter beside a definition filter is answered by the same
+    /// A regex filter beside a code filter is answered by the same
     /// parse, so a file the regex alone selects is still listed.
     #[test]
-    fn files_answers_a_regex_and_a_definition_filter_together() {
+    fn files_answers_a_regex_and_a_code_filter_together() {
         let inputs = sources("batch_files_defs_regex");
         let mut out = Vec::new();
 
@@ -1741,7 +1741,7 @@ mod tests {
     }
 
     /// `Document::read` refuses a NUL-bearing file. On the parse path that
-    /// is "no definitions", not a read failure: not listed, no warning, no
+    /// is "no code items", not a read failure: not listed, no warning, no
     /// exit 2.
     #[test]
     fn files_takes_a_binary_input_as_defining_nothing() {

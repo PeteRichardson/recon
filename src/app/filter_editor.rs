@@ -755,7 +755,7 @@ impl FilterEditor {
                     .map(|expansion| expansion.map(str::to_string).map_err(Clone::clone));
                 predicate
                     .line_regex()
-                    .expect("a typed pattern is never a definition")
+                    .expect("a typed pattern is never a code item")
             });
         match regex {
             Ok(regex) => {
@@ -1656,7 +1656,7 @@ impl App<'_> {
     }
 
     /// `f C`: open the filter editor on the filter at `index` (#313), with
-    /// its name, description and prompt (#317). A definition filter has no
+    /// its name, description and prompt (#317). A code filter has no
     /// pattern to show, and says so instead. A typed filter has no name,
     /// so its name field is empty; a file filter without a `name` has its
     /// pattern as its name, and keeps it when the pattern changes, as `c`
@@ -1668,7 +1668,7 @@ impl App<'_> {
         // As typed: a referring filter keeps its references (#473).
         let Some(pattern) = filter.predicate.typed() else {
             self.report(
-                "a definition filter has no pattern to edit; c turns it into one",
+                "a code filter has no pattern to edit; c turns it into one",
                 false,
             );
             return;
