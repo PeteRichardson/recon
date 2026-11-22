@@ -561,12 +561,14 @@ fn pieces(segment: &str) -> impl Iterator<Item = Piece<'_>> {
 
 /// Refuse the alias `name = chain` when the palette cannot run it (#557).
 /// The name: one that is already a command's, which it would hide, a
-/// number, which is `goto`, and one with a blank or a `;` in it, where the
-/// palette ends a name or a chain. The chain: an empty command line, or one
-/// that names no built-in command. An alias of `aliases` is not a built-in:
-/// an alias cannot run another one yet. An argument in the place of a
-/// command name is no built-in either, and a chain that skips a `$<n>`
-/// below its highest one would lose that word (#558).
+/// number, which is `goto`, one with a blank or a `;` in it, where the
+/// palette ends a name or a chain, and one with a `:`, which `pack:name`
+/// keeps for a pack's alias that lost its bare name (#627). The chain: an
+/// empty command line, or one that names no built-in command. An alias of
+/// `aliases` is not a built-in: an alias cannot run another one yet. An
+/// argument in the place of a command name is no built-in either, and a
+/// chain that skips a `$<n>` below its highest one would lose that word
+/// (#558).
 pub(crate) fn check_alias(
     name: &str,
     chain: &str,
@@ -580,6 +582,11 @@ pub(crate) fn check_alias(
     }
     if name.contains(|c: char| c.is_whitespace() || c == ';') {
         return Err("a name cannot have a blank or a `;` in it".to_string());
+    }
+    if name.contains(':') {
+        return Err(
+            "a name cannot have a `:` in it: `pack:name` names a pack's alias (#627)".to_string(),
+        );
     }
     if find(catalog(), name).is_some() {
         return Err("the name is already a command".to_string());

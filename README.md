@@ -1186,7 +1186,7 @@ The lists apply in `~/.config/recon` too, but never to
 files at startup. The set picker (`L`) then selects the sets of the files
 that recon read.
 
-#### Packs: views in a set file
+#### Packs: views and aliases in a set file
 
 A set file can also have `[commands]` and `[[filetype]]` rows, in the
 format that `config.toml` uses (see [Command views](#command-views)). The
@@ -1225,11 +1225,36 @@ The pack's name is the file name without `.filters.toml`, here `mpegpack`.
 - **No program.** When the program is not on `PATH`, the pack still loads,
   and recon shows the same warning as for a command in `config.toml`.
 
-A command name cannot contain `:`. When two directories each have a pack
-of one name (for example two `filters.toml`), recon uses the first and shows
-a warning for the other. Commands and rows are not
-listed or unlisted in the set picker: they are in force while their file is
-on the path.
+A pack can also have `[aliases]`, in the format that `config.toml` uses
+(see [Aliases](#aliases)). Then the file carries the workflow of the tool
+too:
+
+```toml
+# ~/work/team-filters/deploylogs.filters.toml
+[aliases]
+dlogs = "e $1 ; set DeployLogs:outcome ; unlist code"
+```
+
+- **Same names.** The first definition of an alias keeps its name, and
+  `config.toml` comes before every pack. So your own `dlogs` in
+  `config.toml` wins, and the pack's alias is named `deploylogs:dlogs`, with
+  a warning.
+- **Checks.** recon checks a pack's alias as it checks one in `config.toml`,
+  and the message names the file.
+- **A key.** A `[keymap]` line in `config.toml` can give a pack's alias a
+  key, by its name in force (`dlogs`, or `deploylogs:dlogs`). Because the
+  keymap then depends on the set files, a set file that recon cannot read
+  stops `--print-keymap`. `--print-keymap defaults` and
+  `--print-editor-config` read no file, so they still run.
+- **Paths.** An alias in a shared pack must not use a path that only one
+  machine has. Use an argument (`e $1`), or keep your own version in
+  `config.toml`.
+
+A command name or an alias name cannot contain `:`. When two directories
+each have a pack of one name (for example two `filters.toml`), recon uses
+the first and shows a warning for the other. Commands, rows and aliases are
+not listed or unlisted in the set picker: they are in force while their file
+is on the path.
 
 #### The set picker
 
@@ -2863,8 +2888,9 @@ you may be typing a regular expression: push Esc first.
 
 #### Aliases
 
-An `[aliases]` table in `config.toml` gives a name to a chain of command
-lines, with `;` between them. You type the name in the palette, and recon runs
+An `[aliases]` table in `config.toml`, or in a set file (see
+[Packs](#packs-views-and-aliases-in-a-set-file)), gives a name to a chain of
+command lines, with `;` between them. You type the name in the palette, and recon runs
 each line in order, as if you typed it:
 
 ```toml
@@ -2895,8 +2921,8 @@ go = "explorer.set $1 ; explorer.focus"
 - **recon refuses to start** when an alias has a line that names no command,
   an empty line, or the name of another alias (an alias cannot run another
   alias yet), or that uses `$2` but not `$1`. It also refuses an alias with the name of a command, such as `e`
-  or `global.follow`, a number, or a name with a blank or a `;`. The message
-  names the alias.
+  or `global.follow`, a number, or a name with a blank, a `;` or a `:`. The
+  message names the alias.
 - **A key.** A `[keymap]` line with the alias's name gives it a key, as a
   line with an action's name does:
 
