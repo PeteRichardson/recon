@@ -489,7 +489,7 @@ impl App<'_> {
             explorer_search_history: History::default(),
             sets_search_history: History::default(),
             command_history: History::default(),
-            commands: crate::commands::with_aliases(&config.aliases),
+            commands: crate::commands::with_aliases(&startup.aliases),
             home: std::env::var("HOME").ok(),
             last_folder: None,
             filters,

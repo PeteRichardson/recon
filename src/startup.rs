@@ -18,6 +18,10 @@ pub struct Startup {
     pub config: Config,
     /// Every binding in force: the defaults with `[keymap]` folded in (#61).
     pub bindings: Keymap,
+    /// The palette's aliases: `config.toml`'s, then each pack's (#627), with
+    /// the `pack:name` of one that lost its bare name. `config.aliases` stays
+    /// what `config.toml` said, as `config.commands` does.
+    pub aliases: std::collections::BTreeMap<String, String>,
     /// What the `[keymap]` table cost, then each pack definition a
     /// collision renamed or dropped (#602), then each view a `[[filetype]]`
     /// row names that cannot run (#457): for the panel `App` draws on its first
@@ -40,6 +44,7 @@ impl From<Config> for Startup {
     fn from(config: Config) -> Self {
         let (table, _) = crate::views::cycle::Table::build(&config.filetypes, &config.commands);
         Self {
+            aliases: config.aliases.clone(),
             config,
             bindings: Keymap::default(),
             warnings: Vec::new(),
@@ -114,27 +119,45 @@ pub fn start() -> Result<Start> {
     let overlay = config.load()?;
     log::debug!("config read in {:?}", read.elapsed());
 
+    let read = std::time::Instant::now();
+    let loaded = crate::filtersets::load_file(config.filter_path.as_deref(), &config.filter_dirs)?;
+    let filter_sets = loaded.sets;
+    log::debug!(
+        "{} filter sets read in {:?}",
+        filter_sets.len(),
+        read.elapsed()
+    );
+
+    // The packs' commands, rows (#602) and aliases (#627) join
+    // `config.toml`'s. A view no file defines, or an alias the palette
+    // cannot run, refuses here, before the terminal is taken (#143). The
+    // keymap below and the palette see the one merged list of aliases.
+    let mut merged = crate::views::pack::merge(
+        &config.filetypes,
+        &config.commands,
+        &config.aliases,
+        &loaded.packs,
+    )?;
+    let aliases = std::mem::take(&mut merged.aliases);
+
     // The `[keymap]` table, before `--print-keymap` below, which prints the
     // answer. An unknown action name, an unreadable key spelling or a keymap
     // recon cannot obey refuses to start while a message can still be read
-    // (#61). Above the filter sets for the same reason the two print
-    // commands are: this reads nothing from `filters.toml`.
+    // (#61). Below the filter sets: a line can give a pack's alias a key
+    // (#627), so the map in force depends on the set files, and a set file
+    // recon cannot read leaves no map in force to print.
     let (bindings, keymap_warnings) = crate::keymap::config::build(
         &overlay,
-        &config.aliases,
+        &aliases,
         config.config_file_path(),
         config.warnings(),
     )?;
 
-    // Same reasoning as `--print-editor-config` above: this command reads
-    // nothing from `filters.toml`, so it must not have to survive one to run
-    // (#191). It must stay above `load_file` for that reason, which is why
-    // the keymap build moved up rather than this moving down.
-    //
     // The keymap warnings go to stderr first (#259), the same warnings a
     // normal start shows in its panel — which names this command as where
     // to read them all. Filtered here by the panel's own switch, since these
-    // are the same warnings by another route.
+    // are the same warnings by another route. Above `check_sets`: a `--set`
+    // flag does not change the keymap.
     if config.print_keymap.is_some() {
         return Ok(Start::Print {
             stdout: crate::keymap::print_keymap(&bindings, &Keymap::default()),
@@ -146,22 +169,10 @@ pub fn start() -> Result<Start> {
         });
     }
 
-    let read = std::time::Instant::now();
-    let loaded = crate::filtersets::load_file(config.filter_path.as_deref(), &config.filter_dirs)?;
-    let filter_sets = loaded.sets;
-    log::debug!(
-        "{} filter sets read in {:?}",
-        filter_sets.len(),
-        read.elapsed()
-    );
     // Needs the loaded sets, which is why it is not inside `Config::load`
     // with `check_flags`. Still before any terminal setup: the message must
     // reach a screen that is not about to be replaced (#143).
     config.check_sets(&filter_sets)?;
-
-    // The packs' commands and rows join `config.toml`'s (#602). A view no
-    // file defines refuses here, before the terminal is taken (#143).
-    let merged = crate::views::pack::merge(&config.filetypes, &config.commands, &loaded.packs)?;
 
     // Looks each command up on `PATH` once, here, so that a missing one is
     // one warning at startup and not an error on each file.
@@ -174,6 +185,7 @@ pub fn start() -> Result<Start> {
     Ok(Start::Run(Box::new(Startup {
         config,
         bindings,
+        aliases,
         warnings,
         table: std::sync::Arc::new(table),
         filter_sets,

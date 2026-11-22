@@ -54,6 +54,10 @@ struct FileSchema {
     /// `config.toml`.
     #[serde(default)]
     filetype: Vec<FileType>,
+    /// A pack's palette aliases (#627), with the keys of `[aliases]` in
+    /// `config.toml`.
+    #[serde(default)]
+    aliases: BTreeMap<String, String>,
 }
 
 #[derive(Deserialize, Debug, Default)]
@@ -251,22 +255,25 @@ pub fn parse(text: &str, path: &Path) -> Result<Vec<LoadedSet>, Error> {
 }
 
 /// One file's sets as the file wrote them, and its pack when it has
-/// commands or rows (#602).
+/// commands, rows (#602) or aliases (#627).
 fn parse_file(text: &str, path: &Path) -> Result<(Vec<LoadedSet>, Option<Pack>), Error> {
     let FileSchema {
         sets,
         commands,
         filetype,
+        aliases,
     } = toml::from_str(text).map_err(|source| Error::Parse {
         path: path.to_path_buf(),
         source,
     })?;
-    let pack = (!commands.0.is_empty() || !filetype.is_empty()).then(|| Pack {
-        name: pack_name(path),
-        path: path.to_path_buf(),
-        commands,
-        filetypes: filetype,
-    });
+    let pack =
+        (!commands.0.is_empty() || !filetype.is_empty() || !aliases.is_empty()).then(|| Pack {
+            name: pack_name(path),
+            path: path.to_path_buf(),
+            commands,
+            filetypes: filetype,
+            aliases,
+        });
     Ok((parse_sets(sets, path)?, pack))
 }
 

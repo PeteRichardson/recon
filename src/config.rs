@@ -3719,8 +3719,9 @@ mod tests {
         );
         let mut config = Config::default();
         config.apply(&load_from(&unknown).expect("a row parses before its names are checked"));
-        let err = crate::views::pack::merge(&config.filetypes, &config.commands, &[])
-            .expect_err("an unknown view must fail");
+        let err =
+            crate::views::pack::merge(&config.filetypes, &config.commands, &config.aliases, &[])
+                .expect_err("an unknown view must fail");
         assert!(err.to_string().contains("`marked`"), "{err}");
         assert!(err.to_string().contains("`*.md`"), "{err}");
 
@@ -3742,7 +3743,7 @@ mod tests {
         );
         let mut config = Config::default();
         config.apply(&load_from(&path).expect("a valid file"));
-        crate::views::pack::merge(&config.filetypes, &config.commands, &[])
+        crate::views::pack::merge(&config.filetypes, &config.commands, &config.aliases, &[])
             .expect("every name is known");
         assert_eq!(config.commands.0["jq"].argv, ["jq", "."]);
     }
@@ -3824,6 +3825,15 @@ mod tests {
             assert!(err.contains("[aliases]"), "{name:?}: {err}");
             assert!(err.contains("name"), "{name:?}: {err}");
         }
+    }
+
+    /// `pack:name` names a pack's alias that lost its bare name (#627), so
+    /// no file may give an alias a name with a `:`, as for a command.
+    #[test]
+    fn an_alias_name_with_a_colon_is_refused() {
+        let err = alias_error("team:proj", "goto 1");
+        assert!(err.contains("`team:proj`"), "{err}");
+        assert!(err.contains("`:`"), "{err}");
     }
 
     #[test]
@@ -3974,8 +3984,9 @@ mod tests {
         );
         let mut config = Config::default();
         config.apply(&load_from(&path).expect("a row parses before its names are checked"));
-        let err = crate::views::pack::merge(&config.filetypes, &config.commands, &[])
-            .expect_err("an unknown view must fail");
+        let err =
+            crate::views::pack::merge(&config.filetypes, &config.commands, &config.aliases, &[])
+                .expect_err("an unknown view must fail");
         assert!(
             err.to_string().contains("`application/x-mach-binary`"),
             "{err}"

@@ -359,10 +359,12 @@ recon.
 _Avoid_: plugin, preprocessor, filter (that is a pattern in the filter pane)
 
 **Pack**:
-A set file on the filter path that also has `[commands]` or `[[filetype]]`
-rows: what recon must know about one tool, in one file. Its name is the file
-name without `.filters.toml`, and `pack:view` always means that pack's view.
-A command or a row has no *listed* state: reading the file brings it in.
+A set file on the filter path that also has `[commands]`, `[[filetype]]`
+rows or `[aliases]`: what recon must know about one tool, in one file. Its
+name is the file name without `.filters.toml`, and `pack:view` always means
+that pack's view. A pack alias that loses its name to an earlier file is
+`pack:name`. A command, a row or an alias has no *listed* state: reading the
+file brings it in.
 _Avoid_: plugin, bundle, extension
 
 **Include list, ignore list**:
