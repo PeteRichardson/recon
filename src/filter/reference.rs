@@ -49,8 +49,8 @@ impl fmt::Display for Reference {
 pub enum Broken {
     /// No set of that name, or no filter of that `name` in it.
     NotFound(String),
-    /// The target is a definition filter, which has no pattern.
-    Definition(String),
+    /// The target is a code filter, which has no pattern.
+    CodeItem(String),
     /// The target has references of its own. One level only, for now.
     HasReferences(String),
     /// The expansion would not compile.
@@ -64,7 +64,7 @@ impl fmt::Display for Broken {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::NotFound(target) => write!(f, "{target} not found"),
-            Self::Definition(target) => write!(f, "{target} is a definition filter"),
+            Self::CodeItem(target) => write!(f, "{target} is a code filter"),
             Self::HasReferences(target) => {
                 write!(f, "{target} points to a filter that has references")
             }
@@ -234,22 +234,22 @@ impl Predicate {
     }
 
     /// The pattern as the user wrote it, references and all. `None` for a
-    /// definition, which has no pattern.
+    /// code item, which has no pattern.
     #[must_use]
     pub fn typed(&self) -> Option<&str> {
         match self {
             Self::Regex(regex) => Some(regex.as_str()),
             Self::Referring { typed, .. } | Self::Advanced { typed, .. } => Some(typed),
-            Self::Definition(_) => None,
+            Self::CodeItem(_) => None,
         }
     }
 
     /// The regex a line's text is tested with: for a broken reference, one
-    /// that matches nothing, as its filter does. `None` for a definition.
+    /// that matches nothing, as its filter does. `None` for a code item.
     #[must_use]
     pub fn line_regex(&self) -> Option<LineRegex> {
         match self {
-            Self::Definition(_) => None,
+            Self::CodeItem(_) => None,
             Self::Advanced { .. } => Some(self.as_lookaround().map_or_else(
                 || LineRegex::Standard(NOTHING.clone()),
                 |lookaround| LineRegex::Advanced(lookaround.clone()),
@@ -284,7 +284,7 @@ impl Predicate {
                         |source| Ok(Lookaround::new(source)?),
                     )
             }
-            Self::Regex(_) | Self::Definition(_) => false,
+            Self::Regex(_) | Self::CodeItem(_) => false,
         }
     }
 }
@@ -429,7 +429,7 @@ impl ActiveFilters {
             }
             let pattern = match &filter.predicate {
                 Predicate::Regex(regex) => Ok(regex.as_str().to_string()),
-                Predicate::Definition(_) => Err(Broken::Definition as Reason),
+                Predicate::CodeItem(_) => Err(Broken::CodeItem as Reason),
                 Predicate::Referring { .. } => Err(Broken::HasReferences as Reason),
                 // An advanced pattern is Oniguruma's: a standard filter
                 // that names it gets it as typed, and may not compile.
@@ -578,11 +578,11 @@ mod tests {
     }
 
     #[test]
-    fn a_definition_filter_is_not_a_target() {
-        let filters = org_and_team("${definitions:functions}");
+    fn a_code_filter_is_not_a_target() {
+        let filters = org_and_team("${code:functions}");
         assert_eq!(
             reason(&filters, "Update summaries").as_deref(),
-            Some("definitions:functions is a definition filter")
+            Some("code:functions is a code filter")
         );
     }
 

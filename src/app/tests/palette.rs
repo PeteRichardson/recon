@@ -1009,6 +1009,22 @@ fn a_bad_set_or_item_keeps_the_palette_open_with_an_error() {
     assert!(app.filters.sets().iter().all(|meta| meta.listed));
 }
 
+/// The built-in set's old name (#625), in an alias or typed from memory,
+/// is an unknown set, and the error gives the new name.
+#[test]
+fn the_old_builtin_name_says_what_it_is_now() {
+    let mut app = app_with_three_sets("palette_old_builtin");
+    for line in ["unlist definitions", "set definitions"] {
+        run(&mut app, line);
+        assert_eq!(
+            prompt(&app).error.as_deref(),
+            Some("unknown set \"definitions\" (the built-in set `definitions` is now `code`)"),
+            "{line}"
+        );
+        key(&mut app, KeyCode::Esc);
+    }
+}
+
 /// `set +a:ITEMS` changes the flags the pane shows now for `a`; without
 /// the `+`, the list replaces them (#538).
 #[test]
@@ -1061,9 +1077,9 @@ fn tab_completes_a_set_name() {
     key(&mut app, KeyCode::Esc);
 
     key(&mut app, KeyCode::Char(':'));
-    typed(&mut app, "unlist de");
+    typed(&mut app, "unlist co");
     key(&mut app, KeyCode::Tab);
-    assert_eq!(prompt(&app).pattern, "unlist definitions");
+    assert_eq!(prompt(&app).pattern, "unlist code");
 }
 
 /// After `set NAME:` and after each `,`, Tab completes a profile or a

@@ -2,7 +2,7 @@
 
 use crate::filter::{ActiveFilters, Neighbor, Verdict};
 use crate::lines::Lines;
-use crate::syntax::{self, Definitions, KindSet};
+use crate::syntax::{self, CodeItems, KindSet};
 use crate::visible::Visible;
 use ratatui::style::Style;
 use std::collections::VecDeque;
@@ -67,16 +67,16 @@ pub struct Document {
     /// `append`. The minimap's rebuild key (#523): a filter change can
     /// recolour lines and leave `generation` where it was.
     revision: u64,
-    /// Where `lines` came from, for the grammar lookup a definition filter
+    /// Where `lines` came from, for the grammar lookup a code filter
     /// needs (#123). `None` for a document with no file behind it.
     path: Option<std::path::PathBuf>,
-    /// The definition kinds each line starts, and the extent of each
-    /// definition, computed by the first
-    /// `evaluate` that has a definition filter to answer and kept for the
+    /// The code-item kinds each line starts, and the extent of each
+    /// code item, computed by the first
+    /// `evaluate` that has a code filter to answer and kept for the
     /// document's life. `None` until then, and `Some(empty)` for a file no
     /// grammar claims — that answer is worth caching too. Shared, so that
     /// a pass on another thread (#597) reads it with no copy.
-    definitions: Option<Arc<Definitions>>,
+    code_items: Option<Arc<CodeItems>>,
     /// The ranges of file rows the user made visible in hide mode with `>`
     /// (#609, ADR 0017), in the order they were made. View state, not
     /// verdicts: `recompute_visible` shows a row its verdict hides when a
@@ -101,12 +101,12 @@ impl Document {
             generation: 0,
             revision: 0,
             path: None,
-            definitions: None,
+            code_items: None,
             reveals: Vec::new(),
         }
     }
 
-    /// A document over `lines` read from `path`, so that a definition filter
+    /// A document over `lines` read from `path`, so that a code filter
     /// can ask which grammar to parse them with.
     #[must_use]
     pub fn for_file(path: &Path, lines: impl Into<Arc<Lines>>) -> Self {
@@ -159,11 +159,11 @@ impl Document {
     pub fn evaluate(&mut self, filters: &ActiveFilters) {
         // The whole-file grammar pass, once, and only when a filter will
         // read its answer. A set of regex filters never pays for it.
-        if filters.needs_kinds() && self.definitions.is_none() {
-            self.definitions = Some(definitions(self.path.as_deref(), &self.lines));
+        if filters.needs_kinds() && self.code_items.is_none() {
+            self.code_items = Some(code_items(self.path.as_deref(), &self.lines));
         }
         let kinds = self
-            .definitions
+            .code_items
             .as_deref()
             .map_or(&[][..], |found| &found.kinds);
         self.verdicts.clear();
@@ -200,7 +200,7 @@ impl Document {
         Pass {
             lines: Arc::clone(&self.lines),
             path: self.path.clone(),
-            definitions: self.definitions.clone(),
+            code_items: self.code_items.clone(),
         }
     }
 
@@ -208,8 +208,8 @@ impl Document {
     /// started, and the rows they show.
     pub(crate) fn take_block(&mut self, filters: &ActiveFilters, block: Block) {
         debug_assert_eq!(block.start, self.verdicts.len(), "blocks come in order");
-        if block.definitions.is_some() {
-            self.definitions = block.definitions;
+        if block.code_items.is_some() {
+            self.code_items = block.code_items;
         }
         self.verdicts.extend(block.verdicts);
         for (total, count) in self.over_limit.iter_mut().zip(block.over_limit) {
@@ -226,14 +226,14 @@ impl Document {
         self.verdicts.len() == self.lines.len()
     }
 
-    /// Make the end line of each definition that a definition filter
+    /// Make the end line of each code item that a code filter
     /// includes a neighbor line (#610), for the end lines from row `start`
     /// on, so that hide mode reads as an outline. An end line with a
     /// verdict of its own keeps it. An extent whose end line has no verdict
     /// yet waits for the block that judges it.
     fn mark_end_lines(&mut self, filters: &ActiveFilters, start: usize) {
         let Some(found) = self
-            .definitions
+            .code_items
             .as_deref()
             .filter(|found| found.keeps_end_lines)
         else {
@@ -297,7 +297,7 @@ impl Document {
     ///
     /// Only the new lines are evaluated, so a tick of a large followed log
     /// costs the lines it added, and the neighbor counts' reach. A replaced
-    /// line, or a definition filter,
+    /// line, or a code filter,
     /// which parses the whole file, takes a full `evaluate`. The lines are
     /// copied when the view still shares them: `App` lets go of its
     /// reference first, so a tick does not copy the file.
@@ -309,7 +309,7 @@ impl Document {
         let start = shared.len();
         shared.extend(lines);
         // A grammar's answers were for the lines before.
-        self.definitions = None;
+        self.code_items = None;
         if replace_last || filters.needs_kinds() {
             self.evaluate(filters);
             return;
@@ -348,7 +348,7 @@ impl Document {
         }
     }
 
-    /// Reveal the extent of the definition `row` starts or ends (#611), or
+    /// Reveal the extent of the code item `row` starts or ends (#611), or
     /// else the rows from `row` to the next row its verdict shows (#609):
     /// the hidden lines after a visible `row`, or from a hidden `row` that a
     /// reveal already holds, which makes a reveal inside it. The range
@@ -370,12 +370,12 @@ impl Document {
         Some(range)
     }
 
-    /// The rows of the smallest definition that starts or ends on `row`,
+    /// The rows of the smallest code item that starts or ends on `row`,
     /// when a grammar pass found its extent. An extent whose end line has
     /// no verdict yet waits for the block that judges it, as an end line
     /// does.
     fn extent_at(&self, row: usize) -> Option<Range<usize>> {
-        self.definitions
+        self.code_items
             .as_deref()?
             .extents
             .iter()
@@ -854,12 +854,12 @@ fn sweep<'a>(verdicts: impl Iterator<Item = &'a mut Verdict>, reach: impl Fn(Ver
 }
 
 /// What a pass on another thread reads (#597): the lines, and what a
-/// definition filter needs to judge them. `begin_pass` makes one.
+/// code filter needs to judge them. `begin_pass` makes one.
 #[derive(Debug)]
 pub(crate) struct Pass {
     lines: Arc<Lines>,
     path: Option<std::path::PathBuf>,
-    definitions: Option<Arc<Definitions>>,
+    code_items: Option<Arc<CodeItems>>,
 }
 
 /// The verdicts of `size` lines, from row `start`, for `take_block`.
@@ -871,7 +871,7 @@ pub(crate) struct Block {
     over_limit: Vec<usize>,
     /// The grammar's answers, when this pass found them: the first block
     /// carries them back for the document to keep.
-    definitions: Option<Arc<Definitions>>,
+    code_items: Option<Arc<CodeItems>>,
 }
 
 impl Pass {
@@ -880,12 +880,12 @@ impl Pass {
     /// one, runs before the first block.
     pub(crate) fn blocks(self, filters: ActiveFilters, size: usize) -> impl Iterator<Item = Block> {
         let mut found = None;
-        let definitions = match self.definitions {
-            Some(definitions) => definitions,
+        let code_items = match self.code_items {
+            Some(code_items) => code_items,
             None if filters.needs_kinds() => {
-                let definitions = definitions(self.path.as_deref(), &self.lines);
-                found = Some(Arc::clone(&definitions));
-                definitions
+                let code_items = code_items(self.path.as_deref(), &self.lines);
+                found = Some(Arc::clone(&code_items));
+                code_items
             }
             None => Arc::default(),
         };
@@ -898,7 +898,7 @@ impl Pass {
             judge(
                 &lines,
                 start..end,
-                &definitions.kinds,
+                &code_items.kinds,
                 &filters,
                 &mut verdicts,
                 &mut over_limit,
@@ -907,7 +907,7 @@ impl Pass {
                 start,
                 verdicts,
                 over_limit,
-                definitions: found.take(),
+                code_items: found.take(),
             }
         })
     }
@@ -915,9 +915,9 @@ impl Pass {
 
 /// The grammar's answer for `lines`: empty for a document with no file, or
 /// a file no grammar claims.
-fn definitions(path: Option<&Path>, lines: &Lines) -> Arc<Definitions> {
+fn code_items(path: Option<&Path>, lines: &Lines) -> Arc<CodeItems> {
     Arc::new(
-        path.and_then(|path| syntax::definitions(path, lines))
+        path.and_then(|path| syntax::code_items(path, lines))
             .unwrap_or_default(),
     )
 }
@@ -1314,17 +1314,17 @@ mod tests {
         assert_ne!(document.generation(), generation);
     }
 
-    // ---- definition filters (#123) -----------------------------------------
+    // ---- code filters (#123) -----------------------------------------
 
-    /// A document that knows its file answers a definition filter from the
-    /// grammar; lines that start no definition are unmatched whatever they
+    /// A document that knows its file answers a code filter from the
+    /// grammar; lines that start no code item are unmatched whatever they
     /// say, and the pass runs only once.
     #[test]
-    fn evaluating_a_definition_filter_reads_the_grammar() {
+    fn evaluating_a_code_filter_reads_the_grammar() {
         let mut filters = ActiveFilters::new();
-        filters.add_definition(crate::syntax::Kind::Function);
+        filters.add_code_item(crate::syntax::Kind::Function);
         let lines = vec![
-            "// fn not_a_definition".to_string(),
+            "// fn not_a_code_item".to_string(),
             "fn real() {}".to_string(),
             "struct S;".to_string(),
         ];
@@ -1334,15 +1334,15 @@ mod tests {
             document.verdicts(),
             [Verdict::Unmatched, Verdict::Included(0), Verdict::Unmatched]
         );
-        assert!(document.definitions.is_some(), "the pass ran and was kept");
+        assert!(document.code_items.is_some(), "the pass ran and was kept");
     }
 
-    /// No file behind the lines, or a file no grammar claims: a definition
+    /// No file behind the lines, or a file no grammar claims: a code item
     /// filter matches nothing, and a regex filter is unaffected either way.
     #[test]
-    fn without_a_grammar_a_definition_filter_matches_nothing() {
+    fn without_a_grammar_a_code_filter_matches_nothing() {
         let mut filters = ActiveFilters::new();
-        filters.add_definition(crate::syntax::Kind::Function);
+        filters.add_code_item(crate::syntax::Kind::Function);
         filters.add("real").expect("valid");
         let lines = vec!["fn real() {}".to_string()];
         for mut document in [
@@ -1364,15 +1364,15 @@ mod tests {
         "}",
     ];
 
-    /// The `functions` definition filter alone.
+    /// The `functions` code filter alone.
     fn functions() -> ActiveFilters {
-        definitions_of(crate::syntax::Kind::Function)
+        code_items_of(crate::syntax::Kind::Function)
     }
 
-    /// The definition filter for `kind` alone.
-    fn definitions_of(kind: crate::syntax::Kind) -> ActiveFilters {
+    /// The code filter for `kind` alone.
+    fn code_items_of(kind: crate::syntax::Kind) -> ActiveFilters {
         let mut filters = ActiveFilters::new();
-        filters.add_definition(kind);
+        filters.add_code_item(kind);
         filters
     }
 
@@ -1389,10 +1389,10 @@ mod tests {
         document
     }
 
-    /// The end line of each definition a definition filter matches is a
+    /// The end line of each code item a code filter matches is a
     /// neighbor line: hide mode keeps it, and it is not interesting.
     #[test]
-    fn a_definition_filter_keeps_the_end_line_of_each_match() {
+    fn a_code_filter_keeps_the_end_line_of_each_match() {
         let document = outline(&functions());
         assert_eq!(
             document.verdicts(),
@@ -1408,19 +1408,19 @@ mod tests {
     }
 
     /// A Python end line is the last line of the body, which does not read
-    /// as an end: hide mode shows only the definition line.
+    /// as an end: hide mode shows only the code-item line.
     #[test]
-    fn a_python_definition_keeps_no_end_line() {
+    fn a_python_code_item_keeps_no_end_line() {
         let lines = ["def area(r):", "    return r * r", "x = 1"];
         let document = hidden_file("t.py", &lines, &functions());
         assert_eq!(document.verdicts()[1], Verdict::Unmatched);
         assert_eq!(document.visible(), &[0]);
     }
 
-    /// With no end line kept, `>` on a Python definition still reveals its
+    /// With no end line kept, `>` on a Python code item still reveals its
     /// extent, not the gap up to the next visible line.
     #[test]
-    fn a_python_definition_reveals_its_extent() {
+    fn a_python_code_item_reveals_its_extent() {
         let lines = [
             "def area(r):",
             "    return r * r",
@@ -1444,8 +1444,8 @@ mod tests {
         assert_eq!(document.visible(), &[1]);
     }
 
-    /// A regex filter that matches a definition line keeps no end line:
-    /// only a definition filter knows the extent.
+    /// A regex filter that matches a code-item line keeps no end line:
+    /// only a code filter knows the extent.
     #[test]
     fn a_regex_filter_keeps_no_end_line() {
         let mut filters = ActiveFilters::new();
@@ -1463,7 +1463,7 @@ mod tests {
         };
         let mut document = Document::for_file(Path::new("t.rs"), Lines::from(vec!["fn x() {}"]));
         document.evaluate(&filters);
-        assert!(document.definitions.is_none());
+        assert!(document.code_items.is_none());
     }
     use ratatui::style::Modifier;
 
@@ -1797,14 +1797,14 @@ mod tests {
         assert_eq!(partial.visible(), whole.visible());
     }
 
-    /// A definition filter reads the grammar before the first block, and
+    /// A code filter reads the grammar before the first block, and
     /// the document keeps the answer as `evaluate` does.
     #[test]
     fn a_pass_in_blocks_reads_the_grammar_once() {
         let mut filters = ActiveFilters::new();
-        filters.add_definition(crate::syntax::Kind::Function);
+        filters.add_code_item(crate::syntax::Kind::Function);
         let lines = vec![
-            "// fn not_a_definition".to_string(),
+            "// fn not_a_code_item".to_string(),
             "fn real() {}".to_string(),
             "struct S;".to_string(),
         ];
@@ -1816,10 +1816,10 @@ mod tests {
             document.verdicts(),
             [Verdict::Unmatched, Verdict::Included(0), Verdict::Unmatched]
         );
-        assert!(document.definitions.is_some(), "the pass ran and was kept");
+        assert!(document.code_items.is_some(), "the pass ran and was kept");
     }
 
-    /// An end line two blocks after its definition still becomes a
+    /// An end line two blocks after its code item still becomes a
     /// neighbor line, as `evaluate` makes it.
     #[test]
     fn a_pass_in_blocks_keeps_an_end_line_in_a_later_block() {
@@ -1910,9 +1910,9 @@ mod tests {
         assert!(!document.close_reveals(), "none was open");
     }
 
-    // ---- definition reveals (#611) -----------------------------------------
+    // ---- code-item reveals (#611) -----------------------------------------
 
-    /// `>` on the line that starts a definition reveals its extent, to the
+    /// `>` on the line that starts a code-item reveals its extent, to the
     /// end line, not the gap to the next visible line.
     #[test]
     fn a_reveal_on_a_start_line_shows_the_extent() {
@@ -1931,12 +1931,12 @@ mod tests {
         assert_eq!(document.close_reveal(3), Some(1));
     }
 
-    /// A definition with no extent — bat's Swift grammar opens no scope for
+    /// A code item with no extent — bat's Swift grammar opens no scope for
     /// a `class` — reveals the gap to the next visible line.
     #[test]
-    fn a_reveal_on_a_definition_with_no_extent_shows_the_gap() {
+    fn a_reveal_on_a_code_item_with_no_extent_shows_the_gap() {
         let lines = &["class Canvas {", "    func draw() {}", "}", "let x = 1"];
-        let filters = definitions_of(crate::syntax::Kind::Class);
+        let filters = code_items_of(crate::syntax::Kind::Class);
         let mut document = hidden_file("t.swift", lines, &filters);
         assert_eq!(document.visible(), &[0]);
         assert_eq!(document.reveal(0), Some(0..4));
@@ -1956,7 +1956,7 @@ mod tests {
             "    }",
             "}",
         ];
-        let filters = definitions_of(crate::syntax::Kind::Impl);
+        let filters = code_items_of(crate::syntax::Kind::Impl);
         let mut document = hidden_file("t.rs", lines, &filters);
         assert_eq!(document.visible(), &[0, 7]);
         assert_eq!(document.reveal(0), Some(0..8));

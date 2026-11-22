@@ -24,8 +24,9 @@ pub use matcher::{Bits, BitsPass, MAX_PATTERNS, Matcher, Owner, ScanOff, ScanSta
 pub use reference::{Broken, Expander};
 pub use require::{RequireError, label};
 pub use sets::{
-    ALL_ITEM, ALL_SETS, DEFINITIONS_DESCRIPTION, DEFINITIONS_SET, EnableError, FilterSet,
-    LoadedFilter, LoadedSet, Origin, SetSpec, is_builtin_name, unknown_item,
+    ALL_ITEM, ALL_SETS, CODE_DESCRIPTION, CODE_SET, EnableError, FilterSet, LoadedFilter,
+    LoadedSet, Origin, SetSpec, is_builtin_name, retired_name_hint, unknown_item,
+    write_retired_hint,
 };
 
 use crate::syntax::{Kind, KindSet};
@@ -269,21 +270,21 @@ impl Verdict {
 ///
 /// A filter used to *be* a regex. It is now a regex *or* a question about
 /// what the line starts — a function, a class — answered by the grammar
-/// pass in `syntax::definitions` rather than by the line's text. `Sense`,
+/// pass in `syntax::code_items` rather than by the line's text. `Sense`,
 /// `enabled` and the colour apply to both unchanged, which is the point:
 /// "everything except functions" and "functions with context" cost nothing.
 ///
-/// `Regex` predicates keep the `RegexSet` fast path. A `Definition` occupies
+/// `Regex` predicates keep the `RegexSet` fast path. A `CodeItem` occupies
 /// a slot in that set too — compiled as [`NEVER`], a pattern that matches
 /// nothing — so that the set's indices stay the filters' indices and no
 /// mapping between the two has to be kept in step.
 #[derive(Debug, Clone)]
 pub enum Predicate {
     Regex(Regex),
-    /// The line starts a definition of this kind. Answered from the
+    /// The line starts a code item of this kind. Answered from the
     /// `KindSet` the document supplies alongside the line; on a file with no
     /// grammar every set is empty and the predicate never holds.
-    Definition(Kind),
+    CodeItem(Kind),
     /// A pattern with a reference to another filter's pattern (#473):
     /// `typed` as the user wrote it, and its expansion, or why there is
     /// none. See `reference`.
@@ -326,7 +327,7 @@ pub(crate) fn joined<'a>(typed: &'a str, also: Option<&str>) -> std::borrow::Cow
 }
 
 /// A regex that matches nothing: an empty character class. Stands in for a
-/// `Definition` predicate in the compiled set.
+/// `CodeItem` predicate in the compiled set.
 ///
 /// Empty by construction, not by contradiction. This used to be `\b\B` — a
 /// word boundary and a non-boundary at one position — which is just as
@@ -344,14 +345,14 @@ impl Predicate {
     pub fn display(&self) -> String {
         match self {
             Self::Regex(regex) => regex.as_str().to_string(),
-            Self::Definition(kind) => kind.to_string(),
+            Self::CodeItem(kind) => kind.to_string(),
             Self::Referring { typed, .. } | Self::Advanced { typed, .. } => typed.clone(),
         }
     }
 
     /// The regex, when there is one: for a referring pattern, its
     /// expansion, and none while a reference is broken. The explorer's `Matcher` runs regexes
-    /// over files it never parses, so it has nothing to ask a definition.
+    /// over files it never parses, so it has nothing to ask a code item.
     #[must_use]
     pub fn as_regex(&self) -> Option<&Regex> {
         match self {
@@ -360,7 +361,7 @@ impl Predicate {
                 expanded: Ok(regex),
                 ..
             } => Some(regex),
-            Self::Definition(_) | Self::Referring { .. } | Self::Advanced { .. } => None,
+            Self::CodeItem(_) | Self::Referring { .. } | Self::Advanced { .. } => None,
         }
     }
 
@@ -377,13 +378,13 @@ impl Predicate {
         }
     }
 
-    /// Which engine reads the pattern. A definition has none, and says
+    /// Which engine reads the pattern. A code item has none, and says
     /// `Standard`.
     #[must_use]
     pub fn engine(&self) -> Engine {
         match self {
             Self::Advanced { .. } => Engine::Advanced,
-            Self::Regex(_) | Self::Definition(_) | Self::Referring { .. } => Engine::Standard,
+            Self::Regex(_) | Self::CodeItem(_) | Self::Referring { .. } => Engine::Standard,
         }
     }
 
@@ -395,11 +396,11 @@ impl Predicate {
         self.as_regex().is_some() || self.as_lookaround().is_some()
     }
 
-    /// Whether the predicate is a definition kind: a [`NEVER`] slot in the
+    /// Whether the predicate is a code item kind: a [`NEVER`] slot in the
     /// compiled `RegexSet`, answered from the grammar pass instead.
     #[must_use]
-    pub fn is_definition(&self) -> bool {
-        matches!(self, Self::Definition(_))
+    pub fn is_code_item(&self) -> bool {
+        matches!(self, Self::CodeItem(_))
     }
 
     /// The pattern this predicate contributes to the compiled `RegexSet`.
@@ -408,11 +409,11 @@ impl Predicate {
     }
 
     /// The scan cache's name for this predicate. Distinct from `source` only
-    /// in that two definitions of different kinds must not share [`NEVER`].
+    /// in that two code items of different kinds must not share [`NEVER`].
     /// The leading control character cannot appear in a typed pattern.
     fn key(&self) -> String {
         match self {
-            Self::Definition(kind) => format!("\u{1}{kind}"),
+            Self::CodeItem(kind) => format!("\u{1}{kind}"),
             // Not `NEVER`: the scan tests an advanced filter on its own,
             // so its bits change with its pattern.
             Self::Advanced {
@@ -433,7 +434,7 @@ impl Predicate {
     /// for it, with the step limit, once a line.
     fn holds(&self, line: &str, kinds: KindSet) -> bool {
         match self {
-            Self::Definition(kind) => kinds.contains(*kind),
+            Self::CodeItem(kind) => kinds.contains(*kind),
             Self::Advanced { .. } => false,
             Self::Regex(_) | Self::Referring { .. } => {
                 self.as_regex().is_some_and(|regex| regex.is_match(line))
@@ -958,35 +959,35 @@ impl ActiveFilters {
         self.add_as(pattern, Sense::Exclude, Engine::Standard)
     }
 
-    /// Add an including filter that selects lines starting a definition of
+    /// Add an including filter that selects lines starting a code item of
     /// `kind` (#123), coloured and numbered like any other filter. Test-only
-    /// (#167): the built-in `definitions` set (#127) is how a user gets one,
+    /// (#167): the built-in `code` set (#127) is how a user gets one,
     /// and this is the direct route the filter and document tests take.
     #[cfg(test)]
-    pub(crate) fn add_definition(&mut self, kind: Kind) {
+    pub(crate) fn add_code_item(&mut self, kind: Kind) {
         let style = self.next_style();
         self.insert_scratch(Filter::scratch(
-            Predicate::Definition(kind),
+            Predicate::CodeItem(kind),
             Sense::Include,
             style,
         ));
     }
 
-    /// Whether any filter is a definition predicate, and so needs the
+    /// Whether any filter is a code-item predicate, and so needs the
     /// document to supply each line's kinds. What gates the whole-file
     /// grammar pass in `Document::evaluate`.
     #[must_use]
     pub fn needs_kinds(&self) -> bool {
-        // Effective, not merely present: the built-in set means a definition
+        // Effective, not merely present: the built-in set means a code item
         // filter always exists, and a whole-file grammar pass for a row
         // nobody has turned on would be paid by every source file opened.
         self.filters
             .iter()
             .enumerate()
-            .any(|(index, filter)| filter.predicate.is_definition() && self.effective(index))
+            .any(|(index, filter)| filter.predicate.is_code_item() && self.effective(index))
     }
 
-    /// The kinds whose definitions keep their end line in hide mode
+    /// The kinds whose code items keep their end line in hide mode
     /// (#610): those an effective include filter matches by kind. A regex
     /// filter keeps no end line.
     #[must_use]
@@ -997,7 +998,7 @@ impl ActiveFilters {
             .enumerate()
             .filter(|&(index, filter)| filter.sense == Sense::Include && self.effective(index))
             .filter_map(|(_, filter)| match filter.predicate {
-                Predicate::Definition(kind) => Some(kind),
+                Predicate::CodeItem(kind) => Some(kind),
                 _ => None,
             })
             .collect();
@@ -1497,17 +1498,17 @@ impl ActiveFilters {
         // one pass over the line is still one regex pass too many when
         // there is no regex to run (#265). The scan is exact here — it
         // tests only effective filters, and every one of those is a
-        // definition, answered from `kinds`.
+        // code item, answered from `kinds`.
         if !self.needs_regex() {
             return self.verdict_scanning(line, kinds, advanced_hit);
         }
         let matched = prefilter.matches(set, line);
         let matched = |index: usize| matched.as_ref().is_some_and(|m| m.matched(index));
-        // A definition's slot in the set never matches (see `NEVER`), so it
+        // A code item's slot in the set never matches (see `NEVER`), so it
         // is answered from `kinds` instead; a regex's is the set's answer.
         let hit = |index: usize| match &self.filters[index].predicate {
             Predicate::Regex(_) | Predicate::Referring { .. } => matched(index),
-            Predicate::Definition(kind) => kinds.contains(*kind),
+            Predicate::CodeItem(kind) => kinds.contains(*kind),
             Predicate::Advanced { .. } => advanced_hit(index),
         };
 
@@ -1834,7 +1835,7 @@ pub(crate) mod test_support {
         }
     }
 
-    /// A `[sets.definitions]` override, as the loader would pass it through.
+    /// A `[sets.code]` override, as the loader would pass it through.
     pub(crate) fn builtin_override(priority: i32, autoload: bool) -> LoadedSet {
         LoadedSet {
             priority,
@@ -1921,11 +1922,11 @@ mod tests {
 
     // ---- predicates (#123) -------------------------------------------------
 
-    /// A definition filter answers from the line's kinds, not its text.
+    /// A code filter answers from the line's kinds, not its text.
     #[test]
-    fn a_definition_filter_matches_by_kind_not_by_text() {
+    fn a_code_filter_matches_by_kind_not_by_text() {
         let mut set = ActiveFilters::new();
-        set.add_definition(Kind::Function);
+        set.add_code_item(Kind::Function);
         let functions = KindSet::of(&[Kind::Function]);
         assert_eq!(
             set.verdict("anything at all", functions),
@@ -1940,11 +1941,11 @@ mod tests {
         assert!(!set_with(&["fn"]).needs_kinds());
     }
 
-    /// The scanning fallback and the compiled path agree on definitions.
+    /// The scanning fallback and the compiled path agree on code items.
     #[test]
-    fn definition_verdicts_agree_between_paths() {
+    fn code_item_verdicts_agree_between_paths() {
         let mut set = set_with(&["foo"]);
-        set.add_definition(Kind::Struct);
+        set.add_code_item(Kind::Struct);
         let structs = KindSet::of(&[Kind::Struct]);
         for (line, k) in [("foo", KindSet::EMPTY), ("bar", structs), ("foo", structs)] {
             assert_eq!(
@@ -1961,11 +1962,11 @@ mod tests {
         );
     }
 
-    /// Senses apply to a definition filter as to any other.
+    /// Senses apply to a code filter as to any other.
     #[test]
-    fn definition_filters_take_every_sense() {
+    fn code_filters_take_every_sense() {
         let mut set = set_with(&["foo"]);
-        set.add_definition(Kind::Enum);
+        set.add_code_item(Kind::Enum);
         let enums = KindSet::of(&[Kind::Enum]);
         // Exclude: an enum line is removed even though `foo` matched it.
         set.toggle_context(1);
@@ -1975,19 +1976,19 @@ mod tests {
         set.toggle_context(1);
         set.remove(1);
         set.add_excluding("never").expect("valid");
-        set.filters[1].predicate = Predicate::Definition(Kind::Enum);
+        set.filters[1].predicate = Predicate::CodeItem(Kind::Enum);
         set.recompile();
         assert_eq!(set.verdict("foo", enums), Verdict::Excluded);
         assert_eq!(set.verdict("foo", KindSet::EMPTY), Verdict::Included(0));
     }
 
-    /// The explorer cannot evaluate a definition, so its bit is in no mask:
+    /// The explorer cannot evaluate a code item, so its bit is in no mask:
     /// alone it yields no matcher, and beside a regex it neither selects nor
     /// excludes.
     #[test]
-    fn the_matcher_ignores_definition_filters() {
+    fn the_matcher_ignores_code_filters() {
         let mut set = ActiveFilters::new();
-        set.add_definition(Kind::Function);
+        set.add_code_item(Kind::Function);
         assert!(set.matcher().is_none(), "nothing a scan can evaluate");
         set.add("foo").expect("valid");
         let m = set.matcher().expect("foo selects");
@@ -1995,17 +1996,17 @@ mod tests {
         assert_eq!(m.owner(m.bits("foo")), Some(1));
         assert!(
             !m.selects(m.bits("fn nothing")),
-            "the definition slot never matches text"
+            "the code-item slot never matches text"
         );
     }
 
-    /// Two definitions of different kinds are different cache keys, and
+    /// Two code items of different kinds are different cache keys, and
     /// neither collides with a regex someone might type.
     #[test]
-    fn definition_keys_are_distinct() {
+    fn code_item_keys_are_distinct() {
         let mut set = ActiveFilters::new();
-        set.add_definition(Kind::Function);
-        set.add_definition(Kind::Struct);
+        set.add_code_item(Kind::Function);
+        set.add_code_item(Kind::Struct);
         set.add("functions").expect("valid");
         let key = set.pattern_key();
         assert_eq!(
@@ -2017,12 +2018,12 @@ mod tests {
         assert_ne!(key[0], key[2]);
     }
 
-    /// `c` on a definition filter turns it into a regex filter, keeping its
+    /// `c` on a code filter turns it into a regex filter, keeping its
     /// position, colour and sense — the same contract `set_pattern` has.
     #[test]
-    fn set_pattern_turns_a_definition_into_a_regex() {
+    fn set_pattern_turns_a_code_item_into_a_regex() {
         let mut set = ActiveFilters::new();
-        set.add_definition(Kind::Class);
+        set.add_code_item(Kind::Class);
         assert!(set.set_pattern(0, "class ").expect("valid"));
         assert!(set.filters()[0].predicate.as_regex().is_some());
         assert!(!set.needs_kinds());

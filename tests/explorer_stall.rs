@@ -3,7 +3,7 @@
 //!
 //! Every selection move previews the file and evaluates every line against
 //! the active filters. With no filter effective and no search enabled, that
-//! evaluation owes no regex work at all — but the built-in definitions set
+//! evaluation owes no regex work at all — but the built-in code set
 //! is always present, and its eleven never-match placeholders in the
 //! compiled `RegexSet` cost real time per line. On a 30,000-line file the
 //! one keypress took ~10 s in a debug build, so the budget here cannot pass

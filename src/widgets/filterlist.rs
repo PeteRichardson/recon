@@ -702,7 +702,7 @@ mod tests {
         let mut list = FilterList::default();
         let rows = rendered(&mut list, &filters, 30);
         assert!(rows[1].contains("01[x] inc typed"), "{rows:?}");
-        assert!(rows[2].contains("[ ] definitions"), "{rows:?}");
+        assert!(rows[2].contains("[ ] code"), "{rows:?}");
         assert!(rows[3].contains("[x] w"), "{rows:?}");
         assert!(rows[4].contains("  02[ ] inc assoc"), "{rows:?}");
     }
@@ -935,7 +935,7 @@ mod tests {
         // though longer, adds nothing to the width.
         assert_eq!(
             width,
-            "[ ] definitions".len() + BORDERS as usize,
+            "[ ] code".len() + BORDERS as usize,
             "the pane is asking for {width} columns, so the hint widened it"
         );
     }
@@ -1282,7 +1282,7 @@ mod tests {
     }
 
     /// Built-in rows are unnumbered and user filters keep their numbers
-    /// whether or not the definitions set is expanded (#127).
+    /// whether or not the code set is expanded (#127).
     #[test]
     fn builtin_rows_take_no_number_and_user_filters_keep_theirs() {
         let mut filters = ActiveFilters::with_sets(None, &[]);
@@ -1295,7 +1295,7 @@ mod tests {
         let mut list = FilterList::default();
         let collapsed = rendered(&mut list, &filters, 34);
         assert!(collapsed[1].contains("1[x] inc typed"), "{collapsed:?}");
-        assert!(collapsed[2].contains("[ ] definitions"), "{collapsed:?}");
+        assert!(collapsed[2].contains("[ ] code"), "{collapsed:?}");
         filters.set_enabled_set(index, true);
         let expanded = rendered(&mut list, &filters, 34);
         assert!(expanded[1].contains("1[x] inc typed"), "{expanded:?}");

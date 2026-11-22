@@ -187,26 +187,32 @@ that sets both matching grep's `-C`. The filter editor sets it, and a saved
 filter keeps it; a filter at the default omits it from the saved form.
 _Avoid_: context (that is a *Sense*), `-A`/`-B`/`-C` (those are grep's names)
 
-**Definition filter**:
-A filter in the built-in `definitions` set that matches the lines that start
-one kind of definition in a source file, such as functions or impls. The
+**Code item**:
+One function, class, struct, enum, type, trait, module, impl, constant, macro
+or section in a source file, as the syntax grammar finds it: one of
+syntect's code items (its "definitions"). A *Code filter* selects one kind of them.
+_Avoid_: definition, syntax definition, code definition, symbol
+
+**Code filter**:
+A filter in the built-in `code` set that matches the lines that start
+one kind of code item in a source file, such as functions or impls. The
 syntax grammar of the file finds the lines, not a pattern.
 _Avoid_: outline filter, symbol filter
 
-**Extent** (of a definition):
-The lines of one definition, from the line that starts it to its *end line*.
-A definition with no body, such as a function signature in a trait, has no
+**Extent** (of a code item):
+The lines of one code item, from the line that starts it to its *end line*.
+A code item with no body, such as a function signature in a trait, has no
 extent.
 _Avoid_: span, scope (that is the grammar's word), body
 
 **End line**:
-The last line of a definition's *extent*, usually the line with its closing
-brace. A definition filter keeps the end line of each definition it
+The last line of a code item's *extent*, usually the line with its closing
+brace. A code filter keeps the end line of each code item it
 matches, so that hide mode shows the structure of the code. An end line
 is not interesting: `n` and `N` step over it, and it shows in the
 default foreground, as a *neighbor line* does. In Python the end line is
-only the last line indented under the definition, which does not read as
-an end, so a definition filter does not keep it.
+only the last line indented under the code item, which does not read as
+an end, so a code filter does not keep it.
 _Avoid_: closing line, footer
 
 ### Search
@@ -298,7 +304,7 @@ _Avoid_: root, cwd, current directory (that is the working directory)
 The lines the file view can show, in file order: every line an exclude filter
 does not remove, and in hide mode only the lines an include, context or
 require filter matches, the *neighbor lines* of each include match, the
-*end lines* of each definition filter match, and the lines of each *reveal*.
+*end lines* of each code filter match, and the lines of each *reveal*.
 Dimmed lines are visible.
 _Avoid_: on screen, shown lines
 
@@ -321,7 +327,7 @@ and only whether it renders bright or dim changes (see *Neighbor lines*).
 
 **Reveal**:
 A range of lines that the user makes visible in hide mode with `>`, for the
-session. On a line that starts or ends a definition with an *extent*, the
+session. On a line that starts or ends a code item with an *extent*, the
 range is that extent; on another line, it is the hidden lines up to the next
 visible line. A reveal can be inside another reveal. `<` closes the smallest
 reveal that holds the cursor. A revealed line shows as it would with no

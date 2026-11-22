@@ -320,18 +320,18 @@ fn emit_files_over_a_dash_path_points_to_files_from() {
     assert_eq!(out.status.code(), Some(1));
 }
 
-/// #224: a definition filter is answered by parsing each file, so
+/// #224: a code filter is answered by parsing each file, so
 /// `--emit files` lists only the files that define the kinds asked for,
 /// and the summary does not say `no filter`.
 #[test]
-fn files_hide_with_a_definitions_profile_lists_the_files_that_define_it() {
-    let dir = fixture("files_definitions");
+fn files_hide_with_a_code_profile_lists_the_files_that_define_it() {
+    let dir = fixture("files_code");
     let home = dir.join("config");
     fs::create_dir_all(home.join("recon")).expect("create config dir");
     fs::write(
         home.join("recon/filters.toml"),
-        "[sets.definitions]\n\n\
-         [sets.definitions.profiles]\n\
+        "[sets.code]\n\n\
+         [sets.code.profiles]\n\
          typedefs = [\"structs\"]\n",
     )
     .expect("write filters.toml");
@@ -351,7 +351,7 @@ fn files_hide_with_a_definitions_profile_lists_the_files_that_define_it() {
             "--files-from",
             "-",
             "--set",
-            "definitions:typedefs",
+            "code:typedefs",
         ],
         list.as_bytes(),
     );
@@ -425,10 +425,66 @@ fn set_with_plus_changes_what_an_earlier_set_gave() {
     }
 }
 
+/// #625: the built-in set was `definitions`. A file that still names it is
+/// refused, and the message gives the new name, not a repair that makes
+/// `definitions` an ordinary set.
+#[test]
+fn a_definitions_table_is_refused_with_the_new_name() {
+    let dir = fixture("old_builtin_name");
+    let home = dir.join("config");
+    fs::create_dir_all(home.join("recon")).expect("create config dir");
+    fs::write(
+        home.join("recon/filters.toml"),
+        "[sets.definitions]\npriority = 80\n\n\
+         [sets.definitions.profiles]\n\
+         mod = [\"modules\"]\n",
+    )
+    .expect("write filters.toml");
+
+    let out = recon(&home, &["--emit", "lines", "-"], b"x\n");
+
+    let stderr = text(&out.stderr);
+    assert!(
+        stderr.contains(
+            "[sets.definitions]: the built-in set `definitions` is now `code`; \
+             rename the table to [sets.code]"
+        ),
+        "{stderr}"
+    );
+    assert_eq!(text(&out.stdout), "");
+    assert_eq!(out.status.code(), Some(1));
+}
+
+/// #625: `--set definitions` is an unknown set now, and the refusal gives
+/// the new name.
+#[test]
+fn set_definitions_is_refused_with_the_new_name() {
+    let dir = fixture("old_builtin_flag");
+    let home = dir.join("config");
+    fs::create_dir_all(&home).expect("create config dir");
+
+    let out = recon(
+        &home,
+        &["--emit", "lines", "--set", "definitions:structs", "-"],
+        b"x\n",
+    );
+
+    let stderr = text(&out.stderr);
+    assert!(
+        stderr.contains(
+            "unknown set \"definitions\"; the set files define: none; built in: code \
+             (the built-in set `definitions` is now `code`)"
+        ),
+        "{stderr}"
+    );
+    assert_eq!(text(&out.stdout), "");
+    assert_eq!(out.status.code(), Some(1));
+}
+
 /// #441: a kind of the built-in set is named alone, with no profile in
 /// any file.
 #[test]
-fn set_names_a_definition_kind_without_a_profile() {
+fn set_names_a_code_item_kind_without_a_profile() {
     let dir = fixture("set_list_kind");
     let home = dir.join("config");
     fs::create_dir_all(&home).expect("create config dir");
@@ -446,7 +502,7 @@ fn set_names_a_definition_kind_without_a_profile() {
             "-",
             "-q",
             "--set",
-            "definitions:structs",
+            "code:structs",
         ],
         format!("{}\n{}\n", a.display(), b.display()).as_bytes(),
     );

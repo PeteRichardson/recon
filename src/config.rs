@@ -1019,7 +1019,7 @@ impl fmt::Display for ConfigError {
             Self::DashNeedsAPipe => write!(f, "- reads stdin, but stdin is a terminal"),
             Self::FilesFromNeedsBatch => write!(f, "--files-from applies to batch mode"),
             // The built-in set is listed apart: it is among the known names
-            // — `--set definitions` is accepted (#220) — but no set file
+            // — `--set code` is accepted (#220) — but no set file
             // defines it, and the message says what the set files define.
             // Not "filters.toml": the sets can come from any set file (#309).
             Self::UnknownSet { name, known } => {
@@ -1035,7 +1035,7 @@ impl fmt::Display for ConfigError {
                 if !builtin.is_empty() {
                     write!(f, "; built in: {}", builtin.join(", "))?;
                 }
-                Ok(())
+                crate::filter::write_retired_hint(f, name)
             }
             Self::UnknownSetItem {
                 set,
@@ -2792,7 +2792,7 @@ mod tests {
             set_with_profile("Bugs", "p"),
             crate::filter::test_support::builtin_override(50, false),
         ];
-        for name in ["Bugs", "definitions"] {
+        for name in ["Bugs", "code"] {
             let config = Config {
                 unlist: vec![name.to_string()],
                 ..Config::default()
@@ -2807,7 +2807,7 @@ mod tests {
         let err = config.check_sets(&sets).expect_err("refused");
         assert_eq!(
             err.to_string(),
-            "unknown set \"Foo\"; the set files define: Bugs; built in: definitions"
+            "unknown set \"Foo\"; the set files define: Bugs; built in: code"
         );
     }
 
@@ -3041,7 +3041,7 @@ mod tests {
         );
     }
 
-    /// The loader always supplies the built-in set, so `--set definitions`
+    /// The loader always supplies the built-in set, so `--set code`
     /// and a profile on it pass the same check a file set does (#220).
     #[test]
     fn check_sets_accepts_the_builtin_set_and_its_profiles() {
@@ -3050,7 +3050,7 @@ mod tests {
             &[("typedefs", &["types"])],
         )];
 
-        for spec in ["definitions", "definitions:typedefs", "definitions:types"] {
+        for spec in ["code", "code:typedefs", "code:types"] {
             let config = Config {
                 set: vec![spec.to_string()],
                 ..Config::default()
@@ -3059,13 +3059,13 @@ mod tests {
         }
 
         let config = Config {
-            set: vec!["definitions:nope".to_string()],
+            set: vec!["code:nope".to_string()],
             ..Config::default()
         };
         let err = config.check_sets(&sets).expect_err("refused");
         assert_eq!(
             err.to_string(),
-            "\"nope\" is not a profile or a named filter of set \"definitions\"; \
+            "\"nope\" is not a profile or a named filter of set \"code\"; \
              profiles: typedefs; named filters: functions, classes, structs, enums, types, \
              traits, modules, impls, constants, macros, sections"
         );
@@ -3088,7 +3088,7 @@ mod tests {
 
         assert_eq!(
             err.to_string(),
-            "unknown set \"Foo\"; the set files define: Bugs; built in: definitions"
+            "unknown set \"Foo\"; the set files define: Bugs; built in: code"
         );
     }
 
@@ -3180,7 +3180,7 @@ mod tests {
     fn check_sets_accepts_a_kind_name_for_the_builtin_set() {
         let sets = [crate::filter::test_support::builtin_override(50, false)];
         let config = Config {
-            set: vec!["definitions:functions,structs".to_string()],
+            set: vec!["code:functions,structs".to_string()],
             ..Config::default()
         };
         assert!(config.check_sets(&sets).is_ok());

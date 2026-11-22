@@ -214,7 +214,7 @@ fn the_startup_snapshot_is_logged_at_debug() {
             "no debug record with {needle:?}: {found:?}"
         );
     }
-    let set = records_mentioning("filter set \"definitions\": listed");
+    let set = records_mentioning("filter set \"code\": listed");
     assert!(
         set.iter().all(|(level, _)| *level == log::Level::Debug) && !set.is_empty(),
         "{set:?}"

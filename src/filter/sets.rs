@@ -22,21 +22,46 @@ pub enum Origin {
     BuiltIn,
 }
 
-/// The name of the one built-in set: definition filters — functions,
+/// The name of the one built-in set: code filters — functions,
 /// classes, structs, enums — answered by the grammar pass in
-/// `syntax::definitions` (#127).
-pub const DEFINITIONS_SET: &str = "definitions";
+/// `syntax::code_items` (#127).
+pub const CODE_SET: &str = "code";
 
 /// What the set picker says about the built-in set when the file's
-/// `[sets.definitions]` table gives no `description` of its own (#284).
-pub const DEFINITIONS_DESCRIPTION: &str =
-    "Functions, types and other definitions, found by the syntax grammar";
+/// `[sets.code]` table gives no `description` of its own (#284).
+pub const CODE_DESCRIPTION: &str =
+    "Functions, types and other code items, found by the syntax grammar";
+
+/// What the built-in set was called before #625. No set file may use it,
+/// and a refusal that meets it gives the new name.
+const RETIRED_BUILTIN_NAME: &str = "definitions";
+
+/// The note a refusal adds when `name` is the built-in set's old name, so
+/// that a file or an alias written for it says what to type now.
+#[must_use]
+pub fn retired_name_hint(name: &str) -> Option<String> {
+    (name == RETIRED_BUILTIN_NAME)
+        .then(|| format!("the built-in set `{RETIRED_BUILTIN_NAME}` is now `{CODE_SET}`"))
+}
+
+/// Write [`retired_name_hint`] for `name`, in brackets after an
+/// "unknown set" message, or nothing when `name` is not the old name.
+///
+/// # Errors
+///
+/// The error of the formatter.
+pub fn write_retired_hint(f: &mut std::fmt::Formatter<'_>, name: &str) -> std::fmt::Result {
+    match retired_name_hint(name) {
+        Some(hint) => write!(f, " ({hint})"),
+        None => Ok(()),
+    }
+}
 
 /// Whether `name` is a set recon ships, which the file may position and
 /// switch but not fill.
 #[must_use]
 pub fn is_builtin_name(name: &str) -> bool {
-    name == DEFINITIONS_SET
+    name == CODE_SET
 }
 
 /// A named group of filters, toggled as a unit (#128).
@@ -154,7 +179,7 @@ pub struct LoadedSet {
 }
 
 impl LoadedSet {
-    /// The built-in definitions set as it is when `filters.toml` has no
+    /// The built-in code set as it is when `filters.toml` has no
     /// table for it: collapsed, at the default priority, no profiles.
     ///
     /// The loader appends this to every file that does not name the set,
@@ -164,7 +189,7 @@ impl LoadedSet {
     #[must_use]
     pub fn builtin_default() -> Self {
         Self {
-            name: DEFINITIONS_SET.to_string(),
+            name: CODE_SET.to_string(),
             path: PathBuf::new(),
             priority: crate::filtersets::DEFAULT_PRIORITY,
             autoload: false,
@@ -342,7 +367,10 @@ pub enum EnableError {
 impl std::fmt::Display for EnableError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::UnknownSet(name) => write!(f, "unknown set {name:?}"),
+            Self::UnknownSet(name) => {
+                write!(f, "unknown set {name:?}")?;
+                write_retired_hint(f, name)
+            }
             Self::UnknownItem { set, item } => {
                 write!(
                     f,
@@ -369,7 +397,7 @@ impl ActiveFilters {
     pub fn with_sets(palette: Option<Vec<Color>>, sets: &[LoadedSet]) -> Self {
         let mut this = Self::bare(palette);
         // The built-in set is always present. The loader supplies it — a
-        // `[sets.definitions]` table passed through with its `priority`,
+        // `[sets.code]` table passed through with its `priority`,
         // `autoload` and `profiles` and no filters, or the default when the
         // file has no such table — so a caller that ran the loader never
         // reaches the fallback. It is here for the ones that did not:
@@ -402,7 +430,7 @@ impl ActiveFilters {
                         loaded
                             .description
                             .clone()
-                            .unwrap_or_else(|| DEFINITIONS_DESCRIPTION.to_string()),
+                            .unwrap_or_else(|| CODE_DESCRIPTION.to_string()),
                     ),
                     profiles: loaded.profiles.clone(),
                     filter_names: loaded.item_filter_names(),
@@ -413,7 +441,7 @@ impl ActiveFilters {
                     .into_iter()
                     .map(|kind| Filter {
                         id: FilterId::fresh(),
-                        predicate: Predicate::Definition(kind),
+                        predicate: Predicate::CodeItem(kind),
                         sense: Sense::Include,
                         enabled: false,
                         style: Style::default(),
@@ -1075,11 +1103,7 @@ mod tests {
     #[test]
     fn a_new_set_has_the_scratch_set_and_the_built_in_one() {
         let set = ActiveFilters::new();
-        assert_eq!(
-            set.sets().len(),
-            2,
-            "scratch, and the built-in definitions set"
-        );
+        assert_eq!(set.sets().len(), 2, "scratch, and the built-in code set");
         assert_eq!(set.sets()[0].origin, Origin::Scratch);
         assert!(set.sets()[0].enabled);
         assert_eq!(set.sets()[0].name, "");
@@ -1097,7 +1121,7 @@ mod tests {
     #[test]
     fn loaded_sets_follow_scratch_in_the_known_list() {
         let set = ActiveFilters::with_sets(None, &[loaded("a", 50, false, &["x", "y"])]);
-        assert_eq!(set.sets().len(), 3, "scratch, a, definitions");
+        assert_eq!(set.sets().len(), 3, "scratch, a, code");
         assert_eq!(set.sets()[1].name, "a");
         assert_eq!(
             set.sets()[1].origin,
@@ -1650,7 +1674,7 @@ mod tests {
         let names: Vec<&str> = set.sets().iter().map(|s| s.name.as_str()).collect();
         assert_eq!(
             names,
-            ["", "m", "definitions", "new", "z"],
+            ["", "m", "code", "new", "z"],
             "priority 50 sorts between 10 and 90"
         );
         let new = 3;
@@ -1701,7 +1725,7 @@ mod tests {
     fn adopt_keeps_a_live_solo_aligned() {
         let mut set = ActiveFilters::with_sets(None, &[loaded("z", 90, true, &["r"])]);
         set.add("a").expect("valid");
-        set.solo(2); // z: the sets are "", definitions, z
+        set.solo(2); // z: the sets are "", code, z
         assert!(set.adopt_scratch_as("new", PathBuf::from("t")));
         assert_eq!(set.soloed(), Some(3), "z moved from 2 to 3");
         set.solo(3);
@@ -1713,7 +1737,7 @@ mod tests {
         );
     }
 
-    // ---- the built-in definitions set (#127) -------------------------------
+    // ---- the built-in code set (#127) --------------------------------------
 
     fn builtin_index(set: &ActiveFilters) -> usize {
         set.sets()
@@ -1723,12 +1747,12 @@ mod tests {
     }
 
     #[test]
-    fn the_definitions_set_is_always_present_and_collapsed_by_default() {
+    fn the_code_set_is_always_present_and_collapsed_by_default() {
         let set = ActiveFilters::new();
-        assert_eq!(set.sets().len(), 2, "scratch and definitions");
+        assert_eq!(set.sets().len(), 2, "scratch and code");
         let index = builtin_index(&set);
         let meta = &set.sets()[index];
-        assert_eq!(meta.name, DEFINITIONS_SET);
+        assert_eq!(meta.name, CODE_SET);
         assert!(!meta.enabled);
         assert!(!meta.autoload);
         assert_eq!(meta.priority, crate::filtersets::DEFAULT_PRIORITY);
@@ -1742,7 +1766,7 @@ mod tests {
         assert!(set.filters_in(index).all(|(_, f)| !f.enabled));
         assert!(
             set.filters_in(index)
-                .all(|(_, f)| f.predicate.is_definition())
+                .all(|(_, f)| f.predicate.is_code_item())
         );
     }
 
@@ -1766,7 +1790,7 @@ mod tests {
 
     /// The built-in set sorts among file sets by priority and name.
     #[test]
-    fn the_definitions_set_sorts_among_file_sets() {
+    fn the_code_set_sorts_among_file_sets() {
         let set = ActiveFilters::with_sets(
             None,
             &[
@@ -1775,13 +1799,13 @@ mod tests {
             ],
         );
         let names: Vec<&str> = set.sets().iter().map(|s| s.name.as_str()).collect();
-        assert_eq!(names, ["", "alpha", "definitions", "zeta"]);
+        assert_eq!(names, ["", "alpha", "code", "zeta"]);
     }
 
-    /// A `[sets.definitions]` table positions and switches it, and nothing
+    /// A `[sets.code]` table positions and switches it, and nothing
     /// else: its filters are still recon's four.
     #[test]
-    fn a_file_override_positions_and_switches_the_definitions_set() {
+    fn a_file_override_positions_and_switches_the_code_set() {
         let set = ActiveFilters::with_sets(
             None,
             &[
@@ -1793,14 +1817,14 @@ mod tests {
         assert_eq!(index, 1, "priority 10 sorts before alpha");
         assert!(set.sets()[index].enabled, "autoload");
         assert_eq!(set.filters_in(index).count(), Kind::ALL.len());
-        assert_eq!(set.sets().len(), 3, "no second definitions set");
+        assert_eq!(set.sets().len(), 3, "no second code set");
     }
 
-    /// A `[sets.definitions]` table's profiles are the set's (#220): the
+    /// A `[sets.code]` table's profiles are the set's (#220): the
     /// `default` one applies on autoload, another applies by name, and the
     /// members are the kinds' plural names.
     #[test]
-    fn a_file_override_gives_the_definitions_set_profiles() {
+    fn a_file_override_gives_the_code_set_profiles() {
         let mut set = ActiveFilters::with_sets(
             None,
             &[builtin_with_profiles(
@@ -1827,23 +1851,23 @@ mod tests {
             "in Kind::ALL order"
         );
         assert_eq!(
-            set.enable_named(DEFINITIONS_SET, Some(&["nope".to_string()])),
+            set.enable_named(CODE_SET, Some(&["nope".to_string()])),
             Err(EnableError::UnknownItem {
-                set: DEFINITIONS_SET.to_string(),
+                set: CODE_SET.to_string(),
                 item: "nope".to_string(),
             })
         );
         set.enable_named(
-            DEFINITIONS_SET,
+            CODE_SET,
             Some(&["functions".to_string(), "structs".to_string()]),
         )
         .expect("kinds are the built-in set's filter names (#441)");
         assert_eq!(on(&set), ["functions", "structs"]);
     }
 
-    /// The grammar pass is paid only once a definition filter takes effect.
+    /// The grammar pass is paid only once a code filter takes effect.
     #[test]
-    fn needs_kinds_is_false_until_a_definition_filter_is_effective() {
+    fn needs_kinds_is_false_until_a_code_filter_is_effective() {
         let mut set = ActiveFilters::new();
         assert!(!set.needs_kinds(), "present is not effective");
         let index = builtin_index(&set);
@@ -1858,7 +1882,7 @@ mod tests {
     #[test]
     fn needs_regex_is_false_until_a_regex_filter_is_effective() {
         let mut set = ActiveFilters::new();
-        assert!(!set.needs_regex(), "the built-in set is all definitions");
+        assert!(!set.needs_regex(), "the built-in set is all code items");
 
         set.add("foo").expect("valid pattern");
         assert!(set.needs_regex());
@@ -1873,11 +1897,11 @@ mod tests {
         assert!(!set.needs_regex());
     }
 
-    /// With no regex to run, a definition filter is still answered from the
-    /// kinds, and the definition filters the user left off still say
+    /// With no regex to run, a code filter is still answered from the
+    /// kinds, and the code filters the user left off still say
     /// nothing — the guard changes what is asked, not what is answered.
     #[test]
-    fn a_definition_filter_alone_is_answered_without_the_regex_pass() {
+    fn a_code_filter_alone_is_answered_without_the_regex_pass() {
         let mut set = ActiveFilters::new();
         let index = builtin_index(&set);
         set.set_enabled(0, true); // functions
@@ -1899,7 +1923,7 @@ mod tests {
 
     /// Solo, reset and `!` treat it as any set.
     #[test]
-    fn the_definitions_set_is_an_ordinary_set_to_solo_and_reset() {
+    fn the_code_set_is_an_ordinary_set_to_solo_and_reset() {
         let mut set = ActiveFilters::new();
         set.add("typed").expect("valid");
         let index = builtin_index(&set);
@@ -1939,7 +1963,7 @@ mod tests {
         let set = ActiveFilters::with_sets(None, &[loaded("a", 50, true, &["x"])]);
         assert!(
             set.sets().iter().all(|meta| meta.listed),
-            "scratch, a, definitions"
+            "scratch, a, code"
         );
         assert!(set.sets()[1].enabled);
     }
@@ -2177,7 +2201,7 @@ mod tests {
     }
 
     #[test]
-    fn the_definitions_set_can_be_unlisted() {
+    fn the_code_set_can_be_unlisted() {
         let set = ActiveFilters::with_sets(
             None,
             &[unlisted(builtin_override(
@@ -2198,12 +2222,9 @@ mod tests {
     // ---- descriptions (#284) -----------------------------------------------
 
     #[test]
-    fn the_definitions_set_has_a_builtin_description_the_table_can_override() {
+    fn the_code_set_has_a_builtin_description_the_table_can_override() {
         let set = ActiveFilters::new();
-        assert_eq!(
-            set.sets()[1].description.as_deref(),
-            Some(DEFINITIONS_DESCRIPTION)
-        );
+        assert_eq!(set.sets()[1].description.as_deref(), Some(CODE_DESCRIPTION));
 
         let mut table = builtin_override(crate::filtersets::DEFAULT_PRIORITY, false);
         table.description = Some("mine".into());
@@ -2321,7 +2342,7 @@ mod tests {
         let set_index = |set: &ActiveFilters| {
             set.filters()
                 .iter()
-                .position(|filter| filter.predicate.is_definition())
+                .position(|filter| filter.predicate.is_code_item())
                 .expect("a built-in filter")
         };
         let mut set = ActiveFilters::new();

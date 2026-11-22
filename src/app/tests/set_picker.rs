@@ -2,8 +2,8 @@ use super::*;
 
 // ---- the set picker (#284) ---------------------------------------------
 
-/// Rows: `a` (enabled), `b` (disabled), `c` (disabled), `definitions`.
-/// In the picker, alphabetically: a, b, c, definitions.
+/// Rows: `a` (enabled), `b` (disabled), `c` (disabled), `code`.
+/// In the picker, alphabetically: a, b, c, code items.
 fn set_index(app: &App, name: &str) -> usize {
     app.filters
         .sets()
@@ -40,7 +40,7 @@ fn the_open_set_picker_covers_the_panes() {
     key(&mut app, KeyCode::Char('L'));
     let screen = rendered(&mut app);
     assert!(screen.contains("Filter sets"), "{screen}");
-    assert!(screen.contains("[x] definitions"), "{screen}");
+    assert!(screen.contains("[x] code"), "{screen}");
     assert!(
         !screen.contains("Filters"),
         "the filter pane shows through:\n{screen}"
@@ -169,7 +169,7 @@ fn the_file_view_cursor_is_where_it_was_before_big_l() {
 
 // ---- search in the set picker (#285) -----------------------------------
 
-/// The picker's selected row. Rows: a, b, c, definitions.
+/// The picker's selected row. Rows: a, b, c, code items.
 fn picker_row(app: &App) -> usize {
     app.set_picker
         .as_ref()
@@ -229,7 +229,7 @@ fn n_and_big_n_step_through_the_set_picker_hits() {
     let mut app = app_with_three_sets("sets_search_n");
     key(&mut app, KeyCode::Char('L'));
     key(&mut app, KeyCode::Char('/'));
-    typed(&mut app, "^[bd]");
+    typed(&mut app, "^(b|co)");
     key(&mut app, KeyCode::Enter);
     assert_eq!(picker_row(&app), 1);
     key(&mut app, KeyCode::Char('n'));

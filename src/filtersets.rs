@@ -315,6 +315,19 @@ fn parse_sets(sets: BTreeMap<String, SetSchema>, path: &Path) -> Result<Vec<Load
                 "a set's name cannot start with `@`; `@all` after `unlist` means every set".into(),
             ));
         }
+        // The built-in set's name before #625. A table for it is a file
+        // written for the old name, so the refusal gives the new one: the
+        // usual "a set with no filters" would make it an ordinary set.
+        if let Some(hint) = crate::filter::retired_name_hint(&name) {
+            return Err(invalid(
+                &name,
+                None,
+                format!(
+                    "{hint}; rename the table to [sets.{}]",
+                    crate::filter::CODE_SET
+                ),
+            ));
+        }
         // An alias chains commands with `;` (#555).
         if name.contains(';') {
             return Err(invalid(
@@ -1341,10 +1354,8 @@ mod tests {
     /// The built-in set's profiles must not reuse a kind name.
     #[test]
     fn a_builtin_profile_named_for_a_kind_is_rejected() {
-        let message = rejected(
-            "[sets.definitions]\n[sets.definitions.profiles]\nfunctions = ['functions']\n",
-        );
-        assert!(message.contains("[sets.definitions]"), "{message}");
+        let message = rejected("[sets.code]\n[sets.code.profiles]\nfunctions = ['functions']\n");
+        assert!(message.contains("[sets.code]"), "{message}");
         assert!(
             message.contains("\"functions\" is both a profile and a filter"),
             "{message}"
@@ -1352,7 +1363,7 @@ mod tests {
     }
 
     /// The built-in set is the loader's to supply (#220): a file that never
-    /// names it still yields it, at its defaults, so `--set definitions` is
+    /// names it still yields it, at its defaults, so `--set code` is
     /// validated against the same list `with_sets` builds from.
     #[test]
     fn an_empty_file_has_only_the_builtin_set() {
@@ -1360,7 +1371,7 @@ mod tests {
         assert_eq!(sets.len(), 1);
         let builtin = &sets[0];
         assert!(builtin.builtin);
-        assert_eq!(builtin.name, crate::filter::DEFINITIONS_SET);
+        assert_eq!(builtin.name, crate::filter::CODE_SET);
         assert_eq!(builtin.priority, DEFAULT_PRIORITY);
         assert!(!builtin.autoload);
         assert!(builtin.profiles.is_empty());
@@ -1490,7 +1501,7 @@ pattern = 'plain'
         let names: Vec<&str> = sets.iter().map(|s| s.name.as_str()).collect();
         assert_eq!(
             names,
-            ["zebra", "alpha", "beta", "definitions"],
+            ["zebra", "alpha", "beta", "code"],
             "the built-in set sorts among the file's by the same rule"
         );
     }
@@ -1550,40 +1561,37 @@ pattern = 'plain'
         assert!(message.contains("\"nope\""), "{message}");
     }
 
-    /// `[sets.definitions]` positions and switches the built-in set (#127)
+    /// `[sets.code]` positions and switches the built-in set (#127)
     /// and may carry profiles over its filters' display names (#220); what
     /// it may not do is add filters, which are recon's.
     #[test]
     fn a_builtin_set_table_carries_priority_autoload_and_profiles() {
-        let sets = parsed("[sets.definitions]\npriority = 80\nautoload = true\n");
+        let sets = parsed("[sets.code]\npriority = 80\nautoload = true\n");
         assert_eq!(sets.len(), 1, "the table stands in for the default");
         assert!(sets[0].builtin);
         assert_eq!((sets[0].priority, sets[0].autoload), (80, true));
         assert!(sets[0].filters.is_empty());
         assert!(
-            rejected("[sets.definitions]\n[[sets.definitions.filters]]\npattern = 'x'\n")
-                .contains("built-in")
+            rejected("[sets.code]\n[[sets.code.filters]]\npattern = 'x'\n").contains("built-in")
         );
         let sets = parsed(
-            "[sets.definitions]\n[sets.definitions.profiles]\ndefault = ['functions']\n\
+            "[sets.code]\n[sets.code.profiles]\ndefault = ['functions']\n\
              typedefs = ['types', 'structs', 'enums']\n",
         );
         assert_eq!(sets.len(), 1);
         assert_eq!(sets[0].profiles["default"], vec!["functions".to_string()]);
         assert_eq!(sets[0].profiles["typedefs"].len(), 3);
         // An empty table is fine: it names the set and changes nothing.
-        assert!(parsed("[sets.definitions]\n")[0].builtin);
+        assert!(parsed("[sets.code]\n")[0].builtin);
     }
 
     /// A built-in profile's members are checked against the kinds, the same
     /// way a file set's are checked against its filters, and the message
     /// lists what the names are — nothing in the file shows them.
     #[test]
-    fn a_builtin_profile_must_name_definition_kinds() {
-        let message = rejected(
-            "[sets.definitions]\n[sets.definitions.profiles]\ntypedefs = ['types', 'nope']\n",
-        );
-        assert!(message.contains("[sets.definitions]"), "{message}");
+    fn a_builtin_profile_must_name_code_item_kinds() {
+        let message = rejected("[sets.code]\n[sets.code.profiles]\ntypedefs = ['types', 'nope']\n");
+        assert!(message.contains("[sets.code]"), "{message}");
         assert!(message.contains("profile \"typedefs\""), "{message}");
         assert!(message.contains("\"nope\""), "{message}");
         assert!(message.contains("functions"), "lists the kinds: {message}");
@@ -1925,7 +1933,7 @@ pattern = 'plain'
 
     #[test]
     fn a_builtin_set_table_accepts_listed() {
-        let sets = parsed("[sets.definitions]\nlisted = false\n");
+        let sets = parsed("[sets.code]\nlisted = false\n");
         assert!(sets[0].builtin);
         assert!(!sets[0].listed);
     }
@@ -1945,7 +1953,7 @@ pattern = 'plain'
 
     #[test]
     fn a_builtin_set_table_accepts_description() {
-        let sets = parsed("[sets.definitions]\ndescription = 'mine'\n");
+        let sets = parsed("[sets.code]\ndescription = 'mine'\n");
         assert!(sets[0].builtin);
         assert_eq!(sets[0].description.as_deref(), Some("mine"));
     }
@@ -2601,7 +2609,7 @@ pattern = 'plain'
             set_files(Some(own.clone()), std::slice::from_ref(&team), &no_lists()).expect("lists");
         let sets = load_all(&files).expect("loads").sets;
         let names: Vec<&str> = sets.iter().map(|set| set.name.as_str()).collect();
-        assert_eq!(names, ["bug", "definitions", "wifi"]);
+        assert_eq!(names, ["bug", "code", "wifi"]);
         assert_eq!(sets[0].filters[0].predicate.display(), "mine");
         assert_eq!(sets[0].path, own);
         assert_eq!(sets[2].filters[0].predicate.display(), "wlan");
@@ -2616,7 +2624,7 @@ pattern = 'plain'
         let root = scratch_dir("builtin");
         let (own, team) = (root.join("own.toml"), root.join("team.toml"));
         write(&own, &set_file("a", "x"));
-        write(&team, "[sets.definitions]\npriority = 7\n");
+        write(&team, "[sets.code]\npriority = 7\n");
         let sets = load_all(&[own, team]).expect("loads").sets;
         let builtins: Vec<&LoadedSet> = sets.iter().filter(|set| set.builtin).collect();
         assert_eq!(builtins.len(), 1);

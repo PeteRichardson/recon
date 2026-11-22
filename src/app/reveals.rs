@@ -63,7 +63,7 @@ impl Kept {
 }
 
 impl App<'_> {
-    /// `>`: reveal the extent of the definition the cursor's line starts
+    /// `>`: reveal the extent of the code item the cursor's line starts
     /// or ends, or else the hidden lines from the cursor's line to the next
     /// visible line. The cursor stays on its line.
     pub(super) fn reveal(&mut self) {

@@ -16,7 +16,7 @@ pub enum RequireError {
     /// A name that a reference cannot spell: `}` ends one, and `:` would
     /// read as a set name.
     Unspellable(String),
-    /// A built-in filter is a definition, with no pattern to refer to.
+    /// A built-in filter is a code item, with no pattern to refer to.
     NoPattern,
     /// The base has references of its own: one level only (ADR 0008).
     HasReferences(String),
@@ -59,7 +59,7 @@ impl ActiveFilters {
     /// list is in the order the pane's Require section shows.
     pub fn add_require(&mut self, from: usize, also: &str) -> Result<usize, RequireError> {
         let base = self.filters.get(from).ok_or(RequireError::NoPattern)?;
-        if base.predicate.is_definition() || !self.is_user_authored(from) {
+        if base.predicate.is_code_item() || !self.is_user_authored(from) {
             return Err(RequireError::NoPattern);
         }
         let name = base.name.clone().ok_or(RequireError::NoName)?;

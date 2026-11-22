@@ -37,7 +37,7 @@ fn a_set_without_autoload_is_known_but_off() {
     assert!(app.filters.matcher().is_none());
 }
 
-// ---- the built-in definitions set (#127) ---------------------------------
+// ---- the built-in code set (#127) ----------------------------------------
 
 /// Like `app_over_file`, but the fixture file is named `file` so that a
 /// grammar can be found for it.
@@ -51,7 +51,7 @@ fn app_over_named_file(dir: &str, file: &str, body: &str) -> App<'static> {
     }))
 }
 
-fn definitions_index(app: &App) -> usize {
+fn code_set_index(app: &App) -> usize {
     app.filters
         .sets()
         .iter()
@@ -65,14 +65,14 @@ fn definitions_index(app: &App) -> usize {
 #[test]
 fn functions_narrows_a_rust_file_to_its_fn_lines() {
     let mut app = app_over_named_file(
-        "defs_rust",
+        "code_rust",
         "main.rs",
         "// fn in a comment\nfn one() {}\nstruct S;\nfn two() {}\n",
     );
     assert!(!app.filters.needs_kinds(), "nothing effective yet");
-    let set = definitions_index(&app);
+    let set = code_set_index(&app);
     key(&mut app, KeyCode::Char('f'));
-    // Rows: the `f i` hint, then Header(definitions), with an empty scratch set.
+    // Rows: the `f i` hint, then Header(code), with an empty scratch set.
     app.filters_pane.select(1);
     key(&mut app, KeyCode::Enter);
     assert!(app.filters.sets()[set].enabled);
@@ -95,9 +95,9 @@ fn functions_narrows_a_rust_file_to_its_fn_lines() {
 
 /// On a log file the rows exist and are inert.
 #[test]
-fn definition_rows_are_inert_on_a_log_file() {
-    let mut app = app_over_named_file("defs_log", "app.log", "fn looks_like_one() {}\n");
-    let set = definitions_index(&app);
+fn code_rows_are_inert_on_a_log_file() {
+    let mut app = app_over_named_file("code_log", "app.log", "fn looks_like_one() {}\n");
+    let set = code_set_index(&app);
     app.filters.set_enabled_set(set, true);
     app.filters.set_enabled(0, true); // functions
     app.refresh_view();
@@ -106,10 +106,10 @@ fn definition_rows_are_inert_on_a_log_file() {
 
 /// User filters keep their numbers and colours regardless of the set.
 #[test]
-fn user_filters_keep_numbers_and_colours_beside_the_definitions_set() {
-    let mut app = app_over_named_file("defs_numbers", "main.rs", "fn one() {}\nERROR\n");
+fn user_filters_keep_numbers_and_colours_beside_the_code_set() {
+    let mut app = app_over_named_file("code_numbers", "main.rs", "fn one() {}\nERROR\n");
     app.add_filter("ERROR").unwrap();
-    let set = definitions_index(&app);
+    let set = code_set_index(&app);
     app.filters.set_enabled_set(set, true);
     app.refresh_view();
     let error = app
@@ -163,7 +163,7 @@ fn big_s_saves_the_scratch_set_and_adopts_it() {
             .is_some_and(|m| m.text.contains("saved set")),
         "no confirmation"
     );
-    // Rows: Header(bug 57), ERROR, DEBUG, Header(definitions).
+    // Rows: Header(bug 57), ERROR, DEBUG, Header(code).
     assert_eq!(widgets::filterlist::rows(&app.filters).len(), 4);
 }
 
@@ -258,7 +258,7 @@ fn big_s_says_a_built_in_name_is_built_in() {
     app.add_filter("alpha").unwrap();
     key(&mut app, KeyCode::Char('f'));
     key(&mut app, KeyCode::Char('S'));
-    typed(&mut app, filter::DEFINITIONS_SET);
+    typed(&mut app, filter::CODE_SET);
     key(&mut app, KeyCode::Enter);
     let error = app
         .prompt
