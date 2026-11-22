@@ -4,12 +4,8 @@
   <a href="https://github.com/PeteRichardson/recon/actions/workflows/ci.yml"><img src="https://github.com/PeteRichardson/recon/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
   <a href="https://github.com/PeteRichardson/recon/blob/main/LICENSE"><img src="https://img.shields.io/github/license/PeteRichardson/recon" alt="License"></a>
   <a href="https://peterichardson.github.io/recon/"><img src="https://img.shields.io/badge/docs-user%20guide-blue" alt="User guide"></a>
-</p>
-
-<!-- 🖊 TODO: A release badge belongs here too, but would 404 until the first
-     tagged release exists:
   <a href="https://github.com/PeteRichardson/recon/releases/latest"><img src="https://img.shields.io/github/v/release/PeteRichardson/recon" alt="Latest release"></a>
--->
+</p>
 
 > _Read a log the way you read it in your head: one filter at a time._
 
@@ -32,7 +28,8 @@ motions throughout.
 > It explains filters, filter sets, views and the command palette one topic at
 > a time. This README is the full technical reference.
 
-> **Status:** Active development — pre-1.0, no tagged releases. Keybindings and
+> **Status:** Active development — pre-1.0. Tagged releases exist; see
+> [releases](https://github.com/PeteRichardson/recon/releases). Keybindings and
 > behaviour may change between commits.
 
 ---
