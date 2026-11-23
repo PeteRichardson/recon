@@ -13,7 +13,7 @@ Options:
       --file-editor <TEMPLATE>
           Command template `o` runs for a text file that no `[[filetype]]`
           row hands off. Defaults to `--editor` with the `{project}`
-          argument dropped, so one setting normally configures both keys
+          argument dropped, unless `config.toml` sets `[editor] file`
           [env: RECON_FILE_EDITOR]
       --clipboard <COMMAND>
           Command `y` pipes a selection to, e.g. `pbcopy` or `xclip

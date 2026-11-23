@@ -307,7 +307,7 @@ Options:
       --file-editor <TEMPLATE>
           Command template `o` runs for a text file that no `[[filetype]]` row
           hands off. Defaults to `--editor` with the `{project}` argument
-          dropped, so one setting normally configures both keys [env:
+          dropped, unless `config.toml` sets `[editor] file` [env:
           RECON_FILE_EDITOR]
       --clipboard <COMMAND>
           Command `y` pipes a selection to, e.g. `pbcopy` or `xclip -selection
@@ -3193,9 +3193,10 @@ ones are `zed`, `vscode`, `sublime`, `idea`, `terminal-nvim`, `iterm-nvim`,
 writes neither `config.toml` nor your shell rc.
 
 `editor.file` is the template for `o` on a text file with no hand-off, and
-`{project}` is not substituted there — there is no project. Leave it out and it is derived from `editor.project` by
-dropping the `{project}` argument, so one line normally configures both. Write
-both when you want them to differ — `-n` on just the file one, say.
+`{project}` is not substituted there — there is no project. Leave it out and it
+is derived from the `O` template by dropping the `{project}` argument, so one
+line normally configures both. Write both when you want them to differ — `-n` on
+just the file one, say.
 
 New window versus reusing an existing one is a word in the template, not a
 separate key: `zed -n {file}:{line}` always gets a fresh window, `zed
@@ -3212,6 +3213,12 @@ config.toml              [editor] project    [editor] file
 $VISUAL / $EDITOR        generic, so it ranks BELOW the config file
 zed {project} {file}:{line}                  zed {file}:{line}
 ```
+
+The columns resolve separately, so `[editor] file` beats a `--editor` or
+`RECON_EDITOR` that has no file part. This is deliberate: `RECON_EDITOR` usually
+comes from a shell profile, and a `file` template such as `zed -n {file}:{line}`
+is written on purpose. To override `o` too, use `--file-editor` or
+`RECON_FILE_EDITOR`.
 
 `$VISUAL`/`$EDITOR` sit below the file on purpose: they are not recon's
 variables, and someone with a global `EDITOR=vim` who has *also* written a recon
