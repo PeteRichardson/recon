@@ -121,8 +121,8 @@ pub(crate) enum Kind {
     /// and the reader still names the error; only its size goes blank, since the
     /// link text's length was never an answer either.
     Broken,
-    /// The `..` row. A directory, but never one you are looking *for* — see
-    /// `PARENT_STYLE`.
+    /// The `..` row. A directory, but never one you are looking *for*, so
+    /// [`Entry::style`] draws it in the background's dim style, as chrome.
     ///
     /// Its own variant rather than a `name == PARENT` test inside `style()`,
     /// because a real directory genuinely called `..` cannot exist, and every
@@ -213,8 +213,9 @@ pub(crate) struct ListedFile {
 }
 
 impl Entry {
-    /// `dim` is the background's dim style, which `..` and a special entry
-    /// wear — see the note above `Kind`'s `Parent` variant.
+    /// `dim` is the background's dim style, which `..`, a special entry and
+    /// a broken link wear: rows that are chrome or dead ends, not places to
+    /// go.
     pub(crate) fn style(&self, dim: Style) -> Style {
         match self.kind {
             Kind::Dir => DIR_STYLE,
@@ -1049,8 +1050,9 @@ impl Explorer<'_> {
     /// reasoning that they have nothing to show — but the consequence was
     /// that the view kept displaying the *previous* file, so moving onto a
     /// directory read as though the directory contained that text. The view
-    /// renders `<directory>` for them instead, so the pane always describes
-    /// what is actually selected.
+    /// renders the directory's listing instead
+    /// (`views::read::directory_listing`), so the pane always describes what
+    /// is actually selected.
     fn preview_selection(&self) -> Option<Action> {
         Some(Action::Preview(self.selected_path()?))
     }
@@ -1181,7 +1183,7 @@ fn read_dir_entries(dir: &Path) -> Vec<Entry> {
         name: PARENT.into(),
         // Its own kind, not `Kind::Dir`. It behaves like a directory in every
         // way that matters to navigation, but it is drawn as chrome — see
-        // `PARENT_STYLE`.
+        // `Entry::style`.
         kind: Kind::Parent,
         // Not stat'd: `..` is a way out of this listing rather than an entry
         // in it, and the explorer shows neither field anyway.
@@ -1350,11 +1352,11 @@ impl Widget for &mut Explorer<'_> {
         // `highlight_style`-attaching take `self` by value, and the obvious
         // way to satisfy that — `self.entry_list.clone()` — deep-copies every
         // `ListItem`, and with it every `Line` and `Span`, once per frame.
-        // `App::run` redraws unconditionally at 60 Hz, so a five-thousand
-        // entry directory paid for five thousand copies a second while the
-        // user sat still (#72). A `Block` is a handful of scalars, so
-        // rebuilding it per frame costs nothing; `mem::take` is a pointer
-        // swap whatever the entry count.
+        // `App::run` draws after each event, so a five-thousand entry
+        // directory would pay for five thousand copies on each keypress
+        // (#72). A `Block` is a handful of scalars, so rebuilding it per
+        // frame costs nothing; `mem::take` is a pointer swap whatever the
+        // entry count.
         let block = crate::widgets::pane_block(self.dir.display().to_string(), self.active);
         let inner = block.inner(area);
         self.list.rendered(inner.height);

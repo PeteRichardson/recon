@@ -1058,8 +1058,8 @@ impl ActiveFilters {
     /// row's "N filters" is about what the user built, and a built-in row
     /// nobody turned on is not that.
     ///
-    /// Distinct from `len`, which counts every filter and is what
-    /// `Verdict::Included` indexes into.
+    /// Distinct from `filters().len()`, which counts every filter, built-in
+    /// ones too, and is what `Verdict::Included` indexes into.
     ///
     /// An unlisted set's filters are not in the list at all (#305); the
     /// `listed` test stays as a guard, since the pane has no row for them

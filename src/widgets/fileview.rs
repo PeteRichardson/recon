@@ -763,11 +763,11 @@ impl FileView<'_> {
     /// because `CursorMove::Jump` takes a `u16` and would silently truncate
     /// past 65,535 lines. `set_lines` clamps in `usize` instead, so the
     /// cursor's *data position* is applied directly rather than jumped to
-    /// afterwards. The rendered *viewport* is still `u16` internally, though —
-    /// that ceiling is unchanged, so the view still cannot scroll past
-    /// 65,535 lines; only landing the cursor on the right line survives past
-    /// it. The filename is left alone, since it still describes where these
-    /// lines came from.
+    /// afterwards. The rendered *viewport* is still `u16` internally, but the
+    /// buffer holds only a window of the visible set (`window_start`, #7), so
+    /// that ceiling applies to the window, not to the file: the view scrolls
+    /// past 65,535 lines by moving the window. The filename is left alone,
+    /// since it still describes where these lines came from.
     /// Test-only. Production goes through `show_window`, which carries the
     /// window offset this cannot express; this is that call with an offset of
     /// zero, kept because several tests want the unwindowed form to compare a

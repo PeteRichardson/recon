@@ -847,20 +847,20 @@ impl ActiveFilters {
         }
     }
 
-    /// Whether there are any filters at all, built-in ones included. See
-    /// `row_count`, which counts only the user-authored ones and is what the
-    /// pane sizes itself against.
+    /// Whether there are no user-authored filters. Built-in ones are not
+    /// counted. See `row_count`, which also leaves out the filters of an
+    /// unlisted set and is what the pane sizes itself against.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.user_authored_count() == 0
     }
 
-    /// How many filters there are, built-in ones included. See `row_count`,
-    /// which counts only the user-authored ones.
+    /// How many user-authored filters there are. Built-in ones are not
+    /// counted; `filters()` holds them all. Test-only: production code
+    /// counts with `row_count`.
+    #[cfg(test)]
     #[must_use]
     pub fn len(&self) -> usize {
-        // User-authored: a built-in row is not something the user built. The
-        // known list itself, built-ins included, is `filters()`.
         self.user_authored_count()
     }
 
