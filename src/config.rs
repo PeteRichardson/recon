@@ -133,7 +133,10 @@ pub struct Config {
 
     /// Command template `o` runs for a text file that no `[[filetype]]` row
     /// hands off. Defaults to `--editor` with the `{project}` argument
-    /// dropped, so one setting normally configures both keys.
+    /// dropped, unless `config.toml` sets `[editor] file`.
+    //
+    // The `[editor] file` exception is deliberate (#384); README "Resolution
+    // order" gives the reason.
     #[arg(
         long = "file-editor",
         env = "RECON_FILE_EDITOR",
@@ -3317,10 +3320,15 @@ mod tests {
         };
         set_on_the_cli.apply(&file);
         assert_eq!(set_on_the_cli.editor.as_deref(), Some("from-cli {file}"));
-        // The hole the CLI left is still filled.
+        // The hole the CLI left is still filled, and `o` runs it rather than
+        // a template derived from `--editor` (#384).
         assert_eq!(
             set_on_the_cli.file_editor.as_deref(),
             Some("from-file-solo {file}")
+        );
+        assert_eq!(
+            set_on_the_cli.editor_templates().file,
+            "from-file-solo {file}"
         );
 
         let mut unset = Config::default();
