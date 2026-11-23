@@ -773,7 +773,26 @@ pub struct ActiveFilters {
 /// One pass of verdicts over many lines, from [`ActiveFilters::pass`].
 pub struct VerdictPass<'a> {
     filters: &'a ActiveFilters,
+    plan: Plan<'a>,
     prefilter: Prefilter,
+}
+
+/// Which filters take effect, by sense, and whether a regex is among them:
+/// the walks over the filters that a verdict needs, done once for a pass
+/// (#397). Nothing in it can go stale, because a pass borrows the filters.
+struct Plan<'a> {
+    /// Whether an effective filter is a regex, so the compiled set must be
+    /// asked.
+    needs_regex: bool,
+    /// Effective excluding filters, in order.
+    exclude: Vec<usize>,
+    /// Effective including filters, in order. A verdict holds a `u16`, so a
+    /// filter whose index does not fit is left out.
+    include: Vec<u16>,
+    /// The same for the context and require filters.
+    context: Vec<u16>,
+    /// Effective advanced filters, in order, with their lookarounds.
+    advanced: Vec<(usize, &'a Lookaround)>,
 }
 
 impl VerdictPass<'_> {
@@ -790,7 +809,7 @@ impl VerdictPass<'_> {
         over_limit: impl FnMut(usize),
     ) -> Verdict {
         self.filters
-            .verdict_in(line, kinds, &mut self.prefilter, over_limit)
+            .verdict_in(&self.plan, line, kinds, &mut self.prefilter, over_limit)
     }
 }
 
@@ -1032,6 +1051,33 @@ impl ActiveFilters {
         filter.enabled && self.sets[filter.set].enabled
     }
 
+    /// The effective filters by sense, for one pass of verdicts.
+    fn plan(&self) -> Plan<'_> {
+        let mut plan = Plan {
+            needs_regex: false,
+            exclude: Vec::new(),
+            include: Vec::new(),
+            context: Vec::new(),
+            advanced: Vec::new(),
+        };
+        for (index, filter) in self.filters.iter().enumerate() {
+            if !self.effective(index) {
+                continue;
+            }
+            plan.needs_regex |= filter.predicate.as_regex().is_some();
+            if let Some(lookaround) = filter.predicate.as_lookaround() {
+                plan.advanced.push((index, lookaround));
+            }
+            let slot = u16::try_from(index).ok();
+            match filter.sense {
+                Sense::Exclude => plan.exclude.push(index),
+                Sense::Include => plan.include.extend(slot),
+                Sense::Context | Sense::Require => plan.context.extend(slot),
+            }
+        }
+        plan
+    }
+
     /// Drop a pending `!` capture.
     ///
     /// A capture describes a set that no longer exists once the set changes.
@@ -1048,17 +1094,7 @@ impl ActiveFilters {
     ///
     /// There is no global AND (#474, ADR 0008): an advanced filter's
     /// lookahead is how one filter asks for two things at once.
-    fn include_verdict(&self, hit: impl Fn(usize) -> bool) -> Verdict {
-        let live = |senses: &'static [Sense]| {
-            self.filters
-                .iter()
-                .enumerate()
-                .filter(move |&(index, filter)| {
-                    self.effective(index) && senses.contains(&filter.sense)
-                })
-                // A verdict has no room for a larger index.
-                .filter_map(|(index, _)| Some((index, u16::try_from(index).ok()?)))
-        };
+    fn include_verdict(plan: &Plan, hit: impl Fn(usize) -> bool) -> Verdict {
         // Include outranks context, whatever their order in the set: a
         // line an include filter selected is a hit, and must say so — `n`
         // stops on `Included`, not on `Context` — and its colour is then
@@ -1067,14 +1103,10 @@ impl ActiveFilters {
         //
         // A require filter is context in the view: what it adds is a
         // condition on the file, which the explorer's scan applies (#547).
-        live(&[Sense::Include])
-            .find(|&(index, _)| hit(index))
-            .map(|(_, index)| Verdict::Included(index))
-            .or_else(|| {
-                live(&[Sense::Context, Sense::Require])
-                    .find(|&(index, _)| hit(index))
-                    .map(|(_, index)| Verdict::Context(index))
-            })
+        let first = |slots: &[u16]| slots.iter().copied().find(|&slot| hit(usize::from(slot)));
+        first(&plan.include)
+            .map(Verdict::Included)
+            .or_else(|| first(&plan.context).map(Verdict::Context))
             .unwrap_or(Verdict::Unmatched)
     }
 
@@ -1463,7 +1495,7 @@ impl ActiveFilters {
         kinds: KindSet,
         over_limit: impl FnMut(usize),
     ) -> Verdict {
-        self.verdict_in(line, kinds, &mut Prefilter::default(), over_limit)
+        self.pass().verdict_noting(line, kinds, over_limit)
     }
 
     /// Verdicts for many lines, in order: what a loop over a file asks
@@ -1473,6 +1505,7 @@ impl ActiveFilters {
     pub fn pass(&self) -> VerdictPass<'_> {
         VerdictPass {
             filters: self,
+            plan: self.plan(),
             prefilter: Prefilter::default(),
         }
     }
@@ -1480,27 +1513,28 @@ impl ActiveFilters {
     /// `verdict_noting`, asking the compiled set through `prefilter`.
     fn verdict_in(
         &self,
+        plan: &Plan,
         line: &str,
         kinds: KindSet,
         prefilter: &mut Prefilter,
         mut over_limit: impl FnMut(usize),
     ) -> Verdict {
-        let advanced = self.advanced_hits(line, &mut over_limit);
+        let advanced = self.advanced_hits(plan, line, &mut over_limit);
         let advanced_hit = |index: usize| advanced.contains(&index);
         debug_assert!(
             self.compiled.as_ref().is_none_or(|set| self.in_step(set)),
             "the compiled set is out of step with the filters"
         );
         let Some(set) = self.compiled.as_ref().filter(|set| self.in_step(set)) else {
-            return self.verdict_scanning(line, kinds, advanced_hit);
+            return self.verdict_scanning(plan, line, kinds, advanced_hit);
         };
         // Nothing in the compiled set can take effect, so it is not asked:
         // one pass over the line is still one regex pass too many when
         // there is no regex to run (#265). The scan is exact here — it
         // tests only effective filters, and every one of those is a
         // code item, answered from `kinds`.
-        if !self.needs_regex() {
-            return self.verdict_scanning(line, kinds, advanced_hit);
+        if !plan.needs_regex {
+            return self.verdict_scanning(plan, line, kinds, advanced_hit);
         }
         let matched = prefilter.matches(set, line);
         let matched = |index: usize| matched.as_ref().is_some_and(|m| m.matched(index));
@@ -1515,13 +1549,11 @@ impl ActiveFilters {
         // Exclusion is applied after inclusion and overrides it, so a line an
         // including filter selected is still removed if an excluding filter
         // also matches it.
-        if self.filters.iter().enumerate().any(|(index, filter)| {
-            self.effective(index) && filter.sense == Sense::Exclude && hit(index)
-        }) {
+        if plan.exclude.iter().any(|&index| hit(index)) {
             return Verdict::Excluded;
         }
 
-        self.include_verdict(hit)
+        Self::include_verdict(plan, hit)
     }
 
     /// The original per-filter scan, kept as the fallback for a set that would
@@ -1536,6 +1568,7 @@ impl ActiveFilters {
     /// `advanced_hits`.
     fn verdict_scanning(
         &self,
+        plan: &Plan,
         line: &str,
         kinds: KindSet,
         advanced: impl Fn(usize) -> bool,
@@ -1544,35 +1577,33 @@ impl ActiveFilters {
             Predicate::Advanced { .. } => advanced(index),
             predicate => predicate.holds(line, kinds),
         };
-        if self.filters.iter().enumerate().any(|(index, filter)| {
-            self.effective(index) && filter.sense == Sense::Exclude && holds(index)
-        }) {
+        if plan.exclude.iter().any(|&index| holds(index)) {
             return Verdict::Excluded;
         }
 
-        self.include_verdict(holds)
+        Self::include_verdict(plan, holds)
     }
 
     /// The scanning path alone, for the tests that compare it with the
     /// compiled one.
     #[cfg(test)]
     fn verdict_by_scanning(&self, line: &str, kinds: KindSet) -> Verdict {
-        let advanced = self.advanced_hits(line, &mut |_| {});
-        self.verdict_scanning(line, kinds, |index| advanced.contains(&index))
+        let plan = self.plan();
+        let advanced = self.advanced_hits(&plan, line, &mut |_| {});
+        self.verdict_scanning(&plan, line, kinds, |index| advanced.contains(&index))
     }
 
     /// The index of each effective advanced filter that matches `line`,
     /// with `over_limit` told of each that passed the step limit. Empty,
     /// and no allocation, when none matches.
-    fn advanced_hits(&self, line: &str, over_limit: &mut impl FnMut(usize)) -> Vec<usize> {
+    fn advanced_hits(
+        &self,
+        plan: &Plan,
+        line: &str,
+        over_limit: &mut impl FnMut(usize),
+    ) -> Vec<usize> {
         let mut hits = Vec::new();
-        for (index, filter) in self.filters.iter().enumerate() {
-            let Some(lookaround) = filter.predicate.as_lookaround() else {
-                continue;
-            };
-            if !self.effective(index) {
-                continue;
-            }
+        for &(index, lookaround) in &plan.advanced {
             match lookaround.test(line, self.step_limit) {
                 Ok(true) => hits.push(index),
                 Ok(false) => {}
