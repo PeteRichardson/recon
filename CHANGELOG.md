@@ -1,5 +1,33 @@
 # Changelog
 
+## v0.12.0 — 2026-11-23
+
+One set file on the filter path can now carry all that recon needs for a tool: its filters, commands, views and aliases.
+
+### Breaking changes
+
+- **The built-in `definitions` set is now named `code`.** Before, you selected it as `definitions`, which is long to type and says little about code. Now its name is `code`. Rename `[sets.definitions]` to `[sets.code]`, and change `definitions:` to `code:` in `--set` and in set files. There is no alias: the old table name stops the load and gives the new name, and `--set definitions` says "unknown set". A user set named `code` is now refused. ([#625](https://github.com/PeteRichardson/recon/issues/625))
+- **A set file can define palette aliases.** Before, an alias that runs a tool's workflow had to go in each user's `config.toml`. Now a set file can have an `[aliases]` table, next to its filters, commands and file types, and a `[keymap]` line can give a pack alias a key. An alias in `config.toml` keeps its name; a later alias with the same name is kept as `pack:name`, with a warning. Because of this, an alias name with a `:` is now refused, in `config.toml` too. A set file that recon cannot read now also stops `--print-keymap`. ([#627](https://github.com/PeteRichardson/recon/issues/627))
+
+### Features
+
+- **One file adds a tool's commands and views.** Before, a team could share a tool's filters on the filter path, but its `[commands]` entry and `[[filetype]]` row had to go in each user's `config.toml`. Now a set file on the filter path can carry both. The file is a pack, named by its file name without `.filters.toml`. The first definition of a name wins; a later command with the same name is kept as `pack:name`, with a warning. Pack views come after your own views, so a pack never changes the first view of a file type. ([#602](https://github.com/PeteRichardson/recon/issues/602))
+- **A shared repository of set files can sit on the filter path.** Before, recon read every file in every directory on the path and listed every set. Now each directory can hold a `.include` and a `.ignore` file, with one glob on each line, matched against the file name. A `[filter_dirs."<dir>"]` table in `config.toml` adds your own patterns. Ignore wins, and `~/.config/recon/filters.toml` is always read. A file that is not selected is not opened, so an error in it does not stop recon. ([#603](https://github.com/PeteRichardson/recon/issues/603))
+- **`--print-startup` shows where each definition comes from.** Before, a collision between packs gave a one-line warning, and nothing showed the whole result. Now `--print-startup` prints `config.toml`, the `RECON_*` variables, the filter path, and the set files read and skipped, with the reason. Then it gives the file of each alias, command, `[[filetype]]` row and changed key, with what it hides or what hides it, and every startup warning. `--print-startup all` also shows the built-in views and every key. A collision warning now names the file that won as well as the file that lost. ([#628](https://github.com/PeteRichardson/recon/issues/628))
+- **recon shows every load error in one run.** Before, recon stopped at the first error, so with two broken set files you repaired one, started recon again, and only then saw the second. Now recon shows all the errors together, and still refuses to run. `--print-startup` shows the part that loaded, then the errors in an `[errors]` section, and exits with status 1. An error in `config.toml` itself, such as a TOML syntax error, still stops the load at once. ([#630](https://github.com/PeteRichardson/recon/issues/630))
+- **`:unlist @all` unlists every filter set.** Before, you unlisted one set at a time with `:unlist <set>`. Now `:unlist @all` unlists every known set in one step, as `--clear` does at startup. The scratch set stays, and Tab offers `@all` beside the set names. A set name that starts with `@` is now a load error. ([#563](https://github.com/PeteRichardson/recon/issues/563))
+
+### Fixes
+
+- **`R` restores the filters of each set as its file loads them.** Before, `R` said that it reset every set, but a filter removed with `d` or changed with `c` stayed as it was. Only unlisting and listing the set again brought it back. Now `R` rebuilds each listed set from its file. Scratch filters are kept. ([#401](https://github.com/PeteRichardson/recon/issues/401))
+- **A `[keymap]` binding on `h` or `l` in the filter pane works.** Before, the filter pane showed an explorer hint ("h goes up a directory · e h") for these keys, and your binding did nothing, with no warning. The hint also stayed on `h` and `l` after you moved the explorer's parent or open action to another key. Now the hint shows only for a key that the filter pane leaves unbound, and only when that key is bound to the explorer action. ([#496](https://github.com/PeteRichardson/recon/issues/496))
+- **The cursor shows after a crash.** Before, if recon stopped with a panic or an error, the shell could be left with a hidden cursor. Now every way out of recon shows the cursor. ([#398](https://github.com/PeteRichardson/recon/issues/398))
+
+### Performance
+
+- **Filter toggles are faster on large files.** Before, each line was checked against every filter several times. Now each pass sorts the filters one time. On 1M lines with 40 filters, a pass takes 53 ms instead of 143 ms with no hits, 81 ms instead of 146 ms with a broad last filter, and 32 ms instead of 72 ms with a broad first filter. ([#397](https://github.com/PeteRichardson/recon/issues/397))
+- **Large selections stay fast.** Before, each frame read every selected line to paint the selection: with `V G` on a 1M-line file, 7.3 ms of each frame. Now it reads only the first and last lines, which takes 1.2 µs. ([#407](https://github.com/PeteRichardson/recon/issues/407))
+
 ## v0.11.0 — 2026-11-07
 
 Hide mode can now show a source file as an outline of its definitions, and you can open hidden lines in place to read one function or the lines around a match.
