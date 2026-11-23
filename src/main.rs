@@ -1,5 +1,6 @@
 use color_eyre::{Result, config::HookBuilder, eyre};
 use crossterm::{
+    cursor::Show,
     event::{DisableMouseCapture, EnableMouseCapture},
     execute,
     terminal::{
@@ -639,14 +640,14 @@ fn protocol_for(
 /// script-facing: a redirected stderr holds them verbatim (#222).
 static TERMINAL_UP: AtomicBool = AtomicBool::new(false);
 
-/// Undo `init_terminal`: leave the alternate screen and stop mouse reports.
+/// Undo `init_terminal`: leave the alternate screen, stop mouse reports, and
+/// show the cursor.
 ///
-/// The cursor needs nothing here. `init_terminal` never hides it — the
-/// `execute!` above sends `EnterAlternateScreen`, `EnableMouseCapture` and
-/// `Clear`, and no path in `src/` calls `hide_cursor`. A `show_cursor` call
-/// sat commented out here for months with no reason recorded; it is deleted
-/// rather than restored, because `LeaveAlternateScreen` already returns the
-/// normal screen with the cursor it had.
+/// `init_terminal` does not hide the cursor, but ratatui does: each frame
+/// that sets no cursor position hides it, and only `Terminal::drop` shows it
+/// again. A panic or a signal hook calls this without that drop, so the
+/// shell would get a hidden cursor back. `Show` here makes every way out
+/// the same.
 fn restore_terminal() -> Result<()> {
     // `swap` and not `load`: the normal path calls this once and the hooks
     // can call it again on the way out, and the undo must happen one time.
@@ -654,7 +655,7 @@ fn restore_terminal() -> Result<()> {
         return Ok(());
     }
     disable_raw_mode()?;
-    execute!(screen(), LeaveAlternateScreen, DisableMouseCapture)?;
+    execute!(screen(), LeaveAlternateScreen, DisableMouseCapture, Show)?;
     Ok(())
 }
 

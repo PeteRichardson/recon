@@ -308,13 +308,13 @@ impl App<'_> {
             // site routes its result through this function, so no code path
             // today produces one of these variants here.
             //
-            // Not `unreachable!()`, though: plan 2b lets a user's
-            // `config.toml` bind a key in `Scope::Global` to one of these
-            // actions, and `resolve(Scope::Global, key)` would then hand it
-            // straight to this function — a typo in a config file, not a
-            // programmer error, so it must not crash the TUI. `debug_assert!`
-            // still catches a programmer error loudly in tests and debug
-            // builds; a release binary just does nothing.
+            // Not `unreachable!()`, though. A `[keymap]` line cannot bring
+            // one of these here today: `Keymap::rebind` keeps an action in
+            // the scopes it already held, so no line puts an explorer or
+            // filter-pane action in `Scope::Global`. But if a later change
+            // opened such a path, a release binary must not crash on it.
+            // `debug_assert!` catches it loudly in tests and debug builds; a
+            // release binary just does nothing.
             A::ExplorerUp
             | A::ExplorerDown
             | A::ExplorerParent
@@ -362,11 +362,9 @@ impl App<'_> {
             // and return, not fall through to `Global` the way every pane
             // scope does, so there is no path from a modal scope into
             // `perform` for a fallthrough to take. Same `debug_assert!` as
-            // the group above, and the same reason it exists: plan 2b's
-            // `config.toml` can still bind a `Scope::Global` key to one of
-            // these actions, and `resolve(Scope::Global, key)` would hand it
-            // straight here. The help overlay dismisses on any key and has
-            // no `ActionId` of its own, so it has no arm here at all.
+            // the group above, for the same reason. The help overlay
+            // dismisses on any key and has no `ActionId` of its own, so it
+            // has no arm here at all.
             A::PromptCommit
             | A::PromptCancel
             | A::PromptLeft

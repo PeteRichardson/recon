@@ -230,8 +230,9 @@ impl App<'_> {
         // 65,535 lines and lands the cursor 65,536 lines from its target on a
         // large log. `set_lines` clamps in `usize` and replaces the buffer in
         // the same call, so the row is applied directly rather than jumped to
-        // afterwards. (The rendered viewport is still `u16`-limited, though —
-        // see `FileView::show_lines_with_cursor`.)
+        // afterwards. (The rendered viewport is still `u16`-limited, but only
+        // inside the window the buffer holds — see
+        // `FileView::show_lines_with_cursor`.)
         // Keyed on the window as well as the visible set: scrolling into a new
         // window leaves the visible set untouched and still needs the buffer
         // replaced. The visible set is represented by the document's

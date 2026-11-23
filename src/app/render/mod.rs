@@ -248,9 +248,10 @@ impl Widget for &mut App<'_> {
             style,
         );
         // The prompt's cursor, drawn as the file view draws its own: the
-        // cell in reversed video. The terminal cursor is hidden for the
-        // whole session, so without this an edit in the middle of a pattern
-        // (#206) would have nothing on screen to say where the middle is.
+        // cell in reversed video. ratatui hides the terminal cursor (see
+        // `restore_terminal`), so without this an edit in the middle of a
+        // pattern (#206) would have nothing on screen to say where the
+        // middle is.
         // One blank past the text when the cursor is at the end.
         if let Some(column) = self.prompt.as_ref().and_then(SearchPrompt::cursor_column)
             && column < room
