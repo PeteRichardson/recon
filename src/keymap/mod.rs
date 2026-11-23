@@ -1266,6 +1266,48 @@ pub fn print_keymap(keymap: &Keymap, defaults: &Keymap) -> String {
     out
 }
 
+/// One `[keymap]` row of `--print-startup` (#628).
+#[derive(Debug, PartialEq, Eq)]
+pub struct KeyRow {
+    /// The action or the alias.
+    pub name: String,
+    /// Its keys in force.
+    pub keys: Vec<String>,
+    /// Whether `config.toml` set the keys: they are not the default keys.
+    pub yours: bool,
+    /// Each default key another action or alias took, as `--print-keymap`
+    /// says it: `'x' taken by name`.
+    pub lost: Vec<String>,
+}
+
+/// The rows of `--print-startup`'s `[keymap]` table: each action whose keys
+/// `config.toml` changed or another binding took, then each alias with a
+/// key. With `all`, every action.
+#[must_use]
+pub fn key_rows(keymap: &Keymap, defaults: &Keymap, all: bool) -> Vec<KeyRow> {
+    let mut rows = Vec::new();
+    for action in every_action() {
+        let keys = keymap.labels_for(action);
+        let yours = keys != defaults.labels_for(action);
+        let lost = losses(keymap, defaults, action);
+        if all || yours || !lost.is_empty() {
+            rows.push(KeyRow {
+                name: action.name().to_string(),
+                keys: keys.into_iter().map(str::to_string).collect(),
+                yours,
+                lost,
+            });
+        }
+    }
+    rows.extend(keymap.alias_keys().iter().map(|(name, keys)| KeyRow {
+        name: name.clone(),
+        keys: keys.clone(),
+        yours: true,
+        lost: Vec::new(),
+    }));
+    rows
+}
+
 /// One `[keymap]` value: a bare string for one key, an array for any other
 /// number.
 fn toml_keys(labels: &[&str]) -> String {

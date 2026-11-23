@@ -38,6 +38,7 @@ pub mod panes;
 mod path;
 pub mod scan;
 pub mod startup;
+mod startup_report;
 // Compiled by `build.rs`, which makes the stamp; here only for its tests.
 #[cfg(test)]
 mod stamp;

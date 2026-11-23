@@ -950,6 +950,34 @@ pub fn set_files(
     dirs: &[PathBuf],
     personal: &DirLists,
 ) -> Result<Vec<PathBuf>, Error> {
+    Ok(walk(own, dirs, personal, false)?.files)
+}
+
+/// A file or directory on the filter path that recon did not read, and why
+/// (#628).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Skipped {
+    pub path: PathBuf,
+    pub reason: &'static str,
+}
+
+/// What [`walk`] found.
+struct Walk {
+    /// As [`set_files`] returns them.
+    files: Vec<PathBuf>,
+    skipped: Vec<Skipped>,
+}
+
+/// [`set_files`], and with `report` the set files and directories it
+/// passed over. Only `--print-startup` asks for those, so a normal start
+/// keeps no record of a file it does not read.
+fn walk(
+    own: Option<PathBuf>,
+    dirs: &[PathBuf],
+    personal: &DirLists,
+    report: bool,
+) -> Result<Walk, Error> {
+    let mut skipped = Vec::new();
     let own_dir = own.as_deref().and_then(Path::parent).map(Path::to_path_buf);
     let mut files: Vec<PathBuf> = own.into_iter().collect();
     let mut seen: std::collections::HashSet<PathBuf> = files
@@ -958,13 +986,13 @@ pub fn set_files(
         .collect();
     for dir in own_dir.iter().chain(dirs) {
         let personal = personal.get(&dir_key(dir, None));
-        for file in dir_set_files(dir, personal)? {
+        for file in dir_set_files(dir, personal, report.then_some(&mut skipped))? {
             if seen.insert(crate::path::lexical_absolute(&file)) {
                 files.push(file);
             }
         }
     }
-    Ok(files)
+    Ok(Walk { files, skipped })
 }
 
 /// The personal lists of `config.toml`'s `[filter_dirs]`, by directory
@@ -1049,12 +1077,23 @@ fn read_patterns(path: &Path) -> Result<Option<Vec<Glob>>, Error> {
 
 /// One directory's set files, `filters.toml` first and the rest in name
 /// order, as [`set_files`] describes: those that its lists, with
-/// `personal` added, select.
-fn dir_set_files(dir: &Path, personal: Option<&Lists>) -> Result<Vec<PathBuf>, Error> {
+/// `personal` added, select. Each set file they do not select, and the
+/// directory itself when it is not there, go into `skipped`.
+fn dir_set_files(
+    dir: &Path,
+    personal: Option<&Lists>,
+    mut skipped: Option<&mut Vec<Skipped>>,
+) -> Result<Vec<PathBuf>, Error> {
     let entries = match std::fs::read_dir(dir) {
         Ok(entries) => entries,
         Err(source) if source.kind() == std::io::ErrorKind::NotFound => {
-            log::debug!("no filter sets directory at {}", dir.display());
+            log::debug!(target: crate::config::LOAD_LOG, "no filter sets directory at {}", dir.display());
+            if let Some(skipped) = skipped {
+                skipped.push(Skipped {
+                    path: dir.to_path_buf(),
+                    reason: "no such directory",
+                });
+            }
             return Ok(Vec::new());
         }
         Err(source) => {
@@ -1071,6 +1110,7 @@ fn dir_set_files(dir: &Path, personal: Option<&Lists>) -> Result<Vec<PathBuf>, E
         lists = lists.and(personal);
     }
     let mut found = Vec::new();
+    let first_skip = skipped.as_ref().map_or(0, |skipped| skipped.len());
     for entry in entries {
         let entry = entry.map_err(|source| Error::ReadDir {
             path: dir.to_path_buf(),
@@ -1084,7 +1124,13 @@ fn dir_set_files(dir: &Path, personal: Option<&Lists>) -> Result<Vec<PathBuf>, E
         // Before the `stat` below: a file the lists do not select costs
         // nothing, in a directory of thousands.
         if !lists.selects(name) {
-            log::debug!("{name} in {} is not selected; not read", dir.display());
+            log::debug!(target: crate::config::LOAD_LOG, "{name} in {} is not selected; not read", dir.display());
+            if let Some(skipped) = skipped.as_deref_mut() {
+                skipped.push(Skipped {
+                    path: entry.path(),
+                    reason: "not selected by .include or .ignore",
+                });
+            }
             continue;
         }
         // `Path::is_file` follows a symlink, so a linked file counts;
@@ -1095,8 +1141,11 @@ fn dir_set_files(dir: &Path, personal: Option<&Lists>) -> Result<Vec<PathBuf>, E
         }
     }
     found.sort_by_key(|path| (path.file_name() != Some(FILE.as_ref()), path.clone()));
+    if let Some(skipped) = skipped {
+        skipped[first_skip..].sort_by(|a, b| a.path.cmp(&b.path));
+    }
     if found.is_empty() {
-        log::debug!("no *{SUFFIX} files in {}", dir.display());
+        log::debug!(target: crate::config::LOAD_LOG, "no *{SUFFIX} files in {}", dir.display());
     }
     Ok(found)
 }
@@ -1115,20 +1164,23 @@ fn read_optional(path: &Path) -> Result<Option<String>, Error> {
     }
 }
 
-/// Read and parse one file, as [`parse_file`] leaves it. A file that is
-/// not there is no sets and no pack.
-fn read_file(path: &Path) -> Result<(Vec<LoadedSet>, Option<Pack>), Error> {
+/// What one set file holds: its sets, and its pack when it has one.
+type FileParts = (Vec<LoadedSet>, Option<Pack>);
+
+/// Read and parse one file, as [`parse_file`] leaves it, or `None` when
+/// the file is not there: no sets and no pack.
+fn read_file(path: &Path) -> Result<Option<FileParts>, Error> {
     // A missing file is the overwhelmingly common case, and not a failure:
     // recon runs with the scratch set and the built-in one.
     let Some(text) = read_optional(path)? else {
-        log::debug!("no filter sets file at {}", path.display());
-        return Ok((Vec::new(), None));
+        log::debug!(target: crate::config::LOAD_LOG, "no filter sets file at {}", path.display());
+        return Ok(None);
     };
     // Which file was read is the first thing anyone asks when a set does
     // not appear; absence is logged too, since "no file" and "the wrong
     // file" look identical from the pane (#83).
-    log::debug!("reading filter sets from {}", path.display());
-    parse_file(&text, path)
+    log::debug!(target: crate::config::LOAD_LOG, "reading filter sets from {}", path.display());
+    parse_file(&text, path).map(Some)
 }
 
 /// Read and parse one file. A file that is not there is no sets.
@@ -1144,6 +1196,13 @@ pub struct Loaded {
     pub sets: Vec<LoadedSet>,
     /// One per file with commands or rows, highest precedence first.
     pub packs: Vec<Pack>,
+    /// Each set file read, highest precedence first (#628).
+    pub files: Vec<PathBuf>,
+    /// The directories of the filter path, in order (#628).
+    pub dirs: Vec<PathBuf>,
+    /// The set files and directories on the filter path not read, and why.
+    /// Empty unless [`load_file`] was asked to report them.
+    pub skipped: Vec<Skipped>,
 }
 
 /// Read every file in `files`, highest precedence first, into one list.
@@ -1158,12 +1217,17 @@ pub struct Loaded {
 fn load_all(files: &[PathBuf]) -> Result<Loaded, Error> {
     let mut sets: Vec<LoadedSet> = Vec::new();
     let mut packs = Vec::new();
+    let mut read = Vec::new();
     for file in files {
-        let (file_sets, pack) = read_file(file)?;
+        let Some((file_sets, pack)) = read_file(file)? else {
+            continue;
+        };
+        read.push(file.clone());
         packs.extend(pack);
         for set in file_sets {
             if let Some(winner) = sets.iter().find(|seen| seen.name == set.name) {
                 log::debug!(
+                    target: crate::config::LOAD_LOG,
                     "set {:?} in {} is shadowed by the one in {}",
                     set.name,
                     set.path.display(),
@@ -1177,21 +1241,33 @@ fn load_all(files: &[PathBuf]) -> Result<Loaded, Error> {
     Ok(Loaded {
         sets: finish(sets),
         packs,
+        files: read,
+        ..Loaded::default()
     })
 }
 
 /// The file layer. Call before the terminal is initialised: an error here
 /// refuses to start, for the reason `Config::load` gives. `filter_path` is
 /// `--filter-path` or `RECON_FILTER_PATH`, as clap resolved it; `personal`
-/// is `[filter_dirs]`, keyed as the file writes each directory.
-pub fn load_file(filter_path: Option<&str>, personal: &DirLists) -> Result<Loaded, Error> {
+/// is `[filter_dirs]`, keyed as the file writes each directory. With
+/// `report`, [`Loaded::skipped`] lists what the walk passed over.
+pub fn load_file(
+    filter_path: Option<&str>,
+    personal: &DirLists,
+    report: bool,
+) -> Result<Loaded, Error> {
     let own = path();
     if own.is_none() {
-        log::debug!("no config home ($XDG_CONFIG_HOME, $HOME unset); no filters.toml read");
+        log::debug!(target: crate::config::LOAD_LOG, "no config home ($XDG_CONFIG_HOME, $HOME unset); no filters.toml read");
     }
     let home = std::env::var("HOME").ok();
     let dirs = search_path_from(filter_path, home.as_deref());
-    load_all(&set_files(own, &dirs, &keyed(personal, home.as_deref()))?)
+    let walk = walk(own, &dirs, &keyed(personal, home.as_deref()), report)?;
+    Ok(Loaded {
+        dirs,
+        skipped: walk.skipped,
+        ..load_all(&walk.files)?
+    })
 }
 
 #[cfg(test)]

@@ -275,7 +275,7 @@ pub fn build(
     // "correct this" would ask again at every start.
     if warnings {
         for warning in reserved {
-            log::warn!("{warning}");
+            log::warn!(target: crate::config::LOAD_LOG, "{warning}");
         }
     }
 

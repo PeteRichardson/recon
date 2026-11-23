@@ -321,6 +321,9 @@ Options:
       --print-keymap [<WHICH>]
           Print the keymap as a ready-to-paste `[keymap]` stanza and exit
           [possible values: effective, defaults]
+      --print-startup [<WHICH>]
+          Print how recon built its configuration at startup, and exit [possible
+          values: changes, all]
       --background <BACKGROUND>
           Whether the terminal background is dark or light: picks the built-in
           filter palette and the grey of dimmed lines. Falls back to a top-level
@@ -434,6 +437,9 @@ wrong, and warnings are the only level that reaches you unasked.
 ```sh
 RUST_LOG=recon=debug recon app.log
 ```
+
+`RUST_LOG=recon::config=debug` records only how recon reads its
+configuration at startup: `config.toml`, the set files, and the keymap.
 
 With `RUST_LOG` set, the TUI writes its log to
 `$XDG_STATE_HOME/recon/recon.log` (or `~/.local/state/recon/recon.log`).
@@ -1218,7 +1224,7 @@ The pack's name is the file name without `.filters.toml`, here `mpegpack`.
 - **Same names.** recon reads the files in the order above. The first
   definition of a command keeps its name, and `config.toml` comes before
   every pack. A later command of the same name is named `pack:name`, and
-  recon shows a warning. When two packs have a row for the same files, the
+  recon shows a warning that names both files. When two packs have a row for the same files, the
   first row is used and recon shows a warning for the other.
 - **Names in a row.** In a pack's row, a bare name means that pack's own
   command first. `pack:view` always means that pack's view.
@@ -1255,6 +1261,21 @@ each have a pack of one name (for example two `filters.toml`), recon uses
 the first and shows a warning for the other. Commands, rows and aliases are
 not listed or unlisted in the set picker: they are in force while their file
 is on the path.
+
+`recon --print-startup` shows the result of all of this in one place, and
+exits. It names `config.toml`, the `RECON_*` variables and the filter path,
+the set files that recon read, and each set file that it skipped, with the
+reason. Then it gives the file of each alias, command, `[[filetype]]` row
+and changed key, with what it hides or what hides it, and every startup
+warning:
+
+```text
+[aliases]
+deploylogs:dlogs  ~/work/team-filters/deploylogs.filters.toml  loses `dlogs` to ~/.config/recon/config.toml
+dlogs             ~/.config/recon/config.toml                  hides `deploylogs:dlogs`
+```
+
+`--print-startup all` also lists the built-in views and every key.
 
 #### The set picker
 
