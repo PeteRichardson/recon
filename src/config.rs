@@ -211,6 +211,25 @@ pub struct Config {
     )]
     pub print_keymap: Option<PrintKeymap>,
 
+    /// Print how recon built its configuration at startup, and exit.
+    ///
+    /// Names `config.toml`, the `RECON_*` variables and the filter path, the
+    /// set files read and those skipped with the reason, then the file each
+    /// alias, command, `[[filetype]]` row and changed key comes from, with
+    /// what it hides or what hides it, and every startup warning.
+    /// `--print-startup all` lists the built-in views and every key too.
+    ///
+    /// Prints to stdout and changes nothing on disk (#628).
+    #[arg(
+        long,
+        value_name = "WHICH",
+        num_args = 0..=1,
+        default_missing_value = "changes",
+        value_enum,
+        conflicts_with = "print_keymap"
+    )]
+    pub print_startup: Option<PrintStartup>,
+
     /// The colours successive filters take, or `None` to use the compiled-in
     /// palette. See [`FiltersConfig::palette`].
     ///
@@ -576,6 +595,37 @@ pub enum PrintKeymap {
     Effective,
     /// recon's built-in table, whatever `config.toml` says.
     Defaults,
+}
+
+/// The log target of every record of the load (#628): `config.toml`, the
+/// set files, the pack merge and the keymap. `RUST_LOG=recon::config=debug`
+/// logs how recon built its configuration and nothing else. It is this
+/// module's own path, so the records here need no `target:`.
+pub const LOAD_LOG: &str = "recon::config";
+
+/// The `RECON_*` variables, by name, for the start-up log and
+/// `--print-startup` (#628). Lossy, so a variable that is not UTF-8 is
+/// still shown and never stops recon.
+#[must_use]
+pub fn recon_env() -> std::collections::BTreeMap<String, String> {
+    std::env::vars_os()
+        .map(|(name, value)| {
+            (
+                name.to_string_lossy().into_owned(),
+                value.to_string_lossy().into_owned(),
+            )
+        })
+        .filter(|(name, _)| name.starts_with("RECON_"))
+        .collect()
+}
+
+/// What `--print-startup` lists (#628).
+#[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PrintStartup {
+    /// What the files add or change. The bare flag.
+    Changes,
+    /// That, and every built-in view and key.
+    All,
 }
 
 /// The config file's contents, as parsed.
@@ -3719,9 +3769,14 @@ mod tests {
         );
         let mut config = Config::default();
         config.apply(&load_from(&unknown).expect("a row parses before its names are checked"));
-        let err =
-            crate::views::pack::merge(&config.filetypes, &config.commands, &config.aliases, &[])
-                .expect_err("an unknown view must fail");
+        let err = crate::views::pack::merge(
+            std::path::Path::new("config.toml"),
+            &config.filetypes,
+            &config.commands,
+            &config.aliases,
+            &[],
+        )
+        .expect_err("an unknown view must fail");
         assert!(err.to_string().contains("`marked`"), "{err}");
         assert!(err.to_string().contains("`*.md`"), "{err}");
 
@@ -3743,8 +3798,14 @@ mod tests {
         );
         let mut config = Config::default();
         config.apply(&load_from(&path).expect("a valid file"));
-        crate::views::pack::merge(&config.filetypes, &config.commands, &config.aliases, &[])
-            .expect("every name is known");
+        crate::views::pack::merge(
+            std::path::Path::new("config.toml"),
+            &config.filetypes,
+            &config.commands,
+            &config.aliases,
+            &[],
+        )
+        .expect("every name is known");
         assert_eq!(config.commands.0["jq"].argv, ["jq", "."]);
     }
 
@@ -3984,9 +4045,14 @@ mod tests {
         );
         let mut config = Config::default();
         config.apply(&load_from(&path).expect("a row parses before its names are checked"));
-        let err =
-            crate::views::pack::merge(&config.filetypes, &config.commands, &config.aliases, &[])
-                .expect_err("an unknown view must fail");
+        let err = crate::views::pack::merge(
+            std::path::Path::new("config.toml"),
+            &config.filetypes,
+            &config.commands,
+            &config.aliases,
+            &[],
+        )
+        .expect_err("an unknown view must fail");
         assert!(
             err.to_string().contains("`application/x-mach-binary`"),
             "{err}"

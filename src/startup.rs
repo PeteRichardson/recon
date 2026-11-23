@@ -117,12 +117,17 @@ pub fn start() -> Result<Start> {
 
     let read = std::time::Instant::now();
     let overlay = config.load()?;
-    log::debug!("config read in {:?}", read.elapsed());
+    log::debug!(target: crate::config::LOAD_LOG, "config read in {:?}", read.elapsed());
 
     let read = std::time::Instant::now();
-    let loaded = crate::filtersets::load_file(config.filter_path.as_deref(), &config.filter_dirs)?;
+    let loaded = crate::filtersets::load_file(
+        config.filter_path.as_deref(),
+        &config.filter_dirs,
+        config.print_startup.is_some(),
+    )?;
     let filter_sets = loaded.sets;
     log::debug!(
+        target: crate::config::LOAD_LOG,
         "{} filter sets read in {:?}",
         filter_sets.len(),
         read.elapsed()
@@ -132,7 +137,11 @@ pub fn start() -> Result<Start> {
     // `config.toml`'s. A view no file defines, or an alias the palette
     // cannot run, refuses here, before the terminal is taken (#143). The
     // keymap below and the palette see the one merged list of aliases.
+    let config_file = config
+        .config_file_path()
+        .unwrap_or_else(|| "config.toml".into());
     let mut merged = crate::views::pack::merge(
+        &config_file,
         &config.filetypes,
         &config.commands,
         &config.aliases,
@@ -169,18 +178,41 @@ pub fn start() -> Result<Start> {
         });
     }
 
-    // Needs the loaded sets, which is why it is not inside `Config::load`
-    // with `check_flags`. Still before any terminal setup: the message must
-    // reach a screen that is not about to be replaced (#143).
-    config.check_sets(&filter_sets)?;
-
     // Looks each command up on `PATH` once, here, so that a missing one is
     // one warning at startup and not an error on each file.
     let (table, view_warnings) = crate::views::cycle::Table::build(&merged.rows, &merged.commands);
     let mut warnings = keymap_warnings;
-    warnings.extend(merged.warnings);
+    warnings.extend(std::mem::take(&mut merged.warnings));
     warnings.extend(view_warnings);
     warnings.extend(config.set_hints());
+
+    // Below `--print-keymap`'s return, with the whole merge in hand: the
+    // report shows every source and every warning, so it prints them to
+    // stdout and leaves stderr empty (#628).
+    if let Some(which) = config.print_startup {
+        let home = std::env::var("HOME").ok();
+        let report = crate::startup_report::Report {
+            config_file: &config_file,
+            filter_dirs: &loaded.dirs,
+            env: crate::config::recon_env(),
+            read: &loaded.files,
+            skipped: &loaded.skipped,
+            merged: &merged,
+            bindings: &bindings,
+            warnings: &warnings,
+            all: which == crate::config::PrintStartup::All,
+            home: home.as_deref(),
+        };
+        return Ok(Start::Print {
+            stdout: crate::startup_report::print(&report),
+            warnings: Vec::new(),
+        });
+    }
+
+    // Needs the loaded sets, which is why it is not inside `Config::load`
+    // with `check_flags`. Still before any terminal setup: the message must
+    // reach a screen that is not about to be replaced (#143).
+    config.check_sets(&filter_sets)?;
 
     Ok(Start::Run(Box::new(Startup {
         config,

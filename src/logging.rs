@@ -74,10 +74,8 @@ pub fn startup_snapshot(startup: &Startup) {
         Some(path) => log::debug!("config file: {}", path.display()),
         None => log::debug!("config file: none (no config home)"),
     }
-    for (name, value) in std::env::vars_os() {
-        if name.to_string_lossy().starts_with("RECON_") {
-            log::debug!("environment: {}={}", name.display(), value.display());
-        }
+    for (name, value) in crate::config::recon_env() {
+        log::debug!("environment: {name}={value}");
     }
     log::debug!(
         "filter path: {}",

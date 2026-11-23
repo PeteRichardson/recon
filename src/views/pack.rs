@@ -9,7 +9,7 @@
 use super::FileType;
 use super::command::Commands;
 use std::collections::BTreeMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// The commands and rows of one set file.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -35,10 +35,30 @@ pub struct Merged {
     pub commands: Commands,
     pub aliases: BTreeMap<String, String>,
     pub warnings: Vec<String>,
+    /// Where each definition came from, for `--print-startup` (#628).
+    pub sources: Sources,
+}
+
+/// The file that defines each command, alias and row in force (#628):
+/// `config.toml` or a set file.
+///
+/// A `pack:name` key is a definition that lost its bare name, and the
+/// source of the bare `name` is the file that won it.
+#[derive(Debug, Default)]
+pub struct Sources {
+    /// By the key in [`Merged::commands`].
+    pub commands: BTreeMap<String, PathBuf>,
+    /// By the key in [`Merged::aliases`].
+    pub aliases: BTreeMap<String, PathBuf>,
+    /// One entry per row in [`Merged::rows`], in the same order: the
+    /// files that gave the row its views. A pack row with the criteria of
+    /// a `config.toml` row adds its views to that row, so it has both.
+    pub rows: Vec<Vec<PathBuf>>,
 }
 
 /// `config.toml`'s rows, commands and aliases with `packs` added, packs in
-/// precedence order.
+/// precedence order. `config` is the path of `config.toml`, for messages
+/// and [`Sources`].
 ///
 /// A command or an alias keeps its bare name unless an earlier definition
 /// holds it: `config.toml` first, then the packs in order. One that loses
@@ -50,6 +70,7 @@ pub struct Merged {
 /// A row that names a view that is not a built-in view or a command, and a
 /// pack alias the palette cannot run.
 pub fn merge(
+    config: &Path,
     rows: &[FileType],
     commands: &Commands,
     aliases: &BTreeMap<String, String>,
@@ -60,6 +81,11 @@ pub fn merge(
         commands: commands.clone(),
         aliases: aliases.clone(),
         warnings: Vec::new(),
+        sources: Sources {
+            commands: from(config, commands.0.keys()),
+            aliases: from(config, aliases.keys()),
+            rows: vec![vec![config.to_path_buf()]; rows.len()],
+        },
     };
     // `pack:view` must name one pack, so of two packs with one name (two
     // directories that each hold `filters.toml`) the first wins.
@@ -79,7 +105,7 @@ pub fn merge(
     for pack in &packs {
         for (name, command) in &pack.commands.0 {
             let key = claim(
-                &merged.commands.0,
+                &mut merged.sources.commands,
                 "[commands]",
                 pack,
                 name,
@@ -107,36 +133,52 @@ pub fn merge(
                 continue;
             }
             seen.push(row.clone());
-            match merged.rows[..rows.len()]
-                .iter_mut()
-                .find(|user| same_criteria(user, &row))
+            if let Some(index) = merged.rows[..rows.len()]
+                .iter()
+                .position(|user| same_criteria(user, &row))
             {
-                Some(user) => add_to(user, &row),
-                None => merged.rows.push(row),
+                add_to(&mut merged.rows[index], &row);
+                merged.sources.rows[index].push(pack.path.clone());
+            } else {
+                merged.rows.push(row);
+                merged.sources.rows.push(vec![pack.path.clone()]);
             }
         }
     }
     Ok(merged)
 }
 
-/// The key `pack`'s `name` gets in `taken`, the `[commands]` or `[aliases]`
-/// of the earlier files: its bare name, or `pack:name` with a warning when
-/// an earlier file holds the bare name.
-fn claim<T>(
-    taken: &BTreeMap<String, T>,
+/// Each of `names`, from the file `path`.
+fn from<'a>(path: &Path, names: impl Iterator<Item = &'a String>) -> BTreeMap<String, PathBuf> {
+    names
+        .map(|name| (name.clone(), path.to_path_buf()))
+        .collect()
+}
+
+/// The key `pack`'s `name` gets among `sources`, the `[commands]` or
+/// `[aliases]` of the earlier files, which it then joins: its bare name, or
+/// `pack:name` with a warning that names the earlier file when that file
+/// holds the bare name.
+fn claim(
+    sources: &mut BTreeMap<String, PathBuf>,
     table: &str,
     pack: &Pack,
     name: &str,
     warnings: &mut Vec<String>,
 ) -> String {
-    if !taken.contains_key(name) {
-        return name.to_string();
-    }
-    let key = format!("{}:{name}", pack.name);
-    warnings.push(format!(
-        "{table} `{name}` in {} is named `{key}`: an earlier file defines `{name}`",
-        pack.path.display()
-    ));
+    let key = match sources.get(name) {
+        None => name.to_string(),
+        Some(winner) => {
+            let key = format!("{}:{name}", pack.name);
+            warnings.push(format!(
+                "{table} `{name}` in {} is kept as `{key}`: {} defines it first",
+                pack.path.display(),
+                winner.display()
+            ));
+            key
+        }
+    };
+    sources.insert(key.clone(), pack.path.clone());
     key
 }
 
@@ -160,7 +202,7 @@ fn merge_aliases(merged: &mut Merged, packs: &[&Pack]) -> Result<(), Error> {
                 }
             })?;
             let key = claim(
-                &merged.aliases,
+                &mut merged.sources.aliases,
                 "[aliases]",
                 pack,
                 name,
@@ -308,6 +350,10 @@ impl std::error::Error for Error {}
 mod tests {
     use super::*;
     use crate::views::command::Command;
+    use std::path::Path;
+
+    /// Where the tests' `config.toml` is.
+    const CONFIG: &str = "home/config.toml";
 
     fn pack(name: &str, commands: &[&'static str], rows: Vec<FileType>) -> Pack {
         Pack {
@@ -331,7 +377,14 @@ mod tests {
             &["beautiful"],
             vec![FileType::with_view_names("*.mpg", &["beautiful", "hex"])],
         );
-        let merged = merge(&user, &Commands::default(), &BTreeMap::new(), &[mpeg]).expect("merges");
+        let merged = merge(
+            Path::new(CONFIG),
+            &user,
+            &Commands::default(),
+            &BTreeMap::new(),
+            &[mpeg],
+        )
+        .expect("merges");
         let labels: Vec<&str> = merged.rows.iter().map(FileType::label).collect();
         assert_eq!(labels, ["*.json", "*.mpg"]);
         assert_eq!(views(&merged.rows[1]), ["beautiful", "hex"]);
@@ -349,7 +402,14 @@ mod tests {
         let mut row = FileType::with_view_names("*.mpg", &["beautiful", "hex"]);
         row.handoff = Some(vec!["mpv".to_string(), "{file}".to_string()]);
         let mpeg = pack("mpegpack", &["beautiful"], vec![row]);
-        let merged = merge(&user, &commands, &BTreeMap::new(), &[mpeg]).expect("merges");
+        let merged = merge(
+            Path::new(CONFIG),
+            &user,
+            &commands,
+            &BTreeMap::new(),
+            &[mpeg],
+        )
+        .expect("merges");
         assert_eq!(merged.rows.len(), 2, "the row is merged, not added");
         assert_eq!(views(&merged.rows[0]), ["jq", "beautiful", "raw", "hex"]);
         assert_eq!(
@@ -366,8 +426,14 @@ mod tests {
         let mut row = FileType::with_view_names("*.mpg", &["beautiful"]);
         row.handoff = Some(vec!["mpv".to_string()]);
         let mpeg = pack("mpegpack", &["beautiful"], vec![row]);
-        let merged =
-            merge(&[user], &Commands::default(), &BTreeMap::new(), &[mpeg]).expect("merges");
+        let merged = merge(
+            Path::new(CONFIG),
+            &[user],
+            &Commands::default(),
+            &BTreeMap::new(),
+            &[mpeg],
+        )
+        .expect("merges");
         assert_eq!(
             merged.rows[0].handoff.as_deref(),
             Some(&["vlc".to_string()][..])
@@ -387,7 +453,14 @@ mod tests {
             &["show"],
             vec![FileType::with_view_names("*.b", &["show"])],
         );
-        let merged = merge(&[], &commands, &BTreeMap::new(), &[first, second]).expect("merges");
+        let merged = merge(
+            Path::new(CONFIG),
+            &[],
+            &commands,
+            &BTreeMap::new(),
+            &[first, second],
+        )
+        .expect("merges");
 
         assert_eq!(
             merged.commands.0["dump"].argv,
@@ -433,6 +506,7 @@ mod tests {
         );
         let user = [FileType::with_view_names("*.c", &["second:show", "show"])];
         let merged = merge(
+            Path::new(CONFIG),
             &user,
             &Commands::default(),
             &BTreeMap::new(),
@@ -450,7 +524,14 @@ mod tests {
             &[],
             vec![FileType::with_view_names("*.mpg", &["nope"])],
         );
-        let err = merge(&[], &Commands::default(), &BTreeMap::new(), &[mpeg]).expect_err("refused");
+        let err = merge(
+            Path::new(CONFIG),
+            &[],
+            &Commands::default(),
+            &BTreeMap::new(),
+            &[mpeg],
+        )
+        .expect_err("refused");
         let err = err.to_string();
         assert!(err.contains("team/mpegpack.filters.toml"), "{err}");
         assert!(err.contains("*.mpg"), "{err}");
@@ -460,7 +541,14 @@ mod tests {
     #[test]
     fn a_users_row_can_name_a_pack_view_only_by_its_pack() {
         let user = [FileType::with_view_names("*.c", &["nope:show"])];
-        let err = merge(&user, &Commands::default(), &BTreeMap::new(), &[]).expect_err("refused");
+        let err = merge(
+            Path::new(CONFIG),
+            &user,
+            &Commands::default(),
+            &BTreeMap::new(),
+            &[],
+        )
+        .expect_err("refused");
         assert!(err.to_string().contains("`nope:show`"), "{err}");
     }
 
@@ -477,6 +565,7 @@ mod tests {
             vec![FileType::with_view_names("*.x", &["b"])],
         );
         let merged = merge(
+            Path::new(CONFIG),
             &[],
             &Commands::default(),
             &BTreeMap::new(),
@@ -506,7 +595,14 @@ mod tests {
             &["beautiful", "info"],
             vec![FileType::with_view_names("*.mpg", &["beautiful", "info"])],
         );
-        let merged = merge(&user, &commands, &BTreeMap::new(), &[mpeg]).expect("merges");
+        let merged = merge(
+            Path::new(CONFIG),
+            &user,
+            &commands,
+            &BTreeMap::new(),
+            &[mpeg],
+        )
+        .expect("merges");
         assert_eq!(views(&merged.rows[0]), ["info", "jq", "beautiful", "raw"]);
     }
 
@@ -526,6 +622,7 @@ mod tests {
         );
         second.path = PathBuf::from("other/filters.toml");
         let merged = merge(
+            Path::new(CONFIG),
             &[],
             &Commands::default(),
             &BTreeMap::new(),
@@ -559,14 +656,41 @@ mod tests {
             pack("deploylogs", &[], vec![]),
             &[("dlogs", "e $1"), ("dtail", "unlist code")],
         );
-        let merged = merge(&[], &Commands::default(), &user, &[deploy]).expect("merges");
+        let merged = merge(
+            Path::new(CONFIG),
+            &[],
+            &Commands::default(),
+            &user,
+            &[deploy],
+        )
+        .expect("merges");
         assert_eq!(merged.aliases["dlogs"], "e ~/mine");
         assert_eq!(merged.aliases["deploylogs:dlogs"], "e $1");
         assert_eq!(merged.aliases["dtail"], "unlist code");
         assert_eq!(
             merged.warnings,
             [
-                "[aliases] `dlogs` in team/deploylogs.filters.toml is named `deploylogs:dlogs`: an earlier file defines `dlogs`"
+                "[aliases] `dlogs` in team/deploylogs.filters.toml is kept as `deploylogs:dlogs`: home/config.toml defines it first"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_collision_warning_names_the_file_that_won() {
+        let first = pack("first", &["show"], vec![]);
+        let second = pack("second", &["show"], vec![]);
+        let merged = merge(
+            Path::new(CONFIG),
+            &[],
+            &Commands::default(),
+            &BTreeMap::new(),
+            &[first, second],
+        )
+        .expect("merges");
+        assert_eq!(
+            merged.warnings,
+            [
+                "[commands] `show` in team/second.filters.toml is kept as `second:show`: team/first.filters.toml defines it first"
             ]
         );
     }
@@ -574,9 +698,15 @@ mod tests {
     #[test]
     fn a_pack_alias_the_palette_cannot_run_is_refused_with_its_file() {
         let deploy = with_aliases(pack("deploylogs", &[], vec![]), &[("dlogs", "frobnicate")]);
-        let err = merge(&[], &Commands::default(), &BTreeMap::new(), &[deploy])
-            .expect_err("refused")
-            .to_string();
+        let err = merge(
+            Path::new(CONFIG),
+            &[],
+            &Commands::default(),
+            &BTreeMap::new(),
+            &[deploy],
+        )
+        .expect_err("refused")
+        .to_string();
         assert_eq!(
             err,
             "[aliases] `dlogs` in team/deploylogs.filters.toml: `frobnicate` is not a command"
