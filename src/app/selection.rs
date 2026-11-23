@@ -11,7 +11,7 @@
 //! selection; dimmed lines are visible and so are included. One rule, no
 //! per-mode special case. See `docs/specs/2026-09-07-visual-mode-and-yank-design.md`.
 //!
-//! The two functions at the bottom are pure and take the document's pieces
+//! The two `pub(crate)` free functions are pure and take the document's pieces
 //! rather than the document, so they can be tested on a handful of lines
 //! without an `App` — and so `--emit` (#143) can reuse the yank if it ever
 //! wants a selection.
@@ -50,42 +50,73 @@ pub(crate) struct Yank {
 /// or that line is hidden — a hidden end contributes no column, so the
 /// first visible line after it is taken whole.
 ///
-/// Yields `(visible row, source line, start col, end col)` with the end
-/// exclusive and both clamped to the line. The one walk both the yank and
-/// the painting are built on, so the two cannot disagree about which lines
-/// a selection covers.
+/// Yields `(source line, start col, end col)` with the end exclusive and
+/// both clamped to the line.
 fn visible_segments<'a>(
     lines: &'a Lines,
     visible: &'a Visible,
     visual: &Visual,
     cursor: End,
-) -> impl Iterator<Item = (usize, usize, usize, usize)> + 'a {
-    let anchor: End = (visual.anchor, visual.col);
-    let (lo, hi) = if anchor <= cursor {
-        (anchor, cursor)
-    } else {
-        (cursor, anchor)
-    };
-    let linewise = visual.linewise;
-    let first = visible.rows_before(lo.0);
-    let last = visible.rows_before(hi.0 + 1);
-    (first..)
-        .zip(visible.rows(first, last))
-        .map(move |(row, source)| {
-            let len = lines.get(source).map_or(0, |line| line.chars().count());
-            let start = if !linewise && source == lo.0 {
-                lo.1.min(len)
-            } else {
-                0
-            };
-            // Inclusive of the character under the cursor, as vim's `v` is.
-            let end = if !linewise && source == hi.0 {
-                (hi.1 + 1).min(len)
-            } else {
-                len
-            };
-            (row, source, start, end.max(start))
-        })
+) -> impl Iterator<Item = (usize, usize, usize)> + 'a {
+    let range = Range::new(visible, visual, cursor);
+    visible.rows(range.first, range.last).map(move |source| {
+        let (start, end) = range.columns(lines, source);
+        (source, start, end)
+    })
+}
+
+/// A selection as visible rows: its ordered ends, and the visible rows
+/// `first..last` that it covers. The yank and the painting both take their
+/// rows and columns from here, so the two cannot disagree about what a
+/// selection covers.
+struct Range {
+    lo: End,
+    hi: End,
+    linewise: bool,
+    first: usize,
+    last: usize,
+}
+
+impl Range {
+    fn new(visible: &Visible, visual: &Visual, cursor: End) -> Self {
+        let anchor: End = (visual.anchor, visual.col);
+        let (lo, hi) = if anchor <= cursor {
+            (anchor, cursor)
+        } else {
+            (cursor, anchor)
+        };
+        Self {
+            lo,
+            hi,
+            linewise: visual.linewise,
+            first: visible.rows_before(lo.0),
+            last: visible.rows_before(hi.0 + 1),
+        }
+    }
+
+    /// The first and the last visible row, or `None` when the range shows
+    /// no line.
+    fn end_rows(&self) -> Option<(usize, usize)> {
+        (self.first < self.last).then(|| (self.first, self.last - 1))
+    }
+
+    /// The columns that source line `source` contributes, start inclusive
+    /// and end exclusive.
+    fn columns(&self, lines: &Lines, source: usize) -> (usize, usize) {
+        let len = lines.get(source).map_or(0, |line| line.chars().count());
+        let start = if !self.linewise && source == self.lo.0 {
+            self.lo.1.min(len)
+        } else {
+            0
+        };
+        // Inclusive of the character under the cursor, as vim's `v` is.
+        let end = if !self.linewise && source == self.hi.0 {
+            (self.hi.1 + 1).min(len)
+        } else {
+            len
+        };
+        (start, end.max(start))
+    }
 }
 
 /// The text a yank of this selection copies, or `None` when no line of the
@@ -102,7 +133,7 @@ pub(crate) fn yank_text(
 ) -> Option<Yank> {
     let mut text = String::new();
     let mut count = 0;
-    for (_, source, start, end) in visible_segments(lines, visible, visual, cursor) {
+    for (source, start, end) in visible_segments(lines, visible, visual, cursor) {
         if count > 0 {
             text.push('\n');
         }
@@ -124,18 +155,21 @@ pub(crate) fn yank_text(
 /// columns: the first visible row and the column it starts at, and the last
 /// visible row and the column (exclusive) it ends at. Rows between are whole.
 /// `None` when no line of the range is visible.
+///
+/// It reads only the two end rows, not the rows between (#407): this runs
+/// on each frame, and `V G` on a large file selects every line.
 pub(crate) fn visible_span(
     lines: &Lines,
     visible: &Visible,
     visual: &Visual,
     cursor: End,
 ) -> Option<((usize, usize), (usize, usize))> {
-    let mut segments = visible_segments(lines, visible, visual, cursor);
-    let (first_row, _, start, first_end) = segments.next()?;
-    let (last_row, last_end) = segments
-        .last()
-        .map_or((first_row, first_end), |(row, _, _, end)| (row, end));
-    Some(((first_row, start), (last_row, last_end)))
+    let range = Range::new(visible, visual, cursor);
+    let (first_row, last_row) = range.end_rows()?;
+    let columns = |row: usize| Some(range.columns(lines, visible.get(row)?));
+    let (start, _) = columns(first_row)?;
+    let (_, end) = columns(last_row)?;
+    Some(((first_row, start), (last_row, end)))
 }
 
 impl App<'_> {
