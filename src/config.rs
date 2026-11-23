@@ -890,6 +890,12 @@ pub struct EditorConfig {
 /// What `--follow` with a directory is told (#493), here and in batch mode.
 pub(crate) const FOLLOW_NEEDS_ONE_FILE: &str = "--follow needs one file, not a directory";
 
+/// `value`, or the first of `errors`: a loader that collects its errors
+/// (#630), as one that stops at the first would return it.
+pub(crate) fn first_error<T, E>(value: T, errors: Vec<E>) -> Result<T, E> {
+    errors.into_iter().next().map_or(Ok(value), Err)
+}
+
 /// Why a config file could not be turned into a [`FileConfig`].
 ///
 /// Both variants carry the path. An error that says "invalid config" without

@@ -42,12 +42,20 @@ fn main() -> Result<ExitCode> {
         choose_log_target(&config, false);
     }
     let mut startup = match start? {
-        Start::Print { stdout, warnings } => {
+        Start::Print {
+            stdout,
+            warnings,
+            failed,
+        } => {
             for warning in warnings {
                 log::warn!("{warning}");
             }
             print!("{stdout}");
-            return Ok(ExitCode::SUCCESS);
+            return Ok(if failed {
+                ExitCode::FAILURE
+            } else {
+                ExitCode::SUCCESS
+            });
         }
         Start::Run(startup) => startup,
     };

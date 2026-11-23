@@ -239,16 +239,15 @@ impl serde::de::Visitor<'_> for KeyLabel<'_> {
 /// reaches a screen that a user can read, and the warnings are in hand
 /// before `Muted` starts dropping records (#246).
 ///
-/// # Errors
-///
-/// [`ConfigError::UnknownAction`], [`ConfigError::BadKeyLabel`] or
-/// [`ConfigError::Inconsistent`].
-pub fn build(
+/// Each line with a [`ConfigError::UnknownAction`] or a
+/// [`ConfigError::BadKeyLabel`] is left out, and its error is returned with
+/// the others (#630). A [`ConfigError::Inconsistent`] comes last.
+pub fn build_all(
     overlay: &KeymapConfig,
     aliases: &BTreeMap<String, String>,
     file: Option<PathBuf>,
     warnings: bool,
-) -> Result<(crate::keymap::Keymap, Vec<String>), ConfigError> {
+) -> (crate::keymap::Keymap, Vec<String>, Vec<ConfigError>) {
     // A line that names a user alias (#559) is not an action's line, so
     // `Keymap::new` never sees it. `load` has refused an alias that has an
     // action's name, so no line can be both.
@@ -260,13 +259,15 @@ pub fn build(
     let actions = KeymapConfig {
         bindings: action_lines,
     };
-    let (mut keymap, mut reserved) = crate::keymap::Keymap::new(&actions)
-        .map_err(|err| with_alias_names(err, aliases).in_file(file.clone()))?;
-    reserved.extend(
-        keymap
-            .bind_aliases(&alias_lines)
-            .map_err(|err| err.in_file(file.clone()))?,
-    );
+    let (mut keymap, mut reserved, action_errors) = crate::keymap::Keymap::new_all(&actions);
+    let (alias_reserved, alias_errors) = keymap.bind_aliases(&alias_lines);
+    reserved.extend(alias_reserved);
+    let mut errors: Vec<ConfigError> = action_errors
+        .into_iter()
+        .map(|err| with_alias_names(err, aliases))
+        .chain(alias_errors)
+        .map(|err| err.in_file(file.clone()))
+        .collect();
 
     // Logged here rather than inside `Keymap::new`, which is not told
     // whether the user asked for silence.
@@ -292,16 +293,29 @@ pub fn build(
     // not compile. Rendering also keeps `Problem`'s `Display` the single
     // place any of this is worded.
     if !report.errors().is_empty() {
-        return Err(ConfigError::Inconsistent {
+        errors.push(ConfigError::Inconsistent {
             problems: report.errors().iter().map(ToString::to_string).collect(),
             path: file,
         });
     }
     keymap.evict(report.evict());
-    Ok((
+    (
         keymap,
         report.warnings().iter().map(ToString::to_string).collect(),
-    ))
+        errors,
+    )
+}
+
+/// [`build_all`], or its first error.
+#[cfg(test)]
+pub fn build(
+    overlay: &KeymapConfig,
+    aliases: &BTreeMap<String, String>,
+    file: Option<PathBuf>,
+    warnings: bool,
+) -> Result<(crate::keymap::Keymap, Vec<String>), ConfigError> {
+    let (keymap, warnings, errors) = build_all(overlay, aliases, file, warnings);
+    crate::config::first_error((keymap, warnings), errors)
 }
 
 /// `err`, with the names of `aliases` among the names it suggests: a typo of

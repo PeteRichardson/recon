@@ -925,22 +925,35 @@ impl Keymap {
     /// keeps what it had. A name no action spells is
     /// [`crate::config::ConfigError::UnknownAction`], and a key spelling the
     /// label grammar cannot read is
-    /// [`crate::config::ConfigError::BadKeyLabel`] — `keymap::config::build`
-    /// runs this from `startup::start`, before the terminal comes up, so a typo is
-    /// refused on a screen the message can still reach rather than bound to
-    /// nothing.
+    /// [`crate::config::ConfigError::BadKeyLabel`]: the first error of
+    /// [`Keymap::new_all`], which `keymap::config::build_all` runs from
+    /// `startup::start` before the terminal comes up, so a typo is refused
+    /// on a screen the message can still reach rather than bound to nothing.
+    #[cfg(test)]
     pub(crate) fn new(
         overlay: &config::KeymapConfig,
     ) -> Result<(Self, Vec<String>), crate::config::ConfigError> {
+        let (keymap, reserved, errors) = Self::new_all(overlay);
+        crate::config::first_error((keymap, reserved), errors)
+    }
+
+    /// [`Keymap::new`], with each line it refuses left out and its error
+    /// returned, so that one run shows every bad line (#630).
+    pub(crate) fn new_all(
+        overlay: &config::KeymapConfig,
+    ) -> (Self, Vec<String>, Vec<crate::config::ConfigError>) {
         let mut keymap = Self::default();
         let mut reserved = Vec::new();
+        let mut errors = Vec::new();
         for (name, labels) in &overlay.bindings {
-            let action =
-                action_named(name).ok_or_else(|| crate::config::ConfigError::UnknownAction {
+            let Some(action) = action_named(name) else {
+                errors.push(crate::config::ConfigError::UnknownAction {
                     name: name.clone(),
                     known: known_action_names(),
                     path: None,
-                })?;
+                });
+                continue;
+            };
             // A filter editor action is not checked for a reserved key
             // (#314): the editor takes every key while it is open, so a
             // reserved key there can never meet the key 1.1 gives it, and
@@ -948,29 +961,35 @@ impl Keymap {
             let modal = DEFAULT
                 .iter()
                 .any(|(scope, _, bound)| *bound == action && *scope == Scope::FilterEditor);
-            read_line(name, labels, modal, &mut reserved)?;
+            if let Err(err) = read_line(name, labels, modal, &mut reserved) {
+                errors.push(err);
+                continue;
+            }
             keymap.rebind(action, labels);
         }
-        Ok((keymap, reserved))
+        (keymap, reserved, errors)
     }
 
     /// Give each alias of `lines` its keys (#559), in the global scope, and
     /// say which reserved keys they take, as `Keymap::new` does.
     ///
-    /// # Errors
-    ///
-    /// [`crate::config::ConfigError::BadKeyLabel`], for the reason
-    /// `Keymap::new` refuses one.
+    /// A line with a [`crate::config::ConfigError::BadKeyLabel`], for the
+    /// reason `Keymap::new` refuses one, is left out, and its error is
+    /// returned with the others.
     pub(crate) fn bind_aliases(
         &mut self,
         lines: &std::collections::BTreeMap<String, Vec<String>>,
-    ) -> Result<Vec<String>, crate::config::ConfigError> {
+    ) -> (Vec<String>, Vec<crate::config::ConfigError>) {
         let mut reserved = Vec::new();
+        let mut errors = Vec::new();
         for (name, labels) in lines {
-            read_line(name, labels, false, &mut reserved)?;
+            if let Err(err) = read_line(name, labels, false, &mut reserved) {
+                errors.push(err);
+                continue;
+            }
             self.aliases.push((name.clone(), labels.clone()));
         }
-        Ok(reserved)
+        (reserved, errors)
     }
 
     /// Put `labels` in place of every key `action` currently holds.

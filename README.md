@@ -1277,6 +1277,13 @@ dlogs             ~/.config/recon/config.toml                  hides `deploylogs
 
 `--print-startup all` also lists the built-in views and every key.
 
+When a set file, a pack alias, a `[[filetype]]` row or a `[keymap]` line
+has an error, recon does not stop at the first one. It reads the rest, then
+shows every error together and refuses to start, so you can repair them all
+at once. `--print-startup` shows the part that loaded, then the errors in an
+`[errors]` section, and exits with status 1. Any other error in `config.toml`,
+such as a TOML syntax error, still stops recon at once.
+
 #### The set picker
 
 `L` shows every known set on one screen, so you can choose which sets the

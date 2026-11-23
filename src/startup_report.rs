@@ -28,6 +28,9 @@ pub(crate) struct Report<'a> {
     pub bindings: &'a Keymap,
     /// Every start-up warning, in the order the panel shows them.
     pub warnings: &'a [String],
+    /// The load errors (#630). The section is there only when there are
+    /// some.
+    pub errors: &'a [String],
     /// `--print-startup all`: the built-in views and every key too.
     pub all: bool,
     /// `HOME`, which the report shows as `~`.
@@ -134,14 +137,30 @@ pub(crate) fn print(report: &Report<'_>) -> String {
             .collect();
     section(&mut out, "[keymap]", &keys);
 
+    if !report.errors.is_empty() {
+        out.push_str("\n[errors]\n");
+        for error in report.errors {
+            bullet(&mut out, error);
+        }
+    }
     out.push_str("\n[warnings]\n");
     if report.warnings.is_empty() {
         out.push_str("(none)\n");
     }
     for warning in report.warnings {
-        let _ = writeln!(out, "- {warning}");
+        bullet(&mut out, warning);
     }
     out
+}
+
+/// `text` as a `- ` item, each line after its first indented under it: a
+/// TOML error is a snippet of several lines.
+fn bullet(out: &mut String, text: &str) {
+    let mut lines = text.lines();
+    let _ = writeln!(out, "- {}", lines.next().unwrap_or_default());
+    for line in lines {
+        let _ = writeln!(out, "  {line}");
+    }
 }
 
 /// `items` as rows of a two-column group under `label`: the label on the
