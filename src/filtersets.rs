@@ -950,7 +950,8 @@ pub fn set_files(
     dirs: &[PathBuf],
     personal: &DirLists,
 ) -> Result<Vec<PathBuf>, Error> {
-    Ok(walk(own, dirs, personal, false)?.files)
+    let walk = walk(own, dirs, personal, false);
+    crate::config::first_error(walk.files, walk.errors)
 }
 
 /// A file or directory on the filter path that recon did not read, and why
@@ -966,18 +967,18 @@ struct Walk {
     /// As [`set_files`] returns them.
     files: Vec<PathBuf>,
     skipped: Vec<Skipped>,
+    /// One per directory recon could not list, or whose `.include` or
+    /// `.ignore` file it could not read. It reads no set file of that
+    /// directory, and goes on to the next one (#630).
+    errors: Vec<Error>,
 }
 
 /// [`set_files`], and with `report` the set files and directories it
 /// passed over. Only `--print-startup` asks for those, so a normal start
 /// keeps no record of a file it does not read.
-fn walk(
-    own: Option<PathBuf>,
-    dirs: &[PathBuf],
-    personal: &DirLists,
-    report: bool,
-) -> Result<Walk, Error> {
+fn walk(own: Option<PathBuf>, dirs: &[PathBuf], personal: &DirLists, report: bool) -> Walk {
     let mut skipped = Vec::new();
+    let mut errors = Vec::new();
     let own_dir = own.as_deref().and_then(Path::parent).map(Path::to_path_buf);
     let mut files: Vec<PathBuf> = own.into_iter().collect();
     let mut seen: std::collections::HashSet<PathBuf> = files
@@ -986,13 +987,22 @@ fn walk(
         .collect();
     for dir in own_dir.iter().chain(dirs) {
         let personal = personal.get(&dir_key(dir, None));
-        for file in dir_set_files(dir, personal, report.then_some(&mut skipped))? {
-            if seen.insert(crate::path::lexical_absolute(&file)) {
-                files.push(file);
+        match dir_set_files(dir, personal, report.then_some(&mut skipped)) {
+            Ok(found) => {
+                for file in found {
+                    if seen.insert(crate::path::lexical_absolute(&file)) {
+                        files.push(file);
+                    }
+                }
             }
+            Err(err) => errors.push(err),
         }
     }
-    Ok(Walk { files, skipped })
+    Walk {
+        files,
+        skipped,
+        errors,
+    }
 }
 
 /// The personal lists of `config.toml`'s `[filter_dirs]`, by directory
@@ -1186,7 +1196,7 @@ fn read_file(path: &Path) -> Result<Option<FileParts>, Error> {
 /// Read and parse one file. A file that is not there is no sets.
 #[cfg(test)]
 fn load_from(path: &Path) -> Result<Vec<LoadedSet>, Error> {
-    Ok(load_all(&[path.to_path_buf()])?.sets)
+    Ok(load_all(&[path.to_path_buf()]).strict()?.sets)
 }
 
 /// What the set files hold: the sets, and the packs (#602).
@@ -1203,6 +1213,20 @@ pub struct Loaded {
     /// The set files and directories on the filter path not read, and why.
     /// Empty unless [`load_file`] was asked to report them.
     pub skipped: Vec<Skipped>,
+    /// Every file or directory recon could not read, in the order of the
+    /// filter path. Its sets and its pack are not in `sets` and `packs`;
+    /// the rest of the load goes on, so that one run shows every error
+    /// (#630).
+    pub errors: Vec<Error>,
+}
+
+#[cfg(test)]
+impl Loaded {
+    /// `self`, or its first error.
+    fn strict(mut self) -> Result<Self, Error> {
+        let errors = std::mem::take(&mut self.errors);
+        crate::config::first_error(self, errors)
+    }
 }
 
 /// Read every file in `files`, highest precedence first, into one list.
@@ -1213,14 +1237,21 @@ pub struct Loaded {
 /// shadows the same way. Every file is still read and validated, shadowed
 /// sets included — an error in any of them refuses to start, for the
 /// reason `Config::load` gives, and a broken team file should not wait to
-/// be found until the personal set shadowing it is deleted.
-fn load_all(files: &[PathBuf]) -> Result<Loaded, Error> {
+/// be found until the personal set shadowing it is deleted. A file with an
+/// error is left out whole, and recorded in [`Loaded::errors`].
+fn load_all(files: &[PathBuf]) -> Loaded {
     let mut sets: Vec<LoadedSet> = Vec::new();
     let mut packs = Vec::new();
     let mut read = Vec::new();
+    let mut errors = Vec::new();
     for file in files {
-        let Some((file_sets, pack)) = read_file(file)? else {
-            continue;
+        let (file_sets, pack) = match read_file(file) {
+            Ok(Some(parts)) => parts,
+            Ok(None) => continue,
+            Err(err) => {
+                errors.push(err);
+                continue;
+            }
         };
         read.push(file.clone());
         packs.extend(pack);
@@ -1238,36 +1269,38 @@ fn load_all(files: &[PathBuf]) -> Result<Loaded, Error> {
             sets.push(set);
         }
     }
-    Ok(Loaded {
+    Loaded {
         sets: finish(sets),
         packs,
         files: read,
+        errors,
         ..Loaded::default()
-    })
+    }
 }
 
-/// The file layer. Call before the terminal is initialised: an error here
-/// refuses to start, for the reason `Config::load` gives. `filter_path` is
+/// The file layer. Call before the terminal is initialised: an error in
+/// [`Loaded::errors`] refuses to start, for the reason `Config::load` gives. `filter_path` is
 /// `--filter-path` or `RECON_FILTER_PATH`, as clap resolved it; `personal`
 /// is `[filter_dirs]`, keyed as the file writes each directory. With
 /// `report`, [`Loaded::skipped`] lists what the walk passed over.
-pub fn load_file(
-    filter_path: Option<&str>,
-    personal: &DirLists,
-    report: bool,
-) -> Result<Loaded, Error> {
+#[must_use]
+pub fn load_file(filter_path: Option<&str>, personal: &DirLists, report: bool) -> Loaded {
     let own = path();
     if own.is_none() {
         log::debug!(target: crate::config::LOAD_LOG, "no config home ($XDG_CONFIG_HOME, $HOME unset); no filters.toml read");
     }
     let home = std::env::var("HOME").ok();
     let dirs = search_path_from(filter_path, home.as_deref());
-    let walk = walk(own, &dirs, &keyed(personal, home.as_deref()), report)?;
-    Ok(Loaded {
+    let walk = walk(own, &dirs, &keyed(personal, home.as_deref()), report);
+    let mut loaded = load_all(&walk.files);
+    let mut errors = walk.errors;
+    errors.append(&mut loaded.errors);
+    Loaded {
         dirs,
         skipped: walk.skipped,
-        ..load_all(&walk.files)?
-    })
+        errors,
+        ..loaded
+    }
 }
 
 #[cfg(test)]
@@ -2427,7 +2460,7 @@ pattern = 'plain'
         write(&team.join("broken.filters.toml"), "this is not toml [");
         write(&team.join(".ignore"), "broken*\n");
         let files = set_files(None, std::slice::from_ref(&team), &no_lists()).expect("lists");
-        let sets = load_all(&files).expect("loads").sets;
+        let sets = load_all(&files).strict().expect("loads").sets;
         assert!(sets.iter().any(|set| set.name == "good"));
     }
 
@@ -2637,6 +2670,7 @@ pattern = 'plain'
         write(&own, &set_file("bug", "mine"));
         write(&root.join("own/a.filters.toml"), &set_file("bug", "theirs"));
         let sets = load_all(&set_files(Some(own.clone()), &[], &no_lists()).expect("lists"))
+            .strict()
             .expect("loads")
             .sets;
         assert_eq!(sets[0].name, "bug");
@@ -2690,7 +2724,7 @@ pattern = 'plain'
         write(&team.join("b.filters.toml"), &set_file("wifi", "later"));
         let files =
             set_files(Some(own.clone()), std::slice::from_ref(&team), &no_lists()).expect("lists");
-        let sets = load_all(&files).expect("loads").sets;
+        let sets = load_all(&files).strict().expect("loads").sets;
         let names: Vec<&str> = sets.iter().map(|set| set.name.as_str()).collect();
         assert_eq!(names, ["bug", "code", "wifi"]);
         assert_eq!(sets[0].filters[0].predicate.display(), "mine");
@@ -2708,7 +2742,7 @@ pattern = 'plain'
         let (own, team) = (root.join("own.toml"), root.join("team.toml"));
         write(&own, &set_file("a", "x"));
         write(&team, "[sets.code]\npriority = 7\n");
-        let sets = load_all(&[own, team]).expect("loads").sets;
+        let sets = load_all(&[own, team]).strict().expect("loads").sets;
         let builtins: Vec<&LoadedSet> = sets.iter().filter(|set| set.builtin).collect();
         assert_eq!(builtins.len(), 1);
         assert_eq!(builtins[0].priority, 7);
@@ -2728,7 +2762,9 @@ pattern = 'plain'
                 set_file("mpeg", "frame")
             ),
         );
-        let loaded = load_all(std::slice::from_ref(&file)).expect("loads");
+        let loaded = load_all(std::slice::from_ref(&file))
+            .strict()
+            .expect("loads");
         assert!(loaded.sets.iter().any(|set| set.name == "mpeg"));
         assert_eq!(loaded.packs.len(), 1);
         let pack = &loaded.packs[0];
@@ -2775,7 +2811,9 @@ pattern = 'plain'
         let root = scratch_dir("pack-colon");
         let file = root.join("mpegpack.filters.toml");
         write(&file, "[commands.'a:b']\nargv = ['x']\n");
-        let err = load_all(std::slice::from_ref(&file)).expect_err("refused");
+        let err = load_all(std::slice::from_ref(&file))
+            .strict()
+            .expect_err("refused");
         let err = err.to_string();
         assert!(err.contains(&file.display().to_string()), "{err}");
         assert!(err.contains("`a:b`"), "{err}");
@@ -2787,7 +2825,9 @@ pattern = 'plain'
         let (own, team) = (root.join("own.toml"), root.join("team.toml"));
         write(&own, &set_file("a", "x"));
         write(&team, "[sets.b]\n");
-        let err = load_all(&[own, team.clone()]).expect_err("refused");
+        let err = load_all(&[own, team.clone()])
+            .strict()
+            .expect_err("refused");
         assert!(
             err.to_string().contains(&team.display().to_string()),
             "{err}"

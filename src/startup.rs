@@ -63,11 +63,34 @@ pub enum Start {
     Print {
         stdout: String,
         warnings: Vec<String>,
+        /// recon exits 1 after it prints: `--print-startup` found load
+        /// errors (#630).
+        failed: bool,
     },
     /// Start a session, in the TUI or in batch mode. Boxed because it is the
     /// large one, and `Print` would otherwise be as big.
     Run(Box<Startup>),
 }
+
+/// Every error of one load (#630), shown together, in the order recon
+/// found them.
+#[derive(Debug)]
+pub struct LoadErrors(pub Vec<String>);
+
+impl std::fmt::Display for LoadErrors {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if let [only] = self.0.as_slice() {
+            return f.write_str(only);
+        }
+        write!(f, "{} errors in the config files:", self.0.len())?;
+        for error in &self.0 {
+            write!(f, "\n\n{}", error.trim_end())?;
+        }
+        Ok(())
+    }
+}
+
+impl std::error::Error for LoadErrors {}
 
 /// Parse the command line, read what it needs, and refuse what cannot run.
 ///
@@ -94,6 +117,7 @@ pub fn start() -> Result<Start> {
                 std::env::var("TERM_PROGRAM").ok().as_deref(),
             )?,
             warnings: Vec::new(),
+            failed: false,
         });
     }
 
@@ -112,6 +136,7 @@ pub fn start() -> Result<Start> {
         return Ok(Start::Print {
             stdout: crate::keymap::print_keymap(&defaults, &defaults),
             warnings: Vec::new(),
+            failed: false,
         });
     }
 
@@ -120,11 +145,14 @@ pub fn start() -> Result<Start> {
     log::debug!(target: crate::config::LOAD_LOG, "config read in {:?}", read.elapsed());
 
     let read = std::time::Instant::now();
+    // From here, an error that leaves the rest of the load intact goes into
+    // `errors` and the load goes on, so that one run shows them all (#630).
     let loaded = crate::filtersets::load_file(
         config.filter_path.as_deref(),
         &config.filter_dirs,
         config.print_startup.is_some(),
-    )?;
+    );
+    let mut errors: Vec<String> = loaded.errors.iter().map(ToString::to_string).collect();
     let filter_sets = loaded.sets;
     log::debug!(
         target: crate::config::LOAD_LOG,
@@ -140,13 +168,14 @@ pub fn start() -> Result<Start> {
     let config_file = config
         .config_file_path()
         .unwrap_or_else(|| "config.toml".into());
-    let mut merged = crate::views::pack::merge(
+    let mut merged = crate::views::pack::merge_all(
         &config_file,
         &config.filetypes,
         &config.commands,
         &config.aliases,
         &loaded.packs,
-    )?;
+    );
+    errors.extend(merged.errors.iter().map(ToString::to_string));
     let aliases = std::mem::take(&mut merged.aliases);
 
     // The `[keymap]` table, before `--print-keymap` below, which prints the
@@ -155,12 +184,17 @@ pub fn start() -> Result<Start> {
     // (#61). Below the filter sets: a line can give a pack's alias a key
     // (#627), so the map in force depends on the set files, and a set file
     // recon cannot read leaves no map in force to print.
-    let (bindings, keymap_warnings) = crate::keymap::config::build(
+    let (bindings, keymap_warnings, keymap_errors) = crate::keymap::config::build_all(
         &overlay,
         &aliases,
         config.config_file_path(),
         config.warnings(),
-    )?;
+    );
+    errors.extend(keymap_errors.iter().map(ToString::to_string));
+    // `--print-startup` shows what loaded with the errors, below.
+    if !errors.is_empty() && config.print_startup.is_none() {
+        return Err(LoadErrors(errors).into());
+    }
 
     // The keymap warnings go to stderr first (#259), the same warnings a
     // normal start shows in its panel — which names this command as where
@@ -175,6 +209,7 @@ pub fn start() -> Result<Start> {
             } else {
                 Vec::new()
             },
+            failed: false,
         });
     }
 
@@ -200,12 +235,14 @@ pub fn start() -> Result<Start> {
             merged: &merged,
             bindings: &bindings,
             warnings: &warnings,
+            errors: &errors,
             all: which == crate::config::PrintStartup::All,
             home: home.as_deref(),
         };
         return Ok(Start::Print {
             stdout: crate::startup_report::print(&report),
             warnings: Vec::new(),
+            failed: !errors.is_empty(),
         });
     }
 

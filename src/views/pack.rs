@@ -35,6 +35,10 @@ pub struct Merged {
     pub commands: Commands,
     pub aliases: BTreeMap<String, String>,
     pub warnings: Vec<String>,
+    /// Each row and pack alias recon cannot use, in the order the files
+    /// give them. It is left out of `rows` or `aliases`, and the merge goes
+    /// on, so that one run shows every error (#630).
+    pub errors: Vec<Error>,
     /// Where each definition came from, for `--print-startup` (#628).
     pub sources: Sources,
 }
@@ -65,26 +69,26 @@ pub struct Sources {
 /// is kept as `pack:name`, with a warning. Every view name in a row is then
 /// rewritten to the key it resolves to, so the table needs no pack logic.
 ///
-/// # Errors
-///
 /// A row that names a view that is not a built-in view or a command, and a
-/// pack alias the palette cannot run.
-pub fn merge(
+/// pack alias the palette cannot run, go into [`Merged::errors`].
+#[must_use]
+pub fn merge_all(
     config: &Path,
     rows: &[FileType],
     commands: &Commands,
     aliases: &BTreeMap<String, String>,
     packs: &[Pack],
-) -> Result<Merged, Error> {
+) -> Merged {
     let mut merged = Merged {
         rows: Vec::with_capacity(rows.len()),
         commands: commands.clone(),
         aliases: aliases.clone(),
         warnings: Vec::new(),
+        errors: Vec::new(),
         sources: Sources {
             commands: from(config, commands.0.keys()),
             aliases: from(config, aliases.keys()),
-            rows: vec![vec![config.to_path_buf()]; rows.len()],
+            rows: Vec::with_capacity(rows.len()),
         },
     };
     // `pack:view` must name one pack, so of two packs with one name (two
@@ -114,16 +118,30 @@ pub fn merge(
             merged.commands.0.insert(key, command.clone());
         }
     }
-    merge_aliases(&mut merged, &packs)?;
+    merge_aliases(&mut merged, &packs);
 
     for row in rows {
-        let row = resolve(row, None, &packs, &merged.commands)?;
+        let row = match resolve(row, None, &packs, &merged.commands) {
+            Ok(row) => row,
+            Err(err) => {
+                merged.errors.push(err);
+                continue;
+            }
+        };
         merged.rows.push(row);
+        merged.sources.rows.push(vec![config.to_path_buf()]);
     }
+    let user_rows = merged.rows.len();
     let mut seen: Vec<FileType> = Vec::new();
     for pack in &packs {
         for row in &pack.filetypes {
-            let row = resolve(row, Some(pack), &packs, &merged.commands)?;
+            let row = match resolve(row, Some(pack), &packs, &merged.commands) {
+                Ok(row) => row,
+                Err(err) => {
+                    merged.errors.push(err);
+                    continue;
+                }
+            };
             if seen.iter().any(|earlier| same_criteria(earlier, &row)) {
                 merged.warnings.push(format!(
                     "the [[filetype]] row for `{}` in {} is ignored: an earlier file has a row for the same files",
@@ -133,7 +151,7 @@ pub fn merge(
                 continue;
             }
             seen.push(row.clone());
-            if let Some(index) = merged.rows[..rows.len()]
+            if let Some(index) = merged.rows[..user_rows]
                 .iter()
                 .position(|user| same_criteria(user, &row))
             {
@@ -145,7 +163,21 @@ pub fn merge(
             }
         }
     }
-    Ok(merged)
+    merged
+}
+
+/// [`merge_all`], or its first error.
+#[cfg(test)]
+pub fn merge(
+    config: &Path,
+    rows: &[FileType],
+    commands: &Commands,
+    aliases: &BTreeMap<String, String>,
+    packs: &[Pack],
+) -> Result<Merged, Error> {
+    let mut merged = merge_all(config, rows, commands, aliases, packs);
+    let errors = std::mem::take(&mut merged.errors);
+    crate::config::first_error(merged, errors)
 }
 
 /// Each of `names`, from the file `path`.
@@ -185,7 +217,9 @@ fn claim(
 /// Add the aliases of `packs` to `merged`, which holds `config.toml`'s.
 /// Each pack alias is checked as `config.toml` checks its own (#557), by
 /// its bare name: a chain cannot run another alias, from any file.
-fn merge_aliases(merged: &mut Merged, packs: &[&Pack]) -> Result<(), Error> {
+/// An alias the palette cannot run goes into [`Merged::errors`], not into
+/// `merged.aliases`.
+fn merge_aliases(merged: &mut Merged, packs: &[&Pack]) {
     let mut every = merged.aliases.clone();
     for pack in packs {
         for (name, chain) in &pack.aliases {
@@ -194,13 +228,14 @@ fn merge_aliases(merged: &mut Merged, packs: &[&Pack]) -> Result<(), Error> {
     }
     for pack in packs {
         for (name, chain) in &pack.aliases {
-            crate::commands::check_alias(name, chain, &every).map_err(|problem| {
-                Error::BadAlias {
+            if let Err(problem) = crate::commands::check_alias(name, chain, &every) {
+                merged.errors.push(Error::BadAlias {
                     path: pack.path.clone(),
                     name: name.clone(),
                     problem,
-                }
-            })?;
+                });
+                continue;
+            }
             let key = claim(
                 &mut merged.sources.aliases,
                 "[aliases]",
@@ -211,7 +246,6 @@ fn merge_aliases(merged: &mut Merged, packs: &[&Pack]) -> Result<(), Error> {
             merged.aliases.insert(key, chain.clone());
         }
     }
-    Ok(())
 }
 
 /// `row`, from `pack` or from `config.toml`, with each view name rewritten
