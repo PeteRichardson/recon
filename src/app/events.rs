@@ -76,6 +76,10 @@ impl App<'_> {
         self.dispatch_event(event);
         if let Some(pressed) = pressed {
             crate::logging::key(pressed, self.dispatched, typing);
+            // The user is at the tab, so the `done` marker has done its job.
+            if let Some(reports) = &mut self.status_reports {
+                reports.seen();
+            }
         }
         // Here, beside `refresh_scan`, for the same reason: the dispatch has
         // two dozen early returns and every one of them may have moved

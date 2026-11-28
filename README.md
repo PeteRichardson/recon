@@ -498,7 +498,11 @@ filter count, and the shown and total lines, as in
 the work: `filtering app.log` with the percent done, `loading app.log`,
 `running gen · 52k lines`, `reading stdin · 52k lines`,
 `scanning 412 files` or `finishing`. With more than one, the work that
-blocks you comes first. `recon` removes its status when it exits.
+blocks you comes first. When work that took 2 seconds or more ends,
+`recon` reports `done` with the result, as in
+`filtered app.log: 1204 of 88k lines`, and Rex marks the tab until you
+look at it. The next key goes back to the file status. `recon` removes
+its status when it exits.
 
 `[terminal] status` in `config.toml` controls this:
 

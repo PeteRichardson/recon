@@ -34,7 +34,7 @@ impl Setting {
 /// The longest `msg` Rex takes, in bytes before the base64.
 const MSG_MAX: usize = 2048;
 
-/// What recon is doing, as one report says it. `done` comes with #640.
+/// What recon is doing, as one report says it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Status {
     state: State,
@@ -47,6 +47,8 @@ enum State {
     Idle,
     /// Busy, with the percentage done when the work knows it.
     Working(Option<u8>),
+    /// Long work that ended, with a result the user has not seen yet.
+    Done,
 }
 
 impl Status {
@@ -62,6 +64,14 @@ impl Status {
     pub(crate) fn working(msg: impl Into<String>, progress: Option<u8>) -> Self {
         Self {
             state: State::Working(progress),
+            msg: msg.into(),
+        }
+    }
+
+    /// Long work that ended, with the result that `msg` gives (#640).
+    pub(crate) fn done(msg: impl Into<String>) -> Self {
+        Self {
+            state: State::Done,
             msg: msg.into(),
         }
     }
@@ -105,6 +115,7 @@ pub(crate) fn encode(status: &Status) -> Vec<u8> {
         State::Idle => "idle".to_string(),
         State::Working(None) => "working".to_string(),
         State::Working(Some(percent)) => format!("working:progress={}", percent.min(100)),
+        State::Done => "done".to_string(),
     };
     format!("\x1b]7501;state={state}:app=recon:msg={msg}\x1b\\").into_bytes()
 }
@@ -135,6 +146,16 @@ mod tests {
         assert_eq!(
             encode(&Status::working("pass", Some(37))),
             b"\x1b]7501;state=working:progress=37:app=recon:msg=cGFzcw==\x1b\\"
+        );
+    }
+
+    /// Work that ended names its state and carries its result.
+    #[test]
+    fn a_done_report_carries_the_result() {
+        // "load" in standard base64.
+        assert_eq!(
+            encode(&Status::done("load")),
+            b"\x1b]7501;state=done:app=recon:msg=bG9hZA==\x1b\\"
         );
     }
 
