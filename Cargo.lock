@@ -1916,6 +1916,7 @@ dependencies = [
 name = "recon"
 version = "0.12.0"
 dependencies = [
+ "base64",
  "clap",
  "color-eyre",
  "crossterm 0.29.0",

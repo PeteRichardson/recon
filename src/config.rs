@@ -574,6 +574,11 @@ pub struct Config {
     /// `[log] files` in `config.toml` (#500), or `None` for the default.
     #[arg(skip)]
     pub log_files: Option<u32>,
+
+    /// `[terminal] status` in `config.toml` (#638), or `None` for `auto`.
+    /// No flag, for the reason `filter_palette` gives.
+    #[arg(skip)]
+    pub terminal_status: Option<crate::program_status::Setting>,
 }
 
 /// The `--theme` long help: the short help's two sentences, then the bundled
@@ -685,6 +690,17 @@ pub struct FileConfig {
     /// `[log]`: the log file and its size (#500, #504). Same absent-vs-empty
     /// reasoning as `editor`.
     pub log: Option<LogConfig>,
+    /// `[terminal]`: what recon tells the terminal (#638). Same again.
+    pub terminal: Option<TerminalConfig>,
+}
+
+/// The `[terminal]` table.
+#[derive(Deserialize, Debug, Default, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct TerminalConfig {
+    /// Whether recon reports its status to the terminal. See
+    /// [`Config::terminal_status`].
+    pub status: Option<crate::program_status::Setting>,
 }
 
 /// The `[log]` table.
@@ -1641,6 +1657,7 @@ impl Config {
             aliases,
             filter_dirs,
             log,
+            terminal,
         } = file;
 
         if let Some(background) = background {
@@ -1769,6 +1786,13 @@ impl Config {
                 self.log_files.get_or_insert(files.get());
             }
         }
+
+        if let Some(TerminalConfig {
+            status: Some(status),
+        }) = terminal
+        {
+            self.terminal_status.get_or_insert(*status);
+        }
     }
 
     /// The size at which the log file rotates: `[log] max_mb` megabytes, 50
@@ -1785,6 +1809,13 @@ impl Config {
     #[must_use]
     pub fn log_files(&self) -> u32 {
         self.log_files.unwrap_or(DEFAULT_LOG_FILES)
+    }
+
+    /// Whether recon reports its status to the terminal: `[terminal]
+    /// status`, `auto` by default (#638).
+    #[must_use]
+    pub fn terminal_status(&self) -> crate::program_status::Setting {
+        self.terminal_status.unwrap_or_default()
     }
 
     /// The clipboard command, once the chain has run: the flag, the
@@ -2574,6 +2605,33 @@ mod tests {
 
         assert_eq!(Config::default().log_max_bytes(), 50 * 1024 * 1024);
         assert_eq!(Config::default().log_files(), 2);
+    }
+
+    /// `[terminal] status` (#638): `auto` when the file does not say, and a
+    /// value that is not one of the three is refused with its line.
+    #[test]
+    fn the_terminal_status_setting_parses_defaults_and_refuses_a_bad_value() {
+        use crate::program_status::Setting;
+        assert_eq!(Config::default().terminal_status(), Setting::Auto);
+        for (name, setting) in [
+            ("auto", Setting::Auto),
+            ("on", Setting::On),
+            ("off", Setting::Off),
+        ] {
+            let path = fixture(
+                &format!("terminal-status-{name}.toml"),
+                &format!("[terminal]\nstatus = \"{name}\"\n"),
+            );
+            let mut config = Config::default();
+            config.apply(&load_from(&path).expect(name));
+            assert_eq!(config.terminal_status(), setting, "{name}");
+        }
+        let path = fixture(
+            "terminal-status-bad.toml",
+            "[terminal]\nstatus = \"maybe\"\n",
+        );
+        let err = load_from(&path).expect_err("maybe").to_string();
+        assert!(err.contains("line 2"), "{err}");
     }
 
     /// A bad size is refused with the line, as each other setting is: a

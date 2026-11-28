@@ -129,12 +129,19 @@ fn main() -> Result<ExitCode> {
         if let Ok(size) = terminal.size() {
             log::debug!("terminal: {} columns, {} rows", size.width, size.height);
         }
-        let exit = App::new(&startup)
+        let mut app = App::new(&startup)
             .with_stdin(stdin_file)
             .with_image_picker(image_picker())
             .with_model(recon::generate::system())
-            .with_terminate(terminate)
-            .run(terminal)?;
+            .with_terminate(terminate);
+        // On the screen, as the frames are: stdout is for `--emit` (#638).
+        let term_program = std::env::var("TERM_PROGRAM").ok();
+        if config.terminal_status().reports(term_program.as_deref()) {
+            log::debug!("program status: on");
+            REPORTING.store(true, Ordering::Relaxed);
+            app = app.with_status_reports(Box::new(screen()));
+        }
+        let exit = app.run(terminal)?;
         restore_terminal()?;
         exit
     };
@@ -640,6 +647,11 @@ fn protocol_for(
 /// script-facing: a redirected stderr holds them verbatim (#222).
 static TERMINAL_UP: AtomicBool = AtomicBool::new(false);
 
+/// Set when recon sends program status reports (#638), so that
+/// `restore_terminal` removes the record and the hooks do too: Rex may keep
+/// an `idle` record after the program has gone.
+static REPORTING: AtomicBool = AtomicBool::new(false);
+
 /// Undo `init_terminal`: leave the alternate screen, stop mouse reports, and
 /// show the cursor.
 ///
@@ -656,6 +668,11 @@ fn restore_terminal() -> Result<()> {
     }
     disable_raw_mode()?;
     execute!(screen(), LeaveAlternateScreen, DisableMouseCapture, Show)?;
+    if REPORTING.load(Ordering::Relaxed) {
+        let mut screen = screen();
+        screen.write_all(recon::program_status::CLEAR)?;
+        screen.flush()?;
+    }
     Ok(())
 }
 

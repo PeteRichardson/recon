@@ -595,6 +595,7 @@ mod mouse;
 mod open;
 mod palette;
 mod peek;
+mod program_status;
 mod prompt;
 mod require_section;
 mod reveals;

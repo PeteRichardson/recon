@@ -29,6 +29,7 @@ mod scanning;
 mod search;
 mod selection;
 mod spool;
+mod status_report;
 mod stdin;
 mod sync;
 pub(crate) mod viewport;
@@ -78,6 +79,8 @@ pub struct App<'a> {
     /// Set from outside the loop when a SIGTERM arrives (#382). `main`
     /// installs it; `None` in a test that does not ask for one.
     terminate: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    /// Where recon reports its status to the terminal, when it does (#638).
+    status_reports: Option<status_report::StatusReports>,
     /// The three panes, named rather than collected (#73).
     ///
     /// They were a `Vec<AppWidget>` built once with exactly three entries,
@@ -465,6 +468,7 @@ impl App<'_> {
             writing: None,
             finished: None,
             terminate: None,
+            status_reports: None,
             explorer,
             view,
             filters_pane: FilterList::default(),
@@ -675,6 +679,9 @@ impl App<'_> {
                     frame.render_widget(&mut *self, area);
                 })?;
                 crate::logging::frame_drawn(drawing.elapsed());
+                // After the draw, which flushed the frame, so that a report
+                // cannot land inside one.
+                self.report_status();
             }
             dirty = self.handle_events()?;
         }
