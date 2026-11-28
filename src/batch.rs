@@ -212,13 +212,20 @@ fn listed_files(mut list: impl BufRead) -> io::Result<Vec<PathBuf>> {
         if list.read_until(b'\n', &mut line)? == 0 {
             break;
         }
-        let bytes = strip_line_end(&line);
-        if bytes.iter().all(u8::is_ascii_whitespace) {
-            continue;
-        }
-        files.push(lexical_absolute(&path_from_bytes(bytes)));
+        files.extend(listed_path(&line));
     }
     Ok(files)
+}
+
+/// The path one line of a `--files-from` list names, absolute, or `None`
+/// for a line that is only whitespace. The TUI's list (#519) reads its
+/// lines by this rule too.
+pub(crate) fn listed_path(line: &[u8]) -> Option<PathBuf> {
+    let bytes = strip_line_end(line);
+    if bytes.iter().all(u8::is_ascii_whitespace) {
+        return None;
+    }
+    Some(lexical_absolute(&path_from_bytes(bytes)))
 }
 
 /// `--emit lines`: every input's visible lines in hide mode, in input order,

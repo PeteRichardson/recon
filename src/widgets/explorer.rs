@@ -305,6 +305,9 @@ pub(crate) struct Explorer<'a> {
     /// Each entry's icon, by index into `entries`: looked up when the
     /// directory is read, not on every rebuild a search keystroke makes.
     icon_marks: Vec<Option<Icon>>,
+    /// A folder listed in an order of its own, not sorted: the links of a
+    /// `--files-from` list, in the list's order (#519). Each name's place.
+    order: Option<(PathBuf, std::collections::HashMap<OsString, usize>)>,
 }
 
 /// After the name of a file in follow mode (#493).
@@ -348,6 +351,14 @@ impl Explorer<'_> {
         }
         self.dir = dir;
         self.entries = read_dir_entries(&self.dir);
+        if let Some((dir, places)) = &self.order
+            && *dir == self.dir
+        {
+            // `..` stays first. A name the order does not know goes last,
+            // in the sorted order it was read in.
+            self.entries[1..]
+                .sort_by_cached_key(|entry| places.get(&entry.name).copied().unwrap_or(usize::MAX));
+        }
         self.mark_icons();
         // Fresh entries are all `Unknown`, so every row is visible whatever
         // the mode; `rebuild_visible` also rebuilds the drawn list. The
@@ -790,6 +801,11 @@ impl Explorer<'_> {
         &self.dir
     }
 
+    /// Whether the folder lists nothing: `..` is the only row.
+    pub(crate) fn is_empty(&self) -> bool {
+        self.entries.len() <= 1
+    }
+
     /// The listing, for tests that assert on what is in the pane.
     #[cfg(test)]
     pub(crate) fn entries(&self) -> &[Entry] {
@@ -964,6 +980,18 @@ impl Explorer<'_> {
         self.rebuild_visible()
     }
 
+    /// List `dir` in the order of `names`, not sorted (#519). Takes effect
+    /// the next time `dir` is read: [`Explorer::reload`] for the one on
+    /// screen.
+    pub(crate) fn set_order(&mut self, dir: PathBuf, names: &[OsString]) {
+        let places = names
+            .iter()
+            .enumerate()
+            .map(|(place, name)| (name.clone(), place))
+            .collect();
+        self.order = Some((dir, places));
+    }
+
     /// Re-list `self.dir` from disk, keeping the selection on the entry it
     /// names — or on the first entry if nothing was selected.
     ///
@@ -973,10 +1001,19 @@ impl Explorer<'_> {
     /// fresh entries are all `Unknown` and are re-answered from the
     /// path-keyed scan cache with no I/O for files that have not changed.
     pub(crate) fn reload(&mut self) {
+        self.reload_renamed(&[]);
+    }
+
+    /// [`Explorer::reload`], after the entries in `renamed`, as `(old,
+    /// new)` in the order done, changed their names (#519): the selection
+    /// stays on its entry under the new name.
+    pub(crate) fn reload_renamed(&mut self, renamed: &[(OsString, OsString)]) {
         let select = self
             .selected_entry()
             .and_then(|index| self.entries.get(index))
-            .map_or(Select::First, |entry| Select::Named(entry.name.clone()));
+            .map_or(Select::First, |entry| {
+                Select::Named(renamed_to(&entry.name, renamed))
+            });
         self.set_dir(self.dir.clone(), select);
     }
 
@@ -1176,6 +1213,14 @@ fn locate(path: &Path) -> (PathBuf, Select) {
         .file_name()
         .map_or(Select::First, |name| Select::Named(name.to_owned()));
     (dir, select)
+}
+
+/// What `name` is called after `renamed`, the `(old, new)` name changes in
+/// the order they were done.
+pub(crate) fn renamed_to(name: &std::ffi::OsStr, renamed: &[(OsString, OsString)]) -> OsString {
+    renamed.iter().fold(name.to_owned(), |name, (old, new)| {
+        if name == *old { new.clone() } else { name }
+    })
 }
 
 fn read_dir_entries(dir: &Path) -> Vec<Entry> {

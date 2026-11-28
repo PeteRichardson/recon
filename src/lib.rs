@@ -20,6 +20,7 @@ mod csv_fmt;
 pub mod document;
 pub mod editor;
 pub mod emit;
+pub mod files_from;
 pub mod filetype;
 pub mod filter;
 pub mod filtersets;

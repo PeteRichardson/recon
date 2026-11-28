@@ -8,6 +8,7 @@
 mod actions;
 mod collect;
 mod events;
+mod files_from;
 mod filter_editor;
 mod filtering;
 mod filters;
@@ -373,6 +374,8 @@ pub struct App<'a> {
     /// The spool of the command view on screen, when its output is too
     /// large to keep in memory (#573).
     spool: Option<spool::Spooled>,
+    /// The links to the `--files-from` list's files, in the TUI (#519).
+    links: Option<files_from::Links>,
     /// Files the view was asked to show, for the shutdown summary (#490).
     opened: u64,
     /// Scan answers the explorer took, for the shutdown summary.
@@ -556,6 +559,7 @@ impl App<'_> {
             filtering: filtering::Filtering::default(),
             stdin: None,
             spool: None,
+            links: None,
             opened: 0,
             scanned: 0,
         };

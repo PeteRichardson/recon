@@ -131,17 +131,23 @@ impl Drop for StdinFile {
     }
 }
 
-/// A panic on the copy thread leaves what it last wrote, which is as good
-/// as any to show.
-fn lock(shared: &Mutex<Shared>) -> MutexGuard<'_, Shared> {
+/// A panic on a copy or read thread leaves what it last did, which is as
+/// good as any to show. `--files-from` (#519) shares it.
+pub(crate) fn lock<T>(shared: &Mutex<T>) -> MutexGuard<'_, T> {
     shared.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// `recon-<kind>-<YYYYMMDD-HHMMSS>-<pid>`: the name of what this run makes
+/// in `$TMPDIR`, the stdin copy and the `--files-from` links (#519).
+pub(crate) fn temp_name(kind: &str) -> String {
+    let stamp = jiff::Zoned::now().strftime("%Y%m%d-%H%M%S");
+    format!("recon-{kind}-{stamp}-{}", std::process::id())
 }
 
 /// Create `recon-stdin-<YYYYMMDD-HHMMSS>-<pid>.txt` in `dir`, readable by
 /// its owner only: what comes down a pipe can be private (`sudo …`).
 fn create(dir: &Path) -> io::Result<(PathBuf, File)> {
-    let stamp = jiff::Zoned::now().strftime("%Y%m%d-%H%M%S");
-    let path = dir.join(format!("recon-stdin-{stamp}-{}.txt", std::process::id()));
+    let path = dir.join(format!("{}.txt", temp_name("stdin")));
     let file = create_private(&path)?;
     Ok((path, file))
 }

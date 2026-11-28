@@ -94,7 +94,7 @@ pub struct Config {
     /// With none, the current directory.
     ///
     /// `-` as PATH is the lines on stdin, as for `grep`. Otherwise stdin is
-    /// not read: in batch mode, a list of files comes from `--files-from`.
+    /// not read: a list of files comes from `--files-from`.
     /// With `sudo cmd | recon -`, run `sudo -v` first: sudo's password
     /// prompt and recon both want the terminal.
     //
@@ -400,8 +400,12 @@ pub struct Config {
     #[arg(short = 'n', long)]
     pub line_numbers: bool,
 
-    /// Batch mode's inputs: the files listed in FILE, one per line, or on
-    /// stdin when FILE is `-`. Relative paths are from the current directory.
+    /// The files listed in FILE, one per line, or on stdin when FILE is `-`.
+    /// Relative paths are from the current directory.
+    ///
+    /// Batch mode reads them as its inputs. The TUI lists them in the
+    /// explorer, in the order of the list, as links in a folder in
+    /// `$TMPDIR`.
     // Not `-` as PATH, which was the list before #517 and is now the lines.
     #[arg(long, value_name = "FILE", conflicts_with = "path")]
     pub files_from: Option<String>,
@@ -948,8 +952,9 @@ pub enum ConfigError {
     /// `-` as `PATH` with the keyboard on stdin (#517): the read would wait
     /// for Ctrl-D.
     DashNeedsAPipe,
-    /// `--files-from` in the TUI, which cannot list the files yet (#519).
-    FilesFromNeedsBatch,
+    /// `--files-from -` in the TUI with the keyboard on stdin (#519): the
+    /// list and the keys would both read it.
+    FilesFromDashNeedsAPipe,
     /// `--set` naming a set `filters.toml` does not define (#143). `known`
     /// is every set it does define, for the message.
     UnknownSet { name: String, known: Vec<String> },
@@ -1092,7 +1097,9 @@ impl fmt::Display for ConfigError {
                 "- is lines and applies to --emit lines; for a list of files, use --files-from -"
             ),
             Self::DashNeedsAPipe => write!(f, "- reads stdin, but stdin is a terminal"),
-            Self::FilesFromNeedsBatch => write!(f, "--files-from applies to batch mode"),
+            Self::FilesFromDashNeedsAPipe => {
+                write!(f, "--files-from - reads stdin, but stdin is a terminal")
+            }
             // The built-in set is listed apart: it is among the known names
             // — `--set code` is accepted (#220) — but no set file
             // defines it, and the message says what the set files define.
@@ -1384,6 +1391,12 @@ impl Config {
             .get_or_insert_with(|| vec![crate::panes::Pane::Explorer]);
     }
 
+    /// Open `dir`, the links to the `--files-from` list's files, in place
+    /// of `PATH` (#519).
+    pub fn list_files_into(&mut self, dir: &Path) {
+        self.path = Some(dir.display().to_string());
+    }
+
     /// Whether `PATH` is `-`: the lines on stdin are the input (#517).
     #[must_use]
     pub fn path_is_stdin(&self) -> bool {
@@ -1452,14 +1465,15 @@ impl Config {
     }
 
     /// Refuse a read of stdin that cannot work (#517): `-` from a terminal,
-    /// and `--files-from` in the TUI, which cannot list files yet (#519).
-    /// After the mode is known, unlike `check_flags`: both depend on it.
+    /// and `--files-from -` from a terminal in the TUI (#519), where the
+    /// keys come from the terminal too. After the mode is known, unlike
+    /// `check_flags`: the second depends on it.
     pub fn check_stdin(&self, stdin_is_terminal: bool, batch: bool) -> Result<(), ConfigError> {
         if self.path_is_stdin() && stdin_is_terminal {
             return Err(ConfigError::DashNeedsAPipe);
         }
-        if !batch && self.files_from.is_some() {
-            return Err(ConfigError::FilesFromNeedsBatch);
+        if !batch && stdin_is_terminal && self.files_from.as_deref() == Some(STDIN_PATH) {
+            return Err(ConfigError::FilesFromDashNeedsAPipe);
         }
         Ok(())
     }
@@ -1980,22 +1994,25 @@ mod tests {
         assert!(config.check_stdin(false, true).is_ok(), "a pipe is read");
     }
 
-    /// #517: the TUI cannot list `--files-from` yet (#519), so it is
-    /// refused rather than half done. `-` is read in both modes.
+    /// #519: the TUI lists `--files-from`. Only `--files-from -` with the
+    /// keyboard on stdin is refused there: the list and the keys would
+    /// both read it. Batch mode reads it as `cat` would.
     #[test]
-    fn files_from_in_the_tui_is_refused_for_now() {
-        let files_from = parse_clean(["recon", "--files-from", "-"]).expect("parses");
-        let dash = parse_clean(["recon", "-"]).expect("parses");
+    fn files_from_dash_in_the_tui_needs_a_pipe() {
+        let dash = parse_clean(["recon", "--files-from", "-"]).expect("parses");
+        let file = parse_clean(["recon", "--files-from", "list.txt"]).expect("parses");
 
         assert_eq!(
-            files_from
-                .check_stdin(false, false)
+            dash.check_stdin(true, false)
                 .expect_err("refused")
                 .to_string(),
-            "--files-from applies to batch mode"
+            "--files-from - reads stdin, but stdin is a terminal"
         );
-        assert!(files_from.check_stdin(false, true).is_ok());
-        assert!(dash.check_stdin(false, false).is_ok(), "the TUI reads -");
+        assert!(dash.check_stdin(false, false).is_ok(), "a pipe is read");
+        assert!(dash.check_stdin(true, true).is_ok(), "batch mode reads it");
+        assert!(file.check_stdin(true, false).is_ok(), "a file is read");
+        let lines = parse_clean(["recon", "-"]).expect("parses");
+        assert!(lines.check_stdin(false, false).is_ok(), "the TUI reads -");
     }
 
     /// #517: `-` is lines, so only `--emit lines` takes it. `files` is the
