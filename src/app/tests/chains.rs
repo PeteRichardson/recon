@@ -482,16 +482,16 @@ fn a_view_binding_on_a_filter_letter_beats_the_hint() {
 }
 
 /// The hint follows the keymap (#494): after `filters.profile` moves to
-/// `P`, `P` gives the profile hint outside the filter pane, and `a`, which
+/// `B`, `B` gives the profile hint outside the filter pane, and `a`, which
 /// now reaches nothing there, gives none.
 #[test]
 fn a_moved_filter_verb_hints_on_its_new_key_only() {
     let mut app = app_over("hint_moved", &["a.log"]);
-    rebind(&mut app, &[("filters.profile", &["P"])]);
+    rebind(&mut app, &[("filters.profile", &["B"])]);
     key(&mut app, KeyCode::Char('e'));
 
-    key(&mut app, KeyCode::Char('P'));
-    assert_eq!(status(&app), Some("P picks a profile for the set · f P"));
+    key(&mut app, KeyCode::Char('B'));
+    assert_eq!(status(&app), Some("B picks a profile for the set · f B"));
 
     key(&mut app, KeyCode::Char('a'));
     assert_eq!(status(&app), None, "a still hints at the profile picker");

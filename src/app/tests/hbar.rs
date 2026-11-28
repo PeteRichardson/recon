@@ -23,12 +23,12 @@ fn a_filter_that_hides_the_long_lines_narrows_the_measurement() {
     draw_tall(&mut app);
     assert_eq!(app.hbar_widest(), Some(60));
 
-    // Only the short lines stay visible — `H` hides the unmatched, which
+    // Only the short lines stay visible — `u` hides the unmatched, which
     // leaves the dimmed include filter as the visible set. The bar must
     // shrink with them, not leave a thumb stranded for a line the user
     // cannot see.
     app.add_filter("^short$|^medium").expect("a pattern");
-    key(&mut app, KeyCode::Char('H'));
+    key(&mut app, KeyCode::Char('u'));
     draw_tall(&mut app);
     assert_eq!(app.hbar_widest(), Some(16));
 }
@@ -318,4 +318,105 @@ fn a_click_on_text_releases_the_pinned_column() {
         !app.view.is_scroll_pinned(),
         "a text click left the drag owning the column"
     );
+}
+
+// ---- #644: `H` and `L` page the view sideways -----------------------
+
+/// The columns one `H` or `L` moves: the text's width less the overlap
+/// that keeps the reader's place. The bar spans exactly the text's width.
+fn sideways_page(app: &App<'_>) -> usize {
+    let (_, area) = app.view.drawn_hbar().expect("the bar is drawn");
+    usize::from(area.width - crate::widgets::fileview::SIDEWAYS_OVERLAP)
+}
+
+#[test]
+fn shift_l_pages_the_view_right_and_leaves_the_cursor_put() {
+    let mut app = wide_long_app("page_right");
+    focus_file_view(&mut app);
+    draw_tall(&mut app);
+    let page = sideways_page(&app);
+    let cursor_before = app.view.cursor_col();
+
+    key(&mut app, KeyCode::Char('L'));
+    draw_tall(&mut app);
+    assert_eq!(app.view.scroll_col(), page);
+    assert_eq!(app.view.cursor_col(), cursor_before, "L moved the cursor");
+
+    key(&mut app, KeyCode::Char('L'));
+    draw_tall(&mut app);
+    assert_eq!(
+        app.view.scroll_col(),
+        2 * page,
+        "a second L went one more page"
+    );
+}
+
+#[test]
+fn shift_h_pages_back_and_stops_at_the_first_column() {
+    let mut app = wide_long_app("page_left");
+    focus_file_view(&mut app);
+    draw_tall(&mut app);
+    let page = sideways_page(&app);
+    key(&mut app, KeyCode::Char('L'));
+    key(&mut app, KeyCode::Char('L'));
+    draw_tall(&mut app);
+
+    key(&mut app, KeyCode::Char('H'));
+    draw_tall(&mut app);
+    assert_eq!(app.view.scroll_col(), page);
+    key(&mut app, KeyCode::Char('H'));
+    key(&mut app, KeyCode::Char('H'));
+    draw_tall(&mut app);
+    assert_eq!(app.view.scroll_col(), 0, "H went past the first column");
+}
+
+#[test]
+fn shift_l_stops_where_the_widest_line_ends() {
+    let mut app = wide_long_app("page_right_end");
+    focus_file_view(&mut app);
+    draw_tall(&mut app);
+    // The bar's own measure of what overhangs the window.
+    let (bar, _) = app.view.drawn_hbar().expect("the bar is drawn");
+    let last = bar.max_scroll();
+    for _ in 0..20 {
+        key(&mut app, KeyCode::Char('L'));
+        draw_tall(&mut app);
+    }
+    assert_eq!(app.view.scroll_col(), last);
+}
+
+#[test]
+fn shift_l_and_h_page_the_view_from_the_other_panes() {
+    let mut app = wide_long_app("page_any_pane");
+    focus_file_view(&mut app);
+    draw_tall(&mut app);
+    let page = sideways_page(&app);
+
+    focus_filter_pane(&mut app);
+    key(&mut app, KeyCode::Char('L'));
+    draw_tall(&mut app);
+    assert_eq!(app.view.scroll_col(), page, "L from the filter pane");
+    assert_eq!(app.focus, Focus::Filters, "L moved the focus");
+
+    key(&mut app, KeyCode::Char('e'));
+    key(&mut app, KeyCode::Char('H'));
+    draw_tall(&mut app);
+    assert_eq!(app.view.scroll_col(), 0, "H from the explorer");
+    assert_eq!(app.focus, Focus::Explorer, "H moved the focus");
+}
+
+/// The keys gave up their old work (#644): `u` and `Ctrl-h` still hide, and
+/// `P` opens the set picker.
+#[test]
+fn shift_h_no_longer_hides_and_shift_l_no_longer_opens_the_set_picker() {
+    let mut app = wide_long_app("old_h_and_l");
+    app.add_filter("line").expect("valid pattern");
+    focus_file_view(&mut app);
+    draw_tall(&mut app);
+    let mode = app.document.mode();
+
+    key(&mut app, KeyCode::Char('H'));
+    assert_eq!(app.document.mode(), mode, "H changed the hide mode");
+    key(&mut app, KeyCode::Char('L'));
+    assert!(app.set_picker.is_none(), "L opened the set picker");
 }

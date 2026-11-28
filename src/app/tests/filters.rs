@@ -200,7 +200,7 @@ fn the_hide_mode_survives_loading_another_file() {
     key(&mut app, KeyCode::Char('i'));
     typed(&mut app, "beta");
     key(&mut app, KeyCode::Enter);
-    key(&mut app, KeyCode::Char('H'));
+    key(&mut app, KeyCode::Char('u'));
     assert_eq!(app.document.mode(), Mode::FilteredOnly, "sanity: hiding");
     assert_eq!(view_lines(&app), vec!["beta".to_string()]);
 
@@ -231,7 +231,7 @@ fn the_hide_mode_survives_a_explorer_preview() {
     key(&mut app, KeyCode::Char('i'));
     typed(&mut app, "beta");
     key(&mut app, KeyCode::Enter);
-    key(&mut app, KeyCode::Char('H'));
+    key(&mut app, KeyCode::Char('u'));
 
     let dir = fixture_dir_path("hide_mode_preview");
     fs::write(dir.join("other.txt"), "beta again\nnothing\n").expect("write");
@@ -256,7 +256,7 @@ fn a_file_with_no_matches_shows_an_empty_view_while_hiding() {
     key(&mut app, KeyCode::Char('i'));
     typed(&mut app, "beta");
     key(&mut app, KeyCode::Enter);
-    key(&mut app, KeyCode::Char('H'));
+    key(&mut app, KeyCode::Char('u'));
 
     let dir = fixture_dir_path("hide_mode_no_match");
     fs::write(dir.join("quiet.txt"), "nothing\nhere\n").expect("write");
@@ -324,12 +324,12 @@ fn the_hide_mode_can_still_be_toggled_off_after_a_load() {
     key(&mut app, KeyCode::Char('i'));
     typed(&mut app, "beta");
     key(&mut app, KeyCode::Enter);
-    key(&mut app, KeyCode::Char('H'));
+    key(&mut app, KeyCode::Char('u'));
 
     let dir = fixture_dir_path("hide_mode_untoggle");
     fs::write(dir.join("other.txt"), "beta again\nnothing\n").expect("write");
     app.perform_widget_action(Action::Load(dir.join("other.txt")));
-    key(&mut app, KeyCode::Char('H'));
+    key(&mut app, KeyCode::Char('u'));
 
     assert_eq!(app.document.mode(), Mode::Dimmed);
     assert_eq!(

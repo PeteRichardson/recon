@@ -471,12 +471,17 @@ pub const KEYMAP: &[Section] = &[
                 names: &["global.page.up", "global.page.down"],
             },
             Binding {
+                keys: &["H", "L"],
+                action: "Page the file view left / right, from any pane",
+                names: &["global.page.left", "global.page.right"],
+            },
+            Binding {
                 keys: &["0-9"],
                 action: "Toggle filter 01-99 by its number",
                 names: &["global.filters.toggle"],
             },
             Binding {
-                keys: &["u", "Ctrl-h", "H"],
+                keys: &["u", "Ctrl-h"],
                 action: "Dim unmatched lines, or hide them",
                 names: &["global.toggle.hide"],
             },
@@ -491,7 +496,7 @@ pub const KEYMAP: &[Section] = &[
                 names: &["global.filters.disable"],
             },
             Binding {
-                keys: &["L"],
+                keys: &["P"],
                 action: "Choose which filter sets the filter pane lists",
                 names: &["global.sets"],
             },
@@ -637,6 +642,18 @@ pub const KEYMAP: &[Section] = &[
             Binding {
                 keys: &["PageDown", "PageUp"],
                 action: "A page down / up",
+                names: &[
+                    "explorer.page.down",
+                    "explorer.page.up",
+                    "view.page.down",
+                    "view.page.up",
+                    "filters.page.down",
+                    "filters.page.up",
+                ],
+            },
+            Binding {
+                keys: &["J", "K"],
+                action: "A page down / up, on the home row",
                 names: &[
                     "explorer.page.down",
                     "explorer.page.up",
@@ -1619,7 +1636,8 @@ mod tests {
         // (#59's agreement test is what surfaced that the picker needed a
         // section here at all).
         let shared = [
-            "j", "k", "g", "G", "Ctrl-d", "Ctrl-u", "PageDown", "PageUp", "n", "N", "Enter",
+            "j", "k", "g", "G", "Ctrl-d", "Ctrl-u", "J", "K", "PageDown", "PageUp", "n", "N",
+            "Enter",
         ];
         for key in shared {
             let sections: Vec<&str> = KEYMAP

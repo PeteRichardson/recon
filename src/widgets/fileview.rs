@@ -183,6 +183,9 @@ impl std::fmt::Debug for Picture {
     }
 }
 
+/// The columns one `H` or `L` keeps from the page it leaves (#644).
+pub(crate) const SIDEWAYS_OVERLAP: u16 = 8;
+
 #[derive(Debug, Default)]
 pub(crate) struct FileView<'a> {
     /// The file being shown, as a path rather than a rendering of one.
@@ -943,6 +946,25 @@ impl FileView<'_> {
         self.textarea.set_scroll_col(col);
     }
 
+    /// `L` and `H` (#644): scroll the view one page right or left, and
+    /// leave the cursor where it is, as the scroll bar does. A page is the
+    /// text's width less `SIDEWAYS_OVERLAP` columns, so the reader keeps a
+    /// few columns they saw. `set_scroll_col` stops it at the widest line.
+    fn page_sideways(&mut self, right: bool) {
+        let page = usize::from(
+            self.textarea
+                .viewport_width()
+                .saturating_sub(SIDEWAYS_OVERLAP),
+        )
+        .max(1);
+        let col = self.scroll_col();
+        self.scroll_to_col(if right {
+            col.saturating_add(page)
+        } else {
+            col.saturating_sub(page)
+        });
+    }
+
     /// The column the view is showing, in screen columns — what the thumb
     /// rides on (#580), and what a scroll came from.
     pub(crate) fn scroll_col(&self) -> usize {
@@ -1271,6 +1293,8 @@ impl FileView<'_> {
             // left-is-back and right-is-forward, and neither needs Shift.
             A::ViewPageDown | A::GlobalPageDown => self.scroll_view(Scrolling::PageDown),
             A::ViewPageUp | A::GlobalPageUp => self.scroll_view(Scrolling::PageUp),
+            A::GlobalPageRight => self.page_sideways(true),
+            A::GlobalPageLeft => self.page_sideways(false),
             _ => (),
         }
     }

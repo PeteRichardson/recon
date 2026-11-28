@@ -43,7 +43,7 @@ A set file can also have the `[commands]` and `[[filetype]]` rows of a
 that adds a tool's filters, commands and views together.
 
 When you have many sets, you do not need all of them on the screen. The *set
-picker* (`L`) lists every set that recon found. In it, you select which sets
+picker* (`P`) lists every set that recon found. In it, you select which sets
 the filter pane lists. A set that is not listed has no effect on the view.
 
 ## Sets on the command line

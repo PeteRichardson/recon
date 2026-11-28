@@ -1038,3 +1038,65 @@ fn toggling_a_filter_from_the_pane_leaves_the_cursor_on_the_same_screen_row() {
         "the cursor changed line"
     );
 }
+
+// ---- #644: `J` and `K` page the focused pane ---------------------------
+
+/// Where `codes` leave the focused pane's cursor, on a fresh app named
+/// `name` that has only what `pane` needs to page: a long file for the view,
+/// many files for the explorer, many filters for the filter pane.
+fn after_keys(name: &str, pane: Focus, codes: &[KeyCode]) -> String {
+    let files: Vec<String> = (0..60).map(|i| format!("f{i:02}.log")).collect();
+    let names: Vec<&str> = files.iter().map(String::as_str).collect();
+    let mut app = match pane {
+        Focus::View => app_over_file(name, &numbered_lines(5_000)),
+        Focus::Explorer => app_over(name, &names),
+        Focus::Filters => {
+            let mut app = app_over_file(name, "x\n");
+            for i in 0..60 {
+                app.add_filter(&format!("pattern{i}"))
+                    .expect("valid pattern");
+            }
+            app
+        }
+    };
+    draw(&mut app);
+    match pane {
+        Focus::View => focus_file_view(&mut app),
+        Focus::Filters => focus_filter_pane(&mut app),
+        Focus::Explorer => {
+            key(&mut app, KeyCode::Char('e'));
+        }
+    }
+    draw(&mut app);
+    for &code in codes {
+        key(&mut app, code);
+    }
+    match pane {
+        Focus::View => cursor_source(&app).to_string(),
+        Focus::Filters => format!("{:?}", app.filters_pane.selected()),
+        Focus::Explorer => format!("{:?}", app.explorer.selected_name()),
+    }
+}
+
+#[test]
+fn shift_j_and_k_page_the_focused_pane_as_page_down_and_up_do() {
+    use KeyCode::{Char, PageDown, PageUp};
+    for pane in [Focus::View, Focus::Explorer, Focus::Filters] {
+        let shift = after_keys(&format!("jk_shift_{pane:?}"), pane, &[Char('J'), Char('J')]);
+        let page = after_keys(&format!("jk_page_{pane:?}"), pane, &[PageDown, PageDown]);
+        assert_eq!(shift, page, "{pane:?}: J is not PageDown");
+        let start = after_keys(&format!("jk_start_{pane:?}"), pane, &[]);
+        assert_ne!(page, start, "{pane:?}: sanity, PageDown moved");
+        let shift = after_keys(
+            &format!("jk_shift_up_{pane:?}"),
+            pane,
+            &[Char('J'), Char('J'), Char('K')],
+        );
+        let page = after_keys(
+            &format!("jk_page_up_{pane:?}"),
+            pane,
+            &[PageDown, PageDown, PageUp],
+        );
+        assert_eq!(shift, page, "{pane:?}: K is not PageUp");
+    }
+}

@@ -195,7 +195,7 @@ fn the_status_line_does_not_show_a_funnel_when_disabled_filters_cannot_hide_anyt
     key(&mut app, KeyCode::Enter);
 
     key(&mut app, KeyCode::Char('!'));
-    key(&mut app, KeyCode::Char('H'));
+    key(&mut app, KeyCode::Char('u'));
 
     assert!(
         status_line(&mut app).contains("disabled"),

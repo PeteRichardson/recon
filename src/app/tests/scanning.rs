@@ -396,8 +396,9 @@ fn u_toggles_hiding_like_ctrl_h() {
     key(&mut app, KeyCode::Char('u'));
     assert_eq!(app.document.mode(), Mode::Dimmed, "u did not restore");
 
-    // The aliases still work, and share the state.
-    key(&mut app, KeyCode::Char('H'));
+    // The alias still works, and shares the state. `H` is no longer one:
+    // it pages the view left (#644).
+    ctrl(&mut app, KeyCode::Char('h'));
     assert_eq!(app.document.mode(), Mode::FilteredOnly);
     key(&mut app, KeyCode::Char('u'));
     assert_eq!(app.document.mode(), Mode::Dimmed);

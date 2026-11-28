@@ -13,12 +13,12 @@ fn set_index(app: &App, name: &str) -> usize {
 }
 
 #[test]
-fn big_l_opens_the_set_picker_from_every_pane() {
+fn big_p_opens_the_set_picker_from_every_pane() {
     let mut app = app_with_three_sets("set_picker_opens");
     for focus in [Focus::Explorer, Focus::View, Focus::Filters] {
         app.reveal_and_focus(focus);
-        key(&mut app, KeyCode::Char('L'));
-        assert!(app.set_picker.is_some(), "L did not open from {focus:?}");
+        key(&mut app, KeyCode::Char('P'));
+        assert!(app.set_picker.is_some(), "P did not open from {focus:?}");
         key(&mut app, KeyCode::Esc);
         assert!(app.set_picker.is_none());
         assert_eq!(app.focus, focus, "Esc did not return to {focus:?}");
@@ -26,18 +26,18 @@ fn big_l_opens_the_set_picker_from_every_pane() {
 }
 
 #[test]
-fn big_l_in_a_prompt_is_typed() {
+fn big_p_in_a_prompt_is_typed() {
     let mut app = app_with_three_sets("set_picker_prompt");
     key(&mut app, KeyCode::Char('/'));
-    key(&mut app, KeyCode::Char('L'));
+    key(&mut app, KeyCode::Char('P'));
     assert!(app.set_picker.is_none());
-    assert_eq!(prompt(&app).pattern, "L");
+    assert_eq!(prompt(&app).pattern, "P");
 }
 
 #[test]
 fn the_open_set_picker_covers_the_panes() {
     let mut app = app_with_three_sets("set_picker_draw");
-    key(&mut app, KeyCode::Char('L'));
+    key(&mut app, KeyCode::Char('P'));
     let screen = rendered(&mut app);
     assert!(screen.contains("Filter sets"), "{screen}");
     assert!(screen.contains("[x] code"), "{screen}");
@@ -54,7 +54,7 @@ fn enter_applies_an_unlisting_and_the_view_updates() {
     let mut app = app_with_three_sets("set_picker_apply");
     assert_eq!(included(&app), 3, "sanity: alpha, beta, scratch");
     let a = set_index(&app, "a");
-    key(&mut app, KeyCode::Char('L'));
+    key(&mut app, KeyCode::Char('P'));
     key(&mut app, KeyCode::Char(' '));
     assert!(app.filters.sets()[a].listed, "staged, not applied yet");
     key(&mut app, KeyCode::Enter);
@@ -71,7 +71,7 @@ fn enter_applies_an_unlisting_and_the_view_updates() {
 #[test]
 fn esc_discards_every_change() {
     let mut app = app_with_three_sets("set_picker_esc");
-    key(&mut app, KeyCode::Char('L'));
+    key(&mut app, KeyCode::Char('P'));
     key(&mut app, KeyCode::Char(' '));
     key(&mut app, KeyCode::Char('j'));
     key(&mut app, KeyCode::Char(' '));
@@ -86,10 +86,10 @@ fn esc_discards_every_change() {
 fn a_set_listed_again_comes_back_as_its_file_describes_it() {
     let mut app = app_with_three_sets("set_picker_relist");
     let a = set_index(&app, "a");
-    key(&mut app, KeyCode::Char('L'));
+    key(&mut app, KeyCode::Char('P'));
     key(&mut app, KeyCode::Char(' '));
     key(&mut app, KeyCode::Enter);
-    key(&mut app, KeyCode::Char('L'));
+    key(&mut app, KeyCode::Char('P'));
     key(&mut app, KeyCode::Char(' '));
     key(&mut app, KeyCode::Enter);
     assert!(app.filters.sets()[a].listed);
@@ -109,7 +109,7 @@ fn listing_during_a_peek_ends_the_peek_first() {
     key(&mut app, KeyCode::Char(' '));
     assert_eq!(included(&app), 0, "sanity: peeking");
 
-    key(&mut app, KeyCode::Char('L'));
+    key(&mut app, KeyCode::Char('P'));
     key(&mut app, KeyCode::Char(' '));
     key(&mut app, KeyCode::Enter);
 
@@ -120,7 +120,7 @@ fn listing_during_a_peek_ends_the_peek_first() {
 #[test]
 fn the_set_picker_takes_every_key() {
     let mut app = app_with_three_sets("set_picker_swallow");
-    key(&mut app, KeyCode::Char('L'));
+    key(&mut app, KeyCode::Char('P'));
     key(&mut app, KeyCode::Char('q'));
     assert!(app.set_picker.is_some(), "q closed the picker");
     assert!(
@@ -142,7 +142,7 @@ fn the_filter_pane_cursor_follows_its_row_across_an_apply() {
         .position(|row| *row == widgets::filterlist::Row::Header(b))
         .expect("b has a header");
     app.filters_pane.select(at);
-    key(&mut app, KeyCode::Char('L'));
+    key(&mut app, KeyCode::Char('P'));
     key(&mut app, KeyCode::Char(' '));
     key(&mut app, KeyCode::Enter);
     let rows = widgets::filterlist::rows(&app.filters);
@@ -153,13 +153,13 @@ fn the_filter_pane_cursor_follows_its_row_across_an_apply() {
 }
 
 #[test]
-fn the_file_view_cursor_is_where_it_was_before_big_l() {
+fn the_file_view_cursor_is_where_it_was_before_big_p() {
     let mut app = app_with_three_sets("set_picker_view_cursor");
     focus_file_view(&mut app);
     key(&mut app, KeyCode::Char('j'));
     key(&mut app, KeyCode::Char('j'));
     let before = cursor_source(&app);
-    key(&mut app, KeyCode::Char('L'));
+    key(&mut app, KeyCode::Char('P'));
     key(&mut app, KeyCode::Char('j'));
     key(&mut app, KeyCode::Char(' '));
     key(&mut app, KeyCode::Enter);
@@ -182,7 +182,7 @@ fn picker_row(app: &App) -> usize {
 #[test]
 fn the_set_picker_search_moves_as_it_is_typed_and_esc_returns() {
     let mut app = app_with_three_sets("sets_search_type");
-    key(&mut app, KeyCode::Char('L'));
+    key(&mut app, KeyCode::Char('P'));
     key(&mut app, KeyCode::Char('j'));
     key(&mut app, KeyCode::Char('/'));
     assert_eq!(prompt_line(&mut app), "/");
@@ -209,7 +209,7 @@ fn the_set_picker_search_moves_as_it_is_typed_and_esc_returns() {
 fn enter_keeps_the_set_picker_search_row() {
     let mut app = app_with_three_sets("sets_search_enter");
     let c = set_index(&app, "c");
-    key(&mut app, KeyCode::Char('L'));
+    key(&mut app, KeyCode::Char('P'));
     key(&mut app, KeyCode::Char('/'));
     typed(&mut app, "^c$");
     key(&mut app, KeyCode::Enter);
@@ -227,7 +227,7 @@ fn enter_keeps_the_set_picker_search_row() {
 #[test]
 fn n_and_big_n_step_through_the_set_picker_hits() {
     let mut app = app_with_three_sets("sets_search_n");
-    key(&mut app, KeyCode::Char('L'));
+    key(&mut app, KeyCode::Char('P'));
     key(&mut app, KeyCode::Char('/'));
     typed(&mut app, "^(b|co)");
     key(&mut app, KeyCode::Enter);
@@ -243,7 +243,7 @@ fn n_and_big_n_step_through_the_set_picker_hits() {
 #[test]
 fn a_set_picker_pattern_with_no_hit_is_reported() {
     let mut app = app_with_three_sets("sets_search_none");
-    key(&mut app, KeyCode::Char('L'));
+    key(&mut app, KeyCode::Char('P'));
     key(&mut app, KeyCode::Char('/'));
     typed(&mut app, "zzz");
     key(&mut app, KeyCode::Enter);
@@ -256,7 +256,7 @@ fn a_set_picker_pattern_with_no_hit_is_reported() {
 #[test]
 fn an_invalid_set_picker_pattern_is_reported_like_the_others() {
     let mut app = app_with_three_sets("sets_search_invalid");
-    key(&mut app, KeyCode::Char('L'));
+    key(&mut app, KeyCode::Char('P'));
     key(&mut app, KeyCode::Char('j'));
     key(&mut app, KeyCode::Char('/'));
     typed(&mut app, "c(");
@@ -275,7 +275,7 @@ fn the_set_picker_keeps_its_own_history() {
     typed(&mut app, "beta");
     key(&mut app, KeyCode::Enter);
 
-    key(&mut app, KeyCode::Char('L'));
+    key(&mut app, KeyCode::Char('P'));
     key(&mut app, KeyCode::Char('/'));
     key(&mut app, KeyCode::Up);
     assert_eq!(
@@ -299,7 +299,7 @@ fn the_set_picker_keeps_its_own_history() {
     );
     key(&mut app, KeyCode::Esc);
 
-    key(&mut app, KeyCode::Char('L'));
+    key(&mut app, KeyCode::Char('P'));
     key(&mut app, KeyCode::Char('/'));
     key(&mut app, KeyCode::Up);
     assert_eq!(prompt(&app).pattern, "^b$");

@@ -16,6 +16,8 @@ The default keys that this guide names. `?` in recon shows the full keymap.
 | `u` | Change between dim mode and hide mode |
 | `/` | Search the visible lines, or the file names in the explorer |
 | `n` / `N` | Next / previous hit; with no search, next / previous interesting line |
+| `J` / `K` | Page the focused pane down / up |
+| `H` / `L` | Page the file view left / right, from any pane |
 | `p` | Change the current search into an include filter |
 | `-` | Show the next view of the file |
 | `Ctrl-n` | Show neighbor lines bright, or dim them |
@@ -43,4 +45,4 @@ The default keys that this guide names. `?` in recon shows the full keymap.
 | `m` | In the filter pane: change the selected filter between include and context |
 | `&` | In the filter pane: add a require row from the selected filter, with a text |
 | `S` | In the filter pane: save the typed filters as a new set |
-| `L` | Open the set picker |
+| `P` | Open the set picker |

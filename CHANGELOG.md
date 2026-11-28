@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Breaking changes
+
+- **Shift and a motion key moves one page.** Before, `H` toggled hide mode as `u` does, and `L` opened the set picker. Now `H` and `L` page the file view left and right from any pane. The cursor stays where it was, and 8 columns of the old page stay on screen. `J` and `K` page the focused pane down and up, as `PageDown` and `PageUp` do. `P` now opens the set picker. `u` and `Ctrl-h` still toggle hide mode, and `[` and `]` still page the file view down and up. To keep the old keys, put `global.sets = "L"` and `global.toggle.hide = ["u", "Ctrl-h", "H"]` in `[keymap]`, and give `global.page.left` and `global.page.right` other keys, or `[]` for none. ([#644](https://github.com/PeteRichardson/recon/issues/644))
+
 ## v0.12.0 — 2026-11-23
 
 One set file on the filter path can now carry all that recon needs for a tool: its filters, commands, views and aliases.

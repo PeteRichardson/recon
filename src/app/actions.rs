@@ -254,6 +254,9 @@ impl App<'_> {
             // focus check, so this arm fires from every pane, the file view
             // included (#120 §3). `FileView::perform` pages on both.
             A::GlobalPageDown | A::GlobalPageUp => self.perform_on_view(action),
+            // Sideways only (#644): no row comes into view, so a truncated
+            // preview has no reason to load in full, as `]` makes it.
+            A::GlobalPageRight | A::GlobalPageLeft => self.view.perform(action),
             // The four long-range motions: only `App` can see the whole
             // document, so `long_range_target` answers "which visible row"
             // and this places the cursor there, promoting a truncated
