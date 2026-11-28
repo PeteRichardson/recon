@@ -106,6 +106,7 @@ pub(crate) const MIN_FILE_VIEW_WIDTH: u16 = 2 + (6 + 2) + 20;
 pub(crate) const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 
 /// The time a click is read at, for telling a double-click from two clicks.
+/// The status reports read it too, to time busy work (#640).
 ///
 /// `Instant::now` unless a test has set it. Two real clicks in a test are
 /// two `Instant::now` calls with a render or a directory listing between

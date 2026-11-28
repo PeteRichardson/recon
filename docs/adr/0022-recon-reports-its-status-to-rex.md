@@ -20,7 +20,7 @@ stdout is for `--emit`, so a report on stdout would go into a pipe.
 - **recon sends `idle` reports in v1,** with `app=recon`. The message is
   the name of the file on screen, the filter count, and the shown and
   total lines: `app.log · 3 filters · 1204/88k lines`. With no filters it
-  is `app.log · 88k lines`. A directory is `name/`. `done` is #640.
+  is `app.log · 88k lines`. A directory is `name/`.
 - **A count past four digits is short,** rounded down: `12k`, `1.2M`. A
   previewed total is the estimate, with `~`, as on the status bar.
 - **recon sends `working` while it has busy work (#639),** and `idle`
@@ -49,6 +49,23 @@ stdout is for `--emit`, so a report on stdout would go into a pipe.
   scan starts, nothing reads it.
 - **stdin that is open is `working` until it closes,** as more lines can
   come. The name in an `idle` message is `<stdin>`, as in the title.
+- **Busy work that took 2 s or more ends with `done` (#640),** with the
+  result of the last work in the busy period:
+
+  | Work | Result |
+  |---|---|
+  | A late view | `loaded app.log: 88k lines` |
+  | A filter pass | `filtered app.log: 1204 of 88k lines` |
+  | A command view | `ran gen: 52k lines` |
+  | stdin | `read stdin: 52k lines` |
+  | An explorer scan | `scanned 412 files` |
+
+  `done` stays until the next key, then the report is `idle`. recon
+  cannot tell if its tab is on screen, so it reports `done` after each
+  long period, and Rex decides what to show. The threshold is
+  `LONG_WORK`, 2 s: shorter work is over before the user looks away, and
+  a marker for each move in the explorer would say nothing. `finishing`
+  has no `done`, as recon exits when it ends.
 - **A report goes after a frame, and only when the status changed.** The
   report goes to the screen, after the draw has flushed the frame, so it
   cannot land inside one. Scrolling changes nothing that the status says,

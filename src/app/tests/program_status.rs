@@ -85,6 +85,10 @@ pub(super) fn idle(msg: &str) -> (String, String) {
     ("idle".to_string(), msg.to_string())
 }
 
+pub(super) fn done(msg: &str) -> (String, String) {
+    ("done".to_string(), msg.to_string())
+}
+
 pub(super) fn working(msg: &str) -> (String, String) {
     ("working".to_string(), msg.to_string())
 }
@@ -181,7 +185,8 @@ fn a_previewed_total_is_the_estimate() {
 
 /// A pass reports `working` with how far it has got, in whole percent,
 /// so a pass of any length sends at most about 100 reports. When it ends,
-/// the report is `idle` with the counts again.
+/// the report is `idle` with the counts again: a short pass leaves no
+/// `done` marker.
 #[test]
 fn a_filter_pass_reports_its_progress_then_idle() {
     let (mut app, reports) = reporting(app_over_file("status_pass", &numbered_lines(1000)));
@@ -217,6 +222,70 @@ fn a_filter_pass_reports_its_progress_then_idle() {
         last = Some(percent);
     }
     assert!(last.is_some_and(|percent| percent >= 90), "{last:?}");
+}
+
+/// A pass that takes `LONG_WORK` or more ends with `done` and its result,
+/// so that Rex marks the tab. The next key goes back to `idle` (#640).
+#[test]
+fn a_long_filter_pass_ends_with_done_until_a_key() {
+    let (mut app, reports) = reporting(app_over_file("status_long", &numbered_lines(1000)));
+    app.filtering.threshold = 0;
+    app.filtering.block = 3;
+    app.set_mode(document::Mode::FilteredOnly);
+    app.click_clock.set(std::time::Instant::now());
+    frame(&mut app);
+    reports.take();
+
+    app.add_filter("line 1").expect("valid pattern");
+    frame(&mut app);
+    later(&mut app, super::super::status_report::LONG_WORK);
+    while app.filtering.is_running() {
+        app.poll_filtering();
+        wait_for_scan(&mut app);
+        frame(&mut app);
+    }
+    assert_eq!(
+        reports.take().pop(),
+        Some(done("filtered log.txt: 111 of 1000 lines"))
+    );
+
+    // A frame with no key keeps the marker.
+    frame(&mut app);
+    assert_eq!(reports.take(), []);
+
+    key(&mut app, KeyCode::Char('j'));
+    frame(&mut app);
+    assert_eq!(
+        reports.take(),
+        [idle("log.txt · 1 filter · 111/1000 lines")]
+    );
+}
+
+/// A late view that takes `LONG_WORK` or more ends with what it loaded.
+#[test]
+fn a_long_load_ends_with_done() {
+    let app = app_over_files(
+        "status_long_load",
+        &[("a.txt", "alpha\n"), ("b.txt", "bravo\n")],
+    );
+    let (mut app, reports) = reporting(app);
+    arrow_to(&mut app, "a.txt");
+    let held = crate::views::pool::double::Held::default();
+    app.loading.executor = Box::new(held.clone());
+    app.click_clock.set(std::time::Instant::now());
+    frame(&mut app);
+    reports.take();
+
+    arrow_to(&mut app, "b.txt");
+    frame(&mut app);
+    later(&mut app, super::super::status_report::LONG_WORK);
+    held.release();
+    app.drain_views();
+    frame(&mut app);
+    assert_eq!(
+        reports.take(),
+        [working("loading b.txt"), done("loaded b.txt: 1 line")]
+    );
 }
 
 /// A directory in the view has no lines to count: its name, marked as a
