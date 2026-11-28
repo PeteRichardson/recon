@@ -387,6 +387,13 @@ impl FileView<'_> {
         self.title_alias = Some((crate::path::lexical_absolute(path), title));
     }
 
+    /// Whether the title shows its alias: the file it names is on screen.
+    pub(crate) fn shows_title_alias(&self) -> bool {
+        self.title_alias
+            .as_ref()
+            .is_some_and(|(path, _)| *path == self.filename)
+    }
+
     /// The file being shown.
     pub(crate) fn filename(&self) -> &Path {
         &self.filename
@@ -1642,7 +1649,7 @@ impl FileView<'_> {
     /// correct and harmless — see the `filename` field.
     fn block(&self, width: u16) -> ratatui::widgets::Block<'static> {
         let path = match &self.title_alias {
-            Some((path, title)) if *path == self.filename => title.clone(),
+            Some((_, title)) if self.shows_title_alias() => title.clone(),
             _ => self.filename.display().to_string(),
         };
         let marker = if self.hex { " [hex]" } else { "" };

@@ -37,6 +37,21 @@ impl App<'_> {
         self
     }
 
+    /// Whether the view shows stdin's file, and more of it can come.
+    pub(super) fn reading_stdin(&self) -> bool {
+        self.stdin_label().is_some()
+            && self
+                .stdin
+                .as_ref()
+                .is_some_and(|stdin| stdin.shown == State::Open)
+    }
+
+    /// The name the view's title gives stdin's file, when the view shows
+    /// it: `<stdin>`, not the temporary file's own name.
+    pub(super) fn stdin_label(&self) -> Option<&'static str> {
+        (self.stdin.is_some() && self.view.shows_title_alias()).then_some(LABEL)
+    }
+
     /// Take what the copy did since the last call, and say whether the
     /// screen changed: a new title, or a size passed. Once the copy is
     /// over, nothing more can change, and it is not asked again.

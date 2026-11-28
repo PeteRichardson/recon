@@ -494,8 +494,11 @@ file, key or frame. The book's "Logging" page has the details.
 In a Rex pane, `recon` reports its status to the
 terminal, and Rex shows it in its Activity popup: the file on screen, the
 filter count, and the shown and total lines, as in
-`app.log · 3 filters · 1204/88k lines`. While a filter pass runs, the
-counts are not shown. `recon` removes its status when it exits.
+`app.log · 3 filters · 1204/88k lines`. While `recon` is busy, Rex shows
+the work: `filtering app.log` with the percent done, `loading app.log`,
+`running gen · 52k lines`, `reading stdin · 52k lines`,
+`scanning 412 files` or `finishing`. With more than one, the work that
+blocks you comes first. `recon` removes its status when it exits.
 
 `[terminal] status` in `config.toml` controls this:
 

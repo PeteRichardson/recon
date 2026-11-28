@@ -198,6 +198,11 @@ impl Loading {
         Some(SPINNER[frame % SPINNER.len()])
     }
 
+    /// The file a late view is for, while it is on its way.
+    pub(super) fn pending_path(&self) -> Option<&Path> {
+        self.pending.as_ref().map(|pending| pending.path.as_path())
+    }
+
     /// Whether `path` is already on its way at `extent`.
     pub(super) fn is_pending(&self, path: &Path, extent: Extent) -> bool {
         self.pending

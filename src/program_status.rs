@@ -34,17 +34,36 @@ impl Setting {
 /// The longest `msg` Rex takes, in bytes before the base64.
 const MSG_MAX: usize = 2048;
 
-/// What recon is doing, as one report says it. Each report is `idle` in
-/// v1; `working` and `done` come with #639–#641.
+/// What recon is doing, as one report says it. `done` comes with #640.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Status {
+    state: State,
     msg: String,
+}
+
+/// The `state` a report gives.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum State {
+    Idle,
+    /// Busy, with the percentage done when the work knows it.
+    Working(Option<u8>),
 }
 
 impl Status {
     /// At rest, showing what `msg` says.
     pub(crate) fn idle(msg: impl Into<String>) -> Self {
-        Self { msg: msg.into() }
+        Self {
+            state: State::Idle,
+            msg: msg.into(),
+        }
+    }
+
+    /// Busy with what `msg` says, `progress` percent of the way.
+    pub(crate) fn working(msg: impl Into<String>, progress: Option<u8>) -> Self {
+        Self {
+            state: State::Working(progress),
+            msg: msg.into(),
+        }
     }
 }
 
@@ -82,7 +101,12 @@ pub(crate) fn encode(status: &Status) -> Vec<u8> {
     }
     text.truncate(end);
     let msg = base64::engine::general_purpose::STANDARD.encode(text);
-    format!("\x1b]7501;state=idle:app=recon:msg={msg}\x1b\\").into_bytes()
+    let state = match status.state {
+        State::Idle => "idle".to_string(),
+        State::Working(None) => "working".to_string(),
+        State::Working(Some(percent)) => format!("working:progress={}", percent.min(100)),
+    };
+    format!("\x1b]7501;state={state}:app=recon:msg={msg}\x1b\\").into_bytes()
 }
 
 #[cfg(test)]
@@ -96,6 +120,21 @@ mod tests {
         assert_eq!(
             report,
             b"\x1b]7501;state=idle:app=recon:msg=YXBwLmxvZw==\x1b\\"
+        );
+    }
+
+    /// Busy work names its state, and a percentage when it has one. With
+    /// no `progress`, Rex shows the work as busy with no end in sight.
+    #[test]
+    fn a_working_report_carries_progress_only_when_it_has_some() {
+        // "load" and "pass" in standard base64.
+        assert_eq!(
+            encode(&Status::working("load", None)),
+            b"\x1b]7501;state=working:app=recon:msg=bG9hZA==\x1b\\"
+        );
+        assert_eq!(
+            encode(&Status::working("pass", Some(37))),
+            b"\x1b]7501;state=working:progress=37:app=recon:msg=cGFzcw==\x1b\\"
         );
     }
 
