@@ -6,6 +6,10 @@
 
 - **Shift and a motion key moves one page.** Before, `H` toggled hide mode as `u` does, and `L` opened the set picker. Now `H` and `L` page the file view left and right from any pane. The cursor stays where it was, and 8 columns of the old page stay on screen. `J` and `K` page the focused pane down and up, as `PageDown` and `PageUp` do. `P` now opens the set picker. `u` and `Ctrl-h` still toggle hide mode, and `[` and `]` still page the file view down and up. To keep the old keys, put `global.sets = "L"` and `global.toggle.hide = ["u", "Ctrl-h", "H"]` in `[keymap]`, and give `global.page.left` and `global.page.right` other keys, or `[]` for none. ([#644](https://github.com/PeteRichardson/recon/issues/644))
 
+### Features
+
+- **Rex shows what recon has on screen.** Before, the Activity popup of Rex showed nothing for a pane with recon in it. Now recon reports the file name, the filter count, and the shown and total lines, as in `app.log · 3 filters · 1204/88k lines`, and removes the report when it exits. It reports only when the terminal is Rex. `[terminal] status = "on"` turns the reports on where Rex is not detected, as inside tmux, and `"off"` turns them off. ([#638](https://github.com/PeteRichardson/recon/issues/638))
+
 ## v0.12.0 — 2026-11-23
 
 One set file on the filter path can now carry all that recon needs for a tool: its filters, commands, views and aliases.

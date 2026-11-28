@@ -123,6 +123,10 @@ crossterm = { version = "0.29", features = ["use-dev-tty"] }
 # the build through crossterm, so this adds no crate. `flag::register` is the
 # only part used: the handler stores a flag and the event loop acts on it.
 signal-hook = "0.3"
+# The `msg` field of a Rex program status report (#638) is standard
+# base64. Already in the build through `syntect` (`plist`), so this adds no
+# crate.
+base64 = "0.22"
 env_logger = "0.11.11"
 log = "0.4.33"
 color-eyre = "0.6.5"

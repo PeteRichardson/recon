@@ -313,9 +313,15 @@ impl App<'_> {
         }
     }
 
+    /// Whether a filter pass is still judging rows, so that the shown
+    /// count is of the rows judged so far.
+    pub(super) fn pass_running(&self) -> bool {
+        self.filtering.is_running() && !self.document.judged()
+    }
+
     /// The pass's progress for the status row: `filtering 37%`.
     pub(super) fn filtering_text(&self) -> Option<String> {
-        if !self.filtering.is_running() || self.document.judged() {
+        if !self.pass_running() {
             return None;
         }
         let total = self.document.lines().len().max(1);

@@ -36,6 +36,7 @@ pub mod logging;
 mod mime;
 pub mod panes;
 mod path;
+pub mod program_status;
 pub mod scan;
 pub mod startup;
 mod startup_report;

@@ -489,6 +489,24 @@ The levels follow one rule: `info` is for a fact you must see without a
 setting, `debug` is once per session or per action, and `trace` is once per
 file, key or frame. The book's "Logging" page has the details.
 
+### Status in Rex
+
+In a Rex pane, `recon` reports its status to the
+terminal, and Rex shows it in its Activity popup: the file on screen, the
+filter count, and the shown and total lines, as in
+`app.log · 3 filters · 1204/88k lines`. While a filter pass runs, the
+counts are not shown. `recon` removes its status when it exits.
+
+`[terminal] status` in `config.toml` controls this:
+
+```toml
+[terminal]
+status = "auto"   # "auto" (the default), "on" or "off"
+```
+
+`auto` reports only when `TERM_PROGRAM` is `rex`. Use `on` in a Rex pane
+that does not set it, as inside tmux, and `off` to stop the reports.
+
 ---
 
 ## Keybindings

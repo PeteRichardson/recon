@@ -114,6 +114,16 @@ pub(in crate::app) fn search_badge_text(pattern: &str) -> String {
     format!(" /{} ", elide_right(pattern, SEARCH_BADGE_MAX + 1))
 }
 
+/// The file's line count, as [`App::total_lines`] gives it.
+pub(in crate::app) enum Total {
+    /// The whole file is loaded.
+    Exact(usize),
+    /// A preview, with no estimate: the preview's own count.
+    Preview(usize),
+    /// A preview, and the estimate for the whole file.
+    Estimate(usize),
+}
+
 impl App<'_> {
     /// A one-line summary of the filter state, empty when no filters exist.
     ///
@@ -196,13 +206,23 @@ impl App<'_> {
     /// not a rounding error but a wrong answer. The estimate is a guess, but
     /// it is a guess marked as one.
     fn total_lines_text(&self) -> (String, bool) {
-        let loaded = self.document.lines().len();
-        match (self.view.is_truncated(), self.view.estimated_lines()) {
+        match self.total_lines() {
+            Total::Exact(lines) => (lines.to_string(), false),
             // Truncated with nothing to scale from: the count is still the
             // preview's, so it stays flagged even without a better number.
-            (true, None) => (loaded.to_string(), true),
-            (true, Some(estimate)) => (format!("~{estimate}"), true),
-            (false, _) => (loaded.to_string(), false),
+            Total::Preview(lines) => (lines.to_string(), true),
+            Total::Estimate(lines) => (format!("~{lines}"), true),
+        }
+    }
+
+    /// The file's line count, and how far to trust it: one rule for the
+    /// status bar and the status report to Rex (#638).
+    pub(in crate::app) fn total_lines(&self) -> Total {
+        let loaded = self.document.lines().len();
+        match (self.view.is_truncated(), self.view.estimated_lines()) {
+            (true, None) => Total::Preview(loaded),
+            (true, Some(estimate)) => Total::Estimate(estimate),
+            (false, _) => Total::Exact(loaded),
         }
     }
 
