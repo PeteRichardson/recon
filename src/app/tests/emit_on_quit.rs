@@ -849,7 +849,7 @@ fn ctrl_c_quits_from_a_modal() {
     for (name, open) in [
         ("interrupt_prompt", KeyCode::Char('/')),
         ("interrupt_help", KeyCode::Char('?')),
-        ("interrupt_sets", KeyCode::Char('L')),
+        ("interrupt_sets", KeyCode::Char('P')),
     ] {
         let mut app = app_emitting(name, None);
         key(&mut app, open);

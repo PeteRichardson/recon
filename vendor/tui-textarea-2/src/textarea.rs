@@ -2964,6 +2964,12 @@ impl<'a> TextArea<'a> {
         self.scroll_col_pin >= 0
     }
 
+    /// The viewport's width, gutter included, as the last render recorded it.
+    /// `0` before the first render.
+    pub fn viewport_width(&self) -> u16 {
+        self.viewport.rect().2
+    }
+
     /// The column [`TextArea::set_scroll_col`] will not scroll past: how far
     /// the widest wrapped screen line (plus the gutter) overhangs the viewport
     /// width recorded by the last render. `0` when everything fits.

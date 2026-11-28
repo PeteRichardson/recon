@@ -448,7 +448,7 @@ fn digits_follow_the_pane_numbering_under_a_solo() {
 fn slash_moves_forward_from_the_cursor_only_after_the_rebuild_completes() {
     let mut app = app_over_file("slash_order", "alpha\nbeta1\ngamma\nbeta2\ndelta\n");
     key(&mut app, KeyCode::Char('t'));
-    key(&mut app, KeyCode::Char('H'));
+    key(&mut app, KeyCode::Char('u'));
     key(&mut app, KeyCode::Char('j'));
     key(&mut app, KeyCode::Char('j'));
     key(&mut app, KeyCode::Char('j'));
@@ -608,7 +608,7 @@ fn the_span_highlight_survives_a_rebuild() {
     typed(&mut app, "beta");
     key(&mut app, KeyCode::Enter);
 
-    key(&mut app, KeyCode::Char('H'));
+    key(&mut app, KeyCode::Char('u'));
 
     assert!(
         app.file_view_highlight().is_some(),

@@ -134,7 +134,7 @@ fn bang_peek_and_hide_mode_are_logged() {
         key(app, KeyCode::Char('!'));
     });
     assert_one_change("log_hide", "hide mode on", |app| {
-        key(app, KeyCode::Char('H'));
+        key(app, KeyCode::Char('u'));
     });
     assert_one_change("log_peek", "peek on", |app| {
         key(app, KeyCode::Char(' '));
@@ -145,7 +145,7 @@ fn bang_peek_and_hide_mode_are_logged() {
 fn listing_and_unlisting_a_set_are_logged() {
     capture::install();
     let mut app = app_with_three_sets("log_unlist");
-    key(&mut app, KeyCode::Char('L'));
+    key(&mut app, KeyCode::Char('P'));
     key(&mut app, KeyCode::Char(' '));
     key(&mut app, KeyCode::Enter);
     assert_eq!(

@@ -187,6 +187,9 @@ pub(crate) enum ActionId {
     GlobalYank,
     GlobalPageDown,
     GlobalPageUp,
+    /// `L` / `H`: page the file view right / left from any pane (#644).
+    GlobalPageRight,
+    GlobalPageLeft,
     /// Open the set picker (#284).
     GlobalSets,
     GlobalPalette,
@@ -383,6 +386,8 @@ impl ActionId {
             Self::GlobalYank => "global.yank",
             Self::GlobalPageDown => "global.page.down",
             Self::GlobalPageUp => "global.page.up",
+            Self::GlobalPageRight => "global.page.right",
+            Self::GlobalPageLeft => "global.page.left",
             Self::GlobalSets => "global.sets",
             Self::GlobalPalette => "global.palette",
             Self::HitNext => "hit.next",
@@ -526,7 +531,6 @@ pub(crate) const DEFAULT: &[(Scope, &str, ActionId)] = &[
     // only the second key of a chain (`f i`, `f x`, …) or, inside the
     // filter pane, keys the pane simply doesn't rebind.
     (Scope::Global, "u", ActionId::GlobalToggleHide),
-    (Scope::Global, "H", ActionId::GlobalToggleHide),
     (Scope::Global, "Ctrl-h", ActionId::GlobalToggleHide),
     (Scope::Global, "Ctrl-n", ActionId::GlobalToggleNeighbors),
     (Scope::Global, "b", ActionId::GlobalZoomView),
@@ -546,7 +550,12 @@ pub(crate) const DEFAULT: &[(Scope, &str, ActionId)] = &[
     (Scope::Global, "y", ActionId::GlobalYank),
     (Scope::Global, "]", ActionId::GlobalPageDown),
     (Scope::Global, "[", ActionId::GlobalPageUp),
-    (Scope::Global, "L", ActionId::GlobalSets),
+    // Shift and a motion key moves a page (#644). `H`/`L` are Global, as
+    // `[`/`]` are: sideways means only the file view, from any pane. `J`/`K`
+    // are per pane, below, because `j`/`k` move the focused pane.
+    (Scope::Global, "L", ActionId::GlobalPageRight),
+    (Scope::Global, "H", ActionId::GlobalPageLeft),
+    (Scope::Global, "P", ActionId::GlobalSets),
     (Scope::Global, ":", ActionId::GlobalPalette),
     // `n`/`N` are scoped away from Global (#59 review): `src/lib.rs`'s
     // global arm is guarded `self.focus != Focus::Explorer`, so in the explorer
@@ -572,7 +581,9 @@ pub(crate) const DEFAULT: &[(Scope, &str, ActionId)] = &[
     (Scope::Explorer, "Ctrl-d", ActionId::ExplorerHalfPageDown),
     (Scope::Explorer, "Ctrl-u", ActionId::ExplorerHalfPageUp),
     (Scope::Explorer, "PageDown", ActionId::ExplorerPageDown),
+    (Scope::Explorer, "J", ActionId::ExplorerPageDown), // #644: Shift-motion pages
     (Scope::Explorer, "PageUp", ActionId::ExplorerPageUp),
+    (Scope::Explorer, "K", ActionId::ExplorerPageUp),
     (Scope::Explorer, "n", ActionId::ExplorerHitNext),
     (Scope::Explorer, "N", ActionId::ExplorerHitPrev),
     (Scope::View, "h", ActionId::ViewLeft),
@@ -602,8 +613,10 @@ pub(crate) const DEFAULT: &[(Scope, &str, ActionId)] = &[
     (Scope::View, "Ctrl-u", ActionId::ViewHalfPageUp),
     (Scope::View, "Ctrl-f", ActionId::ViewPageDown),
     (Scope::View, "PageDown", ActionId::ViewPageDown),
+    (Scope::View, "J", ActionId::ViewPageDown), // #644: Shift-motion pages
     (Scope::View, "Ctrl-b", ActionId::ViewPageUp),
     (Scope::View, "PageUp", ActionId::ViewPageUp),
+    (Scope::View, "K", ActionId::ViewPageUp),
     (Scope::View, "Enter", ActionId::ViewOpen),
     // See the Global section above: `n`/`N` fall through to here (and to
     // the filter pane below) rather than being bound in Global.
@@ -624,7 +637,9 @@ pub(crate) const DEFAULT: &[(Scope, &str, ActionId)] = &[
     (Scope::Filters, "Ctrl-d", ActionId::FiltersHalfPageDown),
     (Scope::Filters, "Ctrl-u", ActionId::FiltersHalfPageUp),
     (Scope::Filters, "PageDown", ActionId::FiltersPageDown),
+    (Scope::Filters, "J", ActionId::FiltersPageDown), // #644: Shift-motion pages
     (Scope::Filters, "PageUp", ActionId::FiltersPageUp),
+    (Scope::Filters, "K", ActionId::FiltersPageUp),
     (Scope::Filters, "Enter", ActionId::FiltersToggle),
     (Scope::Filters, "i", ActionId::FiltersInclude),
     (Scope::Filters, "x", ActionId::FiltersExclude),

@@ -41,7 +41,7 @@ fn colon_does_not_open_the_palette_in_a_prompt_or_a_modal_screen() {
     assert_eq!(prompt(&app).pattern, ":");
     key(&mut app, KeyCode::Esc);
 
-    key(&mut app, KeyCode::Char('L'));
+    key(&mut app, KeyCode::Char('P'));
     assert!(app.set_picker.is_some(), "sanity: the set picker is open");
     key(&mut app, KeyCode::Char(':'));
     assert!(

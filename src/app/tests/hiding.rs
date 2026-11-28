@@ -8,13 +8,13 @@ fn move_cursor_to_visible_row(app: &mut App, row: usize) {
     app.view.textarea_mut().set_lines(lines, (row, 0));
 }
 
-/// `H` always rebuilds the buffer — unlike a filter change, there is no
+/// `u` always rebuilds the buffer — unlike a filter change, there is no
 /// "visible set happens to be unchanged" case to skip it — so it is the
 /// most literal instance of the rebuild this whole task is about. It
 /// must hold the cursor's screen row exactly as `!` does, via the same
 /// `apply_view` path.
 #[test]
-fn h_holds_the_cursor_on_the_same_screen_row() {
+fn u_holds_the_cursor_on_the_same_screen_row() {
     // Lines below 100 are never matched, so `FilteredOnly` drops them
     // and keeps only 100..199 — a large, predictable rebuild — while the
     // cursor, parked inside the matched range, stays visible throughout.
@@ -59,13 +59,13 @@ fn h_holds_the_cursor_on_the_same_screen_row() {
          not the fix exists"
     );
 
-    key(&mut app, KeyCode::Char('H'));
+    key(&mut app, KeyCode::Char('u'));
     draw(&mut app);
 
     assert_ne!(
         view_lines(&app).len(),
         before_len,
-        "the buffer did not change size, so `H` did not force a rebuild \
+        "the buffer did not change size, so `u` did not force a rebuild \
          here — this test would pass whether or not the fix exists"
     );
     assert_eq!(
@@ -81,7 +81,7 @@ fn h_holds_the_cursor_on_the_same_screen_row() {
 }
 
 #[test]
-fn h_hides_lines_that_match_no_filter() {
+fn u_hides_lines_that_match_no_filter() {
     let mut app = app_over_file("toggle_hide", "alpha\nbeta\ngamma\n");
     key(&mut app, KeyCode::Char('f'));
     key(&mut app, KeyCode::Char('i'));
@@ -89,7 +89,7 @@ fn h_hides_lines_that_match_no_filter() {
     key(&mut app, KeyCode::Enter);
     assert_eq!(view_lines(&app).len(), 3, "nothing hidden yet");
 
-    key(&mut app, KeyCode::Char('H'));
+    key(&mut app, KeyCode::Char('u'));
 
     assert_eq!(view_lines(&app), vec!["beta".to_string()]);
 }
@@ -121,12 +121,12 @@ fn the_round_trip_returns_to_the_chosen_line() {
     typed(&mut app, "line 1[0-9]");
     key(&mut app, KeyCode::Enter);
 
-    key(&mut app, KeyCode::Char('H'));
+    key(&mut app, KeyCode::Char('u'));
     // Visible rows are now source lines 10..=19; pick the third of them.
     move_cursor_to_visible_row(&mut app, 2);
     assert_eq!(cursor_source(&app), 12);
 
-    key(&mut app, KeyCode::Char('H'));
+    key(&mut app, KeyCode::Char('u'));
 
     assert_eq!(cursor_source(&app), 12, "did not return to the same line");
     assert_eq!(view_lines(&app).len(), 20, "context did not come back");
@@ -154,14 +154,14 @@ fn the_round_trip_survives_more_than_65535_lines() {
     typed(&mut app, "MATCH");
     key(&mut app, KeyCode::Enter);
 
-    key(&mut app, KeyCode::Char('H'));
+    key(&mut app, KeyCode::Char('u'));
     assert_eq!(
         cursor_source(&app),
         TARGET,
         "did not land on the sole match"
     );
 
-    key(&mut app, KeyCode::Char('H'));
+    key(&mut app, KeyCode::Char('u'));
 
     assert_eq!(
         cursor_source(&app),
@@ -189,7 +189,7 @@ fn hiding_from_an_unmatched_line_snaps_to_the_next_match() {
     move_cursor_to_visible_row(&mut app, 2); // gamma, unmatched
     assert_eq!(cursor_source(&app), 2);
 
-    key(&mut app, KeyCode::Char('H'));
+    key(&mut app, KeyCode::Char('u'));
 
     assert_eq!(cursor_source(&app), 3, "did not snap to the next match");
 }
@@ -203,10 +203,10 @@ fn hiding_with_no_matches_is_survivable() {
     typed(&mut app, "zzz");
     key(&mut app, KeyCode::Enter);
 
-    key(&mut app, KeyCode::Char('H'));
+    key(&mut app, KeyCode::Char('u'));
     assert!(view_lines(&app).iter().all(String::is_empty) || view_lines(&app).is_empty());
 
-    key(&mut app, KeyCode::Char('H'));
+    key(&mut app, KeyCode::Char('u'));
     assert_eq!(view_lines(&app).len(), 2, "did not come back");
 }
 
@@ -223,7 +223,7 @@ fn hiding_everything_does_not_show_a_phantom_line_number() {
     typed(&mut app, "zzz");
     key(&mut app, KeyCode::Enter);
 
-    key(&mut app, KeyCode::Char('H'));
+    key(&mut app, KeyCode::Char('u'));
 
     let mut buf = Buffer::empty(AREA);
     (&mut app).render(AREA, &mut buf);
@@ -251,7 +251,7 @@ fn the_status_line_shows_a_funnel_while_hiding() {
     key(&mut app, KeyCode::Enter);
     assert!(!status_line(&mut app).contains('▼'));
 
-    key(&mut app, KeyCode::Char('H'));
+    key(&mut app, KeyCode::Char('u'));
 
     assert!(
         status_line(&mut app).contains('▼'),

@@ -15,7 +15,7 @@ fn app_hiding(name: &str) -> App<'static> {
     key(&mut app, KeyCode::Char('i'));
     typed(&mut app, "beta");
     key(&mut app, KeyCode::Enter);
-    key(&mut app, KeyCode::Char('H'));
+    key(&mut app, KeyCode::Char('u'));
     app
 }
 

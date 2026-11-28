@@ -58,7 +58,7 @@ impl Hbar {
     }
 
     /// The largest scroll offset: what overhangs the window.
-    const fn max_scroll(&self) -> usize {
+    pub(crate) const fn max_scroll(&self) -> usize {
         self.content.saturating_sub(self.view)
     }
 

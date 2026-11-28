@@ -509,7 +509,7 @@ fn n_skips_lines_that_only_a_context_filter_matches() {
     assert_eq!(cursor_source(&app), 4, "stopped on a context line");
 
     // Hide mode still shows the context lines, in the filter's colour.
-    key(&mut app, KeyCode::Char('H'));
+    key(&mut app, KeyCode::Char('u'));
     let visible: Vec<usize> = (0..4)
         .filter_map(|row| app.document.source_at(row))
         .collect();

@@ -551,10 +551,11 @@ Global (`src/app/events.rs`), handled before the focused pane sees the key:
 | `space` | **Peek at the plain file** — drop every filter and flip the hide mode, so the code reads normally. Press again to put the filtered view back exactly as it was. See [Peeking at the plain file](#peeking-at-the-plain-file) | `global.peek` |
 | `.` / `,` | Skip to the next / previous file the filters match, landing on its first / last interesting line. With no filter on, every file matches, so the keys step through all the files. Works from every pane; focus stays put. The keycaps say `>` and `<` | `global.file.next` / `global.file.prev` |
 | `[` / `]` | Page the file view up / down, whichever pane has focus — so a peeked file can be skimmed from the explorer | `global.page.up` / `global.page.down` |
+| `H` / `L` | Page the file view left / right, whichever pane has focus. A page is the text's width less 8 columns, so the last 8 columns stay on screen. Only the view moves: the cursor stays where it was | `global.page.left` / `global.page.right` |
 | `0` – `9` | Two digits, `01` to `99`, toggle the filter the pane numbers that way, from any pane. The status line shows the first digit while it waits; `Esc` cancels it, and any other key cancels it and then does its own work. Built-in filters and set headers have no number; `Enter` in the filter pane toggles those | `global.filters.toggle` |
-| `u` / `Ctrl-H` / `H` | Toggle between dimming unmatched lines and hiding them — `u` for **u**nmatched; the other two are aliases for terminals and habits that already use them | `global.toggle.hide` |
+| `u` / `Ctrl-H` | Toggle between dimming unmatched lines and hiding them — `u` for **u**nmatched; `Ctrl-H` is an alias for terminals and habits that already use it | `global.toggle.hide` |
 | `!` | Disable every filter, remembering which were on; restores exactly that (or enables all, if none were on to remember) | `global.filters.disable` |
-| `L` | Open the set picker — choose which filter sets the filter pane lists. See [The set picker](#the-set-picker) | `global.sets` |
+| `P` | Open the set picker — choose which filter sets the filter pane lists. See [The set picker](#the-set-picker) | `global.sets` |
 | `E` | Hide the explorer | `global.hide.explorer` |
 | `T` | Hide the file view | `global.hide.view` |
 | `F` | Hide the filter pane | `global.hide.filters` |
@@ -607,11 +608,14 @@ exists:
 | `j` / `k`, `Down` / `Up` | next / previous entry | cursor down / up | next / previous row | `explorer.up` / `explorer.down` / `view.up` / `view.down` / `filters.up` / `filters.down` |
 | `g` / `G`, `Home` / `End` | first / last entry | top / bottom of the file | first / last row | `explorer.goto.start` / `explorer.goto.end` / `view.goto.start` / `view.goto.end` / `filters.goto.start` / `filters.goto.end` |
 | `Ctrl-d` / `Ctrl-u` | half a page | scroll half a page | half a page | `explorer.halfpage.down` / `explorer.halfpage.up` / `view.halfpage.down` / `view.halfpage.up` / `filters.halfpage.down` / `filters.halfpage.up` |
-| `PageDown` / `PageUp` | a page | scroll a page (also `Ctrl-f` / `Ctrl-b`) | a page | `explorer.page.down` / `explorer.page.up` / `view.page.down` / `view.page.up` / `filters.page.down` / `filters.page.up` |
+| `J` / `K`, `PageDown` / `PageUp` | a page | scroll a page (also `Ctrl-f` / `Ctrl-b`) | a page | `explorer.page.down` / `explorer.page.up` / `view.page.down` / `view.page.up` / `filters.page.down` / `filters.page.up` |
 | `n` / `N` | next / previous filename-search match, or file the filters match | with a search set, next / previous hit line, wrapping within the file; otherwise next / previous interesting line, crossing files | acts on the file view | `hit.next` / `hit.prev` / `explorer.hit.next` / `explorer.hit.prev` |
 | `Enter` | open the entry — a file also takes the focus | in a directory listing, open the entry under the cursor, as a click on its row does; otherwise nothing | toggle the filter or the set | `explorer.open` / `view.open` / `filters.toggle` |
 
 `[` and `]` page the file view from every pane and so live in the Global table.
+`H` and `L` do too: sideways means only the file view. Shift and a motion key
+moves one page: `J`/`K` down and up in the focused pane, `H`/`L` left and right
+in the file view.
 
 Mouse: a click does what the cursor keys and `Enter` would do to the row under
 it, and focuses the pane it lands in — which is why a click on a file in the
@@ -658,7 +662,7 @@ At least one pane is always shown: a hide of the last one does nothing, and
 the status line says so. If you hide the focused pane, focus goes to the file
 view, or to the next shown pane if the file view is hidden too. A hidden pane
 keeps its cursor, scroll and selection, and its global keys still work — `.`
-and `,`, `1`–`9`, `!`, `p` and `L` act on it while you cannot see it.
+and `,`, `1`–`9`, `!`, `p` and `P` act on it while you cannot see it.
 With the filter pane hidden and a filter on, the status line shows
 `filters: 3 on`, so you know why lines are coloured or gone.
 
@@ -896,7 +900,7 @@ recon is exactly this model with one set.
   a set away you change one key. An unlisted set is never enabled; `--set`
   lists it and enables it, `--list` lists it and leaves it off, and
   `--unlist` unlists a listed one for one run.
-  The scratch set is always listed. `L` changes it during a session; see
+  The scratch set is always listed. `P` changes it during a session; see
   [the set picker](#the-set-picker).
 - **`description`** — one line of plain text that the set picker shows
   beside the set's name. It is optional; a set without one shows a blank. A
@@ -1189,7 +1193,7 @@ ignore = ["broken*"]              # and never these
 
 The lists apply in `~/.config/recon` too, but never to
 `~/.config/recon/filters.toml`, the file that `S` writes. The lists select
-files at startup. The set picker (`L`) then selects the sets of the files
+files at startup. The set picker (`P`) then selects the sets of the files
 that recon read.
 
 #### Packs: views and aliases in a set file
@@ -1286,9 +1290,9 @@ such as a TOML syntax error, still stops recon at once.
 
 #### The set picker
 
-`L` shows every known set on one screen, so you can choose which sets the
+`P` shows every known set on one screen, so you can choose which sets the
 filter pane lists without quitting recon. It opens from the explorer, the
-file view and the filter pane — not from inside a prompt, where `L` is typed —
+file view and the filter pane — not from inside a prompt, where `P` is typed —
 and covers the panes, because the filter pane under it would not change while
 you toggle.
 
@@ -1317,7 +1321,7 @@ its `priority` position; the flags it had before you unlisted it are not
 kept, and `autoload` is a startup value and does not apply. A list or an
 unlist starts the explorer's file matching again from the beginning, and ends
 a peek first. After the picker closes you are where you
-were before `L`: the same pane, the same cursor, the same scroll. The picker
+were before `P`: the same pane, the same cursor, the same scroll. The picker
 takes every key while it is open, so `q` does not quit from inside it.
 
 `/` finds a set when you remember only a word of its description. The pattern
@@ -1764,12 +1768,12 @@ filter typed with `i`.
 Excluding filters (`x`) are different: their matches are removed from view
 outright, in both modes.
 
-`u` is the primary key; the two named next are aliases. `Ctrl-H` (or `H`)
-toggles the remaining lines between dimmed and hidden. `H` is kept as an
-alternative binding for terminals configured with `stty erase ^H`, where the
-Backspace *key* itself sends `0x08` — the same byte crossterm reports as
-`Ctrl-H` — so pressing Backspace would otherwise toggle hiding instead of
-doing nothing in this app. The gutter
+`u` is the primary key, and `Ctrl-H` is an alias. Either one toggles the
+remaining lines between dimmed and hidden. On a terminal configured with
+`stty erase ^H`, the Backspace *key* sends `0x08`, the same byte crossterm
+reports as `Ctrl-H`, so Backspace toggles hiding there. Use `u` on such a
+terminal, and give `global.toggle.hide` only `u` in `[keymap]` if Backspace
+must do nothing. The gutter
 keeps the original line numbers either way, so a gap in the numbering is how
 you tell something was left out — and while hiding, the last number before
 each gap is underlined, since ten matched lines, a hundred hidden ones and ten
@@ -2647,7 +2651,8 @@ does it.
 Hide mode moved to `u` because it is toggled constantly during a review and lived
 behind Shift (`H`) or behind a key many terminals deliver as Backspace (`Ctrl-H`).
 `u` is "toggle **u**nmatched lines", which is what the mode does; vim's `u` is undo,
-and recon has no undo, so no habit collides. The two old keys stay as aliases. The
+and recon has no undo, so no habit collides. `Ctrl-H` stays as an alias. `H` now
+pages the file view left, so that Shift and each motion key moves one page. The
 list motions (`g`/`G`, `Ctrl-d`/`Ctrl-u`, `PageUp`/`PageDown`) are the same in every
 list pane for the same reason `n` is: a key with one meaning is one you stop
 thinking about. `Esc` clears the focused pane's own search before the file search, so a
@@ -2740,7 +2745,7 @@ Two neighbors it is easy to confuse:
 | --- | --- |
 | `space` | Filters off **and** hide mode flipped, for reading. One key back to exactly where you were |
 | `!` | Filters off, hide mode untouched. Its own independent memory of what was on |
-| `H` | Hide mode only, filters untouched |
+| `u` | Hide mode only, filters untouched |
 
 `space` and `!` keep separate memories, so using one never disturbs what the
 other would restore.
