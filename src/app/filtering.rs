@@ -319,13 +319,20 @@ impl App<'_> {
         self.filtering.is_running() && !self.document.judged()
     }
 
-    /// The pass's progress for the status row: `filtering 37%`.
-    pub(super) fn filtering_text(&self) -> Option<String> {
+    /// How far the running pass has got, in whole percent: one value for
+    /// the status row and the report to Rex (#639).
+    pub(super) fn pass_percent(&self) -> Option<u8> {
         if !self.pass_running() {
             return None;
         }
         let total = self.document.lines().len().max(1);
         let judged = self.document.verdicts().len();
-        Some(format!("filtering {}%", judged * 100 / total))
+        Some(u8::try_from(judged * 100 / total).unwrap_or(100))
+    }
+
+    /// The pass's progress for the status row: `filtering 37%`.
+    pub(super) fn filtering_text(&self) -> Option<String> {
+        self.pass_percent()
+            .map(|percent| format!("filtering {percent}%"))
     }
 }

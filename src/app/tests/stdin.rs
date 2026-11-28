@@ -49,6 +49,28 @@ fn lines_come_into_the_view_and_the_title_says_whether_stdin_is_open() {
     until(&mut app, |app| rendered(app).contains("<stdin> (closed)"));
 }
 
+/// stdin that is open is busy work, as more lines can come: Rex shows the
+/// lines so far. When it closes, the report is `idle`.
+#[test]
+fn open_stdin_reports_reading_then_idle_when_it_closes() {
+    use super::program_status::{frame, idle, reporting, working};
+    let (app, mut writer, _) = app_over_stdin("stdin_status");
+    let (mut app, reports) = reporting(app);
+    writer.write_all(b"first\nsecond\n").expect("write");
+    until(&mut app, |app| *app.document.lines() == ["first", "second"]);
+    frame(&mut app);
+    assert_eq!(
+        reports.take().last(),
+        Some(&working("reading stdin · 2 lines"))
+    );
+
+    drop(writer);
+    until(&mut app, |app| rendered(app).contains("<stdin> (closed)"));
+    frame(&mut app);
+    // The name the view's title gives, not the temporary file's.
+    assert_eq!(reports.take().pop(), Some(idle("<stdin> · 2 lines")));
+}
+
 /// The explorer starts hidden, and `e` shows it on the folder the file is
 /// in, with the file selected.
 #[test]

@@ -54,6 +54,28 @@ fn until(app: &mut App, mut done: impl FnMut(&mut App) -> bool) {
     }
 }
 
+/// A command that runs is busy work: its view's name and the lines so far,
+/// as the `RUNNING` badge gives them. When it ends, the report is `idle`.
+#[test]
+fn a_running_command_reports_its_lines_then_idle() {
+    use super::program_status::{frame, last_state, reporting, working};
+    let (app, _) = app_over_command(
+        "spool_status",
+        &["sh", "-c", "echo one; echo two; sleep 0.5; echo three"],
+    );
+    let (mut app, reports) = reporting(app);
+    until(&mut app, |app| *app.document.lines() == ["one", "two"]);
+    frame(&mut app);
+    assert_eq!(
+        reports.take().last(),
+        Some(&working("running gen · 2 lines"))
+    );
+
+    until(&mut app, |app| app.running_spool().is_none());
+    frame(&mut app);
+    assert_eq!(last_state(&reports), "idle");
+}
+
 #[test]
 fn lines_come_while_the_command_runs_and_the_status_line_counts_them() {
     let (mut app, _) = app_over_command(
