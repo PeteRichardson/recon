@@ -353,8 +353,8 @@ Options:
   -n, --line-numbers
           With `--emit lines`: prefix each line with its line number and a tab
       --files-from <FILE>
-          Batch mode's inputs: the files listed in FILE, one per line, or on
-          stdin when FILE is `-`. Relative paths are from the current directory
+          The files listed in FILE, one per line, or on stdin when FILE is `-`.
+          Relative paths are from the current directory
   -f, --follow
           Follow a file that grows, as `tail -f` does
       --neighbors
@@ -3034,7 +3034,38 @@ the copy.
 - **`sudo`.** Run `sudo -v` first: sudo's password prompt and recon both
   want the terminal.
 - **A terminal on stdin** is refused, since the read would wait for Ctrl-D.
-  `--files-from` works in batch mode only, for now (github issue #519).
+
+### Opening a list of files
+
+`--files-from FILE` opens the files that FILE lists, one path per line —
+what `ls -1`, `find` and `git ls-files` print. With `-` as `FILE`, the list
+comes from stdin:
+
+```sh
+find . -name '*.log' -mtime -1 | recon --files-from -
+git diff --name-only main | recon --files-from - --set code
+recon --files-from todo.txt
+```
+
+- **The explorer lists the files in the order of the list**, not by name.
+  The first one is selected and shown.
+- **A list from a pipe streams.** Each file comes into the explorer when
+  its line comes, so a slow `find` shows its first files at once.
+- **A folder of links.** recon makes a folder in `$TMPDIR`
+  (`recon-files-<date>-<time>-<pid>`) with a link to each file, and the
+  explorer lists that folder. A file's link has the file's own name. Files
+  with the same name get the folders that make them different:
+  `a/log.txt` and `b/log.txt` are `a__log.txt` and `b__log.txt`. When a
+  later file takes the name of an earlier one, recon renames the earlier
+  link, and the selection and the view stay on that file.
+- **A path that does not exist** gets no link. When the list ends, one
+  warning names those paths. The log names each one.
+- **The folder stays** after recon quits, as the stdin copy does. With
+  `[stdin] delete_temp_file = true`, recon deletes it when it quits. The
+  links only: the files stay.
+- **`--files-from -` with a terminal on stdin** is refused: the list and
+  the keys would both read the terminal.
+- **`--emit files`** prints the paths of the links, not of the files.
 
 ### Batch mode
 

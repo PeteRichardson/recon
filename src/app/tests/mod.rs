@@ -578,6 +578,7 @@ mod ampersand;
 mod chains;
 mod emit_on_quit;
 mod explorer_search;
+mod files_from;
 mod filter_editor;
 mod filtering;
 mod filters;

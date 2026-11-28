@@ -81,6 +81,12 @@ fn main() -> Result<ExitCode> {
     } else {
         None
     };
+    // `--files-from` in the TUI (#519): batch mode reads the list itself.
+    let links = if batch.is_none() {
+        recon::files_from::list_into(&mut startup.config)?
+    } else {
+        None
+    };
     let config = &startup.config;
     recon::logging::startup_snapshot(&startup);
     match batch {
@@ -131,6 +137,7 @@ fn main() -> Result<ExitCode> {
         }
         let mut app = App::new(&startup)
             .with_stdin(stdin_file)
+            .with_links(links)
             .with_image_picker(image_picker())
             .with_model(recon::generate::system())
             .with_terminate(terminate);

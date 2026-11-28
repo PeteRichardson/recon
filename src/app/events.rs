@@ -30,6 +30,7 @@ impl App<'_> {
             | self.poll_changed()
             | self.poll_filtering()
             | self.poll_stdin()
+            | self.poll_links()
             | self.poll_spool()
             | self.drain_request()
             | self.poll_finish()
